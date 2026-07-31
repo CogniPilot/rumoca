@@ -1,5 +1,5 @@
 use super::*;
-use serde::ser::SerializeStruct;
+use serde::ser::{SerializeSeq, SerializeStruct, SerializeStructVariant};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -8,16 +8,8 @@ pub(super) struct ExpressionArenaWire {
     pub(super) nodes: Vec<ExprNodeWire>,
     #[serde(deserialize_with = "deserialize_provenance_vec")]
     pub(super) provenance: Vec<DaeProvenance>,
-    pub(super) type_anchors: Vec<ExpressionTypeAnchorWire>,
     pub(super) operands: Vec<u32>,
     pub(super) subscripts: Vec<PackedSubscriptWire>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ExpressionTypeAnchorWire {
-    pub(super) expression: u32,
-    pub(super) value_type: u32,
 }
 
 pub(super) struct WireExpression<'wire> {
@@ -43,40 +35,107 @@ pub(super) fn wire_expression(
     })
 }
 
-#[derive(Serialize)]
-struct ExpressionTypeAnchorOutput {
-    expression: u32,
-    value_type: u32,
-}
-
 impl Serialize for FrozenExpressionArenaStorage {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let mut type_anchors = Vec::new();
-        for (index, (node, value_type)) in self.nodes.iter().zip(&self.value_types).enumerate() {
-            if expression_requires_type_anchor(node) {
-                let expression = u32::try_from(index).map_err(serde::ser::Error::custom)?;
-                type_anchors.push(ExpressionTypeAnchorOutput {
-                    expression,
-                    value_type: *value_type,
-                });
-            }
-        }
-        let mut state = serializer.serialize_struct("ExpressionArena", 5)?;
-        state.serialize_field("nodes", &self.nodes)?;
+        let mut state = serializer.serialize_struct("ExpressionArena", 4)?;
+        state.serialize_field("nodes", &ExpressionNodesOutput(self))?;
         state.serialize_field("provenance", &self.provenance)?;
-        state.serialize_field("type_anchors", &type_anchors)?;
         state.serialize_field("operands", &self.operands)?;
         state.serialize_field("subscripts", &self.subscripts)?;
         state.end()
     }
 }
 
-fn expression_requires_type_anchor(node: &ExprNode) -> bool {
-    matches!(node, ExprNode::Record { .. })
-        || matches!(node, ExprNode::Array { operands } if operands.len == 0)
+struct ExpressionNodesOutput<'storage>(&'storage FrozenExpressionArenaStorage);
+
+impl Serialize for ExpressionNodesOutput<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.nodes.len()))?;
+        for (node, value_type) in self.0.nodes.iter().zip(&self.0.value_types) {
+            sequence.serialize_element(&ExpressionNodeOutput {
+                node,
+                value_type: *value_type,
+            })?;
+        }
+        sequence.end()
+    }
+}
+
+/// Wire-local variant indices of the projected arena nodes.
+///
+/// Ordinal-tagged encodings identify a variant positionally, so a projected
+/// node must carry the index its own arena enum declares and [`ExprNodeWire`]
+/// decodes. The two enums declare the same variants in the same order, and the
+/// binary round trips in `wire_omits_constructor_derived_facts_and_round_trips_canonically`
+/// and `wire_omits_generated_fold_facts_and_replays_them_through_construction`
+/// cover every projected variant, so drift fails loudly instead of silently.
+const ARRAY_VARIANT: u32 = 5;
+const RECORD_VARIANT: u32 = 6;
+const FUNCTION_FOLD_PARAMETER_VARIANT: u32 = 16;
+const FUNCTION_FOLD_OUTPUT_VARIANT: u32 = 17;
+
+/// One arena node projected onto the operation that built it.
+///
+/// A record and an empty array cannot infer their own type from operands, so
+/// the type they were constructed with travels as an operand of that node. A
+/// generated fold parameter or output carries only its owning function: every
+/// other fact those nodes hold is re-issued by the fold transition that
+/// generates them, so replay recomputes it instead of reading it.
+struct ExpressionNodeOutput<'storage> {
+    node: &'storage ExprNode,
+    value_type: u32,
+}
+
+impl Serialize for ExpressionNodeOutput<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.node {
+            ExprNode::Array { operands } => {
+                let anchor = (operands.len == 0).then_some(self.value_type);
+                let mut state =
+                    serializer.serialize_struct_variant("ExprNode", ARRAY_VARIANT, "array", 2)?;
+                state.serialize_field("operand_count", operands)?;
+                state.serialize_field("value_type", &anchor)?;
+                state.end()
+            }
+            ExprNode::Record { operands } => {
+                let mut state =
+                    serializer.serialize_struct_variant("ExprNode", RECORD_VARIANT, "record", 2)?;
+                state.serialize_field("operand_count", operands)?;
+                state.serialize_field("value_type", &self.value_type)?;
+                state.end()
+            }
+            ExprNode::FunctionFoldParameter { function, .. } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "ExprNode",
+                    FUNCTION_FOLD_PARAMETER_VARIANT,
+                    "function_fold_parameter",
+                    1,
+                )?;
+                state.serialize_field("function", function)?;
+                state.end()
+            }
+            ExprNode::FunctionFoldOutput { function, .. } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "ExprNode",
+                    FUNCTION_FOLD_OUTPUT_VARIANT,
+                    "function_fold_output",
+                    1,
+                )?;
+                state.serialize_field("function", function)?;
+                state.end()
+            }
+            node => node.serialize(serializer),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -98,9 +157,13 @@ pub(super) enum ExprNodeWire {
     },
     Array {
         operand_count: u32,
+        /// The constructed element type an empty array cannot infer.
+        #[serde(deserialize_with = "deserialize_required_option")]
+        value_type: Option<u32>,
     },
     Record {
         operand_count: u32,
+        value_type: u32,
     },
     Field {
         base: u32,
@@ -153,15 +216,9 @@ pub(super) enum ExprNodeWire {
     },
     FunctionFoldParameter {
         function: u32,
-        fold: u32,
-        carried: u32,
-        definition_ordinal: u32,
     },
     FunctionFoldOutput {
         function: u32,
-        fold: u32,
-        carried: u32,
-        definition_ordinal: u32,
     },
 }
 

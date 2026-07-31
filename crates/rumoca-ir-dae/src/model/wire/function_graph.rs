@@ -134,8 +134,8 @@ impl ExpressionChildren {
 fn operand_count(node: &ExprNodeWire) -> u32 {
     match node {
         ExprNodeWire::Conditional { operand_count }
-        | ExprNodeWire::Array { operand_count }
-        | ExprNodeWire::Record { operand_count }
+        | ExprNodeWire::Array { operand_count, .. }
+        | ExprNodeWire::Record { operand_count, .. }
         | ExprNodeWire::Builtin { operand_count, .. }
         | ExprNodeWire::Call { operand_count, .. } => *operand_count,
         _ => 0,

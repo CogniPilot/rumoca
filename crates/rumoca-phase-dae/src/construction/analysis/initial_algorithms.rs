@@ -14,20 +14,51 @@
 //!   only parameters and constants, so the value the initialization system
 //!   would compute and the value the parameter set computes are the same
 //!   number — evaluating it at parameter-set time is exact, not an
-//!   approximation.
+//!   approximation;
+//! * a discrete-time coordinate becomes an initialization-partition definition
+//!   of the value it holds when initialization finishes. MLS §8.6 lets an
+//!   initial section determine a discrete-time variable, and the equation
+//!   section keeps its own owner for every later instant, so the two are
+//!   different partitions rather than two owners of one coordinate.
+//!
+//! A zero-output call statement to a collected function is replayed the same
+//! way once its body is proven to have no effect other than raising
+//! assertions: the call is replaced by exactly those assertions, under the
+//! same guard, so it reaches the assertion owner above. [`checking_calls`]
+//! states that acceptance contract and rejects every call outside it by name.
 //!
 //! Every other written coordinate keeps a typed rejection: the initialization
 //! system has no checked owner that solves for a state, algebraic, output, or
-//! discrete coordinate from an algorithm, and inventing one would replace a
+//! input coordinate from an algorithm, and inventing one would replace a
 //! missing capability with an unproven guess.
+mod checking_calls;
+
 use super::*;
+use checking_calls::{checking_call, expand_checking_call, reject_unsupported_checking_call};
 use rumoca_core::ExpressionRewriter;
 
 pub(super) struct InitialAlgorithmAnalysis {
     /// Determining expression of each `fixed = false` parameter the section
     /// assigns, with every earlier assignment already substituted.
     pub(super) parameters: HashMap<VarName, Expression>,
+    /// Initialization-instant value of each discrete-time coordinate the
+    /// section assigns, with every earlier assignment already substituted.
+    pub(super) discrete_values: HashMap<VarName, InitialDiscreteValue>,
     pub(super) assertions: Vec<flat::AssertEquation>,
+}
+
+/// One discrete coordinate's initialization-instant value.
+pub(in crate::construction) struct InitialDiscreteValue {
+    pub(in crate::construction) value: Expression,
+    pub(in crate::construction) span: Span,
+}
+
+/// The declarative owner one replayed target resolves to.
+enum InitialTarget {
+    /// MLS §8.6 calculated parameter; the parameter set evaluates it.
+    Parameter(Expression),
+    /// MLS §8.6 discrete-time initial value; the initialization system owns it.
+    Discrete(InitialDiscreteValue),
 }
 
 /// Prove the statement grammar of every initial algorithm section.
@@ -55,6 +86,13 @@ fn reject_unsupported_statements(
     for statement in statements {
         if let Some(assertion) = assertion_call(flat, statement) {
             require_span(assertion.span, "initial algorithm assertion")?;
+            continue;
+        }
+        // A zero-output call to a collected function is a checking call when
+        // its body can only raise assertions; that proof is what admits it, so
+        // it is taken before the call-statement rejection below.
+        if let Some(call) = checking_call(flat, statement) {
+            reject_unsupported_checking_call(&call)?;
             continue;
         }
         match statement {
@@ -88,15 +126,25 @@ fn reject_unsupported_statements(
                     reject_unsupported_statements(flat, statements)?;
                 }
             }
-            rumoca_core::Statement::FunctionCall { comp, span, .. } => {
-                return Err(unsupported(
+            rumoca_core::Statement::FunctionCall {
+                comp,
+                outputs,
+                span,
+                ..
+            } => {
+                let callee = comp.to_var_name();
+                let detail = if outputs.iter().all(Option::is_none) {
                     format!(
-                        "a call statement to `{}` has no checked initialization owner; `assert` \
-                         is the only call statement the initialization partition owns",
-                        comp.to_var_name()
-                    ),
-                    *span,
-                ));
+                        "a call statement to `{callee}` names a callee the Flat function table \
+                         does not register, so its body cannot be proven to only raise assertions"
+                    )
+                } else {
+                    format!(
+                        "a call statement to `{callee}` binds outputs; the initialization \
+                         partition has no owner that solves a coordinate from a call statement"
+                    )
+                };
+                return Err(unsupported(detail, *span));
             }
             _ => {
                 let span =
@@ -118,14 +166,17 @@ pub(super) fn analyze_initial_algorithms(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
+    constants: &EvalContext,
 ) -> Result<InitialAlgorithmAnalysis, ToDaeError> {
     let mut analysis = InitialAlgorithmAnalysis {
         parameters: HashMap::new(),
+        discrete_values: HashMap::new(),
         assertions: Vec::new(),
     };
     for algorithm in &flat.initial_algorithms {
         let mut replay = Replay {
             flat,
+            constants,
             origin: flat::EquationOrigin::Algorithm {
                 component: algorithm.origin.clone(),
             },
@@ -138,12 +189,20 @@ pub(super) fn analyze_initial_algorithms(
             let value = values
                 .remove(&target)
                 .expect("a replayed target keeps its value");
-            let value = plan_initial_parameter(flat, roles, states, &target, value)?;
-            if analysis.parameters.insert(target.clone(), value).is_some() {
+            let duplicated = match plan_initial_target(flat, roles, states, &target, value)? {
+                InitialTarget::Parameter(value) => {
+                    analysis.parameters.insert(target.clone(), value).is_some()
+                }
+                InitialTarget::Discrete(value) => analysis
+                    .discrete_values
+                    .insert(target.clone(), value)
+                    .is_some(),
+            };
+            if duplicated {
                 return Err(unsupported(
                     format!(
-                        "`{target}` is determined by more than one initial algorithm; a \
-                         calculated parameter has exactly one determining owner"
+                        "`{target}` is determined by more than one initial algorithm; an \
+                         initialization-determined coordinate has exactly one determining owner"
                     ),
                     algorithm.span,
                 ));
@@ -209,6 +268,78 @@ fn reject_competing_initial_equations(
     Ok(())
 }
 
+/// Prove that one replayed target has a declarative owner, and say which.
+fn plan_initial_target(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    target: &VarName,
+    value: ReplayedValue,
+) -> Result<InitialTarget, ToDaeError> {
+    match roles[target] {
+        PlannedRole::Parameter => {
+            plan_initial_parameter(flat, roles, states, target, value).map(InitialTarget::Parameter)
+        }
+        PlannedRole::DiscreteReal | PlannedRole::DiscreteValue => {
+            plan_initial_discrete_value(flat, roles, states, target, value)
+                .map(InitialTarget::Discrete)
+        }
+        role => Err(unsupported(
+            format!(
+                "initial algorithm target `{target}` has role {role:?}; the initialization \
+                 system owns an algorithm-determined coordinate only as a `parameter` declared \
+                 `fixed = false` or as a discrete-time coordinate, because a state, algebraic, \
+                 output, or input coordinate is solved from residual rows rather than assigned"
+            ),
+            value.span,
+        )),
+    }
+}
+
+/// Prove that one replayed discrete target is a coordinate the initialization
+/// system can define.
+///
+/// MLS §8.6 lets an initial section determine a discrete-time variable's value
+/// at the initialization instant. That instant is the one point where `time`
+/// is already known and no trajectory exists yet, so the determining
+/// expression may read `time`, parameters, and constants — and nothing else,
+/// because no other coordinate has a proven value there.
+fn plan_initial_discrete_value(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    target: &VarName,
+    value: ReplayedValue,
+) -> Result<InitialDiscreteValue, ToDaeError> {
+    let variable = &flat.variables[target];
+    if variable.binding.is_some() {
+        return Err(unsupported(
+            format!(
+                "discrete coordinate `{target}` already has a declaration binding, which defines \
+                 it at the initialization instant too, so the initial algorithm would give it a \
+                 second determining owner there"
+            ),
+            value.span,
+        ));
+    }
+    if !variable.dims.is_empty() {
+        return Err(unsupported(
+            format!(
+                "discrete coordinate `{target}` is an array; the initialization system defines \
+                 one scalar discrete coordinate per algorithm target and has no vector \
+                 definition owner"
+            ),
+            value.span,
+        ));
+    }
+    reject_unsettled_reads(flat, &value.expression, target, roles)?;
+    validate_expression(&value.expression, roles, states)?;
+    Ok(InitialDiscreteValue {
+        value: value.expression,
+        span: value.span,
+    })
+}
+
 /// Prove that one replayed target is a coordinate the parameter set can own.
 fn plan_initial_parameter(
     flat: &flat::Model,
@@ -218,17 +349,6 @@ fn plan_initial_parameter(
     value: ReplayedValue,
 ) -> Result<Expression, ToDaeError> {
     let variable = &flat.variables[target];
-    if !matches!(roles[target], PlannedRole::Parameter) {
-        return Err(unsupported(
-            format!(
-                "initial algorithm target `{target}` has role {:?}; the initialization system \
-                 owns an algorithm-determined coordinate only as a `parameter` declared \
-                 `fixed = false`",
-                roles[target]
-            ),
-            value.span,
-        ));
-    }
     if variable.fixed != Some(false) {
         return Err(unsupported(
             format!(
@@ -259,6 +379,66 @@ fn plan_initial_parameter(
     reject_runtime_reads(&value.expression, target, roles)?;
     validate_expression(&value.expression, roles, states)?;
     Ok(value.expression)
+}
+
+/// The initialization instant settles `time`, parameters, and constants and
+/// nothing else, so a discrete initial value may read only those.
+///
+/// A read of a state, algebraic, output, input, `pre`, or another discrete
+/// coordinate has no proven value at that instant: the initialization update
+/// rows run before any trajectory exists, and accepting such a read would make
+/// the initial value depend on evaluation order rather than on the model.
+///
+/// An MLS §12.3 `impure` call is rejected for the same reason from the other
+/// side: the runtime applies initialization updates until they stop changing,
+/// and a value that answers differently each time it runs has no fixed point
+/// to reach.
+fn reject_unsettled_reads(
+    flat: &flat::Model,
+    expression: &Expression,
+    target: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<(), ToDaeError> {
+    if let Expression::FunctionCall { name, span, .. } = expression
+        && let Some(function) = flat.functions.get(name.var_name())
+        && !function.pure
+    {
+        return Err(unsupported(
+            format!(
+                "`{target}` is determined by a call to the impure function `{}`; the \
+                 initialization system applies an algorithm-determined discrete value \
+                 until it stops changing, which an impure call never does",
+                function.name
+            ),
+            *span,
+        ));
+    }
+    if let Expression::VarRef { name, span, .. } = expression {
+        let referenced = name.var_name();
+        let settled = referenced.as_str() == "time"
+            || matches!(
+                roles.get(referenced),
+                Some(
+                    PlannedRole::Parameter
+                        | PlannedRole::Constant
+                        | PlannedRole::EnumerationLiteral
+                )
+            );
+        if !settled {
+            return Err(unsupported(
+                format!(
+                    "`{target}` is determined from `{referenced}`, which has no proven value at \
+                     the initialization instant; an algorithm-determined discrete coordinate \
+                     reads only `time`, parameters, and constants"
+                ),
+                *span,
+            ));
+        }
+    }
+    for child in expression_children(expression) {
+        reject_unsettled_reads(flat, child, target, roles)?;
+    }
+    Ok(())
 }
 
 /// A calculated parameter is evaluated once, before the trajectory exists, so
@@ -307,6 +487,9 @@ fn sorted_targets(values: &ReplayValues) -> Vec<VarName> {
 
 struct Replay<'flat> {
     flat: &'flat flat::Model,
+    /// Parameter values and array shapes, so a checking call's loop bounds
+    /// resolve to the iterations the model actually has.
+    constants: &'flat EvalContext,
     origin: flat::EquationOrigin,
     assertions: Vec<flat::AssertEquation>,
 }
@@ -344,6 +527,14 @@ impl Replay<'_> {
                 self.origin.clone(),
             ));
             return Ok(());
+        }
+        // A checking call stands for exactly the assertions its body raises,
+        // so it is replaced by them and replayed under the same guard. Every
+        // enclosing branch condition therefore reaches each one through the
+        // owner a guarded check already has.
+        if let Some(call) = checking_call(self.flat, statement) {
+            let expanded = expand_checking_call(&call, self.constants)?;
+            return self.statements(&expanded, guard, values);
         }
         match statement {
             rumoca_core::Statement::Empty { .. } => Ok(()),

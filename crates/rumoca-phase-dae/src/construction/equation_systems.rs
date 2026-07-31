@@ -13,6 +13,7 @@ pub(super) fn lower_equation_systems<'dae>(
     excluded_equation_rows.extend(&analysis.clock_equation_rows);
     excluded_equation_rows.extend(&analysis.derived_parameter_rows);
     let no_clocked_owners = HashMap::new();
+    let no_semi_linear_rules = SemiLinearRules::default();
     lower_equations(
         construction,
         discrete_values,
@@ -27,6 +28,7 @@ pub(super) fn lower_equation_systems<'dae>(
             topology: &analysis.discrete_value_topology,
             clocked_owners: &analysis.clocked_equation_owners,
             clocks,
+            semi_linear: &analysis.semi_linear_rules,
             initialization: false,
         },
     )?;
@@ -53,6 +55,9 @@ pub(super) fn lower_equation_systems<'dae>(
             topology: &analysis.discrete_value_topology,
             clocked_owners: &no_clocked_owners,
             clocks,
+            // MLS §3.7.4.5's rules are stated for the model equations; an
+            // initial equation is lowered exactly as written.
+            semi_linear: &no_semi_linear_rules,
             initialization: true,
         },
     )?;

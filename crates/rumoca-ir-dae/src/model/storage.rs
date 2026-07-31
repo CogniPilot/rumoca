@@ -14,6 +14,7 @@ impl Storage {
             expressions: self.expressions.freeze(),
             continuous_equations: self.continuous_equations.into_boxed_slice(),
             initialization_equations: self.initialization_equations.into_boxed_slice(),
+            initial_discrete_values: self.initial_discrete_values.into_boxed_slice(),
             discrete_real_equations: self.discrete_real_equations.into_boxed_slice(),
             discrete_value_owners: self.discrete_value_owners.into_boxed_slice(),
             discrete_value_targets: self.discrete_value_targets.into_boxed_slice(),
@@ -615,6 +616,24 @@ impl Storage {
         self.variables
             .get(raw as usize)
             .ok_or_else(|| unknown("variable", raw, at))
+    }
+
+    /// MLS §12.3: a Modelica body is pure; only an external body may declare
+    /// itself `impure`.
+    pub(crate) fn function_is_pure(
+        &self,
+        raw: u32,
+        at: DaeProvenance,
+    ) -> Result<bool, DaeConstructionError> {
+        let entry = self
+            .functions
+            .get(raw as usize)
+            .ok_or_else(|| unknown("function", raw, at))?;
+        Ok(entry
+            .definition
+            .as_ref()
+            .and_then(FunctionBodyEntry::external)
+            .is_none_or(|external| external.purity.is_pure()))
     }
 
     pub(crate) fn total_residual_equation_count(&self) -> usize {

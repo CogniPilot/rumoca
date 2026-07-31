@@ -8,6 +8,7 @@ mod discrete_values;
 mod equation_partitions;
 mod event_conditions;
 mod expression_events;
+mod expression_semi_linear;
 mod expression_validation;
 mod function_array_assemblies;
 mod function_bodies;
@@ -51,6 +52,8 @@ use event_conditions::{
 };
 use expression_events::analyze_expression_events;
 pub(super) use expression_events::{ExpressionEventPlan, ExpressionEventPlans};
+use expression_semi_linear::analyze_semi_linear_rules;
+pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     validate_expression, validate_expression_scoped_with_record_array_fields,
     validate_expression_with_record_array_fields, validate_subscripts_scoped,
@@ -76,6 +79,7 @@ use function_reductions::validate_integer_reduction;
 use function_returns::validate_guarded_function_return;
 pub(super) use function_value_types::record_field_projections;
 use function_value_types::validate_function_value_type;
+pub(super) use initial_algorithms::InitialDiscreteValue;
 use initial_algorithms::{
     InitialAlgorithmAnalysis, analyze_initial_algorithms,
     reject_unsupported_initial_algorithm_statements,
@@ -117,6 +121,9 @@ pub(super) struct Analysis {
     pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
     /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
     pub(super) initial_parameters: HashMap<VarName, Expression>,
+    /// Discrete coordinates whose initialization-instant value an initial
+    /// algorithm determines (MLS §8.6).
+    pub(super) initial_discrete_values: HashMap<VarName, InitialDiscreteValue>,
     /// Assertions an initial algorithm owns, with enclosing guards folded in.
     pub(super) initial_algorithm_assertions: Vec<flat::AssertEquation>,
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
@@ -130,6 +137,10 @@ pub(super) struct Analysis {
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) discrete_value_topology: DiscreteValueTopologyPlan,
     pub(super) assigned_discrete_targets: HashSet<VarName>,
+    /// MLS §3.7.4.5 Rule 1 / Rule 2 replacement residuals, keyed by the model
+    /// equation row they replace. Empty until
+    /// [`Analysis::with_semi_linear_rules`] proves them.
+    pub(super) semi_linear_rules: SemiLinearRules,
 }
 
 struct SourceBalanceAnalysis {
@@ -245,11 +256,9 @@ struct FunctionValidationContext<'scope> {
     shape_analysis: &'scope FunctionShapeAnalysis,
 }
 
-pub(super) fn required_statement_span(
-    statement: &rumoca_core::Statement,
-    owner: impl Into<String>,
-) -> Result<Span, ToDaeError> {
-    let kind = match statement {
+/// Name the statement form, so a report says which owner is missing.
+pub(super) fn statement_kind(statement: &rumoca_core::Statement) -> &'static str {
+    match statement {
         rumoca_core::Statement::Empty { .. } => "empty",
         rumoca_core::Statement::Assignment { .. } => "assignment",
         rumoca_core::Statement::Return { .. } => "return",
@@ -261,7 +270,14 @@ pub(super) fn required_statement_span(
         rumoca_core::Statement::FunctionCall { .. } => "function-call",
         rumoca_core::Statement::Reinit { .. } => "reinit",
         rumoca_core::Statement::Assert { .. } => "assert",
-    };
+    }
+}
+
+pub(super) fn required_statement_span(
+    statement: &rumoca_core::Statement,
+    owner: impl Into<String>,
+) -> Result<Span, ToDaeError> {
+    let kind = statement_kind(statement);
     statement
         .source_span()
         .ok_or_else(|| ToDaeError::MissingProvenance {
@@ -380,6 +396,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
         initial_parameters: initial_algorithms.parameters,
+        initial_discrete_values: initial_algorithms.discrete_values,
         initial_algorithm_assertions: initial_algorithms.assertions,
         function_plans,
         function_shapes,
@@ -392,7 +409,33 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         initial_record_equations,
         discrete_value_topology,
         assigned_discrete_targets: balance.assigned_discrete_targets,
+        semi_linear_rules: SemiLinearRules::default(),
     })
+}
+
+impl Analysis {
+    /// Prove the MLS §3.7.4.5 Rule 1 / Rule 2 replacements over the model
+    /// equation rows, completing the plan [`analyze`] leaves empty.
+    ///
+    /// The rules read every other owner's row claims, so they can only be
+    /// proven once the rest of the analysis exists. Construction is the caller;
+    /// `balance_detail` deliberately is not, because the source balance the
+    /// rules preserve is counted on the untransformed rows.
+    pub(super) fn with_semi_linear_rules(mut self, flat: &flat::Model) -> Self {
+        let mut claimed = self.continuous_family_rows.clone();
+        claimed.extend(&self.clock_equation_rows);
+        claimed.extend(&self.derived_parameter_rows);
+        self.semi_linear_rules = analyze_semi_linear_rules(
+            flat,
+            &self.roles,
+            &SemiLinearRowFilter {
+                excluded: &claimed,
+                records: &self.record_equations,
+                clocked: &self.clocked_equation_owners,
+            },
+        );
+        self
+    }
 }
 
 /// Proves the clocked partitions and corrects the role plan they contradict.
@@ -596,7 +639,7 @@ fn analyze_initial_algorithm_owners(
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
 ) -> Result<InitialAlgorithmAnalysis, ToDaeError> {
-    let initial_algorithms = analyze_initial_algorithms(flat, roles, states)?;
+    let initial_algorithms = analyze_initial_algorithms(flat, roles, states, constants)?;
     validate_assertions(
         flat.assert_equations
             .iter()

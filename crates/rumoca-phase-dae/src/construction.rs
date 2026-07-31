@@ -25,6 +25,7 @@ mod function_construction;
 mod function_external;
 mod function_record_assembly;
 mod function_shapes;
+mod initial_discrete_values;
 mod model_algorithm;
 mod model_events;
 mod record_equation;
@@ -40,7 +41,7 @@ use analysis::{
     ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
     FunctionStatementPlan, FunctionValueSeed, ModelAlgorithmPlan, PlannedRole,
-    RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, analyze,
+    RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, SemiLinearRules, analyze,
     effective_function_scalar_type, effective_variable_scalar_type,
     empty_array_bound_to_declaration, equation_partition, is_inferred_clock_condition,
     is_whole_clock_coordinate, model_algorithm_targets, record_field_projections,
@@ -196,7 +197,7 @@ struct ReservedVariable<'flat, 'dae> {
 }
 
 pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
-    let analysis = analyze(flat)?;
+    let analysis = analyze(flat)?.with_semi_linear_rules(flat);
     if !flat.is_partial && !analysis.balance.is_balanced() {
         return Err(ToDaeError::unbalanced_from_detail(analysis.balance));
     }
@@ -355,6 +356,12 @@ fn lower_model_owners<'dae>(
         coordinates,
         functions,
         clocks,
+    )?;
+    initial_discrete_values::lower_initial_discrete_values(
+        construction,
+        coordinates,
+        functions,
+        analysis,
     )?;
     lower_assertions(
         construction,
@@ -1828,6 +1835,11 @@ struct EquationRows<'scope, 'dae> {
     topology: &'scope DiscreteValueTopologyPlan,
     clocked_owners: &'scope HashMap<usize, ClockPlan>,
     clocks: &'scope LoweredClocks<'dae>,
+    /// MLS §3.7.4.5 Rule 1 / Rule 2 replacements proven by analysis. A row
+    /// listed here is lowered from the rule's residual instead of the source
+    /// one; the row count, its owner, and its balance contribution are
+    /// unchanged, which is why the rule needs no separate equation identity.
+    semi_linear: &'scope SemiLinearRules,
     initialization: bool,
 }
 
@@ -1876,12 +1888,18 @@ fn lower_equations<'dae>(
             .expect("analysis already validates equation ownership")
         {
             EquationPartition::Continuous => {
+                let (source, generation) = match input.semi_linear.residual(index) {
+                    Some(replacement) => {
+                        (replacement, Some(dae::DaeGeneration::SemiLinearLowering))
+                    }
+                    None => (&equation.residual, generation),
+                };
                 let residual = lower_equation_expression(
                     construction,
                     coordinates,
                     functions,
                     owner_clock,
-                    &equation.residual,
+                    source,
                     generation,
                 )?;
                 construction.continuous(|system| system.value_equation(owner, residual))?;

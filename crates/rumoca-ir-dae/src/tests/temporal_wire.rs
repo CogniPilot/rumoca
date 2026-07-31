@@ -621,6 +621,8 @@ fn wire_v12_round_trip_preserves_provenance_without_inline_source_copies() {
 fn wire_decode_rejects_the_superseded_coordinate_tagged_schema_version() {
     /// The last wire version without the clock-interval coordinate variant.
     const SUPERSEDED_COORDINATE_VERSION: u16 = 11;
+    /// The last wire version with positional type anchors and restated fold results.
+    const SUPERSEDED_ANCHOR_VERSION: u16 = 12;
 
     let dae = exact_clock_fixture();
     let json = serde_json::to_string(&dae).expect("clock fixture serializes");
@@ -629,7 +631,7 @@ fn wire_decode_rejects_the_superseded_coordinate_tagged_schema_version() {
         "the current wire carries the clock-interval coordinate"
     );
 
-    for superseded in [10, SUPERSEDED_COORDINATE_VERSION] {
+    for superseded in [10, SUPERSEDED_COORDINATE_VERSION, SUPERSEDED_ANCHOR_VERSION] {
         let payload = json.replacen(
             &format!("\"schema_version\":{DAE_SCHEMA_VERSION}"),
             &format!("\"schema_version\":{superseded}"),

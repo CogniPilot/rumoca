@@ -29,8 +29,9 @@ use crate::discrete_values::{
 };
 use crate::equations::{
     ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationEntry,
-    DiscreteRealEquationView, EquationOwnerEntry, InitializationEquations, ResidualEquationEntry,
-    ResidualShape, StructuredFamilyEntry,
+    DiscreteRealEquationView, EquationOwnerEntry, InitialDiscreteValueEntry,
+    InitialDiscreteValueView, InitializationEquations, ResidualEquationEntry, ResidualShape,
+    StructuredFamilyEntry,
 };
 use crate::events::{
     EventActionEntry, EventActionKind, EventActionOperation, EventActionView, Events,
@@ -59,7 +60,7 @@ use crate::{
 /// enum variants positionally, so adding, removing, or reordering a wire
 /// variant changes the decodable shape. Every such change bumps this constant,
 /// and decode then rejects the superseded number instead of reading it.
-pub const DAE_SCHEMA_VERSION: u16 = 12;
+pub const DAE_SCHEMA_VERSION: u16 = 13;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -349,6 +350,8 @@ pub(crate) struct Storage {
     pub(crate) expressions: ExpressionArenaStorage,
     pub(crate) continuous_equations: Vec<ResidualEquationEntry>,
     pub(crate) initialization_equations: Vec<ResidualEquationEntry>,
+    pub(crate) initial_discrete_values: Vec<InitialDiscreteValueEntry>,
+    pub(crate) initial_discrete_value_by_variable: rustc_hash::FxHashMap<u32, u32>,
     pub(crate) discrete_real_equations: Vec<DiscreteRealEquationEntry>,
     pub(crate) discrete_value_owners: Vec<DiscreteValueOwnerEntry>,
     pub(crate) discrete_value_targets: Vec<u32>,
@@ -396,6 +399,7 @@ struct FrozenStorage {
     expressions: FrozenExpressionArenaStorage,
     continuous_equations: Box<[ResidualEquationEntry]>,
     initialization_equations: Box<[ResidualEquationEntry]>,
+    initial_discrete_values: Box<[InitialDiscreteValueEntry]>,
     discrete_real_equations: Box<[DiscreteRealEquationEntry]>,
     discrete_value_owners: Box<[DiscreteValueOwnerEntry]>,
     discrete_value_targets: Box<[u32]>,
@@ -419,7 +423,7 @@ struct FrozenStorage {
     delays: Box<[DelayEntry]>,
 }
 
-/// Immutable, valid-by-construction schema-v12 DAE.
+/// Immutable, valid-by-construction schema-v13 DAE.
 #[derive(Debug, Serialize)]
 pub struct Dae {
     schema_version: u16,
