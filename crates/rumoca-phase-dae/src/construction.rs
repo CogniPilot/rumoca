@@ -43,7 +43,7 @@ use analysis::{
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
     FunctionStatementPlan, FunctionValueSeed, ModelAlgorithmPlan, PlannedRole,
     RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, SemiLinearRules, analyze,
-    effective_function_scalar_type, effective_variable_scalar_type,
+    assigned_function_targets, effective_function_scalar_type, effective_variable_scalar_type,
     empty_array_bound_to_declaration, equation_partition, is_inferred_clock_condition,
     is_whole_clock_coordinate, model_algorithm_targets, record_field_projections,
     structured_assignment_names,
@@ -660,7 +660,11 @@ fn lower_function_loop<'dae>(
         flattened_function_loop(input.indices, input.source_statements, input.source_depth);
     let binders = lower_function_binders(construction, domain, &indices, input.binder_spans)?;
     let mut loop_shapes = symbols.shapes.clone();
-    loop_shapes.extend(binders.keys().cloned().map(|binder| (binder, Vec::new())));
+    for binder in binders.keys() {
+        // A loop binder is a scalar whose value varies over the iteration, so
+        // it shadows any enclosing coordinate's proven value (MLS §11.2.2).
+        loop_shapes.insert(binder.clone(), Vec::new());
+    }
     let loop_symbols = FunctionSymbols {
         coordinates: symbols.coordinates,
         functions: symbols.functions,

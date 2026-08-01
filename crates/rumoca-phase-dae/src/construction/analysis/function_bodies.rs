@@ -36,7 +36,7 @@ pub(super) fn validate_functions(
             require_span(parameter.span, "function parameter declaration")?;
             validate_function_value_type(parameter, function, flat, &mut HashSet::new())?;
             if let Some(default) = &parameter.default {
-                validate_function_expression(default, function, flat)?;
+                validate_function_expression(default, function, flat, &certificate.values)?;
             }
         }
         let static_integers = immutable_integer_defaults(function, flat, &certificate.values)?;
@@ -81,9 +81,10 @@ fn validate_function_expression(
     expression: &Expression,
     function: &rumoca_core::Function,
     flat: &flat::Model,
+    values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     let roles = function_expression_roles(function, flat);
-    validate_function_expression_with_roles(expression, &roles, flat)
+    validate_function_expression_with_roles(expression, &roles, flat, values)
 }
 
 fn function_expression_roles(
@@ -122,12 +123,19 @@ fn function_expression_roles(
     roles
 }
 
+/// Validate one expression of a value-proven function specialization.
+///
+/// `values` is the specialization's proven environment: MLS §12.2 lets a
+/// function body be written over its inputs, so a construct that must be static
+/// — the compact range of MLS §10.4.1 — is static here exactly when this
+/// specialization settles its operands.
 pub(super) fn validate_function_expression_with_roles(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
     flat: &flat::Model,
+    values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
-    validate_expression(expression, roles, &HashSet::new())?;
+    validate_specialized_expression(expression, roles, values)?;
     validate_known_function_calls(expression, flat)
 }
 
@@ -195,7 +203,12 @@ pub(super) fn plan_function_statements(
             rumoca_core::Statement::Assignment { comp, value, span } => {
                 require_span(*span, "function assignment")?;
                 let assignment = validate_function_assignment_target(context, comp, *span)?;
-                validate_function_expression_with_roles(value, context.roles, context.flat)?;
+                validate_function_expression_with_roles(
+                    value,
+                    context.roles,
+                    context.flat,
+                    context.shapes,
+                )?;
                 plans.push(FunctionStatementPlan::Assignment(assignment));
             }
             rumoca_core::Statement::For { .. } => {
@@ -404,7 +417,7 @@ pub(super) fn validate_function_subscripts(
     subscripts: &[Subscript],
     context: FunctionValidationContext<'_>,
 ) -> Result<(), ToDaeError> {
-    validate_subscripts_scoped(subscripts, context.roles, &HashSet::new(), &HashSet::new())?;
+    validate_specialized_subscripts(subscripts, context.roles, context.shapes)?;
     for subscript in subscripts {
         if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
             validate_known_function_calls(expr, context.flat)?;

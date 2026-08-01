@@ -94,12 +94,11 @@ fn record_constructor<'scope>(
     })
 }
 
-fn validate_field_assembly(
-    statements: &[rumoca_core::Statement],
+/// The declared extents of one record output field and its scalar count.
+fn field_scalar_layout(
     output: &str,
     field: &rumoca_core::FunctionParam,
-    context: FunctionValidationContext<'_>,
-) -> Result<FunctionRecordFieldAssembly, ToDaeError> {
+) -> Result<(Vec<u32>, usize), ToDaeError> {
     let dimensions = field
         .dimensions()
         .iter()
@@ -126,6 +125,16 @@ fn validate_field_assembly(
                 field.span,
             )
         })?;
+    Ok((dimensions, scalar_count))
+}
+
+fn validate_field_assembly(
+    statements: &[rumoca_core::Statement],
+    output: &str,
+    field: &rumoca_core::FunctionParam,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionRecordFieldAssembly, ToDaeError> {
+    let (dimensions, scalar_count) = field_scalar_layout(output, field)?;
     let mut scalars = vec![None; scalar_count];
     for (statement_offset, statement) in statements.iter().enumerate() {
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
@@ -139,7 +148,12 @@ fn validate_field_assembly(
         }
         require_span(*span, "record field assignment")?;
         validate_function_subscripts(&target.subs, context)?;
-        validate_function_expression_with_roles(value, context.roles, context.flat)?;
+        validate_function_expression_with_roles(
+            value,
+            context.roles,
+            context.flat,
+            context.shapes,
+        )?;
         reject_record_self_reference(value, output, *span)?;
         let selection = field_selection(&dimensions, &target.subs, *span)?;
         let found_shape = context

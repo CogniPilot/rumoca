@@ -561,20 +561,52 @@ fn lower_range<'dae>(
     {
         return lower_enumeration_range(construction, symbols, start, end, input.provenance);
     }
-    let start =
-        lower_expression_scoped(construction, symbols, binders, start, input.generated_root)?;
-    let explicit_step = step
-        .as_deref()
-        .map(|step| {
-            lower_expression_scoped(construction, symbols, binders, step, input.generated_root)
-        })
-        .transpose()?;
-    let end = lower_expression_scoped(construction, symbols, binders, end, input.generated_root)?;
+    let mut bound =
+        |bound: &Expression| lower_range_bound(construction, symbols, binders, bound, &input);
+    let start = bound(start)?;
+    let explicit_step = step.as_deref().map(&mut bound).transpose()?;
+    let end = bound(end)?;
     construction.expressions(|expressions| {
         expressions
             .at(input.provenance)
             .range(start, explicit_step, end)
     })
+}
+
+/// Lower one compact-range bound, folding it when the scope proves its value.
+///
+/// A value-proven function specialization settles its inputs (MLS §12.2), so a
+/// bound like `integer(m/2)` denotes one Integer here. Emitting that Integer —
+/// rather than a read of the input coordinate — is what keeps the range the
+/// statically sized owner the analysis admitted it as. The admitting analysis
+/// reads `proven_extent` through the *same* scoped environment this lowering
+/// does, including the loop binders that shadow it, so the two cannot disagree
+/// about which bounds are static.
+///
+/// The folded literal keeps the bound's own span: the value replaces what the
+/// source wrote at that occurrence, and a diagnostic about the extent must point
+/// there rather than at the whole range.
+fn lower_range_bound<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    bound: &Expression,
+    input: &RangeInput<'_>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if !matches!(bound, Expression::Literal { .. })
+        && let Some(value) = symbols.shapes.proven_extent(bound)
+    {
+        let provenance = bound
+            .span()
+            .filter(|span| !span.is_dummy())
+            .map_or(Ok(input.provenance), dae::DaeProvenance::source)?;
+        return construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Integer(value))
+        });
+    }
+    lower_expression_scoped(construction, symbols, binders, bound, input.generated_root)
 }
 
 /// Lower `E.first : E.last` to the array of enumeration values it denotes.
@@ -1228,9 +1260,30 @@ fn lower_builtin_call<'dae>(
     arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    // MLS §10.3: `zeros(n)` declares its own extents, and the checked
+    // constructor types the result from them, so each extent must arrive as the
+    // Integer it denotes. Inside a value-proven specialization `n` denotes one
+    // Integer — the same one the shape proof already read through
+    // `evaluate_shape_integer` — so folding it here is what keeps the two
+    // agreeing instead of handing the constructor a coordinate it must refuse.
+    let extents_are_declared = matches!(function, BuiltinFunction::Zeros);
     let arguments = arguments
         .iter()
-        .map(|argument| lower_expression_scoped(construction, symbols, binders, argument, None))
+        .map(|argument| {
+            if extents_are_declared
+                && !matches!(argument, Expression::Literal { .. })
+                && let Some(extent) = symbols.shapes.proven_extent(argument)
+            {
+                let at = argument
+                    .span()
+                    .filter(|span| !span.is_dummy())
+                    .map_or(Ok(provenance), dae::DaeProvenance::source)?;
+                return construction.expressions(|expressions| {
+                    expressions.at(at).literal(dae::DaeLiteral::Integer(extent))
+                });
+            }
+            lower_expression_scoped(construction, symbols, binders, argument, None)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| {
         expressions

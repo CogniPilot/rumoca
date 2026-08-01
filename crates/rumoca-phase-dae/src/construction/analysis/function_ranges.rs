@@ -5,8 +5,7 @@ pub(super) fn immutable_integer_defaults(
     flat: &flat::Model,
     shapes: &ShapeEnvironment,
 ) -> Result<HashMap<VarName, i64>, ToDaeError> {
-    let mut assigned = HashSet::new();
-    collect_function_assignment_targets(&function.body, &mut assigned);
+    let assigned = assigned_function_targets(&function.body);
     let candidates = function
         .locals
         .iter()
@@ -39,21 +38,83 @@ pub(super) fn immutable_integer_defaults(
     Ok(values)
 }
 
+/// The declared names a function body ever assigns.
+///
+/// MLS §12.4.4 gives a protected declaration equation the value that holds on
+/// function entry, so a local the body never assigns keeps that value for the
+/// whole call. Any decision that reads a local's declaration value — a later
+/// declaration's extent, a static loop domain — must be conditioned on this.
+pub(in crate::construction) fn assigned_function_targets(
+    statements: &[rumoca_core::Statement],
+) -> HashSet<String> {
+    let mut assigned = HashSet::new();
+    collect_function_assignment_targets(statements, &mut assigned);
+    assigned
+}
+
+/// Record the declaration one write target names.
+///
+/// The first part is the declaration a nested write reaches: `r.field := …`
+/// rewrites `r`.
+fn insert_written_declaration(
+    target: &rumoca_core::ComponentReference,
+    assigned: &mut HashSet<String>,
+) {
+    if let Some(part) = target.parts().first() {
+        assigned.insert(part.ident.clone());
+    }
+}
+
+/// Collect every assigned declaration, through every nesting form.
+///
+/// A write is a write wherever it appears: MLS §11.2 puts assignments inside
+/// `if`, `while`, and `when` bodies just as readily as inside `for`, and MLS
+/// §12.4.2 makes a call statement's output list a write of each named target.
+/// Missing any of them would report a reassigned local as settled, which is the
+/// one answer that turns into a wrong extent rather than a rejection.
 fn collect_function_assignment_targets(
     statements: &[rumoca_core::Statement],
     assigned: &mut HashSet<String>,
 ) {
     for statement in statements {
         match statement {
-            rumoca_core::Statement::Assignment { comp, .. } => {
-                if let [target] = comp.parts() {
-                    assigned.insert(target.ident.clone());
+            rumoca_core::Statement::Assignment { comp, .. }
+            | rumoca_core::Statement::Reinit { variable: comp, .. } => {
+                insert_written_declaration(comp, assigned);
+            }
+            rumoca_core::Statement::FunctionCall { outputs, .. } => {
+                for output in outputs.iter().flatten() {
+                    insert_written_declaration(output, assigned);
                 }
             }
             rumoca_core::Statement::For { equations, .. } => {
                 collect_function_assignment_targets(equations, assigned);
             }
-            _ => {}
+            rumoca_core::Statement::While { block, .. } => {
+                collect_function_assignment_targets(&block.stmts, assigned);
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_function_assignment_targets(&block.stmts, assigned);
+                }
+                collect_function_assignment_targets(
+                    else_block.as_deref().unwrap_or_default(),
+                    assigned,
+                );
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    collect_function_assignment_targets(&block.stmts, assigned);
+                }
+            }
+            rumoca_core::Statement::Assert { .. }
+            | rumoca_core::Statement::Empty { .. }
+            | rumoca_core::Statement::Return { .. }
+            | rumoca_core::Statement::Break { .. } => {}
         }
     }
 }
@@ -95,6 +156,13 @@ fn static_shape_integer_expression(
     if let Some(value) = static_integer_expression(expression, values) {
         return Ok(Some(value));
     }
+    // MLS §11.2.2 requires a for-statement's range to be evaluable, and MLS
+    // §12.2 lets it be written over the function's inputs. Inside a value-proven
+    // specialization those inputs carry settled values, so `1:order` is a finite
+    // static domain exactly when the specialization proves `order`.
+    if let Some(value) = shapes.proven_extent(expression) {
+        return Ok(Some(value));
+    }
     match expression {
         Expression::BuiltinCall {
             function: BuiltinFunction::Size,
@@ -131,6 +199,7 @@ pub(super) fn validate_function_range_expression(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
     flat: &flat::Model,
+    values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     let Expression::Range {
         start, step, end, ..
@@ -142,11 +211,11 @@ pub(super) fn validate_function_range_expression(
             expression_span(expression)?,
         ));
     };
-    validate_function_expression_with_roles(start, roles, flat)?;
+    validate_function_expression_with_roles(start, roles, flat, values)?;
     if let Some(step) = step {
-        validate_function_expression_with_roles(step, roles, flat)?;
+        validate_function_expression_with_roles(step, roles, flat, values)?;
     }
-    validate_function_expression_with_roles(end, roles, flat)
+    validate_function_expression_with_roles(end, roles, flat, values)
 }
 
 pub(in crate::construction) fn static_integer_expression(

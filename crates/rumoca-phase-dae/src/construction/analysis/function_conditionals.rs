@@ -17,7 +17,12 @@ pub(super) fn plan_function_conditional(
     }
     let mut branches = Vec::with_capacity(blocks.len());
     for block in blocks {
-        validate_function_expression_with_roles(&block.cond, context.roles, context.flat)?;
+        validate_function_expression_with_roles(
+            &block.cond,
+            context.roles,
+            context.flat,
+            context.shapes,
+        )?;
         branches.push(plan_function_statements(&block.stmts, context)?);
     }
     let fallback = fallback

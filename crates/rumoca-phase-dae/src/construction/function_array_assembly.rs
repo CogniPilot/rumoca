@@ -77,7 +77,11 @@ fn lower_array_assembly_loop<'dae>(
         unreachable!("analysis proves one suffix-loop assignment plan")
     };
     let mut loop_shapes = symbols.shapes.clone();
-    loop_shapes.extend(binders.keys().cloned().map(|binder| (binder, Vec::new())));
+    for binder in binders.keys() {
+        // A loop binder is a scalar whose value varies over the iteration, so
+        // it shadows any enclosing coordinate's proven value (MLS §11.2.2).
+        loop_shapes.insert(binder.clone(), Vec::new());
+    }
     let element = lower_function_expression_scoped(
         construction,
         symbols.coordinates,

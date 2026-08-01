@@ -34,6 +34,15 @@ struct ValidatedFunctionLoop {
     domain: StructuredIndexDomain,
     binder_spans: Vec<Span>,
     roles: HashMap<VarName, PlannedRole>,
+    /// The specialization environment with this nest's binders bound.
+    ///
+    /// MLS §11.2.2 makes a for-index a fresh scalar of the loop, so it shadows
+    /// any enclosing coordinate of the same flat name. Binding it here — with a
+    /// shape and *no* proven value — is what stops an inner bound written over
+    /// the binder from folding an outer coordinate's value, and it is the same
+    /// environment the lowering builds, so the analysis that admits a bound and
+    /// the lowering that folds it read one scope.
+    shapes: ShapeEnvironment,
 }
 
 fn validate_function_loop_domain(
@@ -42,13 +51,22 @@ fn validate_function_loop_domain(
     context: FunctionValidationContext<'_>,
 ) -> Result<ValidatedFunctionLoop, ToDaeError> {
     let mut loop_roles = context.roles.clone();
+    let mut loop_shapes = context.shapes.clone();
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
     for (ordinal, index) in indices.iter().enumerate() {
         let range_span = expression_span(&index.range)?;
-        validate_function_range_expression(&index.range, context.roles, context.flat)?;
+        // Each index is proven in the scope of the ones before it: MLS §11.2.2
+        // opens the binders left to right, so `for i in 1:n, j in 1:i` reads `j`
+        // in a scope where `i` is already a binder rather than an outer value.
+        validate_function_range_expression(
+            &index.range,
+            context.roles,
+            context.flat,
+            &loop_shapes,
+        )?;
         let Some((lower, step, upper)) =
-            static_function_range(&index.range, context.static_integers, context.shapes)?
+            static_function_range(&index.range, context.static_integers, &loop_shapes)?
         else {
             return Err(ToDaeError::unsupported_flat(
                 "function loop domain",
@@ -68,6 +86,7 @@ fn validate_function_loop_domain(
         });
         binder_spans.push(range_span);
         loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
+        loop_shapes.insert(VarName::new(&index.ident), Vec::new());
     }
     let domain = StructuredIndexDomain { binders };
     domain.scalar_count().map_err(|error| {
@@ -84,6 +103,7 @@ fn validate_function_loop_domain(
         domain,
         binder_spans,
         roles: loop_roles,
+        shapes: loop_shapes,
     })
 }
 
@@ -112,6 +132,7 @@ fn validate_nested_function_loop(
     };
     let nested_context = FunctionValidationContext {
         roles: &validated.roles,
+        shapes: &validated.shapes,
         ..context
     };
     let FunctionStatementPlan::For {
@@ -152,7 +173,7 @@ fn validate_nested_function_loop(
         loop_statements,
         &statements,
         context.function,
-        context.shapes,
+        &validated.shapes,
     );
     Ok(Some(FunctionStatementPlan::For {
         domain: validated.domain,
@@ -172,6 +193,7 @@ fn validate_function_loop_body(
 ) -> Result<FunctionStatementPlan, ToDaeError> {
     let body_context = FunctionValidationContext {
         roles: &validated.roles,
+        shapes: &validated.shapes,
         ..context
     };
     let statements = plan_function_statements(equations, body_context)?;
@@ -210,7 +232,7 @@ fn validate_function_loop_body(
         equations,
         &statements,
         context.function,
-        context.shapes,
+        &validated.shapes,
     );
     Ok(FunctionStatementPlan::For {
         domain: validated.domain,

@@ -56,7 +56,8 @@ use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     validate_expression, validate_expression_scoped_with_record_array_fields,
-    validate_expression_with_record_array_fields, validate_subscripts_scoped,
+    validate_expression_with_record_array_fields, validate_specialized_expression,
+    validate_specialized_subscripts, validate_subscripts_scoped,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 use function_bodies::{
@@ -71,6 +72,7 @@ use function_externals::validate_external_function;
 pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
 use function_impurity::validate_impure_call_contexts;
 use function_loops::{subscript_is_binder, validate_function_loop};
+pub(super) use function_ranges::assigned_function_targets;
 use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
@@ -317,11 +319,15 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     // for one — instead of the capability that is missing.
     reject_unsupported_initial_algorithm_statements(flat)?;
     validate_impure_call_contexts(flat)?;
-    let function_shapes = FunctionShapeAnalysis::analyze(flat)?;
+    // The parameter fixed point is folded before any shape is proven: MLS §12.2
+    // lets a function's array dimensions be parameter expressions, so the
+    // settled values of the model's evaluable parameters (MLS §4.5) are part of
+    // what proves a function's declared extents, not a later consequence of it.
+    let constants = constant_context(flat)?;
+    let function_shapes = FunctionShapeAnalysis::analyze(flat, &constants)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equations(flat, &flat.equations)?;
     let initial_record_equations = analyze_record_equations(flat, &flat.initial_equations)?;
-    let constants = constant_context(flat)?;
     let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
     let delay_plans = analyze_delays(flat, &constants)?;
     let clocks = analyze_clocks(flat, &constants)?;

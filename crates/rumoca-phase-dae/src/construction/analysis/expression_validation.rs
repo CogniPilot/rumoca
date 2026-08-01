@@ -6,6 +6,14 @@ struct ExpressionValidator<'a> {
     states: &'a HashSet<VarName>,
     binders: &'a HashSet<VarName>,
     record_array_fields: Option<&'a RecordArrayFieldPlans>,
+    /// Translation-time values this scope proves, when it is a value-proven
+    /// function specialization.
+    ///
+    /// `None` is the model scope, where no specialization has settled a
+    /// coordinate. Only the compact-range rule of MLS §10.4.1 reads this, and
+    /// only to decide whether a non-literal bound is nevertheless settled at
+    /// translation time.
+    values: Option<&'a ShapeEnvironment>,
 }
 
 pub(super) fn validate_expression(
@@ -19,8 +27,49 @@ pub(super) fn validate_expression(
         states,
         binders: &binders,
         record_array_fields: None,
+        values: None,
     }
     .validate(expression)
+}
+
+/// Validate an expression inside a value-proven function specialization.
+///
+/// The specialization's environment is what lets MLS §10.4.1's compact-range
+/// rule accept `1:integer(m/2)`: the bound is not a literal token, but this
+/// scope settles it at translation time.
+pub(super) fn validate_specialized_expression(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    values: &ShapeEnvironment,
+) -> Result<(), ToDaeError> {
+    let binders = HashSet::new();
+    let states = HashSet::new();
+    ExpressionValidator {
+        roles,
+        states: &states,
+        binders: &binders,
+        record_array_fields: None,
+        values: Some(values),
+    }
+    .validate(expression)
+}
+
+/// Validate subscripts inside a value-proven function specialization.
+pub(super) fn validate_specialized_subscripts(
+    subscripts: &[Subscript],
+    roles: &HashMap<VarName, PlannedRole>,
+    values: &ShapeEnvironment,
+) -> Result<(), ToDaeError> {
+    let binders = HashSet::new();
+    let states = HashSet::new();
+    ExpressionValidator {
+        roles,
+        states: &states,
+        binders: &binders,
+        record_array_fields: None,
+        values: Some(values),
+    }
+    .validate_subscripts(subscripts)
 }
 
 pub(super) fn validate_expression_with_record_array_fields(
@@ -35,6 +84,7 @@ pub(super) fn validate_expression_with_record_array_fields(
         states,
         binders: &binders,
         record_array_fields: Some(fields),
+        values: None,
     }
     .validate(expression)
 }
@@ -51,6 +101,7 @@ pub(super) fn validate_expression_scoped_with_record_array_fields(
         states,
         binders,
         record_array_fields: Some(fields),
+        values: None,
     }
     .validate(expression)
 }
@@ -140,11 +191,16 @@ impl<'a> ExpressionValidator<'a> {
         self.validate_subscripts(subscripts)
     }
 
-    /// MLS §10.4.1: a compact range is either an Integer range with literal
-    /// bounds or an enumeration range whose two bounds are literals of one
-    /// enumeration type. Planned roles carry "is an enumeration literal" and
-    /// the reference identities carry "declared by the same enumeration type",
-    /// so neither answer comes from a rendered name.
+    /// MLS §10.4.1: a compact range is either an Integer range whose bounds are
+    /// settled at translation time or an enumeration range whose two bounds are
+    /// literals of one enumeration type. Planned roles carry "is an enumeration
+    /// literal" and the reference identities carry "declared by the same
+    /// enumeration type", so neither answer comes from a rendered name.
+    ///
+    /// "Settled" is a literal in the model scope, and inside a value-proven
+    /// function specialization it is additionally any bound that scope folds —
+    /// MLS §12.2 lets a function write `1:integer(m/2)` over its input `m`, and
+    /// the specialization that fixes `m` fixes the range with it.
     fn validate_range(
         self,
         start: &Expression,
@@ -169,12 +225,21 @@ impl<'a> ExpressionValidator<'a> {
                 span,
             ));
         }
-        require_integer_literal(start, "range start")?;
+        self.require_static_bound(start, "range start")?;
         if let Some(step) = step {
-            require_integer_literal(step, "range step")?;
+            self.require_static_bound(step, "range step")?;
         }
-        require_integer_literal(end, "range end")?;
-        Ok(())
+        self.require_static_bound(end, "range end")
+    }
+
+    fn require_static_bound(self, bound: &Expression, owner: &str) -> Result<(), ToDaeError> {
+        if self
+            .values
+            .is_some_and(|values| values.proven_extent(bound).is_some())
+        {
+            return Ok(());
+        }
+        require_integer_literal(bound, owner).map(|_| ())
     }
 
     fn validate_field_access(self, expression: &Expression, span: Span) -> Result<(), ToDaeError> {
@@ -501,6 +566,7 @@ pub(super) fn validate_subscripts_scoped(
         states,
         binders,
         record_array_fields: None,
+        values: None,
     }
     .validate_subscripts(subscripts)
 }
@@ -556,17 +622,27 @@ impl ExpressionValidator<'_> {
                 span,
             ));
         }
+        // MLS §10.4.1 opens a comprehension index as a fresh scalar of the
+        // comprehension, so it shadows any enclosing coordinate of the same flat
+        // name. The proven-value scope is narrowed with the binder set, or a
+        // bound written over an index would fold the shadowed coordinate's value.
         let mut binders = (*self.binders).clone();
+        let mut values = self.values.cloned();
         for index in indices {
             ExpressionValidator {
                 binders: &binders,
+                values: values.as_ref(),
                 ..self
             }
             .validate_comprehension_range(&index.range)?;
             binders.insert(VarName::new(&index.name));
+            if let Some(values) = values.as_mut() {
+                values.insert(VarName::new(&index.name), Vec::new());
+            }
         }
         ExpressionValidator {
             binders: &binders,
+            values: values.as_ref(),
             ..self
         }
         .validate(body)

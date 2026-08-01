@@ -63,7 +63,12 @@ pub(super) fn validate_external_function(
             }
             None => {
                 reject_mutable_value_argument(function, argument)?;
-                validate_function_expression_with_roles(argument, &input_roles, context.flat)?;
+                validate_function_expression_with_roles(
+                    argument,
+                    &input_roles,
+                    context.flat,
+                    context.shapes,
+                )?;
                 arguments.push(ExternalArgumentPlan::Input(ordinal));
             }
         }
