@@ -1588,6 +1588,7 @@ mod tests {
                 initialization: solve::InitializationSolveSystem {
                     residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                     row_targets: Vec::new(),
+                    row_roles: Vec::new(),
                     projection_unknowns: Vec::new(),
                     projection_plan: solve::InitializationProjectionPlan::default(),
                     update_rhs: solve::ScalarProgramBlock::default(),
@@ -1687,6 +1688,7 @@ mod tests {
                         zero_row(),
                     ])),
                     row_targets: Vec::new(),
+                    row_roles: Vec::new(),
                     projection_unknowns: Vec::new(),
                     projection_plan: solve::InitializationProjectionPlan::default(),
                     update_rhs: solve::ScalarProgramBlock::default(),

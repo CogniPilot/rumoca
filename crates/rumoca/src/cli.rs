@@ -724,6 +724,19 @@ pub fn build_source_diagnostic_report(
     Report::new(MietteDiagnostic::new(message).with_severity(severity))
 }
 
+/// Render a compile failure as the whole diagnostic it came from.
+///
+/// A phase diagnostic is more than one span: `EF026` names both the subscripted
+/// `connect` endpoint and the declaration that has no such dimension, and every
+/// phase error's `help(...)` text arrives as a note. Anchoring the report on the
+/// primary label and dropping the rest would leave the CLI showing strictly less
+/// than the LSP and the API already show for the same error.
+///
+/// Miette renders one source per report, so labels that live in the anchor's
+/// file become miette labels (it draws the snippet and the `file:line:col`
+/// headers, all one-based) and labels in any *other* file become notes carrying
+/// an explicit one-based `file:line:col` — the alternative, silently dropping
+/// them, is what this function exists to stop.
 pub fn build_compile_failure_report(
     failure: &rumoca_compile::compile::ModelFailureDiagnostic,
     source_map: &rumoca_compile::compile::core::SourceMap,
@@ -740,22 +753,77 @@ pub fn build_compile_failure_report(
             "internal compiler diagnostic references a missing source file",
         );
     };
-    let start = label.span.start.0.min(source.len());
-    let end = label.span.end.0.max(start + 1).min(source.len());
-    let label_text = label.message.clone().unwrap_or_else(|| "error".to_string());
     let display_name = display_source_name(file_name);
     let message = if let Some(code) = &failure.error_code {
         format!("\x1b[31m[{code}]\x1b[0m {}", failure.error)
     } else {
         failure.error.clone()
     };
-    let diagnostic = MietteDiagnostic::new(message)
+
+    let (start, len) = clamped_label_offsets(label.span, source);
+    let mut labels = vec![LabeledSpan::new_primary_with_span(
+        Some(label.message.clone().unwrap_or_else(|| "error".to_string())),
+        (start, len),
+    )];
+    let mut notes = Vec::new();
+    for secondary in &failure.secondary_labels {
+        if secondary.span.source == label.span.source {
+            let (start, len) = clamped_label_offsets(secondary.span, source);
+            labels.push(LabeledSpan::new_with_span(
+                secondary.message.clone(),
+                (start, len),
+            ));
+        } else {
+            notes.push(cross_source_label_note(secondary, source_map));
+        }
+    }
+    notes.extend(failure.notes.iter().cloned());
+
+    let mut diagnostic = MietteDiagnostic::new(message)
         .with_severity(Severity::Error)
-        .with_label(LabeledSpan::new_primary_with_span(
-            Some(label_text),
-            (start, end.saturating_sub(start).max(1)),
-        ));
+        .with_labels(labels);
+    if !notes.is_empty() {
+        diagnostic = diagnostic.with_help(notes.join("\n"));
+    }
     Report::new(diagnostic).with_source_code(NamedSource::new(display_name, source.to_string()))
+}
+
+/// Byte offset and length of `span` inside `source`, clamped to the file.
+///
+/// A stale or synthesized span must not panic the renderer, and a zero-length
+/// span must still draw a caret, so the length floors at one byte.
+fn clamped_label_offsets(
+    span: rumoca_compile::compile::core::Span,
+    source: &str,
+) -> (usize, usize) {
+    let start = span.start.0.min(source.len());
+    let end = span.end.0.max(start + 1).min(source.len());
+    (start, end.saturating_sub(start).max(1))
+}
+
+/// A note naming a label that lives in a different file than the report anchor.
+///
+/// [`rumoca_compile::compile::source_span_location`] yields the editor-protocol
+/// [`TextPosition`](rumoca_core::text_position::TextPosition), whose line and
+/// column are zero-based; a terminal `file:line:col` is one-based everywhere
+/// else this compiler prints one, so both fields are shifted here.
+fn cross_source_label_note(
+    label: &rumoca_compile::compile::core::Label,
+    source_map: &rumoca_compile::compile::core::SourceMap,
+) -> String {
+    let text = label.message.as_deref().unwrap_or("related location");
+    match rumoca_compile::compile::source_span_location(source_map, label.span) {
+        Some(location) => format!(
+            "{text}: {}:{}:{}",
+            display_source_name(&location.file_name),
+            location.start.line + 1,
+            location.start.character + 1
+        ),
+        None => match source_map.name(label.span.source) {
+            Some(name) => format!("{text}: {}", display_source_name(name)),
+            None => text.to_string(),
+        },
+    }
 }
 
 fn build_compile_failure_fallback_report(

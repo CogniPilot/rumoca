@@ -11,10 +11,19 @@
 //!   instead of becoming unconditional;
 //! * a `parameter` declared `fixed = false` becomes a calculated parameter
 //!   whose binding is the replayed expression. Its determining expression reads
-//!   only parameters and constants, so the value the initialization system
-//!   would compute and the value the parameter set computes are the same
+//!   only parameters and constants. Where every one of those parameters is
+//!   itself settled when the parameter set runs, the value the initialization
+//!   system would compute and the value the parameter set computes are the same
 //!   number — evaluating it at parameter-set time is exact, not an
-//!   approximation;
+//!   approximation. A `fixed = false` parameter is *not* settled then: MLS 3.6
+//!   §8.6 says such a parameter is "treated as unknown during the
+//!   initialization phase" and "the start-value can be used as a guess-value",
+//!   so the parameter set only has that guess. A replayed expression that reads
+//!   one is still accepted, and `rumoca-phase-solve`'s
+//!   `lower::initial_parameters` re-applies its binding as an initialization
+//!   update row after the projection that solves the unknown, which is what
+//!   makes the value equivalent — the parameter-set number is then the
+//!   iteration seed, not the answer;
 //! * a discrete-time coordinate becomes an initialization-partition definition
 //!   of the value it holds when initialization finishes. MLS §8.6 lets an
 //!   initial section determine a discrete-time variable, and the equation
@@ -389,10 +398,17 @@ fn plan_initial_parameter(
 /// rows run before any trajectory exists, and accepting such a read would make
 /// the initial value depend on evaluation order rather than on the model.
 ///
-/// An MLS §12.3 `impure` call is rejected for the same reason from the other
+/// An MLS §12.3 impure call is rejected for the same reason from the other
 /// side: the runtime applies initialization updates until they stop changing,
 /// and a value that answers differently each time it runs has no fixed point
 /// to reach.
+///
+/// That is a fact about the *body*, not about the written prefix, so it is
+/// proven with [`rumoca_core::Function::body_is_pure`]: MLS 3.7 §12.3 treats an
+/// external function without explicit purity as impure, and such a call settles
+/// no better than one that wrote `impure`. Naming it here gives the owner its
+/// exact span instead of leaving a later stage to report the same call as an
+/// unsupported initialization form.
 fn reject_unsettled_reads(
     flat: &flat::Model,
     expression: &Expression,
@@ -401,7 +417,7 @@ fn reject_unsettled_reads(
 ) -> Result<(), ToDaeError> {
     if let Expression::FunctionCall { name, span, .. } = expression
         && let Some(function) = flat.functions.get(name.var_name())
-        && !function.pure
+        && !function.body_is_pure()
     {
         return Err(unsupported(
             format!(
@@ -442,7 +458,16 @@ fn reject_unsettled_reads(
 }
 
 /// A calculated parameter is evaluated once, before the trajectory exists, so
-/// its determining expression may read only values that are settled by then.
+/// its determining expression may read only parameters and constants.
+///
+/// `PlannedRole::Parameter` covers a `fixed = false` parameter the
+/// initialization projection solves, whose parameter-set number is the MLS 3.6
+/// §8.6 `start` *guess* rather than its value. That read is accepted, not
+/// rejected: `rumoca-phase-solve`'s `lower::initial_parameters` re-applies this
+/// binding as an initialization update row after the solve, so the value the
+/// trajectory reads is the solved one. What this check still owns is the
+/// boundary against a *coordinate* — a state, algebraic, output, input, or
+/// discrete read — which no ordering can settle at parameter time.
 fn reject_runtime_reads(
     expression: &Expression,
     target: &VarName,

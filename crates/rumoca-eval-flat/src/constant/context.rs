@@ -10,6 +10,7 @@ use super::value::Value;
 use super::{EvalIndexMap, Function, VarName};
 
 /// Evaluation context providing variable/parameter values.
+#[derive(Clone, Debug)]
 pub struct EvalContext {
     /// Parameter values by name (e.g., "component.subcomponent.param" -> value)
     pub parameters: EvalIndexMap<Value>,
@@ -81,6 +82,16 @@ impl EvalContext {
     /// Add a parameter value.
     pub fn add_parameter(&mut self, name: impl Into<String>, value: Value) {
         self.parameters.insert(name.into(), value);
+    }
+
+    /// Drop the value bound to `name`, if any.
+    ///
+    /// A caller that rebinds a name to a scope where the value is *not* known —
+    /// a function formal shadowing an enclosing model coordinate of the same
+    /// flat name — must remove the inherited value rather than leave it
+    /// readable, or the inner scope would fold an outer coordinate's value.
+    pub fn remove_parameter(&mut self, name: &str) {
+        self.parameters.shift_remove(name);
     }
 
     /// Add shape metadata without materializing placeholder element values.

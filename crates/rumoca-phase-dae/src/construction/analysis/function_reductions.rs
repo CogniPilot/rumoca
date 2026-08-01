@@ -79,7 +79,12 @@ fn validate_while_sum(
     {
         return Err(unsupported_reduction(function));
     }
-    validate_function_expression_with_roles(&block.cond, context.roles, context.flat)?;
+    validate_function_expression_with_roles(
+        &block.cond,
+        context.roles,
+        context.flat,
+        context.shapes,
+    )?;
     if !is_exclusive_bound(&block.cond, &index, function, context.flat) {
         return Err(unsupported_reduction(function));
     }
@@ -146,8 +151,13 @@ fn validate_capped_for_sum(
     };
     let update_plan =
         plan_function_statements(std::slice::from_ref(update_statement), loop_context)?;
-    validate_function_range_expression(&index.range, context.roles, context.flat)?;
-    validate_function_expression_with_roles(&block.cond, &loop_roles, context.flat)?;
+    validate_function_range_expression(&index.range, context.roles, context.flat, context.shapes)?;
+    validate_function_expression_with_roles(
+        &block.cond,
+        &loop_roles,
+        context.flat,
+        context.shapes,
+    )?;
     if !is_output_integer(function, context.flat, &result)
         || !is_integer_zero(initial_value)
         || !matches!(

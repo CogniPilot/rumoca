@@ -30,6 +30,7 @@ mod record_array_fields;
 mod record_equations;
 mod source_balance;
 mod structured_families;
+mod unexecuted_branches;
 mod when_chains;
 use clocks::SampledTarget;
 use clocks::{ClockAnalysis, ClockDomainAnalysis, analyze_clocks};
@@ -37,7 +38,9 @@ pub(super) use clocks::{
     ClockPlan, ClockedValuePlan, is_inferred_clock_condition, is_whole_clock_coordinate,
 };
 use comprehensions::analyze_comprehensions;
-pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
+pub(super) use comprehensions::{
+    ComprehensionKey, ComprehensionPlan, specialized_comprehension_plan,
+};
 pub(super) use delays::DelayPlan;
 use delays::analyze_delays;
 pub(super) use derived_parameters::DerivedParameterPlan;
@@ -50,13 +53,14 @@ use event_conditions::{
     evaluate_clock_seconds, evaluate_sample_lattice, validate_algorithm_condition,
     validate_condition_expression,
 };
-use expression_events::analyze_expression_events;
 pub(super) use expression_events::{ExpressionEventPlan, ExpressionEventPlans};
+use expression_events::{analyze_expression_events, is_rescheduling_time_relation};
 use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     validate_expression, validate_expression_scoped_with_record_array_fields,
-    validate_expression_with_record_array_fields, validate_subscripts_scoped,
+    validate_expression_with_record_array_fields, validate_specialized_expression,
+    validate_specialized_subscripts, validate_subscripts_scoped,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 use function_bodies::{
@@ -64,6 +68,7 @@ use function_bodies::{
     validate_function_expression_with_roles, validate_function_statements,
     validate_function_subscripts, validate_functions,
 };
+pub(super) use function_conditionals::selected_conditional_statements;
 use function_conditionals::{plan_function_conditional, resolve_function_conditional};
 use function_definitions::FunctionDefinitions;
 pub(super) use function_definitions::FunctionValueSeed;
@@ -71,6 +76,7 @@ use function_externals::validate_external_function;
 pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
 use function_impurity::validate_impure_call_contexts;
 use function_loops::{subscript_is_binder, validate_function_loop};
+pub(super) use function_ranges::assigned_function_targets;
 use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
@@ -98,6 +104,7 @@ pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
+use unexecuted_branches::check_unexecuted_branches;
 use when_chains::validate_when_chains;
 
 pub(super) struct Analysis {
@@ -184,6 +191,15 @@ pub(super) enum FunctionStatementPlan {
         branches: Vec<Vec<FunctionStatementPlan>>,
         fallback: Option<Vec<FunctionStatementPlan>>,
         targets: Vec<VarName>,
+    },
+    /// An MLS §11.5 conditional whose executed branch this specialization
+    /// proves, planned as the unconditional statement sequence it denotes.
+    ///
+    /// `selected` names the condition branch that holds, or `None` for the else
+    /// part; `statements` is the plan of exactly those statements.
+    ProvenBranch {
+        selected: Option<usize>,
+        statements: Vec<FunctionStatementPlan>,
     },
     ArrayAssembly(FunctionArrayAssemblyPlan),
     ArrayAssemblyMember,
@@ -317,11 +333,15 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     // for one — instead of the capability that is missing.
     reject_unsupported_initial_algorithm_statements(flat)?;
     validate_impure_call_contexts(flat)?;
-    let function_shapes = FunctionShapeAnalysis::analyze(flat)?;
+    // The parameter fixed point is folded before any shape is proven: MLS §12.2
+    // lets a function's array dimensions be parameter expressions, so the
+    // settled values of the model's evaluable parameters (MLS §4.5) are part of
+    // what proves a function's declared extents, not a later consequence of it.
+    let constants = constant_context(flat)?;
+    let function_shapes = FunctionShapeAnalysis::analyze(flat, &constants)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equations(flat, &flat.equations)?;
     let initial_record_equations = analyze_record_equations(flat, &flat.initial_equations)?;
-    let constants = constant_context(flat)?;
     let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
     let delay_plans = analyze_delays(flat, &constants)?;
     let clocks = analyze_clocks(flat, &constants)?;

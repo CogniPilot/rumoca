@@ -207,8 +207,41 @@ mod tests {
         );
     }
 
+    /// Assert the checked DAE retained `name` under `role` carrying no scalars.
+    fn assert_retained_zero_cardinality_dae_variable(
+        dae: &Dae,
+        name: &str,
+        role: rumoca_ir_dae::VariableRole,
+    ) {
+        let retained = dae.inspect(|view| {
+            view.variables()
+                .find(|(_, variable)| variable.name().as_str() == name)
+                .map(|(_, variable)| (variable.role(), variable.scalar_count()))
+        });
+        let Some((retained_role, scalar_count)) = retained else {
+            panic!("the DAE must retain the zero-cardinality declaration `{name}`");
+        };
+        assert_eq!(retained_role, role);
+        assert_eq!(
+            scalar_count, 0,
+            "a zero-cardinality `{name}` contributes no scalar unknown"
+        );
+    }
+
+    /// MLS 3.6 §10.1: "Zero-valued dimensions are allowed, so: `C x[0];`
+    /// declares an empty vector" (§10.7 calls these empty arrays). §4.7
+    /// "Balanced Models" counts "the elements after expanding all records,
+    /// operator record, and arrays to a set of scalars of primitive types", so
+    /// an empty array contributes no unknown and no equation.
+    ///
+    /// The declaration is therefore retained (Flat keeps `u` with `dims == [0]`,
+    /// the DAE keeps an `Input` role with `scalar_count() == 0`) and every
+    /// scalar-weighted count stays zero. Retaining it is what lets a model with
+    /// `input Real u[0]` still qualify as standalone: the standalone predicate
+    /// asks whether any input *scalar* needs an external binding, not whether an
+    /// input declaration exists.
     #[test]
-    fn zero_sized_inputs_and_fixed_parameters_are_erased_and_remain_standalone() {
+    fn zero_sized_inputs_and_parameters_are_retained_and_stay_standalone() {
         let mut session = Session::default();
         session
             .add_document(
@@ -229,22 +262,35 @@ mod tests {
             .expect("compile zero-sized standalone model");
 
         let counts = checked_dae_counts(result.dae.as_ref());
-        assert!(
-            !result
+        for name in ["u", "p"] {
+            let declaration = result
                 .flat
                 .variables
-                .contains_key(&rumoca_compile::compile::core::VarName::new("u")),
-            "a zero-cardinality declaration must not create a runtime Flat coordinate"
-        );
-        assert!(
-            !result
-                .flat
-                .variables
-                .contains_key(&rumoca_compile::compile::core::VarName::new("p")),
-            "a zero-cardinality declaration must not create a runtime Flat coordinate"
-        );
-        assert_eq!(counts.input_variables, 0);
+                .get(&rumoca_compile::compile::core::VarName::new(name))
+                .unwrap_or_else(|| {
+                    panic!("Flat must retain the zero-cardinality declaration `{name}`")
+                });
+            assert_eq!(
+                declaration.dims,
+                [0],
+                "`{name}` must be retained at its declared zero cardinality"
+            );
+        }
+        for (name, role) in [
+            ("u", rumoca_ir_dae::VariableRole::Input),
+            ("p", rumoca_ir_dae::VariableRole::Parameter),
+        ] {
+            assert_retained_zero_cardinality_dae_variable(result.dae.as_ref(), name, role);
+        }
+        // `*_variables` counts declarations, `*_scalars` counts scalars; each
+        // retained zero-sized declaration is one declaration carrying no scalars.
+        assert_eq!(counts.input_variables, 1);
         assert_eq!(counts.input_scalars, 0);
+        assert_eq!(counts.parameter_variables, 1);
+        assert_eq!(counts.parameter_scalars, 0);
+        // Balance accounting is scalar-weighted (MLS §4.7), so the retained
+        // declaration cannot inflate it.
+        assert!(!checked_dae_has_input_scalars(result.dae.as_ref()));
         assert!(!result.has_unbound_fixed_parameters);
         assert!(is_root_standalone_msl_example_dae_model(
             "Modelica.Test.Examples.EmptyBindings",

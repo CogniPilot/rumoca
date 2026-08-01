@@ -275,6 +275,27 @@ pub fn get_git_commit(repo_root: &Path) -> String {
     }
 }
 
+/// Whether the working tree carried uncommitted changes when an artifact was
+/// written.
+///
+/// A commit alone is not provenance for a locally-produced artifact: a dirty
+/// tree means the numbers came from code that is not at that commit, so a later
+/// reader cannot reproduce them from the commit alone. Recording the flag makes
+/// that checkable instead of assumed.
+pub fn git_worktree_is_dirty(repo_root: &Path) -> bool {
+    let mut command = Command::new("git");
+    command
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(repo_root);
+    match run_command_with_timeout(&mut command, Duration::from_secs(10)) {
+        Ok(output) => !output.stdout.trim().is_empty(),
+        // An unreadable tree cannot be shown clean; say dirty rather than
+        // stamping an artifact with a cleanliness nobody verified.
+        Err(_) => true,
+    }
+}
+
 pub fn run_command_with_timeout(
     command: &mut Command,
     timeout: Duration,
@@ -432,6 +453,82 @@ pub fn load_target_models(path: &Path) -> Result<Vec<String>> {
         names.push(name.to_string());
     }
     Ok(names)
+}
+
+/// Repository-relative path of the tracked trace-comparison exclusion list.
+///
+/// Owned here rather than by either consumer because two of them read it: the
+/// comparator (which skips the model) and the band table (which records *why* a
+/// cohort model is absent). A second copy of the path would let the two drift.
+pub const TRACE_EXCLUSIONS_FILE_REL: &str =
+    "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json";
+
+/// Schema tag of the exclusions file, so a foreign list is rejected rather than
+/// read as "nothing is excluded".
+pub const TRACE_EXCLUSIONS_SCHEMA: &str = "msl_trace_compare_exclusions";
+
+/// Read the tracked exclusion list: model name -> the reason that model is not
+/// compared.
+///
+/// # Acceptance contract
+///
+/// Accepts exactly an object carrying [`TRACE_EXCLUSIONS_SCHEMA`] and an
+/// `exclusions` array whose every entry has a non-empty `model_name` and a
+/// non-empty `reason`. It rejects a bare name list (the shape this file used to
+/// have), an entry without a reason, and a duplicated model.
+///
+/// The per-entry reason is mandatory because the caller *records* it: with one
+/// shared reason constant, excluding a non-stochastic model would publish a
+/// false rationale in every artifact that quotes the exclusion.
+pub fn load_trace_exclusions_file(
+    path: &Path,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read trace exclusions '{}'", path.display()))?;
+    let payload: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse trace exclusions '{}'", path.display()))?;
+    parse_trace_exclusions(&payload)
+        .with_context(|| format!("invalid trace exclusions '{}'", path.display()))
+}
+
+fn parse_trace_exclusions(payload: &Value) -> Result<std::collections::BTreeMap<String, String>> {
+    let Some(object) = payload.as_object() else {
+        bail!(
+            "trace exclusions must be an object with '{TRACE_EXCLUSIONS_SCHEMA}' and per-entry \
+             reasons; a bare model-name list cannot say why a model is excluded"
+        );
+    };
+    let schema = object.get("schema").and_then(Value::as_str).unwrap_or("");
+    if schema != TRACE_EXCLUSIONS_SCHEMA {
+        bail!("trace exclusions schema is '{schema}', expected '{TRACE_EXCLUSIONS_SCHEMA}'");
+    }
+    let Some(entries) = object.get("exclusions").and_then(Value::as_array) else {
+        bail!("trace exclusions object is missing the `exclusions` array");
+    };
+    let mut exclusions = std::collections::BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let model_name = entry
+            .get("model_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .with_context(|| format!("exclusions[{index}] has no `model_name`"))?;
+        let reason = entry
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .with_context(|| {
+                format!("exclusion '{model_name}' has no `reason`; every exclusion must record why")
+            })?;
+        if exclusions
+            .insert(model_name.to_string(), reason.to_string())
+            .is_some()
+        {
+            bail!("exclusions list '{model_name}' more than once");
+        }
+    }
+    Ok(exclusions)
 }
 
 pub fn write_pretty_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -624,6 +721,73 @@ mod tests {
         assert_eq!(
             list_names,
             vec!["Modelica.A".to_string(), "Modelica.B".to_string()]
+        );
+    }
+
+    /// Every entry carries its own reason, so an artifact that quotes an
+    /// exclusion quotes the rationale that was actually reviewed for it.
+    #[test]
+    fn trace_exclusions_carry_a_reason_per_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("exclusions.json");
+        fs::write(
+            &path,
+            r#"{"schema":"msl_trace_compare_exclusions","exclusions":[
+                {"model_name":"A.Stochastic","reason":"stochastic random-input model"},
+                {"model_name":"B.Timing","reason":"wall-clock dependent"}
+            ]}"#,
+        )
+        .expect("write exclusions");
+
+        let exclusions = load_trace_exclusions_file(&path).expect("load exclusions");
+
+        assert_eq!(exclusions.len(), 2);
+        assert_eq!(
+            exclusions.get("B.Timing").map(String::as_str),
+            Some("wall-clock dependent"),
+            "each entry must keep its own reason rather than a shared constant"
+        );
+    }
+
+    #[test]
+    fn trace_exclusions_reject_a_bare_name_list_and_a_reasonless_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bare = temp.path().join("bare.json");
+        fs::write(&bare, r#"["A.Stochastic"]"#).expect("write bare list");
+        let error = load_trace_exclusions_file(&bare)
+            .expect_err("a bare name list cannot say why a model is excluded")
+            .to_string();
+        assert!(
+            format!("{error:#}").contains("exclusions"),
+            "got: {error:#}"
+        );
+
+        let reasonless = temp.path().join("reasonless.json");
+        fs::write(
+            &reasonless,
+            r#"{"schema":"msl_trace_compare_exclusions","exclusions":[{"model_name":"A.Stochastic"}]}"#,
+        )
+        .expect("write reasonless");
+        let error = load_trace_exclusions_file(&reasonless)
+            .expect_err("an exclusion without a reason must be rejected");
+        assert!(
+            format!("{error:#}").contains("no `reason`"),
+            "got: {error:#}"
+        );
+    }
+
+    /// The tracked list is the one the comparator and the band table both read;
+    /// a shape change that breaks it would silence models with no reason on
+    /// record.
+    #[test]
+    fn the_tracked_exclusions_file_parses_with_reasons() {
+        let path = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .join(TRACE_EXCLUSIONS_FILE_REL);
+        let exclusions = load_trace_exclusions_file(&path).expect("tracked exclusions must parse");
+        assert!(!exclusions.is_empty());
+        assert!(
+            exclusions.values().all(|reason| !reason.trim().is_empty()),
+            "every tracked exclusion must record its own reason"
         );
     }
 }

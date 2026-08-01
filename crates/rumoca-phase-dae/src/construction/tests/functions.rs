@@ -703,20 +703,25 @@ fn assert_production_sum3_loop(view: dae::DaeView<'_>, loop_span: Span) {
     );
 }
 
+/// A loop bound the body itself computes is not settled at translation time.
+///
+/// MLS §11.2.2 requires a for-statement's range to be evaluable. The output `y`
+/// is written by the algorithm, so no specialization can fold it, and the
+/// domain owner must still report that at the range.
 #[test]
 fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
     let source = TestSource::new(
         "function sumN input Integer n; output Integer y; algorithm \
-         y := 0; for k in 1:n loop y := y + k; end for; end sumN; \
+         y := 0; for k in 1:y loop y := y + k; end for; end sumN; \
          model M equation 0 = sumN(3); end M;",
     );
     let function_span = source.span("function sumN", 0);
     let input_span = source.span("input Integer n", 0);
     let output_span = source.span("output Integer y", 0);
     let initial_span = source.span("y := 0", 0);
-    let loop_span = source.span("for k in 1:n loop y := y + k; end for", 0);
-    let range_span = source.span("1:n", 0);
-    let runtime_bound_span = source.span("n", 7);
+    let loop_span = source.span("for k in 1:y loop y := y + k; end for", 0);
+    let range_span = source.span("1:y", 0);
+    let runtime_bound_span = source.span("y", 2);
     let update_span = source.span("y := y + k", 0);
     let mut function = rumoca_core::Function::new("sumN", function_span);
     function.add_input(integer_function_param("n", Vec::new(), input_span));
@@ -740,7 +745,7 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
                     }),
                     step: None,
                     end: Box::new(Expression::VarRef {
-                        name: Reference::new("n"),
+                        name: Reference::new("y"),
                         subscripts: Vec::new(),
                         span: runtime_bound_span,
                     }),
@@ -754,7 +759,7 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
                     lhs: Box::new(Expression::VarRef {
                         name: Reference::new("y"),
                         subscripts: Vec::new(),
-                        span: source.span("y", 3),
+                        span: source.span("y", 4),
                     }),
                     rhs: Box::new(Expression::VarRef {
                         name: Reference::new("k"),
@@ -799,9 +804,129 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
     ));
 }
 
+/// A loop bound written over an input is settled by the specialization.
+///
+/// MLS §11.2.2 requires the range to be evaluable and MLS §12.2 lets a function
+/// body be written over its inputs, so `for k in 1:n` under a call that proves
+/// `n = 3` is the same three-element compact domain a literal `1:3` gives.
+#[test]
+fn reachable_function_loop_over_a_proven_input_lowers_to_its_static_domain() {
+    let source = TestSource::new(
+        "function sumN input Integer n; output Integer y; algorithm \
+         y := 0; for k in 1:n loop y := y + k; end for; end sumN; 1.0 * sumN(3);",
+    );
+    let function_span = source.span("function sumN", 0);
+    let input_span = source.span("input Integer n", 0);
+    let output_span = source.span("output Integer y", 0);
+    let initial_span = source.span("y := 0", 0);
+    let loop_span = source.span("for k in 1:n loop y := y + k; end for", 0);
+    let range_span = source.span("1:n", 0);
+    let update_span = source.span("y := y + k", 0);
+    let mut function = rumoca_core::Function::new("sumN", function_span);
+    function.add_input(integer_function_param("n", Vec::new(), input_span));
+    function.add_output(integer_function_param("y", Vec::new(), output_span));
+    function.body = vec![
+        rumoca_core::Statement::Assignment {
+            comp: test_component_reference("y", initial_span),
+            value: Expression::Literal {
+                value: Literal::Integer(0),
+                span: source.span("0", 0),
+            },
+            span: initial_span,
+        },
+        rumoca_core::Statement::For {
+            indices: vec![rumoca_core::ForIndex {
+                ident: "k".to_string(),
+                range: Expression::Range {
+                    start: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: source.span("1", 0),
+                    }),
+                    step: None,
+                    end: Box::new(Expression::VarRef {
+                        name: Reference::new("n"),
+                        subscripts: Vec::new(),
+                        span: source.span("n", 7),
+                    }),
+                    span: range_span,
+                },
+            }],
+            equations: vec![rumoca_core::Statement::Assignment {
+                comp: test_component_reference("y", update_span),
+                value: Expression::Binary {
+                    op: OpBinary::Add,
+                    lhs: Box::new(Expression::VarRef {
+                        name: Reference::new("y"),
+                        subscripts: Vec::new(),
+                        span: source.span("y", 3),
+                    }),
+                    rhs: Box::new(Expression::VarRef {
+                        name: Reference::new("k"),
+                        subscripts: Vec::new(),
+                        span: source.span("k", 1),
+                    }),
+                    span: source.span("y + k", 0),
+                },
+                span: update_span,
+            }],
+            span: loop_span,
+        },
+    ];
+    let mut model = test_model();
+    model.add_function(function);
+    model.is_partial = true;
+    let call_span = source.span("sumN(3)", 0);
+    let equation_span = source.span("1.0 * sumN(3)", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(Expression::Literal {
+                value: Literal::Real(1.0),
+                span: source.span("1.0", 0),
+            }),
+            rhs: Box::new(Expression::FunctionCall {
+                name: Reference::new("sumN"),
+                args: vec![Expression::Literal {
+                    value: Literal::Integer(3),
+                    span: source.span("3", 0),
+                }],
+                is_constructor: false,
+                span: call_span,
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let fold = view
+            .function_fold(function.fold_id(0).unwrap())
+            .expect("the proven range owns a compact fold");
+        let domain = view.domain(fold.domain()).unwrap();
+        assert_eq!(domain.scalar_count(), 3);
+        assert_eq!(view.source_text(domain.provenance()), Some("1:n"));
+    });
+}
+
+/// The MLS §12.3 purity prefix the fixture's external declaration writes.
+#[derive(Clone, Copy)]
+enum DeclaredExternalPurity {
+    /// `pure function f … external "C" …`.
+    Pure,
+    /// `impure function f … external "C" …`.
+    Impure,
+    /// `function f … external "C" …`: no prefix, the deprecated form.
+    Undeclared,
+}
+
 fn external_random_model(
     source: &TestSource,
-    pure: bool,
+    purity: DeclaredExternalPurity,
     annotations: Vec<rumoca_core::ExternalFunctionAnnotation>,
 ) -> flat::Model {
     let function_span = source.span("function f", 0);
@@ -809,7 +934,13 @@ fn external_random_model(
     let output_span = source.span("output Real y0", 0);
     let state_span = source.span("output Real q0", 0);
     let mut function = rumoca_core::Function::new("f", function_span);
+    let (pure, purity_declared) = match purity {
+        DeclaredExternalPurity::Pure => (true, true),
+        DeclaredExternalPurity::Impure => (false, true),
+        DeclaredExternalPurity::Undeclared => (true, false),
+    };
     function.pure = pure;
+    function.purity_declared = purity_declared;
     function.add_input(real_function_param("p0", Vec::new(), input_span));
     function.add_output(real_function_param("y0", Vec::new(), output_span));
     function.add_output(real_function_param("q0", Vec::new(), state_span));
@@ -862,7 +993,7 @@ fn pure_external_function_lowers_as_a_purity_bearing_callable() {
     let annotation_span = source.span("my_random", 0);
     let model = external_random_model(
         &source,
-        true,
+        DeclaredExternalPurity::Pure,
         vec![rumoca_core::ExternalFunctionAnnotation {
             name: vec!["Library".to_string()],
             value: Expression::Literal {
@@ -898,7 +1029,7 @@ fn pure_external_function_lowers_as_a_purity_bearing_callable() {
 fn external_function_with_an_unproduced_output_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let state_span = source.span("output Real q0", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))
@@ -926,7 +1057,7 @@ fn external_function_with_an_unproduced_output_is_rejected() {
 fn external_function_with_an_undefined_language_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let function_span = source.span("function f", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))
@@ -953,7 +1084,7 @@ fn external_function_link_facts_must_be_string_literals() {
     let annotation_span = source.span("my_random", 0);
     let model = external_random_model(
         &source,
-        true,
+        DeclaredExternalPurity::Pure,
         vec![rumoca_core::ExternalFunctionAnnotation {
             name: vec!["Library".to_string()],
             value: Expression::Literal {
@@ -980,7 +1111,7 @@ fn external_function_with_both_bodies_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let function_span = source.span("function f", 0);
     let assignment_span = source.span("y0 = my_random", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))
@@ -1013,7 +1144,7 @@ fn external_function_with_both_bodies_is_rejected() {
 fn impure_call_from_a_continuous_equation_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let call_span = source.span("f(2.5)", 0);
-    let model = external_random_model(&source, false, Vec::new());
+    let model = external_random_model(&source, DeclaredExternalPurity::Impure, Vec::new());
 
     let error = construct(&model, source.map).unwrap_err();
     assert!(matches!(
@@ -1034,7 +1165,7 @@ fn impure_call_from_a_continuous_equation_is_rejected() {
 fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let call_span = source.span("f(2.5)", 0);
-    let mut model = external_random_model(&source, false, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Impure, Vec::new());
     model.equations.clear();
     model.initial_equations.push(flat::Equation::new(
         Expression::FunctionCall {
@@ -1064,6 +1195,30 @@ fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
     });
 }
 
+/// MLS 3.7 §12.3: a function "shall be treated as impure" when "It is an
+/// external function without explicit purity", and writing no prefix "is
+/// deprecated" rather than illegal. MLS 3.6 §12.3 (historical; 3.7 deprecates
+/// the bare form) said the same in one sentence — "assumed to be impure, but
+/// without any restriction on calling them" — and both halves are proven here:
+/// the stored body fact is impure, and the fixture's continuous-time call is
+/// still accepted.
+#[test]
+fn external_function_without_a_purity_prefix_is_impure_and_callable_anywhere() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let model = external_random_model(&source, DeclaredExternalPurity::Undeclared, Vec::new());
+
+    let dae = construct(&model, source.map)
+        .expect("the deprecated form carries no restriction on calling it");
+    dae.inspect(|view| {
+        let external = view
+            .function(view.function_id(0).unwrap())
+            .unwrap()
+            .external()
+            .expect("the body is external");
+        assert_eq!(external.purity(), dae::FunctionPurity::Impure);
+    });
+}
+
 /// MLS §12.9 defaults an omitted entry point to the function's simple name.
 /// Flat keeps only the flattened path, so the omitted form is rejected with
 /// exact provenance rather than recovered from rendered text.
@@ -1071,7 +1226,7 @@ fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
 fn external_function_without_a_declared_entry_point_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let function_span = source.span("function f", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))

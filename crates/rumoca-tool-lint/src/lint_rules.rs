@@ -10,7 +10,9 @@ use crate::lint_context::LintContext;
 
 mod ast_rules;
 
-pub(crate) use ast_rules::{MagicNumberRule, MissingDocumentationRule, NamingConventionRule};
+pub(crate) use ast_rules::{
+    ExternalPurityRule, MagicNumberRule, MissingDocumentationRule, NamingConventionRule,
+};
 
 /// Severity level for lint messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]

@@ -544,7 +544,9 @@ impl EquationScan<'_> {
         self.diags.push(semantic_error(
             ER088_IMPURE_CALL_CONTEXT,
             format!(
-                "impure function '{}' may only be called from impure functions, when-clauses, or initial sections (MLS §12.3)",
+                "impure function '{}' may only be called from an impure function, a \
+                 `when` equation or statement, an initial equation or initial algorithm, or a \
+                 `parameter` binding (MLS §12.3)",
                 reference_text(comp)
             ),
             label_from_token(
@@ -569,7 +571,9 @@ impl EquationScan<'_> {
             self.diags.push(semantic_error(
                 ER088_IMPURE_CALL_CONTEXT,
                 format!(
-                    "impure function '{name}' may only be called from impure functions, when-clauses, or initial sections (MLS §12.3)"
+                    "impure function '{name}' may only be called from an impure function, a \
+                     `when` equation or statement, an initial equation or initial algorithm, or a \
+                     `parameter` binding (MLS §12.3)"
                 ),
                 label_from_token(
                     &token,
@@ -738,8 +742,18 @@ fn first_expression_token(expr: Option<&Expression>) -> Option<Token> {
 /// MLS §12.3 / FUNC-022: impure calls in component bindings outside functions.
 fn check_impure_bindings(class: &ClassDef, def: &StoredDefinition, diags: &mut Vec<Diagnostic>) {
     for (_, comp) in &class.components {
-        // Parameter/constant bindings are evaluated at initialization, which
-        // MLS treats like the initial section for impure access.
+        // MLS §12.3 lists "Binding equations for components declared as
+        // parameter" among the legal contexts, "which is seen as syntactic
+        // sugar for having a parameter with fixed=false and the binding as an
+        // initial equation", so a parameter binding is skipped by the rule.
+        //
+        // A `constant` binding is *not* on that list and this compiler does not
+        // evaluate it at translation either — the call survives into the DAE as
+        // an ordinary binding — so skipping it is lenience beyond the MLS list,
+        // not a consequence of evaluating it early. It stays lenient because
+        // widening acceptance is the safe direction while the constant-folding
+        // owner is unsettled; OMC rejects the same model, so a model that
+        // relies on this is not portable.
         if matches!(
             comp.variability,
             Variability::Parameter(_) | Variability::Constant(_)
@@ -759,7 +773,9 @@ fn check_impure_bindings(class: &ClassDef, def: &StoredDefinition, diags: &mut V
             diags.push(semantic_error(
                 ER088_IMPURE_CALL_CONTEXT,
                 format!(
-                    "impure function '{name}' may only be called from impure functions, when-clauses, or initial sections (MLS §12.3)"
+                    "impure function '{name}' may only be called from an impure function, a \
+                     `when` equation or statement, an initial equation or initial algorithm, or a \
+                     `parameter` binding (MLS §12.3)"
                 ),
                 label_from_token(
                     &token,

@@ -16,6 +16,8 @@ fn compile_failure_report_handles_missing_primary_label() {
         error_code: Some("ZZ999".to_string()),
         error: "phase failed before labeling source".to_string(),
         primary_label: None,
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     };
     let report = build_compile_failure_report(&failure, &SourceMap::new());
     let rendered = format!("{report:?}");
@@ -36,12 +38,53 @@ fn compile_failure_report_handles_missing_label_source() {
             0,
             1,
         ))),
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     };
     let report = build_compile_failure_report(&failure, &SourceMap::new());
     let rendered = format!("{report:?}");
 
     assert!(rendered.contains("ZZ998"));
     assert!(rendered.contains("references a missing source file"));
+}
+
+/// A label pointing into a file other than the one the report renders cannot
+/// become a miette label — miette draws one source per report — so it must
+/// survive as a note naming a one-based `file:line:col`. Dropping it is the
+/// silent loss this renderer exists to prevent.
+#[test]
+fn compile_failure_report_names_a_label_from_another_file() {
+    let mut source_map = SourceMap::new();
+    let anchor_source = source_map.add("anchor.mo", "model A\n  Real x;\nend A;\n");
+    let other_source = source_map.add("other.mo", "connector C\n  Real e;\nend C;\n");
+    let failure = ModelFailureDiagnostic {
+        model_name: "A".to_string(),
+        phase: None,
+        error_code: Some("ZZ997".to_string()),
+        error: "two files, one report".to_string(),
+        primary_label: Some(
+            Label::primary(Span::from_offsets(anchor_source, 10, 14)).with_message("used here"),
+        ),
+        // `Real e;` starts at byte 14 of other.mo: line 2, column 3 one-based.
+        secondary_labels: vec![
+            Label::secondary(Span::from_offsets(other_source, 14, 20))
+                .with_message("declared here"),
+        ],
+        notes: vec!["MLS §9.1: connectors must match".to_string()],
+    };
+    let report = build_compile_failure_report(&failure, &source_map);
+    let rendered = format!("{report:?}");
+
+    assert!(rendered.contains("ZZ997"), "{rendered}");
+    assert!(rendered.contains("used here"), "{rendered}");
+    assert!(
+        rendered.contains("declared here: ") && rendered.contains("other.mo:2:3"),
+        "the cross-file label must survive as a one-based location: {rendered}"
+    );
+    assert!(
+        rendered.contains("MLS §9.1: connectors must match"),
+        "the diagnostic note must reach the CLI: {rendered}"
+    );
 }
 
 #[test]

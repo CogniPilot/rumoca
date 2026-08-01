@@ -43,6 +43,8 @@ mod array_der_coupling_test;
 mod array_subscript_test;
 #[path = "balance_diagnostic.rs"]
 mod balance_diagnostic;
+#[path = "cli_diagnostic_rendering.rs"]
+mod cli_diagnostic_rendering;
 #[path = "cli_emit.rs"]
 mod cli_emit;
 #[path = "cli_fmt_lint.rs"]
@@ -73,6 +75,8 @@ mod function_noelse_if_test;
 mod function_output_shadow_state_test;
 #[path = "function_projection_array_shape_test.rs"]
 mod function_projection_array_shape_test;
+#[path = "function_proven_branch_test.rs"]
+mod function_proven_branch_test;
 #[path = "function_return_checked.rs"]
 mod function_return_checked;
 #[path = "galec_equivalence.rs"]
@@ -85,6 +89,10 @@ mod homotopy_branch_selection;
 mod index_reduction_manifold;
 #[path = "initial_algorithm_test.rs"]
 mod initial_algorithm_test;
+#[path = "initial_value_alias_transfer.rs"]
+mod initial_value_alias_transfer;
+#[path = "initialization_ordering.rs"]
+mod initialization_ordering;
 #[path = "integer_builtin_checked.rs"]
 mod integer_builtin_checked;
 #[path = "interface_flow_balance.rs"]
@@ -141,6 +149,8 @@ mod structured_family_corner_lowering;
 mod terminate_when_regression;
 #[path = "tiered_models.rs"]
 mod tiered_models;
+#[path = "time_event_when_activation.rs"]
+mod time_event_when_activation;
 #[path = "verification_surface_wiring.rs"]
 mod verification_surface_wiring;
 

@@ -33,8 +33,8 @@ use std::collections::{HashMap, HashSet};
 use crate::lint_context::LintContext;
 use crate::lint_options::LintOptions;
 use crate::lint_rules::{
-    LintLevel, LintMessage, LintRule, MagicNumberRule, MissingDocumentationRule,
-    NamingConventionRule,
+    ExternalPurityRule, LintLevel, LintMessage, LintRule, MagicNumberRule,
+    MissingDocumentationRule, NamingConventionRule,
 };
 
 use rumoca_compile::parsing::parse_source_to_ast;
@@ -189,6 +189,13 @@ fn get_enabled_rules(options: &LintOptions) -> Vec<Box<dyn LintRule>> {
 
     if !options.disabled_rules.contains(&"magic-number".to_string()) {
         rules.push(Box::new(MagicNumberRule));
+    }
+
+    if !options
+        .disabled_rules
+        .contains(&"external-purity-undeclared".to_string())
+    {
+        rules.push(Box::new(ExternalPurityRule));
     }
 
     rules

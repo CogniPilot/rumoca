@@ -714,7 +714,21 @@ pub struct Function {
     pub locals: Vec<FunctionParam>,
     pub body: Vec<Statement>,
     pub is_constructor: bool,
+    /// MLS 3.7 §12.3 written purity prefix: `false` exactly when the
+    /// declaration wrote `impure`.
+    ///
+    /// This is the fact that restricts call contexts, because §12.3 states the
+    /// restriction of the prefix itself: "With the prefix keyword impure it is
+    /// stated that a Modelica function is impure and it is only allowed to call
+    /// such a function from within: …". A declaration that wrote no prefix is
+    /// not restricted by that sentence, whatever its body turns out to be.
     pub pure: bool,
+    /// MLS 3.7 §12.3: whether the declaration wrote `pure` or `impure` at all.
+    ///
+    /// "External functions not explicitly declared with pure or impure is
+    /// deprecated." The bare form is reported (WR001) and compiled, and its
+    /// *body* is impure regardless of `pure`; see [`Function::body_is_pure`].
+    pub purity_declared: bool,
     pub external: Option<ExternalFunction>,
     pub derivatives: Vec<DerivativeAnnotation>,
     pub span: Span,
@@ -732,10 +746,45 @@ impl Function {
             body: Vec::new(),
             is_constructor: false,
             pure: true,
+            purity_declared: false,
             external: None,
             derivatives: Vec::new(),
             span,
         }
+    }
+
+    /// MLS 3.7 §12.3 purity of this function *body*, as far as one declaration
+    /// can state it.
+    ///
+    /// [`Function::pure`] records the written prefix. Purity of the body is a
+    /// different question, and §12.3 answers it normatively: "For purposes of
+    /// symbolic transformations and optimizations, the deprecated semantics
+    /// above imply that not only the functions explicitly declared impure are
+    /// the ones which cannot be treated as pure. Instead, a function shall be
+    /// treated as impure in the following cases (applied recursively): It is
+    /// declared impure. It is an external function without explicit purity. It
+    /// calls another function treated as impure, except when wrapped in
+    /// pure(…)."
+    ///
+    /// This accessor decides the first two cases, which one declaration owns.
+    /// The third is a call-graph closure no single declaration carries, so it
+    /// is *not* answered here and a caller that needs it must close over the
+    /// call graph it owns (rumoca task #76). Until that lands, a Modelica
+    /// function that only reaches an impure body through its own calls reads as
+    /// pure here, which is exactly the gap #76 names.
+    ///
+    /// Callability is a separate fact and stays with [`Function::pure`]: the
+    /// hard restriction §12.3 states is stated of the written `impure` prefix,
+    /// and for the bare external form §12.3 states a *deprecation*, not an
+    /// error — the transitional MLS 3.6 wording made that explicit ("assumed to
+    /// be impure, but without any restriction on calling them"), and 3.7 keeps
+    /// the call legal while deprecating it. So the compiler reports the bare
+    /// form and compiles it.
+    pub fn body_is_pure(&self) -> bool {
+        if self.external.is_some() && !self.purity_declared {
+            return false;
+        }
+        self.pure
     }
 
     pub fn add_input(&mut self, param: FunctionParam) {

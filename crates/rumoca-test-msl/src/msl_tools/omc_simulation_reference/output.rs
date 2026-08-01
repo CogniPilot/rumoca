@@ -285,12 +285,19 @@ fn build_trace_report_payload(
     trace_summary: &TraceOutputSummary,
     metrics: &[TraceModelMetric],
     candidate: usize,
+    provenance: &ComparisonProvenance,
 ) -> Value {
     let (total_rumoca_wall, total_rumoca_build, total_rumoca_sim, total_omc_sim, speedup_ratio) =
         trace_runtime_totals(metrics);
     let shape_counts = trace_shape_counts(metrics);
     json!({
         "generated_at_unix_seconds": unix_timestamp_seconds(),
+        // Binary provenance: which commit produced these numbers, and whether
+        // the tree that produced them matched it. A comparison artifact with no
+        // commit stamp cannot be traced back to the code that wrote it, and a
+        // dirty stamp says the commit alone will not reproduce it.
+        "git_commit": provenance.git_commit,
+        "git_worktree_dirty": provenance.git_worktree_dirty,
         "models_candidate": candidate,
         "models_compared": trace_summary.models_compared,
         "missing_trace_models": trace_summary.missing_trace_models,
@@ -357,6 +364,21 @@ fn trace_shape_counts(metrics: &[TraceModelMetric]) -> BTreeMap<String, usize> {
     counts
 }
 
+/// The commit an artifact was written at, and whether the tree matched it.
+pub(super) struct ComparisonProvenance {
+    git_commit: String,
+    git_worktree_dirty: bool,
+}
+
+impl ComparisonProvenance {
+    fn current(repo_root: &std::path::Path) -> Self {
+        Self {
+            git_commit: get_git_commit(repo_root),
+            git_worktree_dirty: git_worktree_is_dirty(repo_root),
+        }
+    }
+}
+
 pub(super) fn write_trace_report(
     paths: &MslPaths,
     all_results: &BTreeMap<String, SimModelResult>,
@@ -365,7 +387,13 @@ pub(super) fn write_trace_report(
     let metrics = sorted_trace_metrics(quantification);
     let trace_summary = compute_trace_output_summary(quantification);
     let candidate = candidate_model_count(all_results);
-    let payload = build_trace_report_payload(quantification, &trace_summary, &metrics, candidate);
+    let payload = build_trace_report_payload(
+        quantification,
+        &trace_summary,
+        &metrics,
+        candidate,
+        &ComparisonProvenance::current(&paths.repo_root),
+    );
     let trace_file = paths.results_dir.join("sim_trace_comparison.json");
     write_pretty_json(&trace_file, &payload)
 }

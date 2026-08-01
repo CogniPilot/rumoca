@@ -278,11 +278,6 @@ fn initialize_no_state_runtime(
     let tol = opts.atol.max(1.0e-10);
     runtime.initialize_delay_history(current_t, &current_y, &mut params)?;
     runtime.set_initial_event_flag(&mut params, true);
-    // Preserve declared/start values for `pre()` throughout initial event
-    // iteration. Initialization projection is allowed to change current
-    // values, but not the frozen initial-event snapshot.
-    let event_pre_y = current_y.clone();
-    let event_pre_p = params.clone();
     runtime.settle_initialization_system(
         &mut current_y,
         &mut params,
@@ -291,6 +286,14 @@ fn initialize_no_state_runtime(
         NO_STATE_EVENT_UPDATE_MAX_ITERS,
     )?;
     settle_algebraics_and_relation_memory(&runtime, &mut current_y, &mut params, current_t, tol)?;
+    // MLS 3.6 §8.6: "Before the start of the integration, it must be guaranteed
+    // that for all variables `v`, `v = pre(v)`. If this is not the case for
+    // some variables `vi`, `pre(vi) := vi` must be set and an event iteration
+    // at the initial time must follow". The `pre()` the initial event iteration
+    // reads is therefore the settled initialization value, not the declared
+    // `start` the settle replaced.
+    let event_pre_y = current_y.clone();
+    let event_pre_p = params.clone();
     let dynamic_event = runtime.current_dynamic_time_event_stop(&current_y, &params, current_t)?;
     let outcome = runtime.apply_projected_initial_event_boundary(
         ProjectedInitialEventInput {

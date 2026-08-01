@@ -206,12 +206,20 @@ fn lower_expression_event<'dae>(
     }
     // Expansions such as MLS §15.3 `actualStream` build several nodes from one
     // source span, so the span alone does not name the planned owner. Only the
-    // relation node itself may claim the plan.
-    if !matches!(expression, Expression::Binary { op, .. } if op.is_relational()) {
+    // relation node itself may claim the plan, and only for the operands this
+    // occurrence of the span resolved: flattening gives every instance of a
+    // class the same span, and each instance owns its own event.
+    let Expression::Binary { op, lhs, rhs, .. } = expression else {
+        return Ok(());
+    };
+    if !op.is_relational() {
         return Ok(());
     }
     if !matches!(
-        symbols.functions.expression_events.plan(span),
+        symbols
+            .functions
+            .expression_events
+            .plan(span, &[lhs.as_ref(), rhs.as_ref()]),
         Some(ExpressionEventPlan::StateRelation)
     ) {
         return Ok(());
@@ -275,9 +283,17 @@ fn lower_expression_node<'dae>(
         Expression::ArrayComprehension {
             expr,
             indices,
-            filter: _,
+            filter,
             ..
-        } => lower_array_comprehension(construction, symbols, binders, expr, indices, provenance),
+        } => lower_array_comprehension(
+            construction,
+            symbols,
+            binders,
+            expr,
+            indices,
+            filter.as_deref(),
+            provenance,
+        ),
         Expression::Range { .. } => lower_range(
             construction,
             symbols,
@@ -331,7 +347,7 @@ fn lower_builtin_expression<'dae>(
         }
         BuiltinFunction::Sample => {
             let Some(value) = clocked_value_sample(symbols.functions.flat, arguments) else {
-                return lower_sample_event_operator(construction, symbols, provenance);
+                return lower_sample_event_operator(construction, symbols, arguments, provenance);
             };
             lower_temporal_identity(construction, symbols, binders, value, provenance)
         }
@@ -553,20 +569,52 @@ fn lower_range<'dae>(
     {
         return lower_enumeration_range(construction, symbols, start, end, input.provenance);
     }
-    let start =
-        lower_expression_scoped(construction, symbols, binders, start, input.generated_root)?;
-    let explicit_step = step
-        .as_deref()
-        .map(|step| {
-            lower_expression_scoped(construction, symbols, binders, step, input.generated_root)
-        })
-        .transpose()?;
-    let end = lower_expression_scoped(construction, symbols, binders, end, input.generated_root)?;
+    let mut bound =
+        |bound: &Expression| lower_range_bound(construction, symbols, binders, bound, &input);
+    let start = bound(start)?;
+    let explicit_step = step.as_deref().map(&mut bound).transpose()?;
+    let end = bound(end)?;
     construction.expressions(|expressions| {
         expressions
             .at(input.provenance)
             .range(start, explicit_step, end)
     })
+}
+
+/// Lower one compact-range bound, folding it when the scope proves its value.
+///
+/// A value-proven function specialization settles its inputs (MLS §12.2), so a
+/// bound like `integer(m/2)` denotes one Integer here. Emitting that Integer —
+/// rather than a read of the input coordinate — is what keeps the range the
+/// statically sized owner the analysis admitted it as. The admitting analysis
+/// reads `proven_extent` through the *same* scoped environment this lowering
+/// does, including the loop binders that shadow it, so the two cannot disagree
+/// about which bounds are static.
+///
+/// The folded literal keeps the bound's own span: the value replaces what the
+/// source wrote at that occurrence, and a diagnostic about the extent must point
+/// there rather than at the whole range.
+fn lower_range_bound<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    bound: &Expression,
+    input: &RangeInput<'_>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if !matches!(bound, Expression::Literal { .. })
+        && let Some(value) = symbols.shapes.proven_extent(bound)
+    {
+        let provenance = bound
+            .span()
+            .filter(|span| !span.is_dummy())
+            .map_or(Ok(input.provenance), dae::DaeProvenance::source)?;
+        return construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Integer(value))
+        });
+    }
+    lower_expression_scoped(construction, symbols, binders, bound, input.generated_root)
 }
 
 /// Lower `E.first : E.last` to the array of enumeration values it denotes.
@@ -817,11 +865,13 @@ fn clocked_value_sample<'expression>(
 fn lower_sample_event_operator<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
+    arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let span = provenance.span();
+    let operands: Vec<&Expression> = arguments.iter().collect();
     let Some(ExpressionEventPlan::SampleClock(lattice)) =
-        symbols.functions.expression_events.plan(span)
+        symbols.functions.expression_events.plan(span, &operands)
     else {
         return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
     };
@@ -1218,9 +1268,30 @@ fn lower_builtin_call<'dae>(
     arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    // MLS §10.3: `zeros(n)` declares its own extents, and the checked
+    // constructor types the result from them, so each extent must arrive as the
+    // Integer it denotes. Inside a value-proven specialization `n` denotes one
+    // Integer — the same one the shape proof already read through
+    // `evaluate_shape_integer` — so folding it here is what keeps the two
+    // agreeing instead of handing the constructor a coordinate it must refuse.
+    let extents_are_declared = matches!(function, BuiltinFunction::Zeros);
     let arguments = arguments
         .iter()
-        .map(|argument| lower_expression_scoped(construction, symbols, binders, argument, None))
+        .map(|argument| {
+            if extents_are_declared
+                && !matches!(argument, Expression::Literal { .. })
+                && let Some(extent) = symbols.shapes.proven_extent(argument)
+            {
+                let at = argument
+                    .span()
+                    .filter(|span| !span.is_dummy())
+                    .map_or(Ok(provenance), dae::DaeProvenance::source)?;
+                return construction.expressions(|expressions| {
+                    expressions.at(at).literal(dae::DaeLiteral::Integer(extent))
+                });
+            }
+            lower_expression_scoped(construction, symbols, binders, argument, None)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| {
         expressions
@@ -1390,11 +1461,24 @@ fn lower_array_comprehension<'dae>(
     enclosing_binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     body: &Expression,
     indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&Expression>,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let key = ComprehensionKey::new(provenance.span(), indices)
-        .expect("analysis proves comprehension-owner provenance");
-    let plan = &symbols.functions.comprehension_plans[&key];
+    // A comprehension inside a function specialization belongs to that
+    // specialization (MLS §12.2): two specializations of one function share the
+    // source span but not the extent, so `f(3)` and `f(5)` cannot both be
+    // described by the one model-wide plan the span keys. Its domain is folded
+    // in that scope, through the same owner the shape proof and the validator
+    // read. The predicate is the scope, not "has a Modelica body": an MLS §12.9
+    // external argument is in specialization scope with no body to lower into.
+    let plan = if symbols.shapes.is_specialization() {
+        specialized_comprehension_plan(indices, filter, symbols.shapes, provenance.span())
+            .expect("analysis proves every specialized comprehension domain")
+    } else {
+        let key = ComprehensionKey::new(provenance.span(), indices)
+            .expect("analysis proves comprehension-owner provenance");
+        symbols.functions.comprehension_plans[&key].clone()
+    };
     let domain = construction.domains(|domains| {
         domains.nested_in_scope(
             enclosing_binders.values().copied(),

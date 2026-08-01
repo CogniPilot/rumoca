@@ -1,4 +1,4 @@
-//! MLS §8.5 event owners that occur inside model equation expressions.
+//! MLS §8.5 event owners of model equation expressions and `when` activations.
 //!
 //! Appendix B keeps the event surface of `f(x)` explicit: a relation that can
 //! change sign while the solver integrates owns a `relation`/root pair, a
@@ -7,11 +7,23 @@
 //! clock. Analysis proves the owner of every such occurrence here so
 //! construction only has to build the checked DAE node for it.
 //!
-//! Scope is the residual of each `flat::Model::equations` row. Those residuals
-//! are the only model expressions lowered exactly once, so one source relation
-//! always owns exactly one checked DAE relation. Conditions of `when` clauses,
-//! assertions, and algorithms already own their events through their own
-//! semantic owners and are deliberately not collected again here.
+//! Scope is the residual of each `flat::Model::equations` row plus the
+//! activation condition of every `when`. Residuals are the only model
+//! expressions lowered exactly once, so one source relation always owns exactly
+//! one checked DAE relation, and both owner kinds are collected for them.
+//!
+//! A `when` activation is different: `lower_condition_tree` already builds one
+//! checked relation per relational leaf of the activation and gives each of
+//! them a root, so only the *exactly scheduled* owner is collected there — see
+//! [`collect_activation_time_events`]. Without that collection a `when time >
+//! 0.5` would own a zero crossing instead of an instant, and §8.5 also says
+//! what a relation reads between events — *"an event generating expression has
+//! an internal buffer, and the value of the expression can only be changed at
+//! event instants"* — so the located crossing lands exactly on `t = 0.5`, where
+//! the strict relation is still false: the activation is consumed without ever
+//! becoming true. Conditions of assertions and of algorithm `if` statements keep
+//! owning their events through their own semantic owners and are deliberately
+//! not collected here.
 //!
 //! One operator has no arm below on purpose: MLS §3.7.4.5 `semiLinear(x, kp, kn)`
 //! returns `smooth(0, if x >= 0 then kp*x else kn*x)`, so the `x >= 0` relation
@@ -39,28 +51,109 @@ pub(in crate::construction) enum ExpressionEventPlan {
     SampleClock(ClockLattice),
 }
 
+/// One collected owner: the operands that name it, and the plan proved for them.
+struct PlannedOccurrence {
+    operands: Vec<Expression>,
+    plan: ExpressionEventPlan,
+}
+
+impl PlannedOccurrence {
+    fn names(&self, operands: &[&Expression]) -> bool {
+        self.operands.len() == operands.len()
+            && self
+                .operands
+                .iter()
+                .zip(operands)
+                .all(|(held, probe)| held == *probe)
+    }
+}
+
+/// The proved owners, addressed by source span *and* by occurrence.
+///
+/// A span alone does not name an owner. Flattening replicates one source span
+/// across every instance of its class, so `Trigger early(threshold = 0.33)` and
+/// `Trigger late(threshold = 0.73)` produce two flat occurrences of the single
+/// written `time > threshold`, differing only in the operands each instance
+/// resolved — and therefore in the instant each owns. Keyed by span alone the
+/// second occurrence is silently dropped while lowering still reads the first
+/// one's plan for both, which leaves the late instance with no event owner at
+/// all: no scheduled instant of its own, and no zero crossing either, because
+/// the plan it wrongly read suppressed one.
+///
+/// The operands are the identity because they are the only thing that varies and
+/// the only thing both sides hold: analysis takes them from `flat`, and lowering
+/// lowers those same `flat` operands with nothing rewriting them in between.
 #[derive(Default)]
 pub(in crate::construction) struct ExpressionEventPlans {
     ordered: Vec<(Span, ExpressionEventPlan)>,
-    by_span: HashMap<Span, ExpressionEventPlan>,
+    by_span: HashMap<Span, Vec<PlannedOccurrence>>,
 }
 
 impl ExpressionEventPlans {
-    pub(in crate::construction) fn plan(&self, span: Span) -> Option<ExpressionEventPlan> {
-        self.by_span.get(&span).copied()
+    /// The plan proved for the occurrence of `span` carrying `operands`.
+    pub(in crate::construction) fn plan(
+        &self,
+        span: Span,
+        operands: &[&Expression],
+    ) -> Option<ExpressionEventPlan> {
+        self.by_span
+            .get(&span)?
+            .iter()
+            .find_map(|occurrence| occurrence.names(operands).then_some(occurrence.plan))
     }
 
-    /// Collected owners in source order, so the checked DAE arenas they build
-    /// are deterministic across runs.
+    /// Collected owners in source order, one per occurrence, so the checked DAE
+    /// arenas they build are deterministic across runs.
     pub(in crate::construction) fn ordered(
         &self,
     ) -> impl Iterator<Item = (Span, ExpressionEventPlan)> + '_ {
         self.ordered.iter().copied()
     }
 
-    fn insert(&mut self, span: Span, plan: ExpressionEventPlan) {
-        if self.by_span.insert(span, plan).is_none() {
-            self.ordered.push((span, plan));
+    /// Record the plan proved for one occurrence.
+    ///
+    /// A repeat of the same occurrence is the same proof and is dropped. A
+    /// repeat that disagrees is not: two owners cannot both be the owner of one
+    /// occurrence, and silently keeping either is how a dropped instant becomes
+    /// an event that never fires. Analysis derives the plan from the operands
+    /// alone, so a disagreement here is a broken proof, not a model error.
+    fn insert(
+        &mut self,
+        span: Span,
+        operands: &[&Expression],
+        plan: ExpressionEventPlan,
+    ) -> Result<(), ToDaeError> {
+        let occurrences = self.by_span.entry(span).or_default();
+        if let Some(existing) = occurrences
+            .iter()
+            .find(|occurrence| occurrence.names(operands))
+        {
+            if existing.plan.same_owner(plan) {
+                return Ok(());
+            }
+            return Err(ToDaeError::unsupported_flat(
+                "event owner",
+                "one occurrence of this expression was proved to own two different events",
+                span,
+            ));
+        }
+        occurrences.push(PlannedOccurrence {
+            operands: operands.iter().map(|operand| (*operand).clone()).collect(),
+            plan,
+        });
+        self.ordered.push((span, plan));
+        Ok(())
+    }
+}
+
+impl ExpressionEventPlan {
+    /// Whether two plans name the same event owner.
+    fn same_owner(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::StateRelation, Self::StateRelation) => true,
+            (Self::TimeEvent(left), Self::TimeEvent(right)) => left == right,
+            (Self::SampleClock(left), Self::SampleClock(right)) => left == right,
+            _ => false,
         }
     }
 }
@@ -85,7 +178,108 @@ pub(super) fn analyze_expression_events(
     for equation in &flat.equations {
         collect_event_owners(&equation.residual, false, &scope, &mut plans)?;
     }
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            collect_activation_time_events(&branch.condition, constants, &mut plans)?;
+        }
+    }
+    for algorithm in &flat.algorithms {
+        collect_statement_activation_time_events(&algorithm.statements, constants, &mut plans)?;
+    }
     Ok(plans)
+}
+
+/// Collect the exactly scheduled MLS §8.5 owners of a `when` activation.
+///
+/// `lower_condition_tree` builds one checked relation per relational leaf of the
+/// activation's `not`/`and`/`or`/vector tree, so those leaves — and only those —
+/// are the spans an activation owner can claim. This walk mirrors that tree
+/// exactly, which is why it does not descend into operator arguments: a relation
+/// under `noEvent`/`smooth` is lowered as one opaque discrete condition, never as
+/// an activation relation, so claiming it here would schedule an instant nothing
+/// reads.
+///
+/// Only [`ExpressionEventPlan::TimeEvent`] owners are recorded. A leaf that can
+/// change sign during integration already owns its zero crossing through the
+/// activation's own root, and recording a second owner for it would make
+/// `lower_expression_event` build that root a second time.
+fn collect_activation_time_events(
+    expression: &Expression,
+    constants: &EvalContext,
+    plans: &mut ExpressionEventPlans,
+) -> Result<(), ToDaeError> {
+    match expression {
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => collect_activation_time_events(rhs, constants, plans)?,
+        Expression::Binary {
+            op: OpBinary::And | OpBinary::Or,
+            lhs,
+            rhs,
+            ..
+        } => {
+            collect_activation_time_events(lhs, constants, plans)?;
+            collect_activation_time_events(rhs, constants, plans)?;
+        }
+        Expression::Array { elements, .. } => {
+            for element in elements {
+                collect_activation_time_events(element, constants, plans)?;
+            }
+        }
+        Expression::Binary { op, lhs, rhs, span } if op.is_relational() => {
+            if let Some(instant) = time_event_instant(op, lhs, rhs, constants) {
+                plans.insert(*span, &[lhs, rhs], ExpressionEventPlan::TimeEvent(instant))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The same collection over the `when` statements of a model algorithm section.
+///
+/// `lower_algorithm_when` lowers each guarded block's condition through the very
+/// same `lower_condition_tree`, so an algorithm `when time > 0.5` owns its
+/// instant exactly like the equation form. `if` statements are deliberately
+/// skipped: their conditions are ordinary continuous guards, not event
+/// activations.
+fn collect_statement_activation_time_events(
+    statements: &[rumoca_core::Statement],
+    constants: &EvalContext,
+    plans: &mut ExpressionEventPlans,
+) -> Result<(), ToDaeError> {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    collect_activation_time_events(&block.cond, constants, plans)?;
+                    collect_statement_activation_time_events(&block.stmts, constants, plans)?;
+                }
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_statement_activation_time_events(&block.stmts, constants, plans)?;
+                }
+                if let Some(else_block) = else_block {
+                    collect_statement_activation_time_events(else_block, constants, plans)?;
+                }
+            }
+            rumoca_core::Statement::For { equations, .. } => {
+                collect_statement_activation_time_events(equations, constants, plans)?;
+            }
+            rumoca_core::Statement::While { block, .. } => {
+                collect_statement_activation_time_events(&block.stmts, constants, plans)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn collect_event_owners(
@@ -120,7 +314,8 @@ fn collect_event_owners(
             span,
         } if !is_clocked_value_sample(scope.flat, args) => {
             let lattice = evaluate_sample_lattice(args, scope.constants, *span)?;
-            plans.insert(*span, ExpressionEventPlan::SampleClock(lattice));
+            let operands: Vec<&Expression> = args.iter().collect();
+            plans.insert(*span, &operands, ExpressionEventPlan::SampleClock(lattice))?;
             return Ok(());
         }
         Expression::Binary { op, lhs, rhs, span }
@@ -130,7 +325,7 @@ fn collect_event_owners(
                 ExpressionEventPlan::StateRelation,
                 ExpressionEventPlan::TimeEvent,
             );
-            plans.insert(*span, plan);
+            plans.insert(*span, &[lhs, rhs], plan)?;
         }
         _ => {}
     }
@@ -179,10 +374,66 @@ fn relation_can_vary(expression: &Expression, scope: &EventScope<'_>) -> bool {
     }
 }
 
+/// True when a relation names `time` against a threshold the model moves.
+///
+/// This is the self-rescheduling shape — `time >= pre(nextEvent)` — whose next
+/// instant is not knowable in advance because the event it schedules is what
+/// sets it. It is the complement of [`time_event_instant`] on the axis that
+/// matters: `time > 0` and `time > 2 * p` also yield no instant, but for
+/// reasons that leave the relation an ordinary crossing, whereas this one needs
+/// a reschedule the checked DAE does not yet own.
+///
+/// Exactly one operand must be affine in `time`; if neither is, the relation is
+/// over model quantities and reschedules nothing, and if both are, its threshold
+/// is parameter-evaluable and settled before the first step.
+pub(super) fn is_rescheduling_time_relation(
+    op: &OpBinary,
+    lhs: &Expression,
+    rhs: &Expression,
+    constants: &EvalContext,
+) -> bool {
+    if !matches!(
+        op,
+        OpBinary::Lt | OpBinary::Le | OpBinary::Gt | OpBinary::Ge
+    ) {
+        return false;
+    }
+    let affine = (
+        affine_time_coefficients(lhs, constants),
+        affine_time_coefficients(rhs, constants),
+    );
+    match affine {
+        (Some((slope, _)), None) | (None, Some((slope, _))) => slope != 0.0,
+        _ => false,
+    }
+}
+
 /// The exact instant of an MLS §8.5 time event, when one exists.
 ///
 /// Both operands must be affine in `time` with parameter-evaluable
 /// coefficients; the crossing is then the single root of their difference.
+///
+/// The instant must lie strictly after the start of the simulated interval, and
+/// that bound is a semantic one rather than a convenience. §8.5 defines an event
+/// as the instant at which an event generating expression *changes* its value,
+/// and nothing changes at the start: initialization has already fixed every
+/// relation's buffered value there, so `time >= 0` is simply true from the
+/// outset with no edge to activate a `when`, and `time > 0` becomes true only
+/// after the start, at the first event instant beyond it. Scheduling a stop at
+/// the start instant serves neither: it is a stop at which `time > 0` still
+/// reads false, and then no later event exists to retry it. Both spellings are
+/// left to the zero crossing, which locates them at the start and applies them
+/// at its right limit — which is where OpenModelica applies them too, stamping
+/// its own right-limit row (`t = 1e-10` for `when time > 0`).
+///
+/// Leaving them to the crossing is what this owner decides, and it is all it
+/// decides. It buys parity for `when time > 0`, which then fires once, exactly
+/// as OpenModelica does. It does not buy parity for `when time >= 0`:
+/// OpenModelica leaves that unfired, because the relation is already true at the
+/// start and a `when` runs on a rising edge, while rumoca fires it at `t = 0`
+/// like every other activation that is already true there. That divergence is
+/// the pre-existing initial-activation defect (#90) and is untouched by this
+/// bound — it was there before this owner existed and it is there after.
 fn time_event_instant(
     op: &OpBinary,
     lhs: &Expression,
@@ -202,7 +453,7 @@ fn time_event_instant(
         return None;
     }
     let instant = (rhs_offset - lhs_offset) / slope;
-    if !instant.is_finite() || instant < 0.0 {
+    if !instant.is_finite() || instant <= 0.0 {
         return None;
     }
     ClockRational::from_seconds(instant).ok()

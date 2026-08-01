@@ -37,7 +37,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 24;
+pub const SOLVE_SCHEMA_VERSION: u16 = 25;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -748,6 +748,11 @@ fn validate_initialization_system_shape(
         system.row_targets.len(),
     )?;
     validate_count(
+        "initialization.row_roles",
+        residual_count,
+        system.row_roles.len(),
+    )?;
+    validate_count(
         "initialization.update_targets",
         system.update_rhs.len(),
         system.update_targets.len(),
@@ -1324,10 +1329,56 @@ pub struct InitializationSolveArtifacts {
 pub struct InitializationSolveSystem {
     pub residual: ComputeBlock,
     pub row_targets: Vec<Option<ScalarSlot>>,
+    /// What the initialization projection does with each residual row, indexed by
+    /// equation index alongside `row_targets`.
+    ///
+    /// A runtime that only knows "this row has no target" cannot tell a row the
+    /// rest of the system already determined — a legal MLS §8.6 consistency check
+    /// — from a row nothing solved because it reads a coordinate outside the
+    /// planned unknown space. Reporting the first when it is the second names the
+    /// wrong defect, so the planner records which it is.
+    pub row_roles: Vec<InitializationRowRole>,
     pub projection_unknowns: Vec<ScalarSlot>,
     pub projection_plan: InitializationProjectionPlan,
     pub update_rhs: ScalarProgramBlock,
     pub update_targets: Vec<ScalarSlot>,
+}
+
+/// What the MLS §8.6 initialization projection does with one residual row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum InitializationRowRole {
+    /// A projection block solves this row for the coordinate `row_targets` names.
+    Solved,
+    /// Every coordinate the row reads is determined by something other than this
+    /// row — a `fixed = true` start, a pin, a binding, or another block — so the
+    /// row is a consistency check between values the rest of the system fixed.
+    /// MLS §8.6 permits such a row; a failure of one is a contradiction between
+    /// declarations, not an unsolved coordinate.
+    #[default]
+    SurplusCheck,
+    /// The row reads a coordinate the projection does not own, so nothing solved
+    /// it and the residual is a check over a value the row cannot control.
+    UnownedCoordinate(InitializationCoordinateKind),
+}
+
+/// Which coordinate kind kept a residual row out of the planned unknown space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum InitializationCoordinateKind {
+    /// A continuous algebraic or output coordinate. The initialization residual
+    /// is evaluated before the algebraic refresh, so such a row is checked
+    /// against a seeded `start` rather than the coordinate's value.
+    Algebraic,
+    /// A discrete-time coordinate or its `pre` value.
+    Discrete,
+    /// A coordinate the lowering cannot read per scalar: an array state, a
+    /// multi-scalar row, or a structured family point.
+    Unreadable,
+    /// A coordinate the projection could own, but whose component the planner
+    /// could not make square.
+    Unmatched,
+    /// Any other coordinate outside the planned space — an input, a delay, a
+    /// `previous`, a relation memory, a terminal.
+    Other,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

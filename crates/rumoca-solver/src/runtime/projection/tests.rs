@@ -1073,7 +1073,7 @@ fn project_algebraic_block_rejects_rectangular_inventory() {
     };
     let mut y = vec![0.0, 0.0];
 
-    let err = project_algebraic_block(&model, &mut y, &[], 0.0, &block, 1.0e-12)
+    let err = project_algebraic_block(&model, &mut y, &[], 0.0, &block, 1.0e-12, StepLimit::None)
         .expect_err("rectangular projection inventory must be rejected");
 
     assert!(err.to_string().contains("1 residual rows but 2 unknowns"));
@@ -1092,7 +1092,7 @@ fn project_algebraic_block_rejects_row_outside_residual_vector() {
     };
     let mut y = vec![0.0, 0.0];
 
-    let err = project_algebraic_block(&model, &mut y, &[], 0.0, &block, 1.0e-12)
+    let err = project_algebraic_block(&model, &mut y, &[], 0.0, &block, 1.0e-12, StepLimit::None)
         .expect_err("invalid projection row should bubble a runtime error");
 
     assert!(
@@ -1776,3 +1776,6 @@ fn failed_manifold_projection_rolls_back_every_y_slot() {
     );
     assert_eq!(y, original, "failed projection must restore all Y slots");
 }
+
+#[path = "tests/saturation.rs"]
+mod saturation;

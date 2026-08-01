@@ -258,6 +258,51 @@ fn flat_wire_accepts_only_the_current_reference_shape() {
     );
 }
 
+/// MLS §12.3 purity reaches Flat as two declaration facts, and neither may be
+/// invented by the decoder: a payload that omits `purity_declared` cannot say
+/// whether an external function wrote `pure`, and defaulting it would silently
+/// turn a pure external body into an impure one (or the reverse) on replay.
+#[test]
+fn flat_wire_requires_the_declared_purity_of_an_external_function() {
+    let mut function = Function::new("f", test_span());
+    function.pure = true;
+    function.purity_declared = true;
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("my_func".to_string()),
+        output_name: None,
+        args: Vec::new(),
+        annotations: Vec::new(),
+    });
+    let mut flat = Model::new();
+    flat.add_function(function);
+
+    let encoded = serde_json::to_value(&flat).expect("serialize flat model");
+    let decoded: Model =
+        serde_json::from_value(encoded.clone()).expect("the current Flat wire decodes");
+    assert!(
+        decoded.functions[&VarName::new("f")].body_is_pure(),
+        "a declared `pure` external body stays pure across the wire"
+    );
+
+    let mut without_purity_declared = encoded;
+    assert!(
+        without_purity_declared["functions"]["f"]
+            .as_object_mut()
+            .expect("a function serializes as one record")
+            .remove("purity_declared")
+            .is_some()
+    );
+    let error = serde_json::from_value::<Model>(without_purity_declared)
+        .expect_err("an omitted purity declaration is a decode error, not a default");
+    assert!(
+        error
+            .to_string()
+            .contains("missing field `purity_declared`"),
+        "unexpected rejection: {error}"
+    );
+}
+
 #[test]
 fn algorithm_outputs_keep_function_call_targets() {
     let statements = vec![Statement::FunctionCall {

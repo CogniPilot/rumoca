@@ -1,5 +1,5 @@
 {
-  "schema_version": 24,
+  "schema_version": 25,
   "layout": {
     "bindings": {
       "x": {
@@ -347,6 +347,9 @@
           "byte_offset": 8
         }
       }
+    ],
+    "row_roles": [
+      "Solved"
     ],
     "projection_unknowns": [],
     "projection_plan": {

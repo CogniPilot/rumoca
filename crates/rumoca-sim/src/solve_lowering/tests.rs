@@ -738,3 +738,513 @@ fn fixed_false_parameter_is_solved_from_its_initial_equation() {
         result.data[x].last()
     );
 }
+
+/// The column of a simulation result, by variable name.
+fn column<'result>(result: &'result crate::SimResult, name: &str) -> &'result [f64] {
+    let index = result
+        .names
+        .iter()
+        .position(|column| column == name)
+        .unwrap_or_else(|| panic!("`{name}` has a result column, got {:?}", result.names));
+    &result.data[index]
+}
+
+/// The initialization projection blocks a model lowers to, as
+/// `(row count, unknown slots)` pairs.
+fn projection_blocks(dae: &rumoca_ir_dae::Dae) -> Vec<(usize, Vec<rumoca_ir_solve::ScalarSlot>)> {
+    let solve = lower_dae_for_simulation(dae, &SimOptions::default())
+        .expect("the fixture lowers to a Solve problem");
+    solve
+        .problem
+        .initialization
+        .projection_plan
+        .blocks
+        .iter()
+        .map(|block| (block.rows.len(), block.unknowns.clone()))
+        .collect()
+}
+
+/// MLS 3.6 §8.6 makes the *states* unknowns of the initialization system too, not
+/// only the `fixed = false` parameters: §4.8.1 gives `fixed` the default `false`
+/// for everything that is not a parameter, and §8.6 says of such a start only that
+/// it "is used as a guess value". So `initial equation x = 5` determines `x(0)`,
+/// and the declared `start = 0` is the guess the projection begins from.
+///
+/// OpenModelica (`omc`) simulates the same source to `x(0) = 5`.
+#[test]
+fn state_is_solved_from_its_initial_equation() {
+    let dae = compile(
+        concat!(
+            "model InitState\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = -x;\n",
+            "initial equation\n",
+            "  x = 5;\n",
+            "end InitState;\n",
+        ),
+        "InitState",
+    );
+
+    assert!(
+        matches!(
+            projection_blocks(&dae).as_slice(),
+            [(1, unknowns)] if matches!(unknowns.as_slice(), [rumoca_ir_solve::ScalarSlot::Y { .. }])
+        ),
+        "the initial equation owns one block over the state's solver slot, got {:?}",
+        projection_blocks(&dae)
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.5),
+        ..SimOptions::default()
+    };
+    let result =
+        simulate_dae(&dae, &options).expect("the initialization system must solve the state");
+    let x = column(&result, "x");
+    assert!(
+        (x[0] - 5.0).abs() <= 1.0e-12,
+        "`initial equation x = 5` fixes x(0) exactly, got {}",
+        x[0]
+    );
+    assert!(
+        x.last()
+            .is_some_and(|value| (value - 5.0 * (-1.0_f64).exp()).abs() <= 1.0e-5),
+        "x decays from the solved initial value, got {:?}",
+        x.last()
+    );
+}
+
+/// MLS 3.6 §8.6: "For every Real variable `vc` with `fixed = true`, the equation
+/// `vc = startExpression` is added to the initialization equations." That start is
+/// therefore an *equation*, and the coordinate it determines must never also be a
+/// projection unknown — the runtime seeds it and the projection would be a second
+/// owner of the same storage slot. The stated value stands, and the initial
+/// equation restating it stays a consistency check the residual test still has to
+/// satisfy.
+#[test]
+fn fixed_true_state_is_not_an_initialization_projection_unknown() {
+    let dae = compile(
+        concat!(
+            "model PinnedState\n",
+            "  Real x(start=2, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x = 2;\n",
+            "end PinnedState;\n",
+        ),
+        "PinnedState",
+    );
+
+    assert_eq!(
+        projection_blocks(&dae),
+        Vec::new(),
+        "a `fixed = true` state is determined by its own declaration"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the restated value is consistent");
+    assert!((column(&result, "x")[0] - 2.0).abs() <= 1.0e-12);
+}
+
+/// One §8.6 system solving a state and a `fixed = false` parameter together.
+///
+/// The two coordinates live in different runtime storage — the state in the solver
+/// vector, the parameter in the parameter vector — so this is also what proves the
+/// projection plans one block across both.
+#[test]
+fn a_state_and_a_fixed_false_parameter_are_solved_by_one_initialization_system() {
+    let dae = compile(
+        concat!(
+            "model MixedInit\n",
+            "  parameter Real q(start=1, fixed=false);\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x + q = 5;\n",
+            "  x - q = 1;\n",
+            "end MixedInit;\n",
+        ),
+        "MixedInit",
+    );
+
+    let blocks = projection_blocks(&dae);
+    let [(rows, unknowns)] = blocks.as_slice() else {
+        panic!("one coupled initialization block expected, got {blocks:?}");
+    };
+    assert_eq!(*rows, 2);
+    assert_eq!(unknowns.len(), 2);
+    assert!(
+        unknowns
+            .iter()
+            .any(|slot| matches!(slot, rumoca_ir_solve::ScalarSlot::P { .. }))
+            && unknowns
+                .iter()
+                .any(|slot| matches!(slot, rumoca_ir_solve::ScalarSlot::Y { .. })),
+        "the block owns both the parameter and the state slot, got {unknowns:?}"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the 2x2 initialization system is solvable");
+    assert!(
+        (column(&result, "x")[0] - 3.0).abs() <= 1.0e-9,
+        "x + q = 5 and x - q = 1 give x = 3, got {}",
+        column(&result, "x")[0]
+    );
+}
+
+/// MLS 3.6 §8.6 makes `der(x)` an unknown of the initialization system, and the
+/// der-equations active at the initial instant. The Solve lowering discharges that
+/// by substitution rather than by extra rows: the structural matching already named
+/// the continuous row that determines `der(x)`, so `initial equation der(x) = 0` is
+/// a residual over `x` alone and solves the steady state.
+#[test]
+fn a_steady_state_initial_equation_solves_the_state_it_constrains() {
+    let dae = compile(
+        concat!(
+            "model SteadyInit\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 3 - 2*x;\n",
+            "initial equation\n",
+            "  der(x) = 0;\n",
+            "end SteadyInit;\n",
+        ),
+        "SteadyInit",
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the steady-state condition is solvable");
+    let x = column(&result, "x");
+    assert!(
+        (x[0] - 1.5).abs() <= 1.0e-9,
+        "der(x) = 0 with der(x) = 3 - 2x gives x(0) = 1.5, got {}",
+        x[0]
+    );
+    assert!(
+        x.last().is_some_and(|value| (value - 1.5).abs() <= 1.0e-6),
+        "a steady state must not drift, got {:?}",
+        x.last()
+    );
+}
+
+/// A component whose rows cannot cover every state falls back, for the states left
+/// over, to the guess their `start` carries — MLS 3.6 §4.8.1's default-`fixed`
+/// reading, and the value the runtime already seeds. The rest of the component is
+/// still planned around them, so one row still determines one state instead of the
+/// whole system reverting to a residual nothing can satisfy.
+///
+/// *Which* state keeps its guess is a choice no part of MLS §8.6 makes, and it
+/// diverges from OpenModelica; `rumoca_phase_solve`'s `initial_projection` module
+/// header records the divergence and why neither answer is more correct. The
+/// assertions below pin *this* choice so it stays a recorded fact rather than
+/// silent drift.
+#[test]
+fn an_under_determined_state_component_keeps_the_remaining_start_guesses() {
+    let dae = compile(
+        concat!(
+            "model ShortRows\n",
+            "  Real x(start=0, fixed=false);\n",
+            "  Real y(start=3, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  der(y) = 0;\n",
+            "initial equation\n",
+            "  x + y = 5;\n",
+            "end ShortRows;\n",
+        ),
+        "ShortRows",
+    );
+
+    let blocks = projection_blocks(&dae);
+    let [(rows, unknowns)] = blocks.as_slice() else {
+        panic!("one square block expected, got {blocks:?}");
+    };
+    assert_eq!(
+        (*rows, unknowns.len()),
+        (1, 1),
+        "a block is square: one row determines one state, never two in least squares"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the reduced system is solvable");
+    assert!(
+        (column(&result, "y")[0] - 3.0).abs() <= 1.0e-12,
+        "the unmatched state keeps its start guess, got {}",
+        column(&result, "y")[0]
+    );
+    assert!(
+        (column(&result, "x")[0] - 2.0).abs() <= 1.0e-9,
+        "the matched state satisfies the row, got {}",
+        column(&result, "x")[0]
+    );
+}
+
+/// When one row must choose, the `fixed = false` parameter takes it.
+///
+/// MLS 3.6 §8.6 gives such a parameter no value at all without an initialization
+/// equation ("there must be additional equations for them"), while §4.8.1 leaves a
+/// state's unstated `fixed` at `false`, whose `start` §8.6 still calls a guess the
+/// runtime seeds. So spending the single row on the parameter determines both
+/// coordinates, and spending it on the state would leave the parameter's guess
+/// masquerading as its value.
+#[test]
+fn one_row_between_a_parameter_and_a_state_is_spent_on_the_parameter() {
+    let dae = compile(
+        concat!(
+            "model ShortParameterRows\n",
+            "  parameter Real q(start=1, fixed=false);\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x + q = 5;\n",
+            "end ShortParameterRows;\n",
+        ),
+        "ShortParameterRows",
+    );
+
+    let blocks = projection_blocks(&dae);
+    let [(rows, unknowns)] = blocks.as_slice() else {
+        panic!("one square block expected, got {blocks:?}");
+    };
+    assert_eq!(*rows, 1);
+    assert!(
+        matches!(unknowns.as_slice(), [rumoca_ir_solve::ScalarSlot::P { .. }]),
+        "the row determines the parameter, not the state, got {unknowns:?}"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the reduced system is solvable");
+    assert!(
+        (column(&result, "x")[0]).abs() <= 1.0e-12,
+        "the state keeps its start guess, got {}",
+        column(&result, "x")[0]
+    );
+}
+
+/// A `fixed = false` parameter has no fallback: MLS 3.6 §8.6 says "there must be
+/// additional equations for them". A component whose rows cannot determine one is
+/// therefore left entirely unplanned, keeping the typed residual failure rather
+/// than shipping the parameter's guess as if it were its value.
+#[test]
+fn a_component_that_cannot_determine_a_fixed_false_parameter_is_left_unplanned() {
+    let dae = compile(
+        concat!(
+            "model TwoUnsolvedParameters\n",
+            "  parameter Real q(start=1, fixed=false);\n",
+            "  parameter Real r(start=1, fixed=false);\n",
+            "  Real x(start=0, fixed=true);\n",
+            "equation\n",
+            "  der(x) = q + r;\n",
+            "initial equation\n",
+            "  q + r = 5;\n",
+            "end TwoUnsolvedParameters;\n",
+        ),
+        "TwoUnsolvedParameters",
+    );
+
+    assert_eq!(
+        projection_blocks(&dae),
+        Vec::new(),
+        "one row cannot determine two `fixed = false` parameters"
+    );
+    let error = simulate_dae(&dae, &SimOptions::default())
+        .expect_err("the unowned parameter leaves a residual the initialization cannot satisfy")
+        .to_string();
+    assert!(
+        error.contains("outside the planned initialization unknown space")
+            && error.contains("could not give a row of its own"),
+        "an under-determined initialization names the unknown nothing solved, got: {error}"
+    );
+}
+
+/// A failed initialization must name a coordinate, never only a residual row
+/// index. The two answers the planner can give are both diagnostics: a row a
+/// block solves reports the coordinate that block owns, and a row no block solves
+/// reports that it is a §8.6 consistency check the rest of the system contradicts.
+#[test]
+fn a_failed_initialization_names_the_coordinate_its_row_was_planned_to_determine() {
+    let unsolvable = compile(
+        concat!(
+            "model NoRoot\n",
+            "  Real x(start=1, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x*x + 1 = 0;\n",
+            "end NoRoot;\n",
+        ),
+        "NoRoot",
+    );
+    let error = simulate_dae(&unsolvable, &SimOptions::default())
+        .expect_err("x*x + 1 = 0 has no real root")
+        .to_string();
+    assert!(
+        error.contains("target=x"),
+        "the failure names the state the block was planned to determine, got: {error}"
+    );
+
+    let contradicted = compile(
+        concat!(
+            "model Contradicted\n",
+            "  Real x(start=0, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x = 5;\n",
+            "end Contradicted;\n",
+        ),
+        "Contradicted",
+    );
+    let error = simulate_dae(&contradicted, &SimOptions::default())
+        .expect_err("a `fixed = true` start of 0 contradicts `initial equation x = 5`")
+        .to_string();
+    assert!(
+        error.contains("owner=surplus-check"),
+        "a row over coordinates the rest of the system determined is a §8.6 consistency \
+         check, got: {error}"
+    );
+}
+
+/// A row no block solves is not automatically a surplus check, and calling it one
+/// names the wrong defect. MLS 3.6 §8.6 makes a surplus row legal — a coordinate a
+/// declaration determines may still be read by another initialization equation —
+/// so failing one means two declarations contradict each other. A row over a
+/// coordinate the projection never owned is the opposite: nothing solved that
+/// coordinate. The two must not share a message.
+///
+/// `Modelica.Electrical.Analog.Examples.IdealTriacCircuit` is the MSL model this
+/// separates: its failing row reads a discrete coordinate, and the old message
+/// called it a consistency check.
+#[test]
+fn an_unowned_initialization_row_is_not_reported_as_a_surplus_check() {
+    let discrete_read = compile(
+        concat!(
+            "model UnownedDiscrete\n",
+            "  Real x(start=0, fixed=false);\n",
+            "  discrete Real d(start=0, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  when time > 0.5 then\n",
+            "    d = 1;\n",
+            "  end when;\n",
+            "initial equation\n",
+            "  x = d + 2;\n",
+            "end UnownedDiscrete;\n",
+        ),
+        "UnownedDiscrete",
+    );
+    let error = simulate_dae(&discrete_read, &SimOptions::default())
+        .expect_err("a discrete coordinate is outside the planned unknown space")
+        .to_string();
+    assert!(
+        error.contains("outside the planned initialization unknown space")
+            && error.contains("discrete-time coordinate"),
+        "an unowned discrete read names its kind, got: {error}"
+    );
+    assert!(
+        !error.contains("surplus-check"),
+        "a row nothing solved must not be reported as a surplus check, got: {error}"
+    );
+
+    let algebraic_read = compile(
+        concat!(
+            "model UnownedAlgebraic\n",
+            "  Real x(start=0, fixed=false);\n",
+            "  Real a;\n",
+            "equation\n",
+            "  a = 2*time + 5;\n",
+            "  der(x) = a - x;\n",
+            "initial equation\n",
+            "  x = a + 7;\n",
+            "end UnownedAlgebraic;\n",
+        ),
+        "UnownedAlgebraic",
+    );
+    let error = simulate_dae(&algebraic_read, &SimOptions::default())
+        .expect_err("the row is checked against the algebraic's seeded start")
+        .to_string();
+    assert!(
+        error.contains("algebraic/output") && error.contains("seeded `start`"),
+        "an unowned algebraic read says the residual read a seed, got: {error}"
+    );
+}
+
+/// The measured cost of leaving algebraic-reading rows unplanned, pinned so it
+/// cannot drift silently.
+///
+/// The initialization residual is evaluated before the algebraic refresh, so such
+/// a row is checked against a `start` seed rather than the coordinate's value —
+/// vacuous in *both* directions, which is why the module header refuses to call it
+/// a consistency check:
+///
+/// * the steady-state form silently accepts a wrong initial state, where
+///   OpenModelica gives `x(0) = 5`;
+/// * the consistent form is refused on the same stale seed, where OpenModelica
+///   initializes.
+///
+/// Both assertions record today's behaviour. Whichever way the algebraic refresh
+/// eventually joins the §8.6 solve, this test must change with it.
+#[test]
+fn an_algebraic_reading_initialization_row_is_checked_against_a_stale_seed() {
+    const SOURCE: &str = concat!(
+        "model AlgebraicSeed\n",
+        "  Real x(start=0, fixed=false);\n",
+        "  Real a;\n",
+        "equation\n",
+        "  a = 2*time + 5;\n",
+        "  der(x) = a - x;\n",
+        "initial equation\n",
+    );
+
+    let steady = compile(
+        &format!("{SOURCE}  der(x) = 0;\nend AlgebraicSeed;\n"),
+        "AlgebraicSeed",
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&steady, &options)
+        .expect("today the seeded residual cancels and the run is accepted");
+    assert!(
+        column(&result, "x")[0].abs() <= 1.0e-12,
+        "`der(x) = 0` is dropped against the seeded algebraic: rumoca gives x(0) = 0 where \
+         OpenModelica gives 5, got {}",
+        column(&result, "x")[0]
+    );
+
+    let consistent = compile(
+        &format!("{SOURCE}  x = 5;\n  x = a;\nend AlgebraicSeed;\n"),
+        "AlgebraicSeed",
+    );
+    simulate_dae(&consistent, &options).expect_err(
+        "x = 5 and x = a agree at a(0) = 5, but the row is checked at a's seed, so rumoca \
+         refuses what OpenModelica initializes",
+    );
+}

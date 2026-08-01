@@ -1,11 +1,41 @@
-[
-  "Modelica.Blocks.Examples.Noise.AutomaticSeed",
-  "Modelica.Blocks.Examples.Noise.Densities",
-  "Modelica.Blocks.Examples.Noise.Distributions",
-  "Modelica.Blocks.Examples.Noise.DrydenContinuousTurbulence",
-  "Modelica.Blocks.Examples.Noise.ImpureGenerator",
-  "Modelica.Blocks.Examples.Noise.UniformNoise",
-  "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise",
-  "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star",
-  "Modelica.Math.Random.Examples.GenerateRandomNumbers"
-]
+{
+  "schema": "msl_trace_compare_exclusions",
+  "exclusions": [
+    {
+      "model_name": "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Blocks.Examples.Noise.Densities",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Blocks.Examples.Noise.Distributions",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Blocks.Examples.Noise.DrydenContinuousTurbulence",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Blocks.Examples.Noise.ImpureGenerator",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Blocks.Examples.Noise.UniformNoise",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    },
+    {
+      "model_name": "Modelica.Math.Random.Examples.GenerateRandomNumbers",
+      "reason": "stochastic random-input model; skipped until generator + seed parity is implemented"
+    }
+  ]
+}

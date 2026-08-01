@@ -663,7 +663,7 @@ fn connector_alias_chain_demotes_the_redundant_state_and_matches() {
     let prepared = prepare_for_solve(&model).expect("alias chain is reducible");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("alias chain requires a state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("alias chain requires a state demotion"),
     };
     assert_eq!(role(&transformed, "phi1"), dae::VariableRole::State);
     assert_eq!(role(&transformed, "phi2"), dae::VariableRole::Algebraic);
@@ -730,7 +730,7 @@ fn opposed_node_balances_pin_a_flux_state_to_its_parameter() {
     let prepared = prepare_for_solve(&model).expect("pinned flux state is reducible");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("pinned flux state requires a demotion"),
+        PreparedDae::Borrowed { .. } => panic!("pinned flux state requires a demotion"),
     };
     assert_eq!(role(&transformed, "psi"), dae::VariableRole::Algebraic);
     transformed.inspect(|view| {
@@ -791,7 +791,7 @@ fn a_state_pinned_to_a_bare_zero_reduces_like_one_pinned_to_a_parameter() {
     let prepared = prepare_for_solve(&model).expect("pinned support is reducible");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("pinned support requires a demotion"),
+        PreparedDae::Borrowed { .. } => panic!("pinned support requires a demotion"),
     };
     assert_eq!(role(&transformed, "hold"), dae::VariableRole::Algebraic);
     transformed.inspect(|view| {
@@ -828,7 +828,7 @@ fn a_displaced_body_chain_supplies_the_derivative_a_demotion_needs() {
     let prepared = prepare_for_solve(&model).expect("displaced body chain is reducible");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("displaced body chain requires a state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("displaced body chain requires a state demotion"),
     };
     assert_eq!(role(&transformed, "hold"), dae::VariableRole::Algebraic);
     assert_eq!(role(&transformed, "s"), dae::VariableRole::State);

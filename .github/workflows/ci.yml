@@ -976,6 +976,7 @@ jobs:
             target/msl/results/msl_results.json
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
+            target/msl/results/msl_band_table.json
           if-no-files-found: error
 
   msl-merge:
@@ -1036,12 +1037,50 @@ jobs:
             nix-store --import
           nix build .#msl-artifacts --out-link result-msl-artifacts
 
+      # The gate reports cohort movement against the previous certification, and
+      # a full-scope run that cannot diff fails rather than passing with that
+      # reading switched off (SPEC 0033 acceptance contract). Supply the
+      # predecessor here; the gate is what judges its absence.
+      - name: Restore the previous certification's band table
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/msl/results target/msl/predecessor
+          previous_run="$(gh run list \
+            --workflow "${WORKFLOW}" \
+            --branch "${GITHUB_BASE_REF:-main}" \
+            --status success \
+            --limit 20 \
+            --json databaseId \
+            --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID})] | .[0].databaseId" || true)"
+          if [[ -z "${previous_run:-}" || "${previous_run}" == "null" ]]; then
+            echo "::warning title=No predecessor certification::no earlier successful run was found; the quality gate will report cohort movement as unverified"
+            exit 0
+          fi
+          gh run download "${previous_run}" \
+            --name msl-compatibility-report \
+            --dir target/msl/predecessor || true
+          table="target/msl/predecessor/msl_band_table.json"
+          if [[ -s "$table" ]]; then
+            cp "$table" target/msl/results/msl_band_table_previous.json
+            echo "Predecessor cohort table staged from run ${previous_run}."
+          else
+            echo "::warning title=No predecessor band table::run ${previous_run} published no msl_band_table.json; the quality gate will report cohort movement as unverified"
+          fi
+
       - name: Merge shards + run quality gate
         run: |
           cargo xtask verify msl-parity \
             --merge-shards target/msl/shards \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
 
+      # The band table is part of the merged evidence, not an optional extra:
+      # without it the merged run cannot say which models entered or left the
+      # compared set, and `parity_measured: false` in the snapshot is exactly the
+      # gate's own verdict that it had no comparable table to read.
       - name: Validate merged MSL quality outputs
         shell: bash
         run: |
@@ -1050,6 +1089,13 @@ jobs:
           test -s target/msl/results/omc_simulation_reference.json
           test -s target/msl/results/sim_trace_comparison.json
           test -s target/msl/results/msl_quality_current.json
+          test -s target/msl/results/msl_band_table.json
+          measured="$(jq -r '.parity_measured // false' target/msl/results/msl_quality_current.json)"
+          if [[ "$measured" != "true" ]]; then
+            reason="$(jq -r '.parity_unmeasured_reason // "no reason recorded"' target/msl/results/msl_quality_current.json)"
+            echo "::error title=parity unmeasured: comparator did not run::the merged run published no parity number ($reason); sim_ok is completion, never parity"
+            exit 1
+          fi
 
       - name: Generate MSL compatibility report
         if: always()
@@ -1293,6 +1339,7 @@ jobs:
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_quality_current.json
+            target/msl/results/msl_band_table.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/msl_package_trace_accuracy.md
             target/msl/results/mls_contract_coverage.md

@@ -77,6 +77,67 @@ impl LintRule for NamingConventionRule {
 }
 
 // ---------------------------------------------------------------------------
+// external-purity-undeclared
+// ---------------------------------------------------------------------------
+
+/// Rule: an external function must state `pure` or `impure` (MLS 3.7 §12.3).
+///
+/// "External functions not explicitly declared with pure or impure is
+/// deprecated", and such a function "shall be treated as impure". A reader of
+/// the bare form cannot tell which the author meant, and the compiler must
+/// assume the pessimistic one, so the deprecation is reported here as well as
+/// during compilation (WR001) — linting a library is the place where a bare
+/// declaration is cheapest to fix.
+pub(crate) struct ExternalPurityRule;
+
+struct ExternalPurityVisitor<'a> {
+    file_name: &'a str,
+    messages: Vec<LintMessage>,
+}
+
+impl ast::Visitor for ExternalPurityVisitor<'_> {
+    fn enter_class_def(&mut self, class: &ast::ClassDef) -> ControlFlow<()> {
+        if class.class_type == ClassType::Function
+            && class.external.is_some()
+            && !class.purity_declared
+        {
+            self.messages.push(LintMessage::new(
+                "external-purity-undeclared",
+                LintLevel::Warning,
+                format!(
+                    "external function '{}' does not declare `pure` or `impure`; the bare form \
+                     is deprecated and is treated as impure (MLS 3.7 §12.3)",
+                    class.name.text
+                ),
+                self.file_name,
+                class.name.location.start_line,
+                class.name.location.start_column,
+            ));
+        }
+        Continue(())
+    }
+}
+
+impl LintRule for ExternalPurityRule {
+    fn name(&self) -> &'static str {
+        "external-purity-undeclared"
+    }
+
+    fn description(&self) -> &'static str {
+        "Check that external functions declare `pure` or `impure` (MLS §12.3)"
+    }
+
+    fn check(&self, ctx: &LintContext<'_>) -> Vec<LintMessage> {
+        let mut visitor = ExternalPurityVisitor {
+            file_name: ctx.file_name,
+            messages: Vec::new(),
+        };
+        let _ = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
+        visitor.messages
+    }
+}
+
+// ---------------------------------------------------------------------------
 // missing-documentation
 // ---------------------------------------------------------------------------
 

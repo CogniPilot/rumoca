@@ -1419,14 +1419,20 @@ pub(super) fn check_annotation_advisories(
     def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
-    // MLS §12.9 / FUNC-032: external functions without an explicit
-    // pure/impure declaration are deprecated.
+    // MLS 3.7 §12.3 / FUNC-032: "External functions not explicitly declared
+    // with pure or impure is deprecated." Such a function "shall be treated as
+    // impure", but the deprecation is a report, not a call restriction, so the
+    // declaration is reported and compiled, never rejected. MLS 3.6 §12.3
+    // stated the report as a requirement ("a diagnostic must be given if
+    // called in a simulation model"), so it is emitted for every such
+    // declaration rather than only at simulation-model call sites.
     if class.class_type == ClassType::Function && class.external.is_some() && !class.purity_declared
     {
         diags.push(Diagnostic::warning(
             WR001_EXTERNAL_PURITY_UNDECLARED,
             format!(
-                "external function '{}' should declare `pure` or `impure` explicitly; the bare form is deprecated (MLS §12.9)",
+                "external function '{}' should declare `pure` or `impure` explicitly; the bare \
+                 form is deprecated and is treated as impure (MLS 3.7 §12.3)",
                 class.name.text
             ),
             label_from_token(

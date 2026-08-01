@@ -1,16 +1,279 @@
 use super::*;
 
+#[path = "function_shapes/expression_rules.rs"]
+mod expression_rules;
+#[path = "function_shapes/value_relevance.rs"]
+mod value_relevance;
+pub(in crate::construction) use expression_rules::{
+    call_free_expression_shape, call_free_target_shape,
+};
+use expression_rules::{expression_shape, reject_shape_call};
+use value_relevance::ValueReadInputs;
+
 #[cfg(test)]
 #[path = "function_shapes/tests/missing_provenance.rs"]
 mod provenance_tests;
+#[cfg(test)]
+#[path = "function_shapes/tests/value_proven_shapes.rs"]
+mod value_proven_shape_tests;
 
 pub(super) type ValueShape = Vec<u32>;
-pub(super) type ShapeEnvironment = HashMap<VarName, ValueShape>;
 
+/// Maximum nesting of value-proven specializations under one call.
+///
+/// # Acceptance contract (SPEC_0008 §"Acceptance Contract Before Rejection")
+///
+/// A specialization is memoized before its body is discovered, so a call chain
+/// terminates as soon as it repeats a key. Two things make a chain repeat:
+/// [`ValueReadInputs`] keeps an input out of the key unless a declared dimension
+/// or range reads its value, so `f(n) = if n <= 0 then 0 else 1 + f(n - 1)` has
+/// one key for every `n`; and a value-keyed argument that converges — `q(m)`
+/// calling `q(integer(m/2))` — reaches its base value in `log m` activations.
+///
+/// **Accepted.** Every chain that repeats a key, including self- and mutual
+/// recursion over non-value-keyed inputs, and value-keyed recursion whose
+/// arguments converge within this bound.
+///
+/// **Typed-rejected.** A chain that needs more than `SPECIALIZATION_DEPTH_LIMIT`
+/// *distinct* value-keyed activations. `f(n)` with `output Real y[n]` calling
+/// `f(n + 1)` is the shape of it: each activation declares a wider result, so no
+/// key repeats. The report states the bound it exceeded rather than claiming a
+/// proof that no fixed point exists, because this analysis does not decide that.
+///
+/// **Owner.** `ShapeAnalyzer::ensure_specialization`, the only place a
+/// certificate is minted.
+///
+/// **Evidence.** `function_shapes/tests/value_proven_shapes.rs`:
+/// `value_recursion_without_a_fixed_point_is_bounded` (rejected),
+/// `scalar_valued_recursion_reuses_one_specialization` and
+/// `converging_value_keyed_recursion_terminates` (accepted).
+const SPECIALIZATION_DEPTH_LIMIT: usize = 256;
+
+/// Shapes, and the translation-time values, every function shape proof reads.
+///
+/// # Acceptance contract (SPEC_0008 §"Acceptance Contract Before Rejection")
+///
+/// MLS §12.2 (SPEC_0022 FUNC-009) gives a function's non-input array dimension
+/// sizes as expressions over "inputs, constants, or parameter expressions", and
+/// MLS §4.4.2 (SPEC_0022 DECL-018) restricts every array dimension to a "scalar
+/// non-negative evaluable expression of type Integer or enumeration/Boolean".
+/// Two disjoint kinds of dimension expression follow from that rule, and this
+/// environment must prove both:
+///
+/// * a dimension over an argument's **shape** — `output Real y[size(u, 1)]` —
+///   needs only the extents `shapes` records, and was already accepted;
+/// * a dimension over an argument's **value** — `output Real y[n]` for
+///   `input Integer n` — needs the value, and MLS §4.4.2 bounds that value to
+///   the Integer/enumeration/Boolean domain, so proving it is an exact `i64`
+///   question and never a floating-point one.
+///
+/// **Accepted.** A dimension whose value operands are all *evaluable* in the
+/// MLS §4.5 sense (SPEC_0022 INST-007, "structural parameters must be
+/// compile-time evaluable"): an Integer literal; a model `constant`/`parameter`
+/// whose binding the `EvalContext` fixed point settled at translation time; an
+/// enumeration literal read through its MLS §4.8.5.2 ordinal; a function input
+/// bound to such a value at the call site; and any exact Integer arithmetic
+/// over those. Every distinct proven value tuple is owned by its own
+/// specialization certificate, so `f(3)` and `f(5)` construct two DAE functions
+/// with two exact shapes rather than one mis-shaped function.
+///
+/// **Typed-rejected.** A dimension whose value operand is genuinely not
+/// evaluable — a non-evaluable parameter settled only by the initialization
+/// problem (MLS §4.5), a discrete-time or continuous-time variable, a loop
+/// index, a runtime function result — keeps the existing `ED019`
+/// `function shape proof` rejection naming the scalar whose value is missing.
+/// Such a shape is never silently defaulted, widened, or guessed.
+///
+/// **Owner.** `rumoca_phase_dae::construction::function_shapes`, which is the
+/// only producer of `FunctionShapeCertificate` and therefore the only place a
+/// DAE function's declared extents come from.
+///
+/// **Evidence.** `function_shapes/tests/value_proven_shapes.rs`.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ShapeEnvironment {
+    shapes: HashMap<VarName, ValueShape>,
+    /// Values proven for scalar coordinates of MLS §4.4.2 dimension type.
+    ///
+    /// The proven values are held in the same `EvalContext` the rest of this
+    /// phase evaluates translation-time expressions through, so an extent is
+    /// folded by exactly one arithmetic — MLS §10.6 mixed Integer/Real division,
+    /// `integer(...)` truncation, `mod`/`div`, enumeration ordinals — instead of
+    /// a second rule set written for shapes alone.
+    values: EvalContext,
+    /// Whether this scope is one function specialization rather than the model.
+    ///
+    /// MLS §12.2 makes a function body's translation-time constants a property
+    /// of the specialization that fixed its inputs, so a construct whose extent
+    /// is folded from this environment — an MLS §10.4.1 array constructor — is
+    /// owned by the specialization and never by the one model-wide plan a
+    /// source span keys: `f(3)` and `f(5)` share the span and not the extent.
+    /// "Has a Modelica body to lower into" is *not* that predicate — an MLS
+    /// §12.9 external argument is in specialization scope with no body — so the
+    /// distinction is carried by the environment that actually differs.
+    specialized: bool,
+}
+
+impl ShapeEnvironment {
+    pub(super) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            shapes: HashMap::with_capacity(capacity),
+            values: EvalContext::with_capacity(capacity, 0, 0),
+            specialized: false,
+        }
+    }
+
+    /// Mark this scope as one function specialization's proven environment.
+    fn into_specialization(mut self) -> Self {
+        self.specialized = true;
+        self
+    }
+
+    /// Whether this scope is a function specialization (MLS §12.2) rather than
+    /// the model scope.
+    pub(in crate::construction) fn is_specialization(&self) -> bool {
+        self.specialized
+    }
+
+    pub(super) fn get(&self, name: &VarName) -> Option<&ValueShape> {
+        self.shapes.get(name)
+    }
+
+    /// Bind a coordinate's shape and drop any value inherited for that name.
+    ///
+    /// Dropping is the point: a function formal shadows an enclosing model
+    /// coordinate of the same flat name, so a formal bound without a proven
+    /// value must not read the model coordinate's value through the shadowed
+    /// name. Absence of a value here means "not proven at this scope", which is
+    /// exactly what the shape proof must then reject on.
+    pub(super) fn insert(&mut self, name: VarName, shape: ValueShape) {
+        self.values.remove_parameter(name.as_str());
+        self.shapes.insert(name, shape);
+    }
+
+    /// Bind a scalar coordinate whose translation-time value is proven.
+    ///
+    /// The shape and the value are inserted together because MLS §4.4.2 admits
+    /// a value only for a scalar, so a bound value that disagreed with a
+    /// non-scalar shape would be unrepresentable rather than merely wrong.
+    pub(super) fn bind_scalar_value(&mut self, name: VarName, value: EvalValue) {
+        self.shapes.insert(name.clone(), Vec::new());
+        self.values.add_parameter(name.to_string(), value);
+    }
+
+    /// The proven translation-time value of an expression, if it has one.
+    ///
+    /// Absence is a valid semantic outcome — MLS §4.5 lets a parameter be
+    /// established by the initialization problem instead — so the caller
+    /// decides whether the missing value is fatal for the dimension or the
+    /// specialization it is proving.
+    pub(super) fn proven_value(&self, expression: &Expression) -> Option<ProvenValue> {
+        ProvenValue::from_settled(&eval_expr(expression, &self.values).ok()?)
+    }
+
+    /// The exact Integer extent this scope proves for `expression`, if any.
+    ///
+    /// This is the one predicate that answers "is this bound statically known
+    /// here?" for both the validator that admits a compact range (MLS §10.4.1)
+    /// and the lowering that folds its bounds, so the two can never disagree
+    /// about which ranges are static.
+    pub(in crate::construction) fn proven_extent(&self, expression: &Expression) -> Option<i64> {
+        self.proven_value(expression).and_then(ProvenValue::extent)
+    }
+}
+
+/// A translation-time value MLS §4.4.2 admits in an array dimension.
+///
+/// `Real` and `String` are deliberately absent: MLS §4.4.2 restricts an array
+/// dimension to "type Integer or enumeration/Boolean", so a `Real` that happens
+/// to be whole is not an extent and must not silently become one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum ProvenValue {
+    /// An Integer, or an enumeration literal read through its MLS §4.8.5.2
+    /// ordinal.
+    Integer(i64),
+    Boolean(bool),
+}
+
+impl ProvenValue {
+    fn from_settled(value: &EvalValue) -> Option<Self> {
+        match value {
+            EvalValue::Integer(value) => Some(Self::Integer(*value)),
+            EvalValue::Bool(value) => Some(Self::Boolean(*value)),
+            _ => None,
+        }
+    }
+
+    fn into_settled(self) -> EvalValue {
+        match self {
+            Self::Integer(value) => EvalValue::Integer(value),
+            Self::Boolean(value) => EvalValue::Bool(value),
+        }
+    }
+
+    /// The extent this value names, when it names one.
+    ///
+    /// A `Boolean` proves a *branch* of a dimension expression — `if useLosses
+    /// then 3 else 1` — and never an extent by itself.
+    pub(in crate::construction) fn extent(self) -> Option<i64> {
+        match self {
+            Self::Integer(value) => Some(value),
+            Self::Boolean(_) => None,
+        }
+    }
+}
+
+/// The branch of an MLS §11.5 function conditional this scope decides.
+///
+/// MLS §11.5 evaluates the conditions in declaration order and executes the
+/// first branch whose condition is `true`, or the else part when none is. This
+/// answers that question at translation time and only when the answer is exact:
+/// `Some(Some(ordinal))` is a proven taken branch, `Some(None)` is the proven
+/// else part, and `None` means this scope does not settle the choice — which is
+/// the ordinary case for a condition over a runtime value, and keeps the
+/// checked-branch rule that owns those conditionals.
+///
+/// The scan stops at the first condition without a proven value even when a
+/// later condition is proven `true`, because MLS §11.5 would only reach that
+/// later condition if the earlier one evaluated to `false`.
+pub(in crate::construction) fn proven_conditional_branch(
+    blocks: &[rumoca_core::StatementBlock],
+    values: &ShapeEnvironment,
+) -> Option<Option<usize>> {
+    for (ordinal, block) in blocks.iter().enumerate() {
+        match values.proven_value(&block.cond)? {
+            ProvenValue::Boolean(true) => return Some(Some(ordinal)),
+            ProvenValue::Boolean(false) => {}
+            // MLS §11.5 requires a Boolean condition; a scope that folded one to
+            // an Integer proves nothing about which branch runs.
+            ProvenValue::Integer(_) => return None,
+        }
+    }
+    Some(None)
+}
+
+impl std::ops::Index<&VarName> for ShapeEnvironment {
+    type Output = ValueShape;
+
+    fn index(&self, name: &VarName) -> &ValueShape {
+        &self.shapes[name]
+    }
+}
+
+/// The exact identity of one function specialization.
+///
+/// Two calls share a DAE function only when they agree on every input shape
+/// *and* on every input value a declared dimension could read (MLS §12.2). The
+/// value component is what makes `symmetricOrientation(3)` and
+/// `symmetricOrientation(5)` distinct owners of distinct result extents.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct FunctionSpecializationKey {
     pub(super) function: VarName,
     pub(super) inputs: Vec<ValueShape>,
+    /// Proven translation-time value of each input, positionally.
+    ///
+    /// `None` records an input with no proven value; the specialization is then
+    /// accepted only if no declared dimension reads that input's value.
+    pub(super) input_values: Vec<Option<ProvenValue>>,
 }
 
 #[derive(Clone, Debug)]
@@ -28,17 +291,38 @@ pub(super) struct FunctionShapeAnalysis {
     dependencies: Vec<Vec<usize>>,
     constructor_names: HashSet<VarName>,
     constructor_fields_by_key: HashMap<FunctionSpecializationKey, Vec<ValueShape>>,
+    /// Input positions each callable keys a specialization on by value.
+    ///
+    /// An input qualifies only when MLS §4.4.2 admits its declared type in a
+    /// dimension *and* some declared dimension or compact range of the callable
+    /// actually reads its value (MLS §12.2). Keying on any other input would
+    /// split certificates that are proven identical, which both duplicates DAE
+    /// functions and denies a recursive call the repeated key it terminates on.
+    value_read_inputs: ValueReadInputs,
 }
 
 impl FunctionShapeAnalysis {
-    pub(super) fn analyze(flat: &flat::Model) -> Result<Self, ToDaeError> {
-        let model_values = concrete_model_shapes(flat)?;
+    pub(super) fn analyze(flat: &flat::Model, constants: &EvalContext) -> Result<Self, ToDaeError> {
+        let model_values = concrete_model_shapes(flat, constants)?;
         let constructor_names = flat
             .functions
             .values()
             .filter(|function| function.is_constructor)
             .map(|function| function.name.clone())
             .collect();
+        let dimension_typed_inputs = flat
+            .functions
+            .iter()
+            .map(|(name, function)| {
+                let mask = function
+                    .inputs
+                    .iter()
+                    .map(|input| is_dimension_typed_scalar(flat, input))
+                    .collect();
+                (name.clone(), mask)
+            })
+            .collect();
+        let value_read_inputs = ValueReadInputs::analyze(flat, &dimension_typed_inputs);
         let mut analyzer = ShapeAnalyzer {
             flat,
             analysis: Self {
@@ -48,11 +332,39 @@ impl FunctionShapeAnalysis {
                 dependencies: Vec::new(),
                 constructor_names,
                 constructor_fields_by_key: HashMap::new(),
+                value_read_inputs,
             },
             active_specializations: Vec::new(),
         };
         analyzer.discover_model_calls()?;
         Ok(analyzer.analysis)
+    }
+
+    /// The proven argument values that identify one call's specialization.
+    ///
+    /// A position carries a value only when the callee's declared dimensions or
+    /// ranges actually read that input's value, and only when the argument is
+    /// evaluable at translation time. Every other position records `None`, which
+    /// keeps calls that differ only in a value no shape reads inside one shared
+    /// specialization — the property that both prevents duplicate DAE functions
+    /// and lets a recursive call repeat its key.
+    fn proven_input_values(
+        &self,
+        function: &VarName,
+        arguments: &[Expression],
+        values: &ShapeEnvironment,
+    ) -> Vec<Option<ProvenValue>> {
+        arguments
+            .iter()
+            .enumerate()
+            .map(|(ordinal, argument)| {
+                if self.value_read_inputs.reads_value(function, ordinal) {
+                    values.proven_value(argument)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub(super) fn model_values(&self) -> &ShapeEnvironment {
@@ -79,10 +391,13 @@ impl FunctionShapeAnalysis {
             .map(|argument| self.expression_shape(argument, values))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
+        let function = name.var_name().clone();
+        let input_values = self.proven_input_values(&function, arguments, values);
         self.constructor_fields_by_key
             .get(&FunctionSpecializationKey {
-                function: name.var_name().clone(),
+                function,
                 inputs,
+                input_values,
             })
             .map(Vec::as_slice)
     }
@@ -107,9 +422,12 @@ impl FunctionShapeAnalysis {
             .iter()
             .map(|argument| self.expression_shape(argument, values))
             .collect::<Result<Vec<_>, _>>()?;
+        let function = name.var_name().clone();
+        let input_values = self.proven_input_values(&function, arguments, values);
         let key = FunctionSpecializationKey {
-            function: name.var_name().clone(),
+            function,
             inputs,
+            input_values,
         };
         self.certificate(&key).ok_or_else(|| {
             ToDaeError::unsupported_flat(
@@ -234,9 +552,14 @@ impl ShapeAnalyzer<'_> {
                 .iter()
                 .map(|argument| self.discover_expression(argument, values))
                 .collect::<Result<Vec<_>, _>>()?;
+            let function = name.var_name().clone();
+            let input_values = self
+                .analysis
+                .proven_input_values(&function, arguments, values);
             let key = FunctionSpecializationKey {
-                function: name.var_name().clone(),
+                function,
                 inputs,
+                input_values,
             };
             let index = self.ensure_specialization(key, span)?;
             self.analysis.certificates[index]
@@ -292,9 +615,14 @@ impl ShapeAnalyzer<'_> {
             inputs.push(actual.clone());
             fields.push(resolve_declared_shape(parameter, Some(&actual), values)?);
         }
+        let function = name.var_name().clone();
+        let input_values = self
+            .analysis
+            .proven_input_values(&function, arguments, values);
         let key = FunctionSpecializationKey {
-            function: name.var_name().clone(),
+            function,
             inputs,
+            input_values,
         };
         if let Some(previous) = self
             .analysis
@@ -320,6 +648,18 @@ impl ShapeAnalyzer<'_> {
         if let Some(index) = self.analysis.certificate_by_key.get(&key).copied() {
             self.record_dependency(caller, index);
             return Ok(index);
+        }
+        if self.active_specializations.len() >= SPECIALIZATION_DEPTH_LIMIT {
+            return Err(ToDaeError::unsupported_flat(
+                "function shape specialization",
+                format!(
+                    "`{}` needs more than {SPECIALIZATION_DEPTH_LIMIT} nested value-proven \
+                     specializations, which is the bound this analysis admits; no activation in \
+                     the chain repeated an earlier proven argument",
+                    key.function
+                ),
+                call_span,
+            ));
         }
         let function =
             self.flat.functions.get(&key.function).ok_or_else(|| {
@@ -415,10 +755,26 @@ impl ShapeAnalyzer<'_> {
                 cond_blocks,
                 else_block,
                 ..
-            } => {
-                self.discover_statement_blocks(cond_blocks, values)?;
-                self.discover_statements(else_block.as_deref().unwrap_or_default(), values)
-            }
+            } => match proven_conditional_branch(cond_blocks, values) {
+                // MLS §11.5 executes one branch. When this specialization
+                // settles the conditions, the branches it does not execute
+                // contain no call this specialization makes, so discovering
+                // them would mint certificates for callees the program never
+                // reaches — and would demand shape rules for statements it
+                // never runs. A proven condition is itself folded by the same
+                // environment, so it contains no call either.
+                Some(selected) => {
+                    let selected = match selected {
+                        Some(ordinal) => &cond_blocks[ordinal].stmts,
+                        None => else_block.as_deref().unwrap_or_default(),
+                    };
+                    self.discover_statements(selected, values)
+                }
+                None => {
+                    self.discover_statement_blocks(cond_blocks, values)?;
+                    self.discover_statements(else_block.as_deref().unwrap_or_default(), values)
+                }
+            },
             rumoca_core::Statement::When { blocks, .. } => {
                 self.discover_statement_blocks(blocks, values)
             }
@@ -447,10 +803,13 @@ impl ShapeAnalyzer<'_> {
                 if outputs.iter().all(Option::is_none) {
                     return Ok(());
                 }
+                let function = comp.to_var_name();
+                let input_values = self.analysis.proven_input_values(&function, args, values);
                 self.ensure_specialization(
                     FunctionSpecializationKey {
-                        function: comp.to_var_name(),
+                        function,
                         inputs,
+                        input_values,
                     },
                     *span,
                 )?;
@@ -561,21 +920,33 @@ impl ShapeAnalyzer<'_> {
     }
 }
 
-fn concrete_model_shapes(flat: &flat::Model) -> Result<ShapeEnvironment, ToDaeError> {
-    let mut values = flat
-        .variables
-        .iter()
-        .map(|(name, variable)| {
-            concrete_dimensions(&variable.dims, variable.source_span, "model variable")
-                .map(|shape| (name.clone(), shape))
-        })
-        .collect::<Result<ShapeEnvironment, _>>()?;
+/// The shapes, and the settled translation-time values, of the model scope.
+///
+/// `constants` is the fixed point the phase already folds over every
+/// `constant`/`parameter` binding (MLS §4.5 evaluable parameters, SPEC_0022
+/// INST-007). Reading it here is what makes `Real y[m]` provable for a model
+/// that declares `parameter Integer m = 3`: the extent is a parameter
+/// expression in the sense MLS §12.2 admits, and its value is already known.
+fn concrete_model_shapes(
+    flat: &flat::Model,
+    constants: &EvalContext,
+) -> Result<ShapeEnvironment, ToDaeError> {
+    let mut values = ShapeEnvironment::with_capacity(flat.variables.len());
+    for (name, variable) in &flat.variables {
+        let shape = concrete_dimensions(&variable.dims, variable.source_span, "model variable")?;
+        match constants.get(name.as_str()) {
+            Some(value) if shape.is_empty() && is_scalar_value(value) => {
+                values.bind_scalar_value(name.clone(), value.clone());
+            }
+            _ => values.insert(name.clone(), shape),
+        }
+    }
     values.insert(VarName::new("time"), Vec::new());
-    values.extend(
-        flat.enum_literal_ordinals
-            .keys()
-            .map(|name| (VarName::new(name), Vec::new())),
-    );
+    // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,
+    // so a dimension written over a literal is an exact Integer extent.
+    for (name, ordinal) in &flat.enum_literal_ordinals {
+        values.bind_scalar_value(VarName::new(name), EvalValue::Integer(*ordinal));
+    }
     Ok(values)
 }
 
@@ -618,11 +989,20 @@ fn resolve_certificate(
             call_span,
         ));
     }
-    let mut values = global_values.clone();
+    let mut values = global_values.clone().into_specialization();
     let mut parameters = Vec::with_capacity(function.inputs.len());
-    for (parameter, actual) in function.inputs.iter().zip(&key.inputs) {
+    // Inputs are bound in declaration order because MLS §12.2 lets a later
+    // formal's dimension read an earlier formal — both its shape and, for a
+    // dimension-typed scalar, its proven value.
+    for (ordinal, (parameter, actual)) in function.inputs.iter().zip(&key.inputs).enumerate() {
         let shape = resolve_declared_shape(parameter, Some(actual), &values)?;
-        values.insert(VarName::new(&parameter.name), shape.clone());
+        let name = VarName::new(&parameter.name);
+        match key.input_values.get(ordinal).copied().flatten() {
+            Some(value) if shape.is_empty() => {
+                values.bind_scalar_value(name, value.into_settled());
+            }
+            _ => values.insert(name, shape.clone()),
+        }
         parameters.push(shape);
     }
     let mut results = Vec::with_capacity(function.outputs.len());
@@ -631,9 +1011,36 @@ fn resolve_certificate(
         values.insert(VarName::new(&result.name), shape.clone());
         results.push(shape);
     }
+    // MLS §12.2 admits a declared dimension "given by the input formal
+    // parameters ... or by constant or parameter expressions", and MLS §12.4.4
+    // makes a protected declaration equation the value that holds on function
+    // entry. `Integer m = size(x, 1); Real phi[m];` is that rule read
+    // literally, so a local's settled declaration value is bound before the
+    // later locals whose extents read it — but only when the body never assigns
+    // it, because a reassigned local has no single entry value to read.
+    let assigned = assigned_function_targets(&function.body);
     for local in &function.locals {
         let shape = resolve_declared_shape(local, None, &values)?;
-        values.insert(VarName::new(&local.name), shape);
+        let name = VarName::new(&local.name);
+        match local.default.as_ref() {
+            Some(default)
+                if shape.is_empty()
+                    && !assigned.contains(&local.name)
+                    && is_dimension_typed_scalar(flat, local) =>
+            {
+                // A declaration equation this scope cannot settle simply leaves
+                // the local without a value. That is not an error here: the
+                // local is still a well-shaped scalar, and any *extent* written
+                // over it is rejected by name where it is read.
+                match evaluate_shape_integer(default, &values).ok() {
+                    Some(value) => {
+                        values.bind_scalar_value(name, EvalValue::Integer(value));
+                    }
+                    None => values.insert(name, shape),
+                }
+            }
+            _ => values.insert(name, shape),
+        }
     }
     // MLS §12.2: a record value's declared fields are readable through the
     // joined reference identity Flat renders, so each field carries its own
@@ -733,6 +1140,27 @@ fn resolve_declared_shape(
     Ok(shape)
 }
 
+/// Whether an input's declared type lets its *value* name an array dimension.
+///
+/// MLS §4.4.2 (SPEC_0022 DECL-018) admits exactly a scalar Integer,
+/// enumeration, or Boolean there. A `Real`, `String`, record, or array input can
+/// never appear as an extent, so its value is not part of a specialization's
+/// identity.
+fn is_dimension_typed_scalar(flat: &flat::Model, input: &rumoca_core::FunctionParam) -> bool {
+    input.dimensions().is_empty()
+        && matches!(
+            effective_function_scalar_type(flat, input),
+            Some(
+                dae::ScalarType::Integer | dae::ScalarType::Enumeration | dae::ScalarType::Boolean
+            )
+        )
+}
+
+/// Whether a settled parameter value is a scalar the shape proof can read.
+fn is_scalar_value(value: &EvalValue) -> bool {
+    !matches!(value, EvalValue::Array(_) | EvalValue::Record(_))
+}
+
 fn concrete_extent(
     extent: i64,
     value: &rumoca_core::FunctionParam,
@@ -815,33 +1243,70 @@ pub(super) fn evaluate_shape_integer(
                 )
             }),
         Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = evaluate_shape_integer(lhs, values)?;
-            let rhs = evaluate_shape_integer(rhs, values)?;
+            let (Ok(lhs), Ok(rhs)) = (
+                evaluate_shape_integer(lhs, values),
+                evaluate_shape_integer(rhs, values),
+            ) else {
+                // One operand is not itself an extent — `m/2` under
+                // `integer(m/2)` is Real by MLS §10.6.6 — so the whole
+                // expression is folded by the translation-time evaluator.
+                return proven_extent(expression, values, span);
+            };
+            // The structural rules cover the operators an extent is usually
+            // written with; `n^2` and the rest are still MLS §4.4.2 evaluable
+            // expressions, so the whole node goes to the evaluator rather than
+            // being reported as if it had no value.
             checked_shape_arithmetic(op.clone(), lhs, rhs, span)
+                .or_else(|error| proven_extent(expression, values, span).map_err(|_| error))
         }
-        // A scalar coordinate proven by this environment carries a shape but no
-        // value, and an extent written over it needs the value. Naming that
-        // cause keeps the rejection honest: the missing owner is a
-        // value-proven specialization, not a malformed extent expression.
+        // A scalar coordinate this environment proves the *shape* of carries an
+        // extent only when its value is also proven. MLS §12.2 accepts the
+        // dimension either way; what differs is whether the call site settled
+        // the value. Naming that cause keeps the rejection honest: the missing
+        // owner is a value-proven specialization, not a malformed extent.
         Expression::VarRef {
             name, subscripts, ..
         } if subscripts.is_empty() && values.get(name.var_name()).is_some_and(Vec::is_empty) => {
-            Err(ToDaeError::unsupported_flat(
-                "function shape proof",
-                format!(
-                    "extent depends on the value of scalar `{}`, which requires a \
-                     value-proven function specialization",
-                    name.as_str()
-                ),
-                span,
-            ))
+            values
+                .proven_value(expression)
+                .and_then(ProvenValue::extent)
+                .ok_or_else(|| {
+                    ToDaeError::unsupported_flat(
+                        "function shape proof",
+                        format!(
+                            "extent depends on the value of scalar `{}`, which requires a \
+                             value-proven function specialization",
+                            name.as_str()
+                        ),
+                        span,
+                    )
+                })
         }
-        _ => Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "dependent extent is not an exact Integer expression over proven shape axes",
-            span,
-        )),
+        _ => proven_extent(expression, values, span),
     }
+}
+
+/// Fold an extent the structural rules above do not decompose.
+///
+/// MLS §4.4.2 requires an array dimension to be an *evaluable* expression, so
+/// the honest last resort is the same translation-time evaluator the phase
+/// already uses for parameter bindings — `integer(m/2)`, `mod(m, 2)`,
+/// `if n > 0 then n else 1` are extents exactly when it settles them.
+fn proven_extent(
+    expression: &Expression,
+    values: &ShapeEnvironment,
+    span: Span,
+) -> Result<i64, ToDaeError> {
+    values
+        .proven_value(expression)
+        .and_then(ProvenValue::extent)
+        .ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function shape proof",
+                "dependent extent is not an exact Integer expression over proven shape axes",
+                span,
+            )
+        })
 }
 
 fn checked_shape_arithmetic(
@@ -864,462 +1329,6 @@ fn checked_shape_arithmetic(
             span,
         )
     })
-}
-
-type FunctionResultShape<'scope> = dyn FnMut(&rumoca_core::Reference, &[Expression], Span) -> Result<ValueShape, ToDaeError>
-    + 'scope;
-
-fn expression_shape(
-    expression: &Expression,
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-) -> Result<ValueShape, ToDaeError> {
-    let span = expression_span(expression)?;
-    match expression {
-        Expression::Literal { .. } => Ok(Vec::new()),
-        Expression::VarRef {
-            name, subscripts, ..
-        } => {
-            let shape = values
-                .get(name.var_name())
-                .cloned()
-                .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span))?;
-            apply_subscripts(shape, subscripts, values)
-        }
-        Expression::Index {
-            base, subscripts, ..
-        } => {
-            let shape = expression_shape(base, values, function_result)?;
-            apply_subscripts(shape, subscripts, values)
-        }
-        Expression::Unary { rhs, .. } => expression_shape(rhs, values, function_result),
-        Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = expression_shape(lhs, values, function_result)?;
-            let rhs = expression_shape(rhs, values, function_result)?;
-            binary_shape(op.clone(), lhs, rhs, span)
-        }
-        Expression::BuiltinCall { function, args, .. } => {
-            builtin_shape(*function, args, values, function_result, span)
-        }
-        Expression::StringConversion { value, format, .. } => {
-            string_conversion_shape(value, format, values, function_result, span)
-        }
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-            ..
-        } if *is_constructor && name.as_str().starts_with("__rumoca_named_arg__.") => {
-            let [value] = args.as_slice() else {
-                return Err(ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "named argument wrapper must contain one value",
-                    span,
-                ));
-            };
-            expression_shape(value, values, function_result)
-        }
-        Expression::FunctionCall { name, args, .. } => function_result(name, args, span),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            let expected = expression_shape(else_branch, values, function_result)?;
-            for (_, value) in branches {
-                let found = expression_shape(value, values, function_result)?;
-                require_same_shape(&expected, &found, span)?;
-            }
-            Ok(expected)
-        }
-        Expression::Array { elements, .. } => {
-            array_expression_shape(elements, values, function_result, span)
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => range_expression_shape(start, step.as_deref(), end, values, span),
-        Expression::Tuple { .. }
-        | Expression::ArrayComprehension { .. }
-        | Expression::FieldAccess { .. }
-        | Expression::Empty { .. } => Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "expression form has no exact checked shape rule",
-            span,
-        )),
-    }
-}
-
-fn string_conversion_shape(
-    value: &Expression,
-    format: &rumoca_core::StringConversionFormat,
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    if !expression_shape(value, values, function_result)?.is_empty() {
-        return shape_mismatch(span);
-    }
-    for operand in format.operands() {
-        if !expression_shape(operand, values, function_result)?.is_empty() {
-            return shape_mismatch(span);
-        }
-    }
-    Ok(Vec::new())
-}
-
-fn array_expression_shape(
-    elements: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let Some(first) = elements.first() else {
-        return Ok(vec![0]);
-    };
-    let child = expression_shape(first, values, function_result)?;
-    for element in &elements[1..] {
-        let found = expression_shape(element, values, function_result)?;
-        require_same_shape(&child, &found, span)?;
-    }
-    let count = u32::try_from(elements.len()).map_err(|_| {
-        ToDaeError::unsupported_flat(
-            "function shape proof",
-            "array element count exceeds the DAE shape domain",
-            span,
-        )
-    })?;
-    Ok(std::iter::once(count).chain(child).collect())
-}
-
-fn range_expression_shape(
-    start: &Expression,
-    step: Option<&Expression>,
-    end: &Expression,
-    values: &ShapeEnvironment,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let start = evaluate_shape_integer(start, values)?;
-    let step = step
-        .map(|step| evaluate_shape_integer(step, values))
-        .transpose()?
-        .unwrap_or(1);
-    let end = evaluate_shape_integer(end, values)?;
-    Ok(vec![range_cardinality(start, step, end, span)?])
-}
-
-fn reject_shape_call(
-    name: &rumoca_core::Reference,
-    _arguments: &[Expression],
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    Err(ToDaeError::unsupported_flat(
-        "function shape proof",
-        format!(
-            "dependent extents cannot call runtime function `{}`",
-            name.as_str()
-        ),
-        span,
-    ))
-}
-
-fn builtin_shape(
-    function: BuiltinFunction,
-    arguments: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    match function {
-        BuiltinFunction::Size if arguments.len() == 1 => {
-            let rank = expression_shape(&arguments[0], values, function_result)?.len();
-            Ok(vec![u32::try_from(rank).map_err(|_| {
-                ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "rank exceeds the DAE shape domain",
-                    span,
-                )
-            })?])
-        }
-        BuiltinFunction::Size | BuiltinFunction::Sum | BuiltinFunction::Product => Ok(Vec::new()),
-        BuiltinFunction::Zeros => arguments
-            .iter()
-            .map(|argument| {
-                let extent = evaluate_shape_integer(argument, values)?;
-                u32::try_from(extent).ok().ok_or_else(|| {
-                    ToDaeError::unsupported_flat(
-                        "function shape proof",
-                        format!("zeros extent `{extent}` is invalid"),
-                        span,
-                    )
-                })
-            })
-            .collect(),
-        BuiltinFunction::Smooth => arguments
-            .get(1)
-            .ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "smooth requires two arguments",
-                    span,
-                )
-            })
-            .and_then(|value| expression_shape(value, values, function_result)),
-        BuiltinFunction::Integer => scalar_integer_shape(arguments, values, function_result, span),
-        BuiltinFunction::Min | BuiltinFunction::Max if arguments.len() == 1 => Ok(Vec::new()),
-        BuiltinFunction::Der
-        | BuiltinFunction::Pre
-        | BuiltinFunction::Sample
-        | BuiltinFunction::Clock
-        | BuiltinFunction::Hold
-        | BuiltinFunction::Previous
-        | BuiltinFunction::SubSample
-        | BuiltinFunction::SuperSample
-        | BuiltinFunction::ShiftSample
-        | BuiltinFunction::BackSample
-        | BuiltinFunction::NoClock
-        | BuiltinFunction::Abs
-        | BuiltinFunction::Sign
-        | BuiltinFunction::Sqrt
-        | BuiltinFunction::Floor
-        | BuiltinFunction::Ceil
-        | BuiltinFunction::Sin
-        | BuiltinFunction::Cos
-        | BuiltinFunction::Tan
-        | BuiltinFunction::Asin
-        | BuiltinFunction::Acos
-        | BuiltinFunction::Atan
-        | BuiltinFunction::Sinh
-        | BuiltinFunction::Cosh
-        | BuiltinFunction::Tanh
-        | BuiltinFunction::Exp
-        | BuiltinFunction::Log
-        | BuiltinFunction::Log10
-        | BuiltinFunction::NoEvent => arguments
-            .first()
-            .ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    format!("{} requires an argument", function.name()),
-                    span,
-                )
-            })
-            .and_then(|value| expression_shape(value, values, function_result)),
-        BuiltinFunction::Interval => scalar_interval_shape(arguments, span),
-        // MLS §3.7.4.5 `semiLinear` returns `if x >= 0 then positiveSlope*x else
-        // negativeSlope*x`, so its shape is the common shape of its operands.
-        BuiltinFunction::Atan2
-        | BuiltinFunction::Mod
-        | BuiltinFunction::Min
-        | BuiltinFunction::Max
-        | BuiltinFunction::SemiLinear => {
-            shared_operand_shape(function, arguments, values, function_result, span)
-        }
-        _ => Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            format!("{} has no exact checked shape rule", function.name()),
-            span,
-        )),
-    }
-}
-
-/// The one shape every operand of an elementwise builtin must agree on.
-fn shared_operand_shape(
-    function: BuiltinFunction,
-    arguments: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let Some((first, rest)) = arguments.split_first() else {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            format!("{} requires arguments", function.name()),
-            span,
-        ));
-    };
-    let expected = expression_shape(first, values, function_result)?;
-    for argument in rest {
-        let found = expression_shape(argument, values, function_result)?;
-        require_same_shape(&expected, &found, span)?;
-    }
-    Ok(expected)
-}
-
-fn scalar_interval_shape(arguments: &[Expression], span: Span) -> Result<ValueShape, ToDaeError> {
-    if arguments.len() > 1 {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "interval accepts at most one inference operand",
-            span,
-        ));
-    }
-    Ok(Vec::new())
-}
-
-fn scalar_integer_shape(
-    arguments: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let [value] = arguments else {
-        return Err(invalid_integer_shape(span));
-    };
-    let shape = expression_shape(value, values, function_result)?;
-    if shape.is_empty() {
-        Ok(shape)
-    } else {
-        Err(invalid_integer_shape(span))
-    }
-}
-
-fn invalid_integer_shape(span: Span) -> ToDaeError {
-    ToDaeError::unsupported_flat(
-        "function shape proof",
-        "integer requires one scalar argument",
-        span,
-    )
-}
-
-fn binary_shape(
-    operator: OpBinary,
-    lhs: ValueShape,
-    rhs: ValueShape,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    match operator {
-        OpBinary::Mul => match (lhs.as_slice(), rhs.as_slice()) {
-            ([], _) => Ok(rhs),
-            (_, []) => Ok(lhs),
-            ([lhs_n], [rhs_n]) if lhs_n == rhs_n => Ok(Vec::new()),
-            ([rows, inner], [rhs_inner]) if inner == rhs_inner => Ok(vec![*rows]),
-            ([lhs_inner], [rhs_inner, columns]) if lhs_inner == rhs_inner => Ok(vec![*columns]),
-            ([rows, inner], [rhs_inner, columns]) if inner == rhs_inner => {
-                Ok(vec![*rows, *columns])
-            }
-            _ => shape_mismatch(span),
-        },
-        OpBinary::Div => {
-            if rhs.is_empty() {
-                Ok(lhs)
-            } else {
-                shape_mismatch(span)
-            }
-        }
-        OpBinary::MulElem | OpBinary::DivElem | OpBinary::ExpElem => {
-            if lhs.is_empty() {
-                Ok(rhs)
-            } else if rhs.is_empty() || lhs == rhs {
-                Ok(lhs)
-            } else {
-                shape_mismatch(span)
-            }
-        }
-        OpBinary::Exp => {
-            if rhs.is_empty() {
-                Ok(lhs)
-            } else {
-                shape_mismatch(span)
-            }
-        }
-        _ => {
-            require_same_shape(&lhs, &rhs, span)?;
-            Ok(lhs)
-        }
-    }
-}
-
-fn apply_subscripts(
-    shape: ValueShape,
-    subscripts: &[Subscript],
-    values: &ShapeEnvironment,
-) -> Result<ValueShape, ToDaeError> {
-    let mut remaining = shape.into_iter();
-    let mut result = Vec::new();
-    for subscript in subscripts {
-        let source_extent = remaining.next().ok_or_else(|| {
-            ToDaeError::unsupported_flat(
-                "function shape proof",
-                "subscript count exceeds expression rank",
-                subscript.span(),
-            )
-        })?;
-        match subscript {
-            Subscript::Index { value, span } => {
-                if *value < 1
-                    || u32::try_from(*value)
-                        .ok()
-                        .is_none_or(|value| value > source_extent)
-                {
-                    return Err(ToDaeError::unsupported_flat(
-                        "function shape proof",
-                        format!("literal index `{value}` is outside extent {source_extent}"),
-                        *span,
-                    ));
-                }
-            }
-            Subscript::Colon { .. } => result.push(source_extent),
-            Subscript::Expr { expr, .. } => {
-                let index_shape = expression_shape(expr, values, &mut reject_shape_call)?;
-                result.extend(index_shape);
-            }
-        }
-    }
-    result.extend(remaining);
-    Ok(result)
-}
-
-fn require_same_shape(expected: &[u32], found: &[u32], span: Span) -> Result<(), ToDaeError> {
-    if expected == found {
-        Ok(())
-    } else {
-        shape_mismatch(span)
-    }
-}
-
-fn shape_mismatch<T>(span: Span) -> Result<T, ToDaeError> {
-    Err(ToDaeError::unsupported_flat(
-        "function shape proof",
-        "expression shapes are inconsistent",
-        span,
-    ))
-}
-
-fn range_cardinality(start: i64, step: i64, end: i64, span: Span) -> Result<u32, ToDaeError> {
-    if step == 0 {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "range step cannot be zero",
-            span,
-        ));
-    }
-    let distance = if step > 0 {
-        end.checked_sub(start)
-    } else {
-        start.checked_sub(end)
-    };
-    let Some(distance) = distance else {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "range cardinality overflowed",
-            span,
-        ));
-    };
-    if distance < 0 {
-        return Ok(0);
-    }
-    let count = distance
-        .checked_div(step.abs())
-        .and_then(|count| count.checked_add(1))
-        .and_then(|count| u32::try_from(count).ok())
-        .ok_or_else(|| {
-            ToDaeError::unsupported_flat(
-                "function shape proof",
-                "range cardinality exceeds the DAE shape domain",
-                span,
-            )
-        })?;
-    Ok(count)
 }
 
 #[cfg(test)]
@@ -1421,7 +1430,7 @@ mod tests {
             },
         ));
 
-        let Err(error) = FunctionShapeAnalysis::analyze(&model) else {
+        let Err(error) = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) else {
             panic!("record constructor with one missing field must be rejected");
         };
         assert!(matches!(
@@ -1447,7 +1456,7 @@ mod tests {
         model.add_equation(call(2, first));
         model.add_equation(call(3, second));
 
-        let analysis = FunctionShapeAnalysis::analyze(&model).unwrap();
+        let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()).unwrap();
         let certificates = analysis.certificates();
         assert_eq!(certificates.len(), 2);
         assert_eq!(certificates[0].parameters, vec![vec![2]]);
@@ -1465,7 +1474,7 @@ mod tests {
         model.add_function(identity_function(span, true));
         model.add_equation(call(0, span));
 
-        let analysis = FunctionShapeAnalysis::analyze(&model).unwrap();
+        let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()).unwrap();
         let [certificate] = analysis.certificates() else {
             panic!("empty array call should have one shape certificate");
         };
@@ -1482,7 +1491,7 @@ mod tests {
         model.add_function(identity_function(span, false));
         model.add_equation(call(2, span));
 
-        let error = match FunctionShapeAnalysis::analyze(&model) {
+        let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) {
             Ok(_) => panic!("an unresolved result axis must not produce a certificate"),
             Err(error) => error,
         };

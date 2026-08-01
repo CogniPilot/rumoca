@@ -130,6 +130,8 @@ use model_diagnostics::{
 };
 mod reachability;
 use reachability::{ReachabilityPlanner, ReachableModelClosure};
+mod model_failure_diagnostic;
+pub use model_failure_diagnostic::ModelFailureDiagnostic;
 mod strict_compile_diagnostics;
 pub use strict_compile_diagnostics::StrictCompileFailure;
 use strict_compile_diagnostics::{
@@ -1694,16 +1696,6 @@ pub struct ModelDiagnostics {
     pub diagnostics: Vec<CommonDiagnostic>,
     pub source_map: Option<SourceMap>,
     pub global_resolution_failure: bool,
-}
-
-/// Failure diagnostic for a single model in a strict-reachable-with-recovery pass.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelFailureDiagnostic {
-    pub model_name: String,
-    pub phase: Option<FailedPhase>,
-    pub error_code: Option<String>,
-    pub error: String,
-    pub primary_label: Option<Label>,
 }
 
 /// Coarse timing breakdown for strict requested-only model checks.

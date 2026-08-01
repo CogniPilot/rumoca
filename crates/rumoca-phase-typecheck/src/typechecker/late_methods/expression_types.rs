@@ -121,6 +121,12 @@ impl TypeChecker {
         if leaf == "String" {
             return Some(type_table.string());
         }
+        // MLS §12.3 `pure(f(…))` wraps one call to bypass purity checking of
+        // that callee; it changes nothing else, so the wrapper has exactly the
+        // type of what it wraps.
+        if leaf == rumoca_core::PURITY_WRAPPER && comp.parts.len() == 1 {
+            return self.infer_expression_type(args.first()?, type_table);
+        }
         if comp.root_def_id().is_some()
             && self.user_function_definition(comp, &dotted_name).is_some()
         {

@@ -30,7 +30,12 @@ pub(super) fn validate_guarded_function_return(
         .collect::<Vec<_>>();
     let mut branches = Vec::with_capacity(cond_blocks.len());
     for block in cond_blocks {
-        validate_function_expression_with_roles(&block.cond, context.roles, context.flat)?;
+        validate_function_expression_with_roles(
+            &block.cond,
+            context.roles,
+            context.flat,
+            context.shapes,
+        )?;
         let Some((rumoca_core::Statement::Return { span }, statements)) = block.stmts.split_last()
         else {
             return unsupported_return_shape(function, first);
@@ -124,6 +129,11 @@ fn sequence_defines_target(plans: &[FunctionStatementPlan], target: &VarName) ->
             assignment.target() == target
         }
         FunctionStatementPlan::If { targets, .. } => targets.contains(target),
+        // A proven branch runs unconditionally, so it defines exactly what its
+        // own statement sequence defines.
+        FunctionStatementPlan::ProvenBranch { statements, .. } => {
+            sequence_defines_target(statements, target)
+        }
         _ => false,
     })
 }

@@ -13,11 +13,7 @@ pub(super) type InterfaceConnectorRootsByScope = IndexMap<String, InterfaceConne
 /// For array variables, scalar_count = product of dimensions.
 /// For scalars (empty dims), returns 1.
 fn compute_var_scalar_count(var: &flat::Variable) -> usize {
-    if var.dims.is_empty() {
-        1
-    } else {
-        var.dims.iter().copied().map(|d| d.max(0)).product::<i64>() as usize
-    }
+    scalar_count_of_dims(&var.dims)
 }
 
 fn add_connection_equation(
@@ -38,14 +34,28 @@ fn add_connection_equation(
     Ok(())
 }
 
+/// Scalar leaves denoted by one connection-set member.
+///
+/// MLS §9.2 generates one scalar equation per matched leaf and MLS §4.8 counts
+/// those scalars when balancing the model, so an element or slice endpoint
+/// contributes the leaves of what it *denotes* (MLS §10.5), not one leaf per
+/// subscripted path.
 fn resolve_var_scalar_count(flat: &flat::Model, var: &rumoca_core::VarName) -> Option<usize> {
-    if let Some(v) = flat.variables.get(var) {
-        return Some(compute_var_scalar_count(v));
-    }
-    if subscripted_base_var(var, flat).is_some() {
-        return Some(1);
+    if let Some(dims) = connection_endpoint_dims(flat, var) {
+        return Some(scalar_count_of_dims(&dims));
     }
     strip_embedded_array_indices(var.as_str()).map(|_| 1)
+}
+
+/// Scalar count of a dimension list, sharing one clamp with
+/// [`compute_var_scalar_count`] so a declaration and one of its elements can
+/// never be counted by two different rules.
+fn scalar_count_of_dims(dims: &[i64]) -> usize {
+    if dims.is_empty() {
+        1
+    } else {
+        dims.iter().copied().map(|d| d.max(0)).product::<i64>() as usize
+    }
 }
 
 pub(super) fn strip_embedded_array_indices(path: &str) -> Option<String> {
@@ -128,10 +138,7 @@ fn generate_outside_stream_equations(
                 lhs: stream.as_str().to_string(),
                 rhs: format!("inStream({stream})"),
             };
-            let preferred_dims = flat
-                .variables
-                .get(stream)
-                .map(|variable| variable.dims.clone());
+            let preferred_dims = connection_endpoint_dims(flat, stream);
             let equation = flat::Equation::new_array(residual, *span, origin, scalar_count);
             add_connection_equation(flat, equation, preferred_dims.as_deref())?;
             mark_connected(flat, stream);
@@ -158,8 +165,12 @@ pub(super) fn generate_equality_equations(
         let var_a = &window[0];
         let var_b = &window[1];
 
-        let lhs_size = flat.variables.get(var_a).map(compute_var_scalar_count);
-        let rhs_size = flat.variables.get(var_b).map(compute_var_scalar_count);
+        // MLS §10.5: an element/slice member denotes the dimensions its
+        // subscripts leave, so both sides are measured by what they denote.
+        let lhs_dims = connection_endpoint_dims(flat, var_a);
+        let rhs_dims = connection_endpoint_dims(flat, var_b);
+        let lhs_size = lhs_dims.as_deref().map(scalar_count_of_dims);
+        let rhs_size = rhs_dims.as_deref().map(scalar_count_of_dims);
         if let (Some(lhs_size), Some(rhs_size)) = (lhs_size, rhs_size)
             && lhs_size != rhs_size
         {
@@ -208,17 +219,10 @@ pub(super) fn generate_equality_equations(
             lhs: var_a.as_str().to_string(),
             rhs: var_b.as_str().to_string(),
         };
-        let preferred_dims = flat
-            .variables
-            .get(var_a)
-            .filter(|variable| compute_var_scalar_count(variable) == scalar_count)
-            .map(|variable| variable.dims.clone())
-            .or_else(|| {
-                flat.variables
-                    .get(var_b)
-                    .filter(|variable| compute_var_scalar_count(variable) == scalar_count)
-                    .map(|variable| variable.dims.clone())
-            });
+        let preferred_dims = lhs_dims
+            .into_iter()
+            .chain(rhs_dims)
+            .find(|dims| scalar_count_of_dims(dims) == scalar_count);
         let eq = flat::Equation::new_array(residual, span, origin, scalar_count);
         add_connection_equation(flat, eq, preferred_dims.as_deref())?;
     }
@@ -419,9 +423,8 @@ pub(super) fn generate_flow_equation(
     };
     let preferred_dims = variables
         .iter()
-        .filter_map(|name| flat.variables.get(name))
-        .find(|variable| compute_var_scalar_count(variable) == scalar_count)
-        .map(|variable| variable.dims.clone());
+        .filter_map(|name| connection_endpoint_dims(flat, name))
+        .find(|dims| scalar_count_of_dims(dims) == scalar_count);
     let eq = flat::Equation::new_array(sum, span, origin, scalar_count);
     add_connection_equation(flat, eq, preferred_dims.as_deref())?;
 
@@ -560,6 +563,12 @@ pub(crate) fn process_connections(
     let all_connections: Vec<&ast::InstanceConnection> = owned_connections.iter().collect();
     let var_index = ConnectionVarIndex::new(flat);
     let endpoint_index = ConnectionEndpointIndex::new(overlay);
+
+    // MLS §10.5: an endpoint subscript must select along a declared dimension.
+    // Checked before any path matching, because path matching normalizes
+    // indices away and would otherwise connect the whole component the
+    // subscript was meant to index.
+    endpoint_index.check_connection_endpoint_subscripts(&all_connections)?;
 
     // MLS §9.1.3 augmentation must happen before connection-set construction.
     // Until the union elaboration exists, reject the unsupported case instead

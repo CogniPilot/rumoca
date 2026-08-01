@@ -142,6 +142,14 @@ pub struct Component {
     pub is_replaceable: bool,
     /// True if declared with element-level `redeclare` prefix.
     pub is_redeclare: bool,
+    /// True once an `extends` modification has redeclared this inherited
+    /// component (MLS §7.3, `extends Base(redeclare C a[2])`).
+    ///
+    /// Instantiation consumes only the redeclared *type* from such a
+    /// modification, so everything else the redeclare states — notably array
+    /// dimensions — is dropped. Consumers that would otherwise read this
+    /// component's shape as a fact about the source must treat it as unproven.
+    pub redeclared_by_modification: bool,
     /// Constraining type for replaceable components (MLS §7.3.2)
     /// If set, redeclarations must be subtypes of this type
     pub constrainedby: Option<Name>,
@@ -241,6 +249,7 @@ impl Component {
             is_final: false,
             is_replaceable: false,
             is_redeclare: false,
+            redeclared_by_modification: false,
             constrainedby: None,
             is_structural: false,
         }

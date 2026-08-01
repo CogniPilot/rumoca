@@ -54,6 +54,7 @@ mod tests {
             declaration_source_scope: None,
             class_overrides: ast::ClassOverrideMap::default(),
             has_forwarding_class_redeclare: false,
+            had_redeclare: false,
             variability: rumoca_core::Variability::Empty,
             causality: rumoca_core::Causality::Empty,
             flow: false,

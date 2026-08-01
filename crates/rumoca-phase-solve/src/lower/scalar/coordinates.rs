@@ -84,6 +84,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if let dae::CoordinateView::Derivative(state) = coordinate {
             return self.derivative_value(state, scalar, span);
         }
+        if let dae::CoordinateView::Parameter(parameter) = coordinate
+            && let Some(binding) = self
+                .parameter_substitutions
+                .and_then(|substitutions| substitutions.binding(parameter.index()))
+        {
+            return self.substituted_parameter_value(parameter.index(), binding, scalar, span);
+        }
         let slot = if let dae::CoordinateView::Delay(delay_id) = coordinate {
             delay_value_scalar_slot(self.layout, delay_id.index(), scalar, span)?
         } else if let dae::CoordinateView::Previous(previous_id) = coordinate {
@@ -122,6 +129,37 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
         }
         Ok(dst)
+    }
+
+    /// Evaluate a calculated parameter from its binding rather than its storage.
+    ///
+    /// MLS 3.6 §8.6 makes a `parameter` declared `fixed = false` an unknown of
+    /// the initialization phase whose `start` is only a guess, so a binding that
+    /// reads one holds a seed after the parameter set runs, not a value. A row
+    /// the initialization projection iterates must see that binding re-evaluated
+    /// at the current iterate; loading the seed instead turns the projection
+    /// into a fixed-point iteration around it, which diverges as soon as the
+    /// loop gain reaches one.
+    ///
+    /// A binding cycle among parameters is rejected before Solve lowering. The
+    /// active stack keeps that a checked guarantee rather than an assumption.
+    fn substituted_parameter_value(
+        &mut self,
+        parameter: u32,
+        binding: dae::ExprId<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if self.active_parameters.contains(&parameter) {
+            return Err(LowerError::non_computable(
+                "parameter bindings are mutually recursive",
+                span,
+            ));
+        }
+        self.active_parameters.push(parameter);
+        let value = self.expression(binding, scalar);
+        self.active_parameters.pop();
+        value
     }
 
     /// Evaluate a derivative coordinate a row other than its definition reads.

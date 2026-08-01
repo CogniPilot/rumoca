@@ -1675,11 +1675,25 @@ pub(super) fn enforce_msl_quality_gate(
 ) -> io::Result<()> {
     let measurement = measure_msl_parity(stage, summary.sim_target_models.len());
     // Printed on EVERY path, before any early return, so no run can end without
-    // stating whether its numbers were compared against OMC.
+    // stating whether its numbers were compared against OMC, and — when there
+    // is a previous band table — which models entered or left the compared set
+    // since. A departure is listed by name: a model that leaves the compared
+    // set must never be inferable only from a shrinking total.
     println!(
         "{}",
         measurement.summary_line(summary.sim_target_models.len())
     );
+    if let Some(cohort) = measurement.cohort() {
+        for line in cohort.departure_lines() {
+            println!("{line}");
+        }
+        // A band is a share of the channels compared, so evidence can collapse
+        // under a band that never moves. Printed beside the departures because
+        // it is the same class of silent loss.
+        for line in cohort.coverage_drop_lines() {
+            println!("{line}");
+        }
+    }
 
     if require_selected_targets_success() {
         return enforce_all_selected_targets_succeeded(summary);
@@ -1714,6 +1728,23 @@ pub(super) fn enforce_msl_quality_gate(
         gate_failure = Some(match gate_failure {
             Some(existing) => format!("{existing}; {floor}"),
             None => floor,
+        });
+    }
+    // A departure out of the strict-high band is invisible to every aggregate:
+    // one model leaving and another entering holds `agreement_high` flat. The
+    // per-model table is the only artifact that can see it, so the gate reads it
+    // — and a cohort run that cannot diff against its predecessor fails rather
+    // than passing with that reading silently switched off.
+    for reason in [
+        measurement.cohort_movement_unverified_reason(),
+        measurement.departed_strict_high_reason(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        gate_failure = Some(match gate_failure {
+            Some(existing) => format!("{existing}; {reason}"),
+            None => reason,
         });
     }
 

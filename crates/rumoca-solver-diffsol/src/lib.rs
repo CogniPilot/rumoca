@@ -112,6 +112,21 @@ use rumoca_solver::{RuntimeSolveError, project_algebraics, project_algebraics_an
 
 const EVENT_UPDATE_MAX_ITERS: usize = 256;
 
+/// Whether a state-carrying model integrates as a reduced state-only ODE
+/// (algebraics recovered by projection) instead of the general implicit system.
+///
+/// Single source of truth for the path split: [`build_simulation_inner`] and
+/// [`check_initialization_inner`] must agree, otherwise a model can be
+/// initialization-checked against a system the simulation never builds. The
+/// general path requires a derived implicit Jacobian pattern, which a pure
+/// explicit ODE (empty `implicit_rhs`, zero algebraics) does not have.
+///
+/// SDIRK tableaus are wired only on the general/implicit path, so a non-BDF
+/// request routes through `General` even when the model is state-only eligible.
+fn uses_state_only_path(model: &solve::SolveModel, opts: &SimOptions) -> Result<bool, SimError> {
+    Ok(opts.diffsol_method == DiffsolMethod::Bdf && can_use_state_only_bdf(model)?)
+}
+
 pub fn build_simulation(
     model: &solve::SolveModel,
     opts: &SimOptions,
@@ -142,10 +157,7 @@ fn build_simulation_inner(
     let state = if model.state_scalar_count() == 0 {
         tracing::debug!(target: "rumoca_solver_diffsol::bdf_path", "no-state path");
         PreparedSimulationState::NoState
-    } else if opts.diffsol_method == DiffsolMethod::Bdf && can_use_state_only_bdf(model)? {
-        // SDIRK tableaus are wired only on the general/implicit path, so a
-        // non-BDF request routes through `General` even when the model is
-        // state-only eligible.
+    } else if uses_state_only_path(model, opts)? {
         tracing::debug!(
             target: "rumoca_solver_diffsol::bdf_path",
             states = model.state_scalar_count(),
@@ -199,6 +211,9 @@ fn check_initialization_inner(
     if model.state_scalar_count() == 0 {
         return check_no_state_initialization(model, opts);
     }
+    if uses_state_only_path(model, opts)? {
+        return check_state_only_initialization(model, opts);
+    }
 
     let equilibrium_model = Arc::new(OdeModel::new(model)?);
     let runtime = Arc::new(SolveRuntime::new(model)?);
@@ -225,6 +240,65 @@ fn check_initialization_inner(
         runtime,
     )?;
     initial_bdf_state(model, &equilibrium_model, &problem, &current_y, &params).map(|_| ())
+}
+
+/// Settle initial conditions for a model that integrates on the reduced
+/// state-only path.
+///
+/// Runs the same three steps [`simulate_state_only_bdf`] runs before its first
+/// integration step — the initialization settle/projection pass, the reduced
+/// ODE problem build, and the initial `BdfState` construction — so a model that
+/// passes the check is a model whose simulation start point actually exists.
+///
+/// The verification the general path gets from its initial algebraic residual
+/// check in [`initial_bdf_state`] is already inside step three here. The reduced
+/// system has no algebraic residual rows of its own; instead
+/// `initial_state_only_bdf_state` seeds `dy` from
+/// `SolveRuntime::eval_state_derivatives_with_guess`, which solves the projected
+/// algebraics at `t0` and ends in `validate_finite_derivatives` — so a start
+/// point whose projection fails to converge, or whose derivative is non-finite,
+/// is rejected there as `RuntimeSolveError::NonFiniteDerivative` and propagates
+/// out of this function. No separate finiteness check is added here: it would be
+/// unreachable.
+fn check_state_only_initialization(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<(), SimError> {
+    let equilibrium_model = Arc::new(OdeModel::new(model)?);
+    let runtime = Arc::new(SolveRuntime::new(model)?);
+    let mut current_y = model.initial_y.clone();
+    let mut params = model.parameters.clone();
+    let mut current_t = opts.t_start;
+    initialize_state_runtime_values(
+        model,
+        opts,
+        runtime.as_ref(),
+        &equilibrium_model,
+        &mut current_y,
+        &mut params,
+        &mut current_t,
+    )?;
+    let current_state = current_y[..model.state_scalar_count()].to_vec();
+    let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
+    let algebraic_warm_start = AlgebraicWarmStart::new(current_y.clone());
+    let (problem_input, _eval_counters) = state_ode_problem_input(
+        &runtime_params,
+        &algebraic_warm_start,
+        current_t,
+        &current_state,
+        &runtime,
+    );
+    let problem =
+        build_state_ode_problem_with_runtime_params_and_initial(model, opts, problem_input)?;
+    initial_state_only_bdf_state(
+        runtime.as_ref(),
+        &problem,
+        &current_state,
+        &params,
+        opts,
+        &algebraic_warm_start,
+    )
+    .map(|_| ())
 }
 
 pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResult, SimError> {

@@ -21,6 +21,7 @@ use crate::{
 mod fuzz;
 mod msl_cargo_setup_timing;
 mod msl_quality_baseline;
+mod msl_results_cleanup;
 mod parity_budgets;
 mod parity_comparator;
 
@@ -30,6 +31,7 @@ use msl_cargo_setup_timing::{
     write_msl_cargo_setup_timing_report,
 };
 use msl_quality_baseline::resolve_msl_quality_baseline;
+use msl_results_cleanup::clean_msl_results_dir;
 use parity_comparator::check_comparator_evidence;
 
 const MSL_VERSION: &str = "4.1.0";
@@ -1338,41 +1340,6 @@ struct MslCiEnvironment {
     github_actions: bool,
 }
 
-const MSL_RESULTS_PRESERVED_DIRS: &[&str] = &["omc_parity_cache"];
-
-fn should_preserve_msl_results_entry(entry_path: &Path) -> bool {
-    entry_path.is_dir()
-        && entry_path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|name| MSL_RESULTS_PRESERVED_DIRS.contains(&name))
-}
-
-fn clean_msl_results_dir(results_dir: &Path) -> std::io::Result<()> {
-    if !results_dir.is_dir() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(results_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if should_preserve_msl_results_entry(&path) {
-            continue;
-        }
-        if path.is_dir() {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_file(&path)?;
-        }
-    }
-
-    if fs::read_dir(results_dir)?.next().is_none() {
-        fs::remove_dir(results_dir)?;
-    }
-
-    Ok(())
-}
-
 impl MslCiEnvironment {
     fn from_args(root: &Path, args: &VerifyMslParityArgs) -> Self {
         let results_dir = args
@@ -1920,15 +1887,20 @@ mod tests {
         );
     }
 
+    /// The preservation rules have to hold through the flag that actually
+    /// invokes them: a wipe that spared the cohort table in isolation but ran
+    /// unconditionally from `--clean-results` would still delete it on every run.
     #[test]
-    fn msl_ci_environment_preserves_keyed_omc_parity_cache() {
+    fn msl_ci_environment_preserves_the_cohort_table_through_the_clean_results_flag() {
         let temp = tempfile::tempdir().expect("tempdir");
         let results_dir = temp.path().join("results");
-        let parity_cache_dir = results_dir.join("omc_parity_cache");
-        std::fs::create_dir_all(&parity_cache_dir).expect("mkdir parity cache");
-        std::fs::write(results_dir.join("stale.json"), "{}").expect("write stale file");
-        std::fs::write(parity_cache_dir.join("compile.json"), "{}").expect("write cache file");
-
+        std::fs::create_dir_all(&results_dir).expect("mkdir");
+        std::fs::write(
+            results_dir.join("msl_band_table.json"),
+            "{\"schema\":\"a\"}",
+        )
+        .expect("write band table");
+        std::fs::write(results_dir.join("msl_results.json"), "{}").expect("write stale results");
         let env = MslCiEnvironment {
             root: PathBuf::from(temp.path()),
             results_dir: results_dir.clone(),
@@ -1936,20 +1908,38 @@ mod tests {
             clean_results: true,
             github_actions: false,
         };
+
         env.clean_stale_results().expect("cleanup should succeed");
 
         assert!(
-            results_dir.is_dir(),
-            "results dir should remain when keyed parity cache is preserved"
+            results_dir.join("msl_band_table.json").is_file(),
+            "the previous certification's cohort evidence must survive --clean-results"
         );
         assert!(
-            parity_cache_dir.join("compile.json").is_file(),
-            "cleanup should preserve keyed OMC parity cache contents"
+            !results_dir.join("msl_results.json").exists(),
+            "everything the run regenerates must still be wiped"
         );
-        assert!(
-            !results_dir.join("stale.json").exists(),
-            "cleanup should remove stale non-cache artifacts"
-        );
+    }
+
+    /// With the flag off, nothing is removed at all — the wipe is opt-in, so a
+    /// run that never asked for it cannot lose a certification.
+    #[test]
+    fn msl_ci_environment_removes_nothing_when_clean_results_is_off() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let results_dir = temp.path().join("results");
+        std::fs::create_dir_all(&results_dir).expect("mkdir");
+        std::fs::write(results_dir.join("msl_results.json"), "{}").expect("write results");
+        let env = MslCiEnvironment {
+            root: PathBuf::from(temp.path()),
+            results_dir: results_dir.clone(),
+            monitor_interval: None,
+            clean_results: false,
+            github_actions: false,
+        };
+
+        env.clean_stale_results().expect("cleanup should succeed");
+
+        assert!(results_dir.join("msl_results.json").is_file());
     }
 
     #[test]

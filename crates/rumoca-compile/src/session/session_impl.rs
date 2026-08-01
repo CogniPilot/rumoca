@@ -25,16 +25,16 @@ fn resolve_error_diagnostic_failure(diagnostic: &CommonDiagnostic) -> ModelFailu
         diagnostic.is_error(),
         "only error-severity diagnostics may construct a compile failure"
     );
+    let (primary_label, secondary_labels) =
+        ModelFailureDiagnostic::split_labels(diagnostic).unzip();
     ModelFailureDiagnostic {
         model_name: "<resolve>".to_string(),
         phase: None,
         error_code: diagnostic.code.clone(),
         error: diagnostic.message.clone(),
-        primary_label: diagnostic
-            .labels
-            .iter()
-            .find(|label| label.primary)
-            .cloned(),
+        primary_label,
+        secondary_labels: secondary_labels.unwrap_or_default(),
+        notes: diagnostic.notes.clone(),
     }
 }
 
