@@ -246,9 +246,10 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     /// `Boolean bi` per branch condition. An `elsewhen` therefore carries no
     /// condition of its own beyond its own edge.
     ///
-    /// What the earlier branches do own is *priority*, and §8.3.5 scopes that
-    /// precisely: the chain form *"can be used to resolve assignment conflicts
-    /// since the first of the when/elsewhen parts are given higher priority than
+    /// What the earlier branches do own is *priority*, and §8.3.5.4 (the Single
+    /// Assignment Rule applied to when-equations) scopes that precisely: the
+    /// chain form *"can be used to resolve assignment conflicts since the first
+    /// of the when/elsewhen parts are given higher priority than
     /// later ones"*. A conflict exists only where two arms of the same
     /// if-expression are selected at one instant, i.e. where two branch edges
     /// coincide — and the arms are ordered, so the earlier one wins. §8.3.5.1

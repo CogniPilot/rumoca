@@ -451,9 +451,10 @@ fn plan_multi_output_receiver(
             span,
         ));
     }
-    // MLS §12.4.3: "Left-hand side references must agree with type of
-    // corresponding output component" (SPEC_0022 FUNC-025). The proven result
-    // shape is the one the constructed callee actually returns.
+    // MLS §12.4.3: "The type of each component reference in the list must agree
+    // with the type of the corresponding output component." (SPEC_0022
+    // FUNC-025). The proven result shape is the one the constructed callee
+    // actually returns.
     let Some(declared) = context.shapes.get(plan.target()) else {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",

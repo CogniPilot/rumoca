@@ -427,13 +427,22 @@ pub(super) fn is_rescheduling_time_relation(
 /// its own right-limit row (`t = 1e-10` for `when time > 0`).
 ///
 /// Leaving them to the crossing is what this owner decides, and it is all it
-/// decides. It buys parity for `when time > 0`, which then fires once, exactly
-/// as OpenModelica does. It does not buy parity for `when time >= 0`:
-/// OpenModelica leaves that unfired, because the relation is already true at the
-/// start and a `when` runs on a rising edge, while rumoca fires it at `t = 0`
-/// like every other activation that is already true there. That divergence is
-/// the pre-existing initial-activation defect (#90) and is untouched by this
-/// bound — it was there before this owner existed and it is there after.
+/// decides. It buys parity for `when time > 0`, which then fires once on the
+/// rk-like session, exactly as OpenModelica does.
+///
+/// `when time >= 0` used to diverge here — rumoca fired it at `t = 0` where
+/// OpenModelica leaves it unfired, because the relation is already true at the
+/// start and a `when` runs on a rising edge. That was the initial-activation
+/// defect (#90), and it is **fixed**: seeding the activation buffer from the
+/// settled initialization values (`when` condition memory, commit 4032af2a)
+/// removed the manufactured edge, so both sessions now leave `when time >= 0`
+/// unfired as OpenModelica does. `crates/rumoca/tests/time_event_when_activation.rs`
+/// pins the pair.
+///
+/// What this bound still does not reach is the `Bdf` session, where
+/// `when time > 0` does not fire at all: the located crossing at the start
+/// instant is never applied there. That is a diffsol event-boundary defect
+/// rather than an owner decision, and no test pins it yet.
 fn time_event_instant(
     op: &OpBinary,
     lhs: &Expression,

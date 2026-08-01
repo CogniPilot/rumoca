@@ -30,6 +30,10 @@ pub mod test_support;
 use std::sync::OnceLock;
 
 // Re-export main types
+pub use registry::formal::{
+    EnforcementStatus, FormalStatement, FormalStatementError, MlsEdition, PinPolarity, QuoteKind,
+    StatementPin, StatementTier, load_all_formal_statements, parse_formal_statements,
+};
 pub use registry::{Contract, ContractCategory, ContractId, ContractRegistry, ContractStatus};
 pub use report::ComplianceReport;
 pub use runner::{ContractResult, TestRunner};
@@ -427,6 +431,18 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "UNIT-008",
     "UNIT-009",
 ];
+
+static FORMAL_STATEMENTS: OnceLock<Vec<FormalStatement>> = OnceLock::new();
+
+/// The formal-statement registry: which formal statement justifies each pinned
+/// behavior, and whether it is spec-sourced or oracle-implied.
+///
+/// See [`registry::formal`] for the tiers and how rows are added. The table is
+/// parsed once per process; a malformed row panics on first access, because it
+/// ships inside the binary.
+pub fn formal_statements() -> &'static [FormalStatement] {
+    FORMAL_STATEMENTS.get_or_init(load_all_formal_statements)
+}
 
 static REGISTRY_TEMPLATE: OnceLock<ContractRegistry> = OnceLock::new();
 
