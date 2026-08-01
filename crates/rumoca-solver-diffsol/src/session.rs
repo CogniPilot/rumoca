@@ -7,8 +7,8 @@ use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    DiffsolMethod, RuntimeEventStop, SimOptions, SolveRuntime, SolveStopSchedule,
-    event_solver_step_cap, runtime_root_event_application_time, time_match_with_tol,
+    RuntimeEventStop, SimOptions, SolveRuntime, SolveStopSchedule, event_solver_step_cap,
+    runtime_root_event_application_time, time_match_with_tol,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -379,15 +379,6 @@ impl BdfSession {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
         let runtime = SolveRuntime::new(model)?;
-        if !model.problem.continuous.manifold_projection_plan.is_empty()
-            && opts.diffsol_method != DiffsolMethod::Bdf
-        {
-            return Err(SimError::SolverError(format!(
-                "index-reduction manifold projection is not supported by {:?}; use BDF or the \
-                 RK-like solver",
-                opts.diffsol_method
-            )));
-        }
         let root_runtime = Arc::new(runtime.clone());
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));

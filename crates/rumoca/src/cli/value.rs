@@ -22,9 +22,9 @@ use super::{
     CompilationResult, CompileArgs, CompilePhase, EarlyIrArtifact, SimCommandArgs, SimOptions,
     SimulationRequestSummary, SimulationRunMetrics, TemplateIr,
     compile_str_dae_with_inferred_model, compile_str_early_ir_with_inferred_model,
-    compile_str_with_inferred_model, diffsol_method_for_solver_label, direct_sim_t_end,
-    render_early_ir_as_modelica_ast, render_early_ir_as_modelica_flat, render_ir_as_modelica,
-    simulate_solver_or_auto, simulation_failure_error, target_manifest,
+    compile_str_with_inferred_model, direct_sim_t_end, render_early_ir_as_modelica_ast,
+    render_early_ir_as_modelica_flat, render_ir_as_modelica, simulate_solver_or_auto,
+    simulation_failure_error, target_manifest,
 };
 
 /// Compile `source` (inline Modelica text) according to `args` and return the
@@ -153,13 +153,13 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
         args.diagnostics.verbose,
     )?;
     let compile_seconds = compile_started.elapsed().as_secs_f64();
-    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
 
     let mut opts = SimOptions {
         t_end: direct_sim_t_end(args.t_end),
         dt: args.dt,
         solver_mode: solver.into(),
-        diffsol_method: diffsol_method_for_solver_label(solver.as_label()),
+        diffsol_method: rumoca_sim::DiffsolMethod::Bdf,
         ..SimOptions::default()
     };
     if let Some(atol) = args.atol {

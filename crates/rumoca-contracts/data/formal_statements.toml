@@ -513,6 +513,20 @@ pin_polarity = 'PinsDivergence'
 status = 'RecordedDivergence'
 note = 'NEEDS A TEST. No test pins either half of this row: the rk-like agreement is covered incidentally by an_activation_at_the_start_instant_fires_exactly_once (FS-SIM-013), but the Bdf gap is recorded only in prose. A wave that touches the diffsol event boundary should convert this Record pin into a Test pin and flip its polarity.'
 
+[[statements]]
+id = 'FS-SIM-015'
+statement = 'A model entering simulation through build_simulation or check_initialization is integrated only as a reduced state-only ODE, and one whose state derivatives read a solver coordinate that no algebraic projection block produces is rejected by name rather than re-expressed as a general implicit DAE.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.6 scopes what a tool must establish before and during a simulation run — the initialization system, the event iteration, and the values every variable holds at each instant — and it states those as properties of the solution, never of the system form or integrator used to reach them. The silence is therefore established by what §8.6 does state: it fixes the answer and leaves the machinery free, so a tool carrying a general implicit DAE beside the reduced ODE conforms exactly as well as one carrying only the reduced form. Nothing in §8.6, or in the §8.5 event semantics it leans on, distinguishes them.'
+alternatives_considered = 'Keeping both systems was the status quo and was refused on evidence rather than on conformance: a census of the 566-model MSL cohort found zero models constructing the general one, so it was carried, untested by any cohort model, purely as a fallback — and as a fallback it could only ever have absorbed a rumoca-phase-solve regression by switching integrators with no diagnostic. Keeping it behind a flag was refused: pre-1.0 the tree deletes a superseded path rather than gating it. Rejecting unprojectable models *silently* (returning the old boolean false) was refused because an unprojectable coordinate is a lowering defect, and answering a defect with a different integrator hides it. FMI 3.0 Model Exchange was considered as an oracle and rejected as one: ME constrains what a component exports, not what a tool integrates internally, and a mass-matrix system M·x@ = f with invertible M is presentable as x@ = M**-1 f anyway — this crate already does exactly that in OdeModel::solve_state_mass — so ME implies nothing about the general path.'
+oracle_consulted = 'None. OpenModelica settles trajectory values, not which internal system form a tool reduces to, so it cannot separate the two candidates: both produce the same trajectories, which is why the 566-model freeze comparison was byte-identical on both sides.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-solver-diffsol/src/tests/state_path_integration.rs'
+pin_anchor = 'simulate_rejects_an_unprojectable_derivative_dependency_by_name'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Scoped deliberately to build_simulation / check_initialization, which is the whole of where it is enforced. SimulationSession takes neither entry point: it constructs the general implicit problem directly for its own stepping loop (crates/rumoca-solver-diffsol/src/session.rs), so a model this row rejects can still be stepped through a session — crates/rumoca/tests/index_reduction_manifold.rs runs one model through both routes and is the in-tree counterexample. Consolidating the session onto the same reduction is follow-on work. The ESDIRK34 / TR-BDF2 tableaus removed alongside the general path are not abandoned: they are to be re-homed onto the FMI ME kernel as host integrators (board #134), which is why no surface offers their names in the meantime rather than offering a name that silently runs BDF.'
+
 # ---------------------------------------------------------------------------
 # EXPR — event-generating operators (MLS §3.7.5) and semiLinear (§3.7.4.5)
 # ---------------------------------------------------------------------------

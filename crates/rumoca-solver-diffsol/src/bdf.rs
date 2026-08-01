@@ -7,12 +7,15 @@ use std::{
 
 use diffsol::{
     BdfState, DiffsolError, MatrixCommon, OdeEquations, OdeEquationsImplicit, OdeSolverMethod,
-    OdeSolverProblem, OdeSolverState, RkState, VectorHost, error::OdeSolverError,
+    OdeSolverProblem, OdeSolverState, VectorHost, error::OdeSolverError,
 };
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
-use crate::{LinearSolver, Matrix, OdeModel, RuntimeParameters, Scalar, SimError, Vector};
+use crate::{
+    LinearSolver, Matrix, OdeModel, RuntimeParameters, Scalar, SimError, SimFailureStage,
+    StateOnlyRejection, Vector,
+};
 
 static SOLVER_PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
@@ -198,39 +201,6 @@ where
     Ok(state)
 }
 
-/// Build the initial `RkState` for the SDIRK (ESDIRK34 / TR-BDF2) path.
-///
-/// Mirrors [`projected_initial_bdf_state`]: it seeds the solver with the
-/// already-settled, algebraically-consistent `y` and the mass-matrix
-/// derivative guess `dy` (the same `bdf_derivative_guess` used by BDF, which
-/// is solver-agnostic). This preserves the exact-AD projection-aware
-/// consistent initial condition for the implicit RK tableaus too — without it
-/// SDIRK would lose the very startup robustness the BDF path gained.
-///
-/// Callers pass a `y` that has been settled by the simulate path's
-/// equilibrium/initialisation pass, so it is already algebraically consistent
-/// at `problem.t0`.
-pub(crate) fn initial_rk_state<Eqn>(
-    ode_model: &OdeModel,
-    problem: &OdeSolverProblem<Eqn>,
-    y: &[f64],
-    p: &[f64],
-) -> Result<RkState<Vector>, SimError>
-where
-    Eqn: OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>,
-{
-    let dy = bdf_derivative_guess(ode_model, y, p, problem.t0)?;
-    let mut state = RkState::<Vector>::new_without_initialise(problem)
-        .map_err(|err| SimError::SolverError(format!("SDIRK projected init: {err}")))?;
-    {
-        let state_ref = state.as_mut();
-        state_ref.y.as_mut_slice().copy_from_slice(y);
-        state_ref.dy.as_mut_slice().copy_from_slice(&dy);
-    }
-    state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
-    Ok(state)
-}
-
 pub(crate) fn bdf_derivative_guess(
     ode_model: &OdeModel,
     y: &[f64],
@@ -354,7 +324,20 @@ where
     }
 }
 
-pub(crate) fn can_use_state_only_bdf(model: &solve::SolveModel) -> Result<bool, SimError> {
+/// Check the state-only integration contract, naming what fails it.
+///
+/// A state-carrying model is *accepted* when it lowers to one derivative row
+/// per continuous state and every non-state solver coordinate those rows read
+/// is produced — transitively — by the algebraic projection plan. That is the
+/// whole contract; anything else returns a [`StateOnlyRejection`] identifying
+/// the construct and the coordinate.
+///
+/// This used to be a `-> Result<bool, _>` predicate whose `false` silently
+/// routed the model onto a second, general/implicit DAE system. That path is
+/// retired (SPEC 0038): a coordinate with no projection
+/// producer is a lowering defect, and answering it with a different integrator
+/// hid the defect instead of reporting it.
+pub(crate) fn require_state_only_bdf(model: &solve::SolveModel) -> Result<(), SimError> {
     let state_count = model.state_scalar_count();
     let derivative_rhs_len = model
         .problem
@@ -363,32 +346,68 @@ pub(crate) fn can_use_state_only_bdf(model: &solve::SolveModel) -> Result<bool, 
         .len()
         .map_err(|err| SimError::SolveIr(err.to_string()))?;
     if derivative_rhs_len != state_count {
-        return Ok(false);
+        return Err(reject(StateOnlyRejection::DerivativeRowCount {
+            derivative_rows: derivative_rhs_len,
+            state_count,
+        }));
     }
     let derivative_rows =
         solve_eval::to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
     let direct_deps = derivative_non_state_loads(model, &derivative_rows);
-    Ok(direct_deps.is_empty() || projection_plan_covers_non_state_loads(model, direct_deps)?)
+    if direct_deps.is_empty() {
+        return Ok(());
+    }
+    require_projection_plan_covers_non_state_loads(model, direct_deps)
 }
 
+/// Annotate a contract rejection as a backend-construction failure.
+///
+/// Both entry points (`build_simulation` and `check_initialization`) funnel
+/// through the same check, so the stage is pinned here rather than inherited
+/// from whichever boundary happened to call first — otherwise the identical
+/// defect would be recorded under two different stages.
+fn reject(rejection: StateOnlyRejection) -> SimError {
+    SimError::StateOnlyPathUnavailable(rejection).at_stage(SimFailureStage::BackendBuild)
+}
+
+fn coordinate_name(model: &solve::SolveModel, y_index: usize) -> String {
+    model
+        .problem
+        .solve_layout
+        .solver_maps
+        .names
+        .get(y_index)
+        .cloned()
+        .unwrap_or_else(|| format!("y[{y_index}]"))
+}
+
+/// Non-state solver coordinates each state-derivative row reads, keyed by
+/// coordinate and carrying the state whose derivative first read it — so a
+/// rejection can name `der(<state>)`, not just the dangling coordinate.
 fn derivative_non_state_loads(
     model: &solve::SolveModel,
     derivative_rows: &solve::ScalarProgramBlock,
-) -> BTreeSet<usize> {
+) -> BTreeMap<usize, usize> {
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
-    derivative_rows
+    let mut deps = BTreeMap::new();
+    for (state_index, row) in derivative_rows
         .programs()
         .iter()
         .take(state_count)
-        .flat_map(|row| non_state_y_loads(row, state_count, solver_count))
-        .collect()
+        .enumerate()
+    {
+        for load in non_state_y_loads(row, state_count, solver_count) {
+            deps.entry(load).or_insert(state_index);
+        }
+    }
+    deps
 }
 
-fn projection_plan_covers_non_state_loads(
+fn require_projection_plan_covers_non_state_loads(
     model: &solve::SolveModel,
-    direct_deps: BTreeSet<usize>,
-) -> Result<bool, SimError> {
+    direct_deps: BTreeMap<usize, usize>,
+) -> Result<(), SimError> {
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
     let implicit_rows =
@@ -396,44 +415,48 @@ fn projection_plan_covers_non_state_loads(
     // The projection plan references residual rows by OUTPUT index; a program may
     // now emit several outputs, so the producer map is bounded by output count
     // and resolved to its producing program.
-    let Some(producer_rows) = projection_producer_rows(model, implicit_rows.output_count()) else {
-        return Ok(false);
-    };
+    let producer_rows =
+        projection_producer_rows(model, implicit_rows.output_count()).map_err(reject)?;
     let mut needed = BTreeSet::new();
     let mut stack = direct_deps.into_iter().collect::<Vec<_>>();
-    while let Some(index) = stack.pop() {
+    while let Some((index, state_index)) = stack.pop() {
         if index < state_count || !needed.insert(index) {
             continue;
         }
         let Some(output_idx) = producer_rows.get(&index).copied() else {
-            tracing::debug!(
-                target: "rumoca_solver_diffsol::bdf_path",
-                y_index = index,
-                "state-only BDF rejected: derivative dependency has no algebraic projection producer"
-            );
-            return Ok(false);
+            return Err(reject(StateOnlyRejection::UnproducedDerivativeDependency {
+                y_index: index,
+                name: coordinate_name(model, index),
+                state_name: coordinate_name(model, state_index),
+            }));
         };
-        let Some(program_idx) = implicit_rows.program_index_for_output(output_idx) else {
-            tracing::debug!(
-                target: "rumoca_solver_diffsol::bdf_path",
-                y_index = index,
-                output_index = output_idx,
-                "state-only BDF rejected: projection producer has no scalar program"
-            );
-            return Ok(false);
-        };
-        let Some(row) = implicit_rows.program(program_idx) else {
-            return Ok(false);
-        };
-        stack.extend(non_state_y_loads(row, state_count, solver_count));
+        // Resolve output index -> program -> row in one fallible step. A missing
+        // program and a missing row are the same defect from the caller's side —
+        // the plan named a producer that carries nothing to evaluate — so both
+        // land on one rejection rather than one rejection and one panic.
+        let row = implicit_rows
+            .program_index_for_output(output_idx)
+            .and_then(|program_idx| implicit_rows.program(program_idx))
+            .ok_or_else(|| {
+                reject(StateOnlyRejection::ProducerWithoutScalarProgram {
+                    y_index: index,
+                    name: coordinate_name(model, index),
+                    output_index: output_idx,
+                })
+            })?;
+        stack.extend(
+            non_state_y_loads(row, state_count, solver_count)
+                .into_iter()
+                .map(|load| (load, state_index)),
+        );
     }
-    Ok(true)
+    Ok(())
 }
 
 fn projection_producer_rows(
     model: &solve::SolveModel,
-    implicit_row_count: usize,
-) -> Option<BTreeMap<usize, usize>> {
+    implicit_output_count: usize,
+) -> Result<BTreeMap<usize, usize>, StateOnlyRejection> {
     let mut producer_rows = BTreeMap::new();
     for block in &model.problem.continuous.algebraic_projection_plan.blocks {
         for (row_idx, target_index) in block
@@ -442,17 +465,25 @@ fn projection_producer_rows(
             .copied()
             .zip(block.y_indices.iter().copied())
         {
-            if row_idx >= implicit_row_count {
-                return None;
+            if row_idx >= implicit_output_count {
+                return Err(StateOnlyRejection::ProjectionRowOutOfRange {
+                    row: row_idx,
+                    implicit_output_count,
+                });
             }
             if let Some(previous_row) = producer_rows.insert(target_index, row_idx)
                 && previous_row != row_idx
             {
-                return None;
+                return Err(StateOnlyRejection::ConflictingProjectionProducers {
+                    y_index: target_index,
+                    name: coordinate_name(model, target_index),
+                    first_row: previous_row,
+                    second_row: row_idx,
+                });
             }
         }
     }
-    Some(producer_rows)
+    Ok(producer_rows)
 }
 
 fn non_state_y_loads(

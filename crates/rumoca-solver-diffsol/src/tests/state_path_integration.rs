@@ -1,25 +1,76 @@
 //! Continuous state-path integration tests.
 //!
-//! The state-only BDF eligibility rules, the initialization check that must
-//! take the same branch the simulation build takes, the general/implicit
-//! tableaus, transport delays replayed from accepted history, terminal events,
-//! scheduled events on the state path, and the wall-clock budget.
+//! The state-only integration contract and the typed rejection that replaced
+//! the general/implicit fallback, the initialization check that must take the
+//! same branch the simulation build takes, transport delays replayed from
+//! accepted history, terminal events, scheduled events on the state path, and
+//! the wall-clock budget.
 
 use super::*;
 
+/// The acceptance half of the contract, plus its ablation: removing the
+/// projection plan that produces the coordinate `der(x)` reads must turn an
+/// accepted model into a *named* rejection.
+///
+/// Before SPEC 0038 the ablated model was silently rerouted
+/// onto a general/implicit DAE system and still integrated, so this assertion
+/// could only ever observe a `false` — the defect it now names was invisible.
 #[test]
 fn state_only_bdf_accepts_projection_backed_derivative_dependencies() {
     let mut model = projected_derivative_model();
 
-    assert!(
-        can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
-        "state derivative rows may read non-state slots when the projection plan can refresh them"
+    require_state_only_bdf(&model).expect(
+        "state derivative rows may read non-state slots when the projection plan can refresh them",
     );
 
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan::default();
+    let error = require_state_only_bdf(&model)
+        .expect_err("state-only BDF must not treat missing algebraic refresh data as a default");
+    let SimError::StateOnlyPathUnavailable(StateOnlyRejection::UnproducedDerivativeDependency {
+        y_index,
+        name,
+        state_name,
+    }) = error.kind()
+    else {
+        panic!("ablating the projection plan must name the unproduced coordinate: {error}");
+    };
+    assert_eq!(*y_index, 1);
+    assert_eq!(name, "a");
+    assert_eq!(state_name, "x");
+    assert_eq!(
+        error.stage(),
+        Some(SimFailureStage::BackendBuild),
+        "a construction-time contract failure is a backend-build failure"
+    );
+}
+
+/// The rejection reaches the user through `simulate`, as an error — not as a
+/// quietly different integration.
+#[test]
+fn simulate_rejects_an_unprojectable_derivative_dependency_by_name() {
+    let mut model = projected_derivative_model();
+    model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan::default();
+
+    let error = simulate(
+        &model,
+        &SimOptions {
+            t_start: 0.0,
+            t_end: 1.0,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect_err("a model with no reduced system must fail, not silently integrate another one");
+
+    let rendered = error.to_string();
     assert!(
-        !can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
-        "state-only BDF must not treat missing algebraic refresh data as a default"
+        rendered.contains("der(x)") && rendered.contains("'a'") && rendered.contains("y[1]"),
+        "the rejection must name the derivative and the coordinate: {rendered}"
+    );
+    assert!(
+        rendered.contains("retired"),
+        "the rejection must say the fallback is gone, not merely that the model is unsupported: \
+         {rendered}"
     );
 }
 
@@ -56,10 +107,10 @@ fn explicit_decay_model() -> solve::SolveModel {
     model
 }
 
-/// A pure explicit ODE has no implicit residual rows, so the general/implicit
-/// path cannot derive the implicit Jacobian pattern it requires. The
-/// initialization check must therefore take the *same* branch the simulation
-/// build takes, and settle the model on the reduced state-only path.
+/// A pure explicit ODE has no implicit residual rows at all. The
+/// initialization check must take the *same* branch the simulation build takes
+/// — the reduced state-only path — so a model that passes the check is the
+/// model that runs.
 #[test]
 fn check_initialization_settles_pure_explicit_odes_on_the_state_only_path() {
     let model = explicit_decay_model();
@@ -73,10 +124,8 @@ fn check_initialization_settles_pure_explicit_odes_on_the_state_only_path() {
         dt: Some(0.1),
         ..Default::default()
     };
-    assert!(
-        uses_state_only_path(&model, &opts).expect("valid model should check BDF eligibility"),
-        "a pure explicit ODE integrates on the reduced state-only path"
-    );
+    require_state_only_bdf(&model)
+        .expect("a pure explicit ODE satisfies the reduced state-only contract");
 
     check_initialization(&model, &opts).expect(
         "initialization must be checked on the path the simulation builds, not the implicit one",
@@ -93,25 +142,6 @@ fn check_initialization_settles_pure_explicit_odes_on_the_state_only_path() {
         (x - (-1.0f64).exp()).abs() <= 1.0e-5,
         "x(1) = {x} should match exp(-1)"
     );
-}
-
-#[test]
-fn general_path_integrates_with_sdirk_tableaus() {
-    // A non-BDF `diffsol_method` routes the model through the general/implicit
-    // path, where ESDIRK34 / TR-BDF2 are wired. The ramp model (x' = 1,
-    // x(0) = 0) has the closed form x(t) = t, so every tableau must land on
-    // x(1) = 1 and agree with the BDF baseline.
-    let model = general_ramp_model();
-    let bdf = run_ramp(&model, DiffsolMethod::Bdf);
-    assert!((bdf - 1.0).abs() <= 1.0e-6, "BDF baseline: x(1) = {bdf}");
-    for method in [DiffsolMethod::Esdirk34, DiffsolMethod::TrBdf2] {
-        let x = run_ramp(&model, method);
-        assert!((x - 1.0).abs() <= 1.0e-6, "{method:?}: x(1) = {x}");
-        assert!(
-            (x - bdf).abs() <= 1.0e-6,
-            "{method:?} disagrees with BDF: {x} vs {bdf}"
-        );
-    }
 }
 
 #[test]
@@ -188,7 +218,7 @@ fn bdf_session_processes_terminal_event_at_horizon() {
 }
 
 fn terminal_marker_model() -> solve::SolveModel {
-    let mut model = general_ramp_model();
+    let mut model = ramp_model();
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 1, 1);
     model.problem.solve_layout.parameter_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
@@ -206,30 +236,13 @@ fn terminal_marker_model() -> solve::SolveModel {
     model
 }
 
-fn run_ramp(model: &solve::SolveModel, method: DiffsolMethod) -> f64 {
-    let result = simulate(
-        model,
-        &SimOptions {
-            t_start: 0.0,
-            t_end: 1.0,
-            dt: Some(0.25),
-            diffsol_method: method,
-            ..Default::default()
-        },
-    )
-    .unwrap_or_else(|err| panic!("{method:?} should integrate the ramp: {err}"));
-    *result
-        .data
-        .first()
-        .and_then(|series| series.last())
-        .expect("x series should have a final sample")
-}
-
-/// A single-state ramp `x' = 1` (so `x(t) = t`) whose residual/jacobian are
-/// consistently formed for the general/implicit solver path: `M·x' = f` with
-/// `M = I` and `f = 1`, exact JVP `df/dx = 0`, visible value reading the state
+/// A single-state ramp `x' = 1` (so `x(t) = t`) carrying both forms Solve
+/// emits: the explicit derivative program (inherited from
+/// [`unit_integrator_model`]) that the reduced state-only system integrates,
+/// and the consistent `M·x' = f` residual (`M = I`, `f = 1`, exact JVP
+/// `df/dx = 0`) the projection kernels read. Visible value reads the state
 /// directly.
-fn general_ramp_model() -> solve::SolveModel {
+fn ramp_model() -> solve::SolveModel {
     let mut model = unit_integrator_model();
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
@@ -266,7 +279,7 @@ fn general_ramp_model() -> solve::SolveModel {
 }
 
 fn delayed_ramp_model() -> solve::SolveModel {
-    let mut model = general_ramp_model();
+    let mut model = ramp_model();
     let source = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
@@ -361,10 +374,8 @@ fn state_only_bdf_accepts_transitive_projection_dependencies() {
         ],
     };
 
-    assert!(
-        can_use_state_only_bdf(&model).expect("valid model should check BDF eligibility"),
-        "projection coverage should be checked transitively through producer rows"
-    );
+    require_state_only_bdf(&model)
+        .expect("projection coverage should be checked transitively through producer rows");
 }
 
 #[test]

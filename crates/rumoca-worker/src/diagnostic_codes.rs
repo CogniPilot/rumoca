@@ -83,6 +83,10 @@ pub fn sim_error_diagnostic_code(err: &SimError) -> Option<String> {
                 .unwrap_or_else(|| runtime_preparation_code().to_string()),
         ),
         SimError::RuntimeContract { .. } => Some(runtime_preparation_code().to_string()),
+        // Preparing the lowered model for execution failed: the model does not
+        // present a reduced state-only system, which is a lowering outcome
+        // discovered at backend-build time, not a numeric solver failure.
+        SimError::StateOnlyPathUnavailable(_) => Some(runtime_preparation_code().to_string()),
         SimError::SolverError(message) => Some(
             embedded_diagnostic_code(message).unwrap_or_else(|| solver_failure_code().to_string()),
         ),

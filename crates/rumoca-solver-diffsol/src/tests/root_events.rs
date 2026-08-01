@@ -367,12 +367,20 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
     );
 
     let mut model = solve::SolveModel::default();
+    // `der(x) = 1`. The mass matrix is the identity, so the explicit derivative
+    // program and the implicit residual carry the same row; Solve emits both,
+    // and the reduced state-only system integrates the derivative program.
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
     model.artifacts.continuous.mass_matrix = solve::MassMatrix::Identity;
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(zero.clone());
+    // d(der(x))/dx = 0 — `der(x) = 1` is constant, so the state Jacobian the
+    // reduced system linearises against is exactly zero.
+    model.artifacts.continuous.full_jacobian_v = zero.clone();
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.solver_maps.names = vec!["x".to_string()];
     model.problem.solve_layout.solver_maps.name_to_idx = IndexMap::from([("x".to_string(), 0)]);
@@ -430,6 +438,11 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
     let (rhs, zero) = falling_ball_continuous_blocks();
 
     let mut model = solve::SolveModel::default();
+    // `der(x) = v`, `der(v) = -9.81`. Identity mass matrix, so the derivative
+    // program and the implicit residual carry the same two rows, and both rows
+    // read only states — the reduced state-only system integrates directly.
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_row_targets =
@@ -437,6 +450,21 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
     model.artifacts.continuous.mass_matrix = solve::MassMatrix::Identity;
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(zero.clone());
+    // Exact state Jacobian-vector product for `der(x) = v`, `der(v) = -9.81`:
+    // row 0 is `v`'s seed component, row 1 is zero.
+    model.artifacts.continuous.full_jacobian_v = scalar_program_block!(
+        vec![
+            vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_span!(),
+    );
     model.problem.solve_layout.state_scalar_count = 2;
     model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "v".to_string()];
     model.problem.solve_layout.solver_maps.name_to_idx =
@@ -444,6 +472,10 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
     model.problem.solve_layout.solver_maps.base_to_indices =
         IndexMap::from([("x".to_string(), vec![0]), ("v".to_string(), vec![1])]);
     model.problem.solve_layout.compiled_parameter_len = 2;
+    // The full-Jacobian seed spans `y ++ p`, so the variable layout has to
+    // declare both states and both parameter slots for the JVP above to be
+    // in bounds.
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 2);
     model.problem.solve_layout.pre_param_bindings = vec![
         solve::PreParamBinding {
             dest_p_index: 0,

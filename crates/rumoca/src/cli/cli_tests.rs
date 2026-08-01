@@ -750,3 +750,38 @@ fn simulation_failure_error_renders_the_code_prefix() {
         "[EX003] `k` is not a parameter of this model"
     );
 }
+
+/// `--solver` must offer exactly the solvers the rest of the pipeline runs.
+///
+/// The flag is validated by clap against its own value enum, while every
+/// free-text route (scenario `sim.solver`, `experiment(Solver=...)`) is
+/// validated by `rumoca_core::canonical_solver_name`. If the two lists drift, a
+/// name is accepted on one entry point and reported on the other — which is the
+/// split this wave removed.
+#[test]
+fn the_solver_flag_offers_exactly_the_solvers_the_tree_runs() {
+    let mut flag_values: Vec<String> = SimulateSolverMode::value_variants()
+        .iter()
+        .filter_map(|mode| {
+            clap::ValueEnum::to_possible_value(mode).map(|value| value.get_name().to_string())
+        })
+        .collect();
+    flag_values.sort();
+
+    let mut authority: Vec<String> = rumoca_core::SOLVER_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    authority.sort();
+
+    assert_eq!(
+        flag_values, authority,
+        "--solver values and rumoca_core::SOLVER_NAMES must name the same solvers"
+    );
+
+    // And each flag value round-trips through the authority unchanged.
+    for mode in SimulateSolverMode::value_variants() {
+        let label = mode.as_label();
+        assert_eq!(rumoca_core::canonical_solver_name(label), Ok(label));
+    }
+}

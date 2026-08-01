@@ -122,6 +122,49 @@ relocating semantics cannot be told apart from the divergence being fixed.
 Phase 1 does not fix event-semantics divergences; it removes the reason they
 have to be fixed twice. Fixing them is phase 2 work, on the one event loop.
 
+#### Acceptance Contract: the reduced state-only system
+
+Phase 2 deletes the Diffsol backend's general/implicit DAE construction, so the
+reduced state-only ODE becomes the only system a state-carrying model is
+integrated as. Per SPEC_0008 *Acceptance Contract Before Rejection*, the new
+rejection path ships with the shapes that stay legal:
+
+- [ ] `EX002` (`SimError::StateOnlyPathUnavailable`) rejects a state-carrying
+      model whose state-derivative rows read a solver coordinate that the
+      algebraic projection plan cannot produce, or that does not present one
+      derivative row per continuous state;
+      accepts (a) models with zero continuous states, which keep the no-state
+      runtime path, (b) models whose derivative rows read only continuous
+      states, and (c) models whose non-state reads are transitively produced by
+      the algebraic projection plan — including chains through several producer
+      rows, and including algebraic counts far above any MSL model's;
+      owned by `rumoca-solver-diffsol::bdf::require_state_only_bdf`, with the
+      rejection minted in `rumoca-solver-diffsol::error::StateOnlyRejection`
+      and bucketed by `rumoca-worker::failure_classification` at
+      `SimFailureStage::BackendBuild`;
+      evidence `rumoca-solver-diffsol/src/tests/state_path_integration.rs::state_only_bdf_accepts_projection_backed_derivative_dependencies`
+      (acceptance plus its ablation),
+      `::state_only_bdf_accepts_transitive_projection_dependencies` (chained
+      producers), and
+      `::simulate_rejects_an_unprojectable_derivative_dependency_by_name`
+      (the rejection reaches the caller by name).
+
+The rejection is deliberately *not* reachable from `SimulationSession`, which
+constructs its own problem and so bypasses the check; consolidating the session
+onto the same reduction is follow-on work, recorded on `FS-SIM-015`.
+
+**Fixture note.** Ten Diffsol unit tests previously exercised the
+general/implicit construction only because their `SolveModel` fixtures were
+under-specified: they set `implicit_rhs` but left `derivative_rhs` empty, so the
+eligibility walk saw zero derivative rows and routed them to the general path.
+Their edits add the `derivative_rhs` and `full_jacobian_v` rows Solve actually
+emits for those systems — the mass matrix is the identity in every one, so the
+derivative program is the same rows as the residual, and the added Jacobians are
+the exact JVPs (`der(x)=1` -> `0`; `der(x)=v, der(v)=-9.81` -> `[seed[1], 0]`;
+`der(x)=0` -> `0`). No assertion was weakened: the edits complete the fixtures
+towards the shape Solve emits, so each test now pins its original semantics on
+the path the model would really take.
+
 Composing work: the target/backend registry (#121) supplies the capability
 discovery the profile table above assumes, and declarative buffer starts (#119)
 remove the last initialization state a host would otherwise have to reach for

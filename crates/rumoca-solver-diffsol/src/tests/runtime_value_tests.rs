@@ -1,4 +1,8 @@
 use super::*;
+// `project_algebraics` over an `OdeModel` is the *no-state* path's projection
+// kernel (see `runtime::prepare_fixed_event_left_limit`), so these tests import
+// it directly from `rumoca-solver` rather than through the diffsol crate root.
+use rumoca_solver::project_algebraics;
 
 #[test]
 fn event_sample_replaces_near_duplicate_output_sample() {
@@ -734,6 +738,16 @@ fn simulate_seeds_algebraics_from_initial_residual_before_runtime_projection() {
         indexmap::IndexMap::from([("x".to_string(), 0), ("z".to_string(), 1)]);
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
+    // `der(x) = 0`: the explicit derivative program the reduced state-only
+    // system integrates. `z` stays algebraic and is recovered by the
+    // projection plan installed below.
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        scalar_program_block!(vec![zero_row()], fixture_span!()),
+    );
+    // d(der(x))/d(x, z) = 0, the exact state Jacobian-vector product for
+    // `der(x) = 0`. The reduced system derives its sparsity from this.
+    model.artifacts.continuous.full_jacobian_v =
+        scalar_program_block!(vec![zero_row()], fixture_span!());
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
         scalar_program_block!(vec![zero_row(), quadratic_algebraic_row()], fixture_span!()),
     );
@@ -902,6 +916,16 @@ fn simulate_records_algebraically_consistent_initial_sample() {
         indexmap::IndexMap::from([("x".to_string(), 0), ("z".to_string(), 1)]);
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
+    // `der(x) = 0`: the explicit derivative program the reduced state-only
+    // system integrates. `z` stays algebraic and is recovered by the
+    // projection plan installed below.
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        scalar_program_block!(vec![zero_row()], fixture_span!()),
+    );
+    // d(der(x))/d(x, z) = 0, the exact state Jacobian-vector product for
+    // `der(x) = 0`. The reduced system derives its sparsity from this.
+    model.artifacts.continuous.full_jacobian_v =
+        scalar_program_block!(vec![zero_row()], fixture_span!());
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
         scalar_program_block!(vec![zero_row(), z_zero_row()], fixture_span!()),
     );
@@ -947,6 +971,16 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["c[1]".to_string()];
+    // `der(x) = 0`: the explicit derivative program the reduced state-only
+    // system integrates. `z` stays algebraic and is recovered by the
+    // projection plan installed below.
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        scalar_program_block!(vec![zero_row()], fixture_span!()),
+    );
+    // d(der(x))/d(x, z) = 0, the exact state Jacobian-vector product for
+    // `der(x) = 0`. The reduced system derives its sparsity from this.
+    model.artifacts.continuous.full_jacobian_v =
+        scalar_program_block!(vec![zero_row()], fixture_span!());
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
         scalar_program_block!(vec![zero_row(), z_zero_row()], fixture_span!()),
     );
@@ -997,6 +1031,16 @@ fn simulate_seeds_initial_discrete_conditions_before_initial_residual() {
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
+    // `der(x) = 0`: the explicit derivative program the reduced state-only
+    // system integrates. `z` stays algebraic and is recovered by the
+    // projection plan installed below.
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        scalar_program_block!(vec![zero_row()], fixture_span!()),
+    );
+    // d(der(x))/d(x, z) = 0, the exact state Jacobian-vector product for
+    // `der(x) = 0`. The reduced system derives its sparsity from this.
+    model.artifacts.continuous.full_jacobian_v =
+        scalar_program_block!(vec![zero_row()], fixture_span!());
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
         scalar_program_block!(vec![zero_row(), z_plus_one()], fixture_span!()),
     );

@@ -17,7 +17,7 @@ from ._magic import (
 )
 
 Stage = Literal["ast", "flat", "dae", "solve"]
-Solver = Literal["auto", "rk-like", "bdf", "esdirk34", "trbdf2"] | str
+Solver = Literal["auto", "rk-like", "bdf"] | str
 Level = Literal["error", "warning", "note", "help"]
 ParamKind = Literal["tunable", "structural"]
 Input = float | tuple[Any, Any] | Callable[[float], float]

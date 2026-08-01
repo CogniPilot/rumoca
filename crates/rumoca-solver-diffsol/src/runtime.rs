@@ -4,7 +4,7 @@ use rumoca_solver::{
     NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
     ProjectedEventUpdateInput, RuntimeSolveError, apply_discrete_slot_values,
     build_sim_result_from_solve_model, first_no_state_root_crossing,
-    no_state_root_scan_step_ceiling, project_algebraics_and_detect_changes,
+    no_state_root_scan_step_ceiling, project_algebraics, project_algebraics_and_detect_changes,
     run_no_state_output_schedule, timeline::event_left_probe_time,
 };
 
