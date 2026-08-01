@@ -1,9 +1,17 @@
 use indexmap::IndexMap;
+use rumoca_ir_solve as solve;
 use rumoca_ir_solve::{
     ComputeBlock, LinearOp, ScalarProgramBlock, SolveLayout, SolveProblem, SolverNameIndexMaps,
 };
 
 use super::*;
+
+/// Build the ME component a test host drives, exactly as `simulate` does.
+fn test_backend(model: &solve::SolveModel, opts: &SimOptions) -> Rk45Backend {
+    let kernel = SolveMeKernel::instantiate(MeModelSource::new(model), &instance_config(opts))
+        .expect("fixture model should instantiate an ME component");
+    Rk45Backend::new(kernel, opts).expect("RK45 backend should initialize")
+}
 
 macro_rules! fixture_span {
     () => {
@@ -489,9 +497,8 @@ fn rk45_dense_root_localization_selects_earliest_crossing_and_state() {
         vec![root_threshold_row(1.08), root_threshold_row(1.05)],
         fixture_span!(),
     );
-    let runtime = SolveRuntime::new(&model).expect("root localization model should prepare");
-    let backend = Rk45Backend::new(
-        Rc::new(runtime),
+    let mut backend = test_backend(
+        &model,
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -500,8 +507,7 @@ fn rk45_dense_root_localization_selects_earliest_crossing_and_state() {
             rtol: 1.0e-10,
             ..Default::default()
         },
-    )
-    .expect("RK45 backend should initialize");
+    );
     let old_state = vec![1.0];
     let trial = backend
         .trial_step_from(0.0, &old_state, 0.1, None)
@@ -514,19 +520,19 @@ fn rk45_dense_root_localization_selects_earliest_crossing_and_state() {
     )
     .expect("accepted stages should build dense output");
     let old_roots = backend
-        .eval_root_conditions(0.0, &old_state)
+        .event_indicators_at(0.0, &old_state, None)
         .expect("left roots should evaluate");
     let new_roots = backend
-        .eval_root_conditions(0.1, &trial.y_next)
+        .event_indicators_at(0.1, &trial.y_next, None)
         .expect("right roots should evaluate");
     let crossings = [
-        RootCrossing {
+        MeIndicatorCrossing {
             index: 0,
-            post_relation_memory_value: 1.0,
+            post_indicator_value: 1.0,
         },
-        RootCrossing {
+        MeIndicatorCrossing {
             index: 1,
-            post_relation_memory_value: 1.0,
+            post_indicator_value: 1.0,
         },
     ];
 
@@ -917,16 +923,14 @@ fn runtime_contract_step_until_advances_rk45_backend() {
         LinearOp::Const { dst: 0, value: 2.0 },
         LinearOp::StoreOutput { src: 0 },
     ]]);
-    let model = SolveRuntime::new(&prepared).expect("valid runtime contract model should prepare");
-    let mut backend = Rk45Backend::new(
-        Rc::new(model),
+    let mut backend = test_backend(
+        &prepared,
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             dt: Some(0.01),
             ..Default::default()
         },
-    )
-    .expect("backend should build");
+    );
 
     backend.init().expect("init should succeed");
     let outcome = backend.step_until(0.1).expect("backend should step");
@@ -953,19 +957,17 @@ fn rk45_tiny_final_remainder_keeps_state_and_time_consistent() {
         LinearOp::Const { dst: 0, value: 2.0 },
         LinearOp::StoreOutput { src: 0 },
     ]]);
-    let runtime = Rc::new(SolveRuntime::new(&prepared).expect("runtime should prepare"));
     let start = 1.0;
     let target = start + 0.5 * MIN_STEP;
-    let mut backend = Rk45Backend::new(
-        runtime,
+    let mut backend = test_backend(
+        &prepared,
         &SimOptions {
             t_start: start,
             t_end: target,
             dt: Some(0.1),
             ..Default::default()
         },
-    )
-    .expect("backend should build");
+    );
     backend.init().expect("backend should initialize");
 
     backend

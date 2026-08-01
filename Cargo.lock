@@ -4869,7 +4869,6 @@ name = "rumoca-solver-rk45"
 version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
- "rumoca-eval-solve",
  "rumoca-ir-solve",
  "rumoca-solver",
  "thiserror 2.0.18",

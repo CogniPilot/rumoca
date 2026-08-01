@@ -2,19 +2,27 @@
 // boundary handling, and output sampling. split plan: move event handling and
 // dense-output/sample scheduling into focused solver modules.
 
-use std::{cell::RefCell, rc::Rc, time::Instant};
+//! The rk-like Model Exchange host.
+//!
+//! Per SPEC_0038 §Internal Solver Boundary this crate is an *integrator*: it
+//! owns the Dormand-Prince tableau, step control, dense output, and root
+//! localization, and reaches the model only through
+//! [`rumoca_solver::fmi_me::ModelExchangeKernel`]. It does not depend on
+//! `rumoca-ir-solve` or `rumoca-eval-solve` at all, so naming a Solve row,
+//! layout, opcode, event, or runtime object here does not compile.
+
+use std::time::Instant;
 
 use indexmap::IndexMap;
-use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    BackendState, EventActionOutcome, EventPreMode, EventUpdateRowFilter, InitialEventObservation,
-    ProjectedEventUpdateInput, ProjectedInitialEventInput, RootCrossing, RuntimeEventBoundary,
-    RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimResult,
-    SimSolverMode, SimTermination, SimulationBackend, SolveRuntime, SolveStopSchedule,
-    StepUntilOutcome, TimeoutBudget, TimeoutExceeded, clear_scheduled_root_relation_memory,
-    commit_pre_params_after_event_at, convert_variable_meta, filter_scheduled_root_crossings,
-    process_runtime_event_boundary, root_crossings_with_relation_memory, root_value_crossed,
-    runtime_event_horizon, runtime_values_changed, timeline,
+    BackendState, SimOptions, SimResult, SimSolverMode, SimTermination, SimulationBackend,
+    StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
+    fmi_me::{
+        MeError, MeEventCause, MeEventEntry, MeEventStop, MeIndicatorCrossing, MeInstanceConfig,
+        MeModelSource, MeObservation, MeOutputSeries, MeStepCompletion, MeTime,
+        ModelExchangeKernel, SolveMeKernel, event_indicator_crossed,
+    },
+    timeline,
 };
 
 mod dense_output;
@@ -30,10 +38,11 @@ use trace::{
     rk_eval_trace_enabled, trace_rk_eval_snapshot,
 };
 
+/// FMI `instanceName` for this host's component.
+pub(crate) const INSTANCE_NAME: &str = "rk-like";
+
 const MIN_STEP: f64 = 1.0e-12;
 const ROOT_LOCALIZATION_MAX_ITERS: usize = 64;
-const UPDATE_MAX_ITERS: usize = 32;
-const ALGEBRAIC_REFRESH_TOL: f64 = 1.0e-10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
@@ -79,9 +88,17 @@ impl From<TimeoutExceeded> for SimError {
     }
 }
 
-impl From<rumoca_eval_solve::EvalSolveError> for SimError {
-    fn from(value: rumoca_eval_solve::EvalSolveError) -> Self {
-        Self::SolveIr(value.to_string())
+impl From<MeError> for SimError {
+    fn from(value: MeError) -> Self {
+        match value {
+            MeError::NoContinuousStates => Self::EmptySystem,
+            MeError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
+            MeError::Evaluation { message } => Self::SolveIr(message),
+            MeError::NonFiniteDerivative { state_name } => Self::NonFiniteDerivative { state_name },
+            MeError::Contract { reason } => Self::RuntimeContract { reason },
+            MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
+            MeError::Allocation { context, entries } => Self::Allocation { context, entries },
+        }
     }
 }
 
@@ -101,27 +118,44 @@ enum SimulationSessionInner {
 }
 
 struct StateSession {
-    runtime: Rc<SolveRuntime>,
     backend: Rk45Backend,
     reset_snapshot: Rk45ResetSnapshot,
     input_values: IndexMap<String, f64>,
 }
 
+/// FMI instantiation arguments this host uses for every component it owns.
+fn instance_config(opts: &SimOptions) -> MeInstanceConfig {
+    MeInstanceConfig {
+        instance_name: INSTANCE_NAME,
+        tolerance: opts.atol.max(1.0e-12),
+        start_time: opts.t_start,
+        stop_time: opts.t_end,
+    }
+}
+
 impl SimulationSession {
-    pub fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
+    pub fn new<'a>(
+        model: impl Into<MeModelSource<'a>>,
+        opts: SimOptions,
+    ) -> Result<Self, SimError> {
         match opts.solver_mode {
             SimSolverMode::Auto | SimSolverMode::RkLike => {}
             requested => return Err(SimError::UnsupportedSolverMode { requested }),
         }
-        if model.state_scalar_count() == 0 {
-            return NoStateSession::new(model, opts).map(|session| Self {
-                inner: SimulationSessionInner::NoState(Box::new(session)),
-            });
+        let source = model.into();
+        match SolveMeKernel::instantiate(source, &instance_config(&opts)) {
+            // A model with no continuous states has no integrator to host;
+            // the component's zero-state path owns it instead.
+            Err(MeError::NoContinuousStates) => {
+                NoStateSession::new(source, opts).map(|session| Self {
+                    inner: SimulationSessionInner::NoState(Box::new(session)),
+                })
+            }
+            Err(error) => Err(error.into()),
+            Ok(kernel) => StateSession::new(kernel, &opts).map(|session| Self {
+                inner: SimulationSessionInner::State(Box::new(session)),
+            }),
         }
-        validate_explicit_solve_model(model)?;
-        StateSession::new(model, opts).map(|session| Self {
-            inner: SimulationSessionInner::State(Box::new(session)),
-        })
     }
 
     pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
@@ -132,10 +166,10 @@ impl SimulationSession {
     }
 
     pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
-        match &mut self.inner {
-            SimulationSessionInner::NoState(session) => session.set_inputs(inputs),
-            SimulationSessionInner::State(session) => session.set_inputs(inputs),
+        for (name, value) in inputs {
+            self.set_input(name, *value)?;
         }
+        Ok(())
     }
 
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
@@ -214,13 +248,11 @@ impl SimulationSession {
 }
 
 impl StateSession {
-    fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
-        let runtime = Rc::new(SolveRuntime::new(model)?);
-        let mut backend = Rk45Backend::new(Rc::clone(&runtime), &opts)?;
+    fn new(kernel: SolveMeKernel, opts: &SimOptions) -> Result<Self, SimError> {
+        let mut backend = Rk45Backend::new(kernel, opts)?;
         backend.init()?;
         let reset_snapshot = backend.reset_snapshot();
         Ok(Self {
-            runtime,
             backend,
             reset_snapshot,
             input_values: IndexMap::new(),
@@ -228,28 +260,12 @@ impl StateSession {
     }
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
-        let Some(param_idx) = self
-            .runtime
-            .model
-            .problem
-            .solve_layout
-            .input_parameter_index(name)
-        else {
+        let Some(reference) = self.backend.kernel.value_reference(name) else {
             return Err(SimError::SolveIr(format!("unknown input '{name}'")));
         };
         self.input_values.insert(name.to_string(), value);
-        if let Some(slot) = self.backend.params.get_mut(param_idx) {
-            *slot = value;
-        }
-        self.backend.clear_runtime_caches();
-        self.backend.commit_delay_point()?;
-        Ok(())
-    }
-
-    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimError> {
-        for (name, value) in inputs {
-            self.set_input(name, *value)?;
-        }
+        self.backend.sync_kernel_to_current_point()?;
+        self.backend.kernel.set_float64(&[reference], &[value])?;
         Ok(())
     }
 
@@ -258,7 +274,8 @@ impl StateSession {
         if target_time <= self.backend.time {
             return Ok(());
         }
-        advance_backend_to(&mut self.backend, target_time)
+        advance_backend_to(&mut self.backend, target_time)?;
+        self.backend.sync_kernel_to_current_point()
     }
 
     fn ensure_end_time(&mut self, target_time: f64) {
@@ -267,8 +284,9 @@ impl StateSession {
         }
         let t_end = target_time + (target_time - self.backend.time).max(1.0);
         self.backend.t_end = t_end;
-        self.backend.stop_schedule =
-            SolveStopSchedule::new(&self.runtime.model.problem, self.backend.time, t_end);
+        self.backend
+            .kernel
+            .extend_stop_time(self.backend.time, t_end);
     }
 
     fn step(&mut self, dt: f64) -> Result<(), SimError> {
@@ -281,10 +299,7 @@ impl StateSession {
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         self.backend
-            .reset_to_snapshot(&self.reset_snapshot, t_start);
-        self.runtime.reset_delay_history();
-        self.backend.commit_delay_point()?;
-        Ok(())
+            .reset_to_snapshot(&self.reset_snapshot, t_start)
     }
 
     fn time(&self) -> f64 {
@@ -295,19 +310,21 @@ impl StateSession {
         if let Some(value) = self.input_values.get(name).copied() {
             return Ok(Some(value));
         }
-        let solver_y = self.backend.current_solver_y()?;
+        let observation = self.backend.kernel.observe()?;
         let Some(idx) = self
-            .runtime
-            .model
-            .visible_names
+            .backend
+            .kernel
+            .model_description()
+            .output_names
             .iter()
             .position(|visible| visible == name)
         else {
             return Ok(None);
         };
-        let values =
-            self.runtime
-                .visible_values(&solver_y, &self.backend.params, self.backend.time)?;
+        let mut values = Vec::new();
+        self.backend
+            .kernel
+            .get_outputs(&observation, self.backend.time, &mut values)?;
         values.get(idx).copied().map(Some).ok_or_else(|| {
             SimError::RuntimeContract {
                 reason: format!(
@@ -337,19 +354,23 @@ impl StateSession {
     }
 
     fn input_names(&self) -> &[String] {
-        self.runtime.model.problem.solve_layout.input_scalar_names()
+        self.backend.kernel.model_description().input_names
     }
 
     fn variable_names(&self) -> &[String] {
-        &self.runtime.model.visible_names
+        self.backend.kernel.model_description().output_names
     }
 
     fn session_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
-        let solver_y = self.backend.current_solver_y()?;
-        let visible_values =
-            self.runtime
-                .visible_values(&solver_y, &self.backend.params, self.backend.time)?;
-        let mut values = collect_visible_values(&self.runtime.model.visible_names, visible_values)?;
+        let observation = self.backend.kernel.observe()?;
+        let mut visible_values = Vec::new();
+        self.backend
+            .kernel
+            .get_outputs(&observation, self.backend.time, &mut visible_values)?;
+        let mut values = collect_visible_values(
+            self.backend.kernel.model_description().output_names,
+            visible_values,
+        )?;
         values.extend(
             self.input_values
                 .iter()
@@ -360,21 +381,27 @@ impl StateSession {
 }
 
 fn record_rk_initial_samples(
-    model: &SolveRuntime,
-    backend: &Rk45Backend,
-    data: &mut [Vec<f64>],
+    backend: &mut Rk45Backend,
+    series: &mut MeOutputSeries,
     times: &mut Vec<f64>,
     t_start: f64,
 ) -> Result<(), SimError> {
-    if backend.initial_observations.is_empty() {
-        let solver_y = backend.current_solver_y()?;
-        model.record_visible_sample(data, &solver_y, &backend.params, t_start)?;
+    if backend.kernel.initial_observations().is_empty() {
+        backend.sync_kernel_to_current_point()?;
+        let observation = backend.kernel.observe()?;
+        backend
+            .kernel
+            .record_outputs(&observation, t_start, series)?;
         times.push(t_start);
         return Ok(());
     }
-    for observation in &backend.initial_observations {
-        model.record_visible_sample(data, &observation.y, &observation.p, observation.t)?;
-        times.push(observation.t);
+    for index in 0..backend.kernel.initial_observations().len() {
+        let observation: &MeObservation = &backend.kernel.initial_observations()[index];
+        let sample_t = observation.time();
+        backend
+            .kernel
+            .record_outputs(observation, sample_t, series)?;
+        times.push(sample_t);
     }
     Ok(())
 }
@@ -395,56 +422,18 @@ fn collect_visible_values(
     Ok(names.iter().cloned().zip(values).collect())
 }
 
-impl From<RuntimeSolveError> for SimError {
-    fn from(value: RuntimeSolveError) -> Self {
-        match value {
-            RuntimeSolveError::SolveIr { message, span } => {
-                let message = match span {
-                    Some(span) => format!("{message} @ {span:?}"),
-                    None => message,
-                };
-                Self::SolveIr(message)
-            }
-            RuntimeSolveError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
-            unassignable @ RuntimeSolveError::RefreshTargetUnassignable { .. } => {
-                Self::SolveIr(unassignable.to_string())
-            }
-            RuntimeSolveError::NonFiniteDerivative { state_name } => {
-                Self::NonFiniteDerivative { state_name }
-            }
-            non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
-                Self::SolveIr(non_finite.to_string())
-            }
-        }
-    }
-}
-
-struct Rk45Backend {
-    model: Rc<SolveRuntime>,
-    time: f64,
-    state: Vec<f64>,
-    params: Vec<f64>,
+/// The Dormand-Prince host driving one ME component.
+pub(crate) struct Rk45Backend {
+    pub(crate) kernel: SolveMeKernel,
+    pub(crate) time: f64,
+    pub(crate) state: Vec<f64>,
     atol: f64,
     state_atol: Vec<f64>,
     rtol: f64,
-    next_step: f64,
+    pub(crate) next_step: f64,
     t_end: f64,
     budget: TimeoutBudget,
-    stop_schedule: SolveStopSchedule,
-    termination: Option<SimTermination>,
-    pending_root_crossings: Vec<RootCrossing>,
-    pending_event_pre_y: Option<Vec<f64>>,
-    pending_event_pre_p: Option<Vec<f64>>,
-    boundary_event_pre_y: Option<Vec<f64>>,
-    boundary_event_pre_p: Option<Vec<f64>>,
-    post_event_eval_time: Option<f64>,
-    solver_y_guess: RefCell<Vec<f64>>,
-    delay_params_scratch: RefCell<Vec<f64>>,
-    delay_solver_y_scratch: RefCell<Vec<f64>>,
-    derivative_cache: RefCell<Option<CachedDerivative>>,
-    root_cache: RefCell<Option<CachedRootConditions>>,
-    initial_observations: Vec<InitialEventObservation>,
-    delay_step_limit: Option<f64>,
+    pub(crate) termination: Option<SimTermination>,
 }
 
 struct TrialStep {
@@ -459,23 +448,6 @@ struct StepAcceptanceContext<'a> {
     event_boundary: Option<f64>,
 }
 
-struct CachedDerivative {
-    time: f64,
-    state: Vec<f64>,
-    derivative: Vec<f64>,
-}
-
-struct CachedRootConditions {
-    time: f64,
-    state: Vec<f64>,
-    values: Vec<f64>,
-}
-
-struct EventStop {
-    time: f64,
-    event: Option<RuntimeEventStop>,
-}
-
 #[derive(Clone)]
 struct LocatedRoot {
     time: f64,
@@ -487,48 +459,46 @@ struct LocatedRoot {
 struct RootLocalizationInput<'a> {
     old_roots: &'a [f64],
     new_roots: &'a [f64],
-    crossings: &'a [RootCrossing],
+    crossings: &'a [MeIndicatorCrossing],
     event_boundary: Option<f64>,
 }
 
-pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResult, SimError> {
+pub fn simulate<'a>(
+    model: impl Into<MeModelSource<'a>>,
+    opts: &SimOptions,
+) -> Result<SimResult, SimError> {
     reset_rk_eval_trace();
-    rumoca_eval_solve::reset_solve_row_eval_trace();
     match opts.solver_mode {
         SimSolverMode::Auto | SimSolverMode::RkLike => {}
         requested => return Err(SimError::UnsupportedSolverMode { requested }),
     }
 
-    validate_explicit_solve_model(model)?;
-    let model = Rc::new(SolveRuntime::new(model)?);
+    let kernel = SolveMeKernel::instantiate(model.into(), &instance_config(opts))?;
     let sample_dt = default_output_dt(opts);
     let sample_times = timeline::try_build_output_times(opts.t_start, opts.t_end, sample_dt)
         .map_err(|error| SimError::RuntimeContract {
             reason: error.to_string(),
         })?;
     let mut times = checked_vec_with_capacity(sample_times.len(), "RK45 output times")?;
-    let mut backend = Rk45Backend::new(Rc::clone(&model), opts)?;
+    let mut backend = Rk45Backend::new(kernel, opts)?;
     backend.init()?;
-    let mut data =
-        checked_vec_with_capacity(model.model.visible_names.len(), "RK45 output series")?;
-    for _ in &model.model.visible_names {
-        data.push(checked_vec_with_capacity(
-            sample_times.len(),
-            "RK45 output samples",
-        )?);
-    }
-    record_rk_initial_samples(&model, &backend, &mut data, &mut times, opts.t_start)?;
+    let output_count = backend.kernel.model_description().output_names.len();
+    let mut series = MeOutputSeries::with_capacity(output_count, sample_times.len())?;
+    record_rk_initial_samples(&mut backend, &mut series, &mut times, opts.t_start)?;
 
     for &target_t in sample_times.iter().skip(1) {
         advance_backend_to(&mut backend, target_t)?;
-        let solver_y = backend.current_solver_y()?;
+        backend.sync_kernel_to_current_point()?;
+        let observation = backend.kernel.observe()?;
         let sample_t = backend.time;
         if !times
             .last()
             .copied()
             .is_some_and(|last_t| time_match_with_tol(last_t, sample_t))
         {
-            model.record_visible_sample(&mut data, &solver_y, &backend.params, sample_t)?;
+            backend
+                .kernel
+                .record_outputs(&observation, sample_t, &mut series)?;
             times.push(sample_t);
         }
         if backend.termination.is_some() {
@@ -536,43 +506,20 @@ pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResul
         }
     }
 
-    trace_rk_eval_snapshot("rk-like");
-    rumoca_eval_solve::trace_solve_row_eval_snapshot("rk-like");
+    trace_rk_eval_snapshot(INSTANCE_NAME);
+    backend.kernel.terminate()?;
+    let description = backend.kernel.model_description();
+    let names = description.output_names.to_vec();
+    let n_states = description.continuous_state_count;
+    let variable_meta = description.output_meta.to_vec();
     Ok(SimResult {
         times,
-        names: model.model.visible_names.clone(),
-        data,
-        n_states: model.state_count,
-        variable_meta: convert_variable_meta(&model.model.variable_meta),
+        names,
+        data: series.into_columns(),
+        n_states,
+        variable_meta,
         termination: backend.termination,
     })
-}
-
-fn validate_explicit_solve_model(model: &solve::SolveModel) -> Result<(), SimError> {
-    let layout = &model.problem.solve_layout;
-    if layout.state_scalar_count == 0 {
-        return Err(SimError::EmptySystem);
-    }
-    if model.initial_y.len() != model.solver_scalar_count() {
-        return Err(SimError::SolveIr(format!(
-            "initial vector length {} does not match solver layout {}",
-            model.initial_y.len(),
-            model.solver_scalar_count()
-        )));
-    }
-    let derivative_rhs_len = model
-        .problem
-        .continuous
-        .derivative_rhs
-        .len()
-        .map_err(|err| SimError::SolveIr(err.to_string()))?;
-    if derivative_rhs_len != layout.state_scalar_count {
-        return Err(SimError::SolveIr(format!(
-            "derivative RHS has {} rows for {} states",
-            derivative_rhs_len, layout.state_scalar_count
-        )));
-    }
-    Ok(())
 }
 
 fn checked_vec_with_capacity<T>(
@@ -672,242 +619,117 @@ fn roots_are_simultaneous(first: &LocatedRoot, candidate: &LocatedRoot) -> bool 
 }
 
 impl Rk45Backend {
-    fn new(model: Rc<SolveRuntime>, opts: &SimOptions) -> Result<Self, SimError> {
-        let state = model.model.initial_y[..model.state_count].to_vec();
+    fn new(kernel: SolveMeKernel, opts: &SimOptions) -> Result<Self, SimError> {
+        let state_count = kernel.model_description().continuous_state_count;
+        let mut state = vec![0.0; state_count];
+        kernel.get_continuous_states(&mut state)?;
         let next_step = default_step_size(opts);
         if !next_step.is_finite() || next_step <= 0.0 {
             return Err(SimError::StepSizeUnderflow {
                 target_t: opts.t_end,
             });
         }
+        let atol = opts.atol.max(1.0e-12);
+        let mut nominals = vec![0.0; state_count];
+        kernel.get_nominals_of_continuous_states(&mut nominals)?;
         Ok(Self {
-            model: Rc::clone(&model),
+            kernel,
             time: opts.t_start,
             state,
-            params: model.model.parameters.clone(),
-            atol: opts.atol.max(1.0e-12),
-            state_atol: (0..model.state_count)
-                .map(|index| {
-                    (opts.atol.max(1.0e-12) * model.model.solver_variable_scale(index))
-                        .min(f64::MAX)
-                })
+            atol,
+            state_atol: nominals
+                .into_iter()
+                .map(|scale| (atol * scale).min(f64::MAX))
                 .collect(),
             rtol: opts.rtol.max(1.0e-12),
             next_step,
             t_end: opts.t_end,
             budget: TimeoutBudget::new(opts.max_wall_seconds),
-            stop_schedule: SolveStopSchedule::new(&model.model.problem, opts.t_start, opts.t_end),
             termination: None,
-            pending_root_crossings: Vec::new(),
-            pending_event_pre_y: None,
-            pending_event_pre_p: None,
-            boundary_event_pre_y: None,
-            boundary_event_pre_p: None,
-            post_event_eval_time: None,
-            solver_y_guess: RefCell::new(model.model.initial_y.clone()),
-            delay_params_scratch: RefCell::new(model.model.parameters.clone()),
-            delay_solver_y_scratch: RefCell::new(model.model.initial_y.clone()),
-            derivative_cache: RefCell::new(None),
-            root_cache: RefCell::new(None),
-            initial_observations: Vec::new(),
-            delay_step_limit: None,
         })
     }
 
-    fn current_solver_y(&self) -> Result<Vec<f64>, SimError> {
-        self.solver_y_at_time(self.public_time_eval_time(self.time))
-    }
-
-    fn solver_y_at_time(&self, time: f64) -> Result<Vec<f64>, SimError> {
-        self.with_delay_evaluation_params(time, &self.state, |params| {
-            let mut guess = self.solver_y_guess.borrow_mut();
-            self.model
-                .full_solver_y_with_guess(
-                    time,
-                    &self.state,
-                    params,
-                    &mut guess,
-                    ALGEBRAIC_REFRESH_TOL,
-                    UPDATE_MAX_ITERS,
-                )
-                .map(|()| guess.clone())
-                .map_err(Into::into)
-        })?
-    }
-
-    fn copy_state_from_solver_y(&mut self, solver_y: &[f64]) {
-        for (dst, src) in self.state.iter_mut().zip(solver_y.iter().copied()) {
-            *dst = src;
-        }
-    }
-
-    fn project_accepted_state(&mut self, time: f64, state: &mut [f64]) -> Result<bool, SimError> {
-        let mut solver_y = self.model.full_solver_y(
-            time,
-            state,
-            &self.params,
-            ALGEBRAIC_REFRESH_TOL,
-            UPDATE_MAX_ITERS,
-        )?;
-        let changed =
-            self.model
-                .project_state_manifold(&mut solver_y, &self.params, time, self.atol)?;
-        state.copy_from_slice(&solver_y[..self.model.state_count]);
-        self.model.full_solver_y_with_guess(
-            time,
-            state,
-            &self.params,
-            &mut solver_y,
-            ALGEBRAIC_REFRESH_TOL,
-            UPDATE_MAX_ITERS,
-        )?;
-        *self.solver_y_guess.borrow_mut() = solver_y;
-        Ok(changed)
-    }
-
-    fn trial_step(&self, h: f64, event_boundary: Option<f64>) -> Result<TrialStep, SimError> {
-        self.trial_step_from(self.time, &self.state, h, event_boundary)
-    }
-
-    fn derivatives_at(&self, time: f64, state: &[f64]) -> Result<Vec<f64>, SimError> {
-        if let Some(derivative) = self.cached_derivative(time, state) {
-            return Ok(derivative);
-        }
-        let start = rk_eval_trace_enabled().then(Instant::now);
-        let result = self.with_delay_evaluation_params(time, state, |params| {
-            let mut guess = self.solver_y_guess.borrow_mut();
-            self.model
-                .eval_state_derivatives_with_guess(
-                    time,
-                    state,
-                    params,
-                    &mut guess,
-                    ALGEBRAIC_REFRESH_TOL,
-                    UPDATE_MAX_ITERS,
-                )
-                .map_err(Into::into)
-        })?;
-        if let Some(start) = start {
-            record_derivative_eval_trace(start);
-        }
-        result
-    }
-
-    fn cached_derivative(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
-        let cache = self.derivative_cache.borrow();
-        let cached = cache.as_ref()?;
-        if !time_match_with_tol(cached.time, time) || !state_values_match(&cached.state, state) {
-            return None;
-        }
-        Some(cached.derivative.clone())
-    }
-
-    fn cache_derivative(&self, time: f64, state: &[f64], derivative: Vec<f64>) {
-        *self.derivative_cache.borrow_mut() = Some(CachedDerivative {
-            time,
-            state: state.to_vec(),
-            derivative,
-        });
-    }
-
-    fn clear_derivative_cache(&self) {
-        *self.derivative_cache.borrow_mut() = None;
-    }
-
-    fn clear_runtime_caches(&self) {
-        self.clear_derivative_cache();
-        *self.root_cache.borrow_mut() = None;
-    }
-
-    fn with_delay_evaluation_params<R>(
-        &self,
-        time: f64,
-        state: &[f64],
-        f: impl FnOnce(&[f64]) -> R,
-    ) -> Result<R, SimError> {
-        if !self.model.has_delay_channels() {
-            return Ok(f(&self.params));
-        }
-        let mut params = self.delay_params_scratch.borrow_mut();
-        params.resize(self.params.len(), 0.0);
-        params.copy_from_slice(&self.params);
-        let mut solver_y = self.delay_solver_y_scratch.borrow_mut();
-        {
-            let guess = self.solver_y_guess.borrow();
-            solver_y.resize(guess.len(), 0.0);
-            solver_y.copy_from_slice(&guess);
-        }
-        if solver_y.len() < state.len() {
-            return Err(runtime_contract_violation(format!(
-                "delay evaluation solver vector has {} entries for {} state values",
-                solver_y.len(),
-                state.len()
-            )));
-        }
-        solver_y[..state.len()].copy_from_slice(state);
-        self.model
-            .refresh_delay_values(time, &solver_y, &mut params)?;
-        Ok(f(&params))
-    }
-
-    fn commit_delay_point(&mut self) -> Result<(), SimError> {
-        if !self.model.has_delay_channels() {
-            return Ok(());
-        }
-        let mut solver_y = self.solver_y_guess.borrow_mut();
-        if solver_y.len() < self.state.len() {
-            return Err(runtime_contract_violation(format!(
-                "delay commit solver vector has {} entries for {} state values",
-                solver_y.len(),
-                self.state.len()
-            )));
-        }
-        solver_y[..self.state.len()].copy_from_slice(&self.state);
-        self.delay_step_limit =
-            self.model
-                .refresh_delay_values(self.time, &solver_y, &mut self.params)?;
-        self.model.full_solver_y_with_guess(
-            self.time,
-            &self.state,
-            &self.params,
-            &mut solver_y,
-            ALGEBRAIC_REFRESH_TOL,
-            UPDATE_MAX_ITERS,
-        )?;
-        self.model
-            .commit_delay_history(self.time, &solver_y, &self.params)?;
+    /// Put the component at the host's accepted point.
+    ///
+    /// `fmi3SetTime` + `fmi3SetContinuousStates`: the ordinary FMI discipline
+    /// before reading variables or asking for the next event.
+    pub(crate) fn sync_kernel_to_current_point(&mut self) -> Result<(), SimError> {
+        self.kernel.set_time(MeTime::at(self.time));
+        self.kernel.set_continuous_states(&self.state)?;
         Ok(())
     }
 
+    fn project_accepted_state(&mut self, time: f64, state: &mut [f64]) -> Result<bool, SimError> {
+        self.kernel.set_time(MeTime::at(time));
+        Ok(self.kernel.project_continuous_states(state)?)
+    }
+
+    fn trial_step(&mut self, h: f64, event_boundary: Option<f64>) -> Result<TrialStep, SimError> {
+        let time = self.time;
+        let state = std::mem::take(&mut self.state);
+        let result = self.trial_step_from(time, &state, h, event_boundary);
+        self.state = state;
+        result
+    }
+
+    /// `fmi3SetTime` + `fmi3SetContinuousStates` +
+    /// `fmi3GetContinuousStateDerivatives` for one tableau stage.
+    fn derivatives_at(
+        &mut self,
+        time: f64,
+        state: &[f64],
+        event_boundary: Option<f64>,
+    ) -> Result<Vec<f64>, SimError> {
+        self.kernel.set_time(MeTime::new(time, event_boundary));
+        self.kernel.set_continuous_states(state)?;
+        let start = rk_eval_trace_enabled().then(Instant::now);
+        let mut derivatives = Vec::new();
+        self.kernel
+            .get_continuous_state_derivatives(&mut derivatives)?;
+        if let Some(start) = start {
+            record_derivative_eval_trace(start);
+        }
+        Ok(derivatives)
+    }
+
+    /// `fmi3SetTime` + `fmi3SetContinuousStates` + `fmi3GetEventIndicators`.
+    fn event_indicators_at(
+        &mut self,
+        time: f64,
+        state: &[f64],
+        event_boundary: Option<f64>,
+    ) -> Result<Vec<f64>, SimError> {
+        self.kernel.set_time(MeTime::new(time, event_boundary));
+        self.kernel.set_continuous_states(state)?;
+        let start = rk_eval_trace_enabled().then(Instant::now);
+        let mut indicators = Vec::new();
+        self.kernel.get_event_indicators(&mut indicators)?;
+        if let Some(start) = start {
+            record_root_eval_trace(start);
+        }
+        Ok(indicators)
+    }
+
     fn trial_step_from(
-        &self,
+        &mut self,
         time: f64,
         state: &[f64],
         h: f64,
         event_boundary: Option<f64>,
     ) -> Result<TrialStep, SimError> {
-        let k1 = self.derivatives_at(self.continuous_eval_time(time, event_boundary), state)?;
+        let k1 = self.derivatives_at(time, state, event_boundary)?;
         let y2 = combine_stage(state, h, &[(&k1, 1.0 / 5.0)])?;
-        let k2 = self.derivatives_at(
-            self.continuous_eval_time(time + h * (1.0 / 5.0), event_boundary),
-            &y2,
-        )?;
+        let k2 = self.derivatives_at(time + h * (1.0 / 5.0), &y2, event_boundary)?;
 
         let y3 = combine_stage(state, h, &[(&k1, 3.0 / 40.0), (&k2, 9.0 / 40.0)])?;
-        let k3 = self.derivatives_at(
-            self.continuous_eval_time(time + h * (3.0 / 10.0), event_boundary),
-            &y3,
-        )?;
+        let k3 = self.derivatives_at(time + h * (3.0 / 10.0), &y3, event_boundary)?;
 
         let y4 = combine_stage(
             state,
             h,
             &[(&k1, 44.0 / 45.0), (&k2, -56.0 / 15.0), (&k3, 32.0 / 9.0)],
         )?;
-        let k4 = self.derivatives_at(
-            self.continuous_eval_time(time + h * (4.0 / 5.0), event_boundary),
-            &y4,
-        )?;
+        let k4 = self.derivatives_at(time + h * (4.0 / 5.0), &y4, event_boundary)?;
 
         let y5 = combine_stage(
             state,
@@ -919,10 +741,7 @@ impl Rk45Backend {
                 (&k4, -212.0 / 729.0),
             ],
         )?;
-        let k5 = self.derivatives_at(
-            self.continuous_eval_time(time + h * (8.0 / 9.0), event_boundary),
-            &y5,
-        )?;
+        let k5 = self.derivatives_at(time + h * (8.0 / 9.0), &y5, event_boundary)?;
 
         let y6 = combine_stage(
             state,
@@ -935,7 +754,7 @@ impl Rk45Backend {
                 (&k5, -5103.0 / 18656.0),
             ],
         )?;
-        let k6 = self.derivatives_at(self.continuous_eval_time(time + h, event_boundary), &y6)?;
+        let k6 = self.derivatives_at(time + h, &y6, event_boundary)?;
 
         let y5th = combine_stage(
             state,
@@ -950,7 +769,7 @@ impl Rk45Backend {
         )?;
 
         let y7 = y5th.clone();
-        let k7 = self.derivatives_at(self.continuous_eval_time(time + h, event_boundary), &y7)?;
+        let k7 = self.derivatives_at(time + h, &y7, event_boundary)?;
         let y4th = combine_stage(
             state,
             h,
@@ -981,7 +800,7 @@ impl Rk45Backend {
         }
         while self.time < target_t {
             let stop = self.next_event_stop(target_t)?;
-            let event_boundary = stop.event.is_some().then_some(stop.time);
+            let event_boundary = stop.is_event.then_some(stop.time);
             let outcome = self.advance_continuous_to(stop.time, event_boundary)?;
             match self.process_event_boundary(outcome, &stop, target_t)? {
                 Some(StepUntilOutcome::Finished) => return Ok(StepUntilOutcome::Finished),
@@ -995,16 +814,14 @@ impl Rk45Backend {
     fn process_event_boundary(
         &mut self,
         outcome: StepUntilOutcome,
-        stop: &EventStop,
+        stop: &MeEventStop,
         target_t: f64,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
         if matches!(outcome, StepUntilOutcome::RootFound { .. }) {
             return self.apply_events_and_continue_or_finish(self.time, target_t);
         }
-        if let Some(event) = stop.event
-            && time_match_with_tol(self.time, stop.time)
-        {
-            return self.apply_scheduled_events_and_continue_or_finish(stop.time, target_t, event);
+        if stop.is_event && time_match_with_tol(self.time, stop.time) {
+            return self.apply_scheduled_events_and_continue_or_finish(stop.time, target_t);
         }
         Ok(None)
     }
@@ -1018,11 +835,13 @@ impl Rk45Backend {
             self.budget.check()?;
             let old_t = self.time;
             let old_state = self.state.clone();
-            let old_roots = self.eval_root_conditions(
-                self.continuous_eval_time(old_t, event_boundary),
-                &old_state,
+            let old_roots = self.event_indicators_at(old_t, &old_state, event_boundary)?;
+            let h = trial_step_size(
+                self.time,
+                target_t,
+                self.next_step,
+                self.kernel.max_step_size(),
             )?;
-            let h = trial_step_size(self.time, target_t, self.next_step, self.delay_step_limit)?;
             let trial = self.trial_step(h, event_boundary)?;
             let step_context = StepAcceptanceContext {
                 old_roots: &old_roots,
@@ -1056,22 +875,11 @@ impl Rk45Backend {
         }
         let new_t = (self.time + h).min(context.target_t);
         let mut projected_next = trial.y_next.clone();
-        let manifold_changed = self.project_accepted_state(new_t, &mut projected_next)?;
-        let new_roots = self.eval_root_conditions(
-            self.continuous_eval_time(new_t, context.event_boundary),
-            &projected_next,
-        )?;
-        let mut crossings = root_crossings_with_relation_memory(
-            context.old_roots,
-            &new_roots,
-            self.atol,
-            &self.model.model.problem.events.root_relation_memory_targets,
-            &self.params,
-        );
-        filter_scheduled_root_crossings(
-            &mut crossings,
-            &self.model.model.problem.events.scheduled_root_conditions,
-        );
+        self.project_accepted_state(new_t, &mut projected_next)?;
+        let new_roots = self.event_indicators_at(new_t, &projected_next, context.event_boundary)?;
+        let mut crossings = Vec::new();
+        self.kernel
+            .event_indicator_crossings(context.old_roots, &new_roots, &mut crossings)?;
         if !crossings.is_empty() {
             let dense_output = Dopri5DenseOutput::new(
                 old_t,
@@ -1100,45 +908,42 @@ impl Rk45Backend {
                         .iter()
                         .map(|crossing| format!(
                             "{}->{:.0}",
-                            crossing.index, crossing.post_relation_memory_value
+                            crossing.index, crossing.post_indicator_value
                         ))
                         .collect::<Vec<_>>()
                         .join(",")
                 );
             }
-            self.pending_event_pre_y = Some(self.model.full_solver_y(
-                root.time,
-                &root.pre_state,
-                &self.params,
-                ALGEBRAIC_REFRESH_TOL,
-                UPDATE_MAX_ITERS,
-            )?);
-            self.pending_event_pre_p = Some(self.params.clone());
-            self.pending_root_crossings = simultaneous_crossings.clone();
+            // Latch `pre(v)` from the located left limit, then hand the
+            // component the crossings its relation buffers must record.
+            self.kernel.set_time(MeTime::at(root.time));
+            self.kernel.set_continuous_states(&root.pre_state)?;
+            self.kernel.capture_pre_event_state()?;
+            self.kernel.arm_state_event(&simultaneous_crossings)?;
             self.time = root.time;
             self.state = root.state;
-            self.post_event_eval_time = None;
-            self.clear_runtime_caches();
-            self.commit_delay_point()?;
+            self.kernel.set_time(MeTime::at(self.time));
+            self.kernel.set_continuous_states(&self.state)?;
+            self.kernel
+                .completed_integrator_step(MeStepCompletion::AtStateEvent)?;
             return Ok(Some(StepUntilOutcome::RootFound { t_root: root.time }));
         }
         self.time = new_t;
         self.state = projected_next;
-        self.post_event_eval_time = None;
-        if manifold_changed {
-            self.clear_derivative_cache();
-        } else {
-            self.cache_derivative(self.time, &self.state, trial.stages[6].clone());
-        }
-        self.commit_delay_point()?;
+        self.kernel.set_time(MeTime::at(self.time));
+        self.kernel.set_continuous_states(&self.state)?;
+        self.kernel
+            .completed_integrator_step(MeStepCompletion::Continuous {
+                accepted_derivatives: Some(&trial.stages[6]),
+            })?;
         Ok(None)
     }
 
     fn locate_step_roots(
-        &self,
+        &mut self,
         dense_output: &Dopri5DenseOutput,
         input: RootLocalizationInput<'_>,
-    ) -> Result<(LocatedRoot, Vec<RootCrossing>), SimError> {
+    ) -> Result<(LocatedRoot, Vec<MeIndicatorCrossing>), SimError> {
         let mut located = Vec::with_capacity(input.crossings.len());
         for crossing in input.crossings {
             let old_value = root_value_at(input.old_roots, crossing.index, "left dense endpoint")?;
@@ -1166,9 +971,9 @@ impl Rk45Backend {
     }
 
     fn locate_dense_root(
-        &self,
+        &mut self,
         dense_output: &Dopri5DenseOutput,
-        crossing: RootCrossing,
+        crossing: MeIndicatorCrossing,
         mut lo_value: f64,
         mut hi_value: f64,
         event_boundary: Option<f64>,
@@ -1186,16 +991,14 @@ impl Rk45Backend {
                 return located_dense_root(dense_output, hi_t, time_tolerance);
             }
             let candidate_state = dense_output.evaluate(candidate_t)?;
-            let candidate_roots = self.eval_root_conditions(
-                self.continuous_eval_time(candidate_t, event_boundary),
-                &candidate_state,
-            )?;
+            let candidate_roots =
+                self.event_indicators_at(candidate_t, &candidate_state, event_boundary)?;
             let candidate_value =
                 root_value_at(&candidate_roots, crossing.index, "dense root candidate")?;
             if used_secant && candidate_value.abs() <= self.atol {
                 return located_dense_root(dense_output, candidate_t, time_tolerance);
             }
-            if root_value_crossed(lo_value, candidate_value, self.atol) {
+            if event_indicator_crossed(lo_value, candidate_value, self.atol) {
                 hi_t = candidate_t;
                 hi_value = candidate_value;
             } else {
@@ -1207,107 +1010,9 @@ impl Rk45Backend {
         located_dense_root(dense_output, hi_t, time_tolerance)
     }
 
-    fn eval_root_conditions(&self, t: f64, state: &[f64]) -> Result<Vec<f64>, SimError> {
-        if let Some(values) = self.cached_root_conditions(t, state) {
-            return Ok(values);
-        }
-        let start = rk_eval_trace_enabled().then(Instant::now);
-        let result = self.with_delay_evaluation_params(t, state, |params| {
-            self.model
-                .eval_root_conditions(t, state, params, ALGEBRAIC_REFRESH_TOL, UPDATE_MAX_ITERS)
-                .inspect(|values| {
-                    self.cache_root_conditions(t, state, values);
-                })
-                .map_err(Into::into)
-        })?;
-        if let Some(start) = start {
-            record_root_eval_trace(start);
-        }
-        result
-    }
-
-    fn cached_root_conditions(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
-        let cache = self.root_cache.borrow();
-        let cached = cache.as_ref()?;
-        if !time_match_with_tol(cached.time, time) || !state_values_match(&cached.state, state) {
-            return None;
-        }
-        Some(cached.values.clone())
-    }
-
-    fn cache_root_conditions(&self, time: f64, state: &[f64], values: &[f64]) {
-        *self.root_cache.borrow_mut() = Some(CachedRootConditions {
-            time,
-            state: state.to_vec(),
-            values: values.to_vec(),
-        });
-    }
-
-    fn next_event_stop(&mut self, target_t: f64) -> Result<EventStop, SimError> {
-        let solver_y = self.current_solver_y()?;
-        let (time, event) = self.model.next_runtime_event_stop(
-            &solver_y,
-            &self.params,
-            &mut self.stop_schedule,
-            self.time,
-            target_t,
-        )?;
-        Ok(EventStop { time, event })
-    }
-
-    fn apply_discrete_event_updates(
-        &mut self,
-        event_time: f64,
-        _event: RuntimeEventStop,
-    ) -> Result<(), SimError> {
-        let event_entry_y = self
-            .pending_event_pre_y
-            .take()
-            .map(Ok)
-            .unwrap_or_else(|| self.current_solver_y())?;
-        let event_entry_p = self
-            .pending_event_pre_p
-            .take()
-            .unwrap_or_else(|| self.params.clone());
-        let mut solver_y = self.current_solver_y()?;
-        let root_overrides = self
-            .pending_root_crossings
-            .drain(..)
-            .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
-            .collect::<Vec<_>>();
-        let runtime = Rc::clone(&self.model);
-        let projection_runtime = Rc::clone(&runtime);
-        let state_count = runtime.state_count;
-        let tol = self.atol;
-        let outcome = runtime.apply_projected_event_update(
-            ProjectedEventUpdateInput {
-                y: &mut solver_y,
-                p: &mut self.params,
-                t: event_time,
-                tol,
-                event_pre_y: &event_entry_y,
-                event_pre_p: &event_entry_p,
-                max_iters: UPDATE_MAX_ITERS,
-                row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &root_overrides,
-            },
-            move |y, p| {
-                project_rk_algebraics(&projection_runtime, y, p, event_time, state_count, tol)
-            },
-        )?;
-        self.copy_state_from_solver_y(&solver_y);
-        let post_event_y = self.current_solver_y()?;
-        commit_pre_params_after_event_at(
-            &self.model.model,
-            &post_event_y,
-            &mut self.params,
-            Some(event_time),
-            self.atol,
-        );
-        self.commit_delay_point()?;
-        self.apply_event_action_outcome(outcome, event_time)?;
-        self.clear_runtime_caches();
-        Ok(())
+    fn next_event_stop(&mut self, target_t: f64) -> Result<MeEventStop, SimError> {
+        self.sync_kernel_to_current_point()?;
+        Ok(self.kernel.next_event_stop(target_t)?)
     }
 
     fn apply_events_and_continue_or_finish(
@@ -1315,43 +1020,48 @@ impl Rk45Backend {
         event_time: f64,
         target_t: f64,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
-        process_runtime_event_boundary(
-            RuntimeEventBoundary {
-                event_t: event_time,
-                horizon_t: event_time.min(target_t),
-                tolerance: self.atol.max(1.0e-10),
-                event: RuntimeEventStop::static_event(EventPreMode::EventEntry),
-            },
-            self,
-        )?;
-        Ok(Some(
-            self.termination
-                .as_ref()
-                .map_or(StepUntilOutcome::InternalStep, |_| {
-                    StepUntilOutcome::Finished
-                }),
-        ))
+        self.sync_kernel_to_current_point()?;
+        self.kernel.enter_event_mode(MeEventEntry {
+            cause: MeEventCause::StateEvent,
+            event_time,
+            horizon: target_t,
+        })?;
+        self.apply_event_mode_and_continue_or_finish()
     }
 
     fn apply_scheduled_events_and_continue_or_finish(
         &mut self,
         event_time: f64,
         target_t: f64,
-        event: RuntimeEventStop,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
         self.time = event_time.max(self.time);
-        let outcome = process_runtime_event_boundary(
-            RuntimeEventBoundary {
-                event_t: event_time,
-                horizon_t: runtime_event_horizon(event, target_t, self.t_end),
-                tolerance: self.atol.max(1.0e-10),
-                event,
-            },
-            self,
-        )?;
-        self.post_event_eval_time = outcome.right_limit_t;
-        self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
-        self.clear_runtime_caches();
+        self.sync_kernel_to_current_point()?;
+        self.kernel.enter_event_mode(MeEventEntry {
+            cause: MeEventCause::TimeEvent,
+            event_time,
+            horizon: target_t,
+        })?;
+        self.apply_event_mode_and_continue_or_finish()
+    }
+
+    /// The FMI 3 discrete-state iteration: call `fmi3UpdateDiscreteStates`
+    /// until the component stops asking, then re-read the continuous states
+    /// it reports as changed.
+    fn apply_event_mode_and_continue_or_finish(
+        &mut self,
+    ) -> Result<Option<StepUntilOutcome>, SimError> {
+        loop {
+            let discrete = self.kernel.update_discrete_states()?;
+            if discrete.values_of_continuous_states_changed {
+                self.kernel.get_continuous_states(&mut self.state)?;
+            }
+            if let Some(termination) = discrete.terminate_simulation {
+                self.termination = Some(termination);
+            }
+            if !discrete.discrete_states_need_update {
+                break;
+            }
+        }
         Ok(Some(
             self.termination
                 .as_ref()
@@ -1360,110 +1070,22 @@ impl Rk45Backend {
                 }),
         ))
     }
-
-    fn apply_event_action_outcome(
-        &mut self,
-        outcome: EventActionOutcome,
-        event_time: f64,
-    ) -> Result<(), SimError> {
-        match outcome {
-            EventActionOutcome::Continue => Ok(()),
-            EventActionOutcome::AssertionFailed { time, message } => {
-                Err(SimError::AssertionFailed {
-                    time: if time.is_finite() { time } else { event_time },
-                    message,
-                })
-            }
-            EventActionOutcome::Terminated { time, message } => {
-                self.termination = Some(SimTermination {
-                    time: if time.is_finite() { time } else { event_time },
-                    message,
-                });
-                Ok(())
-            }
-        }
-    }
-
-    fn public_time_eval_time(&self, time: f64) -> f64 {
-        match self.post_event_eval_time {
-            Some(eval_time) if time_match_with_tol(time, self.time) => eval_time,
-            _ => time,
-        }
-    }
-
-    fn continuous_eval_time(&self, time: f64, event_boundary: Option<f64>) -> f64 {
-        match event_boundary {
-            Some(boundary) if time >= boundary => {
-                timeline::event_left_probe_time(boundary, self.atol)
-            }
-            _ => self.public_time_eval_time(time),
-        }
-    }
 }
 
 impl SimulationBackend for Rk45Backend {
+    type Error = SimError;
+
     fn init(&mut self) -> Result<(), Self::Error> {
-        self.model.initialize_delay_history(
-            self.time,
-            &self.model.model.initial_y,
-            &mut self.params,
-        )?;
-        self.model.set_initial_event_flag(&mut self.params, true);
-        let startup_event_pre_y = self.current_solver_y()?;
-        let startup_event_pre_p = self.params.clone();
-        let mut solver_y = self.current_solver_y()?;
-        self.model.settle_initialization_system(
-            &mut solver_y,
-            &mut self.params,
-            self.time,
-            self.atol,
-            UPDATE_MAX_ITERS,
-        )?;
-        project_rk_algebraics(
-            self.model.as_ref(),
-            &mut solver_y,
-            &self.params,
-            self.time,
-            self.model.state_count,
-            self.atol,
-        )?;
-        self.copy_state_from_solver_y(&solver_y);
-        self.model.update_relation_memory_from_state(
-            self.time,
-            &self.state,
-            &mut self.params,
-            self.atol,
-            UPDATE_MAX_ITERS,
-        )?;
-        let dynamic_event =
-            self.model
-                .current_dynamic_time_event_stop(&solver_y, &self.params, self.time)?;
-        let runtime = Rc::clone(&self.model);
-        let projection_runtime = Rc::clone(&runtime);
-        let state_count = runtime.state_count;
-        let tol = self.atol;
-        let outcome = runtime.apply_projected_initial_event_boundary(
-            ProjectedInitialEventInput {
-                y: &mut solver_y,
-                p: &mut self.params,
-                t_start: self.time,
-                t_end: self.t_end,
-                tol,
-                event_pre_y: &startup_event_pre_y,
-                event_pre_p: &startup_event_pre_p,
-                max_iters: UPDATE_MAX_ITERS,
-                dynamic_event,
-                apply_without_initial_event: false,
-            },
-            move |y, p, t| project_rk_algebraics(&projection_runtime, y, p, t, state_count, tol),
-        )?;
-        self.copy_state_from_solver_y(&solver_y);
-        self.time = outcome.final_t;
-        self.initial_observations = outcome.observations;
-        self.apply_event_action_outcome(outcome.action, outcome.final_t)?;
-        self.commit_delay_point()?;
-        self.clear_all_scheduled_root_relation_memory()?;
-        self.clear_runtime_caches();
+        self.sync_kernel_to_current_point()?;
+        self.kernel.enter_initialization_mode()?;
+        self.kernel.exit_initialization_mode()?;
+        let discrete = self.kernel.update_discrete_states()?;
+        self.kernel.get_continuous_states(&mut self.state)?;
+        self.time = discrete.time;
+        if let Some(termination) = discrete.terminate_simulation {
+            self.termination = Some(termination);
+        }
+        self.kernel.enter_continuous_time_mode()?;
         Ok(())
     }
 
@@ -1473,144 +1095,6 @@ impl SimulationBackend for Rk45Backend {
 
     fn read_state(&self) -> BackendState {
         BackendState { t: self.time }
-    }
-}
-
-impl RuntimeEventBoundaryHandler for Rk45Backend {
-    type Error = SimError;
-
-    fn on_event_time(
-        &mut self,
-        event_time: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(), Self::Error> {
-        self.time = event_time.max(self.time);
-        if event.terminal
-            && let Some(index) = self
-                .model
-                .model
-                .problem
-                .solve_layout
-                .terminal_event_parameter_index
-            && let Some(slot) = self.params.get_mut(index)
-        {
-            *slot = 1.0;
-        }
-        let (event_pre_y, event_pre_p) = self.event_pre_for_update(event_time, event)?;
-        self.boundary_event_pre_y = Some(event_pre_y.clone());
-        self.boundary_event_pre_p = Some(event_pre_p.clone());
-        self.pending_event_pre_y = Some(event_pre_y);
-        self.pending_event_pre_p = Some(event_pre_p);
-        self.seed_scheduled_root_relation_overrides(event_time, event)?;
-        self.apply_discrete_event_updates(self.time, event)?;
-        Ok(())
-    }
-
-    fn on_event_right_limit(
-        &mut self,
-        right_time: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(), Self::Error> {
-        let event_pre_y = if let Some(event_pre_y) = self.boundary_event_pre_y.clone() {
-            event_pre_y
-        } else {
-            self.current_solver_y()?
-        };
-        let event_pre_p = self
-            .boundary_event_pre_p
-            .clone()
-            .unwrap_or_else(|| self.params.clone());
-        self.pending_event_pre_y = Some(event_pre_y);
-        self.pending_event_pre_p = Some(event_pre_p);
-        self.apply_discrete_event_updates(right_time, event)?;
-        self.post_event_eval_time = Some(right_time);
-        Ok(())
-    }
-}
-
-impl Rk45Backend {
-    fn event_pre_for_update(
-        &mut self,
-        event_time: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(Vec<f64>, Vec<f64>), SimError> {
-        if let Some(event_pre_y) = self.pending_event_pre_y.take() {
-            let event_pre_p = self
-                .pending_event_pre_p
-                .take()
-                .unwrap_or_else(|| self.params.clone());
-            return Ok((event_pre_y, event_pre_p));
-        }
-        let pre_time = match event.pre_mode {
-            EventPreMode::EventEntry | EventPreMode::Fixed => {
-                timeline::event_left_probe_time(event_time, self.atol)
-            }
-            EventPreMode::FollowCurrent => self.public_time_eval_time(self.time),
-        };
-        let event_pre_y = self.solver_y_at_time(pre_time)?;
-        let event_pre_p = self.params.clone();
-        Ok((event_pre_y, event_pre_p))
-    }
-
-    fn clear_event_entry_scheduled_root_relation_memory(
-        &mut self,
-        event_time: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(), SimError> {
-        if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
-            return Ok(());
-        }
-        let root_indices = self.scheduled_root_indices_at_time(event_time);
-        self.clear_scheduled_root_relation_memory(&root_indices)
-    }
-
-    fn clear_all_scheduled_root_relation_memory(&mut self) -> Result<(), SimError> {
-        let root_indices = self
-            .model
-            .model
-            .problem
-            .events
-            .scheduled_root_conditions
-            .iter()
-            .map(|root| root.root_index)
-            .collect::<Vec<_>>();
-        self.clear_scheduled_root_relation_memory(&root_indices)
-    }
-
-    fn clear_scheduled_root_relation_memory(
-        &mut self,
-        root_indices: &[usize],
-    ) -> Result<(), SimError> {
-        clear_scheduled_root_relation_memory(&self.model.model, root_indices, &mut self.params)
-            .map_err(runtime_contract_violation)
-    }
-
-    fn seed_scheduled_root_relation_overrides(
-        &mut self,
-        event_time: f64,
-        event: RuntimeEventStop,
-    ) -> Result<(), SimError> {
-        if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
-            return Ok(());
-        }
-        let scheduled_indices = self.scheduled_root_indices_at_time(event_time);
-        if scheduled_indices.is_empty() {
-            return Ok(());
-        }
-        for index in scheduled_indices {
-            self.pending_root_crossings.push(RootCrossing {
-                index,
-                post_relation_memory_value: 1.0,
-            });
-        }
-        Ok(())
-    }
-
-    fn scheduled_root_indices_at_time(&self, event_time: f64) -> Vec<usize> {
-        timeline::scheduled_root_indices_at_time(
-            &self.model.model.problem.events.scheduled_root_conditions,
-            event_time,
-        )
     }
 }
 
@@ -1634,31 +1118,8 @@ fn default_step_size(opts: &SimOptions) -> f64 {
         .unwrap_or(1.0e-3)
 }
 
-fn project_rk_algebraics(
-    runtime: &SolveRuntime,
-    y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    state_count: usize,
-    tol: f64,
-) -> Result<bool, RuntimeSolveError> {
-    let before = y.to_vec();
-    runtime.project_state_manifold(y, p, t, tol)?;
-    let state = y[..state_count.min(y.len())].to_vec();
-    let refreshed = runtime.full_solver_y(t, &state, p, ALGEBRAIC_REFRESH_TOL, UPDATE_MAX_ITERS)?;
-    y.copy_from_slice(&refreshed);
-    Ok(runtime_values_changed(&before, y, tol))
-}
-
 fn time_match_with_tol(a: f64, b: f64) -> bool {
     rumoca_solver::time_match_with_tol(a, b)
-}
-
-fn state_values_match(a: &[f64], b: &[f64]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits())
 }
 
 fn combine_stage(y: &[f64], h: f64, stages: &[(&[f64], f64)]) -> Result<Vec<f64>, SimError> {
