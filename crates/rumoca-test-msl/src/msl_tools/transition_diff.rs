@@ -1,3 +1,26 @@
+//! Diff two MSL certifications.
+//!
+//! # Cohort pinning (SPEC 0008 acceptance contract)
+//!
+//! Phase/sim transitions are only meaningful over models both runs carry, so
+//! this report also diffs the two runs' per-model band tables
+//! ([`super::band_table`]). A certification is **comparable** when its results
+//! directory yields a table that passes [`band_table::ensure_comparable`] —
+//! either a persisted `msl_band_table.json` or one derived on the fly from
+//! `sim_trace_comparison.json` + `msl_results.json`, so a directory written
+//! before the artifact existed is still diffable.
+//!
+//! When both sides are comparable the report carries ENTERED / LEFT /
+//! BAND-CHANGED per model, and every LEFT row names the reason the model is no
+//! longer compared. When either side is not comparable the report says so by
+//! name (`not_comparable` with the reason); it never falls back to an empty
+//! transition set, because "no models left the cohort" and "we could not tell"
+//! must not be spelled the same way.
+
+use super::band_table::{
+    self, BandChangedModel, BandTransitions, CoverageDroppedModel, EnteredModel, LeftModel,
+    load_or_derive_band_table,
+};
 use super::common::{MslPaths, get_git_commit, unix_timestamp_seconds, write_pretty_json};
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
@@ -123,12 +146,45 @@ struct PackagePhaseCountsDelta {
     sim_passed: isize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Whether the two certifications' cohorts could be compared at all.
+///
+/// `NotComparable` is a stated outcome, not a default: a report that could not
+/// read one side's band table says which side and why, instead of publishing an
+/// empty transition set that reads as "nothing moved".
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum BandTableComparison {
+    Comparable(Box<BandTransitions>),
+    NotComparable { detail: String },
+}
+
+impl BandTableComparison {
+    fn transitions(&self) -> Option<&BandTransitions> {
+        match self {
+            Self::Comparable(transitions) => Some(transitions),
+            Self::NotComparable { .. } => None,
+        }
+    }
+
+    fn summary_line(&self) -> String {
+        match self {
+            Self::Comparable(transitions) => transitions.summary_line(),
+            Self::NotComparable { detail } => {
+                format!("cohort: not comparable ({detail})")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct TransitionDiffReport {
     generated_at_unix_seconds: i64,
     git_commit: String,
     inputs: IndexMap<String, String>,
     counts: TransitionCounts,
+    /// Per-model cohort movement. Listed before the phase/sim sections because
+    /// a phase transition over a shifted cohort is not like-for-like.
+    band_transitions: BandTableComparison,
     new_models: Vec<String>,
     removed_models: Vec<String>,
     phase_fail_to_phase_pass: Vec<TransitionRecord>,
@@ -204,7 +260,31 @@ fn build_report_from_paths(paths: &InputPaths) -> Result<TransitionDiffReport> {
         before,
         after,
         collect_package_phase_deltas(before_package_rates.as_ref(), after_package_rates.as_ref())?,
+        compare_band_tables(paths),
     ))
+}
+
+/// Read both sides' band tables and diff them, naming the side that failed
+/// rather than returning an empty diff.
+fn compare_band_tables(paths: &InputPaths) -> BandTableComparison {
+    let before = load_or_derive_band_table(&paths.before_dir);
+    let after = load_or_derive_band_table(&paths.after_dir);
+    match (before, after) {
+        (Ok(before), Ok(after)) => match band_table::ensure_diffable_pair(&before, &after) {
+            Ok(()) => BandTableComparison::Comparable(Box::new(band_table::diff_band_tables(
+                &before, &after,
+            ))),
+            Err(error) => BandTableComparison::NotComparable {
+                detail: format!("{error:#}"),
+            },
+        },
+        (Err(error), _) => BandTableComparison::NotComparable {
+            detail: format!("before certification has no comparable band table: {error:#}"),
+        },
+        (_, Err(error)) => BandTableComparison::NotComparable {
+            detail: format!("after certification has no comparable band table: {error:#}"),
+        },
+    }
 }
 
 fn build_report(
@@ -212,6 +292,7 @@ fn build_report(
     before: IndexMap<String, ModelPhaseState>,
     after: IndexMap<String, ModelPhaseState>,
     package_phase_deltas: Vec<PackagePhaseDelta>,
+    band_transitions: BandTableComparison,
 ) -> TransitionDiffReport {
     let before_names = before.keys().cloned().collect::<IndexSet<_>>();
     let after_names = after.keys().cloned().collect::<IndexSet<_>>();
@@ -291,6 +372,7 @@ fn build_report(
         git_commit: get_git_commit(&paths.repo_root),
         inputs: report_inputs(paths),
         counts,
+        band_transitions,
         new_models,
         removed_models,
         phase_fail_to_phase_pass,
@@ -555,6 +637,9 @@ fn render_markdown(report: &TransitionDiffReport, top: usize) -> String {
         format!("- after models: {}", report.counts.after_models),
         format!("- common models: {}", report.counts.common_models),
         String::new(),
+    ];
+    append_band_transitions(&mut lines, &report.band_transitions);
+    lines.extend([
         "| Transition | Count |".to_string(),
         "|---|---:|".to_string(),
         format!(
@@ -590,7 +675,7 @@ fn render_markdown(report: &TransitionDiffReport, top: usize) -> String {
             report.counts.high_to_non_high_agreement
         ),
         String::new(),
-    ];
+    ]);
     append_section(
         &mut lines,
         "Phase Fail To Phase Pass",
@@ -629,6 +714,110 @@ fn render_markdown(report: &TransitionDiffReport, top: usize) -> String {
     );
     append_package_deltas(&mut lines, &report.package_phase_deltas, top);
     lines.join("\n")
+}
+
+fn append_band_transitions(lines: &mut Vec<String>, comparison: &BandTableComparison) {
+    lines.push("## Cohort (compared-set) Transitions".to_string());
+    lines.push(String::new());
+    let Some(transitions) = comparison.transitions() else {
+        lines.push(format!("**{}**", comparison.summary_line()));
+        lines.push(String::new());
+        return;
+    };
+    lines.push(format!("- {}", transitions.summary_line()));
+    lines.push(String::new());
+    append_left_models(lines, &transitions.left);
+    append_entered_models(lines, &transitions.entered);
+    append_band_changed_models(lines, &transitions.band_changed);
+    append_coverage_dropped_models(lines, &transitions.coverage_dropped);
+}
+
+/// LEFT is never truncated: a departure that scrolls off the report is the
+/// silence this section exists to remove.
+fn append_left_models(lines: &mut Vec<String>, records: &[LeftModel]) {
+    if records.is_empty() {
+        lines.push("No model left the compared set.".to_string());
+        lines.push(String::new());
+        return;
+    }
+    lines.push("### LEFT the compared set".to_string());
+    lines.push(String::new());
+    lines.push("| Model | Before band | Exit reason | Detail |".to_string());
+    lines.push("|---|---|---|---|".to_string());
+    lines.extend(records.iter().map(|record| {
+        format!(
+            "| {} | {} | {} | {} |",
+            record.model_name,
+            record.before_band.as_str(),
+            record.exit_reason.as_str(),
+            record.exit_detail.as_deref().unwrap_or("-")
+        )
+    }));
+    lines.push(String::new());
+}
+
+fn append_entered_models(lines: &mut Vec<String>, records: &[EnteredModel]) {
+    if records.is_empty() {
+        return;
+    }
+    lines.push("### ENTERED the compared set".to_string());
+    lines.push(String::new());
+    lines.push("| Model | After band | Previous state |".to_string());
+    lines.push("|---|---|---|".to_string());
+    lines.extend(records.iter().map(|record| {
+        format!(
+            "| {} | {} | {} |",
+            record.model_name,
+            record.after_band.as_str(),
+            record
+                .before_exit_reason
+                .map_or("absent from the before table", |reason| reason.as_str())
+        )
+    }));
+    lines.push(String::new());
+}
+
+fn append_band_changed_models(lines: &mut Vec<String>, records: &[BandChangedModel]) {
+    if records.is_empty() {
+        return;
+    }
+    lines.push("### BAND-CHANGED".to_string());
+    lines.push(String::new());
+    lines.push("| Model | Before band | After band |".to_string());
+    lines.push("|---|---|---|".to_string());
+    lines.extend(records.iter().map(|record| {
+        format!(
+            "| {} | {} | {} |",
+            record.model_name,
+            record.before_band.as_str(),
+            record.after_band.as_str()
+        )
+    }));
+    lines.push(String::new());
+}
+
+/// Coverage loss is never truncated either: a model can keep its band while the
+/// evidence behind it collapses, and that is exactly the movement a band count
+/// cannot show.
+fn append_coverage_dropped_models(lines: &mut Vec<String>, records: &[CoverageDroppedModel]) {
+    if records.is_empty() {
+        return;
+    }
+    lines.push("### COVERAGE-DROPPED (still compared, over fewer channels)".to_string());
+    lines.push(String::new());
+    lines.push("| Model | Band | Before channels | After channels | Lost |".to_string());
+    lines.push("|---|---|---:|---:|---:|".to_string());
+    lines.extend(records.iter().map(|record| {
+        format!(
+            "| {} | {} | {} | {} | {} |",
+            record.model_name,
+            record.band.as_str(),
+            record.before_compared_variables,
+            record.after_compared_variables,
+            record.before_compared_variables - record.after_compared_variables
+        )
+    }));
+    lines.push(String::new());
 }
 
 fn append_section(lines: &mut Vec<String>, title: &str, records: &[TransitionRecord], top: usize) {
@@ -714,6 +903,47 @@ fn print_summary(paths: &InputPaths, report: &TransitionDiffReport) {
         report.counts.near_to_high_agreement,
         report.counts.high_to_non_high_agreement
     );
+    print_band_transitions(&report.band_transitions);
+}
+
+fn print_band_transitions(comparison: &BandTableComparison) {
+    println!("  {}", comparison.summary_line());
+    let Some(transitions) = comparison.transitions() else {
+        return;
+    };
+    for left in &transitions.left {
+        println!(
+            "    LEFT {} (was {}): {} — {}",
+            left.model_name,
+            left.before_band.as_str(),
+            left.exit_reason.as_str(),
+            left.exit_detail.as_deref().unwrap_or("no detail recorded")
+        );
+    }
+    for entered in &transitions.entered {
+        println!(
+            "    ENTERED {} ({})",
+            entered.model_name,
+            entered.after_band.as_str()
+        );
+    }
+    for changed in &transitions.band_changed {
+        println!(
+            "    BAND-CHANGED {}: {} -> {}",
+            changed.model_name,
+            changed.before_band.as_str(),
+            changed.after_band.as_str()
+        );
+    }
+    for drop in &transitions.coverage_dropped {
+        println!(
+            "    COVERAGE-DROPPED {}: {} -> {} channels (still {})",
+            drop.model_name,
+            drop.before_compared_variables,
+            drop.after_compared_variables,
+            drop.band.as_str()
+        );
+    }
 }
 
 fn read_required_json(path: &Path) -> Result<Value> {
@@ -766,7 +996,15 @@ mod tests {
             ("E", "Success", "sim_ok", Some("high")),
         ]);
 
-        let report = build_report(&paths, before, after, Vec::new());
+        let report = build_report(
+            &paths,
+            before,
+            after,
+            Vec::new(),
+            BandTableComparison::NotComparable {
+                detail: "synthetic fixture carries no results directories".to_string(),
+            },
+        );
 
         assert_eq!(report.counts.phase_fail_to_phase_pass, 1);
         assert_eq!(report.counts.sim_solver_fail_to_sim_ok, 1);
@@ -830,6 +1068,220 @@ mod tests {
         assert_eq!(states["High"].trace_band.as_deref(), Some("high"));
         assert_eq!(states["Near"].trace_band.as_deref(), Some("near"));
         assert_eq!(states["Failed"].sim_status, "not_attempted");
+    }
+
+    /// Two synthetic certifications where `Left` is strict-high in the first run
+    /// and stops simulating in the second, so it silently disappears from the
+    /// comparator's `models` map. The diff must name it.
+    #[test]
+    fn a_model_that_leaves_the_compared_set_between_two_result_dirs_is_reported() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let before_dir = temp.path().join("before");
+        let after_dir = temp.path().join("after");
+        write_certification(
+            &before_dir,
+            &[("Left", "sim_ok"), ("Stay", "sim_ok")],
+            &["Left", "Stay"],
+        );
+        write_certification(
+            &after_dir,
+            &[
+                ("Left", "sim_solver_fail"),
+                ("Stay", "sim_ok"),
+                ("New", "sim_ok"),
+            ],
+            &["Stay", "New"],
+        );
+        let paths = paths_for(temp.path(), &before_dir, &after_dir);
+
+        let report = build_report_from_paths(&paths).expect("build report");
+
+        let transitions = report
+            .band_transitions
+            .transitions()
+            .expect("two derivable certifications must be comparable");
+        assert_eq!(transitions.counts.left, 1);
+        assert_eq!(transitions.left[0].model_name, "Left");
+        assert_eq!(transitions.left[0].before_band, band_table::BandLabel::High);
+        assert_eq!(
+            transitions.left[0].exit_reason,
+            band_table::ExitReason::SimFailed
+        );
+        assert_eq!(
+            transitions
+                .entered
+                .iter()
+                .map(|entered| entered.model_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["New"]
+        );
+
+        let markdown = render_markdown(&report, 25);
+        assert!(markdown.contains("### LEFT the compared set"), "{markdown}");
+        assert!(
+            markdown.contains("| Left | high | sim_failed |"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn a_certification_without_a_comparable_band_table_is_named_not_a_silent_empty_diff() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let before_dir = temp.path().join("before");
+        let after_dir = temp.path().join("after");
+        write_certification(&before_dir, &[("Stay", "sim_ok")], &["Stay"]);
+        // The after directory has results but no comparator output at all.
+        fs::create_dir_all(&after_dir).expect("create after dir");
+        write_pretty_json(
+            &after_dir.join(MSL_RESULTS_FILE),
+            &results_payload(&[("Stay", "sim_ok")]),
+        )
+        .expect("write after results");
+        let paths = paths_for(temp.path(), &before_dir, &after_dir);
+
+        let report = build_report_from_paths(&paths).expect("build report");
+
+        match &report.band_transitions {
+            BandTableComparison::NotComparable { detail } => {
+                assert!(detail.contains("after certification"), "got: {detail}");
+            }
+            other => panic!("a missing comparator output must be named, got {other:?}"),
+        }
+        assert!(
+            render_markdown(&report, 25).contains("not comparable"),
+            "the report must say the cohort could not be compared"
+        );
+    }
+
+    /// A table copied in from another results directory is well-formed, passes
+    /// every structural check, and describes a population that has nothing to do
+    /// with this run. The evidence path must refuse it rather than diff against
+    /// it — otherwise the artifact that exists to pin the cohort is the easiest
+    /// thing in the run to forge.
+    #[test]
+    fn a_planted_band_table_makes_the_report_say_not_comparable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let before_dir = temp.path().join("before");
+        let after_dir = temp.path().join("after");
+        write_certification_with_widths(&before_dir, &[("Stay", "sim_ok")], &[("Stay", 8)]);
+        // A genuinely different comparator output: same model, more channels.
+        write_certification_with_widths(&after_dir, &[("Stay", "sim_ok")], &[("Stay", 12)]);
+        // Persist the before run's table, then plant it in the after directory.
+        band_table::persist_band_table(&before_dir, band_table::BandTableRunScope::Full)
+            .expect("persist before");
+        fs::copy(
+            band_table::band_table_path(&before_dir),
+            band_table::band_table_path(&after_dir),
+        )
+        .expect("plant the table");
+        let paths = paths_for(temp.path(), &before_dir, &after_dir);
+
+        let report = build_report_from_paths(&paths).expect("build report");
+
+        match &report.band_transitions {
+            BandTableComparison::NotComparable { detail } => {
+                assert!(detail.contains("after certification"), "got: {detail}");
+                assert!(
+                    detail.contains("different comparator output"),
+                    "the report must say the table is not this run's, got: {detail}"
+                );
+            }
+            other => panic!("a planted table must not be diffed against, got {other:?}"),
+        }
+    }
+
+    /// A model can hold its band while the evidence behind it collapses. The
+    /// report names that as its own event.
+    #[test]
+    fn a_coverage_drop_reaches_the_markdown_report() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let before_dir = temp.path().join("before");
+        let after_dir = temp.path().join("after");
+        write_certification_with_widths(&before_dir, &[("Wide", "sim_ok")], &[("Wide", 165)]);
+        write_certification_with_widths(&after_dir, &[("Wide", "sim_ok")], &[("Wide", 3)]);
+        let paths = paths_for(temp.path(), &before_dir, &after_dir);
+
+        let report = build_report_from_paths(&paths).expect("build report");
+
+        let transitions = report
+            .band_transitions
+            .transitions()
+            .expect("both certifications are comparable");
+        assert_eq!(transitions.counts.coverage_dropped, 1);
+        assert_eq!(transitions.counts.compared_variables_lost, 162);
+        let markdown = render_markdown(&report, 25);
+        assert!(
+            markdown.contains("### COVERAGE-DROPPED"),
+            "a coverage drop must be listed, not folded into the band counts: {markdown}"
+        );
+        assert!(
+            markdown.contains("| Wide | high | 165 | 3 | 162 |"),
+            "{markdown}"
+        );
+    }
+
+    fn paths_for(repo_root: &Path, before_dir: &Path, after_dir: &Path) -> InputPaths {
+        InputPaths {
+            repo_root: repo_root.to_path_buf(),
+            before_results_file: before_dir.join(MSL_RESULTS_FILE),
+            after_results_file: after_dir.join(MSL_RESULTS_FILE),
+            before_trace_file: before_dir.join(TRACE_COMPARISON_FILE),
+            after_trace_file: after_dir.join(TRACE_COMPARISON_FILE),
+            before_package_pass_rates_file: before_dir.join(PACKAGE_PASS_RATES_FILE),
+            after_package_pass_rates_file: after_dir.join(PACKAGE_PASS_RATES_FILE),
+            before_dir: before_dir.to_path_buf(),
+            after_dir: after_dir.to_path_buf(),
+            output_json: repo_root.join("out.json"),
+            output_md: repo_root.join("out.md"),
+        }
+    }
+
+    fn write_certification(dir: &Path, results: &[(&str, &str)], compared: &[&str]) {
+        let widths = compared
+            .iter()
+            .map(|name| (*name, 8usize))
+            .collect::<Vec<_>>();
+        write_certification_with_widths(dir, results, &widths);
+    }
+
+    fn write_certification_with_widths(
+        dir: &Path,
+        results: &[(&str, &str)],
+        compared: &[(&str, usize)],
+    ) {
+        fs::create_dir_all(dir).expect("create results dir");
+        write_pretty_json(&dir.join(MSL_RESULTS_FILE), &results_payload(results))
+            .expect("write results");
+        let models = compared
+            .iter()
+            .map(|(name, channels)| ((*name).to_string(), trace_metric(name, *channels, 0, 0)))
+            .collect::<serde_json::Map<_, _>>();
+        write_pretty_json(
+            &dir.join(TRACE_COMPARISON_FILE),
+            &json!({ "models": models, "missing_trace": {}, "skipped": {} }),
+        )
+        .expect("write trace comparison");
+    }
+
+    fn results_payload(entries: &[(&str, &str)]) -> Value {
+        json!({
+            "git_commit": "cert1234",
+            // The cohort roster: every model the run set out to simulate. The
+            // band table is keyed on this, not on whatever the comparator
+            // happened to mention.
+            "sim_target_models": entries
+                .iter()
+                .map(|(model_name, _)| *model_name)
+                .collect::<Vec<_>>(),
+            "model_results": entries
+                .iter()
+                .map(|(model_name, sim_status)| json!({
+                    "model_name": model_name,
+                    "phase_reached": "Success",
+                    "sim_status": sim_status,
+                }))
+                .collect::<Vec<_>>()
+        })
     }
 
     fn states<const N: usize>(

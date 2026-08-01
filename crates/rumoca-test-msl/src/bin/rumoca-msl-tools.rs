@@ -41,6 +41,8 @@ enum MslCommand {
     CompatibilityReport(msl_tools::compatibility_report::Args),
     /// Report: diff rumoca balance output against the OMC reference
     CompareBalance(msl_tools::compare_balance::Args),
+    /// Report: persist the per-model agreement-band table for a results dir
+    BandTable(msl_tools::band_table::Args),
     /// Report: compare per-model phase/sim/trace transitions between two MSL result dirs
     TransitionDiff(msl_tools::transition_diff::Args),
     /// Report: assemble the MSL quality summary posted as the CI PR comment
@@ -73,6 +75,7 @@ fn main() -> Result<()> {
         MslCommand::ParityManifest(args) => msl_tools::parity_manifest::run(args),
         MslCommand::CompatibilityReport(args) => msl_tools::compatibility_report::run(args),
         MslCommand::CompareBalance(args) => msl_tools::compare_balance::run(args),
+        MslCommand::BandTable(args) => msl_tools::band_table::run(args),
         MslCommand::TransitionDiff(args) => msl_tools::transition_diff::run(args),
         MslCommand::PrComment(args) => msl_tools::pr_comment::run(args),
         MslCommand::DebugModel(args) => msl_tools::debug_model::run(args),

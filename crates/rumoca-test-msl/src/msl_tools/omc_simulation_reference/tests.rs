@@ -448,8 +448,13 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
     assert!(report.models.is_empty());
     assert!(report.missing_trace.is_empty());
     assert_eq!(
-        report.skipped.get(&model_name).map(String::as_str),
-        Some("stochastic")
+        report.skipped.get(&model_name),
+        Some(&TraceExitRecord::new(
+            TraceExitKind::PolicyExcluded,
+            "stochastic"
+        )),
+        "a policy exclusion must be recorded as one, so it is never read back as a \
+         comparator failure"
     );
 }
 
@@ -515,8 +520,12 @@ fn quantify_trace_differences_rejects_error_status_model_with_stale_traces() {
         quantify_trace_differences(&paths, &all_results, &BTreeMap::new()).expect("quantify");
 
     assert_eq!(
-        report.missing_trace.get(&model_name).map(String::as_str),
-        Some("OMC attempt status `error` is not successful; stale trace artifacts are ineligible")
+        report.missing_trace.get(&model_name),
+        Some(&TraceExitRecord::new(
+            TraceExitKind::OmcTraceMissing,
+            "OMC attempt status `error` is not successful; stale trace artifacts are ineligible"
+        )),
+        "an OMC-side gap must be attributed to OMC, not to rumoca"
     );
     assert!(report.skipped.is_empty());
     assert!(!report.models.contains_key(&model_name));
@@ -584,8 +593,11 @@ fn quantify_trace_differences_rejects_undeclared_omc_trace_file() {
         quantify_trace_differences(&paths, &all_results, &BTreeMap::new()).expect("quantify");
 
     assert_eq!(
-        report.missing_trace.get(&model_name).map(String::as_str),
-        Some("successful OMC attempt did not declare a trace file")
+        report.missing_trace.get(&model_name),
+        Some(&TraceExitRecord::new(
+            TraceExitKind::OmcTraceMissing,
+            "successful OMC attempt did not declare a trace file"
+        ))
     );
     assert!(report.models.is_empty());
 }
@@ -638,13 +650,22 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
 }
 
 #[test]
-fn load_trace_exclusions_reads_model_list() {
+fn load_trace_exclusions_reads_each_entrys_own_reason() {
     let temp = tempfile::tempdir().expect("tempdir");
     let exclusions_file = temp.path().join("trace_exclusions.json");
-    let payload = serde_json::json!([
-        "Modelica.Blocks.Examples.Noise.ImpureGenerator",
-        "Modelica.Math.Random.Examples.GenerateRandomNumbers"
-    ]);
+    let payload = serde_json::json!({
+        "schema": "msl_trace_compare_exclusions",
+        "exclusions": [
+            {
+                "model_name": "Modelica.Blocks.Examples.Noise.ImpureGenerator",
+                "reason": "stochastic random-input model"
+            },
+            {
+                "model_name": "Modelica.Math.Random.Examples.GenerateRandomNumbers",
+                "reason": "wall-clock seeded generator"
+            }
+        ]
+    });
     std::fs::write(
         &exclusions_file,
         serde_json::to_vec(&payload).expect("serialize"),
@@ -672,7 +693,13 @@ fn load_trace_exclusions_reads_model_list() {
     assert_eq!(exclusions.len(), 2);
     assert_eq!(
         exclusions.get("Modelica.Blocks.Examples.Noise.ImpureGenerator"),
-        Some(&STOCHASTIC_TRACE_EXCLUSION_REASON.to_string())
+        Some(&"stochastic random-input model".to_string()),
+        "each entry keeps its own reason; one shared constant would attribute a false \
+         rationale to every future exclusion"
+    );
+    assert_eq!(
+        exclusions.get("Modelica.Math.Random.Examples.GenerateRandomNumbers"),
+        Some(&"wall-clock seeded generator".to_string())
     );
 }
 

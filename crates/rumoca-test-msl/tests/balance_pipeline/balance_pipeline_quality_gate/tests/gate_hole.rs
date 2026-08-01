@@ -82,7 +82,10 @@ fn a_measured_run_with_stable_bands_passes() {
         trace_accuracy_stats: Some(trace_accuracy_baseline()),
         ..baseline_quality_template()
     };
-    let measurement = MslParityMeasurement::measured(parity_with(trace_accuracy_baseline()));
+    let measurement = MslParityMeasurement::measured(
+        parity_with(trace_accuracy_baseline()),
+        fixtures::cohort_for(&trace_accuracy_baseline()),
+    );
     assert!(measurement.is_measured());
 
     assert_eq!(

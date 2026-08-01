@@ -631,13 +631,23 @@ fn accepted_sim_ok_without_trace(payload: &serde_json::Value) -> BTreeSet<String
         .and_then(serde_json::Value::as_object)
         .into_iter()
         .flat_map(|skipped| skipped.iter())
-        .filter(|(_, reason)| reason.as_str().is_some_and(trace_skip_accepts_sim_ok))
+        .filter(|(_, entry)| trace_skip_accepts_sim_ok(entry))
         .map(|(model_name, _)| model_name.clone())
         .collect()
 }
 
-fn trace_skip_accepts_sim_ok(reason: &str) -> bool {
-    reason.contains("trace has no comparable variable samples")
+/// Whether a recorded skip is the one that still lets a `sim_ok` model count as
+/// passing: the two traces shared nothing comparable, so there was no band to
+/// contradict the simulation.
+///
+/// The comparator decides this and records it as a [`TraceExitKind`]. Matching
+/// on the kind rather than on the wording of the reason string is what keeps the
+/// acceptance from widening the day someone rephrases a comparator error — the
+/// message text is operator prose, not an interface.
+fn trace_skip_accepts_sim_ok(entry: &serde_json::Value) -> bool {
+    use rumoca_test_msl::msl_tools::band_table::{TraceExitKind, trace_exit_kind};
+
+    trace_exit_kind(entry) == Some(TraceExitKind::NoComparableSamples)
 }
 
 fn trace_metric_matches_omc(metric: &ModelDeviationMetric) -> bool {
@@ -1839,11 +1849,16 @@ mod tests {
             "Success",
             Some("sim_ok"),
         )];
+        // The comparator records the boundary it hit as a typed kind. This one —
+        // the two traces shared nothing comparable — is the only skip that still
+        // lets `sim_ok` count as passing, because no band contradicts it.
         let payload = serde_json::json!({
             "models": {},
             "skipped": {
-                "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine":
-                    "trace compare failed: trace has no comparable variable samples"
+                "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine": {
+                    "kind": "no_comparable_samples",
+                    "detail": "trace compare failed: trace has no comparable variable samples"
+                }
             }
         });
 
@@ -1853,6 +1868,38 @@ mod tests {
         assert_eq!(report.overall.n, 1);
         assert_eq!(report.overall.sim_passed, 1);
         assert_eq!(report.overall.sim_percent, 100.0);
+    }
+
+    /// Every other recorded skip is a comparator defect or a policy decision, and
+    /// neither excuses a `sim_ok` model from having no band behind it. Matching
+    /// on the typed kind is what keeps this from widening the day a comparator
+    /// error message is rephrased.
+    #[test]
+    fn package_pass_rate_report_does_not_accept_sim_ok_for_a_comparator_defect() {
+        let mut summary = empty_summary(0, 0);
+        summary.model_results = vec![model_result(
+            "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine",
+            "Success",
+            Some("sim_ok"),
+        )];
+        let payload = serde_json::json!({
+            "models": {},
+            "skipped": {
+                "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine": {
+                    "kind": "comparator_failed",
+                    "detail": "trace compare failed: trace has no valid time samples"
+                }
+            }
+        });
+
+        let report = build_msl_package_pass_rate_report_with_trace_payload(&summary, &payload)
+            .expect("pass report with a comparator defect");
+
+        assert_eq!(report.overall.n, 1);
+        assert_eq!(
+            report.overall.sim_passed, 0,
+            "a comparator defect must not be read as a passing simulation"
+        );
     }
 
     #[test]

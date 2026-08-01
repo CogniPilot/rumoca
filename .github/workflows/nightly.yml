@@ -399,6 +399,7 @@ jobs:
             target/msl/results/msl_results.json
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
+            target/msl/results/msl_band_table.json
           if-no-files-found: warn
 
   msl-sweep-merge:
@@ -469,7 +470,7 @@ jobs:
             exit 1
           fi
           for dir in target/msl/shards/shard-*; do
-            for file in msl_results.json omc_simulation_reference.json sim_trace_comparison.json; do
+            for file in msl_results.json omc_simulation_reference.json sim_trace_comparison.json msl_band_table.json; do
               if [[ ! -s "$dir/$file" ]]; then
                 echo "::error title=Incomplete MSL fan-in::$dir/$file is missing or empty"
                 exit 1
@@ -477,6 +478,47 @@ jobs:
             done
           done
           echo "All $EXPECTED_SHARDS shards reported."
+
+      # Cohort movement is only checkable against the previous certification, so
+      # the gate needs that certification's band table on disk before it runs.
+      # Restoring it as `msl_band_table_previous.json` is what lets the
+      # departed-strict-high rule fire at all: without it every nightly is a
+      # first certification, and a model can leave the strict-high band with the
+      # rule that would catch it silently inert. A missing predecessor is not
+      # swallowed here — the gate itself fails on it (SPEC 0033 acceptance
+      # contract), and this step only supplies what it can find.
+      - name: Restore the previous certification's band table
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ github.workflow }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/msl/results target/msl/predecessor
+          # The most recent completed sweep on this repository, excluding this
+          # run. Failures here are not fatal: the gate is what rejects a
+          # certification with no predecessor, and it must see the real state
+          # rather than a state this step invented.
+          previous_run="$(gh run list \
+            --workflow "${WORKFLOW}" \
+            --status completed \
+            --limit 20 \
+            --json databaseId \
+            --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID})] | .[0].databaseId" || true)"
+          if [[ -z "${previous_run:-}" || "${previous_run}" == "null" ]]; then
+            echo "::warning title=No predecessor sweep::no earlier completed sweep was found; the quality gate will report cohort movement as unverified"
+            exit 0
+          fi
+          gh run download "${previous_run}" \
+            --name msl-sweep-reports \
+            --dir target/msl/predecessor || true
+          table="target/msl/predecessor/msl_band_table.json"
+          if [[ -s "$table" ]]; then
+            cp "$table" target/msl/results/msl_band_table_previous.json
+            echo "Predecessor cohort table staged from run ${previous_run}; this run's movement will be diffed against it."
+          else
+            echo "::warning title=No predecessor band table::run ${previous_run} published no msl_band_table.json; the quality gate will report cohort movement as unverified"
+          fi
 
       # `continue-on-error` covers exactly one accepted outcome: the merged set
       # did not clear the pre-cutover ratchet. Everything else the command can
@@ -507,7 +549,8 @@ jobs:
             msl_results.json \
             omc_simulation_reference.json \
             sim_trace_comparison.json \
-            msl_quality_current.json
+            msl_quality_current.json \
+            msl_band_table.json
           do
             if [[ ! -s "target/msl/results/$file" ]]; then
               echo "::error title=MSL merge produced no $file::target/msl/results/$file is missing or empty"
@@ -538,6 +581,34 @@ jobs:
             exit 1
           fi
           echo "The merged sweep compared $compared model(s) against OMC."
+
+      # Rejection 4. `continue-on-error` on the merge step accepts exactly one
+      # outcome: the ratchet was missed. A run whose gate reported "parity
+      # unmeasured" — no comparable per-model band table, or a table that
+      # disagrees with the reference — is not a ratchet miss, and must not pass
+      # through that forgiveness. The gate writes its own verdict into the
+      # snapshot, so this reads the verdict rather than re-deriving it.
+      - name: Verify the merged sweep pinned its cohort
+        id: cohort-pinned
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="target/msl/results/msl_quality_current.json"
+          measured="$(jq -r '.parity_measured // false' "$snapshot")"
+          if [[ "$measured" != "true" ]]; then
+            reason="$(jq -r '.parity_unmeasured_reason // "no reason recorded"' "$snapshot")"
+            echo "::error title=parity unmeasured: comparator did not run::$reason; sim_ok is completion, never parity"
+            exit 1
+          fi
+          table="target/msl/results/msl_band_table.json"
+          cohort="$(jq -r '.counts.cohort_models // 0' "$table")"
+          table_compared="$(jq -r '.counts.compared_models // 0' "$table")"
+          reference_compared="$(jq -r '.trace_comparison.models_compared // 0' "target/msl/results/omc_simulation_reference.json")"
+          if [[ "$table_compared" -ne "$reference_compared" ]]; then
+            echo "::error title=Band table disagrees with the reference::the per-model table compares $table_compared model(s), the reference reports $reference_compared; one artifact is stale and neither may be quoted"
+            exit 1
+          fi
+          echo "Cohort pinned: $cohort model rows, $table_compared compared."
 
       - name: Typed-bucket triage report
         if: ${{ always() && steps.fanin.outcome == 'success' }}
@@ -661,6 +732,8 @@ jobs:
             target/msl/results/msl_quality_current.json
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
+            target/msl/results/msl_band_table.json
+            target/msl/results/msl_band_table_previous.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/msl_package_trace_accuracy.md
             target/msl/results/mls_contract_coverage.md

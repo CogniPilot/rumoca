@@ -126,7 +126,11 @@ Failure classifications:
 | Tier 2 MUST cover the full 566-model set, either in one run or as CI shards merged by the fan-in job | CI / milestone | Cohort evidence without a serial CI long pole |
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
 | A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
-| A Tier 2 run whose comparator stage did not execute over every `sim_ok` trace reports "parity unmeasured", not a number | reports, dev/ ledger | Missing comparison must be visible, not defaulted |
+| The comparator's candidate set MUST be every `sim_ok` trace | `rumoca_model_is_trace_candidate` | Completion picks candidates; comparison decides parity |
+| Every candidate MUST be compared or recorded under `skipped`/`missing_trace` with a reason | `sim_trace_comparison.json` | An uncompared trace must name why |
+| A run whose comparator stage did not execute, or compared zero models, reports "parity unmeasured", not a number | harness gate, `verify msl-parity` | Missing comparison must be visible, not defaulted |
+| A quoted number MUST state `models_compared` and the skipped/missing counts beside it | reports, dev/ ledger | Partial coverage is part of the claim |
+| Comparator exclusions MUST stay a tracked list, and each excluded model MUST record its reason | `msl_trace_compare_exclusions.json` | Silencing a model must be reviewable |
 | An unmeasured cohort run MUST fail its quality gate, not pass with `sim_ok` | harness gate, `verify msl-parity` | A run nobody could check must not read as a green run |
 | The cohort ratchet MUST be the strict-high agreement band; `sim_ok` is reported and never gated on | harness gate | Gating completion rewards traces nobody compared |
 | No validity check that reads simulation outcomes may run before the comparator stage | harness gate flow | A gate that aborts first destroys the measurement it judges |
@@ -155,6 +159,12 @@ quality gate fails rather than falling back to `sim_ok`.
 | `omc_simulation_reference.json` exists in the results directory and carries `omc_version` | `MslParityMeasurement::measured`, `check_comparator_evidence` |
 | `sim_trace_comparison.json` exists and is non-empty | `check_comparator_evidence` |
 | `trace_comparison.models_compared > 0` | `MslParityMeasurement::measured`, `check_comparator_evidence`, nightly `Verify the merged sweep measured parity` |
+| Every `sim_ok` candidate is compared or carries a recorded skip reason | `quantify_trace_differences` (`skipped`, `missing_trace`) |
+| The run persisted a per-model band table with one row per cohort target, bound to its own comparator output | `read_cohort` / `measure_msl_parity` (`BandTableAbsent`), `band_table::ensure_comparable` |
+| That table declares counts and a row digest matching its own rows | `band_table::ensure_comparable` |
+| That table's compared, strict-high, near, and deviation counts equal the reference's | `band_table_disagreement` (`BandTableInconsistent`), nightly `Verify the merged sweep pinned its cohort` (compared count) |
+| A full-cohort run can diff against its predecessor certification's band table | `cohort_movement_unverified_reason`; CI restores it as `msl_band_table_previous.json` before the gate |
+| No model that held the strict-high band left the compared set | `departed_strict_high_reason` |
 | The reference's `total_models` equals the run's `sim_target_models` (not stale) | `load_current_msl_parity_gate_input_required` |
 | The reference records no OMC Modelica assertion failures | `load_current_msl_parity_gate_input_required` |
 
@@ -165,6 +175,21 @@ completion, and is gated on nowhere: the cohort ratchet reads
 `agreement_high`, and the structural floor reads `agreement_high` as well,
 because `agreement_high <= models_compared <= sim_ok` makes a band floor
 strictly tighter than the `sim_ok` floor it replaced.
+
+A recorded skip cannot inflate the number. `models_candidate` counts every
+`sim_ok` model and equals `models_compared + skipped_models +
+missing_trace_models`, the cohort ratchet compares absolute `agreement_high`
+counts, and `models_compared` carries its own non-regression check
+(`TRACE_MODELS_COMPARED_ALLOWED_DROP`), so moving a model out of the comparison
+lowers both sides of the claim instead of raising the percentage.
+
+Cohort movement is part of a certification, not a bonus reading. A full-scope
+run whose results directory carries no predecessor band table cannot report which
+models entered or left the compared set, and every rule that reads that movement
+is inert — so the run fails its quality gate rather than passing with those rules
+silently switched off. CI supplies the predecessor by restoring the previous
+certification's `msl_band_table.json` as `msl_band_table_previous.json`; a first
+certification legitimately has none and says so.
 
 Ordering is part of the contract: the only validity check that may run before
 the comparator is "is this run measurable at all" (nonzero discovered models,

@@ -781,10 +781,14 @@ fn collect_missing_traces(trace: &Value) -> Vec<MissingTraceRecord> {
         .and_then(Value::as_object)
         .into_iter()
         .flatten()
-        .map(|(model_name, reason)| MissingTraceRecord {
+        .map(|(model_name, entry)| MissingTraceRecord {
             model_name: model_name.clone(),
             reason: "trace.missing_channel".to_string(),
-            detail: reason.as_str().map(truncate_detail),
+            // The comparator records `{kind, detail}`; older certifications
+            // carry a bare string. Both render the same operator text.
+            detail: Some(truncate_detail(&super::band_table::trace_exit_detail(
+                entry,
+            ))),
             reproduction: reproduction_command(model_name),
         })
         .collect::<Vec<_>>();
