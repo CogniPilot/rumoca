@@ -238,3 +238,82 @@ fn pid_msl_responds_to_step_error() {
         "expected PIDMSL controller output to become nonzero, max |pid.y|={pid_y_max}"
     );
 }
+
+/// `Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor` at its own
+/// `experiment` settings (`StopTime = 0.1`, `Tolerance = 1e-7`).
+///
+/// The example drives a closed ferromagnetic core past the permeability peak of
+/// M350-50A twice per mains period, so every output sample past `t ~ 0.022 s` asks
+/// the algebraic projection to move `r_mFe.B` across the saturation knee, where
+/// `mu_r` falls by an order of magnitude over a tenth of a tesla. Reference values
+/// are OMC 4.1.0 on the same source.
+///
+/// The output interval is pinned at `2e-4 s` deliberately. On a coarser grid whether
+/// the projection is handed a distant warm start depends on the step sequence, and
+/// that shifted when `time_event_instant` stopped scheduling a stop at the start
+/// instant (`expression_events.rs`, `instant <= 0.0`, correct per MLS §8.5) and so
+/// stopped restarting the integrator there. At this interval the stall reproduces
+/// regardless, so the guard tests the projection rather than the schedule that
+/// happens to reach it.
+const SATURATED_INDUCTOR: &str = r#"
+model SaturatedInductorRun
+  extends Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor;
+end SaturatedInductorRun;
+"#;
+
+#[test]
+fn saturated_inductor_projects_across_the_saturation_knee() {
+    let msl_compiler = require_msl_compiler();
+    let compiled = msl_compiler
+        .model("SaturatedInductorRun")
+        .compile_str(SATURATED_INDUCTOR, "SaturatedInductorRun.mo")
+        .expect("MSL saturated inductor example should compile");
+
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(2.0e-4),
+            atol: 1.0e-7,
+            rtol: 1.0e-7,
+            solver_mode: SimSolverMode::Bdf,
+            ..SimOptions::default()
+        },
+    )
+    .expect("saturated inductor should simulate to its experiment stop time");
+
+    // A relative permeability below 1 is outside the range the MSL approximation
+    // `1 + non-negative/positive` can take, and a non-positive reluctance is not a
+    // reluctance: either means the projection settled off the physical branch.
+    let permeability = result_series(&result, &["r_mFe.mu_r"]);
+    let worst_permeability = permeability.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!(
+        worst_permeability >= 1.0,
+        "r_mFe.mu_r reached {worst_permeability}, which is not a physical relative permeability"
+    );
+    let worst_reluctance = result_series(&result, &["r_mFe.R_m"])
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        worst_reluctance > 0.0,
+        "r_mFe.R_m reached {worst_reluctance}, which is not a physical reluctance"
+    );
+
+    // OMC 4.1.0: min(r_mFe.mu_r) = 413.11 at the flux-density peak
+    // max|r_mFe.B| = 1.5868 T, max|coil.i| = 1.5350 A.
+    assert!(
+        (worst_permeability - 413.11).abs() <= 413.11 * 0.02,
+        "saturation depth drifted: min r_mFe.mu_r = {worst_permeability}, OMC reports 413.11"
+    );
+    let peak_flux_density = max_abs_column_value(&result, &["r_mFe.B"]);
+    assert!(
+        (peak_flux_density - 1.5868).abs() <= 1.5868 * 0.02,
+        "peak r_mFe.B = {peak_flux_density}, OMC reports 1.5868 T"
+    );
+    let peak_current = max_abs_column_value(&result, &["coil.i"]);
+    assert!(
+        (peak_current - 1.5350).abs() <= 1.5350 * 0.02,
+        "peak coil.i = {peak_current}, OMC reports 1.5350 A"
+    );
+}

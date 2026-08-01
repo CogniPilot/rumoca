@@ -10,12 +10,15 @@ use scaling::{
     scaled_residual_converged, scaled_residual_norm, scaled_tolerance,
 };
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
+use step_limit::StepLimit;
 
 mod homotopy;
 mod manifold;
 mod plan;
+mod retry;
 mod scaling;
 mod singleton;
+mod step_limit;
 
 pub use manifold::{ManifoldProjectionModel, project_state_manifold};
 
@@ -387,12 +390,7 @@ pub fn project_algebraics_with_plan<M: ImplicitProjectionModel>(
     max_iters: usize,
 ) -> Result<(), RuntimeSolveError> {
     validate_algebraic_projection_plan(plan, args.state_count, y.len())?;
-    let snapshot = projection_unknown_values(plan, y);
-    let result = project_algebraics_with_plan_inner(model, plan, y, args, max_iters);
-    if result.is_err() {
-        restore_projection_unknown_values(plan, y, &snapshot);
-    }
-    result
+    retry::project_with_step_limited_retry(model, plan, y, args, max_iters)
 }
 
 fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
@@ -401,6 +399,7 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
     y: &mut [f64],
     args: AlgebraicProjectionArgs<'_>,
     max_iters: usize,
+    step_limit: StepLimit,
 ) -> Result<(), RuntimeSolveError> {
     let rows = projection_rows(plan);
     for iteration in 0..max_iters {
@@ -415,6 +414,7 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
                 args.time,
                 block,
                 args.tolerance,
+                step_limit,
             )?;
             changed |= update.changed;
             all_settled &= update.settled;
@@ -464,6 +464,7 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
     tol: f64,
+    step_limit: StepLimit,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
     let mut changed = false;
@@ -521,6 +522,8 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
             before: before_norm,
             tolerance: tol,
             row_scales: &row_scales,
+            variable_scales: &variable_scales,
+            step_limit,
         },
         y,
         delta.as_slice(),
@@ -689,6 +692,8 @@ struct AlgebraicBlockDeltaContext<'a, M> {
     before: f64,
     tolerance: f64,
     row_scales: &'a [f64],
+    variable_scales: &'a [f64],
+    step_limit: StepLimit,
 }
 
 fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
@@ -704,6 +709,8 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
         before,
         tolerance,
         row_scales,
+        variable_scales,
+        step_limit,
     } = context;
     let snapshot = y.to_vec();
     if !before.is_finite() {
@@ -712,7 +719,7 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
             settled: false,
         });
     }
-    let mut alpha = 1.0;
+    let mut alpha = step_limit.initial_alpha(y, &block.y_indices, delta, variable_scales);
     loop {
         y.copy_from_slice(&snapshot);
         let mut changed = false;
