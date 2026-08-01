@@ -1,7 +1,13 @@
 use super::*;
 
+#[path = "function_shapes/expression_rules.rs"]
+mod expression_rules;
 #[path = "function_shapes/value_relevance.rs"]
 mod value_relevance;
+pub(in crate::construction) use expression_rules::{
+    call_free_expression_shape, call_free_target_shape,
+};
+use expression_rules::{expression_shape, reject_shape_call};
 use value_relevance::ValueReadInputs;
 
 #[cfg(test)]
@@ -94,6 +100,17 @@ pub(super) struct ShapeEnvironment {
     /// `integer(...)` truncation, `mod`/`div`, enumeration ordinals — instead of
     /// a second rule set written for shapes alone.
     values: EvalContext,
+    /// Whether this scope is one function specialization rather than the model.
+    ///
+    /// MLS §12.2 makes a function body's translation-time constants a property
+    /// of the specialization that fixed its inputs, so a construct whose extent
+    /// is folded from this environment — an MLS §10.4.1 array constructor — is
+    /// owned by the specialization and never by the one model-wide plan a
+    /// source span keys: `f(3)` and `f(5)` share the span and not the extent.
+    /// "Has a Modelica body to lower into" is *not* that predicate — an MLS
+    /// §12.9 external argument is in specialization scope with no body — so the
+    /// distinction is carried by the environment that actually differs.
+    specialized: bool,
 }
 
 impl ShapeEnvironment {
@@ -101,7 +118,20 @@ impl ShapeEnvironment {
         Self {
             shapes: HashMap::with_capacity(capacity),
             values: EvalContext::with_capacity(capacity, 0, 0),
+            specialized: false,
         }
+    }
+
+    /// Mark this scope as one function specialization's proven environment.
+    fn into_specialization(mut self) -> Self {
+        self.specialized = true;
+        self
+    }
+
+    /// Whether this scope is a function specialization (MLS §12.2) rather than
+    /// the model scope.
+    pub(in crate::construction) fn is_specialization(&self) -> bool {
+        self.specialized
     }
 
     pub(super) fn get(&self, name: &VarName) -> Option<&ValueShape> {
@@ -190,6 +220,35 @@ impl ProvenValue {
             Self::Boolean(_) => None,
         }
     }
+}
+
+/// The branch of an MLS §11.5 function conditional this scope decides.
+///
+/// MLS §11.5 evaluates the conditions in declaration order and executes the
+/// first branch whose condition is `true`, or the else part when none is. This
+/// answers that question at translation time and only when the answer is exact:
+/// `Some(Some(ordinal))` is a proven taken branch, `Some(None)` is the proven
+/// else part, and `None` means this scope does not settle the choice — which is
+/// the ordinary case for a condition over a runtime value, and keeps the
+/// checked-branch rule that owns those conditionals.
+///
+/// The scan stops at the first condition without a proven value even when a
+/// later condition is proven `true`, because MLS §11.5 would only reach that
+/// later condition if the earlier one evaluated to `false`.
+pub(in crate::construction) fn proven_conditional_branch(
+    blocks: &[rumoca_core::StatementBlock],
+    values: &ShapeEnvironment,
+) -> Option<Option<usize>> {
+    for (ordinal, block) in blocks.iter().enumerate() {
+        match values.proven_value(&block.cond)? {
+            ProvenValue::Boolean(true) => return Some(Some(ordinal)),
+            ProvenValue::Boolean(false) => {}
+            // MLS §11.5 requires a Boolean condition; a scope that folded one to
+            // an Integer proves nothing about which branch runs.
+            ProvenValue::Integer(_) => return None,
+        }
+    }
+    Some(None)
 }
 
 impl std::ops::Index<&VarName> for ShapeEnvironment {
@@ -696,10 +755,26 @@ impl ShapeAnalyzer<'_> {
                 cond_blocks,
                 else_block,
                 ..
-            } => {
-                self.discover_statement_blocks(cond_blocks, values)?;
-                self.discover_statements(else_block.as_deref().unwrap_or_default(), values)
-            }
+            } => match proven_conditional_branch(cond_blocks, values) {
+                // MLS §11.5 executes one branch. When this specialization
+                // settles the conditions, the branches it does not execute
+                // contain no call this specialization makes, so discovering
+                // them would mint certificates for callees the program never
+                // reaches — and would demand shape rules for statements it
+                // never runs. A proven condition is itself folded by the same
+                // environment, so it contains no call either.
+                Some(selected) => {
+                    let selected = match selected {
+                        Some(ordinal) => &cond_blocks[ordinal].stmts,
+                        None => else_block.as_deref().unwrap_or_default(),
+                    };
+                    self.discover_statements(selected, values)
+                }
+                None => {
+                    self.discover_statement_blocks(cond_blocks, values)?;
+                    self.discover_statements(else_block.as_deref().unwrap_or_default(), values)
+                }
+            },
             rumoca_core::Statement::When { blocks, .. } => {
                 self.discover_statement_blocks(blocks, values)
             }
@@ -914,7 +989,7 @@ fn resolve_certificate(
             call_span,
         ));
     }
-    let mut values = global_values.clone();
+    let mut values = global_values.clone().into_specialization();
     let mut parameters = Vec::with_capacity(function.inputs.len());
     // Inputs are bound in declaration order because MLS §12.2 lets a later
     // formal's dimension read an earlier formal — both its shape and, for a
@@ -1254,462 +1329,6 @@ fn checked_shape_arithmetic(
             span,
         )
     })
-}
-
-type FunctionResultShape<'scope> = dyn FnMut(&rumoca_core::Reference, &[Expression], Span) -> Result<ValueShape, ToDaeError>
-    + 'scope;
-
-fn expression_shape(
-    expression: &Expression,
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-) -> Result<ValueShape, ToDaeError> {
-    let span = expression_span(expression)?;
-    match expression {
-        Expression::Literal { .. } => Ok(Vec::new()),
-        Expression::VarRef {
-            name, subscripts, ..
-        } => {
-            let shape = values
-                .get(name.var_name())
-                .cloned()
-                .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span))?;
-            apply_subscripts(shape, subscripts, values)
-        }
-        Expression::Index {
-            base, subscripts, ..
-        } => {
-            let shape = expression_shape(base, values, function_result)?;
-            apply_subscripts(shape, subscripts, values)
-        }
-        Expression::Unary { rhs, .. } => expression_shape(rhs, values, function_result),
-        Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = expression_shape(lhs, values, function_result)?;
-            let rhs = expression_shape(rhs, values, function_result)?;
-            binary_shape(op.clone(), lhs, rhs, span)
-        }
-        Expression::BuiltinCall { function, args, .. } => {
-            builtin_shape(*function, args, values, function_result, span)
-        }
-        Expression::StringConversion { value, format, .. } => {
-            string_conversion_shape(value, format, values, function_result, span)
-        }
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-            ..
-        } if *is_constructor && name.as_str().starts_with("__rumoca_named_arg__.") => {
-            let [value] = args.as_slice() else {
-                return Err(ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "named argument wrapper must contain one value",
-                    span,
-                ));
-            };
-            expression_shape(value, values, function_result)
-        }
-        Expression::FunctionCall { name, args, .. } => function_result(name, args, span),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            let expected = expression_shape(else_branch, values, function_result)?;
-            for (_, value) in branches {
-                let found = expression_shape(value, values, function_result)?;
-                require_same_shape(&expected, &found, span)?;
-            }
-            Ok(expected)
-        }
-        Expression::Array { elements, .. } => {
-            array_expression_shape(elements, values, function_result, span)
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => range_expression_shape(start, step.as_deref(), end, values, span),
-        Expression::Tuple { .. }
-        | Expression::ArrayComprehension { .. }
-        | Expression::FieldAccess { .. }
-        | Expression::Empty { .. } => Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "expression form has no exact checked shape rule",
-            span,
-        )),
-    }
-}
-
-fn string_conversion_shape(
-    value: &Expression,
-    format: &rumoca_core::StringConversionFormat,
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    if !expression_shape(value, values, function_result)?.is_empty() {
-        return shape_mismatch(span);
-    }
-    for operand in format.operands() {
-        if !expression_shape(operand, values, function_result)?.is_empty() {
-            return shape_mismatch(span);
-        }
-    }
-    Ok(Vec::new())
-}
-
-fn array_expression_shape(
-    elements: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let Some(first) = elements.first() else {
-        return Ok(vec![0]);
-    };
-    let child = expression_shape(first, values, function_result)?;
-    for element in &elements[1..] {
-        let found = expression_shape(element, values, function_result)?;
-        require_same_shape(&child, &found, span)?;
-    }
-    let count = u32::try_from(elements.len()).map_err(|_| {
-        ToDaeError::unsupported_flat(
-            "function shape proof",
-            "array element count exceeds the DAE shape domain",
-            span,
-        )
-    })?;
-    Ok(std::iter::once(count).chain(child).collect())
-}
-
-fn range_expression_shape(
-    start: &Expression,
-    step: Option<&Expression>,
-    end: &Expression,
-    values: &ShapeEnvironment,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let start = evaluate_shape_integer(start, values)?;
-    let step = step
-        .map(|step| evaluate_shape_integer(step, values))
-        .transpose()?
-        .unwrap_or(1);
-    let end = evaluate_shape_integer(end, values)?;
-    Ok(vec![range_cardinality(start, step, end, span)?])
-}
-
-fn reject_shape_call(
-    name: &rumoca_core::Reference,
-    _arguments: &[Expression],
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    Err(ToDaeError::unsupported_flat(
-        "function shape proof",
-        format!(
-            "dependent extents cannot call runtime function `{}`",
-            name.as_str()
-        ),
-        span,
-    ))
-}
-
-fn builtin_shape(
-    function: BuiltinFunction,
-    arguments: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    match function {
-        BuiltinFunction::Size if arguments.len() == 1 => {
-            let rank = expression_shape(&arguments[0], values, function_result)?.len();
-            Ok(vec![u32::try_from(rank).map_err(|_| {
-                ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "rank exceeds the DAE shape domain",
-                    span,
-                )
-            })?])
-        }
-        BuiltinFunction::Size | BuiltinFunction::Sum | BuiltinFunction::Product => Ok(Vec::new()),
-        BuiltinFunction::Zeros => arguments
-            .iter()
-            .map(|argument| {
-                let extent = evaluate_shape_integer(argument, values)?;
-                u32::try_from(extent).ok().ok_or_else(|| {
-                    ToDaeError::unsupported_flat(
-                        "function shape proof",
-                        format!("zeros extent `{extent}` is invalid"),
-                        span,
-                    )
-                })
-            })
-            .collect(),
-        BuiltinFunction::Smooth => arguments
-            .get(1)
-            .ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "smooth requires two arguments",
-                    span,
-                )
-            })
-            .and_then(|value| expression_shape(value, values, function_result)),
-        BuiltinFunction::Integer => scalar_integer_shape(arguments, values, function_result, span),
-        BuiltinFunction::Min | BuiltinFunction::Max if arguments.len() == 1 => Ok(Vec::new()),
-        BuiltinFunction::Der
-        | BuiltinFunction::Pre
-        | BuiltinFunction::Sample
-        | BuiltinFunction::Clock
-        | BuiltinFunction::Hold
-        | BuiltinFunction::Previous
-        | BuiltinFunction::SubSample
-        | BuiltinFunction::SuperSample
-        | BuiltinFunction::ShiftSample
-        | BuiltinFunction::BackSample
-        | BuiltinFunction::NoClock
-        | BuiltinFunction::Abs
-        | BuiltinFunction::Sign
-        | BuiltinFunction::Sqrt
-        | BuiltinFunction::Floor
-        | BuiltinFunction::Ceil
-        | BuiltinFunction::Sin
-        | BuiltinFunction::Cos
-        | BuiltinFunction::Tan
-        | BuiltinFunction::Asin
-        | BuiltinFunction::Acos
-        | BuiltinFunction::Atan
-        | BuiltinFunction::Sinh
-        | BuiltinFunction::Cosh
-        | BuiltinFunction::Tanh
-        | BuiltinFunction::Exp
-        | BuiltinFunction::Log
-        | BuiltinFunction::Log10
-        | BuiltinFunction::NoEvent => arguments
-            .first()
-            .ok_or_else(|| {
-                ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    format!("{} requires an argument", function.name()),
-                    span,
-                )
-            })
-            .and_then(|value| expression_shape(value, values, function_result)),
-        BuiltinFunction::Interval => scalar_interval_shape(arguments, span),
-        // MLS §3.7.4.5 `semiLinear` returns `if x >= 0 then positiveSlope*x else
-        // negativeSlope*x`, so its shape is the common shape of its operands.
-        BuiltinFunction::Atan2
-        | BuiltinFunction::Mod
-        | BuiltinFunction::Min
-        | BuiltinFunction::Max
-        | BuiltinFunction::SemiLinear => {
-            shared_operand_shape(function, arguments, values, function_result, span)
-        }
-        _ => Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            format!("{} has no exact checked shape rule", function.name()),
-            span,
-        )),
-    }
-}
-
-/// The one shape every operand of an elementwise builtin must agree on.
-fn shared_operand_shape(
-    function: BuiltinFunction,
-    arguments: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let Some((first, rest)) = arguments.split_first() else {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            format!("{} requires arguments", function.name()),
-            span,
-        ));
-    };
-    let expected = expression_shape(first, values, function_result)?;
-    for argument in rest {
-        let found = expression_shape(argument, values, function_result)?;
-        require_same_shape(&expected, &found, span)?;
-    }
-    Ok(expected)
-}
-
-fn scalar_interval_shape(arguments: &[Expression], span: Span) -> Result<ValueShape, ToDaeError> {
-    if arguments.len() > 1 {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "interval accepts at most one inference operand",
-            span,
-        ));
-    }
-    Ok(Vec::new())
-}
-
-fn scalar_integer_shape(
-    arguments: &[Expression],
-    values: &ShapeEnvironment,
-    function_result: &mut FunctionResultShape<'_>,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    let [value] = arguments else {
-        return Err(invalid_integer_shape(span));
-    };
-    let shape = expression_shape(value, values, function_result)?;
-    if shape.is_empty() {
-        Ok(shape)
-    } else {
-        Err(invalid_integer_shape(span))
-    }
-}
-
-fn invalid_integer_shape(span: Span) -> ToDaeError {
-    ToDaeError::unsupported_flat(
-        "function shape proof",
-        "integer requires one scalar argument",
-        span,
-    )
-}
-
-fn binary_shape(
-    operator: OpBinary,
-    lhs: ValueShape,
-    rhs: ValueShape,
-    span: Span,
-) -> Result<ValueShape, ToDaeError> {
-    match operator {
-        OpBinary::Mul => match (lhs.as_slice(), rhs.as_slice()) {
-            ([], _) => Ok(rhs),
-            (_, []) => Ok(lhs),
-            ([lhs_n], [rhs_n]) if lhs_n == rhs_n => Ok(Vec::new()),
-            ([rows, inner], [rhs_inner]) if inner == rhs_inner => Ok(vec![*rows]),
-            ([lhs_inner], [rhs_inner, columns]) if lhs_inner == rhs_inner => Ok(vec![*columns]),
-            ([rows, inner], [rhs_inner, columns]) if inner == rhs_inner => {
-                Ok(vec![*rows, *columns])
-            }
-            _ => shape_mismatch(span),
-        },
-        OpBinary::Div => {
-            if rhs.is_empty() {
-                Ok(lhs)
-            } else {
-                shape_mismatch(span)
-            }
-        }
-        OpBinary::MulElem | OpBinary::DivElem | OpBinary::ExpElem => {
-            if lhs.is_empty() {
-                Ok(rhs)
-            } else if rhs.is_empty() || lhs == rhs {
-                Ok(lhs)
-            } else {
-                shape_mismatch(span)
-            }
-        }
-        OpBinary::Exp => {
-            if rhs.is_empty() {
-                Ok(lhs)
-            } else {
-                shape_mismatch(span)
-            }
-        }
-        _ => {
-            require_same_shape(&lhs, &rhs, span)?;
-            Ok(lhs)
-        }
-    }
-}
-
-fn apply_subscripts(
-    shape: ValueShape,
-    subscripts: &[Subscript],
-    values: &ShapeEnvironment,
-) -> Result<ValueShape, ToDaeError> {
-    let mut remaining = shape.into_iter();
-    let mut result = Vec::new();
-    for subscript in subscripts {
-        let source_extent = remaining.next().ok_or_else(|| {
-            ToDaeError::unsupported_flat(
-                "function shape proof",
-                "subscript count exceeds expression rank",
-                subscript.span(),
-            )
-        })?;
-        match subscript {
-            Subscript::Index { value, span } => {
-                if *value < 1
-                    || u32::try_from(*value)
-                        .ok()
-                        .is_none_or(|value| value > source_extent)
-                {
-                    return Err(ToDaeError::unsupported_flat(
-                        "function shape proof",
-                        format!("literal index `{value}` is outside extent {source_extent}"),
-                        *span,
-                    ));
-                }
-            }
-            Subscript::Colon { .. } => result.push(source_extent),
-            Subscript::Expr { expr, .. } => {
-                let index_shape = expression_shape(expr, values, &mut reject_shape_call)?;
-                result.extend(index_shape);
-            }
-        }
-    }
-    result.extend(remaining);
-    Ok(result)
-}
-
-fn require_same_shape(expected: &[u32], found: &[u32], span: Span) -> Result<(), ToDaeError> {
-    if expected == found {
-        Ok(())
-    } else {
-        shape_mismatch(span)
-    }
-}
-
-fn shape_mismatch<T>(span: Span) -> Result<T, ToDaeError> {
-    Err(ToDaeError::unsupported_flat(
-        "function shape proof",
-        "expression shapes are inconsistent",
-        span,
-    ))
-}
-
-fn range_cardinality(start: i64, step: i64, end: i64, span: Span) -> Result<u32, ToDaeError> {
-    if step == 0 {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "range step cannot be zero",
-            span,
-        ));
-    }
-    let distance = if step > 0 {
-        end.checked_sub(start)
-    } else {
-        start.checked_sub(end)
-    };
-    let Some(distance) = distance else {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "range cardinality overflowed",
-            span,
-        ));
-    };
-    if distance < 0 {
-        return Ok(0);
-    }
-    let count = distance
-        .checked_div(step.abs())
-        .and_then(|count| count.checked_add(1))
-        .and_then(|count| u32::try_from(count).ok())
-        .ok_or_else(|| {
-            ToDaeError::unsupported_flat(
-                "function shape proof",
-                "range cardinality exceeds the DAE shape domain",
-                span,
-            )
-        })?;
-    Ok(count)
 }
 
 #[cfg(test)]

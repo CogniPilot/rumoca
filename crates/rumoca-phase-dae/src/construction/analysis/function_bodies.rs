@@ -326,6 +326,24 @@ pub(super) fn resolve_function_definitions(
                 )?;
             }
             (
+                rumoca_core::Statement::If {
+                    cond_blocks,
+                    else_block,
+                    ..
+                },
+                FunctionStatementPlan::ProvenBranch {
+                    selected,
+                    statements: branch,
+                },
+            ) => {
+                // MLS §11.5 executes exactly these statements, so they carry
+                // the definedness certificate straight into the enclosing
+                // sequence: nothing about the values they own is conditional.
+                let selected =
+                    selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+                resolve_function_definitions(selected, branch, context, definitions)?;
+            }
+            (
                 rumoca_core::Statement::For { span, .. },
                 FunctionStatementPlan::For {
                     lowering,

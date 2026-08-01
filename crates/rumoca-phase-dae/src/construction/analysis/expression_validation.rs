@@ -622,6 +622,14 @@ impl ExpressionValidator<'_> {
                 span,
             ));
         }
+        // Inside a value-proven function specialization the comprehension owns
+        // its own compact domain: MLS §12.2 lets the range be written over the
+        // function's inputs, so `{... for k in 1:m}` is a rectangular domain
+        // exactly when this specialization settles `m`. Proving it here is what
+        // lets the lowering fold the same domain without a second rule.
+        if let Some(values) = self.values {
+            specialized_comprehension_plan(indices, filter, values, span)?;
+        }
         // MLS §10.4.1 opens a comprehension index as a fresh scalar of the
         // comprehension, so it shadows any enclosing coordinate of the same flat
         // name. The proven-value scope is narrowed with the binder set, or a

@@ -283,9 +283,17 @@ fn lower_expression_node<'dae>(
         Expression::ArrayComprehension {
             expr,
             indices,
-            filter: _,
+            filter,
             ..
-        } => lower_array_comprehension(construction, symbols, binders, expr, indices, provenance),
+        } => lower_array_comprehension(
+            construction,
+            symbols,
+            binders,
+            expr,
+            indices,
+            filter.as_deref(),
+            provenance,
+        ),
         Expression::Range { .. } => lower_range(
             construction,
             symbols,
@@ -1453,11 +1461,24 @@ fn lower_array_comprehension<'dae>(
     enclosing_binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     body: &Expression,
     indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&Expression>,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let key = ComprehensionKey::new(provenance.span(), indices)
-        .expect("analysis proves comprehension-owner provenance");
-    let plan = &symbols.functions.comprehension_plans[&key];
+    // A comprehension inside a function specialization belongs to that
+    // specialization (MLS §12.2): two specializations of one function share the
+    // source span but not the extent, so `f(3)` and `f(5)` cannot both be
+    // described by the one model-wide plan the span keys. Its domain is folded
+    // in that scope, through the same owner the shape proof and the validator
+    // read. The predicate is the scope, not "has a Modelica body": an MLS §12.9
+    // external argument is in specialization scope with no body to lower into.
+    let plan = if symbols.shapes.is_specialization() {
+        specialized_comprehension_plan(indices, filter, symbols.shapes, provenance.span())
+            .expect("analysis proves every specialized comprehension domain")
+    } else {
+        let key = ComprehensionKey::new(provenance.span(), indices)
+            .expect("analysis proves comprehension-owner provenance");
+        symbols.functions.comprehension_plans[&key].clone()
+    };
     let domain = construction.domains(|domains| {
         domains.nested_in_scope(
             enclosing_binders.values().copied(),

@@ -30,6 +30,7 @@ mod record_array_fields;
 mod record_equations;
 mod source_balance;
 mod structured_families;
+mod unexecuted_branches;
 mod when_chains;
 use clocks::SampledTarget;
 use clocks::{ClockAnalysis, ClockDomainAnalysis, analyze_clocks};
@@ -37,7 +38,9 @@ pub(super) use clocks::{
     ClockPlan, ClockedValuePlan, is_inferred_clock_condition, is_whole_clock_coordinate,
 };
 use comprehensions::analyze_comprehensions;
-pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
+pub(super) use comprehensions::{
+    ComprehensionKey, ComprehensionPlan, specialized_comprehension_plan,
+};
 pub(super) use delays::DelayPlan;
 use delays::analyze_delays;
 pub(super) use derived_parameters::DerivedParameterPlan;
@@ -65,6 +68,7 @@ use function_bodies::{
     validate_function_expression_with_roles, validate_function_statements,
     validate_function_subscripts, validate_functions,
 };
+pub(super) use function_conditionals::selected_conditional_statements;
 use function_conditionals::{plan_function_conditional, resolve_function_conditional};
 use function_definitions::FunctionDefinitions;
 pub(super) use function_definitions::FunctionValueSeed;
@@ -100,6 +104,7 @@ pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
+use unexecuted_branches::check_unexecuted_branches;
 use when_chains::validate_when_chains;
 
 pub(super) struct Analysis {
@@ -186,6 +191,15 @@ pub(super) enum FunctionStatementPlan {
         branches: Vec<Vec<FunctionStatementPlan>>,
         fallback: Option<Vec<FunctionStatementPlan>>,
         targets: Vec<VarName>,
+    },
+    /// An MLS §11.5 conditional whose executed branch this specialization
+    /// proves, planned as the unconditional statement sequence it denotes.
+    ///
+    /// `selected` names the condition branch that holds, or `None` for the else
+    /// part; `statements` is the plan of exactly those statements.
+    ProvenBranch {
+        selected: Option<usize>,
+        statements: Vec<FunctionStatementPlan>,
     },
     ArrayAssembly(FunctionArrayAssemblyPlan),
     ArrayAssemblyMember,

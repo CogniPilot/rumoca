@@ -46,7 +46,7 @@ use analysis::{
     assigned_function_targets, effective_function_scalar_type, effective_variable_scalar_type,
     empty_array_bound_to_declaration, equation_partition, is_inferred_clock_condition,
     is_whole_clock_coordinate, model_algorithm_targets, record_field_projections,
-    structured_assignment_names,
+    selected_conditional_statements, specialized_comprehension_plan, structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use conditions::{combine_conditions, lower_condition, negate_condition};
@@ -78,7 +78,8 @@ use function_external::define_external_function;
 use function_record_assembly::lower_function_record_assembly;
 use function_shapes::{
     FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,
-    evaluate_shape_integer,
+    call_free_expression_shape, call_free_target_shape, evaluate_shape_integer,
+    proven_conditional_branch,
 };
 use model_algorithm::{
     ModelAlgorithmLowering, lower_declarative_model_algorithm,
@@ -568,6 +569,24 @@ fn lower_function_statement<'dae>(
                 },
             )?;
             Ok(body)
+        }
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            },
+            FunctionStatementPlan::ProvenBranch {
+                selected,
+                statements,
+            },
+        ) => {
+            // Analysis settled every condition MLS §11.5 evaluates here, so the
+            // selected statements are lowered as the unconditional sequence they
+            // denote and no condition reaches the DAE.
+            let selected =
+                selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+            lower_function_statements(construction, symbols, body, selected, statements)
         }
         (_, FunctionStatementPlan::ArrayAssemblyMember) => {
             unreachable!("array assembly members are consumed by their leading owner")

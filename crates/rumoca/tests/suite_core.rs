@@ -75,6 +75,8 @@ mod function_noelse_if_test;
 mod function_output_shadow_state_test;
 #[path = "function_projection_array_shape_test.rs"]
 mod function_projection_array_shape_test;
+#[path = "function_proven_branch_test.rs"]
+mod function_proven_branch_test;
 #[path = "function_return_checked.rs"]
 mod function_return_checked;
 #[path = "galec_equivalence.rs"]

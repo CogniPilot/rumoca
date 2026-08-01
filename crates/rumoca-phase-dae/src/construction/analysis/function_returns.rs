@@ -129,6 +129,11 @@ fn sequence_defines_target(plans: &[FunctionStatementPlan], target: &VarName) ->
             assignment.target() == target
         }
         FunctionStatementPlan::If { targets, .. } => targets.contains(target),
+        // A proven branch runs unconditionally, so it defines exactly what its
+        // own statement sequence defines.
+        FunctionStatementPlan::ProvenBranch { statements, .. } => {
+            sequence_defines_target(statements, target)
+        }
         _ => false,
     })
 }
