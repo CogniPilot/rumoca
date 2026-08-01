@@ -14,6 +14,9 @@ use rumoca_core::{BuiltinFunction, Span, apply_scalar_binary_math, apply_scalar_
 
 /// Evaluate a built-in function call.
 pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, EvalError> {
+    if let Some(result) = eval_vectorized_call(name, args, span) {
+        return result;
+    }
     if let Some(result) = eval_scalar_math_builtin(name, args, span) {
         return result;
     }
@@ -56,6 +59,70 @@ pub fn eval_builtin(name: &str, args: &[Value], span: Span) -> Result<Value, Eva
 
         _ => Err(EvalError::unknown_function(name, span)),
     }
+}
+
+/// Apply a one-argument scalar builtin element-wise to an array actual.
+///
+/// MLS 3.6 §12.4.6 (referenced from §10.6.12): "Functions with one scalar
+/// return value can be applied to arrays element-wise, e.g., if `A` is a vector
+/// of reals, then `sin(A)` is a vector where each element is the result of
+/// applying the function `sin` to the corresponding element in `A`" —
+/// `sin({a, b, c}) = {sin(a), sin(b), sin(c)}`. The array actual is the
+/// *foreach argument* of that rule, and the result has its dimension sizes; the
+/// recursion carries the rule through a matrix row by row.
+///
+/// Only the one-argument scalar functions of MLS §3.7.3 (elementary
+/// mathematical), §3.7.1 (numeric `abs`/`sign`/`sqrt`) and §3.7.2
+/// (event-triggering `floor`/`ceil`/`integer`) are vectorized here, because
+/// those are exactly the builtins whose formal parameter is a scalar — an array
+/// actual can only be a foreach argument. `size`, `ndims`, `sum`, `product`,
+/// `fill`, `cat`, `linspace`, `isEqual` and the reduction forms of `min`/`max`
+/// declare array formals, so an array actual there is the ordinary call and
+/// vectorizing it would change what the model means.
+fn eval_vectorized_call(
+    name: &str,
+    args: &[Value],
+    span: Span,
+) -> Option<Result<Value, EvalError>> {
+    if !is_scalar_argument_builtin(name) {
+        return None;
+    }
+    let [Value::Array(elements)] = args else {
+        return None;
+    };
+    Some(
+        elements
+            .iter()
+            .map(|element| eval_builtin(name, std::slice::from_ref(element), span))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+    )
+}
+
+/// The builtins whose single formal parameter is a scalar (MLS §3.7.1, §3.7.2,
+/// §3.7.3), so an array actual is a foreach argument under MLS §12.4.6.
+fn is_scalar_argument_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "exp"
+            | "log"
+            | "log10"
+            | "sqrt"
+            | "abs"
+            | "sign"
+            | "floor"
+            | "ceil"
+            | "integer"
+    )
 }
 
 fn eval_scalar_math_builtin(

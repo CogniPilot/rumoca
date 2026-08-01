@@ -14,6 +14,9 @@ pub(super) fn eval_binary_op(
     rhs: &Value,
     span: Span,
 ) -> Result<Value, EvalError> {
+    if let Some(refusal) = record_operand_refusal(op, lhs, rhs, span) {
+        return Err(refusal);
+    }
     match op {
         OpBinary::Add | OpBinary::AddElem => eval_add(lhs, rhs, span),
         OpBinary::Sub | OpBinary::SubElem => eval_sub(lhs, rhs, span),
@@ -37,8 +40,62 @@ pub(super) fn eval_binary_op(
     }
 }
 
+/// Why an arithmetic or ordering operator over a record operand has no rule
+/// here, rather than proving the model wrong.
+///
+/// MLS 3.6 §14 defines `+`, `-`, `*`, `/`, `^` and the ordering operators over
+/// an operator record only through the operator functions the record declares,
+/// and resolving that overload is not something this evaluator does — Flat
+/// still carries the written `Binary` node. So a record operand means "no
+/// folding rule reaches here", which is an unimplemented form, not a defect in
+/// the model. Reporting it as a type mismatch would blame the model for an
+/// overload the compiler never resolved.
+///
+/// `==`/`!=` are excluded because their structural comparison is already
+/// defined on every value this evaluator builds.
+fn record_operand_refusal(
+    op: &OpBinary,
+    lhs: &Value,
+    rhs: &Value,
+    span: Span,
+) -> Option<EvalError> {
+    let overloadable = matches!(
+        op,
+        OpBinary::Add
+            | OpBinary::AddElem
+            | OpBinary::Sub
+            | OpBinary::SubElem
+            | OpBinary::Mul
+            | OpBinary::MulElem
+            | OpBinary::Div
+            | OpBinary::DivElem
+            | OpBinary::Exp
+            | OpBinary::ExpElem
+            | OpBinary::Lt
+            | OpBinary::Le
+            | OpBinary::Gt
+            | OpBinary::Ge
+    );
+    let has_record = matches!(lhs, Value::Record(_)) || matches!(rhs, Value::Record(_));
+    (overloadable && has_record).then(|| EvalError::UnsupportedExpression {
+        kind: format!("overloaded operator `{op:?}` on an operator-record operand (MLS §14)"),
+        span,
+    })
+}
+
 /// Evaluate a unary operation.
 pub(super) fn eval_unary_op(op: &OpUnary, rhs: &Value, span: Span) -> Result<Value, EvalError> {
+    if matches!(rhs, Value::Record(_))
+        && matches!(
+            op,
+            OpUnary::Minus | OpUnary::DotMinus | OpUnary::Plus | OpUnary::DotPlus
+        )
+    {
+        return Err(EvalError::UnsupportedExpression {
+            kind: format!("overloaded operator `{op:?}` on an operator-record operand (MLS §14)"),
+            span,
+        });
+    }
     match op {
         OpUnary::Minus | OpUnary::DotMinus => eval_negate(rhs, span),
         OpUnary::Plus | OpUnary::DotPlus => Ok(rhs.clone()),
@@ -226,6 +283,16 @@ fn eval_div(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
                 .iter()
                 .zip(b.iter())
                 .map(|(x, y)| eval_div(x, y, span))
+                .collect::<Result<_, _>>()?;
+            Ok(Value::Array(result))
+        }
+        // MLS 3.6 §10.6.5 "Division by Numeric Scalars": `a / s` divides every
+        // element of the numeric array `a` by the numeric scalar `s`. The
+        // mirrored form `s / a` has no MLS meaning and stays rejected.
+        (Value::Array(a), Value::Integer(_) | Value::Real(_)) => {
+            let result: Vec<Value> = a
+                .iter()
+                .map(|x| eval_div(x, rhs, span))
                 .collect::<Result<_, _>>()?;
             Ok(Value::Array(result))
         }
