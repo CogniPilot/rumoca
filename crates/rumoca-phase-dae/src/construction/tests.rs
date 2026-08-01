@@ -3,6 +3,7 @@ mod clocks_temporal;
 mod discrete;
 mod events;
 mod functions;
+mod multi_output_calls;
 mod semi_linear;
 mod support;
 mod variables;

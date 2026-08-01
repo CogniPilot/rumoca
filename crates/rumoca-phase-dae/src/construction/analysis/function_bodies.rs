@@ -224,6 +224,20 @@ pub(super) fn plan_function_statements(
                 *span,
                 context,
             )?),
+            rumoca_core::Statement::FunctionCall {
+                comp,
+                args,
+                outputs,
+                span,
+            } => plans.push(plan_function_multi_output_call(
+                MultiOutputCallStatement {
+                    callee: comp,
+                    args,
+                    outputs,
+                    span: *span,
+                },
+                context,
+            )?),
             _ => {
                 let span =
                     required_statement_span(statement, "unsupported function body statement")?;
@@ -277,6 +291,198 @@ fn validate_function_assignment_target(
         subscripts: target.subs.clone().into_boxed_slice(),
         seed: None,
     })
+}
+
+pub(super) struct MultiOutputCallStatement<'statement> {
+    pub(super) callee: &'statement rumoca_core::ComponentReference,
+    pub(super) args: &'statement [Expression],
+    pub(super) outputs: &'statement [Option<rumoca_core::ComponentReference>],
+    pub(super) span: Span,
+}
+
+/// Prove the checked owner of an MLS §11.2.1.1 multi-result call statement.
+///
+/// MLS §11.2.1.1 writes the statement as
+/// `"(" output-expression-list ")" ":=" component-reference function-call-args`
+/// and states: "A function with n results needs m≤n receiving variables on the
+/// left-hand side, and the variables are assigned from left to right." An
+/// omitted receiver — `(out1, , out3)` — is a hole in that list, not a value.
+///
+/// The DAE owns one call expression per *read* result ordinal (the same
+/// `call(function, ordinal, ..)` node an MLS §11.2.1 single-result call builds
+/// at ordinal 0), so a receiving slot becomes an ordinary whole-value
+/// definition of its target and an omitted slot becomes nothing at all.
+fn plan_function_multi_output_call(
+    call: MultiOutputCallStatement<'_>,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionStatementPlan, ToDaeError> {
+    require_span(call.span, "function multi-result call statement")?;
+    if call.callee.parts().is_empty()
+        || call.callee.parts().iter().any(|part| !part.subs.is_empty())
+    {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            "a multi-result call statement requires one resolved, unsubscripted function",
+            call.span,
+        ));
+    }
+    let callee_name = call.callee.to_var_name();
+    let Some(callee) = context.flat.functions.get(&callee_name) else {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!("`{callee_name}` is not a declared function of the flat model"),
+            call.span,
+        ));
+    };
+    // MLS §12.6 makes a record constructor an expression-only callable: it has
+    // one result and no statement form, so it never owns a receiving list.
+    if callee.is_constructor {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "`{callee_name}` is a record constructor, which owns no multi-result call statement"
+            ),
+            call.span,
+        ));
+    }
+    // MLS §12.4.3 and §11.2.1.1 evaluate the right-hand call *once* and then
+    // assign the receiving variables. The canonical DAE has no multi-result
+    // node: it owns one `call(function, ordinal, ..)` per result read, so a
+    // statement that reads k results denotes k invocations. That is
+    // indistinguishable from one evaluation only for a function whose result
+    // depends on nothing but its arguments. `body_is_pure` is exactly that
+    // predicate: MLS 3.7 §12.3 treats an MLS §12.9 external body that declared
+    // no purity as impure, which is the form rumoca already reports as
+    // deprecated (WR001). Such callees are refused by name rather than being
+    // silently invoked once per receiver.
+    if !callee.body_is_pure() {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "MLS §12.4.3 evaluates a multi-result call once, but the canonical DAE reads each \
+                 result as its own call: `{callee_name}` is an impure external function, whose \
+                 repeated invocation is not its single evaluation"
+            ),
+            call.span,
+        ));
+    }
+    // A statement call that reads no result defines nothing, so no DAE owner
+    // observes it. MLS §12.3 admits such a call for its effect, but only an
+    // impure context has an effect to keep; this body has no owner for one
+    // either way, so the rejection names the missing owner and not a purity
+    // the caller may not have.
+    if call.outputs.iter().all(Option::is_none) {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "`{}` calls `{callee_name}` as a statement without reading a result, which the \
+                 canonical DAE has no owner for",
+                context.function.name
+            ),
+            call.span,
+        ));
+    }
+    if call.outputs.len() > callee.outputs.len() {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "MLS §11.2.1.1 admits at most one receiving variable per result: `{callee_name}` declares {} but the call site writes {}",
+                callee.outputs.len(),
+                call.outputs.len()
+            ),
+            call.span,
+        ));
+    }
+    for argument in call.args {
+        validate_function_expression_with_roles(
+            argument,
+            context.roles,
+            context.flat,
+            context.shapes,
+        )?;
+    }
+    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
+    let key = context
+        .shape_analysis
+        .call_key(&reference, call.args, context.shapes, call.span)?;
+    let certificate = context
+        .shape_analysis
+        .certificate(&key)
+        .expect("call_key proves the certificate it returns a key for");
+    let mut outputs = Vec::with_capacity(call.outputs.len());
+    for (ordinal, target) in call.outputs.iter().enumerate() {
+        let Some(target) = target else {
+            outputs.push(None);
+            continue;
+        };
+        outputs.push(Some(plan_multi_output_receiver(
+            target,
+            ordinal,
+            &callee_name,
+            certificate,
+            call.span,
+            context,
+        )?));
+    }
+    Ok(FunctionStatementPlan::MultiOutputCall { outputs })
+}
+
+/// Prove one receiving variable of an MLS §11.2.1.1 multi-result call.
+fn plan_multi_output_receiver(
+    target: &rumoca_core::ComponentReference,
+    ordinal: usize,
+    callee_name: &VarName,
+    certificate: &FunctionShapeCertificate,
+    span: Span,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionAssignmentPlan, ToDaeError> {
+    let plan = validate_function_assignment_target(context, target, span)?;
+    // A receiving variable takes one whole result. An element write would need
+    // the aggregate seed MLS §12.4.4 definedness proves for the single-result
+    // form, which this statement shape does not carry.
+    if !plan.is_whole() {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "receiving variable `{}` is subscripted; a multi-result call statement defines \
+                 whole function values",
+                plan.target()
+            ),
+            span,
+        ));
+    }
+    // MLS §12.4.3: "Left-hand side references must agree with type of
+    // corresponding output component" (SPEC_0022 FUNC-025). The proven result
+    // shape is the one the constructed callee actually returns.
+    let Some(declared) = context.shapes.get(plan.target()) else {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "receiving variable `{}` has no proven shape in this specialization",
+                plan.target()
+            ),
+            span,
+        ));
+    };
+    let result = certificate.results.get(ordinal).ok_or_else(|| {
+        ToDaeError::unsupported_flat(
+            "function call statement",
+            format!("`{callee_name}` proves no result shape for ordinal {ordinal}"),
+            span,
+        )
+    })?;
+    if declared != result {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "receiving variable `{}` has shape {declared:?} but result {ordinal} of \
+                 `{callee_name}` has shape {result:?}",
+                plan.target()
+            ),
+            span,
+        ));
+    }
+    Ok(plan)
 }
 
 /// Prove the MLS §12.4.4 definedness certificate of one planned sequence.
@@ -351,6 +557,20 @@ pub(super) fn resolve_function_definitions(
                     ..
                 },
             ) => resolve_function_loop_definitions(lowering, body, context, definitions, *span)?,
+            (
+                rumoca_core::Statement::FunctionCall { args, span, .. },
+                FunctionStatementPlan::MultiOutputCall { outputs },
+            ) => {
+                // MLS §11.2.1.1 evaluates the arguments, then assigns the
+                // receiving variables left to right, so every argument is read
+                // before any receiver is defined.
+                for argument in args.iter() {
+                    definitions.require_readable(argument, context, *span)?;
+                }
+                for plan in outputs.iter().flatten() {
+                    definitions.define_whole(plan.target());
+                }
+            }
             (_, FunctionStatementPlan::ArrayAssembly(assembly)) => {
                 definitions.define_whole(&assembly.target);
             }

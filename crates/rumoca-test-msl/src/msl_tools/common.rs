@@ -296,6 +296,48 @@ pub fn git_worktree_is_dirty(repo_root: &Path) -> bool {
     }
 }
 
+/// A content digest of the working tree's uncommitted changes, or `None` when
+/// the tree is clean.
+///
+/// [`git_worktree_is_dirty`] says *that* an artifact came from uncommitted
+/// code; it cannot say *which* uncommitted code. Two runs of one commit with
+/// different working-tree content — exactly how a change is iterated before it
+/// lands — produce artifacts that are indistinguishable by commit and dirty
+/// flag alone, so a reader cannot tell which run a table describes, nor order
+/// two of them. Hashing `git diff HEAD` together with the untracked-file roster
+/// makes each working-tree state self-identifying.
+///
+/// An unreadable tree yields a sentinel rather than `None`: "clean" is a claim,
+/// and a claim nobody verified must not be stamped on an artifact.
+pub fn git_worktree_content_digest(repo_root: &Path) -> Option<String> {
+    let mut diff = Command::new("git");
+    diff.arg("diff")
+        .arg("HEAD")
+        .arg("--binary")
+        .current_dir(repo_root);
+    let mut untracked = Command::new("git");
+    untracked
+        .arg("ls-files")
+        .arg("--others")
+        .arg("--exclude-standard")
+        .current_dir(repo_root);
+    let timeout = Duration::from_secs(30);
+    let (Ok(diff), Ok(untracked)) = (
+        run_command_with_timeout(&mut diff, timeout),
+        run_command_with_timeout(&mut untracked, timeout),
+    ) else {
+        return Some("unverified".to_string());
+    };
+    if diff.stdout.trim().is_empty() && untracked.stdout.trim().is_empty() {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(diff.stdout.as_bytes());
+    hasher.update(b"\0untracked\0");
+    hasher.update(untracked.stdout.as_bytes());
+    Some(hasher.finalize().to_hex().to_string())
+}
+
 pub fn run_command_with_timeout(
     command: &mut Command,
     timeout: Duration,

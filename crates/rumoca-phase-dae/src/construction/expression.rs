@@ -277,8 +277,16 @@ fn lower_expression_node<'dae>(
             else_branch,
             provenance,
         ),
-        Expression::Array { elements, .. } => {
-            lower_array_expression(construction, symbols, binders, elements, provenance)
+        Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } => {
+            if *is_matrix {
+                lower_matrix_expression(construction, symbols, binders, elements, provenance)
+            } else {
+                lower_array_expression(construction, symbols, binders, elements, provenance)
+            }
         }
         Expression::ArrayComprehension {
             expr,
@@ -1329,6 +1337,53 @@ fn lower_function_call<'dae>(
             provenance,
         );
     }
+    let call = lower_call_operands(construction, symbols, binders, name, arguments, provenance)?;
+    call.result(construction, 0, provenance)
+}
+
+/// The callee and lowered *arguments* one call site shares across its results.
+///
+/// MLS §11.2.1.1 evaluates a multi-result call once and then assigns each
+/// receiving variable, so every read result ordinal reads the same argument
+/// expressions; lowering them once shares exactly those argument nodes.
+///
+/// LIMITATION: only the arguments are shared. The canonical DAE owns no
+/// multi-result call node, so each read ordinal is its own
+/// `call(function, ordinal, ..)` and the callee body is evaluated once per
+/// result read — a statement reading k results costs k evaluations of that
+/// body (measured: a 2-receiver statement doubles the callee's `sin`/`cos`
+/// node count). This is sound only because the accepted callees are pure
+/// (see the MLS §12.4.3 external-impurity refusal in
+/// `analysis::function_bodies::plan_function_multi_output_call`), but it is a
+/// real cost that a shared multi-result node would remove.
+pub(super) struct LoweredCallOperands<'dae> {
+    function: dae::FunctionId<'dae>,
+    arguments: Vec<dae::ExprId<'dae>>,
+}
+
+impl<'dae> LoweredCallOperands<'dae> {
+    pub(super) fn result(
+        &self,
+        construction: &mut dae::DaeConstruction<'dae>,
+        ordinal: usize,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+        construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .call(self.function, ordinal, self.arguments.iter().copied())
+        })
+    }
+}
+
+pub(super) fn lower_call_operands<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    name: &rumoca_core::Reference,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<LoweredCallOperands<'dae>, dae::DaeConstructionError> {
     let (key, function) =
         symbols
             .functions
@@ -1355,7 +1410,10 @@ fn lower_function_call<'dae>(
             lower_expression_scoped(construction, symbols, binders, argument, None)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    construction.expressions(|expressions| expressions.at(provenance).call(function, 0, arguments))
+    Ok(LoweredCallOperands {
+        function,
+        arguments,
+    })
 }
 
 fn lower_record_constructor<'dae>(
@@ -1453,6 +1511,92 @@ fn lower_array_expression<'dae>(
         .map(|element| lower_expression_scoped(construction, symbols, binders, element, None))
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| expressions.at(provenance).array(elements))
+}
+
+/// Lower the MLS §10.4.2.1 `[ ]` concatenation operator.
+///
+/// `[ ]` always denotes a matrix, so its value is built row-major with one
+/// nesting level per dimension: an outer array of rows, each row an array of
+/// its scalar operands. The `;` spelling already arrives with one node per row
+/// and lowers as those rows; the `,` spelling arrives as one flat operand list
+/// and is the single row of a 1 x n matrix, which is the level of nesting that
+/// used to be missing — `[0, 1, 1, 0, 0]` was built as a 5-vector rather than
+/// as the 1 x 5 matrix MLS gives it.
+///
+/// ACCEPTANCE CONTRACT (SPEC_0008): only a row whose operands are *all
+/// syntactically non-array* changes here — `[s1, …, sn]` becomes the 1 x n
+/// matrix MLS gives it. Every other `[ ]` keeps the element nesting it already
+/// lowered to, because two different producers write `is_matrix: true` with two
+/// different row conventions and the node alone does not say which built it:
+///
+/// * Parse (`rumoca-phase-parse/src/expressions.rs::convert_range_primary`)
+///   writes the `;` spelling as one `is_matrix: true` row node per row.
+/// * Flatten's comprehension expander
+///   (`rumoca-phase-flatten/src/array_comprehension.rs:145`) sets
+///   `is_matrix = matches!(expr, Array { .. })`, which marks an MLS §10.4.1
+///   `{ }` comprehension whose *body* is an array as though it were an MLS
+///   §10.4.2.1 `[ ]` matrix, over rows that are plain `is_matrix: false`
+///   arrays. `Modelica.Electrical.Machines.SpacePhasors.Blocks.ToSpacePhasor`'s
+///   `InverseTransformation[m, 2] = {{…} for k in 1:m}` arrives that way,
+///   containing no `[ ]` at all. That mislabelling is the root defect (filed as
+///   a board item); this rule only has to survive it.
+///
+/// A row test that accepted only the first convention rewrapped the second into
+/// rank 3 and broke `Modelica.Electrical.Machines.Examples.Transformers.
+/// TransformerTestbench`. A row test that accepted both would silently read the
+/// MLS §10.4.2.1 row-of-vectors `[{1,2,3},{4,5,6}]` (OMC: 3 x 2) as 2 x 3.
+///
+/// The predicate is deliberately *syntactic*, not a scalar-ness proof: a bare
+/// reference operand (`[v1, v2]` over declared vectors) is not an array node,
+/// so it takes the 1 x n branch and is then refused by the checked shape rule
+/// below rather than silently transposed the way the base compiler did.
+fn lower_matrix_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    elements: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if is_non_array_operand_row(elements) {
+        // `[s1, …, sn]`: one row of scalars, so the matrix is that row wrapped
+        // once. This is the only shape whose lowering changes.
+        let row = lower_array_expression(construction, symbols, binders, elements, provenance)?;
+        return construction.expressions(|expressions| expressions.at(provenance).array([row]));
+    }
+    // Every other shape keeps the nesting it already lowered to. A child that is
+    // itself a scalar-operand row is lowered as its own operand list rather than
+    // through the dispatch above, which would otherwise wrap that row a second
+    // time and turn `[1, 2; 3, 4]` into rank 3.
+    let lowered = elements
+        .iter()
+        .map(|element| match element {
+            Expression::Array {
+                elements: operands,
+                is_matrix: true,
+                ..
+            } if is_non_array_operand_row(operands) => {
+                lower_array_expression(construction, symbols, binders, operands, provenance)
+            }
+            other => lower_expression_scoped(construction, symbols, binders, other, None),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    construction.expressions(|expressions| expressions.at(provenance).array(lowered))
+}
+
+/// Whether `elements` is a non-empty `[ ]` row in which no operand is an array
+/// *node*.
+///
+/// This is a syntactic test, not a scalar-ness proof: a bare reference to a
+/// declared vector satisfies it. Proving the operands actually scalar is the
+/// checked shape rule's job — `function_shapes::expression_rules::
+/// matrix_row_columns` for a call argument, and
+/// `analysis::expression_validation::validate_matrix_row_operands` for a model
+/// expression — both of which name MLS §10.4.2.1 when they refuse.
+fn is_non_array_operand_row(elements: &[Expression]) -> bool {
+    !elements.is_empty()
+        && !elements
+            .iter()
+            .any(|element| matches!(element, Expression::Array { .. }))
 }
 
 fn lower_array_comprehension<'dae>(

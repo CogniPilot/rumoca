@@ -96,6 +96,8 @@ fn meta(tag: &str) -> BandTableMeta {
     BandTableMeta {
         run_scope: BandTableRunScope::Full,
         git_commit: "cert1234".to_string(),
+        // A fixture stands for a clean-tree certification.
+        working_tree_digest: None,
         omc_version: Some("OpenModelica 1.25.0".to_string()),
         source: BandTableSource {
             trace_comparison_file: format!("{tag}/sim_trace_comparison.json"),

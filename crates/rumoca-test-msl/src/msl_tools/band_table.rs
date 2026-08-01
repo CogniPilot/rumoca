@@ -79,9 +79,10 @@
 //! the reason every other cohort model was not classified at all.
 
 use super::common::{
-    TRACE_EXCLUSIONS_FILE_REL, load_trace_exclusions_file, unix_timestamp_seconds,
-    write_pretty_json,
+    TRACE_EXCLUSIONS_FILE_REL, git_worktree_content_digest, load_trace_exclusions_file,
+    unix_timestamp_seconds, write_pretty_json,
 };
+use crate::repo_root;
 use anyhow::{Context, Result, bail};
 use indexmap::IndexMap;
 use rumoca_sim::sim_trace_compare::{
@@ -462,6 +463,16 @@ pub struct BandTable {
     /// another run's numbers to this one.
     #[serde(default)]
     pub git_commit: String,
+    /// Digest of the working tree's uncommitted content at write time, absent
+    /// when the tree was clean.
+    ///
+    /// `git_commit` cannot separate two runs of one commit that carried
+    /// different uncommitted work, which is how a change is iterated before it
+    /// lands: such tables are indistinguishable by commit, and file timestamps
+    /// do not order them either once a directory is copied or re-cleaned.
+    /// Stamping the content makes each working-tree state self-identifying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_tree_digest: Option<String>,
     #[serde(default)]
     pub omc_version: Option<String>,
     #[serde(default)]
@@ -548,6 +559,7 @@ impl BandTable {
             generated_at_unix_seconds: unix_timestamp_seconds(),
             run_scope: meta.run_scope,
             git_commit: meta.git_commit,
+            working_tree_digest: meta.working_tree_digest,
             omc_version: meta.omc_version,
             source: meta.source,
             cohort_roster_models,
@@ -584,6 +596,7 @@ fn rows_digest(rows: &[BandRow]) -> String {
 pub struct BandTableMeta {
     pub run_scope: BandTableRunScope,
     pub git_commit: String,
+    pub working_tree_digest: Option<String>,
     pub omc_version: Option<String>,
     pub source: BandTableSource,
 }
@@ -1314,6 +1327,7 @@ pub fn derive_band_table_from_dir(
     let meta = BandTableMeta {
         run_scope,
         git_commit,
+        working_tree_digest: git_worktree_content_digest(&repo_root()),
         omc_version: read_omc_version(results_dir),
         source: BandTableSource {
             trace_comparison_file: trace_file.display().to_string(),

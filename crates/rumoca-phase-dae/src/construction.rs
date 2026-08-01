@@ -59,7 +59,7 @@ use equation_systems::{lower_equation_expression, lower_equation_systems};
 use expression::{
     FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
     classify_function_call, derivative_reference, expression_children, expression_span,
-    lower_clocked_expression, lower_coordinate_reference, lower_expression,
+    lower_call_operands, lower_clocked_expression, lower_coordinate_reference, lower_expression,
     lower_expression_scoped, lower_function_array_update, lower_function_expression,
     lower_function_expression_scoped, lower_model_algorithm_expression, planned_input_variability,
     require_span, variable_attribute_expressions,
@@ -77,8 +77,8 @@ use function_construction::{
 use function_external::define_external_function;
 use function_record_assembly::lower_function_record_assembly;
 use function_shapes::{
-    FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,
-    call_free_expression_shape, call_free_target_shape, evaluate_shape_integer,
+    FunctionShapeAnalysis, FunctionShapeCertificate, FunctionSpecializationKey, ShapeEnvironment,
+    ValueShape, call_free_expression_shape, call_free_target_shape, evaluate_shape_integer,
     proven_conditional_branch,
 };
 use model_algorithm::{
@@ -544,17 +544,61 @@ fn lower_function_statement<'dae>(
             },
         ),
         (
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                span,
+            statement @ rumoca_core::Statement::If { .. },
+            FunctionStatementPlan::If { .. } | FunctionStatementPlan::ProvenBranch { .. },
+        ) => lower_function_conditional_statement(construction, symbols, body, statement, plan),
+        (
+            rumoca_core::Statement::FunctionCall {
+                comp, args, span, ..
             },
-            FunctionStatementPlan::If {
-                branches,
-                fallback,
-                targets,
-            },
+            FunctionStatementPlan::MultiOutputCall { outputs },
         ) => {
+            let call = FunctionMultiOutputCall {
+                callee: comp,
+                args,
+                span: *span,
+                outputs,
+            };
+            lower_function_multi_output_call(construction, symbols, &mut body, call)?;
+            Ok(body)
+        }
+        (_, FunctionStatementPlan::ArrayAssemblyMember) => {
+            unreachable!("array assembly members are consumed by their leading owner")
+        }
+        (_, FunctionStatementPlan::RecordAssemblyMember) => {
+            unreachable!("record assembly members are consumed by their leading owner")
+        }
+        _ => unreachable!("function analysis and construction plans remain aligned"),
+    }
+}
+
+/// Lower one MLS §11.5 conditional statement of a function body.
+///
+/// The conditional reaches the DAE either as its own branches, or — when
+/// analysis settled every condition this specialization evaluates — as the
+/// unconditional sequence the executed branch denotes, in which case no
+/// condition reaches the DAE at all.
+fn lower_function_conditional_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    mut body: dae::FunctionBody<'dae>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    let rumoca_core::Statement::If {
+        cond_blocks,
+        else_block,
+        span,
+    } = statement
+    else {
+        unreachable!("a conditional plan owns a conditional statement")
+    };
+    match plan {
+        FunctionStatementPlan::If {
+            branches,
+            fallback,
+            targets,
+        } => {
             lower_function_conditional(
                 construction,
                 &mut body,
@@ -570,29 +614,13 @@ fn lower_function_statement<'dae>(
             )?;
             Ok(body)
         }
-        (
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            },
-            FunctionStatementPlan::ProvenBranch {
-                selected,
-                statements,
-            },
-        ) => {
-            // Analysis settled every condition MLS §11.5 evaluates here, so the
-            // selected statements are lowered as the unconditional sequence they
-            // denote and no condition reaches the DAE.
+        FunctionStatementPlan::ProvenBranch {
+            selected,
+            statements,
+        } => {
             let selected =
                 selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
             lower_function_statements(construction, symbols, body, selected, statements)
-        }
-        (_, FunctionStatementPlan::ArrayAssemblyMember) => {
-            unreachable!("array assembly members are consumed by their leading owner")
-        }
-        (_, FunctionStatementPlan::RecordAssemblyMember) => {
-            unreachable!("record assembly members are consumed by their leading owner")
         }
         _ => unreachable!("function analysis and construction plans remain aligned"),
     }
@@ -602,6 +630,60 @@ struct FunctionAssignment<'statement> {
     value: &'statement Expression,
     span: Span,
     plan: &'statement FunctionAssignmentPlan,
+}
+
+struct FunctionMultiOutputCall<'statement> {
+    callee: &'statement rumoca_core::ComponentReference,
+    args: &'statement [Expression],
+    span: Span,
+    outputs: &'statement [Option<FunctionAssignmentPlan>],
+}
+
+/// Lower one MLS §11.2.1.1 multi-result call statement.
+///
+/// The call's *arguments* are lowered once and each read result ordinal becomes
+/// the `call(function, ordinal, ..)` node that defines its receiving variable —
+/// the same owner an MLS §11.2.1 single-result assignment builds at ordinal 0.
+/// An omitted receiver reads no result, so it mints no expression.
+///
+/// Only the arguments are shared: reading k results denotes k evaluations of
+/// the callee body, not the one evaluation MLS §12.4.3 describes. That is
+/// observationally equal only for a pure callee, which is why an impure
+/// external callee is refused by name during planning. See
+/// [`expression::LoweredCallOperands`] for the cost this leaves behind.
+fn lower_function_multi_output_call<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    call: FunctionMultiOutputCall<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::source(call.span)?;
+    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
+    let binders = HashMap::new();
+    let operands = lower_call_operands(
+        construction,
+        LoweringSymbols {
+            coordinates: symbols.coordinates,
+            functions: symbols.functions,
+            shapes: symbols.shapes,
+            function_body: Some(body),
+            values: None,
+            owner_clock: None,
+        },
+        &binders,
+        &reference,
+        call.args,
+        provenance,
+    )?;
+    for (ordinal, plan) in call.outputs.iter().enumerate() {
+        let Some(plan) = plan else {
+            continue;
+        };
+        let target = function_value_coordinate(symbols.coordinates, plan.target());
+        let value = operands.result(construction, ordinal, provenance)?;
+        construction.functions(|owner| owner.assign(body, target, value, provenance))?;
+    }
+    Ok(())
 }
 
 fn lower_function_assignment<'dae>(

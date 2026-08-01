@@ -104,8 +104,16 @@ pub(super) fn expression_shape(
             }
             Ok(expected)
         }
-        Expression::Array { elements, .. } => {
-            array_expression_shape(elements, values, function_result, span)
+        Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } => {
+            if *is_matrix {
+                matrix_expression_shape(elements, values, function_result, span)
+            } else {
+                array_expression_shape(elements, values, function_result, span)
+            }
         }
         Expression::Range {
             start, step, end, ..
@@ -124,13 +132,40 @@ pub(super) fn expression_shape(
             span,
         ),
         Expression::Tuple { .. } | Expression::FieldAccess { .. } | Expression::Empty { .. } => {
-            Err(ToDaeError::unsupported_flat(
-                "function shape proof",
-                "expression form has no exact checked shape rule",
-                span,
-            ))
+            Err(unshaped_expression_form(expression, span))
         }
     }
+}
+
+/// Name the construct behind an expression form that owns no checked shape.
+///
+/// A rejection that does not say *which* construct it refuses cannot be read as
+/// a contract (SPEC_0008 acceptance-contract-before-rejection), so each form
+/// reports itself rather than sharing one message.
+///
+/// Reachability differs per arm. `FieldAccess` is reached by real models —
+/// `Modelica.Electrical.Batteries.Examples.ShowImpedance` and
+/// `Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.
+/// SinglePhaseInductance` both land here through a symbolically indexed record
+/// array element. `Tuple` and `Empty` are defensive: flatten lowers an
+/// MLS §11.2.1.1 receiving list into `Statement::FunctionCall::outputs` and an
+/// absent expression into no expression at all, so neither reaches a shape
+/// query in the MSL cohort. They are still named rather than shared, because a
+/// future producer that does emit one must read what was refused.
+fn unshaped_expression_form(expression: &Expression, span: Span) -> ToDaeError {
+    let detail = match expression {
+        Expression::Tuple { .. } => {
+            "an MLS §11.2.1.1 result tuple has no shape of its own; only its individual results do"
+        }
+        Expression::FieldAccess { .. } => {
+            "MLS §12.2 record-field projection has an exact shape only through a flattened field \
+             name; a structural field access of a symbolically indexed record array element keeps \
+             no such name"
+        }
+        Expression::Empty { .. } => "an absent expression has no shape",
+        _ => unreachable!("only the unshaped expression forms reach this rule"),
+    };
+    ToDaeError::unsupported_flat("function shape proof", detail, span)
 }
 
 fn string_conversion_shape(
@@ -173,6 +208,142 @@ fn array_expression_shape(
         )
     })?;
     Ok(std::iter::once(count).chain(child).collect())
+}
+
+/// The shape MLS §10.4.2.1 gives the `[ ]` concatenation operator.
+///
+/// MLS §10.4.2.1 defines both spellings over `promote`:
+///
+/// > Concatenation along first dimension: `[A; B; C; …] = cat(1, promote(A, n),
+/// > promote(B, n), promote(C, n), …)` where `n = max(2, ndims(A), ndims(B),
+/// > ndims(C), …)`.
+/// >
+/// > Concatenation along second dimension: `[A, B, C, …] = cat(2, promote(A,
+/// > n), promote(B, n), promote(C, n), …)` where `n = max(2, …)`. If necessary,
+/// > 1-sized dimensions are added to the right of A, B, C before the operation
+/// > is carried out, especially that each operand has at least two dimensions.
+///
+/// A `[ ]` result therefore always has rank 2 here, never the rank the element
+/// nesting alone suggests: `[0, 1, 1, 0, 0]` is a 1x5 matrix, not a 5-vector.
+/// Proving it as a vector is what made `Modelica.Math.Matrices.isEqual(...,
+/// [0, 1, 1, 0, 0], ...)` look like a rank-1 argument for a `Real[:,:]` formal.
+///
+/// Parse builds a row-per-element node for the `;` spelling and a
+/// operand-per-element node for the `,` spelling
+/// (`rumoca-phase-parse/src/expressions.rs::convert_range_primary`), so a
+/// constructor whose every element is itself a `[ ]` node is the `;` form.
+///
+/// KNOWN FRONTEND LIMITATION (not introduced here): those two spellings alias
+/// when a `,` operand is itself written with brackets. `[[1,2],[3,4]]` (OMC:
+/// 1x4) and `[1,2;3,4]` (OMC: 2x2) reach this rule as the *same* node, and both
+/// are read as the `;` form. The aliasing is in the parse IR — `is_matrix` is a
+/// bool with no room for the separator — and predates this rule, which only
+/// changes the previously wrong rank of the unambiguous single-row form.
+fn matrix_expression_shape(
+    elements: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    if elements.is_empty() {
+        // MLS §10.4.2.1: "There must be at least one argument (i.e., [] is not
+        // defined)."
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "MLS §10.4.2.1 leaves the empty matrix construction `[]` undefined",
+            span,
+        ));
+    }
+    let is_row_element = |element: &Expression| {
+        matches!(
+            element,
+            Expression::Array {
+                is_matrix: true,
+                ..
+            }
+        )
+    };
+    if elements.iter().all(is_row_element) {
+        // `[A; B; …]`: concatenate the 1 x n rows along dimension 1.
+        let mut columns = None;
+        for row in elements {
+            let Expression::Array {
+                elements: operands, ..
+            } = row
+            else {
+                unreachable!("every element was proven to be a matrix constructor")
+            };
+            let column_count = matrix_row_columns(operands, values, function_result, span)?;
+            match columns {
+                Some(expected) if expected != column_count => return shape_mismatch(span),
+                None => columns = Some(column_count),
+                _ => {}
+            }
+        }
+        let rows = u32::try_from(elements.len()).map_err(|_| {
+            ToDaeError::unsupported_flat(
+                "function shape proof",
+                "matrix row count exceeds the DAE shape domain",
+                span,
+            )
+        })?;
+        let columns = columns.expect("a matrix construction owns at least one row");
+        return Ok(vec![rows, columns]);
+    }
+    // `[A, B, …]`: one row, concatenated along dimension 2.
+    let columns = matrix_row_columns(elements, values, function_result, span)?;
+    Ok(vec![1, columns])
+}
+
+/// The column count one `[ ]` row proves for its operands.
+///
+/// Each operand is `promote`d to rank 2 first — MLS Operator 10.1 "Fills
+/// dimensions of size 1 from the right" — so a scalar becomes 1x1 and the row
+/// is 1 x (operand count).
+///
+/// ACCEPTANCE CONTRACT (SPEC_0008): this rule proves a `[ ]` row of *scalar*
+/// operands and nothing else. A non-scalar operand needs the real `cat`
+/// promotion — a vector operand becomes an n x 1 column, so MLS §10.4.2.1's own
+/// example states "`[v1; v2]` is a `(n1+n2) x 1` matrix", and a row of vectors
+/// transposes into the result — and the canonical DAE has no concatenation
+/// owner to build that with. Proving a shape the lowering cannot construct
+/// would only move the rejection to `ED020`, so the shape rule and
+/// [`lower_matrix_expression`] refuse exactly the same operands.
+fn matrix_row_columns(
+    operands: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<u32, ToDaeError> {
+    if operands.is_empty() {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "MLS §10.4.2.1 leaves an empty matrix construction row undefined",
+            span,
+        ));
+    }
+    for operand in operands {
+        let shape = expression_shape(operand, values, function_result)?;
+        if !shape.is_empty() {
+            return Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                format!(
+                    "MLS §10.4.2.1 `[ ]` concatenation of a rank-{} operand needs a `cat` \
+                     promotion owner the canonical DAE does not have; only scalar operands \
+                     have an exact checked shape rule",
+                    shape.len()
+                ),
+                span,
+            ));
+        }
+    }
+    u32::try_from(operands.len()).map_err(|_| {
+        ToDaeError::unsupported_flat(
+            "function shape proof",
+            "matrix column count exceeds the DAE shape domain",
+            span,
+        )
+    })
 }
 
 /// The shape MLS §10.4.1 gives an array constructor with iterators.

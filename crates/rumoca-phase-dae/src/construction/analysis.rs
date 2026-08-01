@@ -201,6 +201,15 @@ pub(super) enum FunctionStatementPlan {
         selected: Option<usize>,
         statements: Vec<FunctionStatementPlan>,
     },
+    /// MLS §11.2.1.1 assignment from a call with multiple results.
+    ///
+    /// One entry per *receiving slot* written at the call site, in source
+    /// order, so entry `i` names the target of result ordinal `i`. `None` is an
+    /// omitted receiver — the `(out1, , out3)` spelling — whose result the DAE
+    /// never reads and therefore never lowers.
+    MultiOutputCall {
+        outputs: Vec<Option<FunctionAssignmentPlan>>,
+    },
     ArrayAssembly(FunctionArrayAssemblyPlan),
     ArrayAssemblyMember,
     RecordAssembly(FunctionRecordAssemblyPlan),
