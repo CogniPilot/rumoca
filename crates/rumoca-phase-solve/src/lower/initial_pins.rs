@@ -21,7 +21,8 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{InitialValuePin, InitialValueRole};
 
-use super::initial_parameters::{InitialRowIncidence, InitializationParameterOwnership};
+use super::initial_parameters::InitializationParameterOwnership;
+use super::initial_projection::InitialRowIncidence;
 use super::{ScalarRows, variable_scalar_slot};
 use crate::LowerError;
 use crate::layout::LoweredLayout;

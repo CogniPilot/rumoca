@@ -85,7 +85,10 @@ pub struct PreparedSystem<'prepared, 'dae> {
     /// Constraint expressions an index reduction left on the state manifold.
     pub manifold: &'prepared [dae::ExprId<'dae>],
     /// MLS 3.6 §8.6 initial equations rewritten onto the state each one
-    /// determines. See [`initial_pins`].
+    /// determines. The proof that decides which stated value defines a state and
+    /// which one only restates it lives in this phase's `initial_pins` module,
+    /// which is private — naming it as a doc link would make the public page
+    /// point at an item its reader cannot open.
     pub pins: &'prepared [InitialValuePin],
 }
 

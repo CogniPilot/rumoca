@@ -4,6 +4,7 @@ use nalgebra::{DMatrix, DVector};
 use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
+use initial_diagnostics::initial_projection_error;
 use scaling::{
     algebraic_block_scales, algebraic_plan_row_scales, initial_block_fallback_scales,
     initial_residual_scales, jacobian_row_scales, model_variable_scale, scaled_newton_delta,
@@ -13,6 +14,7 @@ use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assi
 use step_limit::StepLimit;
 
 mod homotopy;
+mod initial_diagnostics;
 mod manifold;
 mod plan;
 mod retry;
@@ -143,6 +145,16 @@ pub trait AlgebraicProjectionModel: ImplicitProjectionModel {
 
     fn initial_residual_len(&self) -> usize;
     fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot>;
+
+    /// What the initialization projection does with one row, when the lowered
+    /// model records it. Diagnostics only; projection semantics never read it.
+    ///
+    /// The default is `None` so a third-party projection model keeps working —
+    /// it then gets a diagnostic that says the role is unrecorded rather than one
+    /// that guesses which of the two very different readings applies.
+    fn initial_row_role(&self, _row_idx: usize) -> Option<solve::InitializationRowRole> {
+        None
+    }
 
     fn eval_initial_jacobian_v(
         &self,
@@ -960,6 +972,10 @@ impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
         self.model.initial_target(row_idx)
     }
 
+    fn initial_row_role(&self, row_idx: usize) -> Option<solve::InitializationRowRole> {
+        self.model.initial_row_role(row_idx)
+    }
+
     fn eval_initial_jacobian_v(
         &self,
         values: &[f64],
@@ -1759,34 +1775,6 @@ fn initial_selected_residual_norm<M: AlgebraicProjectionModel>(
         selected.push(value);
     }
     Ok(scaled_residual_norm(&selected, row_scales))
-}
-
-fn initial_projection_error<M: AlgebraicProjectionModel>(
-    model: &M,
-    message: &str,
-    selected_rows: &[usize],
-    residual: &[f64],
-) -> RuntimeSolveError {
-    let worst = residual
-        .iter()
-        .copied()
-        .enumerate()
-        .max_by(|(_, lhs), (_, rhs)| residual_sort_key(*lhs).total_cmp(&residual_sort_key(*rhs)));
-    match worst {
-        Some((row, value)) => {
-            let original_row = selected_rows.get(row).copied().unwrap_or(row);
-            // Naming the row's target turns "row 51 is NaN" into the variable a
-            // model author can act on; the row index alone is meaningless
-            // outside the lowered IR.
-            let target = initial_row_target_name(model, original_row)
-                .map_or(String::new(), |name| format!(" target={name}"));
-            RuntimeSolveError::solve_ir(format!(
-                "{message}: max selected residual row={row} original_row={original_row}{target} value={value:.6e} norm={:.6e}",
-                residual_norm(residual)
-            ))
-        }
-        None => RuntimeSolveError::solve_ir(message),
-    }
 }
 
 fn residual_sort_key(value: f64) -> f64 {

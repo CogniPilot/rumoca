@@ -138,6 +138,16 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .flatten()
     }
 
+    fn initial_row_role(&self, row_idx: usize) -> Option<solve::InitializationRowRole> {
+        self.runtime
+            .model
+            .problem
+            .initialization
+            .row_roles
+            .get(row_idx)
+            .copied()
+    }
+
     fn eval_initial_jacobian_v(
         &self,
         y: &[f64],

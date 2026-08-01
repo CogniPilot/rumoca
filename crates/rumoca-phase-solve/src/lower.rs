@@ -13,6 +13,7 @@ mod events;
 mod initial_discrete;
 mod initial_parameters;
 mod initial_pins;
+mod initial_projection;
 mod scalar;
 use scalar::{ScalarCompiler, ScalarSelector, ScaledDerivativeProgram};
 
@@ -1238,6 +1239,18 @@ fn lower_initialization<'dae>(
     // recompute a bound owner's binding rather than read the seed the parameter
     // set stored for it.
     let ownership = initial_parameters::initialization_parameter_ownership(view, layout)?;
+    // MLS §8.6 solves the states and the `fixed = false` parameters together; the
+    // space names which coordinate of each kind the projection may own, and which
+    // a declaration has already determined.
+    let space = initial_projection::initialization_unknown_space(
+        initial_projection::InitializationUnknownInputs {
+            view,
+            layout,
+            ownership: &ownership,
+            derivatives,
+            pins,
+        },
+    )?;
     let context = InitializationRowContext {
         view,
         layout,
@@ -1245,7 +1258,7 @@ fn lower_initialization<'dae>(
         ownership: &ownership,
     };
     let mut rows = ScalarRows::default();
-    let mut row_incidence: Vec<initial_parameters::InitialRowIncidence<'dae>> = Vec::new();
+    let mut row_incidence: Vec<initial_projection::InitialRowIncidence<'dae>> = Vec::new();
     for owner in view.initialization_owners() {
         match owner {
             dae::InitializationOwnerView::Residual { equation, .. } => {
@@ -1262,15 +1275,15 @@ fn lower_initialization<'dae>(
                     // Only a one-scalar equation lets a whole-expression coordinate
                     // walk stand in for exact per-scalar incidence.
                     row_incidence.push(match count {
-                        1 => initial_parameters::InitialRowIncidence::Residual(equation.residual()),
-                        _ => initial_parameters::InitialRowIncidence::Opaque,
+                        1 => initial_projection::InitialRowIncidence::Residual(equation.residual()),
+                        _ => initial_projection::InitialRowIncidence::Opaque,
                     });
                 }
             }
             dae::InitializationOwnerView::Structured { family, .. } => {
                 lower_initialization_family(context, family, &mut rows)?;
                 row_incidence.resize_with(rows.programs.len(), || {
-                    initial_parameters::InitialRowIncidence::Opaque
+                    initial_projection::InitialRowIncidence::Opaque
                 });
             }
         }
@@ -1290,8 +1303,7 @@ fn lower_initialization<'dae>(
     // residual no block can ever satisfy.
     row_incidence.extend(transferred.check_incidence);
     let row_count = rows.programs.len();
-    let plan =
-        initial_parameters::plan_initial_parameter_projection(view, &ownership, &row_incidence)?;
+    let plan = initial_projection::plan_initialization_projection(&space, &row_incidence);
     let mut updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
     // MLS §8.6 orders these after the projection that solves the `fixed = false`
     // unknowns they read; `settle_initialization_system` iterates the whole set
@@ -1304,14 +1316,111 @@ fn lower_initialization<'dae>(
     // projection reaches the same fixed point.
     updates.rows.extend(transferred.updates);
     updates.targets.extend(transferred.update_targets);
+    reject_double_owned_initial_coordinates(view, &plan.unknowns, &updates.targets)?;
+    let row_targets = initial_row_targets(view, &plan.plan, row_count)?;
     Ok(solve::InitializationSolveSystem {
         residual: rows.into_compute_block()?,
-        row_targets: vec![None; row_count],
+        row_targets,
+        row_roles: plan.row_roles,
         projection_unknowns: plan.unknowns,
         projection_plan: plan.plan,
         update_rhs: updates.rows.into_scalar_block()?,
         update_targets: updates.targets,
     })
+}
+
+/// The coordinate each initialization row was planned to determine.
+///
+/// The matching already decided this pairing, and carrying it into the Solve IR
+/// is what lets a failed initialization say *which coordinate* it could not
+/// settle instead of only which residual row index was worst — the difference
+/// between a bare numeric failure and a diagnostic a model author can act on.
+/// It also lets the runtime take a row that is affine in its own coordinate as a
+/// direct assignment (`project_initial_singleton_assignment`), which it verifies
+/// against the residual and reverts when it does not improve.
+///
+/// A row named by two blocks would be one equation solving two coordinates. The
+/// components are row-disjoint by construction, so that cannot happen — which is
+/// exactly why it is checked here rather than assumed.
+fn initial_row_targets(
+    view: dae::DaeView<'_>,
+    plan: &solve::InitializationProjectionPlan,
+    row_count: usize,
+) -> Result<Vec<Option<solve::ScalarSlot>>, LowerError> {
+    let mut targets = vec![None; row_count];
+    for block in &plan.blocks {
+        for (row, unknown) in block
+            .rows
+            .iter()
+            .copied()
+            .zip(block.unknowns.iter().copied())
+        {
+            let entry = targets.get_mut(row).ok_or_else(|| {
+                LowerError::contract(
+                    format!(
+                        "initialization projection names residual row {row}, but the system has \
+                         only {row_count} rows"
+                    ),
+                    first_model_span(view),
+                )
+            })?;
+            if entry.is_some() {
+                return Err(LowerError::contract(
+                    format!(
+                        "initialization residual row {row} is claimed by two projection blocks"
+                    ),
+                    first_model_span(view),
+                ));
+            }
+            *entry = Some(unknown);
+        }
+    }
+    Ok(targets)
+}
+
+/// Every coordinate the initialization determines has exactly one owner.
+///
+/// The two lanes are disjoint by construction — `initial_projection` refuses a
+/// coordinate any declaration already states, and the update rows only write
+/// coordinates a declaration or a binding states — but a slot written by both an
+/// update row and a projection block is a wrong number rather than a failed
+/// solve: the update overwrites what the block solved, or the block re-solves
+/// what the update assigned, depending on where the settle loop stops. So the
+/// disjointness is checked here rather than trusted.
+fn reject_double_owned_initial_coordinates(
+    view: dae::DaeView<'_>,
+    unknowns: &[solve::ScalarSlot],
+    targets: &[solve::ScalarSlot],
+) -> Result<(), LowerError> {
+    let owned = unknowns
+        .iter()
+        .copied()
+        .filter_map(slot_identity)
+        .collect::<BTreeSet<_>>();
+    let Some(collision) = targets
+        .iter()
+        .copied()
+        .filter_map(slot_identity)
+        .find(|target| owned.contains(target))
+    else {
+        return Ok(());
+    };
+    Err(LowerError::contract(
+        format!(
+            "initialization coordinate {collision:?} is both a projection unknown and an \
+             initialization update target",
+        ),
+        first_model_span(view),
+    ))
+}
+
+/// A storage-class-tagged slot identity, so a Y index never aliases a P index.
+fn slot_identity(slot: solve::ScalarSlot) -> Option<(bool, usize)> {
+    match slot {
+        solve::ScalarSlot::Y { index, .. } => Some((false, index)),
+        solve::ScalarSlot::P { index, .. } => Some((true, index)),
+        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
+    }
 }
 
 /// Everything a lowered initialization row resolves its leaves against.

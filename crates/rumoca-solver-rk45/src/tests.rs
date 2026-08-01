@@ -1452,6 +1452,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
             initialization: solve::InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                 row_targets: Vec::new(),
+                row_roles: Vec::new(),
                 projection_unknowns: Vec::new(),
                 projection_plan: solve::InitializationProjectionPlan::default(),
                 update_rhs: solve::ScalarProgramBlock::default(),
