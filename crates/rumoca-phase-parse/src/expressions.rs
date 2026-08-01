@@ -450,6 +450,36 @@ fn ast_name_to_comp_ref(
     ast_name_to_comp_ref_with_local(name, false, context)
 }
 
+/// Build the redeclared component's name reference, keeping the array
+/// dimensions the redeclaration states.
+///
+/// MLS §A.2.5 gives an `element-redeclaration` a full `component-clause1`, whose
+/// `declaration` is `IDENT [ array-subscripts ] [ modification ]`. So
+/// `redeclare C a[2]` restates the component's dimensions just as its original
+/// declaration did, and those subscripts are the redeclaration's statement about
+/// the component's shape (MLS §7.3). Dropping them here silently reshapes the
+/// component to whatever the *replaced* declaration said, which is how a
+/// dimension-raising redeclaration used to reach typecheck as a rank-zero
+/// component and be rejected against its own subscripts.
+///
+/// The subscripts ride on the redeclared name's own `ComponentRefPart`, which is
+/// what [`rumoca_ir_ast::ComponentRefPart::subs`] is for: it keeps them attached
+/// to the name they dimension and leaves the redeclared *type* reference
+/// untouched. A redeclaration that states no subscripts leaves `subs` `None`, so
+/// this is a strict addition — for every source that never dimensions a
+/// redeclaration (all of MSL 4.1.0) the produced AST is unchanged.
+fn redeclared_name_ref(
+    decl: &modelica_grammar_trait::Declaration,
+) -> anyhow::Result<rumoca_ir_ast::ComponentReference> {
+    let mut name_ref = ident_to_comp_ref(&decl.ident)?;
+    if let Some(decl_opt) = &decl.declaration_opt
+        && let Some(part) = name_ref.parts.first_mut()
+    {
+        part.subs = Some(decl_opt.array_subscripts.subscripts.clone());
+    }
+    Ok(name_ref)
+}
+
 /// Build a single-part ComponentReference from an identifier token.
 fn ident_to_comp_ref(
     ident: &rumoca_core::Token,
@@ -631,7 +661,7 @@ fn convert_component_clause_redecl_inner(
         ));
     }
 
-    let name_ref = ident_to_comp_ref(&decl.ident)?;
+    let name_ref = redeclared_name_ref(decl)?;
     let new_type_ref =
         ast_name_to_comp_ref(&cc1.type_specifier.name, "component clause redeclaration")?;
 
@@ -700,7 +730,7 @@ fn convert_replaceable_component_clause_inner(
     cc1: &modelica_grammar_trait::ComponentClause1,
 ) -> Result<rumoca_ir_ast::Expression, anyhow::Error> {
     let decl = &cc1.component_declaration1.declaration;
-    let name_ref = ident_to_comp_ref(&decl.ident)?;
+    let name_ref = redeclared_name_ref(decl)?;
     let new_type_ref =
         ast_name_to_comp_ref(&cc1.type_specifier.name, "replaceable component clause")?;
 
