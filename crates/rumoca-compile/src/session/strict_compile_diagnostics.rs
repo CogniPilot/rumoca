@@ -27,6 +27,8 @@ pub(super) fn phase_result_to_failures(
                 missing_inners.join(", ")
             ),
             primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
+            secondary_labels: missing_inner_secondary_labels(missing_spans),
+            notes: Vec::new(),
         }],
         PhaseResult::Failed {
             phase,
@@ -56,6 +58,8 @@ pub(super) fn dae_phase_result_to_failures(
                 missing_inners.join(", ")
             ),
             primary_label: missing_inner_primary_label(tree, model_name, missing_spans),
+            secondary_labels: missing_inner_secondary_labels(missing_spans),
+            notes: Vec::new(),
         }],
         DaePhaseResult::Failed {
             phase,
@@ -171,17 +175,15 @@ fn failed_phase_failures(
         .iter()
         .filter(|diag| diag.is_error())
         .filter_map(|diag| {
-            let label = diag
-                .labels
-                .iter()
-                .find(|label| label.primary)
-                .or_else(|| diag.labels.first())?;
+            let (primary_label, secondary_labels) = ModelFailureDiagnostic::split_labels(diag)?;
             Some(ModelFailureDiagnostic {
                 model_name: model_name.to_string(),
                 phase: Some(phase),
                 error_code: diag.code.clone(),
                 error: diag.message.clone(),
-                primary_label: Some(label.clone()),
+                primary_label: Some(primary_label),
+                secondary_labels,
+                notes: diag.notes.clone(),
             })
         })
         .collect();
@@ -194,6 +196,8 @@ fn failed_phase_failures(
         error_code: error_code.clone(),
         error: error.to_string(),
         primary_label: class_primary_label(tree, model_name, "phase failed"),
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     }]
 }
 
@@ -345,6 +349,19 @@ fn missing_inner_primary_label(
         .or_else(|| class_primary_label(tree, model_name, "model needs inner declarations"))
 }
 
+/// The remaining `outer` declarations that also lack an `inner`.
+///
+/// The first span anchors the report; naming only that one would report a
+/// single site for a failure that has several, so the rest are carried as
+/// secondary labels rather than discarded.
+fn missing_inner_secondary_labels(missing_spans: &[Span]) -> Vec<Label> {
+    missing_spans
+        .iter()
+        .skip(1)
+        .map(|span| Label::secondary(*span).with_message("missing matching `inner`"))
+        .collect()
+}
+
 fn collect_document_parse_failures(
     doc: &Document,
     source_map: &SourceMap,
@@ -355,12 +372,16 @@ fn collect_document_parse_failures(
             .iter()
             .map(|error| {
                 let diagnostic = parse_error_to_common_diagnostic(error, doc, source_map);
+                let (primary_label, secondary_labels) =
+                    ModelFailureDiagnostic::split_labels(&diagnostic).unzip();
                 ModelFailureDiagnostic {
                     model_name: doc.uri.clone(),
                     phase: None,
                     error_code: diagnostic.code.clone(),
                     error: diagnostic.message,
-                    primary_label: diagnostic.labels.into_iter().find(|label| label.primary),
+                    primary_label,
+                    secondary_labels: secondary_labels.unwrap_or_default(),
+                    notes: diagnostic.notes,
                 }
             })
             .collect();
@@ -376,6 +397,8 @@ fn collect_document_parse_failures(
         error: err.to_string(),
         primary_label: doc_default_parse_span(doc, source_map)
             .map(|span| Label::primary(span).with_message("parse error in this document")),
+        secondary_labels: Vec::new(),
+        notes: Vec::new(),
     }]
 }
 

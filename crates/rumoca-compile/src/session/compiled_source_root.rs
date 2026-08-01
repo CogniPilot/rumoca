@@ -202,6 +202,8 @@ impl CompiledSourceRoot {
                 error_code: None,
                 error: "target resolution cache poisoned".to_string(),
                 primary_label: None,
+                secondary_labels: Vec::new(),
+                notes: Vec::new(),
             }],
             diagnostics: Vec::new(),
             source_map: Box::new(self.tree().source_map.clone()),
