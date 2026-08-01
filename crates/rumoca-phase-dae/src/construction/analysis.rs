@@ -51,16 +51,18 @@ use equation_partitions::defined_discrete_targets;
 pub(super) use equation_partitions::{EquationPartition, equation_partition};
 use event_conditions::{
     evaluate_clock_seconds, evaluate_sample_lattice, validate_algorithm_condition,
-    validate_condition_expression,
+    validate_condition_expression, validate_when_condition_expression,
 };
 pub(super) use expression_events::{ExpressionEventPlan, ExpressionEventPlans};
 use expression_events::{analyze_expression_events, is_rescheduling_time_relation};
 use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
-    validate_expression, validate_expression_scoped_with_record_array_fields,
+    PreContext, validate_expression, validate_expression_in_context,
+    validate_expression_scoped_with_record_array_fields,
     validate_expression_with_record_array_fields, validate_specialized_expression,
-    validate_specialized_subscripts, validate_subscripts_scoped,
+    validate_specialized_subscripts, validate_subscripts_scoped, validate_when_expression,
+    when_body_context,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 use function_bodies::{
@@ -116,7 +118,6 @@ pub(super) struct Analysis {
     pub(super) initialization_family_rows: HashSet<usize>,
     pub(super) sample_lattices: Vec<(Span, ClockLattice)>,
     pub(super) expression_events: ExpressionEventPlans,
-    pub(super) reinit_state_pre: HashSet<Span>,
     pub(super) clock_plans: HashMap<InstanceId, ClockPlan>,
     pub(super) clock_equation_rows: HashSet<usize>,
     pub(super) clocked_equation_owners: HashMap<usize, ClockPlan>,
@@ -381,7 +382,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &record_array_fields,
     )?;
     let mut sample_lattices = Vec::new();
-    let reinit_state_pre = validate_when_chains(
+    validate_when_chains(
         &flat.when_chains,
         &roles,
         &states,
@@ -416,7 +417,6 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         initialization_family_rows,
         sample_lattices,
         expression_events,
-        reinit_state_pre,
         clock_plans: clocks.plans,
         clock_equation_rows: clocks.equation_rows,
         clocked_equation_owners: clock_domains.equation_owners,

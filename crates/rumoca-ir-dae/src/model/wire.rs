@@ -1315,6 +1315,12 @@ fn rebuild_coordinate<'dae>(
         CoordinateWire::PreDiscreteValue(variable) => CoordinateInput::PreDiscreteValue(
             DiscreteValueId::from_raw(mapped(&ids.variables, *variable, "variable", at)?.index()),
         ),
+        CoordinateWire::PreState(variable) => CoordinateInput::PreState(StateId::from_raw(
+            mapped(&ids.variables, *variable, "variable", at)?.index(),
+        )),
+        CoordinateWire::PreAlgebraic(variable) => CoordinateInput::PreAlgebraic(
+            AlgebraicId::from_raw(mapped(&ids.variables, *variable, "variable", at)?.index()),
+        ),
         CoordinateWire::Time => CoordinateInput::Time,
         CoordinateWire::ClockInterval(clock) => {
             CoordinateInput::ClockInterval(mapped(&ids.clocks, *clock, "clock", at)?.periodic(at)?)

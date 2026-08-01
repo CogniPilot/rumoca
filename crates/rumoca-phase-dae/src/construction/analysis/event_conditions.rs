@@ -7,6 +7,50 @@ pub(super) fn validate_condition_expression(
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
 ) -> Result<(), ToDaeError> {
+    validate_condition_expression_in_context(
+        expression,
+        roles,
+        states,
+        constants,
+        sample_lattices,
+        PreContext::Continuous,
+    )
+}
+
+/// Validate a condition a when-clause *body* evaluates.
+///
+/// These are the guards of if-equations and assertions written inside the body,
+/// which the event instant reaches only after the clause has already activated.
+/// MLS §3.7.5 therefore admits `pre()` of a continuous coordinate in them for
+/// the same reason it admits one in the body's definitions. The clause's own
+/// activation condition is a different context and uses
+/// [`validate_condition_expression`].
+pub(super) fn validate_when_condition_expression(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    constants: &EvalContext,
+    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    clocked: bool,
+) -> Result<(), ToDaeError> {
+    validate_condition_expression_in_context(
+        expression,
+        roles,
+        states,
+        constants,
+        sample_lattices,
+        when_body_context(clocked),
+    )
+}
+
+fn validate_condition_expression_in_context(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    constants: &EvalContext,
+    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    when_clause: PreContext,
+) -> Result<(), ToDaeError> {
     match expression {
         Expression::BuiltinCall {
             function: BuiltinFunction::Initial,
@@ -41,15 +85,36 @@ pub(super) fn validate_condition_expression(
             op: OpUnary::Not,
             rhs,
             ..
-        } => validate_condition_expression(rhs, roles, states, constants, sample_lattices),
+        } => validate_condition_expression_in_context(
+            rhs,
+            roles,
+            states,
+            constants,
+            sample_lattices,
+            when_clause,
+        ),
         Expression::Binary {
             op: OpBinary::And | OpBinary::Or,
             lhs,
             rhs,
             ..
         } => {
-            validate_condition_expression(lhs, roles, states, constants, sample_lattices)?;
-            validate_condition_expression(rhs, roles, states, constants, sample_lattices)
+            validate_condition_expression_in_context(
+                lhs,
+                roles,
+                states,
+                constants,
+                sample_lattices,
+                when_clause,
+            )?;
+            validate_condition_expression_in_context(
+                rhs,
+                roles,
+                states,
+                constants,
+                sample_lattices,
+                when_clause,
+            )
         }
         // MLS §8.5 states the vector form as one of the two ways to enable a
         // `when` during initialization — "`when initial() then` or
@@ -61,11 +126,18 @@ pub(super) fn validate_condition_expression(
         Expression::Array { elements, .. } => {
             reject_rescheduling_initial_activation(elements, constants)?;
             for element in elements {
-                validate_condition_expression(element, roles, states, constants, sample_lattices)?;
+                validate_condition_expression_in_context(
+                    element,
+                    roles,
+                    states,
+                    constants,
+                    sample_lattices,
+                    when_clause,
+                )?;
             }
             Ok(())
         }
-        _ => validate_expression(expression, roles, states),
+        _ => validate_expression_in_context(expression, roles, states, when_clause),
     }
 }
 

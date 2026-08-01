@@ -1,5 +1,4 @@
 use super::*;
-use rumoca_core::ExpressionRewriter;
 
 pub(super) fn validate_when_chains(
     chains: &[flat::WhenChain],
@@ -7,10 +6,14 @@ pub(super) fn validate_when_chains(
     states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<HashSet<Span>, ToDaeError> {
-    let mut reinit_state_pre = HashSet::new();
+) -> Result<(), ToDaeError> {
     for chain in chains {
         for branch in chain.branches() {
+            // A when-clause's own activation condition is evaluated to decide
+            // whether the event happens, so it is not yet inside the event it
+            // guards: `pre()` of a continuous coordinate has no left limit to
+            // read there. OMC rejects the shape for the same reason
+            // ("Argument 1 of pre must be a discrete expression").
             validate_condition_expression(
                 &branch.condition,
                 roles,
@@ -32,12 +35,11 @@ pub(super) fn validate_when_chains(
                 states,
                 constants,
                 sample_lattices,
-                &mut reinit_state_pre,
                 clocked,
             )?;
         }
     }
-    Ok(reinit_state_pre)
+    Ok(())
 }
 
 fn validate_when_equations(
@@ -46,7 +48,6 @@ fn validate_when_equations(
     states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
-    reinit_state_pre: &mut HashSet<Span>,
     clocked: bool,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
@@ -59,27 +60,28 @@ fn validate_when_equations(
             } => validate_assignment(target, value, *span, roles, states, clocked)?,
             flat::WhenEquation::Reinit {
                 state, value, span, ..
-            } => validate_reinitialization(state, value, *span, roles, states, reinit_state_pre)?,
+            } => validate_reinitialization(state, value, *span, roles, states, clocked)?,
             flat::WhenEquation::Assert {
                 condition,
                 message,
                 level,
                 ..
             } => {
-                validate_condition_expression(
+                validate_when_condition_expression(
                     condition,
                     roles,
                     states,
                     constants,
                     sample_lattices,
+                    clocked,
                 )?;
-                validate_expression(message, roles, states)?;
+                validate_when_expression(message, roles, states, clocked)?;
                 if let Some(level) = level {
-                    validate_expression(level, roles, states)?;
+                    validate_when_expression(level, roles, states, clocked)?;
                 }
             }
             flat::WhenEquation::Terminate { message, .. } => {
-                validate_expression(message, roles, states)?;
+                validate_when_expression(message, roles, states, clocked)?;
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -89,12 +91,13 @@ fn validate_when_equations(
             } => {
                 validate_non_real_branch_targets(branches, else_branch, roles, *span)?;
                 for (condition, equations) in branches {
-                    validate_condition_expression(
+                    validate_when_condition_expression(
                         condition,
                         roles,
                         states,
                         constants,
                         sample_lattices,
+                        clocked,
                     )?;
                     validate_when_equations(
                         equations,
@@ -102,7 +105,6 @@ fn validate_when_equations(
                         states,
                         constants,
                         sample_lattices,
-                        reinit_state_pre,
                         clocked,
                     )?;
                 }
@@ -113,7 +115,6 @@ fn validate_when_equations(
                         states,
                         constants,
                         sample_lattices,
-                        reinit_state_pre,
                         clocked,
                     )?;
                 }
@@ -212,7 +213,7 @@ fn validate_assignment(
         ));
     }
     validate_clocked_temporal_expressions(value, roles, clocked)?;
-    validate_expression(value, roles, states)
+    validate_when_expression(value, roles, states, clocked)
 }
 
 fn validate_clocked_temporal_expressions(
@@ -265,62 +266,24 @@ fn validate_clocked_temporal_expressions(
     Ok(())
 }
 
+/// MLS §8.3.6 `reinit(x, expr)`.
+///
+/// The value expression is evaluated at the event instant, so `pre(x)` inside
+/// it is the ordinary left limit `x(t^pre)` and lowers through the same
+/// event-entry lane as every other continuous `pre()` read. It used to be
+/// rewritten to a plain `x` here, which read the wrong value once the lane
+/// existed and turned `reinit(x, pre(x) + 1)` into the unsolvable
+/// `reinit(x, x + 1)`.
 fn validate_reinitialization(
     state: &VarName,
     value: &Expression,
     span: Span,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
-    reinit_state_pre: &mut HashSet<Span>,
+    clocked: bool,
 ) -> Result<(), ToDaeError> {
     if !matches!(roles.get(state), Some(PlannedRole::State)) {
         return Err(ToDaeError::reinit_non_state(state.as_str(), span));
     }
-    collect_state_pre(value, roles, reinit_state_pre);
-    let validation = StatePreEraser {
-        spans: reinit_state_pre,
-    }
-    .rewrite_expression(value);
-    validate_expression(&validation, roles, states)
-}
-
-fn collect_state_pre(
-    expression: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-    reinit_state_pre: &mut HashSet<Span>,
-) {
-    if let Expression::BuiltinCall {
-        function: BuiltinFunction::Pre,
-        args,
-        span,
-    } = expression
-        && let [argument] = args.as_slice()
-        && let Some((name, _)) = derivative_reference(argument)
-        && matches!(roles.get(name.var_name()), Some(PlannedRole::State))
-    {
-        reinit_state_pre.insert(*span);
-        return;
-    }
-    for child in expression_children(expression) {
-        collect_state_pre(child, roles, reinit_state_pre);
-    }
-}
-
-struct StatePreEraser<'spans> {
-    spans: &'spans HashSet<Span>,
-}
-
-impl ExpressionRewriter for StatePreEraser<'_> {
-    fn rewrite_expression(&mut self, expression: &Expression) -> Expression {
-        if let Expression::BuiltinCall {
-            function: BuiltinFunction::Pre,
-            args,
-            span,
-        } = expression
-            && self.spans.contains(span)
-        {
-            return args[0].clone();
-        }
-        self.walk_expression(expression)
-    }
+    validate_when_expression(value, roles, states, clocked)
 }

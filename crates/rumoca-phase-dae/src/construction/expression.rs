@@ -1220,20 +1220,6 @@ fn lower_pre<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let (name, subscripts) =
         derivative_reference(&arguments[0]).expect("analysis proves the pre-value target shape");
-    if symbols.functions.reinit_state_pre.contains(&span) {
-        let Coordinate::State(state) = symbols.coordinates[name.var_name()] else {
-            unreachable!("reinit pre analysis certifies a state coordinate")
-        };
-        let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::PreValueLowering, span)?;
-        return lower_coordinate_reference(
-            construction,
-            symbols,
-            binders,
-            dae::CoordinateInput::State(state),
-            subscripts,
-            provenance,
-        );
-    }
     let coordinate = symbols.coordinates[name.var_name()]
         .previous(span)
         .expect("analysis proves the pre-value role");

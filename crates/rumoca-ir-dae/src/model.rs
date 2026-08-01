@@ -65,7 +65,13 @@ use crate::{
 /// `ConditionNodeWire::AnyRise`. The insertion shifts every later condition
 /// ordinal, so a v13 payload decodes to the wrong variant rather than failing —
 /// which is exactly the case this constant exists to reject.
-pub const DAE_SCHEMA_VERSION: u16 = 14;
+///
+/// 15 appends `CoordinateWire::PreState` and `CoordinateWire::PreAlgebraic`.
+/// They sit at the tail deliberately: decode reads the whole payload before it
+/// checks this number, so appended ordinals keep every earlier variant stable
+/// and an old blob fails cleanly on the version instead of mis-decoding
+/// mid-stream.
+pub const DAE_SCHEMA_VERSION: u16 = 15;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

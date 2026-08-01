@@ -316,6 +316,12 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
             | dae::CoordinateView::DiscreteValue(_)
             | dae::CoordinateView::PreDiscreteReal(_)
             | dae::CoordinateView::PreDiscreteValue(_)
+            // A `pre()` read is the coordinate's settled left limit at event
+            // entry, not the unknown itself, so it carries no incidence — the
+            // Mean shape's `y_last = f*pre(x)` must not read as an equation
+            // that solves for `x`.
+            | dae::CoordinateView::PreState(_)
+            | dae::CoordinateView::PreAlgebraic(_)
             | dae::CoordinateView::Time
             | dae::CoordinateView::ClockInterval(_)
             | dae::CoordinateView::Condition(_)

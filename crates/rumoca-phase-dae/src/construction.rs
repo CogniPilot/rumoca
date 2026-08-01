@@ -138,18 +138,25 @@ impl<'dae> Coordinate<'dae> {
         }
     }
 
+    /// MLS §3.7.5 `pre(v)`: the left limit `v(t^pre)` at event entry.
+    ///
+    /// Discrete coordinates keep their event history in the discrete pre lane.
+    /// A continuous state or algebraic gets its own event-entry snapshot lane,
+    /// which is what makes `y = f*pre(x); reinit(x, 0)` in one when-body read
+    /// the accumulated `x` rather than the reinitialized one. Analysis proves
+    /// the read sits in a when-clause before this constructor runs.
     fn previous(self, span: Span) -> Result<dae::CoordinateInput<'dae>, ToDaeError> {
         match self {
             Self::DiscreteReal(id) => Ok(dae::CoordinateInput::PreDiscreteReal(id)),
             Self::DiscreteValue(id) => Ok(dae::CoordinateInput::PreDiscreteValue(id)),
+            Self::State(id) => Ok(dae::CoordinateInput::PreState(id)),
+            Self::Algebraic(id) => Ok(dae::CoordinateInput::PreAlgebraic(id)),
             Self::Parameter(_)
             | Self::Input(_)
-            | Self::State(_)
-            | Self::Algebraic(_)
             | Self::FunctionParameter(_)
             | Self::FunctionValue(_) => Err(ToDaeError::unsupported_flat(
                 "pre expression",
-                "pre(...) must name a discrete coordinate in canonical DAE",
+                "pre(...) must name a discrete or continuous variable coordinate in canonical DAE",
                 span,
             )),
         }
@@ -236,7 +243,6 @@ fn build_checked<'dae>(
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
-        reinit_state_pre: &analysis.reinit_state_pre,
         coordinate_instances: &no_coordinate_instances,
         expression_events: &analysis.expression_events,
     };
@@ -260,7 +266,6 @@ fn build_checked<'dae>(
             record_array_fields: &analysis.record_array_fields,
             constants: &analysis.constants,
             delay_plans: &analysis.delay_plans,
-            reinit_state_pre: &analysis.reinit_state_pre,
             coordinate_instances: coordinates.by_instance(),
             expression_events: &analysis.expression_events,
         },
@@ -274,7 +279,6 @@ fn build_checked<'dae>(
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
-        reinit_state_pre: &analysis.reinit_state_pre,
         coordinate_instances: coordinates.by_instance(),
         expression_events: &analysis.expression_events,
     };

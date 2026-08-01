@@ -589,6 +589,8 @@ fn project_coordinate(coordinate: dae::CoordinateView<'_>) -> Value {
         dae::CoordinateView::PreDiscreteValue(id) => {
             coordinate_id("pre_discrete_value", id.index())
         }
+        dae::CoordinateView::PreState(id) => coordinate_id("pre_state", id.index()),
+        dae::CoordinateView::PreAlgebraic(id) => coordinate_id("pre_algebraic", id.index()),
         dae::CoordinateView::Time => json!({ "kind": "time" }),
         dae::CoordinateView::Condition(id) => coordinate_id("condition", id.index()),
         dae::CoordinateView::Delay(id) => coordinate_id("delay", id.index()),

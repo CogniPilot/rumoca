@@ -14,12 +14,77 @@ struct ExpressionValidator<'a> {
     /// only to decide whether a non-literal bound is nevertheless settled at
     /// translation time.
     values: Option<&'a ShapeEnvironment>,
+    /// Which event context, if any, evaluates this expression.
+    when_clause: PreContext,
+}
+
+/// The contexts that decide whether `pre()` may name a continuous coordinate.
+///
+/// MLS §3.7.5 lets `pre(v)` name a continuous-time `v` only where the read is
+/// itself a discrete-time expression. An unclocked when-clause body is that
+/// context: it runs at an event instant, where the left limit `v(t^pre)`
+/// exists. Nothing else is — see the per-variant notes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreContext {
+    /// A continuous equation, or a when-clause's own activation condition.
+    ///
+    /// The activation condition decides whether the event happens, so it is not
+    /// yet inside the event it guards and has no left limit to read.
+    Continuous,
+    /// The body of an unclocked (event-driven) when-clause.
+    WhenBody,
+    /// The body of a clocked when-clause (MLS §16 clock partition).
+    ///
+    /// A clock partition has no continuous-time left limit of its own: MLS
+    /// §16.5/§16.8.1 give it `previous()` over its own clocked coordinates, and
+    /// a continuous value enters the partition only through `sample()`. OMC
+    /// rejects `pre()` of a continuous coordinate here for the same reason.
+    ClockedWhenBody,
+}
+
+impl PreContext {
+    /// Whether this context defines the left limit of a continuous coordinate.
+    const fn admits_continuous_pre(self) -> bool {
+        matches!(self, Self::WhenBody)
+    }
 }
 
 pub(super) fn validate_expression(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
+) -> Result<(), ToDaeError> {
+    validate_expression_in_context(expression, roles, states, PreContext::Continuous)
+}
+
+/// Validate an expression a when-clause body evaluates.
+///
+/// `clocked` selects the MLS §16 partition rule: a clocked body keeps the
+/// continuous `pre()` rejection because its coordinates have no continuous-time
+/// left limit.
+pub(super) fn validate_when_expression(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    clocked: bool,
+) -> Result<(), ToDaeError> {
+    validate_expression_in_context(expression, roles, states, when_body_context(clocked))
+}
+
+/// The `pre()` context of a when-clause body with the given clock ownership.
+pub(super) const fn when_body_context(clocked: bool) -> PreContext {
+    if clocked {
+        PreContext::ClockedWhenBody
+    } else {
+        PreContext::WhenBody
+    }
+}
+
+pub(super) fn validate_expression_in_context(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    when_clause: PreContext,
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
@@ -28,6 +93,7 @@ pub(super) fn validate_expression(
         binders: &binders,
         record_array_fields: None,
         values: None,
+        when_clause,
     }
     .validate(expression)
 }
@@ -50,6 +116,7 @@ pub(super) fn validate_specialized_expression(
         binders: &binders,
         record_array_fields: None,
         values: Some(values),
+        when_clause: PreContext::Continuous,
     }
     .validate(expression)
 }
@@ -68,6 +135,7 @@ pub(super) fn validate_specialized_subscripts(
         binders: &binders,
         record_array_fields: None,
         values: Some(values),
+        when_clause: PreContext::Continuous,
     }
     .validate_subscripts(subscripts)
 }
@@ -85,6 +153,7 @@ pub(super) fn validate_expression_with_record_array_fields(
         binders: &binders,
         record_array_fields: Some(fields),
         values: None,
+        when_clause: PreContext::Continuous,
     }
     .validate(expression)
 }
@@ -102,6 +171,7 @@ pub(super) fn validate_expression_scoped_with_record_array_fields(
         binders,
         record_array_fields: Some(fields),
         values: None,
+        when_clause: PreContext::Continuous,
     }
     .validate(expression)
 }
@@ -474,6 +544,26 @@ impl ExpressionValidator<'_> {
         self.validate_subscripts(subscripts)
     }
 
+    /// MLS §3.7.5 `pre(y)`: the left limit `y(t^pre)`.
+    ///
+    /// A discrete coordinate carries its event history everywhere, so `pre()`
+    /// of one is accepted in any context. A continuous-time coordinate has a
+    /// left limit only at an event instant, and MLS §3.7.5 correspondingly
+    /// requires the `pre()` read to be a discrete-time expression: inside a
+    /// when-clause body the read is one, outside it there is no event to take
+    /// the limit at. `Modelica.Blocks.Math.Mean` is the canonical shape — its
+    /// `when sample(...) then y_last = f*pre(x); reinit(x, 0); end when;` reads
+    /// the integrator state accumulated up to the tick.
+    ///
+    /// Two accept-side gaps are deliberate and out of contract for now, each
+    /// with its own typed rejection rather than a silent miss:
+    ///
+    /// * `pre()` of a continuous `input` — OMC accepts it; rumoca has no
+    ///   event-entry lane for an externally driven coordinate yet.
+    /// * `pre()` of a continuous coordinate in a when-*statement* of an
+    ///   algorithm section — OMC accepts it;
+    ///   `model_algorithm_statements.rs` still validates statement values with
+    ///   the continuous-context validator, so the read is rejected there.
     fn validate_pre(self, arguments: &[Expression], span: Span) -> Result<(), ToDaeError> {
         let [argument] = arguments else {
             return Err(invalid_reference_builtin("pre", "pre", span));
@@ -481,15 +571,52 @@ impl ExpressionValidator<'_> {
         let Some((name, subscripts)) = derivative_reference(argument) else {
             return Err(invalid_reference_builtin("pre", "pre", span));
         };
-        if !matches!(
-            self.roles.get(name.var_name()),
-            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-        ) {
-            return Err(ToDaeError::unsupported_flat(
-                "pre expression",
-                "pre(...) must name a discrete coordinate",
-                span,
-            ));
+        match self.roles.get(name.var_name()) {
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue) => {}
+            Some(PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output)
+                if self.when_clause.admits_continuous_pre() => {}
+            Some(PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output)
+                if self.when_clause == PreContext::ClockedWhenBody =>
+            {
+                return Err(ToDaeError::unsupported_flat(
+                    "pre expression",
+                    format!(
+                        "pre(`{name}`) names a continuous coordinate inside a clocked \
+                         when-clause; MLS §16.5 gives a clock partition `previous()` over its \
+                         own clocked coordinates and admits a continuous value only through \
+                         `sample()`"
+                    ),
+                    span,
+                ));
+            }
+            Some(PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output) => {
+                return Err(ToDaeError::unsupported_flat(
+                    "pre expression",
+                    format!(
+                        "pre(`{name}`) names a continuous coordinate where the read is not a \
+                         discrete-time expression; MLS §3.7.5 defines its left limit only \
+                         inside a when-clause body"
+                    ),
+                    span,
+                ));
+            }
+            Some(PlannedRole::Input) => {
+                return Err(ToDaeError::unsupported_flat(
+                    "pre expression",
+                    format!(
+                        "pre(`{name}`) names an external input coordinate; the canonical DAE \
+                         has no event-entry history lane for a value the host drives"
+                    ),
+                    span,
+                ));
+            }
+            _ => {
+                return Err(ToDaeError::unsupported_flat(
+                    "pre expression",
+                    "pre(...) must name a discrete coordinate",
+                    span,
+                ));
+            }
         }
         self.validate_subscripts(subscripts)
     }
@@ -567,6 +694,7 @@ pub(super) fn validate_subscripts_scoped(
         binders,
         record_array_fields: None,
         values: None,
+        when_clause: PreContext::Continuous,
     }
     .validate_subscripts(subscripts)
 }

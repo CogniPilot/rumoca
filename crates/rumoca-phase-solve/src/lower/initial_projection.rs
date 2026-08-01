@@ -498,7 +498,15 @@ impl<'dae> InitialIncidence<'dae> {
             dae::CoordinateView::DiscreteReal(_)
             | dae::CoordinateView::DiscreteValue(_)
             | dae::CoordinateView::PreDiscreteReal(_)
-            | dae::CoordinateView::PreDiscreteValue(_) => {
+            | dae::CoordinateView::PreDiscreteValue(_)
+            // A `pre()` read holds a settled event-history value at
+            // initialization, so it is a discrete input to the row rather than
+            // the continuous coordinate it names. Grouping it here rather than
+            // leaving it to the `_` arm below is the same planning outcome —
+            // both exclude the row — and only changes the reported exclusion
+            // kind, which `exclusion_rank` ranks Discrete above Other.
+            | dae::CoordinateView::PreState(_)
+            | dae::CoordinateView::PreAlgebraic(_) => {
                 self.exclude(solve::InitializationCoordinateKind::Discrete);
             }
             // A domain binder and a clock interval are compile-time constants, and

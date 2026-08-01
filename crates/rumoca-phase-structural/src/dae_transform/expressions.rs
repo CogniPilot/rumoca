@@ -386,6 +386,29 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     _ => unreachable!("algebraic role is preserved"),
                 }
             }
+            // Index reduction can demote a state to an algebraic, and the
+            // event-entry left limit follows the coordinate to its new role.
+            //
+            // The demoting branch is defensive: no model is currently known
+            // that both takes `pre()` of a state and reduces that same state
+            // away — the reviewer's attempts (a high-index pendulum and a
+            // constrained-drive shape) fail earlier in flattening — so the
+            // `Algebraic` arm below is unexercised by the suite. It is written
+            // out rather than left to `unreachable!` because the demotion is a
+            // legal transform whose result is well defined.
+            dae::CoordinateView::PreState(id) => {
+                match self.variables[id.index() as usize].identity {
+                    TargetVariable::State(id) => dae::CoordinateInput::PreState(id),
+                    TargetVariable::Algebraic(id) => dae::CoordinateInput::PreAlgebraic(id),
+                    _ => unreachable!("state becomes a state or algebraic"),
+                }
+            }
+            dae::CoordinateView::PreAlgebraic(id) => {
+                match self.variables[id.index() as usize].identity {
+                    TargetVariable::Algebraic(id) => dae::CoordinateInput::PreAlgebraic(id),
+                    _ => unreachable!("algebraic role is preserved"),
+                }
+            }
             dae::CoordinateView::Time => dae::CoordinateInput::Time,
             dae::CoordinateView::ClockInterval(source) => {
                 dae::CoordinateInput::ClockInterval(self.clocks[source.index() as usize].periodic())

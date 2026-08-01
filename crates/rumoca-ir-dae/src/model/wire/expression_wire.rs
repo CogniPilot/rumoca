@@ -271,6 +271,10 @@ pub(super) enum CoordinateWire {
     Terminal(u32),
     Binder { domain: u32, ordinal: u32 },
     FunctionParameter { function: u32, ordinal: u32 },
+    // Declaration order mirrors `Coordinate` in `expression/nodes.rs`, which is
+    // the encoded form; ordinal-tagged codecs pair them positionally.
+    PreState(u32),
+    PreAlgebraic(u32),
 }
 
 #[derive(Deserialize, Clone, Copy)]

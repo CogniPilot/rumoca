@@ -1314,6 +1314,8 @@ fn expression_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'da
             dae::ExpressionOperation::Coordinate(
                 dae::CoordinateView::PreDiscreteReal(_)
                     | dae::CoordinateView::PreDiscreteValue(_)
+                    | dae::CoordinateView::PreState(_)
+                    | dae::CoordinateView::PreAlgebraic(_)
                     | dae::CoordinateView::Previous(_)
             )
         );
