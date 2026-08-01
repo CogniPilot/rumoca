@@ -116,7 +116,7 @@ impl TypeChecker {
         }
     }
 
-    /// MLS §3.7.2.4: homotopy(actual, simplified) takes Real-compatible
+    /// MLS 3.6 §3.7.4.3: homotopy(actual, simplified) takes Real-compatible
     /// scalar expressions (EXPR-034).
     fn check_homotopy_builtin(
         &mut self,

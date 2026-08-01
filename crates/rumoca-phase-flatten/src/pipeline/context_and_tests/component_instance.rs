@@ -22,6 +22,50 @@ pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) function_types: functions::FunctionTypeCatalog<'a>,
 }
 
+/// Class-body occurrence that scopes the references in a modifier binding
+/// (MLS §7.2.4).
+///
+/// A modification's right-hand side is written in the *modifier's* class body,
+/// not in the body of the component it modifies: `stateGraphRoot(suspend =
+/// anyTrue(suspend.reset))` names the `suspend` that the enclosing class owns.
+/// `variables::qualify_variable_binding` already spells such a binding with the
+/// modifier's instance path (`InstanceData::binding_source_scope`), so the
+/// occurrence identity carried alongside that spelling must be the class body
+/// standing at the same path — the declaring component's own body owns none of
+/// what the modifier named.
+///
+/// Accepted: a variable whose binding did not come from a modification (answers
+/// `None`, leaving the declaring body as the scope, which is where a
+/// declaration binding is written); and a modifier binding whose recorded scope
+/// is an instantiated class body, including the root model's empty path.
+/// Rejected: a modifier binding whose recorded scope names no class body, which
+/// would otherwise scope the reference to a body that cannot contain it.
+/// A modifier binding with no recorded scope at all is already rejected by
+/// `variables::qualify_variable_binding`, which needs the same scope to spell
+/// the reference.
+fn modifier_binding_scope(
+    instance_data: &rumoca_ir_ast::InstanceData,
+    scope_index: &OverlayScopeIndex<'_>,
+    source_span: rumoca_core::Span,
+) -> Result<Option<rumoca_core::InstanceId>, FlattenError> {
+    if !instance_data.binding_from_modification {
+        return Ok(None);
+    }
+    let Some(scope) = instance_data.binding_source_scope.as_ref() else {
+        return Ok(None);
+    };
+    scope_index
+        .class_occurrence(scope)
+        .map(Some)
+        .ok_or_else(|| {
+            FlattenError::missing_source_scope(
+                instance_data.qualified_name.to_flat_string(),
+                format!("modifier binding written in `{}`", scope.to_flat_string()),
+                source_span,
+            )
+        })
+}
+
 pub(crate) fn process_component_instance(
     request: ComponentInstanceProcess<'_, '_>,
 ) -> Result<(), FlattenError> {
@@ -72,8 +116,20 @@ pub(crate) fn process_component_instance(
         request.class_index,
         &import_context,
     )?;
+    let declaration_scope = request
+        .instance_data
+        .owner_class_id
+        .ok_or_else(|| FlattenError::internal("Flat variable has no instantiated class owner"))?;
+    let binding_scope = modifier_binding_scope(
+        request.instance_data,
+        request.scope_index,
+        flat_var.source_span,
+    )?
+    .unwrap_or(declaration_scope);
+    if let Some(expression) = flat_var.binding.as_mut() {
+        attach_reference_scope(expression, binding_scope)?;
+    }
     for expression in [
-        &mut flat_var.binding,
         &mut flat_var.start,
         &mut flat_var.min,
         &mut flat_var.max,
@@ -82,12 +138,7 @@ pub(crate) fn process_component_instance(
     .into_iter()
     .flatten()
     {
-        attach_reference_scope(
-            expression,
-            request.instance_data.owner_class_id.ok_or_else(|| {
-                FlattenError::internal("Flat variable has no instantiated class owner")
-            })?,
-        )?;
+        attach_reference_scope(expression, declaration_scope)?;
     }
     let instance_scope = request.instance_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =

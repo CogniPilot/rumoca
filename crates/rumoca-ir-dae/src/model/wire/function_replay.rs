@@ -265,11 +265,11 @@ fn replay_component<'group, 'dae>(
                 &mut functions,
                 (*function, *value, *definition_ordinal),
             )?,
-            ExprNodeWire::FunctionFoldParameter { function, fold, .. } => {
-                replay_loop_entry(wire, dae, ids, &mut functions, *function, *fold)?;
+            ExprNodeWire::FunctionFoldParameter { function } => {
+                replay_loop_entry(wire, dae, ids, &mut functions, *function)?;
             }
-            ExprNodeWire::FunctionFoldOutput { function, fold, .. } => {
-                replay_loop_exit(wire, dae, ids, &mut functions, *function, *fold)?;
+            ExprNodeWire::FunctionFoldOutput { function } => {
+                replay_loop_exit(wire, dae, ids, &mut functions, *function)?;
             }
             _ => {
                 if !super::reconstruct_next_expression(wire, dae, ids)? {
@@ -290,10 +290,7 @@ struct FunctionReplay<'wire, 'group, 'dae> {
 
 enum ReplayCapability<'group, 'dae> {
     Body(FunctionBody<'dae>),
-    Fold {
-        ordinal: u32,
-        body: FunctionLoop<'dae>,
-    },
+    Fold(FunctionLoop<'dae>),
     /// An MLS §12.9 external body keeps its reservation until its checked
     /// interface replays; it never opens a Modelica body build state.
     External(FunctionReservation<'group, 'dae>),
@@ -449,7 +446,7 @@ fn replay_read<'dae>(
     let body = body_for_definition(dae, state, value_raw, definition_ordinal, provenance)?;
     let value = FunctionValueId::from_raw(function_raw, value_raw);
     let rebuilt = dae.functions(|functions| functions.read(body, value, provenance))?;
-    record_expression(wire, dae, ids, rebuilt, provenance)
+    record_expression(dae, ids, rebuilt, provenance)
 }
 
 fn advance_to_definition<'dae>(
@@ -495,7 +492,7 @@ fn current_definition_ordinal<'dae>(
         .ok_or_else(|| incomplete("function capability", state.function_index, provenance))?
     {
         ReplayCapability::Body(body) => body,
-        ReplayCapability::Fold { body, .. } => body.body(),
+        ReplayCapability::Fold(body) => body.body(),
         ReplayCapability::External(_) => return Err(malformed("functions.external")),
     };
     let value = FunctionValueId::from_raw(state.function_index as u32, value);
@@ -556,9 +553,7 @@ fn apply_assignment<'dae>(
     })?;
     dae.functions(|functions| match capability {
         ReplayCapability::Body(body) => functions.assign(body, target, rhs, input.provenance),
-        ReplayCapability::Fold { body, .. } => {
-            functions.assign_loop(body, target, rhs, input.provenance)
-        }
+        ReplayCapability::Fold(body) => functions.assign_loop(body, target, rhs, input.provenance),
         ReplayCapability::External(_) => Err(malformed("functions.external")),
     })
 }
@@ -576,7 +571,7 @@ fn body_for_definition<'state, 'wire, 'group, 'dae>(
         .ok_or_else(|| incomplete("function capability", state.function_index, provenance))?
     {
         ReplayCapability::Body(body) => body,
-        ReplayCapability::Fold { body, .. } => body.body(),
+        ReplayCapability::Fold(body) => body.body(),
         ReplayCapability::External(_) => return Err(malformed("functions.external")),
     };
     let value_id = FunctionValueId::from_raw(state.function_index as u32, value);
@@ -600,27 +595,15 @@ fn replay_loop_entry<'dae>(
     ids: &mut WireIds<'dae>,
     functions: &mut [FunctionReplay<'_, '_, 'dae>],
     function_raw: u32,
-    fold_ordinal: u32,
 ) -> Result<(), DaeConstructionError> {
     let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
     apply_ready_assignments(wire, dae, ids, state)?;
+    let pending_fold = dae.storage.functions[state.function_index].folds.len();
     let Some(ReplayOp::BeginFold(input)) = state.operations.get(state.next_operation).copied()
     else {
-        return Err(incomplete(
-            "function fold begin",
-            fold_ordinal as usize,
-            provenance,
-        ));
+        return Err(incomplete("function fold begin", pending_fold, provenance));
     };
-    let expected_fold = checked_u32(
-        dae.storage.functions[state.function_index].folds.len(),
-        "function fold",
-        input.provenance,
-    )?;
-    if fold_ordinal != expected_fold {
-        return Err(malformed("functions.statements.fold"));
-    }
     let targets =
         checked_loop_targets(wire, state.function_index, input.targets, input.provenance)?;
     let capability = state.capability.take().ok_or_else(|| {
@@ -645,16 +628,12 @@ fn replay_loop_entry<'dae>(
             input.provenance,
         )
     })?;
-    if loop_body.fold().ordinal() != fold_ordinal {
-        return Err(malformed("functions.statements.fold"));
-    }
     record_generated_group(
         wire,
         dae,
         ids,
         GeneratedGroupReplay {
             function: function_raw,
-            fold: fold_ordinal,
             target_count: input.targets.len(),
             group: GeneratedGroup::Parameter,
             expression_start,
@@ -662,10 +641,7 @@ fn replay_loop_entry<'dae>(
         },
     )?;
     state.next_operation += 1;
-    state.capability = Some(ReplayCapability::Fold {
-        ordinal: fold_ordinal,
-        body: loop_body,
-    });
+    state.capability = Some(ReplayCapability::Fold(loop_body));
     Ok(())
 }
 
@@ -675,17 +651,16 @@ fn replay_loop_exit<'dae>(
     ids: &mut WireIds<'dae>,
     functions: &mut [FunctionReplay<'_, '_, 'dae>],
     function_raw: u32,
-    fold_ordinal: u32,
 ) -> Result<(), DaeConstructionError> {
     let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
     apply_ready_assignments(wire, dae, ids, state)?;
+    let open_fold = dae.storage.functions[state.function_index]
+        .folds
+        .len()
+        .saturating_sub(1);
     let Some(ReplayOp::EndFold(input)) = state.operations.get(state.next_operation).copied() else {
-        return Err(incomplete(
-            "function fold end",
-            fold_ordinal as usize,
-            provenance,
-        ));
+        return Err(incomplete("function fold end", open_fold, provenance));
     };
     let expression_start = ids.expressions.len();
     let definition_start = dae.storage.functions[state.function_index]
@@ -698,12 +673,9 @@ fn replay_loop_exit<'dae>(
             input.provenance,
         )
     })?;
-    let ReplayCapability::Fold { ordinal, body } = capability else {
+    let ReplayCapability::Fold(body) = capability else {
         return Err(malformed("functions.statements.fold"));
     };
-    if ordinal != fold_ordinal {
-        return Err(malformed("functions.statements.fold"));
-    }
     let body = dae.functions(|functions| functions.finish_loop(body, input.provenance))?;
     record_generated_group(
         wire,
@@ -711,7 +683,6 @@ fn replay_loop_exit<'dae>(
         ids,
         GeneratedGroupReplay {
             function: function_raw,
-            fold: fold_ordinal,
             target_count: input.target_count,
             group: GeneratedGroup::Output,
             expression_start,
@@ -754,7 +725,7 @@ fn finish_functions<'dae>(
             ReplayCapability::External(reservation) => {
                 replay_external_body(wire, dae, ids, state.function_index, reservation)?;
             }
-            ReplayCapability::Fold { .. } => {
+            ReplayCapability::Fold(_) => {
                 return Err(incomplete(
                     "function fold",
                     state.function_index,
@@ -823,7 +794,6 @@ enum GeneratedGroup {
 
 struct GeneratedGroupReplay {
     function: u32,
-    fold: u32,
     target_count: usize,
     group: GeneratedGroup,
     expression_start: usize,
@@ -852,64 +822,38 @@ fn record_generated_group<'dae>(
     {
         return Err(malformed("functions.statements"));
     }
-    for (carried, raw) in (replay.expression_start..expected_expression_end).enumerate() {
+    for raw in replay.expression_start..expected_expression_end {
         let expression = wire_expression(wire, raw)?;
-        let definition_index = replay
-            .definition_start
-            .checked_add(carried)
-            .ok_or_else(|| malformed("functions.statements"))?;
-        let definition = checked_u32(
-            definition_index,
-            "function definition",
-            expression.provenance,
-        )?;
-        expect_generated_node(
-            expression.node,
-            replay.function,
-            replay.fold,
-            carried,
-            definition,
-            replay.group,
-        )?;
+        expect_generated_node(expression.node, replay.function, replay.group)?;
         let raw = u32::try_from(raw).map_err(|_| malformed("expressions.nodes"))?;
-        record_expression(wire, dae, ids, ExprId::from_raw(raw), expression.provenance)?;
+        record_expression(dae, ids, ExprId::from_raw(raw), expression.provenance)?;
     }
     Ok(())
 }
 
+/// A generated node names only the function whose fold transition issued it.
+///
+/// The fold ordinal, carried position, and defining assignment that node holds
+/// in the arena are results of `begin_loop`/`finish_loop`, so replay re-issues
+/// them here instead of reading them back from wire columns.
 fn expect_generated_node(
     node: &ExprNodeWire,
     function: u32,
-    fold: u32,
-    carried: usize,
-    definition: u32,
     group: GeneratedGroup,
 ) -> Result<(), DaeConstructionError> {
-    let carried = u32::try_from(carried).map_err(|_| malformed("functions.statements.targets"))?;
     let matches = match (node, group) {
         (
             ExprNodeWire::FunctionFoldParameter {
                 function: found_function,
-                fold: found_fold,
-                carried: found_carried,
-                definition_ordinal,
             },
             GeneratedGroup::Parameter,
         )
         | (
             ExprNodeWire::FunctionFoldOutput {
                 function: found_function,
-                fold: found_fold,
-                carried: found_carried,
-                definition_ordinal,
             },
             GeneratedGroup::Output,
-        ) => {
-            *found_function == function
-                && *found_fold == fold
-                && *found_carried == carried
-                && *definition_ordinal == definition
-        }
+        ) => *found_function == function,
         _ => false,
     };
     if matches {
@@ -920,7 +864,6 @@ fn expect_generated_node(
 }
 
 fn record_expression<'dae>(
-    wire: &StorageWire,
     dae: &DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
     rebuilt: ExprId<'dae>,
@@ -930,7 +873,6 @@ fn record_expression<'dae>(
     if rebuilt.index() as usize != index {
         return Err(malformed("expressions.nodes"));
     }
-    expect_no_expression_type_anchor(wire, ids, provenance)?;
     if dae.storage.expressions.provenance[index] != provenance {
         return Err(DaeConstructionError::ShapeMismatch {
             span: provenance.span(),

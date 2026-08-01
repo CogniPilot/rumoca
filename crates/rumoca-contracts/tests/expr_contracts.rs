@@ -800,7 +800,7 @@ fn expr_022_string_of_string_rejected() {
 // =============================================================================
 // EXPR-034: homotopy types
 // "Scalar expressions actual and simplified are subtypes of Real"
-// (MLS §3.7.2.4)
+// (MLS 3.6 §3.7.4.3)
 // =============================================================================
 
 #[test]

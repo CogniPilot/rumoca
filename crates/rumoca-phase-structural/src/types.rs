@@ -163,6 +163,15 @@ pub enum StructuralError {
     /// Span-free: an empty whole-model system has no equation or variable owner.
     #[error("empty system: no equations or unknowns")]
     EmptySystem,
+    /// The only index reduction available demoted a state whose `fixed = true`
+    /// start MLS 3.6 §8.6 turns into an initialization equation, and no equation
+    /// the reduction keeps reproduces that equation. Reducing anyway would
+    /// answer with a guess in place of a stated initial condition, so the phase
+    /// reports the condition it would have had to drop instead.
+    #[error(
+        "index reduction would discard the stated initial value of `{variable}`: MLS 3.6 section 8.6 adds `{variable} = {variable}.start` to the initialization equations for a `fixed = true` variable, and demoting `{variable}` leaves no equation that states it"
+    )]
+    DroppedStatedInitialValue { variable: String, span: Span },
     #[error("checked DAE scalar projection failed: {reason}")]
     Projection { reason: String, span: Span },
     #[error("invalid structural IR contract: {reason}")]
@@ -179,6 +188,7 @@ impl StructuralError {
         match self {
             Self::Singular { .. } => codes::ES010_SINGULAR_SYSTEM,
             Self::EmptySystem => codes::ES011_EMPTY_SYSTEM,
+            Self::DroppedStatedInitialValue { .. } => codes::ES012_DROPPED_STATED_INITIAL_VALUE,
             Self::Projection { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => codes::ES014_CONTRACT_VIOLATION,
@@ -192,12 +202,15 @@ impl StructuralError {
                 unmatched_unknown_spans,
                 ..
             } => unmatched_unknown_spans.first().copied(),
-            Self::Projection { span, .. } | Self::ContractViolation { span, .. }
+            Self::DroppedStatedInitialValue { span, .. }
+            | Self::Projection { span, .. }
+            | Self::ContractViolation { span, .. }
                 if !span.is_dummy() =>
             {
                 Some(*span)
             }
             Self::EmptySystem
+            | Self::DroppedStatedInitialValue { .. }
             | Self::Projection { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => None,
@@ -207,11 +220,17 @@ impl StructuralError {
 
 impl PhaseError for StructuralError {
     fn to_diagnostic(&self) -> Diagnostic {
+        let label = match self {
+            Self::DroppedStatedInitialValue { .. } => {
+                "this stated initial value has no equation left after index reduction"
+            }
+            _ => "structural analysis failed here",
+        };
         let mut diagnostic = match self.source_span() {
             Some(span) => Diagnostic::error(
                 self.code(),
                 self.to_string(),
-                PrimaryLabel::new(span).with_message("structural analysis failed here"),
+                PrimaryLabel::new(span).with_message(label),
             ),
             None => Diagnostic::global_error(self.code(), self.to_string()),
         };

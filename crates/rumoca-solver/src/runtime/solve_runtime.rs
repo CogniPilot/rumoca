@@ -31,6 +31,7 @@ use rumoca_eval_solve::{
 mod coupled_event;
 mod discrete_rows;
 mod event_update;
+mod initial_continuation;
 mod initial_event;
 mod initial_projection;
 mod plans;
@@ -39,6 +40,7 @@ mod sensitivity;
 mod support;
 use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput};
 pub use event_update::{EventUpdateRowFilter, ProjectedEventUpdateInput};
+use initial_continuation::InitialContinuationCoverage;
 pub use initial_event::{
     InitialEventObservation, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
     ProjectedPostInitialEventInput,
@@ -46,7 +48,8 @@ pub use initial_event::{
 use plans::{
     RootConditionPlan, RootConditionPlanEntry, VisibleValuePlan, VisibleValuePlanEntry,
     copy_grouped_expression_values, direct_time_root_search_default, direct_time_root_time,
-    direct_time_root_value, direct_visible_value, root_condition_plan, visible_value_plan,
+    direct_time_root_value, direct_visible_value, prepare_manifold_projection_programs,
+    root_condition_plan, total_root_condition_count, visible_value_plan,
 };
 use support::{
     copy_runtime_values, copy_runtime_values_into, reserve_runtime_index_map_capacity,
@@ -102,6 +105,10 @@ pub struct SolveRuntime {
     algebraic_refresh: RefreshPlan,
     derivative_refresh: RefreshPlan,
     root_refresh: RefreshPlan,
+    /// Certified coverage for the initialization homotopy continuation; the
+    /// single source of truth shared by the sweep driver and the acceptance
+    /// check in [`InitialContinuationCoverage::certify`].
+    initial_continuation: Option<InitialContinuationCoverage>,
     root_condition_rows: PreparedScalarProgramBlock,
     root_condition_plan: Option<RootConditionPlan>,
     discrete_rhs: PreparedScalarProgramBlock,
@@ -122,21 +129,6 @@ pub struct SolveRuntime {
     reverse_scratch: RefCell<solve_eval::reverse::ReverseScratch>,
 }
 
-fn prepare_manifold_projection_programs(
-    model: &solve::SolveModel,
-) -> Result<(PreparedComputeBlock, PreparedComputeBlock), EvalSolveError> {
-    Ok((
-        PreparedComputeBlock::new_with_label(
-            &model.problem.continuous.manifold_residual,
-            "runtime_manifold_residual",
-        )?,
-        PreparedComputeBlock::new_with_label(
-            &model.artifacts.continuous.manifold_jacobian_v,
-            "runtime_manifold_jacobian_v",
-        )?,
-    ))
-}
-
 impl SolveRuntime {
     pub fn new(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
         let implicit_scalar_programs =
@@ -155,17 +147,15 @@ impl SolveRuntime {
         trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
+        let (initial_scalar_residual, initial_continuation) =
+            InitialContinuationCoverage::certify_runtime_blocks(
+                model,
+                &implicit_scalar_rhs,
+                &algebraic_refresh,
+            )?;
         let delay_runtime = DelayRuntime::new(&model.problem.events.delays)?;
-        let root_condition_count = model
-            .problem
-            .events
-            .root_conditions
-            .len()
-            .checked_add(delay_runtime.event_root_count())
-            .ok_or_else(|| EvalSolveError::ShapeContract {
-                message: "combined model and delay root count exceeds host index range".to_string(),
-                span: None,
-            })?;
+        let root_condition_count =
+            total_root_condition_count(model, delay_runtime.event_root_count())?;
         Ok(Self {
             model: model.clone(),
             state_count: model.state_scalar_count(),
@@ -192,9 +182,7 @@ impl SolveRuntime {
                 &model.artifacts.initialization.residual_jacobian_v,
                 "runtime_initial_residual_jacobian_v",
             )?,
-            initial_scalar_residual: PreparedScalarProgramBlock::new(to_scalar_program_block(
-                &model.problem.initialization.residual,
-            )?)?,
+            initial_scalar_residual: PreparedScalarProgramBlock::new(initial_scalar_residual)?,
             derivative_rhs: PreparedComputeBlock::new_with_label(
                 &model.problem.continuous.derivative_rhs,
                 "runtime_derivative_rhs",
@@ -213,6 +201,7 @@ impl SolveRuntime {
             algebraic_refresh,
             derivative_refresh,
             root_refresh,
+            initial_continuation,
             root_condition_rows: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
             )?,

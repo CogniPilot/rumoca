@@ -36,6 +36,11 @@ fn check_view(view: dae::DaeView<'_>) -> Result<AdmittedClock, Vec<GalecTargetEr
             structured_families: view.initialization_family_count(),
         });
     }
+    if view.initial_discrete_value_count() != 0 {
+        errors.push(GalecTargetError::InitialDiscreteValues {
+            definitions: view.initial_discrete_value_count(),
+        });
+    }
     if view.time_event_count() != 0 {
         errors.push(GalecTargetError::RuntimeEvents {
             scheduled_time_events: view.time_event_count(),
@@ -168,5 +173,51 @@ mod tests {
             error,
             GalecTargetError::ContinuousDynamics { equations: 1, .. }
         )));
+    }
+
+    /// MLS §8.6: an algorithm-determined discrete initial value is a checked
+    /// DAE owner GALEC Startup has no lowering for. It initializes from `start`
+    /// attributes only, so admitting the model would run the block from the
+    /// declared `start` instead of the determined value.
+    #[test]
+    fn checked_discrete_initial_value_is_never_ignored() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("galec.mo", "discrete Real m; initial algorithm m := 1.0;");
+        let declaration = dae::DaeProvenance::source(Span::from_offsets(source, 0, 15)).unwrap();
+        let owner = dae::DaeProvenance::source(Span::from_offsets(source, 35, 43)).unwrap();
+        let model = dae::Dae::construct(sources, |model| {
+            let real = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let m = model.variables(|variables| {
+                variables.discrete_real(
+                    VarName::new("m"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let value = model.expressions(|expressions| {
+                expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))
+            })?;
+            model.initialization(|initialization| {
+                initialization
+                    .discrete_real_initial_value(m, value, owner)
+                    .map(|_| ())
+            })
+        })
+        .unwrap();
+        let errors = check_admissibility(&GalecInput::new(&model, "DiscreteInitial")).unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                GalecTargetError::InitialDiscreteValues { definitions: 1 }
+            )),
+            "an algorithm-determined discrete initial value must be reported: {errors:?}"
+        );
     }
 }

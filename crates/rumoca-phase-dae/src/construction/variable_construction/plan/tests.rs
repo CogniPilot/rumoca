@@ -70,7 +70,8 @@ fn only_self_later_and_runtime_function_attributes_reserve() {
         reference("b", source.span("b", 1)),
     );
     assert!(
-        !plan_variable(&backward, PlannedRole::Parameter, None, &ordinals).requires_reservation(1)
+        !plan_variable(&backward, PlannedRole::Parameter, None, None, &ordinals)
+            .requires_reservation(1)
     );
 
     let self_reference = parameter(
@@ -79,8 +80,14 @@ fn only_self_later_and_runtime_function_attributes_reserve() {
         reference("c", source.span("c", 1)),
     );
     assert!(
-        plan_variable(&self_reference, PlannedRole::Parameter, None, &ordinals)
-            .requires_reservation(2)
+        plan_variable(
+            &self_reference,
+            PlannedRole::Parameter,
+            None,
+            None,
+            &ordinals
+        )
+        .requires_reservation(2)
     );
 
     let runtime_call = parameter(
@@ -94,7 +101,7 @@ fn only_self_later_and_runtime_function_attributes_reserve() {
         },
     );
     assert!(
-        plan_variable(&runtime_call, PlannedRole::Parameter, None, &ordinals)
+        plan_variable(&runtime_call, PlannedRole::Parameter, None, None, &ordinals)
             .requires_reservation(3)
     );
 
@@ -112,8 +119,14 @@ fn only_self_later_and_runtime_function_attributes_reserve() {
         },
     );
     assert!(
-        !plan_variable(&record_constructor, PlannedRole::Parameter, None, &ordinals)
-            .requires_reservation(4)
+        !plan_variable(
+            &record_constructor,
+            PlannedRole::Parameter,
+            None,
+            None,
+            &ordinals
+        )
+        .requires_reservation(4)
     );
     for function in [BuiltinFunction::Previous, BuiltinFunction::Hold] {
         let intrinsic_attribute = parameter(
@@ -132,6 +145,7 @@ fn only_self_later_and_runtime_function_attributes_reserve() {
             !plan_variable(
                 &intrinsic_attribute,
                 PlannedRole::Parameter,
+                None,
                 None,
                 &ordinals
             )
@@ -160,7 +174,8 @@ fn later_reference_reserves_but_lexical_binders_do_not() {
         reference("b", source.span("b", 0)),
     );
     assert!(
-        plan_variable(&forward, PlannedRole::Parameter, None, &ordinals).requires_reservation(0)
+        plan_variable(&forward, PlannedRole::Parameter, None, None, &ordinals)
+            .requires_reservation(0)
     );
 
     let comprehension = parameter(
@@ -188,8 +203,14 @@ fn later_reference_reserves_but_lexical_binders_do_not() {
         },
     );
     assert!(
-        !plan_variable(&comprehension, PlannedRole::Parameter, None, &ordinals)
-            .requires_reservation(2)
+        !plan_variable(
+            &comprehension,
+            PlannedRole::Parameter,
+            None,
+            None,
+            &ordinals
+        )
+        .requires_reservation(2)
     );
 
     let mut derived = AttributeDependencyCollector::new(&ordinals);
@@ -296,8 +317,8 @@ fn calculated_parameter_attributes_do_not_create_a_false_binding_cycle() {
     b.start = Some(reference("A", source.span("A", 1)));
 
     let variables = vec![
-        plan_variable(&a, PlannedRole::Algebraic, Some(&derived), &ordinals),
-        plan_variable(&b, PlannedRole::Parameter, None, &ordinals),
+        plan_variable(&a, PlannedRole::Algebraic, Some(&derived), None, &ordinals),
+        plan_variable(&b, PlannedRole::Parameter, None, None, &ordinals),
     ];
     let full_components = rumoca_core::dependency_first_sccs(&[vec![1], vec![0]]).unwrap();
     assert!(full_components[0].recursive);

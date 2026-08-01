@@ -12,6 +12,18 @@
 //! always owns exactly one checked DAE relation. Conditions of `when` clauses,
 //! assertions, and algorithms already own their events through their own
 //! semantic owners and are deliberately not collected again here.
+//!
+//! One operator has no arm below on purpose: MLS §3.7.4.5 `semiLinear(x, kp, kn)`
+//! returns `smooth(0, if x >= 0 then kp*x else kn*x)`, so the `x >= 0` relation
+//! that DAE construction builds for it is already inside a `smooth`. §3.7.5
+//! grants a freedom there rather than imposing a rule — *"a tool is free to not
+//! generate events for expressions inside `smooth`. However, `smooth` does not
+//! guarantee that no events will be generated"* — and rumoca elects to take it,
+//! which is what the `Smooth` arm below encodes. The operator is C0-continuous,
+//! so no crossing has to be located to keep the residual continuous, and OMC
+//! emits no zero crossing for it either. Relations written inside its operands
+//! are ordinary model relations and still reach their own arm through the child
+//! recursion.
 
 use super::*;
 
@@ -83,8 +95,11 @@ fn collect_event_owners(
     plans: &mut ExpressionEventPlans,
 ) -> Result<(), ToDaeError> {
     match expression {
-        // MLS §3.7.5: `noEvent` and `smooth` remove event generation from the
-        // relations they enclose, so no owner is collected below them.
+        // MLS §3.7.5: `noEvent` mandates it — "no zero crossing functions shall
+        // be used to monitor any of the normally event-generating
+        // subexpressions inside expr" — while `smooth` only permits it: "a tool
+        // is free to not generate events for expressions inside smooth". rumoca
+        // takes that freedom uniformly, so no owner is collected below either.
         Expression::BuiltinCall {
             function: BuiltinFunction::NoEvent | BuiltinFunction::Smooth,
             args,

@@ -118,6 +118,8 @@ branded_ids! {
     ContinuousEquationId;
     /// Identity of one initialization-only residual equation.
     InitializationEquationId;
+    /// Identity of one initialization-instant discrete value definition.
+    InitialDiscreteValueId;
     /// Identity of one coupled discrete Real B.1b residual equation.
     DiscreteRealEquationId;
     /// Identity of one atomic source-priority B.1c definition owner.

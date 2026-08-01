@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const CARGO_BUILD_JOBS: &str = "CARGO_BUILD_JOBS";
 const RUST_TEST_THREADS: &str = "RUST_TEST_THREADS";
+const RAYON_NUM_THREADS: &str = "RAYON_NUM_THREADS";
 const MAX_RESERVED_PHYSICAL_CORES: usize = 2;
 
 /// Measured peak resident set of one Cargo job slot while linking, in MiB.
@@ -275,10 +276,18 @@ static ANNOUNCED_TEST_THREADS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) fn apply_to_child(command: &mut Command) {
     let jobs_overridden = std::env::var_os(CARGO_BUILD_JOBS).is_some();
     let test_threads_overridden = std::env::var_os(RUST_TEST_THREADS).is_some();
-    if jobs_overridden && test_threads_overridden {
+    let rayon_overridden = std::env::var_os(RAYON_NUM_THREADS).is_some();
+    if jobs_overridden && test_threads_overridden && rayon_overridden {
         return;
     }
     let budget = RustJobBudget::detect();
+    // Rayon pools default to every logical CPU; the harness's parallel MSL
+    // parse fans out in one burst, which reads as a runaway spawn to
+    // growth-based process killers and oversubscribes the host regardless.
+    // Cap the pool at the same derived job budget unless the caller chose.
+    if !rayon_overridden {
+        command.env(RAYON_NUM_THREADS, budget.jobs.to_string());
+    }
     let test_threads = budget.test_threads();
     if !jobs_overridden {
         command.env(CARGO_BUILD_JOBS, budget.jobs.to_string());

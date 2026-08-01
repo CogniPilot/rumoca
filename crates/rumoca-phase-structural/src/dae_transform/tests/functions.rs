@@ -150,6 +150,7 @@ fn function_reconstruction_is_stack_bounded_and_deterministic() {
     );
     let candidate = model
         .inspect(direct_state_constraints)
+        .admissible
         .into_iter()
         .next()
         .expect("fixture has a direct state constraint");

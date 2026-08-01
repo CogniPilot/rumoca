@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -153,19 +155,13 @@ fn lower_discrete_real_equations<'dae>(
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows,
 ) -> Result<(), LowerError> {
+    let definitions = resolve_discrete_real_definitions(view)?;
     let mut conditional = Vec::new();
-    for index in 0..view.discrete_real_equation_count() {
+    for (index, (target, value)) in definitions.into_iter().enumerate() {
         let equation = view
             .discrete_real_equation(index)
             .expect("dense checked discrete Real equation resolves");
         let span = equation.provenance().span();
-        let (target, value) = direct_discrete_real_definition(view, equation.residual())
-            .ok_or_else(|| {
-                LowerError::non_computable(
-                    "coupled discrete Real residual is not an explicit computable definition",
-                    span,
-                )
-            })?;
         let variable = dae::VariableId::from(target);
         match equation.activation() {
             dae::DiscreteRealActivation::Always => {
@@ -261,27 +257,113 @@ fn lower_unconditional_discrete_real<'dae>(
     Ok(())
 }
 
-fn direct_discrete_real_definition<'dae>(
+/// Orients every discrete `Real` row toward the coordinate that row defines.
+///
+/// A row that names a whole discrete `Real` coordinate on exactly one side
+/// states its own causality. A row that names one on *each* side states only
+/// that the two are equal: MLS §9.1 connection equations between clocked
+/// signals — `connect(sample.y, assignClock.u)` in the `Modelica.Clocked`
+/// examples — have that shape, and their target is whichever coordinate the
+/// rest of the partition leaves undefined.
+///
+/// A two-sided row is therefore oriented by forced elimination: it takes the one
+/// candidate that no other row already defines. The one-sided rows state the
+/// initial set of defined coordinates — several `when` branches may define the
+/// same coordinate, so that set is a union and never an exclusive claim — and
+/// each forced two-sided orientation extends it until no further row is forced.
+/// A row that never becomes forced admits more than one causality and is
+/// reported at its own span, never guessed.
+fn resolve_discrete_real_definitions<'dae>(
+    view: dae::DaeView<'dae>,
+) -> Result<Vec<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)>, LowerError> {
+    let count = view.discrete_real_equation_count();
+    let mut candidates = Vec::with_capacity(count);
+    let mut spans = Vec::with_capacity(count);
+    for index in 0..count {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("dense checked discrete Real equation resolves");
+        candidates.push(discrete_real_definition_candidates(
+            view,
+            equation.residual(),
+        ));
+        spans.push(equation.provenance().span());
+    }
+    let mut resolved = vec![None; count];
+    let mut defined = BTreeSet::new();
+    let mut pending = count;
+    for (index, row) in candidates.iter().enumerate() {
+        if let [definition] = row.as_slice() {
+            defined.insert(definition.0.index());
+            resolved[index] = Some(*definition);
+            pending -= 1;
+        }
+    }
+    while pending != 0 {
+        let forced = force_discrete_real_rows(&candidates, &mut resolved, &mut defined);
+        if forced == 0 {
+            let unresolved = resolved
+                .iter()
+                .position(Option::is_none)
+                .expect("a pending row has no resolved definition");
+            return Err(LowerError::non_computable(
+                "coupled discrete Real residual is not an explicit computable definition",
+                spans[unresolved],
+            ));
+        }
+        pending -= forced;
+    }
+    Ok(resolved
+        .into_iter()
+        .map(|definition| definition.expect("every discrete Real row was oriented"))
+        .collect())
+}
+
+/// One elimination sweep: orients every still-open row whose candidates have
+/// been narrowed to a single coordinate no other row defines, and reports how
+/// many rows the sweep oriented.
+fn force_discrete_real_rows<'dae>(
+    candidates: &[Vec<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)>],
+    resolved: &mut [Option<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)>],
+    defined: &mut BTreeSet<u32>,
+) -> usize {
+    let mut forced = 0;
+    for (index, row) in candidates.iter().enumerate() {
+        let mut open = row
+            .iter()
+            .filter(|(target, _)| !defined.contains(&target.index()));
+        let (None, Some(definition), None) = (resolved[index], open.next(), open.next()) else {
+            continue;
+        };
+        defined.insert(definition.0.index());
+        resolved[index] = Some(*definition);
+        forced += 1;
+    }
+    forced
+}
+
+/// The discrete `Real` coordinates one residual could define, in residual order.
+fn discrete_real_definition_candidates<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
-) -> Option<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)> {
-    let residual = view.expression(residual)?;
+) -> Vec<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)> {
+    let Some(residual) = view.expression(residual) else {
+        return Vec::new();
+    };
     let dae::ExpressionOperation::Binary {
         operator: dae::BinaryOperator::Subtract,
         lhs,
         rhs,
     } = residual.operation()
     else {
-        return None;
+        return Vec::new();
     };
-    match (
-        whole_discrete_real(view, lhs),
-        whole_discrete_real(view, rhs),
-    ) {
-        (Some(target), None) => compatible_discrete_definition(view, target, rhs),
-        (None, Some(target)) => compatible_discrete_definition(view, target, lhs),
-        (None, None) | (Some(_), Some(_)) => None,
-    }
+    [(lhs, rhs), (rhs, lhs)]
+        .into_iter()
+        .filter_map(|(side, value)| {
+            compatible_discrete_definition(view, whole_discrete_real(view, side)?, value)
+        })
+        .collect()
 }
 
 fn compatible_discrete_definition<'dae>(

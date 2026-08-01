@@ -37,6 +37,19 @@ impl<'a> OverlayScopeIndex<'a> {
             components,
         }
     }
+
+    /// Class-body occurrence that instantiation created for the instance path
+    /// `scope`, if that path names one.
+    ///
+    /// The root model's body answers the empty path. A path that names no
+    /// class body — a lexical class name, or a component with no instantiated
+    /// body — answers `None`, because no occurrence identity exists for it.
+    pub(crate) fn class_occurrence(
+        &self,
+        scope: &ast::QualifiedName,
+    ) -> Option<rumoca_core::InstanceId> {
+        self.classes.get(scope).map(|class| class.instance_id)
+    }
 }
 
 pub(crate) fn initialize_flat_metadata(flat: &mut flat::Model, overlay: &ast::InstanceOverlay) {

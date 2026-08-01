@@ -325,6 +325,9 @@ impl ExpressionValidator<'_> {
         if matches!(function, BuiltinFunction::Hold | BuiltinFunction::Previous) {
             return self.validate_clocked_unary(function, arguments, span);
         }
+        if function == BuiltinFunction::SemiLinear {
+            return self.validate_semi_linear(arguments, span);
+        }
         if !is_supported_builtin(function) {
             return Err(ToDaeError::unsupported_runtime_operator(
                 function.name(),
@@ -336,6 +339,25 @@ impl ExpressionValidator<'_> {
             self.validate(argument)?;
         }
         Ok(())
+    }
+
+    /// MLS §3.7.4.5 `semiLinear(x, positiveSlope, negativeSlope)`.
+    ///
+    /// The operator has a fixed three-operand contract; construction turns it
+    /// into the checked conditional `if x >= 0 then positiveSlope*x else
+    /// negativeSlope*x`, so every operand must itself be a lowerable
+    /// expression.
+    fn validate_semi_linear(self, arguments: &[Expression], span: Span) -> Result<(), ToDaeError> {
+        let [x, positive_slope, negative_slope] = arguments else {
+            return Err(ToDaeError::unsupported_runtime_operator(
+                BuiltinFunction::SemiLinear.name(),
+                "semiLinear takes exactly an operand and its positive and negative slopes",
+                span,
+            ));
+        };
+        self.validate(x)?;
+        self.validate(positive_slope)?;
+        self.validate(negative_slope)
     }
 
     fn validate_clocked_unary(

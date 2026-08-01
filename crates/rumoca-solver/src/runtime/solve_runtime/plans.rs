@@ -3,8 +3,8 @@ use rumoca_ir_solve as solve;
 use std::collections::BTreeSet;
 
 use crate::RuntimeSolveError;
-use rumoca_eval_solve::RowEvalContext;
 use rumoca_eval_solve::refresh_plan::RefreshPlan;
+use rumoca_eval_solve::{EvalSolveError, PreparedComputeBlock, RowEvalContext};
 
 #[derive(Clone, Copy)]
 pub(super) enum DirectVisibleSource {
@@ -375,4 +375,38 @@ pub(super) fn visible_plan_output_index_error(index: usize, len: usize) -> Runti
     RuntimeSolveError::solve_ir(format!(
         "visible value plan output index {index} out of bounds for {len} values"
     ))
+}
+
+/// Prepare the manifold residual and its Jacobian-vector product.
+pub(super) fn prepare_manifold_projection_programs(
+    model: &solve::SolveModel,
+) -> Result<(PreparedComputeBlock, PreparedComputeBlock), EvalSolveError> {
+    Ok((
+        PreparedComputeBlock::new_with_label(
+            &model.problem.continuous.manifold_residual,
+            "runtime_manifold_residual",
+        )?,
+        PreparedComputeBlock::new_with_label(
+            &model.artifacts.continuous.manifold_jacobian_v,
+            "runtime_manifold_jacobian_v",
+        )?,
+    ))
+}
+
+/// Total root-condition count: the model's own conditions plus the roots the
+/// delay runtime schedules.
+pub(super) fn total_root_condition_count(
+    model: &solve::SolveModel,
+    delay_event_roots: usize,
+) -> Result<usize, EvalSolveError> {
+    model
+        .problem
+        .events
+        .root_conditions
+        .len()
+        .checked_add(delay_event_roots)
+        .ok_or_else(|| EvalSolveError::ShapeContract {
+            message: "combined model and delay root count exceeds host index range".to_string(),
+            span: None,
+        })
 }

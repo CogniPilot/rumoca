@@ -1,6 +1,6 @@
 //! Coordinate equalities the source system already asserts.
 //!
-//! A connected MSL model states most of its structure as bare two-operand
+//! A connected MSL model states most of its structure as bare additive
 //! balances: every `connect` between two rotational flanges lowers to a
 //! potential residual `a.phi - b.phi`, every two-terminal node lowers to a flow
 //! residual `a.i + b.i`, a component body adds `phi - flange_a.phi`, and an
@@ -15,6 +15,15 @@
 //! signed edges is equally exact. Nothing here inspects a name: membership
 //! comes from branded coordinate identities, and the class anchor is picked by
 //! variable role and `StateSelect`.
+//!
+//! A rigid body writes its ends as `flange_a.s - (s - L/2)`, which states the
+//! same equality displaced by a time-invariant length. That displacement is
+//! exact for a derivative — `d/dt (x + c) = d/dt x` whenever `c` is constant —
+//! and inexact for a value, so the two facts are closed separately. The
+//! `exact` layer carries only offset-free edges and answers value questions;
+//! the `affine` layer additionally carries displaced edges and answers
+//! derivative questions. Every reader picks the layer its claim needs, so an
+//! offset can never leak into a substitution that names a value.
 
 use rumoca_core::StateSelect;
 use rumoca_ir_dae as dae;
@@ -22,9 +31,12 @@ use rumoca_ir_dae as dae;
 /// The class member whose time derivative is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EqualityAnchor {
-    /// A time-invariant expression the class is pinned to, by source ordinal:
-    /// every member of the class has derivative zero.
-    Invariant(u32),
+    /// A time-invariant value the class is pinned to: every member of the class
+    /// has derivative zero. `value` names the source expression every member
+    /// equals when the pinning residual states that value directly, and is
+    /// `None` when the residual only proves the class constant. `ordinal` is
+    /// the pinning residual, which keeps anchor selection deterministic.
+    Invariant { value: Option<u32>, ordinal: u32 },
     /// The state the class keeps; every other state in the class is redundant.
     State(u32),
 }
@@ -43,113 +55,26 @@ impl EqualitySign {
     }
 }
 
-/// Exact coordinate equalities, closed transitively over one finalized DAE.
-pub(super) struct SystemEqualities {
+/// Signed coordinate classes closed transitively over one set of edges.
+struct SignedClasses {
     /// Union-find parent per variable ordinal.
     parent: Vec<u32>,
     /// Sign of each variable relative to its union-find parent.
     parity: Vec<bool>,
-    /// Whether each variable ordinal is declared a continuous state.
-    state: Vec<bool>,
     /// Anchor of the class rooted at each variable ordinal.
     anchor: Vec<Option<EqualityAnchor>>,
     /// Classes whose edges contradict each other and prove nothing usable.
     inconsistent: Vec<bool>,
-    /// Lowest whole-model coordinate expression ordinal naming each variable.
-    coordinate: Vec<Option<u32>>,
-    /// One asserted equality incident to each variable, for candidate owners.
-    witness: Vec<Option<dae::DaeProvenance>>,
 }
 
-impl SystemEqualities {
-    pub(super) fn collect(view: dae::DaeView<'_>) -> Self {
-        let count = view.variable_count();
-        let mut equalities = Self {
+impl SignedClasses {
+    fn new(count: usize) -> Self {
+        Self {
             parent: (0..count as u32).collect(),
             parity: vec![false; count],
-            state: view
-                .variables()
-                .map(|(_, variable)| variable.role() == dae::VariableRole::State)
-                .collect(),
             anchor: vec![None; count],
             inconsistent: vec![false; count],
-            coordinate: coordinate_expressions(view),
-            witness: vec![None; count],
-        };
-        let mut pinned = Vec::new();
-        for owner in view.continuous_owners() {
-            let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
-                continue;
-            };
-            let Some(equality) = asserted_equality(view, equation.residual()) else {
-                continue;
-            };
-            for variable in equality.variables() {
-                equalities.witness[variable as usize].get_or_insert(equation.provenance());
-            }
-            match equality {
-                AssertedEquality::Aliased {
-                    left,
-                    right,
-                    opposite,
-                } => equalities.union(left, right, opposite),
-                AssertedEquality::Pinned {
-                    variable,
-                    expression,
-                } => pinned.push((variable, expression)),
-            }
         }
-        equalities.resolve_anchors(view, &pinned);
-        equalities
-    }
-
-    /// The class member whose derivative is known, and how `variable` signs
-    /// against it, if the class has such a member.
-    ///
-    /// A pinned class always reports [`EqualitySign::Same`]: a time-invariant
-    /// value has the same zero derivative under either sign, so the sign
-    /// carries no information a caller could act on.
-    pub(super) fn anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
-        let (root, parity) = self.find(variable);
-        if self.inconsistent[root as usize] {
-            return None;
-        }
-        match self.anchor[root as usize]? {
-            anchor @ EqualityAnchor::Invariant(_) => Some((anchor, EqualitySign::Same)),
-            anchor @ EqualityAnchor::State(state) => {
-                let (_, anchor_parity) = self.find(state);
-                Some((anchor, EqualitySign::of(parity != anchor_parity)))
-            }
-        }
-    }
-
-    /// The source expression a demotion onto `anchor` differentiates.
-    pub(super) fn anchor_expression(&self, anchor: EqualityAnchor) -> Option<u32> {
-        match anchor {
-            EqualityAnchor::Invariant(expression) => Some(expression),
-            EqualityAnchor::State(state) => self.coordinate[state as usize],
-        }
-    }
-
-    /// One equality this system asserts about `variable`.
-    pub(super) fn witness(&self, variable: u32) -> Option<dae::DaeProvenance> {
-        self.witness[variable as usize]
-    }
-
-    /// States that a class equality proves are the anchor itself.
-    ///
-    /// A state anchor is only reported for same-sign members: a demotion hands
-    /// reconstruction an existing coordinate expression as the state's
-    /// definition, and the DAE need not contain a negated form of it.
-    pub(super) fn redundant_states(&self) -> impl Iterator<Item = (u32, EqualityAnchor)> + '_ {
-        (0..self.parent.len() as u32).filter_map(move |variable| {
-            if !self.state[variable as usize] {
-                return None;
-            }
-            let (anchor, sign) = self.anchor_of(variable)?;
-            (sign == EqualitySign::Same && anchor != EqualityAnchor::State(variable))
-                .then_some((variable, anchor))
-        })
     }
 
     /// The class root of `variable` and its sign relative to that root.
@@ -184,21 +109,23 @@ impl SystemEqualities {
         self.inconsistent[keep as usize] |= self.inconsistent[merged as usize];
     }
 
-    /// Pick the anchor of every class: a time-invariant pin fixes the whole
-    /// class, otherwise the class keeps the state a solver would prefer.
-    fn resolve_anchors(&mut self, view: dae::DaeView<'_>, pinned: &[(u32, u32)]) {
-        for (id, variable) in view.variables() {
-            let index = id.index();
-            if variable.role() != dae::VariableRole::State
-                || !is_scalar_real(variable)
-                || self.coordinate[index as usize].is_none()
-            {
-                continue;
-            }
-            self.offer_anchor(view, index, EqualityAnchor::State(index));
+    /// The class member whose derivative is known, and how `variable` signs
+    /// against it, if the class has such a member.
+    ///
+    /// A pinned class always reports [`EqualitySign::Same`]: a time-invariant
+    /// value has the same zero derivative under either sign, so the sign
+    /// carries no information a caller could act on.
+    fn anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
+        let (root, parity) = self.find(variable);
+        if self.inconsistent[root as usize] {
+            return None;
         }
-        for (variable, expression) in pinned.iter().copied() {
-            self.offer_anchor(view, variable, EqualityAnchor::Invariant(expression));
+        match self.anchor[root as usize]? {
+            anchor @ EqualityAnchor::Invariant { .. } => Some((anchor, EqualitySign::Same)),
+            anchor @ EqualityAnchor::State(state) => {
+                let (_, anchor_parity) = self.find(state);
+                Some((anchor, EqualitySign::of(parity != anchor_parity)))
+            }
         }
     }
 
@@ -219,18 +146,162 @@ impl SystemEqualities {
     }
 }
 
+/// Exact coordinate equalities, closed transitively over one finalized DAE.
+pub(super) struct SystemEqualities {
+    /// Classes proven equal up to sign, with no displacement between members.
+    /// Answers every question about a value.
+    exact: SignedClasses,
+    /// Classes proven equal up to sign and a time-invariant displacement.
+    /// Members share a derivative but not necessarily a value.
+    affine: SignedClasses,
+    /// Whether each variable ordinal is declared a continuous state.
+    state: Vec<bool>,
+    /// Lowest whole-model coordinate expression ordinal naming each variable.
+    coordinate: Vec<Option<u32>>,
+    /// One asserted equality incident to each variable, for candidate owners.
+    witness: Vec<Option<dae::DaeProvenance>>,
+}
+
+impl SystemEqualities {
+    pub(super) fn collect(view: dae::DaeView<'_>) -> Self {
+        let count = view.variable_count();
+        let mut equalities = Self {
+            exact: SignedClasses::new(count),
+            affine: SignedClasses::new(count),
+            state: view
+                .variables()
+                .map(|(_, variable)| variable.role() == dae::VariableRole::State)
+                .collect(),
+            coordinate: coordinate_expressions(view),
+            witness: vec![None; count],
+        };
+        let mut pinned = Vec::new();
+        for owner in view.continuous_owners() {
+            let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
+                continue;
+            };
+            let Some(equality) = asserted_equality(view, equation.residual()) else {
+                continue;
+            };
+            for variable in equality.variables() {
+                equalities.witness[variable as usize].get_or_insert(equation.provenance());
+            }
+            match equality {
+                AssertedEquality::Aliased {
+                    left,
+                    right,
+                    opposite,
+                    displaced,
+                } => equalities.alias(left, right, opposite, displaced),
+                AssertedEquality::Pinned { variable, anchor } => pinned.push((variable, anchor)),
+            }
+        }
+        equalities.resolve_anchors(view, &pinned);
+        equalities
+    }
+
+    /// Record one asserted alias in the layers it holds for.
+    ///
+    /// A displaced pair shares only its derivative, so it never reaches the
+    /// offset-free layer that answers value questions.
+    fn alias(&mut self, left: u32, right: u32, opposite: bool, displaced: bool) {
+        self.affine.union(left, right, opposite);
+        if !displaced {
+            self.exact.union(left, right, opposite);
+        }
+    }
+
+    /// The class member whose derivative is known, and how `variable` signs
+    /// against it, if the system proves the class has such a member.
+    ///
+    /// The offset-free class is reported whenever it has an anchor, and the
+    /// displaced class otherwise. Both prove the same derivative, so preferring
+    /// the offset-free one keeps a derivative claim on the same witness a value
+    /// claim about the variable would use.
+    pub(super) fn anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
+        self.exact
+            .anchor_of(variable)
+            .or_else(|| self.affine.anchor_of(variable))
+    }
+
+    /// The class anchor of `variable` on the offset-free layer only.
+    ///
+    /// [`Self::anchor_of`] answers derivative questions and may fall back on the
+    /// displaced layer, where members share a derivative but not a value. A
+    /// caller reasoning about a *value* — an initial condition, say — must not
+    /// see that fallback, so it reads this instead.
+    pub(super) fn value_anchor_of(&self, variable: u32) -> Option<(EqualityAnchor, EqualitySign)> {
+        self.exact.anchor_of(variable)
+    }
+
+    /// The source expression a demotion onto `anchor` differentiates.
+    pub(super) fn anchor_expression(&self, anchor: EqualityAnchor) -> Option<u32> {
+        match anchor {
+            EqualityAnchor::Invariant { value, .. } => value,
+            EqualityAnchor::State(state) => self.coordinate[state as usize],
+        }
+    }
+
+    /// One equality this system asserts about `variable`.
+    pub(super) fn witness(&self, variable: u32) -> Option<dae::DaeProvenance> {
+        self.witness[variable as usize]
+    }
+
+    /// States that a class equality proves are the anchor itself.
+    ///
+    /// Only the offset-free layer is consulted: a demotion substitutes the
+    /// anchor's value for the state, which a displaced equality does not prove.
+    /// A state anchor is only reported for same-sign members, because a
+    /// demotion hands reconstruction an existing coordinate expression as the
+    /// state's definition and the DAE need not contain a negated form of it.
+    pub(super) fn redundant_states(&self) -> impl Iterator<Item = (u32, EqualityAnchor)> + '_ {
+        (0..self.state.len() as u32).filter_map(move |variable| {
+            if !self.state[variable as usize] {
+                return None;
+            }
+            let (anchor, sign) = self.exact.anchor_of(variable)?;
+            (sign == EqualitySign::Same && anchor != EqualityAnchor::State(variable))
+                .then_some((variable, anchor))
+        })
+    }
+
+    /// Pick the anchor of every class: a time-invariant pin fixes the whole
+    /// class, otherwise the class keeps the state a solver would prefer.
+    fn resolve_anchors(&mut self, view: dae::DaeView<'_>, pinned: &[(u32, EqualityAnchor)]) {
+        for (id, variable) in view.variables() {
+            let index = id.index();
+            if variable.role() != dae::VariableRole::State
+                || !is_scalar_real(variable)
+                || self.coordinate[index as usize].is_none()
+            {
+                continue;
+            }
+            self.exact
+                .offer_anchor(view, index, EqualityAnchor::State(index));
+            self.affine
+                .offer_anchor(view, index, EqualityAnchor::State(index));
+        }
+        for (variable, anchor) in pinned.iter().copied() {
+            self.exact.offer_anchor(view, variable, anchor);
+            self.affine.offer_anchor(view, variable, anchor);
+        }
+    }
+}
+
 /// Order anchors so a pinned class reports its invariant, and a free class
 /// keeps the state a solver most wants to integrate.
 ///
 /// The second component keeps a fixed initial value inside the class. Demoting
 /// a state drops its initial equation, so a class member the model pins with
 /// `fixed = true` has to be the one that survives — otherwise the reduction
-/// would silently replace a stated initial condition with a guess.
+/// would silently replace a stated initial condition with a guess. Between two
+/// pins the one that names its value outranks the one that only proves
+/// constancy, because only the named value can define a demoted state.
 fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8) {
     match anchor {
         // A time-invariant pin proves the whole class constant, which is
         // strictly more information than any state selection.
-        EqualityAnchor::Invariant(_) => (u8::MAX, u8::MAX),
+        EqualityAnchor::Invariant { value, .. } => (u8::MAX, u8::from(value.is_some())),
         EqualityAnchor::State(variable) => {
             let Some(variable) = view
                 .variable_id(variable as usize)
@@ -254,22 +325,30 @@ fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8) {
 /// choice never depends on the order equations happened to be visited in.
 fn anchor_ordinal(anchor: EqualityAnchor) -> std::cmp::Reverse<u32> {
     let ordinal = match anchor {
-        EqualityAnchor::Invariant(expression) => expression,
+        EqualityAnchor::Invariant { ordinal, .. } => ordinal,
         EqualityAnchor::State(variable) => variable,
     };
     std::cmp::Reverse(ordinal)
 }
 
-/// One equality a two-operand residual proves.
+/// One equality an additive residual proves.
 enum AssertedEquality {
-    /// Two variables the residual proves equal, up to sign.
+    /// Two variables the residual proves equal, up to sign and a possible
+    /// time-invariant displacement.
     Aliased {
         left: u32,
         right: u32,
         opposite: bool,
+        /// Whether the two variables are separated by a displacement the
+        /// residual does not prove zero. A displaced pair still shares a
+        /// derivative; it does not share a value.
+        displaced: bool,
     },
-    /// One variable the residual pins to a time-invariant expression.
-    Pinned { variable: u32, expression: u32 },
+    /// One variable the residual proves time-invariant.
+    Pinned {
+        variable: u32,
+        anchor: EqualityAnchor,
+    },
 }
 
 impl AssertedEquality {
@@ -281,109 +360,208 @@ impl AssertedEquality {
     }
 }
 
-/// One side of a two-operand residual, once its sign has been peeled off.
-#[derive(Clone, Copy)]
-enum EqualityOperand {
-    Variable {
-        variable: u32,
-        negated: bool,
-    },
-    /// A literal or parameter coordinate: time-invariant, and differentiable to
-    /// zero whichever sign it carries.
-    Invariant {
-        expression: u32,
-    },
+/// The signed operands of one additive residual, split by what they name.
+#[derive(Default)]
+struct AdditiveOperands {
+    /// Scalar real coordinates, with the sign each carries in the residual.
+    variables: Vec<(u32, bool)>,
+    /// Time-invariant operands, with their sign and whether they are exactly
+    /// zero.
+    invariants: Vec<AdditiveInvariant>,
 }
 
-/// The equality a bare `a ± b` residual proves.
+#[derive(Clone, Copy)]
+struct AdditiveInvariant {
+    expression: u32,
+    negated: bool,
+    zero: bool,
+}
+
+impl AdditiveOperands {
+    /// Whether no operand displaces the balance: an omitted term and a literal
+    /// zero both contribute exactly zero.
+    fn offset_free(&self) -> bool {
+        self.invariants.iter().all(|invariant| invariant.zero)
+    }
+
+    /// The single expression a pinned variable equals, when the residual states
+    /// that value directly.
+    ///
+    /// A residual `s·v + Σ sᵢ·kᵢ = 0` puts the variable at `-(Σ sᵢ·kᵢ)/s`, so
+    /// only a lone invariant of the opposite sign is the value as written. A
+    /// balance whose invariants are all zero puts the variable at zero, which
+    /// any of those zeros names.
+    fn pinned_value(&self, negated: bool) -> Option<u32> {
+        if self.offset_free() {
+            return self
+                .invariants
+                .first()
+                .map(|invariant| invariant.expression);
+        }
+        match self.invariants.as_slice() {
+            [only] if only.negated != negated => Some(only.expression),
+            _ => None,
+        }
+    }
+
+    /// The equality this operand list proves, if it proves one.
+    fn classify(&self, residual: u32) -> Option<AssertedEquality> {
+        match *self.variables.as_slice() {
+            [(left, left_negated), (right, right_negated)] => {
+                (left != right).then_some(AssertedEquality::Aliased {
+                    left,
+                    right,
+                    // `a - b = 0` proves `a ≡ b`; `a + b = 0` proves `a ≡ -b`.
+                    opposite: left_negated == right_negated,
+                    displaced: !self.offset_free(),
+                })
+            }
+            [(variable, negated)] => Some(AssertedEquality::Pinned {
+                variable,
+                anchor: EqualityAnchor::Invariant {
+                    value: self.pinned_value(negated),
+                    ordinal: residual,
+                },
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The equality one additive residual proves.
 ///
-/// Both the residual as written and its zero-stripped form are tried, because a
-/// DAE spells `0 = a.i + b.i` as `0 - (a.i + b.i)` while spelling
-/// `phi_support = 0` as `phi_support - 0`; stripping is right for the first and
-/// destroys the second.
+/// The residual is read as a signed sum of leaves, so every spelling of the
+/// same balance reduces to the same operand list: a DAE writes `0 = a.i + b.i`
+/// as `0 - (a.i + b.i)` and `phi_support = 0` as `phi_support - 0`, and a rigid
+/// body writes `flange_a.s = s - L/2`. A residual that reaches a leaf which is
+/// neither a scalar real coordinate nor a time-invariant expression proves
+/// nothing this closure may use, and is dropped whole.
 fn asserted_equality<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
 ) -> Option<AssertedEquality> {
-    two_operand_equality(view, residual)
-        .or_else(|| two_operand_equality(view, zero_normalized(view, residual)))
+    let mut operands = AdditiveOperands::default();
+    flatten_additive(view, residual, false, &mut operands)
+        .then(|| operands.classify(residual.index()))
+        .flatten()
 }
 
-fn two_operand_equality<'dae>(
+/// Split `expression` into signed additive leaves, reporting whether every leaf
+/// is one this closure can read.
+///
+/// The walk stops as soon as a third variable appears: no equality this closure
+/// records relates more than two coordinates, so a longer balance — a flow node
+/// over three terminals, say — is rejected rather than partially read.
+fn flatten_additive<'dae>(
     view: dae::DaeView<'dae>,
-    residual: dae::ExprId<'dae>,
-) -> Option<AssertedEquality> {
-    let dae::ExpressionOperation::Binary { operator, lhs, rhs } =
-        view.expression(residual)?.operation()
-    else {
-        return None;
+    expression: dae::ExprId<'dae>,
+    negated: bool,
+    operands: &mut AdditiveOperands,
+) -> bool {
+    if operands.variables.len() > 2 {
+        return false;
+    }
+    let Some(node) = whole_model_expression(view, expression) else {
+        return false;
     };
-    let opposite = match operator {
-        dae::BinaryOperator::Subtract => false,
-        dae::BinaryOperator::Add => true,
-        _ => return None,
-    };
-    match (equality_operand(view, lhs)?, equality_operand(view, rhs)?) {
-        (
-            EqualityOperand::Variable {
-                variable: left,
-                negated: left_negated,
-            },
-            EqualityOperand::Variable {
-                variable: right,
-                negated: right_negated,
-            },
-        ) => (left != right).then_some(AssertedEquality::Aliased {
-            left,
-            right,
-            opposite: opposite ^ left_negated ^ right_negated,
-        }),
-        (EqualityOperand::Variable { variable, .. }, EqualityOperand::Invariant { expression })
-        | (EqualityOperand::Invariant { expression }, EqualityOperand::Variable { variable, .. }) => {
-            Some(AssertedEquality::Pinned {
-                variable,
-                expression,
-            })
+    match node.operation() {
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Plus,
+            operand,
+        } => flatten_additive(view, operand, negated, operands),
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Negate,
+            operand,
+        } => flatten_additive(view, operand, !negated, operands),
+        dae::ExpressionOperation::Binary {
+            operator: dae::BinaryOperator::Add,
+            lhs,
+            rhs,
+        } => {
+            flatten_additive(view, lhs, negated, operands)
+                && flatten_additive(view, rhs, negated, operands)
         }
-        (EqualityOperand::Invariant { .. }, EqualityOperand::Invariant { .. }) => None,
+        dae::ExpressionOperation::Binary {
+            operator: dae::BinaryOperator::Subtract,
+            lhs,
+            rhs,
+        } => {
+            flatten_additive(view, lhs, negated, operands)
+                && flatten_additive(view, rhs, !negated, operands)
+        }
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => {
+            push_variable(view, state.index(), negated, operands)
+        }
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
+            push_variable(view, algebraic.index(), negated, operands)
+        }
+        _ => {
+            if !is_time_invariant(view, expression) {
+                return false;
+            }
+            operands.invariants.push(AdditiveInvariant {
+                expression: expression.index(),
+                negated,
+                zero: is_zero_literal(view, expression),
+            });
+            true
+        }
     }
 }
 
-/// Strip the sign and zero padding a residual may carry around its balance.
+/// Record one scalar real coordinate operand.
 ///
-/// A DAE lowers `0 = a.i + b.i` as `0 - (a.i + b.i)`, and an equation written
-/// the other way round as `(a.i + b.i) - 0`. Both assert exactly what the inner
-/// balance asserts, and so does any overall sign, so peeling them loses nothing
-/// and lets one matcher read every spelling of the same equality.
-fn zero_normalized<'dae>(
-    view: dae::DaeView<'dae>,
-    residual: dae::ExprId<'dae>,
-) -> dae::ExprId<'dae> {
-    let mut current = residual;
-    loop {
-        let Some(expression) = view.expression(current) else {
-            return current;
-        };
-        if expression.function_scope().is_some() || expression.binder_domain().is_some() {
-            return current;
-        }
-        current = match expression.operation() {
-            dae::ExpressionOperation::Unary {
-                operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
-                operand,
-            } => operand,
-            dae::ExpressionOperation::Binary {
-                operator: dae::BinaryOperator::Subtract,
-                lhs,
-                rhs,
-            } if is_zero_literal(view, lhs) => rhs,
-            dae::ExpressionOperation::Binary {
-                operator: dae::BinaryOperator::Add | dae::BinaryOperator::Subtract,
-                lhs,
-                rhs,
-            } if is_zero_literal(view, rhs) => lhs,
-            _ => return current,
-        };
+/// A coordinate of any other shape is not a value this closure may chain, so
+/// the whole residual is dropped rather than read without it.
+fn push_variable(
+    view: dae::DaeView<'_>,
+    variable: u32,
+    negated: bool,
+    operands: &mut AdditiveOperands,
+) -> bool {
+    let Some(declaration) = view
+        .variable_id(variable as usize)
+        .and_then(|id| view.variable(id))
+    else {
+        return false;
+    };
+    if !is_scalar_real(declaration) {
+        return false;
+    }
+    operands.variables.push((variable, negated));
+    true
+}
+
+/// Whether `expression` has the same value at every instant.
+///
+/// Restricted to the forms differentiation resolves to zero outright: literal
+/// numbers, parameter coordinates, and the arithmetic over them. A coordinate
+/// that varies, a reference to `time`, and anything scoped to a function or a
+/// comprehension are all excluded, so an accepted expression really is a
+/// constant of the whole-model system.
+fn is_time_invariant<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> bool {
+    let Some(node) = whole_model_expression(view, expression) else {
+        return false;
+    };
+    match node.operation() {
+        dae::ExpressionOperation::Literal(
+            dae::DaeLiteral::Real(_) | dae::DaeLiteral::Integer(_),
+        )
+        | dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(_)) => true,
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
+            operand,
+        } => is_time_invariant(view, operand),
+        dae::ExpressionOperation::Binary {
+            operator:
+                dae::BinaryOperator::Add
+                | dae::BinaryOperator::Subtract
+                | dae::BinaryOperator::Multiply
+                | dae::BinaryOperator::Divide,
+            lhs,
+            rhs,
+        } => is_time_invariant(view, lhs) && is_time_invariant(view, rhs),
+        _ => false,
     }
 }
 
@@ -396,52 +574,6 @@ fn is_zero_literal<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>
             )
         )
     })
-}
-
-/// Read one residual side as a signed variable or a time-invariant pin.
-///
-/// Only whole-model operands qualify: a function-scoped or comprehension-bound
-/// expression does not name a whole-model unknown. A derivative or discrete
-/// coordinate is not a value this closure may chain, and an invariant is
-/// restricted to the two forms differentiation resolves to zero outright.
-fn equality_operand<'dae>(
-    view: dae::DaeView<'dae>,
-    operand: dae::ExprId<'dae>,
-) -> Option<EqualityOperand> {
-    let expression = whole_model_expression(view, operand)?;
-    let (operand, negated) = match expression.operation() {
-        dae::ExpressionOperation::Unary {
-            operator: dae::UnaryOperator::Negate,
-            operand,
-        } => (operand, true),
-        dae::ExpressionOperation::Unary {
-            operator: dae::UnaryOperator::Plus,
-            operand,
-        } => (operand, false),
-        _ => (operand, false),
-    };
-    let expression = whole_model_expression(view, operand)?;
-    let variable = match expression.operation() {
-        dae::ExpressionOperation::Literal(
-            dae::DaeLiteral::Real(_) | dae::DaeLiteral::Integer(_),
-        ) => {
-            return Some(EqualityOperand::Invariant {
-                expression: operand.index(),
-            });
-        }
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(_)) => {
-            return Some(EqualityOperand::Invariant {
-                expression: operand.index(),
-            });
-        }
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state)) => state.index(),
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(algebraic)) => {
-            algebraic.index()
-        }
-        _ => return None,
-    };
-    let declaration = view.variable(view.variable_id(variable as usize)?)?;
-    is_scalar_real(declaration).then_some(EqualityOperand::Variable { variable, negated })
 }
 
 fn whole_model_expression<'dae>(

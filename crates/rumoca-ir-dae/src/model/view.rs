@@ -124,6 +124,7 @@ impl<'dae> DaeView<'dae> {
         initialization_family_count => initialization_families,
         initialization_equation_count => initialization_equations,
         initialization_owner_count => initialization_equation_owners,
+        initial_discrete_value_count => initial_discrete_values,
         discrete_real_equation_count => discrete_real_equations,
         discrete_value_owner_count => discrete_value_owners,
         relation_count => relations,
@@ -378,6 +379,25 @@ impl<'dae> DaeView<'dae> {
         (0..self.initialization_owner_count()).map(move |index| {
             self.initialization_owner(index)
                 .expect("finalized initialization owner resolves")
+        })
+    }
+
+    /// MLS §8.6 initialization-instant value of one discrete coordinate.
+    pub fn initial_discrete_value(self, index: usize) -> Option<InitialDiscreteValueView<'dae>> {
+        let entry = self.dae.storage.initial_discrete_values.get(index)?;
+        Some(InitialDiscreteValueView {
+            target: VariableId::from_raw(entry.target),
+            value: ExprId::from_raw(entry.value),
+            provenance: entry.provenance,
+        })
+    }
+
+    pub fn initial_discrete_values(
+        self,
+    ) -> impl ExactSizeIterator<Item = InitialDiscreteValueView<'dae>> {
+        (0..self.initial_discrete_value_count()).map(move |index| {
+            self.initial_discrete_value(index)
+                .expect("finalized discrete initial value resolves")
         })
     }
 

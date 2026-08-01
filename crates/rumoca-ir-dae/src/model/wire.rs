@@ -61,7 +61,7 @@ impl Serialize for FrozenStorage {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("DaeStorage", 22)?;
+        let mut state = serializer.serialize_struct("DaeStorage", 23)?;
         state.serialize_field(
             "predefined_string_declaration",
             &self.predefined_string_declaration,
@@ -94,6 +94,7 @@ impl Serialize for FrozenStorage {
                 &self.equation_family_bodies,
             ),
         )?;
+        state.serialize_field("initial_discrete_values", &self.initial_discrete_values)?;
         state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
         state.serialize_field("discrete_value_owners", &discrete_value_owner_output(self))?;
         state.serialize_field("relations", &self.relations)?;
@@ -110,12 +111,18 @@ impl Serialize for FrozenStorage {
     }
 }
 
-/// Private schema-v12 input records.
+/// Private schema-v13 input records.
 ///
 /// These mirror the serialized column names, but they are deliberately
 /// distinct from every invariant-bearing arena entry. Deserialization can
 /// therefore produce only wire data; the records below enter the IR solely
 /// through the same checked operations used by production construction.
+///
+/// The columns are operation-shaped: each record names the semantic owners,
+/// exact provenance, explicit operands, and references one construction
+/// operation needs. Facts the operation itself produces — derived types,
+/// variabilities, domains, scopes, and generated fold results — are absent,
+/// because replay re-issues them through the same checked operation.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StorageWire {
@@ -131,6 +138,7 @@ struct StorageWire {
     expressions: ExpressionArenaWire,
     continuous_equation_operations: Vec<EquationOperationInput>,
     initialization_equation_operations: Vec<EquationOperationInput>,
+    initial_discrete_values: Vec<InitialDiscreteValueWire>,
     discrete_real_equations: Vec<DiscreteRealEquationWire>,
     discrete_value_owners: Vec<DiscreteValueOwnerWire>,
     relations: Vec<RelationEntryWire>,
@@ -283,6 +291,15 @@ struct DomainEntryWire {
 struct DiscreteRealEquationWire {
     residual: u32,
     activation: DiscreteRealActivationWire,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InitialDiscreteValueWire {
+    target: u32,
+    value: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -610,7 +627,6 @@ struct WireIds<'dae> {
     terminals: Vec<TerminalId<'dae>>,
     delays: Vec<DelayId<'dae>>,
     expressions: Vec<ExprId<'dae>>,
-    next_expression_type_anchor: usize,
     next_operand: usize,
     next_subscript: usize,
 }
@@ -646,7 +662,6 @@ fn reconstruct<'dae>(
         terminals: Vec::with_capacity(wire.terminals.len()),
         delays: Vec::with_capacity(wire.delays.len()),
         expressions: Vec::with_capacity(wire.expressions.nodes.len()),
-        next_expression_type_anchor: 0,
         next_operand: 0,
         next_subscript: 0,
     };
@@ -659,7 +674,41 @@ fn reconstruct<'dae>(
     reconstruct_roots(wire, dae, &ids)?;
     reconstruct_events(wire, dae, &ids)?;
     reconstruct_equation_systems(wire, dae, &ids)?;
+    reconstruct_initial_discrete_values(wire, dae, &ids)?;
     reconstruct_discrete_value_owners(wire, dae, &ids)
+}
+
+/// Replay every MLS §8.6 discrete initial-value definition through the same
+/// checked initialization owner production uses.
+fn reconstruct_initial_discrete_values<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    for (index, definition) in wire.initial_discrete_values.iter().enumerate() {
+        let at = definition.provenance;
+        let variable = mapped(&ids.variables, definition.target, "variable", at)?;
+        let value = mapped_expression(ids, definition.value, at)?;
+        let role = dae.storage.variables[variable.index() as usize].role;
+        let id = dae.initialization(|initialization| match role {
+            VariableRole::DiscreteReal => initialization.discrete_real_initial_value(
+                DiscreteRealId::from_raw(variable.index()),
+                value,
+                at,
+            ),
+            VariableRole::DiscreteValue => initialization.discrete_value_initial_value(
+                DiscreteValueId::from_raw(variable.index()),
+                value,
+                at,
+            ),
+            _ => Err(DaeConstructionError::InvalidVariableRole {
+                name: ownership_variable_name(wire, definition.target, at)?,
+                span: at.span(),
+            }),
+        })?;
+        expect_ordinal("discrete initial value", index, id.index(), at)?;
+    }
+    Ok(())
 }
 
 fn reconstruct_types<'dae>(
@@ -912,7 +961,6 @@ fn reconstruct_next_expression<'dae>(
     let expression = wire_expression(wire, index)?;
     let provenance = expression.provenance;
     let node = expression.node;
-    let type_anchor = take_expression_type_anchor(wire, ids, node, provenance)?;
     let id = match node {
         ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) => {
             reconstruct_delay_coordinate(wire, dae, ids, *delay, provenance)?
@@ -923,14 +971,7 @@ fn reconstruct_next_expression<'dae>(
             return Ok(false);
         }
         _ => dae.expressions(|expressions| {
-            rebuild_node(
-                wire,
-                ids,
-                expressions.at(provenance),
-                node,
-                type_anchor,
-                provenance,
-            )
+            rebuild_node(wire, ids, expressions.at(provenance), node, provenance)
         })?,
     };
     if id.index() != raw {
@@ -942,53 +983,6 @@ fn reconstruct_next_expression<'dae>(
     Ok(true)
 }
 
-fn take_expression_type_anchor<'dae>(
-    wire: &StorageWire,
-    ids: &mut WireIds<'dae>,
-    node: &ExprNodeWire,
-    provenance: DaeProvenance,
-) -> Result<Option<ValueTypeId<'dae>>, DaeConstructionError> {
-    let expression = checked_u32(ids.expressions.len(), "expression arena", provenance)?;
-    let required = matches!(node, ExprNodeWire::Record { .. })
-        || matches!(node, ExprNodeWire::Array { operand_count: 0 });
-    let next = wire
-        .expressions
-        .type_anchors
-        .get(ids.next_expression_type_anchor);
-    let raw = match next {
-        Some(anchor) if anchor.expression < expression => {
-            return Err(malformed("expressions.type_anchors"));
-        }
-        Some(anchor) if anchor.expression == expression => {
-            ids.next_expression_type_anchor += 1;
-            Some(anchor.value_type)
-        }
-        _ => None,
-    };
-    if required != raw.is_some() {
-        return Err(malformed("expressions.type_anchors"));
-    }
-    raw.map(|raw| mapped(&ids.types, raw, "value type", provenance))
-        .transpose()
-}
-
-fn expect_no_expression_type_anchor(
-    wire: &StorageWire,
-    ids: &WireIds<'_>,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let expression = checked_u32(ids.expressions.len(), "expression arena", provenance)?;
-    if let Some(anchor) = wire
-        .expressions
-        .type_anchors
-        .get(ids.next_expression_type_anchor)
-        && anchor.expression <= expression
-    {
-        return Err(malformed("expressions.type_anchors"));
-    }
-    Ok(())
-}
-
 fn expect_expression_arena_consumed(
     wire: &StorageWire,
     dae: &DaeConstruction<'_>,
@@ -996,7 +990,6 @@ fn expect_expression_arena_consumed(
 ) -> Result<(), DaeConstructionError> {
     let count = wire.expressions.nodes.len();
     if wire.expressions.provenance.len() != count
-        || ids.next_expression_type_anchor != wire.expressions.type_anchors.len()
         || ids.next_operand != wire.expressions.operands.len()
         || ids.next_subscript != wire.expressions.subscripts.len()
         || ids.delays.len() != wire.delays.len()
@@ -1090,7 +1083,6 @@ fn rebuild_node<'dae>(
     ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
     node: &ExprNodeWire,
-    type_anchor: Option<ValueTypeId<'dae>>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
     match node {
@@ -1117,11 +1109,15 @@ fn rebuild_node<'dae>(
         ExprNodeWire::Conditional { operand_count } => {
             rebuild_conditional(wire, ids, at, *operand_count, provenance)
         }
-        ExprNodeWire::Array { operand_count } => {
-            rebuild_array(wire, ids, at, *operand_count, type_anchor, provenance)
-        }
-        ExprNodeWire::Record { operand_count } => at.record(
-            type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?,
+        ExprNodeWire::Array {
+            operand_count,
+            value_type,
+        } => rebuild_array(wire, ids, at, *operand_count, *value_type, provenance),
+        ExprNodeWire::Record {
+            operand_count,
+            value_type,
+        } => at.record(
+            mapped(&ids.types, *value_type, "value type", provenance)?,
             map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::Field { base, field } => at.field(
@@ -1199,19 +1195,24 @@ fn rebuild_range<'dae>(
     )
 }
 
+/// Rebuild one array node, requiring the element type exactly when it is an
+/// operand: an empty array carries the type it was constructed with, and a
+/// populated array infers it from those operands and cannot restate it.
 fn rebuild_array<'dae>(
     wire: &StorageWire,
     ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
     operands: u32,
-    type_anchor: Option<ValueTypeId<'dae>>,
+    value_type: Option<u32>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
     let operands = map_expression_operands(wire, ids, operands, provenance)?;
-    if operands.is_empty() {
-        at.empty_array(type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?)
-    } else {
-        at.array(operands)
+    match (operands.is_empty(), value_type) {
+        (true, Some(value_type)) => {
+            at.empty_array(mapped(&ids.types, value_type, "value type", provenance)?)
+        }
+        (false, None) => at.array(operands),
+        _ => Err(malformed("expressions.nodes.array.value_type")),
     }
 }
 

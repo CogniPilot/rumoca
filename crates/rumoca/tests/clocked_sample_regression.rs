@@ -732,6 +732,126 @@ end ClockedRelayBalance;
         .expect("a clocked connection row must count the coordinate it defines");
 }
 
+/// MLS §16.5.1: a coordinate that reaches a clocked partition only through a
+/// connection is still a clocked discrete-time variable.
+///
+/// `assignClock.u` has no `sample`, `previous` or `when` occurrence of its own —
+/// it is clocked purely because `connect(sample1.y, assignClock.u)` puts it in
+/// the partition. Leaving it continuous adds an unknown to the continuous
+/// system whose only equation lives in the clocked partition, which is exactly
+/// the singular `2 equations / 3 unknowns` shape
+/// `Modelica.Clocked.Examples.Elementary.RealSignals.Sample1` produces.
+#[test]
+fn connected_clocked_input_is_owned_by_its_partition_clock() {
+    let source = r#"
+model ClockedConnectedInput
+  connector ClockInput = input Clock;
+  connector ClockOutput = output Clock;
+  connector RealInput = input Real;
+  connector RealOutput = output Real;
+
+  block PeriodicClock
+    parameter Real period = 0.1;
+    ClockOutput y;
+  equation
+    y = Clock(period);
+  end PeriodicClock;
+
+  block Ramp
+    RealOutput y;
+  equation
+    y = time;
+  end Ramp;
+
+  block Sample
+    RealInput u;
+    RealOutput y;
+  equation
+    y = sample(u);
+  end Sample;
+
+  block AssignClock
+    RealInput u;
+    RealOutput y;
+    ClockInput clock;
+  equation
+    when clock then
+      y = u;
+    end when;
+  end AssignClock;
+
+  PeriodicClock periodicClock;
+  Ramp ramp;
+  Sample sample1;
+  AssignClock assignClock;
+equation
+  connect(ramp.y, sample1.u);
+  connect(sample1.y, assignClock.u);
+  connect(periodicClock.y, assignClock.clock);
+end ClockedConnectedInput;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("ClockedConnectedInput")
+        .compile_str(source, "clocked_connected_input.mo")
+        .expect("a connected clocked input must compile");
+    compiled.dae.inspect(|view| {
+        let clocked = (0..view.clock_ownership_count())
+            .map(|index| {
+                let id = view
+                    .clock_ownership_id(index)
+                    .expect("dense clock ownership identity resolves");
+                let ownership = view
+                    .clock_ownership(id)
+                    .expect("checked clock ownership resolves");
+                view.variable(ownership.variable())
+                    .expect("clock-owned coordinate resolves")
+                    .name()
+                    .to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            clocked.contains("assignClock.u"),
+            "the connected clocked input must carry a clock ownership; owned={clocked:?}"
+        );
+        let continuous = view
+            .variables()
+            .filter(|(_, variable)| {
+                matches!(
+                    variable.role(),
+                    rumoca_ir_dae::VariableRole::Algebraic
+                        | rumoca_ir_dae::VariableRole::Output
+                        | rumoca_ir_dae::VariableRole::State
+                )
+            })
+            .map(|(_, variable)| variable.name().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            !continuous.contains("assignClock.u"),
+            "a clock-partition coordinate must not enter the continuous unknown set; continuous={continuous:?}"
+        );
+    });
+
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.3,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("a connected clocked input must simulate");
+    let y = trace_values(&sim, "assignClock.y");
+    let u = trace_values(&sim, "assignClock.u");
+    assert_eq!(y, u, "AssignClock passes its clocked input through");
+    for (index, value) in y.iter().enumerate() {
+        let expected = index as f64 * 0.1;
+        assert!(
+            (value - expected).abs() <= 1.0e-12,
+            "tick {index} must hold the ramp value sampled at its own tick; got {value}"
+        );
+    }
+}
+
 fn assert_periodic_clock_period(model: &rumoca_ir_dae::Dae, numerator: i128, denominator: i128) {
     model.inspect(|view| {
         let clock = view
@@ -745,6 +865,12 @@ fn assert_periodic_clock_period(model: &rumoca_ir_dae::Dae, numerator: i128, den
     });
 }
 
+/// MLS §16.5.1: *every* variable of a clocked partition is a clocked
+/// discrete-time variable, so the ownership relation names each of them.
+/// `SampleTime`'s partition is `ramp.simTime`, `ramp.y`, `assignClock.u` and
+/// `assignClock.y`: the sampled coordinate, the value the same block derives
+/// from it, and both sides of the connection that carries it into the clocked
+/// assignment.
 fn assert_canonical_clock_ownership(model: &rumoca_ir_dae::Dae) {
     model.inspect(|view| {
         assert_eq!(
@@ -752,21 +878,41 @@ fn assert_canonical_clock_ownership(model: &rumoca_ir_dae::Dae) {
             1,
             "clock aliases must share one canonical semantic owner"
         );
+        let owned = (0..view.clock_ownership_count())
+            .map(|index| {
+                let id = view
+                    .clock_ownership_id(index)
+                    .expect("dense clock ownership identity resolves");
+                let ownership = view
+                    .clock_ownership(id)
+                    .expect("checked clock ownership resolves");
+                let variable = view
+                    .variable(ownership.variable())
+                    .expect("clock-owned coordinate resolves");
+                (variable.name().to_string(), ownership.clock())
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let names = owned.keys().cloned().collect::<Vec<_>>();
         assert_eq!(
-            view.clock_ownership_count(),
-            2,
-            "sampled time and the clocked assignment each require explicit ownership"
+            names,
+            vec![
+                "assignClock.u".to_string(),
+                "assignClock.y".to_string(),
+                "ramp.simTime".to_string(),
+                "ramp.y".to_string(),
+            ],
+            "every coordinate of the clocked partition requires explicit ownership"
         );
-        let first = view
-            .clock_ownership(view.clock_ownership_id(0).unwrap())
-            .unwrap();
-        let second = view
-            .clock_ownership(view.clock_ownership_id(1).unwrap())
-            .unwrap();
-        assert_eq!(
-            first.clock(),
-            second.clock(),
-            "both clocked coordinates must reference the same branded clock identity"
+        let clock = view
+            .clock_ownership(
+                view.clock_ownership_id(0)
+                    .expect("the partition owns at least one coordinate"),
+            )
+            .expect("checked clock ownership resolves")
+            .clock();
+        assert!(
+            owned.values().all(|owner| *owner == clock),
+            "all clocked coordinates must reference the same branded clock identity"
         );
     });
 }

@@ -103,7 +103,7 @@ Failure classifications:
 | Commands not run MUST be reported with reason | final updates/PRs | Exposes residual risk |
 | Work is not done while temporary probes or symptom patches remain | all changes | Prevents cleanup debt |
 | Semantic work is done only after spec grounding, root-cause proof, and regression coverage | compiler/simulator | Fix must be defensible |
-| Cargo subprocesses launched by repository tooling MUST derive a host-topology job budget unless `CARGO_BUILD_JOBS` is explicitly set | developer tooling | Keeps verification responsive without overriding an operator choice |
+| Cargo subprocesses launched by repository tooling MUST derive a host-topology job budget for `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS` unless the caller sets them explicitly | developer tooling | Keeps verification responsive without overriding an operator choice; an underived rayon pool fans out to every CPU inside an already-capped child |
 | The automatic Cargo budget MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two at 8 or more | developer tooling | Small runners retain throughput while developer machines retain foreground capacity |
 | Long-running isolated workers MUST exit when their parent control channel closes and MUST enforce a bounded resident-memory policy | worker orchestration | Interrupted gates must not leave orphaned or unbounded processes |
 
@@ -116,7 +116,7 @@ Failure classifications:
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Verification commands MUST run under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4` | local and agent workflows | Fixed budget keeps concurrent workers from oversubscribing the host |
+| Verification commands MUST run under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4` | local and agent workflows | Fixed budget keeps concurrent workers from oversubscribing the host; naming only the first two leaves the derived rayon pool free to reclaim every core |
 | A capability change is complete only with Tier 1 focused suites green | all capability work | Focused proof precedes every broader claim |
 | A capability change is complete only with its Tier 1 canary delta recorded in the working `dev/` ledger | dev/ ledger | Deltas must outlive the session that produced them |
 | The canary target set is the fixed 20-model list in `dev/msl-canary-20.json` | canary runs | A moving target set makes deltas meaningless |
@@ -125,18 +125,51 @@ Failure classifications:
 | A canary timeout, panic, unsupported operation, or non-finite result MUST be recorded as a failure | canary runs | Retries and fallbacks manufacture passes |
 | Tier 2 MUST cover the full 566-model set, either in one run or as CI shards merged by the fan-in job | CI / milestone | Cohort evidence without a serial CI long pole |
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
+| A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
+| A Tier 2 run whose comparator stage did not execute over every `sim_ok` trace reports "parity unmeasured", not a number | reports, dev/ ledger | Missing comparison must be visible, not defaulted |
+| An unmeasured cohort run MUST fail its quality gate, not pass with `sim_ok` | harness gate, `verify msl-parity` | A run nobody could check must not read as a green run |
+| The cohort ratchet MUST be the strict-high agreement band; `sim_ok` is reported and never gated on | harness gate | Gating completion rewards traces nobody compared |
+| No validity check that reads simulation outcomes may run before the comparator stage | harness gate flow | A gate that aborts first destroys the measurement it judges |
 | Every quoted parity number MUST name the Tier 2 run and commit it came from | reports, PRs, specs | An unsourced number cannot be rechecked |
 | Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
 | A Tier 1 canary delta MUST NOT be reported as a cohort parity number | dev/ ledger, PR text | Tier 1 is a tripwire, not a metric |
 
 ```bash
 # Tier 1 — fixed 20-model canary; the harness marks this snapshot partial.
-CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo xtask verify msl-parity \
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity \
   --sim-targets-file dev/msl-canary-20.json
 
 # Tier 2 — full cohort; CI shards it as `--shard m/n` plus `--merge-shards DIR`.
-CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo xtask verify msl-parity
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity
 ```
+
+#### Acceptance contract: what a Tier 2 run must contain to emit a parity number
+
+A run emits a parity number only when ALL of the following are true. Anything
+less is reported as `parity unmeasured: comparator did not run`, and the
+quality gate fails rather than falling back to `sim_ok`.
+
+| Requirement | Enforced by |
+|---|---|
+| The comparator stage executed, or its bands were merged from shards that ran it | `MslParityStageOutcome` (`Ran` / `MergedShardArtifacts`) |
+| `omc_simulation_reference.json` exists in the results directory and carries `omc_version` | `MslParityMeasurement::measured`, `check_comparator_evidence` |
+| `sim_trace_comparison.json` exists and is non-empty | `check_comparator_evidence` |
+| `trace_comparison.models_compared > 0` | `MslParityMeasurement::measured`, `check_comparator_evidence`, nightly `Verify the merged sweep measured parity` |
+| The reference's `total_models` equals the run's `sim_target_models` (not stale) | `load_current_msl_parity_gate_input_required` |
+| The reference records no OMC Modelica assertion failures | `load_current_msl_parity_gate_input_required` |
+
+The quoted number is the **strict-high agreement band** over the cohort target
+count. `agreement_minor` and `agreement_deviation` are reported alongside it and
+are not part of the number. `sim_ok` is printed in every summary, labelled as
+completion, and is gated on nowhere: the cohort ratchet reads
+`agreement_high`, and the structural floor reads `agreement_high` as well,
+because `agreement_high <= models_compared <= sim_ok` makes a band floor
+strictly tighter than the `sim_ok` floor it replaced.
+
+Ordering is part of the contract: the only validity check that may run before
+the comparator is "is this run measurable at all" (nonzero discovered models,
+no resolve errors). Every verdict that reads simulation outcomes runs after the
+comparator stage, so no gate can abort a run before its parity is measured.
 
 **Why:** a Tier 1 run writes `run_scope: "partial"` into its quality snapshot
 (`balance_pipeline_quality_gate.rs`), and only a `"full"` scope satisfies the

@@ -8,6 +8,7 @@ mod discrete_values;
 mod equation_partitions;
 mod event_conditions;
 mod expression_events;
+mod expression_semi_linear;
 mod expression_validation;
 mod function_array_assemblies;
 mod function_bodies;
@@ -21,6 +22,7 @@ mod function_record_assemblies;
 mod function_reductions;
 mod function_returns;
 mod function_value_types;
+mod initial_algorithms;
 mod model_algorithm_statements;
 mod model_algorithms;
 mod model_roles;
@@ -30,7 +32,7 @@ mod source_balance;
 mod structured_families;
 mod when_chains;
 use clocks::SampledTarget;
-use clocks::analyze_clocks;
+use clocks::{ClockAnalysis, ClockDomainAnalysis, analyze_clocks};
 pub(super) use clocks::{
     ClockPlan, ClockedValuePlan, is_inferred_clock_condition, is_whole_clock_coordinate,
 };
@@ -50,6 +52,8 @@ use event_conditions::{
 };
 use expression_events::analyze_expression_events;
 pub(super) use expression_events::{ExpressionEventPlan, ExpressionEventPlans};
+use expression_semi_linear::analyze_semi_linear_rules;
+pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     validate_expression, validate_expression_scoped_with_record_array_fields,
     validate_expression_with_record_array_fields, validate_subscripts_scoped,
@@ -75,13 +79,20 @@ use function_reductions::validate_integer_reduction;
 use function_returns::validate_guarded_function_return;
 pub(super) use function_value_types::record_field_projections;
 use function_value_types::validate_function_value_type;
+pub(super) use initial_algorithms::InitialDiscreteValue;
+use initial_algorithms::{
+    InitialAlgorithmAnalysis, analyze_initial_algorithms,
+    reject_unsupported_initial_algorithm_statements,
+};
 use model_algorithm_statements::validate_model_algorithm;
 pub(super) use model_algorithms::ModelAlgorithmPlan;
 use model_algorithms::analyze_model_algorithm;
 pub(super) use model_algorithms::{
     algorithm_targets, event_targets, model_algorithm_targets, when_chain_targets,
 };
-use model_roles::{ModelRoles, analyze_model_roles, is_predefined_clock_variable};
+use model_roles::{
+    ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
+};
 use record_array_fields::analyze_record_array_fields;
 pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
 use record_equations::analyze_record_equations;
@@ -108,6 +119,13 @@ pub(super) struct Analysis {
     /// Owning clock of every runtime coordinate in a clocked partition.
     pub(super) clocked_coordinate_owners: HashMap<InstanceId, ClockPlan>,
     pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
+    /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
+    pub(super) initial_parameters: HashMap<VarName, Expression>,
+    /// Discrete coordinates whose initialization-instant value an initial
+    /// algorithm determines (MLS §8.6).
+    pub(super) initial_discrete_values: HashMap<VarName, InitialDiscreteValue>,
+    /// Assertions an initial algorithm owns, with enclosing guards folded in.
+    pub(super) initial_algorithm_assertions: Vec<flat::AssertEquation>,
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
     pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
@@ -119,6 +137,10 @@ pub(super) struct Analysis {
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) discrete_value_topology: DiscreteValueTopologyPlan,
     pub(super) assigned_discrete_targets: HashSet<VarName>,
+    /// MLS §3.7.4.5 Rule 1 / Rule 2 replacement residuals, keyed by the model
+    /// equation row they replace. Empty until
+    /// [`Analysis::with_semi_linear_rules`] proves them.
+    pub(super) semi_linear_rules: SemiLinearRules,
 }
 
 struct SourceBalanceAnalysis {
@@ -234,11 +256,9 @@ struct FunctionValidationContext<'scope> {
     shape_analysis: &'scope FunctionShapeAnalysis,
 }
 
-pub(super) fn required_statement_span(
-    statement: &rumoca_core::Statement,
-    owner: impl Into<String>,
-) -> Result<Span, ToDaeError> {
-    let kind = match statement {
+/// Name the statement form, so a report says which owner is missing.
+pub(super) fn statement_kind(statement: &rumoca_core::Statement) -> &'static str {
+    match statement {
         rumoca_core::Statement::Empty { .. } => "empty",
         rumoca_core::Statement::Assignment { .. } => "assignment",
         rumoca_core::Statement::Return { .. } => "return",
@@ -250,7 +270,14 @@ pub(super) fn required_statement_span(
         rumoca_core::Statement::FunctionCall { .. } => "function-call",
         rumoca_core::Statement::Reinit { .. } => "reinit",
         rumoca_core::Statement::Assert { .. } => "assert",
-    };
+    }
+}
+
+pub(super) fn required_statement_span(
+    statement: &rumoca_core::Statement,
+    owner: impl Into<String>,
+) -> Result<Span, ToDaeError> {
+    let kind = statement_kind(statement);
     statement
         .source_span()
         .ok_or_else(|| ToDaeError::MissingProvenance {
@@ -284,11 +311,11 @@ pub(super) struct RecordEquationFieldPlan {
 
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     validate_flat_shape(flat)?;
-    // An initial algorithm has no canonical DAE owner yet, so it is rejected
-    // before anything analyzes its statements. Analyzing them first reports a
-    // consequence of the missing owner — a statement-form `assert` read as an
-    // unresolved callee, for one — instead of the capability that is absent.
-    reject_initial_algorithm(flat)?;
+    // The initial-algorithm statement grammar is proven before anything else
+    // analyzes those statements. Analyzing them first reports a consequence of
+    // an absent owner — a statement-form `assert` read as an unresolved callee,
+    // for one — instead of the capability that is missing.
+    reject_unsupported_initial_algorithm_statements(flat)?;
     validate_impure_call_contexts(flat)?;
     let function_shapes = FunctionShapeAnalysis::analyze(flat)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
@@ -307,13 +334,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let record_array_fields = analyze_record_array_field_plans(flat, &roles)?;
     let derived_parameters = analyze_derived_parameters(flat, &roles)?;
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
-    let clock_domains = clocks::analyze_clock_domains(
-        flat,
-        &roles,
-        &clocks.plans,
-        &clocks.equation_rows,
-        &clocks.sampled_targets,
-    )?;
+    let clock_domains =
+        analyze_clocked_partitions(flat, &clocks, &mut roles, &mut expression_roles)?;
     validate_model_expressions(flat, &expression_roles, &states, &record_array_fields)?;
     let continuous_family_rows = validate_structured_families(
         &flat.structured_equations,
@@ -346,7 +368,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &mut sample_lattices,
     )?;
     let discrete_value_topology = analyze_discrete_value_topology(flat, &roles)?;
-    validate_assertions(flat, &roles, &states, &constants, &mut sample_lattices)?;
+    let initial_algorithms =
+        analyze_initial_algorithm_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
     let balance = analyze_source_balance(
         flat,
         &roles,
@@ -372,6 +395,9 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clocked_when_owners: clock_domains.when_owners,
         clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
+        initial_parameters: initial_algorithms.parameters,
+        initial_discrete_values: initial_algorithms.discrete_values,
+        initial_algorithm_assertions: initial_algorithms.assertions,
         function_plans,
         function_shapes,
         comprehension_plans,
@@ -383,7 +409,67 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         initial_record_equations,
         discrete_value_topology,
         assigned_discrete_targets: balance.assigned_discrete_targets,
+        semi_linear_rules: SemiLinearRules::default(),
     })
+}
+
+impl Analysis {
+    /// Prove the MLS §3.7.4.5 Rule 1 / Rule 2 replacements over the model
+    /// equation rows, completing the plan [`analyze`] leaves empty.
+    ///
+    /// The rules read every other owner's row claims, so they can only be
+    /// proven once the rest of the analysis exists. Construction is the caller;
+    /// `balance_detail` deliberately is not, because the source balance the
+    /// rules preserve is counted on the untransformed rows.
+    pub(super) fn with_semi_linear_rules(mut self, flat: &flat::Model) -> Self {
+        let mut claimed = self.continuous_family_rows.clone();
+        claimed.extend(&self.clock_equation_rows);
+        claimed.extend(&self.derived_parameter_rows);
+        self.semi_linear_rules = analyze_semi_linear_rules(
+            flat,
+            &self.roles,
+            &SemiLinearRowFilter {
+                excluded: &claimed,
+                records: &self.record_equations,
+                clocked: &self.clocked_equation_owners,
+            },
+        );
+        self
+    }
+}
+
+/// Proves the clocked partitions and corrects the role plan they contradict.
+///
+/// The proven partition owners are what turn a continuous role plan into the
+/// clocked discrete-time role MLS §16.5.1 requires, and the corrected roles are
+/// in turn what let `assign_value_owners` prove clock ownership for those
+/// coordinates. The replay is exact rather than iterative: partition membership
+/// reads roles only through `is_clock_runtime_role`, which both the old and the
+/// new role satisfy, so the second pass proves the same partitions and only
+/// widens the ownership relation over them.
+fn analyze_clocked_partitions(
+    flat: &flat::Model,
+    clocks: &ClockAnalysis,
+    roles: &mut HashMap<VarName, PlannedRole>,
+    expression_roles: &mut HashMap<VarName, PlannedRole>,
+) -> Result<ClockDomainAnalysis, ToDaeError> {
+    let domains = clocks::analyze_clock_domains(
+        flat,
+        roles,
+        &clocks.plans,
+        &clocks.equation_rows,
+        &clocks.sampled_targets,
+    )?;
+    if !apply_clocked_partition_roles(flat, &domains.coordinate_owners, roles, expression_roles)? {
+        return Ok(domains);
+    }
+    clocks::analyze_clock_domains(
+        flat,
+        roles,
+        &clocks.plans,
+        &clocks.equation_rows,
+        &clocks.sampled_targets,
+    )
 }
 
 fn analyze_model_algorithms(
@@ -543,18 +629,38 @@ fn analyze_source_balance(
     })
 }
 
-fn validate_assertions(
+/// Replay the initial algorithms, then validate every assertion the model owns
+/// — the ones an equation section declares and the ones a replayed section
+/// produced — against one condition grammar.
+fn analyze_initial_algorithm_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
+) -> Result<InitialAlgorithmAnalysis, ToDaeError> {
+    let initial_algorithms = analyze_initial_algorithms(flat, roles, states, constants)?;
+    validate_assertions(
+        flat.assert_equations
+            .iter()
+            .chain(&flat.initial_assert_equations)
+            .chain(&initial_algorithms.assertions),
+        roles,
+        states,
+        constants,
+        sample_lattices,
+    )?;
+    Ok(initial_algorithms)
+}
+
+fn validate_assertions<'flat>(
+    assertions: impl IntoIterator<Item = &'flat flat::AssertEquation>,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    constants: &EvalContext,
+    sample_lattices: &mut Vec<(Span, ClockLattice)>,
 ) -> Result<(), ToDaeError> {
-    for assertion in flat
-        .assert_equations
-        .iter()
-        .chain(&flat.initial_assert_equations)
-    {
+    for assertion in assertions {
         require_span(assertion.span, "assert equation")?;
         validate_condition_expression(
             &assertion.condition,
@@ -569,16 +675,6 @@ fn validate_assertions(
         }
     }
     Ok(())
-}
-
-fn reject_initial_algorithm(flat: &flat::Model) -> Result<(), ToDaeError> {
-    flat.initial_algorithms.first().map_or(Ok(()), |algorithm| {
-        Err(ToDaeError::unsupported_algorithm(
-            "initial",
-            &algorithm.origin,
-            algorithm.span,
-        ))
-    })
 }
 
 fn analyze_record_array_field_plans(

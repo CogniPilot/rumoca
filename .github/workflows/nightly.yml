@@ -68,6 +68,19 @@ jobs:
   #     uploaded. Owner: this workflow; the `shard-*/msl_results.json` layout it
   #     guards is `list_shard_dirs` in
   #     crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_merge.rs.
+  #   * `Verify the merged sweep measured parity` rejects a merged OMC reference
+  #     whose `trace_comparison.models_compared` is zero — files that exist but
+  #     contain no comparison. It accepts any nonzero count, whatever the bands
+  #     say: a bad parity number is a finding, a missing one is a broken run.
+  #     Owner: this workflow; the reading it guards is `MslParityMeasurement` in
+  #     crates/rumoca-test-msl/tests/balance_pipeline/balance_pipeline_quality_gate/parity_measurement.rs.
+  #
+  # OMC references are cached across nights (`Restore OMC parity reference
+  # cache`), keyed on the OpenModelica flake revision, the MSL release, and the
+  # shard index. The harness re-keys every individual entry on the model set,
+  # MSL version, OMC version, batch timeout, and experiment stop-time policy,
+  # so a coarse cache hit never yields a reference for the wrong experiment —
+  # it only avoids regenerating one that already matches.
   #
   # Deliberately NOT on the PR path: `.github/workflows/ci.yml` owns the
   # PR-facing sharded lane (baseline promotion, PR comment); this one is the
@@ -277,14 +290,56 @@ jobs:
           test -f "$msl_dir/Complex.mo"
           test -f "$msl_dir/Modelica 4.1.0/package.mo"
 
+      # NOT `rm -rf target/msl/results`: that also deletes `omc_parity_cache/`,
+      # the keyed OMC reference cache restored below. Everything else goes.
       - name: Clean stale MSL results
         shell: bash
-        run: rm -rf target/msl/results
+        run: |
+          set -euo pipefail
+          if [[ -d target/msl/results ]]; then
+            find target/msl/results -mindepth 1 -maxdepth 1 \
+              ! -name omc_parity_cache -exec rm -rf {} +
+          fi
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
+
+      # OMC references are the expensive half of this lane: `omc simulate()`
+      # generates C and invokes gcc per model. The harness already keys each
+      # cached reference on (model set, MSL version, OMC version, batch timeout,
+      # experiment stop-time policy) and regenerates on any mismatch, so this
+      # coarse key only has to change when the OMC build or the MSL release
+      # does — a stale entry can never be reused as a fresh one, it just misses.
+      - name: Derive OMC parity cache key
+        id: omc-parity-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+
+          with open("flake.lock", encoding="utf-8") as lock_file:
+              locked = json.load(lock_file)["nodes"]["openmodelica"]["locked"]
+          identity = f'{locked["rev"]}\0{locked["narHash"]}'.encode()
+          digest = hashlib.sha256(identity).hexdigest()[:16]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"omc={digest}\n")
+          PY
+
+      - name: Restore OMC parity reference cache
+        uses: actions/cache@v5
+        with:
+          path: target/msl/results/omc_parity_cache
+          key: >-
+            omc-parity-cache-v1-${{ runner.os }}-msl4.1.0-${{
+            steps.omc-parity-cache-key.outputs.omc }}-shard${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: |
+            omc-parity-cache-v1-${{ runner.os }}-msl4.1.0-${{ steps.omc-parity-cache-key.outputs.omc }}-shard${{ matrix.shard }}-
+            omc-parity-cache-v1-${{ runner.os }}-msl4.1.0-${{ steps.omc-parity-cache-key.outputs.omc }}-
 
       - name: Download shared Nix closures
         uses: actions/download-artifact@v8
@@ -461,6 +516,29 @@ jobs:
           done
           exit "$missing"
 
+      # Rejection 3 of the acceptance contract above. Present-but-empty bands
+      # are the shape that let `sim_ok` masquerade as parity: the files existed,
+      # nothing had been compared. A merged reference that compared zero models
+      # is "parity unmeasured", and this lane says so instead of reporting the
+      # sweep's `sim_ok` as if it were a parity number. Accepts any merged
+      # reference with `models_compared > 0`, whatever the bands say.
+      - name: Verify the merged sweep measured parity
+        id: parity-measured
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference="target/msl/results/omc_simulation_reference.json"
+          if [[ ! -s "$reference" ]]; then
+            echo "::error title=parity unmeasured: comparator did not run::$reference is missing or empty; this sweep has no parity number, only sim_ok (which is completion, never parity)"
+            exit 1
+          fi
+          compared="$(jq -r '.trace_comparison.models_compared // 0' "$reference")"
+          if [[ "$compared" -le 0 ]]; then
+            echo "::error title=parity unmeasured: comparator did not run::$reference reports models_compared=$compared; this sweep has no parity number, only sim_ok (which is completion, never parity)"
+            exit 1
+          fi
+          echo "The merged sweep compared $compared model(s) against OMC."
+
       - name: Typed-bucket triage report
         if: ${{ always() && steps.fanin.outcome == 'success' }}
         shell: bash
@@ -481,9 +559,39 @@ jobs:
         run: |
           set -euo pipefail
           results="target/msl/results/msl_results.json"
+          reference="target/msl/results/omc_simulation_reference.json"
           triage="target/msl/results/msl_triage.json"
           {
             echo "## MSL/OMC sweep — ${SHARD_COUNT} shards, merged once"
+            echo
+            # The parity reading comes FIRST and comes from the comparator.
+            # `sim_ok` is listed below it as completion, explicitly labelled so
+            # it cannot be lifted out of this summary as a parity number.
+            echo "### Parity (OMC trace comparator)"
+            echo
+            targets=0
+            if [[ -s "$results" ]]; then
+              targets="$(jq -r '(.sim_target_models // []) | length' "$results")"
+            fi
+            if [[ -s "$reference" ]] && \
+               [[ "$(jq -r '.trace_comparison.models_compared // 0' "$reference")" -gt 0 ]] && \
+               [[ "$targets" -gt 0 ]]; then
+              jq -r --argjson targets "$targets" '
+                .trace_comparison as $t
+                | def pct($n): (($n * 1000 / $targets) | floor) / 10;
+                  "| band | models | % of \($targets) cohort targets |",
+                  "|---|---|---|",
+                  "| strict-high (the parity number) | \($t.agreement_high) | \(pct($t.agreement_high)) |",
+                  "| minor | \($t.agreement_minor) | \(pct($t.agreement_minor)) |",
+                  "| deviation | \($t.agreement_deviation) | \(pct($t.agreement_deviation)) |",
+                  "| models compared | \($t.models_compared) | |"
+              ' "$reference"
+            else
+              echo "**parity unmeasured: comparator did not run.** This sweep has no"
+              echo "parity number. \`sim_ok\` below is completion, never parity."
+            fi
+            echo
+            echo "### Completion (reported, never a parity claim)"
             echo
             if [[ -s "$results" ]]; then
               jq -r '
@@ -493,7 +601,7 @@ jobs:
                 "| compiled | \(.compiled_models) |",
                 "| balanced | \(.balanced_models) |",
                 "| sim attempted | \(.sim_attempted) |",
-                "| sim_ok | \(.sim_ok) |"
+                "| sim_ok (completion, not parity) | \(.sim_ok) |"
               ' "$results"
             else
               echo "The fan-in did not complete: no merged msl_results.json was produced."

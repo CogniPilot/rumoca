@@ -148,6 +148,107 @@ fn wire_replay_routes_domain_free_reads_to_the_active_loop_owner() {
 }
 
 #[test]
+fn wire_omits_generated_fold_facts_and_replays_them_through_construction() {
+    let (dae, _) = active_loop_fixture();
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae =
+        serde_json::from_str(&encoded).expect("generated fold facts replay from their transitions");
+    assert_eq!(
+        serde_json::to_string(&decoded).unwrap(),
+        encoded,
+        "re-issued fold results reproduce the canonical arena"
+    );
+    let binary = bincode::serialize(&dae).expect("fold arena serializes");
+    let decoded: Dae =
+        bincode::deserialize(&binary).expect("ordinal-tagged fold nodes reconstruct");
+    assert_eq!(
+        bincode::serialize(&decoded).unwrap(),
+        binary,
+        "binary fold nodes have one canonical representation"
+    );
+
+    let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    for kind in ["function_fold_parameter", "function_fold_output"] {
+        let generated = generated_fold_nodes(&canonical, kind);
+        assert_eq!(generated.len(), 2, "the fixture folds two carried values");
+        for node in generated {
+            let fields = node.as_object().unwrap();
+            assert_eq!(
+                fields.keys().collect::<Vec<_>>(),
+                vec!["function"],
+                "a generated {kind} names only the function whose fold issued it"
+            );
+        }
+    }
+}
+
+#[test]
+fn wire_rejects_restated_generated_fold_facts() {
+    let (dae, _) = active_loop_fixture();
+    let canonical = serde_json::to_value(dae).unwrap();
+
+    for (kind, field, value) in [
+        ("function_fold_parameter", "fold", serde_json::json!(0)),
+        ("function_fold_parameter", "carried", serde_json::json!(0)),
+        (
+            "function_fold_parameter",
+            "definition_ordinal",
+            serde_json::json!(2),
+        ),
+        ("function_fold_output", "fold", serde_json::json!(0)),
+        ("function_fold_output", "carried", serde_json::json!(0)),
+        (
+            "function_fold_output",
+            "definition_ordinal",
+            serde_json::json!(4),
+        ),
+    ] {
+        let mut restated = canonical.clone();
+        generated_fold_nodes_mut(&mut restated, kind)
+            .remove(0)
+            .as_object_mut()
+            .unwrap()
+            .insert(field.to_owned(), value);
+        assert!(
+            serde_json::from_value::<Dae>(restated).is_err(),
+            "a generated {kind} must not restate the {field} its fold transition re-issues"
+        );
+    }
+
+    let mut foreign_owner = canonical;
+    generated_fold_nodes_mut(&mut foreign_owner, "function_fold_output").remove(0)["function"] =
+        u32::MAX.into();
+    assert!(
+        serde_json::from_value::<Dae>(foreign_owner).is_err(),
+        "a generated node cannot claim a function that did not issue it"
+    );
+}
+
+fn generated_fold_nodes<'value>(
+    wire: &'value serde_json::Value,
+    kind: &str,
+) -> Vec<&'value serde_json::Value> {
+    wire["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node.get(kind))
+        .collect()
+}
+
+fn generated_fold_nodes_mut<'value>(
+    wire: &'value mut serde_json::Value,
+    kind: &str,
+) -> Vec<&'value mut serde_json::Value> {
+    wire["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .filter_map(|node| node.get_mut(kind))
+        .collect()
+}
+
+#[test]
 fn wire_replay_rejects_invalid_fold_transitions() {
     let (dae, _) = active_loop_fixture();
     let canonical = serde_json::to_value(dae).unwrap();

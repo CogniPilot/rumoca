@@ -9,8 +9,9 @@ use crate::model::{
 };
 use crate::{
     BinaryOperator, ConditionId, ContinuousEquationId, ContinuousFamilyId, DaeConstructionError,
-    DaeGeneration, DaeProvenance, DiscreteRealEquationId, DomainId, ExprId,
-    InitializationEquationId, InitializationFamilyId, ScalarType,
+    DaeGeneration, DaeProvenance, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId,
+    DomainId, ExprId, InitialDiscreteValueId, InitializationEquationId, InitializationFamilyId,
+    ScalarType, VariableId, VariableRole,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -235,6 +236,180 @@ equation_partitions! {
         family value_equation, structured_family
             -> InitializationFamilyId, initialization_families, initialization_equation_owners;
     }
+}
+
+/// MLS §8.6 initial value of one discrete coordinate.
+///
+/// An `initial algorithm` assigns a discrete-time variable; the declarative
+/// meaning of that assignment is the value the coordinate holds when
+/// initialization finishes. That is a definition, not a residual: nothing
+/// solves for it, and the equation-section owner that defines the coordinate
+/// afterwards (an MLS §8.5 `when`) is a different partition. The initialization
+/// system therefore owns it as a target/value pair.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InitialDiscreteValueEntry {
+    pub(crate) target: u32,
+    pub(crate) value: u32,
+    pub(crate) provenance: DaeProvenance,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct InitialDiscreteValueView<'dae> {
+    pub(crate) target: VariableId<'dae>,
+    pub(crate) value: ExprId<'dae>,
+    pub(crate) provenance: DaeProvenance,
+}
+
+impl<'dae> InitialDiscreteValueView<'dae> {
+    pub const fn target(self) -> VariableId<'dae> {
+        self.target
+    }
+
+    pub const fn value(self) -> ExprId<'dae> {
+        self.value
+    }
+
+    pub const fn provenance(self) -> DaeProvenance {
+        self.provenance
+    }
+}
+
+impl<'dae> InitializationEquations<'_, 'dae> {
+    /// Define the initialization-instant value of one discrete Real coordinate.
+    pub fn discrete_real_initial_value(
+        &mut self,
+        target: DiscreteRealId<'dae>,
+        value: ExprId<'dae>,
+        owner: DaeProvenance,
+    ) -> Result<InitialDiscreteValueId<'dae>, DaeConstructionError> {
+        insert_initial_discrete_value(
+            self.source_map,
+            self.storage,
+            target.index(),
+            VariableRole::DiscreteReal,
+            value,
+            owner,
+        )
+    }
+
+    /// Define the initialization-instant value of one discrete-valued coordinate.
+    pub fn discrete_value_initial_value(
+        &mut self,
+        target: DiscreteValueId<'dae>,
+        value: ExprId<'dae>,
+        owner: DaeProvenance,
+    ) -> Result<InitialDiscreteValueId<'dae>, DaeConstructionError> {
+        insert_initial_discrete_value(
+            self.source_map,
+            self.storage,
+            target.index(),
+            VariableRole::DiscreteValue,
+            value,
+            owner,
+        )
+    }
+}
+
+/// Insert one checked discrete initial-value definition.
+///
+/// The local integrity this checks is what makes an unsettled read
+/// unrepresentable rather than merely unlikely: the initialization update rows
+/// are applied at the known initialization instant, before any trajectory
+/// exists, so the defining value may read only coordinates that are already
+/// settled there — parameters, constants, and `time`. A read of a state,
+/// algebraic, output, input, `pre`, delay, or any other discrete coordinate has
+/// no proven evaluation order at that instant, so it fails here instead of
+/// producing a numerically plausible but unproven initial value.
+fn insert_initial_discrete_value<'dae>(
+    source_map: &rumoca_core::SourceMap,
+    storage: &mut Storage,
+    target: u32,
+    expected_role: VariableRole,
+    value: ExprId<'dae>,
+    owner: DaeProvenance,
+) -> Result<InitialDiscreteValueId<'dae>, DaeConstructionError> {
+    check_provenance(source_map, owner)?;
+    let variable = storage.variable(target, owner)?;
+    if variable.role != expected_role {
+        return Err(DaeConstructionError::InvalidVariableRole {
+            name: variable.name.clone(),
+            span: owner.span(),
+        });
+    }
+    let declared = storage
+        .value_types
+        .get(variable.value_type as usize)
+        .ok_or_else(|| crate::model::unknown("value type", variable.value_type, owner))?
+        .clone();
+    storage.expect_closed_expression(value, owner)?;
+    let found = storage.expr_type(value, owner)?;
+    if found.scalar_type() != declared.scalar_type() {
+        return Err(DaeConstructionError::TypeMismatch {
+            expected: declared.scalar_type(),
+            found: found.scalar_type(),
+            span: owner.span(),
+        });
+    }
+    if !declared.is_scalar() || !found.is_scalar() {
+        return Err(DaeConstructionError::ExpectedScalar { span: owner.span() });
+    }
+    expect_initialization_settled_reads(storage, value, owner)?;
+    if storage
+        .initial_discrete_value_by_variable
+        .contains_key(&target)
+    {
+        return Err(duplicate("discrete initial value", target, owner));
+    }
+    let raw = push_dense(
+        &mut storage.initial_discrete_values,
+        InitialDiscreteValueEntry {
+            target,
+            value: value.index(),
+            provenance: owner,
+        },
+        "discrete initial-value arena",
+        owner,
+    )?;
+    storage
+        .initial_discrete_value_by_variable
+        .insert(target, raw);
+    Ok(InitialDiscreteValueId::from_raw(raw))
+}
+
+/// Prove that every coordinate the value reads is settled at the initialization
+/// instant, and that evaluating the value twice there yields the same number.
+///
+/// The runtime applies initialization updates until they stop changing, so a
+/// value whose result depends on when it ran — an MLS §12.3 `impure` external
+/// call — has no fixed point to reach. Rejecting it here names the missing
+/// owner instead of leaving a convergence failure for the runtime to hit.
+fn expect_initialization_settled_reads(
+    storage: &Storage,
+    value: ExprId<'_>,
+    owner: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let mut pending = vec![value.index()];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(expression) = pending.pop() {
+        if !visited.insert(expression) {
+            continue;
+        }
+        let node = &storage.expressions.nodes[expression as usize];
+        let settled = match node {
+            ExprNode::Coordinate(coordinate) => matches!(
+                coordinate,
+                Coordinate::Parameter(_) | Coordinate::Time | Coordinate::ClockInterval(_)
+            ),
+            ExprNode::Call { function, .. } => storage.function_is_pure(*function, owner)?,
+            _ => true,
+        };
+        if !settled {
+            return Err(DaeConstructionError::InvalidExpressionForm { span: owner.span() });
+        }
+        node.for_each_child(&storage.expressions, |child| pending.push(child));
+    }
+    Ok(())
 }
 
 pub struct DiscreteEquations<'storage, 'dae> {

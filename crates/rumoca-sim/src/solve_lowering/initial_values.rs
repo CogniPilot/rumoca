@@ -54,6 +54,7 @@ where
             solver_nominals: vec![1.0; self.problem.layout.y_scalars()],
             parameters: vec![0.0; self.problem.layout.p_scalars()],
         };
+        self.seed_homotopy_continuation(&mut columns)?;
 
         for index in 0..self.view.variable_count() {
             let id = self
@@ -80,6 +81,43 @@ where
             visible_value_rows,
             variable_meta,
         })
+    }
+
+    /// Seed the hidden homotopy continuation slot (λ) to `1.0`.
+    ///
+    /// MLS 3.6 §3.7.4.3 defines `homotopy(actual, simplified)` through the blend
+    /// `lambda*actual + (1 - lambda)*simplified` and explicitly permits the
+    /// trivial implementation `homotopy(actual, simplified) = actual`. λ = 1
+    /// *is* that trivial implementation for the blend the Solve lowering emits,
+    /// so seeding `1.0` makes `actual` the default reading of every homotopy
+    /// expression: simulation-time rows, rows in systems the initialization
+    /// continuation does not steer, and every backend that has no continuation
+    /// at all agree on it. Seeding `0.0` would instead make `simplified` the
+    /// default — a system the model author supplied only as a starting guess —
+    /// for anything the continuation failed to reach.
+    ///
+    /// `SolveRuntime::project_initial_variables` is the only writer that moves
+    /// λ: it drives `0 -> 1` around the solves its coverage certificate names
+    /// and leaves `1.0` behind.
+    fn seed_homotopy_continuation(
+        &self,
+        columns: &mut RuntimeColumns,
+    ) -> Result<(), SimulationDiagnosticError> {
+        let Some(index) = self.problem.solve_layout.initial_homotopy_parameter_index else {
+            return Ok(());
+        };
+        let len = columns.parameters.len();
+        let slot = columns.parameters.get_mut(index).ok_or_else(|| {
+            runtime_error(
+                format!(
+                    "initial homotopy parameter index {index} is outside the {len} runtime \
+                     parameters"
+                ),
+                first_span(self.view),
+            )
+        })?;
+        *slot = 1.0;
+        Ok(())
     }
 
     fn visible_projections(

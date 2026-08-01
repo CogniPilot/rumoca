@@ -367,6 +367,9 @@ fn lower_builtin_expression<'dae>(
         BuiltinFunction::Delay => {
             lower_delay(construction, symbols, binders, arguments, provenance, span)
         }
+        BuiltinFunction::SemiLinear => {
+            lower_semi_linear(construction, symbols, binders, arguments, provenance)
+        }
         _ => lower_builtin_call(
             construction,
             symbols,
@@ -656,6 +659,79 @@ fn lower_hold<'dae>(
         });
     };
     lower_temporal_identity(construction, symbols, binders, value, provenance)
+}
+
+/// The MLS §3.7.4.5 operator `semiLinear(x, positiveSlope, negativeSlope)`.
+///
+/// MLS defines the operator to return
+/// `smooth(0, if x >= 0 then positiveSlope*x else negativeSlope*x)`, so the
+/// checked DAE owns exactly that conditional. Both linear segments multiply the
+/// *same* lowered operand node, so the branch the conditional selects and the
+/// value it scales are one expression identity, and the result is continuous
+/// across `x = 0`.
+///
+/// The `smooth(0, ...)` of the definition is why the `x >= 0` relation stays a
+/// pure branch selector instead of owning a state event: MLS §3.7.5 leaves a
+/// tool free not to generate events under `smooth` (it grants a freedom, it
+/// does not mandate suppression — only `noEvent` says "shall"), rumoca elects
+/// to take that freedom here, the operator's residual is C0-continuous so
+/// no crossing has to be located to keep it continuous, and OMC likewise emits
+/// no zero crossing for the operator. Event-owner analysis therefore keys no
+/// plan on this call, exactly as it does for a source-written `smooth`.
+///
+/// The MLS §3.7.4.5 "Rule 1"/"Rule 2" transformations for a set of `semiLinear`
+/// equations that becomes underdetermined at `x = 0` rewrite a *set* of
+/// equations, not this expression, so they are owned one level up by
+/// [`analysis::SemiLinearRules`]: analysis proves the rule shape over the model
+/// equation rows and equation lowering builds the replacement residual. A row
+/// that reaches this function is therefore either untouched by the rules or is
+/// the rules' own surviving `y = semiLinear(x, sa, sb)`.
+fn lower_semi_linear<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let [x, positive_slope, negative_slope] = arguments else {
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 3,
+            found: arguments.len(),
+            span: provenance.span(),
+        });
+    };
+    let generated =
+        dae::DaeProvenance::generated(dae::DaeGeneration::SemiLinearLowering, provenance.span())?;
+    let x = lower_expression_scoped(construction, symbols, binders, x, None)?;
+    let positive_slope =
+        lower_expression_scoped(construction, symbols, binders, positive_slope, None)?;
+    let negative_slope =
+        lower_expression_scoped(construction, symbols, binders, negative_slope, None)?;
+    let zero = construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .literal(dae::DaeLiteral::Real(0.0))
+    })?;
+    let nonnegative = construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .binary(dae::BinaryOperator::GreaterEqual, x, zero)
+    })?;
+    let positive = construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .binary(dae::BinaryOperator::Multiply, positive_slope, x)
+    })?;
+    let negative = construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .binary(dae::BinaryOperator::Multiply, negative_slope, x)
+    })?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .conditional([(nonnegative, positive)], negative)
+    })
 }
 
 fn lower_previous<'dae>(

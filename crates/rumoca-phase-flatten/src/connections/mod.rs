@@ -307,10 +307,15 @@ fn is_subscripted_variable(var: &rumoca_core::VarName, flat: &flat::Model) -> bo
     is_subscripted_variable_inner(var, flat).unwrap_or(false)
 }
 
-fn subscripted_base_var_with_rank(
+/// Resolve an element path to the declaration it selects from.
+///
+/// Returns the declaration's flat name, the declaration itself, and the literal
+/// coordinates the path selects, so callers that must *name* the element
+/// (equation generation) and callers that only need its rank share one proof.
+fn declared_array_element<'flat>(
     var: &rumoca_core::VarName,
-    flat: &flat::Model,
-) -> Option<(rumoca_core::VarName, usize)> {
+    flat: &'flat flat::Model,
+) -> Option<(rumoca_core::VarName, &'flat flat::Variable, Vec<i64>)> {
     let (base_name, groups) = split_trailing_index_groups(var.as_str())?;
     let base = rumoca_core::VarName::new(&base_name);
     let base_var = flat.variables.get(&base)?;
@@ -325,7 +330,7 @@ fn subscripted_base_var_with_rank(
         // Collapsed connector-array fields may lose explicit dimensions in flat::Variable.
         // Accept positive scalar indices and map to the base variable.
         if indices.iter().all(|index| *index >= 1) {
-            return Some((base, indices.len()));
+            return Some((base, base_var, indices));
         }
         return None;
     }
@@ -340,10 +345,17 @@ fn subscripted_base_var_with_rank(
         .all(|(index, dim)| *dim >= 1 && *index >= 1 && *index <= *dim);
 
     if in_bounds {
-        Some((base, indices.len()))
+        Some((base, base_var, indices))
     } else {
         None
     }
+}
+
+fn subscripted_base_var_with_rank(
+    var: &rumoca_core::VarName,
+    flat: &flat::Model,
+) -> Option<(rumoca_core::VarName, usize)> {
+    declared_array_element(var, flat).map(|(base, _, indices)| (base, indices.len()))
 }
 
 fn subscripted_base_var(
@@ -1676,6 +1688,43 @@ fn var_to_expr(var_name: &rumoca_core::VarName, span: ProvenanceSpan) -> rumoca_
     rumoca_core::Expression::VarRef {
         name: var_name.clone().into(),
         subscripts: Vec::new(),
+        span: span.span(),
+    }
+}
+
+/// Materialize one connection-set member as a Flat expression.
+///
+/// Connection sets are keyed by rendered path, so a member that is one element
+/// of a declared array connector arrives as `base[i]`. Emitting that key as a
+/// reference *name* would name a coordinate no Flat declaration owns — every
+/// consumer that resolves references against the declared variable set rejects
+/// it (`ED008` at the Flat/DAE boundary). Resolving the element back to its
+/// declaration keeps the reference on the declared coordinate and moves the
+/// selection into structured subscripts, and lets the member carry the exact
+/// occurrence identity the declaration already proved.
+fn connection_member_expr(
+    flat: &flat::Model,
+    var_name: &rumoca_core::VarName,
+    span: ProvenanceSpan,
+) -> rumoca_core::Expression {
+    if flat.variables.contains_key(var_name) {
+        return var_to_expr(var_name, span);
+    }
+    let Some((base, declaration, indices)) = declared_array_element(var_name, flat) else {
+        return var_to_expr(var_name, span);
+    };
+    let name = match declaration.component_ref.clone() {
+        Some(component_ref) => {
+            rumoca_core::Reference::with_component_reference(base.as_str(), component_ref)
+        }
+        None => rumoca_core::Reference::from_var_name(base),
+    };
+    rumoca_core::Expression::VarRef {
+        name: name.with_instance_id(declaration.instance_id),
+        subscripts: indices
+            .into_iter()
+            .map(|value| rumoca_core::Subscript::generated_index_with_provenance(value, span))
+            .collect(),
         span: span.span(),
     }
 }

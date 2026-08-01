@@ -128,6 +128,249 @@ fn channel_shape_labels_discrete_event_time_mismatch() {
     assert_eq!(metric.shape, TraceDeviationShape::EventTimeMismatch);
 }
 
+/// Clocked sampler fixture: a 20 ms clock over `[0, 0.2]` whose sampled step
+/// rises one tick earlier in the candidate than in the reference. Only the
+/// switch instant moves, so this is the shape `EventTimeMismatch` names.
+fn one_tick_shifted_step(lead_ticks: usize) -> (Vec<f64>, Vec<Option<f64>>) {
+    let times = (0..=10).map(|k| k as f64 * 0.02).collect::<Vec<_>>();
+    let rise = 5 - lead_ticks;
+    let values = (0..=10)
+        .map(|k| Some(if k >= rise { 1.0 } else { 0.0 }))
+        .collect::<Vec<_>>();
+    (times, values)
+}
+
+#[test]
+fn one_tick_clock_lead_is_labelled_event_time_mismatch() {
+    let (rumoca_times, rumoca_values) = one_tick_shifted_step(1);
+    let (omc_times, omc_values) = one_tick_shifted_step(0);
+
+    let metric = compare_channel(
+        "sample1.y",
+        ChannelSeries::new(&rumoca_times, &rumoca_values),
+        ChannelSeries::new(&omc_times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert!(
+        metric.bounded_normalized_l1_error > HIGH_AGREEMENT_CHANNEL_THRESHOLD,
+        "the fixture must clear the high-agreement threshold to reach shape classification"
+    );
+    assert_eq!(metric.shape, TraceDeviationShape::EventTimeMismatch);
+}
+
+/// The hole this ordering closes: a clocked channel that settles on a level the
+/// reference never reaches — the signature of a clocked partition solved as an
+/// algebraic loop instead of a per-tick recurrence — is a real value
+/// disagreement, not a sampling convention, and must not be labelled
+/// `EventTimeMismatch`.
+#[test]
+fn discrete_value_disagreement_is_not_labelled_event_time_mismatch() {
+    let times = (0..=10).map(|k| k as f64 * 0.02).collect::<Vec<_>>();
+    // Reference: the clocked recurrence 0, 0, 1.2, -0.24, 1.488, ...
+    let reference = [
+        0.0,
+        0.0,
+        1.2,
+        -0.24,
+        1.488,
+        -0.5856,
+        1.90272,
+        -1.083264,
+        2.4999168,
+        -1.79990016,
+        3.359880192,
+    ];
+    let omc_values = reference.iter().copied().map(Some).collect::<Vec<_>>();
+    // Candidate: the algebraic-loop steady state held for the whole run.
+    let rumoca_values = times
+        .iter()
+        .map(|&t| {
+            Some(if t < 0.04 {
+                0.0
+            } else {
+                0.545_454_545_454_545_5
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let metric = compare_channel(
+        "feedback.u2",
+        ChannelSeries::new(&times, &rumoca_values),
+        ChannelSeries::new(&times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert!(
+        metric.bounded_normalized_l1_error > HIGH_AGREEMENT_CHANNEL_THRESHOLD,
+        "the fixture must clear the high-agreement threshold to reach shape classification"
+    );
+    assert_ne!(
+        metric.shape,
+        TraceDeviationShape::EventTimeMismatch,
+        "a discrete channel holding a level the reference never reaches is a value disagreement"
+    );
+}
+
+/// A step-hold channel whose levels are simply inverted visits the same level
+/// set as the reference, so only the *confinement* condition separates it from
+/// a timing shift.
+#[test]
+fn discrete_inversion_over_the_whole_horizon_is_not_labelled_event_time_mismatch() {
+    let times = (0..=10).map(|k| k as f64 * 0.02).collect::<Vec<_>>();
+    let rumoca_values = (0..=10)
+        .map(|k| Some(if k % 2 == 0 { 1.0 } else { 0.0 }))
+        .collect::<Vec<_>>();
+    let omc_values = (0..=10)
+        .map(|k| Some(if k % 2 == 0 { 0.0 } else { 1.0 }))
+        .collect::<Vec<_>>();
+
+    let metric = compare_channel(
+        "q",
+        ChannelSeries::new(&times, &rumoca_values),
+        ChannelSeries::new(&times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert_ne!(metric.shape, TraceDeviationShape::EventTimeMismatch);
+}
+
+/// A two-level step-hold trace on a uniform tick grid; `level(k)` is the level
+/// the trace holds from tick `k` onwards.
+fn step_hold_series(
+    ticks: usize,
+    tick: f64,
+    level: impl Fn(usize) -> bool,
+) -> (Vec<f64>, Vec<Option<f64>>) {
+    let times = (0..=ticks).map(|k| k as f64 * tick).collect::<Vec<_>>();
+    let values = (0..=ticks)
+        .map(|k| Some(if level(k) { 1.0 } else { 0.0 }))
+        .collect::<Vec<_>>();
+    (times, values)
+}
+
+fn discrete_channel_metric(
+    rumoca: &(Vec<f64>, Vec<Option<f64>>),
+    omc: &(Vec<f64>, Vec<Option<f64>>),
+) -> ChannelDeviationMetric {
+    let metric = compare_channel(
+        "q",
+        ChannelSeries::new(&rumoca.0, &rumoca.1),
+        ChannelSeries::new(&omc.0, &omc.1),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+    assert!(
+        metric.bounded_normalized_l1_error > HIGH_AGREEMENT_CHANNEL_THRESHOLD,
+        "the fixture must clear the high-agreement threshold to reach shape classification"
+    );
+    metric
+}
+
+/// A genuine event-time shift, and a *large* one: a five-tick square wave whose
+/// candidate switches two ticks early spends 40% of the horizon disagreeing.
+/// Every mismatched sample still sits within two ticks of a transition and no
+/// level hold loses its majority, so the shape stays `EventTimeMismatch`. The
+/// share is not what decides this.
+#[test]
+fn event_shift_confined_to_transitions_stays_event_time_mismatch() {
+    let square = |lead: usize| step_hold_series(103, 0.01, move |k| ((k + lead) / 5) % 2 == 1);
+    let metric = discrete_channel_metric(&square(2), &square(0));
+
+    assert!(
+        (metric.mean_abs_error - 0.4).abs() < 0.02,
+        "fixture must disagree over ~40% of the horizon, got {}",
+        metric.mean_abs_error
+    );
+    assert_eq!(metric.shape, TraceDeviationShape::EventTimeMismatch);
+}
+
+/// The hole the per-hold rule closes. The candidate tracks the reference for the
+/// first half of the run and then holds the opposite level across four whole
+/// ten-tick plateaus. That is 45% of the horizon — under the horizon-level cap
+/// the old rule applied, and it visits only levels the reference also reaches,
+/// so the old rule called it `EventTimeMismatch`. No event instant can move a
+/// level the reference holds for a whole plateau, so it is a value
+/// disagreement.
+#[test]
+fn sustained_level_disagreement_across_whole_holds_is_not_event_time_mismatch() {
+    let reference = step_hold_series(100, 0.01, |k| (k / 10) % 2 == 1);
+    let candidate = step_hold_series(100, 0.01, |k| ((k / 10) % 2 == 1) != (k >= 55));
+    let metric = discrete_channel_metric(&candidate, &reference);
+
+    assert!(
+        metric.mean_abs_error < EVENT_MISMATCH_MAX_HOLD_DISAGREEMENT_SHARE,
+        "fixture must stay under the share the old horizon-level cap allowed, got {}",
+        metric.mean_abs_error
+    );
+    assert_eq!(metric.shape, TraceDeviationShape::DiscreteLevelDisagreement);
+}
+
+/// Boundary: a displacement that eats exactly half of the hold it moves into is
+/// still a displacement. Switching at 0.75 against a reference that switches at
+/// 0.5 consumes 0.25 of the reference's 0.5-long second hold.
+#[test]
+fn a_hold_disagreeing_for_exactly_half_its_span_is_still_event_time_mismatch() {
+    let reference = step_hold_series(8, 0.125, |k| k >= 4);
+    let candidate = step_hold_series(8, 0.125, |k| k >= 6);
+    let metric = discrete_channel_metric(&candidate, &reference);
+
+    assert_eq!(metric.shape, TraceDeviationShape::EventTimeMismatch);
+}
+
+/// One tick past that boundary the same fixture is a level disagreement, and it
+/// gets there while still disagreeing over only 37.5% of the horizon — the
+/// horizon-level cap cannot see the difference between this and the case above.
+#[test]
+fn a_hold_disagreeing_for_more_than_half_its_span_is_a_level_disagreement() {
+    let reference = step_hold_series(8, 0.125, |k| k >= 4);
+    let candidate = step_hold_series(8, 0.125, |k| k >= 7);
+    let metric = discrete_channel_metric(&candidate, &reference);
+
+    assert!(
+        metric.mean_abs_error < EVENT_MISMATCH_MAX_HOLD_DISAGREEMENT_SHARE,
+        "fixture must stay under the share the old horizon-level cap allowed, got {}",
+        metric.mean_abs_error
+    );
+    assert_eq!(metric.shape, TraceDeviationShape::DiscreteLevelDisagreement);
+}
+
+/// The corpus case, at the shape the landed traces have.
+/// `Modelica.Electrical.Analog.Examples.CharacteristicIdealDiodes` switches
+/// `Ideal.off` at mid-horizon in OpenModelica and holds it; our trace holds the
+/// opposite level until the final sample. That is 0.498 of the horizon — under
+/// the old 0.50 cap by 0.002, which is why a diode that conducts for the entire
+/// second half of the run reported as an event-timing artifact. Measured against
+/// the hold it lands in it is 0.996.
+///
+/// The label also has to be the level disagreement it is: the numeric ladder
+/// below the timing gate would have claimed it as a `ScaleError`, fitting a
+/// least-squares gain of 0.002 to a Boolean.
+#[test]
+fn a_discrete_level_held_past_the_reference_switch_is_a_level_disagreement() {
+    let reference = step_hold_series(500, 0.002, |k| k >= 250);
+    let candidate = step_hold_series(500, 0.002, |k| k >= 499);
+    let metric = discrete_channel_metric(&candidate, &reference);
+
+    assert!(
+        (metric.mean_abs_error - 0.498).abs() < 1.0e-9,
+        "fixture must reproduce the landed 0.498 disagreement share, got {}",
+        metric.mean_abs_error
+    );
+    assert!(
+        metric.mean_abs_error < EVENT_MISMATCH_MAX_HOLD_DISAGREEMENT_SHARE,
+        "the landed channel cleared the old horizon-level cap; the fixture must too"
+    );
+    assert_eq!(metric.shape, TraceDeviationShape::DiscreteLevelDisagreement);
+}
+
 #[test]
 fn model_score_uses_median_bounded_l1() {
     let rumoca = trace(

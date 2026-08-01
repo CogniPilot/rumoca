@@ -10,6 +10,7 @@ use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 mod clocks;
 mod events;
+mod initial_discrete;
 mod scalar;
 use scalar::{ScalarCompiler, ScalarSelector, ScaledDerivativeProgram};
 
@@ -29,9 +30,11 @@ pub(crate) fn lower_solve_problem<'dae>(
     reject_unimplemented_systems(view)?;
     let lowered = lower_layout(view)?;
     let clocks = clocks::lower_clocks(view)?;
+    clocks::reject_clocked_continuous_feedback(view, &clocks)?;
     let structural = structural_matching(view)?;
-    let continuous = lower_continuous(view, &lowered, &structural, manifold)?;
-    let initialization = lower_initialization(view, &lowered)?;
+    let derivatives = index_derivative_rows(view, &structural.rows)?;
+    let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
+    let initialization = lower_initialization(view, &lowered, &derivatives)?;
     let (discrete, events) = events::lower_discrete_and_events(view, &lowered, &clocks)?;
     Ok(solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
@@ -165,14 +168,168 @@ fn continuous_scalar_row_count(view: dae::DaeView<'_>) -> Result<usize, LowerErr
     })
 }
 
+/// One continuous scalar row as the lowering walk reaches it.
+///
+/// Row ordinals come from the same per-owner scalar counts
+/// [`continuous_scalar_row_count`] sums, so this enumeration and the lowering
+/// walk agree by construction.
+pub(super) struct ContinuousRowSource<'dae> {
+    pub(super) expression: dae::ExprId<'dae>,
+    pub(super) scalar: usize,
+    pub(super) domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
+}
+
+/// The continuous row the structural proof matched to each state derivative.
+///
+/// A model may define one state derivative in one equation and still read that
+/// derivative in another — `HeatCapacitor` writes both `der_T = der(T)` and
+/// `C*der(T) = port.Q_flow`. Only one of the two can be the row that defines
+/// `der(T)`; the other is an algebraic row that reads it. This index lets the
+/// reading row recover the derivative's own defining equation instead of
+/// meeting a coordinate with no Solve storage.
+#[derive(Default)]
+pub(super) struct DerivativeRowIndex<'dae> {
+    rows: HashMap<(u32, u32), ContinuousRowSource<'dae>>,
+}
+
+impl<'dae> DerivativeRowIndex<'dae> {
+    pub(super) fn definition(
+        &self,
+        state: dae::StateId<'dae>,
+        scalar: usize,
+    ) -> Option<&ContinuousRowSource<'dae>> {
+        let scalar = u32::try_from(scalar).ok()?;
+        self.rows.get(&(state.index(), scalar))
+    }
+}
+
+fn index_derivative_rows<'dae>(
+    view: dae::DaeView<'dae>,
+    matching: &HashMap<usize, UnknownId<'dae>>,
+) -> Result<DerivativeRowIndex<'dae>, LowerError> {
+    let mut rows = HashMap::new();
+    let mut row = 0usize;
+    for owner in view.continuous_owners() {
+        let span = owner_provenance(owner).span();
+        match owner {
+            dae::ContinuousOwnerView::Residual { equation, .. } => {
+                for scalar in 0..scalar_count(view, equation.residual()) {
+                    insert_derivative_row(
+                        matching,
+                        row,
+                        ContinuousRowSource {
+                            expression: equation.residual(),
+                            scalar,
+                            domain_point: None,
+                        },
+                        &mut rows,
+                        span,
+                    )?;
+                    row += 1;
+                }
+            }
+            dae::ContinuousOwnerView::Structured { family, .. } => {
+                row = index_family_derivative_rows(view, matching, row, family, &mut rows, span)?;
+            }
+        }
+    }
+    if row != continuous_scalar_row_count(view)? {
+        return Err(LowerError::contract(
+            "continuous row enumeration disagrees with the checked row count",
+            first_model_span(view),
+        ));
+    }
+    Ok(DerivativeRowIndex { rows })
+}
+
+fn index_family_derivative_rows<'dae>(
+    view: dae::DaeView<'dae>,
+    matching: &HashMap<usize, UnknownId<'dae>>,
+    mut row: usize,
+    family: dae::StructuredFamilyView<'dae>,
+    rows: &mut HashMap<(u32, u32), ContinuousRowSource<'dae>>,
+    span: Span,
+) -> Result<usize, LowerError> {
+    let domain = view
+        .domain(family.domain())
+        .expect("checked family domain resolves");
+    for point in 0..domain.scalar_count() as usize {
+        let values = domain
+            .structured()
+            .index_tuple_at(point)
+            .expect("checked domain remains valid")
+            .expect("checked point ordinal is in range");
+        for body in family.bodies().iter() {
+            let scalar = family
+                .scalar_view()
+                .body_scalar(point, domain.extents())
+                .expect("checked family view projects its domain point");
+            insert_derivative_row(
+                matching,
+                row,
+                ContinuousRowSource {
+                    expression: body,
+                    scalar,
+                    domain_point: Some((family.domain(), values.clone())),
+                },
+                rows,
+                span,
+            )?;
+            row += 1;
+        }
+    }
+    Ok(row)
+}
+
+fn insert_derivative_row<'dae>(
+    matching: &HashMap<usize, UnknownId<'dae>>,
+    row: usize,
+    source: ContinuousRowSource<'dae>,
+    rows: &mut HashMap<(u32, u32), ContinuousRowSource<'dae>>,
+    span: Span,
+) -> Result<(), LowerError> {
+    let Some(UnknownId::Derivative { state, scalar }) = matching.get(&row).copied() else {
+        return Ok(());
+    };
+    if rows.insert((state.index(), scalar), source).is_some() {
+        return Err(LowerError::contract(
+            "two continuous rows matched the same state derivative",
+            span,
+        ));
+    }
+    Ok(())
+}
+
+/// Everything a continuous row needs that does not vary from row to row.
+#[derive(Clone, Copy)]
+struct ContinuousContext<'borrow, 'dae> {
+    view: dae::DaeView<'dae>,
+    layout: &'borrow LoweredLayout<'dae>,
+    matching: &'borrow HashMap<usize, UnknownId<'dae>>,
+    derivatives: &'borrow DerivativeRowIndex<'dae>,
+}
+
+/// The two row streams a continuous lowering fills.
+#[derive(Default)]
+struct ContinuousOutput {
+    residual: ScalarRows,
+    derivative: DerivativeRows,
+}
+
 fn lower_continuous<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     structural: &StructuralMatching<'dae>,
+    derivatives: &DerivativeRowIndex<'dae>,
     manifold: &[dae::ExprId<'dae>],
 ) -> Result<solve::ContinuousSolveSystem, LowerError> {
-    let mut residual = ScalarRows::default();
-    let mut derivative = DerivativeRows::default();
+    let context = ContinuousContext {
+        view,
+        layout,
+        matching: &structural.rows,
+        derivatives,
+    };
+    let mut output = ContinuousOutput::default();
     let mut row = 0usize;
     for owner in view.continuous_owners() {
         match owner {
@@ -192,38 +349,31 @@ fn lower_continuous<'dae>(
                         "continuous row ordinal overflow",
                         equation.provenance().span(),
                     )?;
-                    derivative.push_tensor(group);
+                    output.derivative.push_tensor(group);
                     continue;
                 }
                 for scalar in 0..count {
                     lower_continuous_row(
-                        view,
-                        layout,
-                        &structural.rows,
+                        context,
+                        &mut output,
                         row,
                         equation.residual(),
                         scalar,
                         None,
                         equation.provenance().span(),
-                        &mut residual,
-                        &mut derivative,
                     )?;
                     row += 1;
                 }
             }
             dae::ContinuousOwnerView::Structured { family, .. } => {
-                row = lower_continuous_family(
-                    view,
-                    layout,
-                    &structural.rows,
-                    row,
-                    family,
-                    &mut residual,
-                    &mut derivative,
-                )?;
+                row = lower_continuous_family(context, &mut output, row, family)?;
             }
         }
     }
+    let ContinuousOutput {
+        residual,
+        derivative,
+    } = output;
     let residual = residual.into_compute_block()?;
     let (implicit_row_targets, algebraic_projection_plan) =
         lower_algebraic_projection(view, layout, structural)?;
@@ -456,14 +606,12 @@ fn manifold_projection_plan(
 }
 
 fn lower_continuous_family<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
     mut row: usize,
     family: dae::StructuredFamilyView<'dae>,
-    residual: &mut ScalarRows,
-    derivative: &mut DerivativeRows,
 ) -> Result<usize, LowerError> {
+    let view = context.view;
     let domain = view
         .domain(family.domain())
         .expect("checked family domain resolves");
@@ -476,8 +624,8 @@ fn lower_continuous_family<'dae>(
             .expect("single checked family body resolves");
         if let Some(group) = lower_implicit_tensor_derivative(
             view,
-            layout,
-            matching,
+            context.layout,
+            context.matching,
             row,
             body,
             family.provenance().span(),
@@ -494,7 +642,7 @@ fn lower_continuous_family<'dae>(
                     family.provenance().span(),
                 )
             })?;
-            derivative.push_tensor(group);
+            output.derivative.push_tensor(group);
             return Ok(row);
         }
     }
@@ -504,26 +652,21 @@ fn lower_continuous_family<'dae>(
             .index_tuple_at(point)
             .expect("checked domain remains valid")
             .expect("checked point ordinal is in range");
-        row = lower_continuous_family_point(
-            view, layout, matching, row, family, point, &values, residual, derivative,
-        )?;
+        row = lower_continuous_family_point(context, output, row, family, point, &values)?;
     }
     Ok(row)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn lower_continuous_family_point<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
     mut row: usize,
     family: dae::StructuredFamilyView<'dae>,
     point: usize,
     values: &[i64],
-    residual: &mut ScalarRows,
-    derivative: &mut DerivativeRows,
 ) -> Result<usize, LowerError> {
-    let domain = view
+    let domain = context
+        .view
         .domain(family.domain())
         .expect("checked family domain resolves");
     for body in family.bodies().iter() {
@@ -532,35 +675,34 @@ fn lower_continuous_family_point<'dae>(
             .body_scalar(point, domain.extents())
             .expect("checked family view projects its domain point");
         lower_continuous_row(
-            view,
-            layout,
-            matching,
+            context,
+            output,
             row,
             body,
             scalar,
             Some((family.domain(), values)),
             family.provenance().span(),
-            residual,
-            derivative,
         )?;
         row += 1;
     }
     Ok(row)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn lower_continuous_row<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
     row: usize,
     expression: dae::ExprId<'dae>,
     scalar: usize,
     domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
     span: Span,
-    residual: &mut ScalarRows,
-    derivative: &mut DerivativeRows,
 ) -> Result<(), LowerError> {
+    let ContinuousContext {
+        view,
+        layout,
+        matching,
+        derivatives,
+    } = context;
     let unknown = matching.get(&row).copied().ok_or_else(|| {
         LowerError::non_computable("structural proof omitted a continuous row", span)
     })?;
@@ -602,19 +744,22 @@ fn lower_continuous_row<'dae>(
             let solve::ScalarSlot::Y { index, .. } = target else {
                 unreachable!("state declarations are Y slots")
             };
-            derivative.push_scalar(program, span, index);
+            output.derivative.push_scalar(program, span, index);
         }
         UnknownId::Algebraic {
             variable,
             scalar: target,
         } => {
-            let program =
-                ScalarCompiler::new(view, layout, domain_point).program(expression, scalar)?;
+            // An algebraic row may read a derivative another row defines; give
+            // this compiler the index that resolves it to that definition.
+            let program = ScalarCompiler::new(view, layout, domain_point)
+                .with_derivative_definitions(derivatives)
+                .program(expression, scalar)?;
             let target = variable_scalar_slot(layout, variable.index(), target as usize, span)?;
             let solve::ScalarSlot::Y { index, .. } = target else {
                 unreachable!("algebraic declarations are Y slots")
             };
-            residual.push(program, span, index);
+            output.residual.push(program, span, index);
         }
         UnknownId::Solver(_) | UnknownId::Unmatched { .. } => {
             return Err(LowerError::non_computable(
@@ -938,6 +1083,7 @@ fn derivative_rhs<'dae>(
 ) -> Result<DerivativeRhs<'dae>, LowerError> {
     let selector = ScalarSelector::new(view, domain_point);
     let (residual, scalar) = selector.select_array_element(residual, scalar)?;
+    let residual = selector.structural_branch(residual, scalar)?;
     let node = view
         .expression(residual)
         .expect("branded residual expression resolves");
@@ -952,6 +1098,10 @@ fn derivative_rhs<'dae>(
             node.provenance().span(),
         ));
     };
+    // A branch the model fixes at translation time is the equation's only
+    // reachable form, so the affine decomposition reads through it.
+    let lhs = selector.structural_branch(lhs, scalar)?;
+    let rhs = selector.structural_branch(rhs, scalar)?;
     let lhs_direct = is_target_derivative(&selector, lhs, scalar, state, state_scalar)?;
     let rhs_direct = is_target_derivative(&selector, rhs, scalar, state, state_scalar)?;
     if lhs_direct && !expression_contains_derivative(view, rhs) {
@@ -1041,6 +1191,8 @@ fn scaled_derivative_factor<'dae>(
     } else {
         scalar
     };
+    let lhs = selector.structural_branch(lhs, lhs_scalar)?;
+    let rhs = selector.structural_branch(rhs, rhs_scalar)?;
     let lhs_target = is_target_derivative(selector, lhs, lhs_scalar, state, state_scalar)?;
     let rhs_target = is_target_derivative(selector, rhs, rhs_scalar, state, state_scalar)?;
     let factor = match (lhs_target, rhs_target) {
@@ -1072,6 +1224,7 @@ fn scaled_derivative_factor<'dae>(
 fn lower_initialization<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    derivatives: &DerivativeRowIndex<'dae>,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
     let mut rows = ScalarRows::default();
     let mut row_residuals: Vec<Option<dae::ExprId<'dae>>> = Vec::new();
@@ -1080,7 +1233,10 @@ fn lower_initialization<'dae>(
             dae::InitializationOwnerView::Residual { equation, .. } => {
                 let count = scalar_count(view, equation.residual());
                 for scalar in 0..count {
+                    // An initial residual may constrain a state derivative;
+                    // the continuous row that defines it supplies its value.
                     let program = ScalarCompiler::new(view, layout, None)
+                        .with_derivative_definitions(derivatives)
                         .program(equation.residual(), scalar)?;
                     let output = rows.programs.len();
                     rows.push(program, equation.provenance().span(), output);
@@ -1090,19 +1246,21 @@ fn lower_initialization<'dae>(
                 }
             }
             dae::InitializationOwnerView::Structured { family, .. } => {
-                lower_initialization_family(view, layout, family, &mut rows)?;
+                lower_initialization_family(view, layout, derivatives, family, &mut rows)?;
                 row_residuals.resize(rows.programs.len(), None);
             }
         }
     }
     let row_count = rows.programs.len();
     let plan = plan_initial_parameter_projection(view, layout, &row_residuals)?;
+    let updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
     Ok(solve::InitializationSolveSystem {
         residual: rows.into_compute_block()?,
         row_targets: vec![None; row_count],
         projection_unknowns: plan.unknowns,
         projection_plan: plan.plan,
-        ..solve::InitializationSolveSystem::default()
+        update_rhs: updates.rows.into_scalar_block()?,
+        update_targets: updates.targets,
     })
 }
 
@@ -1309,6 +1467,7 @@ impl DisjointSets {
 fn lower_initialization_family<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    derivatives: &DerivativeRowIndex<'dae>,
     family: dae::StructuredFamilyView<'dae>,
     rows: &mut ScalarRows,
 ) -> Result<(), LowerError> {
@@ -1321,7 +1480,7 @@ fn lower_initialization_family<'dae>(
             .index_tuple_at(point)
             .expect("checked domain remains valid")
             .expect("checked point ordinal is in range");
-        lower_initialization_family_point(view, layout, family, point, &values, rows)?;
+        lower_initialization_family_point(view, layout, derivatives, family, point, &values, rows)?;
     }
     Ok(())
 }
@@ -1329,6 +1488,7 @@ fn lower_initialization_family<'dae>(
 fn lower_initialization_family_point<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    derivatives: &DerivativeRowIndex<'dae>,
     family: dae::StructuredFamilyView<'dae>,
     point: usize,
     values: &[i64],
@@ -1343,6 +1503,7 @@ fn lower_initialization_family_point<'dae>(
             .body_scalar(point, domain.extents())
             .expect("checked family view projects its domain point");
         let program = ScalarCompiler::new(view, layout, Some((family.domain(), values)))
+            .with_derivative_definitions(derivatives)
             .program(body, scalar)?;
         let output = rows.programs.len();
         rows.push(program, family.provenance().span(), output);
@@ -1358,6 +1519,10 @@ pub(super) struct ScalarRows {
 }
 
 impl ScalarRows {
+    pub(super) fn len(&self) -> usize {
+        self.programs.len()
+    }
+
     pub(super) fn push(&mut self, program: Vec<solve::LinearOp>, span: Span, output: usize) {
         self.programs.push(program);
         self.spans.push(span);

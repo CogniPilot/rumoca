@@ -79,10 +79,12 @@ mod function_return_checked;
 mod galec_equivalence;
 #[path = "gear_loop_regression.rs"]
 mod gear_loop_regression;
+#[path = "homotopy_branch_selection.rs"]
+mod homotopy_branch_selection;
 #[path = "index_reduction_manifold.rs"]
 mod index_reduction_manifold;
-#[path = "initial_algorithm_rejection_test.rs"]
-mod initial_algorithm_rejection_test;
+#[path = "initial_algorithm_test.rs"]
+mod initial_algorithm_test;
 #[path = "integer_builtin_checked.rs"]
 mod integer_builtin_checked;
 #[path = "interface_flow_balance.rs"]
@@ -113,6 +115,8 @@ mod periodic_source_counter_regression;
 mod pipeline_test;
 #[path = "prepared_vectors_refresh.rs"]
 mod prepared_vectors_refresh;
+#[path = "semi_linear_zero_flow.rs"]
+mod semi_linear_zero_flow;
 // quadrotor_se23_regression_test.rs lives in `suite_heavy_solve`
 // (required-features = ["heavy-solve-tests"]): until the compact Solve
 // function-fold owner lands, its guards grind through ~139 MB of

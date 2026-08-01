@@ -45,6 +45,21 @@ pub(super) fn scope_qualified_reference(
     }
     let component_ref = reference.component_ref()?;
     let rendered = reference.var_name();
+    let candidate = scope_qualified_path(class_index, component_ref, rendered)?;
+    Some(reference.with_rewritten_component_reference(rendered.as_str(), candidate))
+}
+
+/// Restate a callable's structured path so it spells `rendered` exactly.
+///
+/// This is the path half of [`scope_qualified_reference`], shared with the
+/// statement call form. A statement call names its callee by a bare
+/// `ComponentReference` with no rendered companion, so the collected function
+/// table's key is supplied by the caller instead of read off a `Reference`.
+pub(super) fn scope_qualified_path(
+    class_index: &ast::ClassDefIndex<'_>,
+    component_ref: &rumoca_core::ComponentReference,
+    rendered: &rumoca_core::VarName,
+) -> Option<rumoca_core::ComponentReference> {
     if component_ref.to_var_name() == *rendered {
         return None;
     }
@@ -84,9 +99,7 @@ pub(super) fn scope_qualified_reference(
             parts.extend(tail.iter().cloned());
             let candidate = component_ref.with_replaced_parts(parts).ok()?;
             if candidate.to_var_name() == *rendered {
-                return Some(
-                    reference.with_rewritten_component_reference(rendered.as_str(), candidate),
-                );
+                return Some(candidate);
             }
         }
     }
@@ -220,5 +233,127 @@ end Lib;
         };
         assert_eq!(dims_of("noise.fastState"), vec![4]);
         assert_eq!(dims_of("noise.slowState"), vec![2]);
+    }
+}
+
+#[cfg(test)]
+mod statement_callable_tests {
+    //! A statement call names its callee by a bare `ComponentReference`, so a
+    //! call written inside the class that declares the callee spells one
+    //! segment while the collected table is keyed by the declaration path.
+    //!
+    //! `Modelica.Blocks.Sources.BooleanTable` writes `isValidTable(table)` in
+    //! its initial algorithm and `Modelica.Blocks.Examples.BooleanNetwork1`
+    //! failed the DAE with `ED013 a call statement to isValidTable has no
+    //! checked initialization owner`, because reachability read the two
+    //! spellings as different callables and pruned the collected function.
+
+    use rumoca_ir_ast as ast;
+    use rumoca_ir_flat as flat;
+
+    const SOURCE: &str = r"
+package Lib
+  model Table
+    parameter Real table[:] = {1.0, 2.0};
+  protected
+    function isValidTable
+      input Real t[:];
+    algorithm
+      assert(size(t, 1) > 0, 'empty table');
+    end isValidTable;
+
+    function bounds
+      input Real t[:];
+      output Real low;
+      output Real high;
+    algorithm
+      low := t[1];
+      high := t[size(t, 1)];
+    end bounds;
+  public
+    Real lo;
+    Real hi;
+    Real y;
+  initial algorithm
+    isValidTable(table);
+  algorithm
+    (lo, hi) := bounds(table);
+  equation
+    y = time;
+  end Table;
+
+  model Top
+    Table plant;
+  end Top;
+end Lib;
+";
+
+    fn flatten_source(model: &str) -> flat::Model {
+        let file_name = "<statement_callable_tests>";
+        let source = SOURCE.replace('\'', "\"");
+        let stored =
+            rumoca_phase_parse::parse_to_ast(&source, file_name).expect("fixture should parse");
+        let mut tree = ast::ClassTree::from_parsed(stored);
+        tree.source_map.add(file_name, &source);
+        let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+            .expect("fixture should resolve");
+        let instanced = rumoca_phase_instantiate::instantiate(resolved, model)
+            .expect("fixture should instantiate");
+        let ast::InstancedTree { tree, mut overlay } = instanced;
+        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
+            .expect("fixture should typecheck");
+        crate::flatten_ref(&tree, &overlay, model).expect("fixture should flatten")
+    }
+
+    fn statement_callees(statements: &[rumoca_core::Statement]) -> Vec<String> {
+        statements
+            .iter()
+            .filter_map(|statement| match statement {
+                rumoca_core::Statement::FunctionCall { comp, .. } => {
+                    Some(comp.to_var_name().as_str().to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_zero_output_statement_callee_reaches_the_collected_table() {
+        let model = flatten_source("Lib.Top");
+        let collected: Vec<&str> = model.functions.keys().map(|key| key.as_str()).collect();
+        assert!(
+            collected.contains(&"Lib.Table.isValidTable"),
+            "a zero-output statement call must keep its callee collected, got {collected:?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_output_statement_callee_reaches_the_collected_table() {
+        let model = flatten_source("Lib.Top");
+        let collected: Vec<&str> = model.functions.keys().map(|key| key.as_str()).collect();
+        assert!(
+            collected.contains(&"Lib.Table.bounds"),
+            "a multi-output statement call must keep its callee collected, got {collected:?}"
+        );
+    }
+
+    /// Every consumer that resolves a statement callee does so by its rendered
+    /// name, so the call site has to spell the collected table's key.
+    #[test]
+    fn statement_callees_spell_their_collected_key() {
+        let model = flatten_source("Lib.Top");
+        let mut callees = Vec::new();
+        for algorithm in model.algorithms.iter().chain(&model.initial_algorithms) {
+            callees.extend(statement_callees(&algorithm.statements));
+        }
+        callees.sort();
+        assert_eq!(
+            callees,
+            vec![
+                "Lib.Table.bounds".to_string(),
+                "Lib.Table.isValidTable".to_string()
+            ],
+            "statement callees must spell the collected declaration path"
+        );
     }
 }

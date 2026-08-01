@@ -423,12 +423,30 @@ impl ShapeAnalyzer<'_> {
                 self.discover_statement_blocks(blocks, values)
             }
             rumoca_core::Statement::FunctionCall {
-                comp, args, span, ..
+                comp,
+                args,
+                outputs,
+                span,
             } => {
                 let inputs = args
                     .iter()
                     .map(|argument| self.discover_expression(argument, values))
                     .collect::<Result<Vec<_>, _>>()?;
+                // A call statement that binds no output produces no value any
+                // owner reads, so no specialization of the callee is executed.
+                // Two such statements reach here and both are owned without
+                // one: MLS §8.3.7 `assert`, a call to a predefined operator
+                // the Flat function table never registers, and an initial
+                // algorithm's checking call, which the initialization
+                // partition replays into the assertions its body raises. Every
+                // other zero-output call statement is rejected by the owner
+                // check of the section it appears in, so selecting a
+                // specialization here would only report a callee ahead of that
+                // rejection. The arguments are ordinary expressions and were
+                // discovered above either way.
+                if outputs.iter().all(Option::is_none) {
+                    return Ok(());
+                }
                 self.ensure_specialization(
                     FunctionSpecializationKey {
                         function: comp.to_var_name(),
@@ -1087,23 +1105,14 @@ fn builtin_shape(
             })
             .and_then(|value| expression_shape(value, values, function_result)),
         BuiltinFunction::Interval => scalar_interval_shape(arguments, span),
+        // MLS §3.7.4.5 `semiLinear` returns `if x >= 0 then positiveSlope*x else
+        // negativeSlope*x`, so its shape is the common shape of its operands.
         BuiltinFunction::Atan2
         | BuiltinFunction::Mod
         | BuiltinFunction::Min
-        | BuiltinFunction::Max => {
-            let Some(first) = arguments.first() else {
-                return Err(ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    format!("{} requires arguments", function.name()),
-                    span,
-                ));
-            };
-            let expected = expression_shape(first, values, function_result)?;
-            for argument in &arguments[1..] {
-                let found = expression_shape(argument, values, function_result)?;
-                require_same_shape(&expected, &found, span)?;
-            }
-            Ok(expected)
+        | BuiltinFunction::Max
+        | BuiltinFunction::SemiLinear => {
+            shared_operand_shape(function, arguments, values, function_result, span)
         }
         _ => Err(ToDaeError::unsupported_flat(
             "function shape proof",
@@ -1111,6 +1120,29 @@ fn builtin_shape(
             span,
         )),
     }
+}
+
+/// The one shape every operand of an elementwise builtin must agree on.
+fn shared_operand_shape(
+    function: BuiltinFunction,
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let Some((first, rest)) = arguments.split_first() else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            format!("{} requires arguments", function.name()),
+            span,
+        ));
+    };
+    let expected = expression_shape(first, values, function_result)?;
+    for argument in rest {
+        let found = expression_shape(argument, values, function_result)?;
+        require_same_shape(&expected, &found, span)?;
+    }
+    Ok(expected)
 }
 
 fn scalar_interval_shape(arguments: &[Expression], span: Span) -> Result<ValueShape, ToDaeError> {

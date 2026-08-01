@@ -1,7 +1,9 @@
 use crate::{
-    AlgebraicProjectionModel, ImplicitProjectionModel, RuntimeSolveError,
+    AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem, RuntimeSolveError,
     project_initial_variables_with_homotopy,
 };
+
+use super::initial_continuation::InitialContinuationCoverage;
 
 use super::*;
 
@@ -217,24 +219,55 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
 }
 
 impl SolveRuntime {
+    /// Project the initialization unknowns, sweeping the homotopy continuation
+    /// parameter when the model has a solve for it to steer.
+    ///
+    /// The sweep drives exactly the solves named by the runtime's certified
+    /// `InitialContinuationCoverage`: the initialization projection plan and —
+    /// whenever that coverage includes implicit rows — the algebraic refresh.
+    /// The algebraic refresh has to run *inside* the sweep because that is where
+    /// the Solve lowering parks a `homotopy(...)` written in an `equation`
+    /// section; refreshing only after the sweep leaves the algebraic solve to
+    /// pick a root from a cold guess, which is how
+    /// `Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator` settled onto
+    /// the trivial all-zero equilibrium instead of the ±15 V branch the
+    /// simplified expression selects.
+    ///
+    /// When the coverage names no steered solve — every λ read sits in a
+    /// derivative, discrete, or unowned initialization row — there is nothing to
+    /// sweep and λ stays at its seeded `1.0`, so those rows evaluate to `actual`
+    /// (MLS 3.6 §3.7.4.3's trivial implementation).
     pub fn project_initial_variables(
         &self,
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
         tol: f64,
+        max_iters: usize,
     ) -> Result<(), RuntimeSolveError> {
+        let drives_algebraic_refresh = self
+            .initial_continuation
+            .as_ref()
+            .is_some_and(InitialContinuationCoverage::drives_algebraic_refresh);
         project_initial_variables_with_homotopy(
-            &InitialProjectionModel { runtime: self },
+            InitialHomotopySystem {
+                model: &InitialProjectionModel { runtime: self },
+                t,
+                plan: &self.model.problem.initialization.projection_plan,
+                homotopy_parameter_index: self
+                    .initial_continuation
+                    .as_ref()
+                    .and_then(InitialContinuationCoverage::sweep_parameter_index),
+                tol,
+            },
             y,
             p,
-            t,
-            &self.model.problem.initialization.projection_plan,
-            self.model
-                .problem
-                .solve_layout
-                .initial_homotopy_parameter_index,
-            tol,
+            |y, p| {
+                if !drives_algebraic_refresh {
+                    return Ok(());
+                }
+                self.refresh_algebraic_and_output_slots(t, y, p, tol, max_iters)
+            },
         )
     }
 
@@ -256,7 +289,7 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         for _ in 0..max_iters {
             self.apply_initialization_updates(y, p, t, tol, max_iters)?;
-            self.project_initial_variables(y, p, t, tol)?;
+            self.project_initial_variables(y, p, t, tol, max_iters)?;
             if !self.apply_initialization_updates(y, p, t, tol, max_iters)? {
                 return Ok(());
             }
@@ -368,7 +401,7 @@ mod tests {
         let mut p = model.parameters.clone();
 
         runtime
-            .project_initial_variables(&mut y, &mut p, 0.0, 1.0e-10)
+            .project_initial_variables(&mut y, &mut p, 0.0, 1.0e-10, 8)
             .expect("continuation should project the actual system");
 
         assert_eq!(p, vec![1.0]);

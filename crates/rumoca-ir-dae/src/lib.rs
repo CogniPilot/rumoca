@@ -137,7 +137,7 @@ pub use discrete_values::{
 };
 pub use equations::{
     ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationView,
-    InitializationEquations, ResidualEquation, StructuredResiduals,
+    InitialDiscreteValueView, InitializationEquations, ResidualEquation, StructuredResiduals,
 };
 pub use error::DaeConstructionError;
 pub use events::{EventActionOperation, EventActionView, Events, TimeEventView};
@@ -153,9 +153,9 @@ pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
     DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
-    FunctionId, FunctionParameterId, FunctionValueId, InitializationEquationId,
-    InitializationFamilyId, InputId, ParameterId, PeriodicClockId, PreviousId, RelationId, RootId,
-    StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
+    FunctionId, FunctionParameterId, FunctionValueId, InitialDiscreteValueId,
+    InitializationEquationId, InitializationFamilyId, InputId, ParameterId, PeriodicClockId,
+    PreviousId, RelationId, RootId, StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,

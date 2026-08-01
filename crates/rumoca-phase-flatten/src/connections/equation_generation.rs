@@ -111,7 +111,7 @@ fn generate_outside_stream_equations(
             }
             let provenance =
                 require_connection_provenance(*span, "outside stream connection equation")?;
-            let stream_expr = var_to_expr(stream, provenance);
+            let stream_expr = connection_member_expr(flat, stream, provenance);
             // A connector that reached interface discovery without joining a
             // stream connection set at that scope is the MLS §15.2 unconnected
             // case; it keeps the conceptual `inStream()` right-hand side.
@@ -200,8 +200,8 @@ pub(super) fn generate_equality_equations(
         mark_connected(flat, var_b);
 
         // Create residual: var_a - var_b = 0
-        let expr_a = var_to_expr(var_a, provenance);
-        let expr_b = var_to_expr(var_b, provenance);
+        let expr_a = connection_member_expr(flat, var_a, provenance);
+        let expr_b = connection_member_expr(flat, var_b, provenance);
         let residual = create_equality_residual(expr_a, expr_b, provenance);
 
         let origin = rumoca_ir_flat::EquationOrigin::Connection {
@@ -387,7 +387,7 @@ pub(super) fn generate_flow_equation(
     let flow_exprs: Vec<rumoca_core::Expression> = variables
         .iter()
         .map(|var| {
-            let expr = var_to_expr(var, provenance);
+            let expr = connection_member_expr(flat, var, provenance);
             if is_outside_flow_var_for_scope(var, scope, interface_flow_vars_by_scope) {
                 // Outside connector: negate (sign = -1)
                 rumoca_core::Expression::Unary {

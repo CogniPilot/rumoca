@@ -189,12 +189,14 @@ change/receipt registries, generation tokens, and post-rewrite validation are pr
 
 ### Serialization
 
-Only DAE wire v12 exists; v11-and-earlier/pre-versioned payloads, adapters,
+Only DAE wire v13 exists; v12-and-earlier/pre-versioned payloads, adapters,
 migration readers, and dual writes are prohibited.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Current wire records are private and deny unknown fields | DAE serde | Wire is not IR |
+| Operands travel on the operation that consumes them, never in a positional side table | DAE serde | One reading order |
+| Facts a construction operation produces are absent and re-issued by replay | Private wire types | Results cannot be forged |
 | Required collections are explicit, including empty | Private wire types | Omission is not ambiguity |
 | Decode calls the same provenance-requiring operations | DAE serde | Deserialization is construction |
 | Provenance serializes identity/range/origin only | DAE wire | Source text stays canonical |
