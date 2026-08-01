@@ -50,6 +50,23 @@ fn msl_render_enabled() -> bool {
     false
 }
 
+/// Two count families over the checked DAE, deliberately kept distinct:
+///
+/// - `*_variables` counts **declarations** — one per DAE variable, whatever its
+///   cardinality. This is the "how many things were declared" view used for
+///   reporting (`num_states`, `num_algebraics`).
+/// - `*_scalars` counts **scalars** — `scalar_count()` summed over declarations.
+///   This is the balance-accounting view: MLS 3.6 §4.7 "Balanced Models" counts
+///   "the elements after expanding all records, operator record, and arrays to a
+///   set of scalars of primitive types". It is the only family
+///   `checked_dae_has_input_scalars` and the balance report offset consume.
+///
+/// The split matters for zero-sized arrays, which MLS §10.1 declares legal
+/// ("Zero-valued dimensions are allowed, so: `C x[0];` declares an empty
+/// vector") and §10.7 names *empty arrays*: `input Real u[0]` is retained as one
+/// `Input` declaration with `scalar_count() == 0`, so it adds 1 to
+/// `input_variables` and 0 to `input_scalars` — a zero-cardinality declaration
+/// can therefore never inflate balance accounting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct CheckedDaeCounts {
     pub variables: usize,
