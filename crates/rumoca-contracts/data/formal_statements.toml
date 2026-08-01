@@ -974,6 +974,42 @@ contracts = ['ARR-026']
 related_sections = ['§10.1', '§10.4.1', '§10.5']
 note = 'The declared extents are read from the record instantiation writes for every array it expands, not from the descriptor it writes only for the ones it compacted: SPEC_0032 §1 makes compaction an optimization, and a diagnostic that changed with it was reporting the compiler rather than the model. 56 MSL models (57 by diagnostic text; one carries it under the ET000 summary) were rejected as `has 0 dimension(s)` on legal subscripts because of it. The section follows the contract it cites: SPEC_0022 stamps ARR-026 = §10.6.9 for the subscript-count rule, and §10.5.1 for ARR-025, which is about index type.'
 
+[[statements]]
+id = 'FS-ARR-008'
+statement = 'A component reference is measured against the dimensions of every part of its path, so a part whose declared extents the compiler cannot determine leaves the whole reference unmeasurable and the subscript budget unenforced, rather than measurable against zero dimensions.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = '§10.4.1 composes the reference shape from every part, so a part with unknown extents makes the composition unknown'
+quote_source = 'crates/rumoca-phase-typecheck/src/typechecker/equation_compat.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_record_array_member_of_a_scalar_owner_is_subscriptable'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-026']
+related_sections = ['§10.4.1', '§10.5.1']
+note = 'The subscript walk accumulates the extents of each part and spends that part of the subscripts against them. An absent part used to contribute nothing, which left the already-spent vector of the enclosing prefix standing and reported its leftover length as the rank of the absent declaration — `has 0 dimension(s)` for a member the model gave three. Absence is unknown, not scalar; a known scalar is recorded as an explicit empty extent list and still rejects. This rule governs absence only, and does NOT close the `has 0 dimension(s)` class: the same text still reaches a model when the shape lookup answers a positive wrong shape rather than absence, which `arr_026_redeclared_record_member_array_still_reports_zero_dimensions` pins on a redeclared record member array (omc accepts it). That is wrong-instance resolution, a separate defect tracked on its own. Counting convention for the MSL cohort, which differs by one between the two ways of counting: 22 models carried the ET009 *code* before this change and 2 carry it after, while 23 carried the diagnostic *text* and 3 carry it after — the extra model, `CCCV_StackRC`, reports the same text under an ET000 summary and is unchanged either way. Both conventions agree that 20 models were fixed. Of the 3 that remain, 2 are the `kDegraded[:,2]` unspecified-extent defect and 1 is the redeclared shape above; none is an absence. The section follows the contract it cites: SPEC_0022 stamps ARR-026 = §10.6.9 for the subscript-count rule.'
+
+[[statements]]
+id = 'FS-ARR-009'
+statement = 'A component reference may carry no more subscripts than the declaration it names has dimensions, and exceeding that count is an error of the model.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = 'a literal subscript that selects no expanded element'
+quote_source = 'crates/rumoca-phase-typecheck/src/semantic_scope.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_over_subscripted_record_member_loses_its_equation_instead_of_being_named'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+contracts = ['ARR-026']
+related_sections = ['§10.5.1']
+note = 'The count rule is enforced wherever the shape lookup answers, which `arr_026_a_member_array_is_still_rejected_when_over_subscripted` holds it to. It is not enforced when the reference reaches the member through a prefix the instance-shape index cannot resolve, because the identity walk filters candidate instances by the very subscripts being validated: an over-long subscript list selects no expanded element, the walk reports absence, and FS-ARR-008 then abstains. The pin records what happens instead, and it is worse than an unnamed rejection: the binding equation is dropped from the DAE entirely, so `Cx yy = c.i[1, 2]` surfaces as `unbalanced model: 3 equations, 4 unknowns` spanned on the enclosing model rather than on the subscript. omc names it (`Wrong number of subscripts in c.i[1, 2] (2 subscripts for 1 dimensions)`). The model is still rejected, so this is a diagnostic and blame-target gap rather than an admissibility one. The fix is to stop filtering the final prefix part by its own subscripts in the shape query; that is a change to identity resolution, not to the abstention, and is deliberately not folded into it. Index-bounds checking (§10.5.1) is a separate statement and is not covered by this row or its pin.'
+
 # ---------------------------------------------------------------------------
 # INST / PKG — scoping and class occurrences (MLS §5.3.1, §7.1, §13.2)
 # ---------------------------------------------------------------------------

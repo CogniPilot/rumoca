@@ -251,14 +251,27 @@ impl TypeChecker {
                         .get_or_insert_with(Vec::new)
                         .extend_from_slice(&local_shape);
                 }
-                SemanticLookup::Found(None) | SemanticLookup::Ambiguous => {
-                    // The declaration has dimensions, but one or more extents
-                    // are not evaluable in this instance. Unknown shape is not
-                    // scalar: defer arity and bounds validation until a phase
-                    // owns concrete extents.
+                // Nothing concrete is known about this part's extents:
+                // `Found(None)` is a declaration whose dimensions exist but
+                // whose extents are not evaluable in this instance,
+                // `Ambiguous` is disagreeing candidates, and `Missing` is a
+                // path the concrete instance-shape index has no row for at
+                // all. Unknown shape is not scalar - a known scalar is
+                // `Some(Vec::new())` - so all three abstain.
+                //
+                // `Missing` must clear the accumulator rather than leave it
+                // standing. §10.4.1 composes the reference shape from every
+                // part, so a part with unknown extents makes the composition
+                // unknown; keeping the enclosing prefix's vector would measure
+                // this part's subscripts against extents that belong to an
+                // earlier part and are already consumed, and report the
+                // leftover count (`has 0 dimension(s)`) as if it were this
+                // declaration's rank.
+                SemanticLookup::Found(None)
+                | SemanticLookup::Ambiguous
+                | SemanticLookup::Missing => {
                     effective_shape = None;
                 }
-                SemanticLookup::Missing => {}
             }
             let Some(subscripts) = part.subs.as_ref() else {
                 continue;

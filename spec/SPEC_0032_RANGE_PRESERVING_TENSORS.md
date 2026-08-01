@@ -15,7 +15,7 @@ scalar rows are derived views, not recovered structure.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Structured equation families stay authoritative | Flat/DAE IR | Prevents parallel scalar owners |
-| Compacted component arrays record a family descriptor | Instance IR | Preserves the compact domain |
+| Compacted component arrays leave no descriptor | Instance IR | Compaction is not an ownership change |
 | Domains use `rumoca-core::StructuredIndexDomain` | Flat/DAE/Solve IR | One compact domain shape |
 | Domain payloads are compact | IR serialization | Avoids O(N) metadata |
 | Binder ids are stable and explicit | `StructuredIndexBinder` / phase maps | Names can shadow |
@@ -35,15 +35,31 @@ optimization, not an ownership change — Instance IR's authoritative
 representation of the array is still the per-element `components`/`classes`
 entries, and every later phase reads those.
 
-`InstanceOverlay::component_families` records the descriptor
-(`InstanceComponentFamily`: domain, root path, subscript depth, template
-instance ids) for each array that was compacted. Today it has no readers; it is
-recorded so a future phase can consume the compact domain without re-deriving
-it. **REQUIRED:** a compacted array must produce byte-identical per-element
+**REQUIRED:** a compacted array must produce byte-identical per-element
 entries — including `InstanceId` allocation order, on which flat variable
-identity depends (SPEC_0001) — to element-by-element expansion.
-**PROHIBITED:** treating the descriptor as the array's owner while per-element
-entries remain the consumed representation.
+identity depends (SPEC_0001) — to element-by-element expansion. The declared
+extents of every expanded array, compacted or not, are recorded once in
+`InstanceOverlay::array_parent_dims`; that is the only array-level record
+Instance IR keeps, and the per-element entries remain the array's
+representation.
+
+**PROHIBITED:** recording *in Instance IR* that an array was compacted.
+Instantiation kept a `component_families` descriptor for a possible future
+reader and acquired none; while it existed a diagnostic read it and reported
+whether the compiler had compacted the array rather than what the model
+declared. A compaction record in the IR is by construction a second owner for
+state the per-element entries already own, and it makes the two paths
+distinguishable to consumers, which this section forbids. A future phase that
+wants the compact domain re-derives it from the declared extents.
+
+This prohibition is on IR content, not on observability as such: a counter or
+other out-of-band signal that no consumer can read is still permitted, and one
+is needed. Compaction currently has no liveness witness — the differential
+tests prove only that the compact and scalar overlays agree, which stays
+trivially true if the homogeneity gate silently stops compacting anything, so
+the optimization could regress to element-by-element expansion undetected. The
+follow-up is a non-IR compaction counter that the instantiate tests can assert
+on.
 
 Compaction is refused whenever any per-element rewrite in
 `prepare_element_declaration` would fire: a non-`each` `start`, an array-level
@@ -70,10 +86,10 @@ lhs/rhs or output expression.
 This section governs views derived from a structured *equation* or tensor owner.
 It does not apply to the per-element instance entries of a compacted component
 array (§1): those are ordinary instances carrying ordinary instance provenance
-(qualified name, span, source scopes) and no parent-family metadata, because the
-family descriptor is not their owner. It does apply to the scalar view of a
-compact `InstanceConnectionFamily` (`rumoca-eval-ast::connection`), which is a
-derived view of a structured owner.
+(qualified name, span, source scopes) and no parent-family metadata, because
+compaction leaves no owner for them to point at. It does apply to the scalar
+view of a compact `InstanceConnectionFamily` (`rumoca-eval-ast::connection`),
+which is a derived view of a structured owner.
 
 ### 3. DAE Canonical Form
 

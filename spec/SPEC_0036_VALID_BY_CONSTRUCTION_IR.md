@@ -56,9 +56,9 @@ For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 rules are
 [SPEC_0043 §7](SPEC_0043_CONSTRUCTION_CATALOG.md#7-flat-aggregate-construction-catalog-spec_0036-flat-aggregate).
 
-Declarations retain exact spans. Per SPEC_0032,
-`InstanceOverlay::component_families` remains a non-authoritative descriptor;
-per-element instance entries own Instance semantics. `flat::Model` owns only
+Declarations retain exact spans. Per SPEC_0032 §1, Instance IR keeps no record
+of array compaction at all; per-element instance entries own Instance
+semantics. `flat::Model` owns only
 the flattened structured families, whose scalar views/counts derive.
 Drafts, public invariant fields, repair, compatibility, unchecked insertion,
 finalized mutation, and alternate constructors are prohibited.

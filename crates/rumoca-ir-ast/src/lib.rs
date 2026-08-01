@@ -80,10 +80,10 @@ pub use semantic_identity::{
 
 // Re-export key types from submodules
 pub use instance::{
-    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceComponentFamily,
-    InstanceConnection, InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData,
-    InstanceEquation, InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment,
-    ModificationValue, QualifiedName,
+    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceConnection,
+    InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData, InstanceEquation,
+    InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment, ModificationValue,
+    QualifiedName,
 };
 pub use scope::{Import as ScopeImport, InheritedMember, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};

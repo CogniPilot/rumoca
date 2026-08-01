@@ -1166,6 +1166,281 @@ fn arr_026_element_expanded_array_bounds_are_checked_against_the_declared_extent
 }
 
 #[test]
+fn arr_026_record_array_member_of_a_scalar_owner_is_subscriptable() {
+    // MLS §10.6.9 budgets `c.i[1]` against the dimensions `i` is declared with.
+    // Record expansion re-checks this binding inside `yy`'s own class instance,
+    // where the instance-shape index has no row for `c` at all, so the prefix
+    // shape is unknown. Unknown is an abstention: measuring the subscript
+    // against the scalar owner's already-consumed extents reported
+    // `c.i has 0 dimension(s)`, a statement about the lookup rather than about
+    // the model. omc accepts this model.
+    expect_success(
+        r#"
+        package P
+            record Cx
+                Real re;
+            end Cx;
+            model Sub
+                Cx i[3];
+            equation
+                for k in 1:3 loop
+                    i[k].re = time;
+                end for;
+            end Sub;
+            model M
+                Sub c;
+                Cx yy = c.i[1];
+            end M;
+        end P;
+    "#,
+        "P.M",
+    );
+}
+
+#[test]
+fn arr_026_record_array_member_under_an_element_expanded_owner_is_subscriptable() {
+    // The same abstention with a subscript on the owner as well: `c[1]` is
+    // spent against the owner's declared extent before `i[1]` is measured, so
+    // the accumulated extents are empty by the time the unknown member arrives.
+    expect_success(
+        r#"
+        package P
+            record Cx
+                Real re;
+            end Cx;
+            model Sub
+                Cx i[3];
+            equation
+                for k in 1:3 loop
+                    i[k].re = time;
+                end for;
+            end Sub;
+            model M
+                Sub c[2];
+                Cx yy = c[1].i[1];
+            end M;
+        end P;
+    "#,
+        "P.M",
+    );
+}
+
+#[test]
+fn arr_026_record_array_member_with_a_parameter_extent_is_subscriptable() {
+    // The MSL shape this rule was found on
+    // (`Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.Components.PolyphaseInductance`,
+    // `output SI.ComplexCurrent Ie = resistor_e.i[1]`): the member's extent is
+    // a modified parameter, and the owner is a scalar submodel. omc accepts it.
+    expect_success(
+        r#"
+        package P
+            record Cx
+                Real re;
+                Real im;
+            end Cx;
+            model Resistor
+                parameter Integer m = 3;
+                Cx i[m];
+            equation
+                for j in 1:m loop
+                    i[j].re = time;
+                    i[j].im = 0;
+                end for;
+            end Resistor;
+            model M
+                parameter Integer m = 5;
+                Resistor resistor_e(m = m);
+                output Cx Ie = resistor_e.i[1];
+            end M;
+        end P;
+    "#,
+        "P.M",
+    );
+}
+
+#[test]
+fn arr_026_a_scalar_member_of_a_scalar_owner_is_still_rejected_when_subscripted() {
+    // The ablation for the three acceptances above. The abstention is confined
+    // to prefixes the instance-shape index has no row for; a member whose shape
+    // *is* known to be scalar keeps reporting zero dimensions, so the fix
+    // cannot have been "stop checking member paths".
+    expect_failure_in_phase_with_detail(
+        r#"
+        package P
+            model Sub
+                parameter Real p = 1;
+                Real x;
+            equation
+                x = p*time;
+            end Sub;
+            model M
+                Sub c(p = 2);
+                Real y;
+            equation
+                y = c.x[1];
+            end M;
+        end P;
+    "#,
+        "P.M",
+        FailedPhase::Typecheck,
+        "ET009",
+        "`c.x` has 0 dimension(s) but is subscripted with 1 subscript(s)",
+    );
+}
+
+#[test]
+fn arr_026_a_member_array_is_still_rejected_when_over_subscripted() {
+    // Second ablation: a member whose declared extents *are* known is still
+    // measured against them, and the diagnostic names the member, not its owner.
+    expect_failure_in_phase_with_detail(
+        r#"
+        package P
+            model Inner
+                parameter Real p = 1;
+                parameter Integer n = 3;
+                Real x[n];
+            equation
+                x = {p*time for k in 1:n};
+            end Inner;
+            model M
+                Inner c(p = 2);
+                Real y;
+            equation
+                y = c.x[1, 2];
+            end M;
+        end P;
+    "#,
+        "P.M",
+        FailedPhase::Typecheck,
+        "ET009",
+        "`c.x` has 1 dimension(s) but is subscripted with 2 subscript(s)",
+    );
+}
+
+#[test]
+fn arr_026_a_member_array_is_still_bounds_checked() {
+    // Third ablation: literal bounds on a known member extent (MLS §10.5.1).
+    expect_failure_in_phase_with_detail(
+        r#"
+        package P
+            model Inner
+                parameter Real p = 1;
+                parameter Integer n = 3;
+                Real x[n];
+            equation
+                x = {p*time for k in 1:n};
+            end Inner;
+            model M
+                Inner c(p = 2);
+                Real y;
+            equation
+                y = c.x[4];
+            end M;
+        end P;
+    "#,
+        "P.M",
+        FailedPhase::Typecheck,
+        "ET009",
+        "subscript 4 for `c.x` is out of bounds for dimension of size 3",
+    );
+}
+
+#[test]
+fn arr_026_redeclared_record_member_array_still_reports_zero_dimensions() {
+    // PINS A DIVERGENCE, not a rule. omc accepts this model; rumoca rejects it.
+    //
+    // This is the shape of
+    // `Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge`
+    // (`CellRCStack` redeclares `cellData` to a record carrying `rcData[nRC]`,
+    // and the binding is distributed over `resistor[cellData.nRC]`).
+    //
+    // It is *not* reached by the absence rule FS-ARR-008 pins: the prefix
+    // shape lookup answers `Found(Some([]))` here, a positive "known scalar"
+    // for a declaration the model gave a dimension, so no abstention is
+    // reachable. Deleting the redeclare makes the same model answer `Missing`
+    // and pass (`arr_026_record_array_member_with_a_parameter_extent_is_subscriptable`
+    // is that control). The defect is wrong-instance resolution, tracked
+    // separately; this test exists so that work has a witness and so the
+    // `has 0 dimension(s)` class is not mistaken for closed.
+    expect_failure_in_phase_with_detail(
+        r#"
+        package P
+            record RCData
+                parameter Real R = 1;
+                parameter Real T_ref = 300;
+            end RCData;
+            record BaseData
+                parameter Real R0 = 1;
+            end BaseData;
+            record TransientData
+                extends BaseData;
+                parameter Integer nRC = 2;
+                parameter RCData rcData[nRC];
+            end TransientData;
+            model Res
+                parameter Real R = 1;
+                parameter Real T_ref = 300;
+                Real v;
+            equation
+                v = R*time + T_ref;
+            end Res;
+            partial model BaseCellStack
+                replaceable parameter BaseData cellData constrainedby BaseData;
+            end BaseCellStack;
+            model M
+                extends BaseCellStack(redeclare parameter TransientData cellData(nRC = 2));
+                Res resistor[cellData.nRC](
+                    final R = cellData.rcData.R,
+                    final T_ref = cellData.rcData.T_ref);
+            end M;
+        end P;
+    "#,
+        "P.M",
+        FailedPhase::Typecheck,
+        "ET009",
+        "`cellData.rcData` has 0 dimension(s) but is subscripted with 1 subscript(s)",
+    );
+}
+
+#[test]
+fn arr_026_over_subscripted_record_member_loses_its_equation_instead_of_being_named() {
+    // PINS A DIVERGENCE, not a rule. This is the witness for FS-ARR-009.
+    //
+    // `c.i[1, 2]` spends two subscripts on a member declared with one
+    // dimension. omc names it: "Wrong number of subscripts in c.i[1, 2]
+    // (2 subscripts for 1 dimensions)". rumoca abstains at the subscript walk
+    // (the literal subscripts select no expanded element, so the shape lookup
+    // reports absence) and the binding equation is then dropped from the DAE
+    // altogether, surfacing as an unbalanced model blamed on `M` rather than
+    // on the subscript. The model is still rejected, but the count rule is not
+    // what rejects it and the span is not where the error is.
+    expect_failure_in_phase_with_detail(
+        r#"
+        package P
+            record Cx
+                Real re;
+            end Cx;
+            model Sub
+                Cx i[3];
+            equation
+                for k in 1:3 loop
+                    i[k].re = time;
+                end for;
+            end Sub;
+            model M
+                Sub c;
+                Cx yy = c.i[1, 2];
+            end M;
+        end P;
+    "#,
+        "P.M",
+        FailedPhase::ToDae,
+        "ED001",
+        "unbalanced model: 3 equations, 4 unknowns",
+    );
+}
+
+#[test]
 fn arr_026_a_genuine_scalar_component_is_still_rejected_when_subscripted() {
     // The ablation for the four acceptances above: a component the model never
     // gave a dimension keeps reporting zero of them.

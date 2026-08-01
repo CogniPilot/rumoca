@@ -2,19 +2,24 @@
 //! keeps a compact family (SPEC_0032 §1).
 //!
 //! The gate is the only thing standing between a genuinely per-element array and
-//! a wrong model, so each verdict it can return is exercised here, together with
+//! a wrong model, so each input it must refuse is exercised here, together with
 //! the domain probing that feeds it.
+//!
+//! The gate's verdict itself is deliberately not observable: SPEC_0032 §1
+//! requires compaction to produce the same overlay as element-by-element
+//! expansion, so nothing in Instance IR distinguishes the two paths. What the
+//! gate protects — that a genuinely per-element array is not collapsed onto its
+//! template — is exactly what `assert_overlays_equivalent` checks, so each case
+//! below pins the per-element content plus that differential.
+//!
+//! That covers safety but not liveness: the differential stays trivially true
+//! if the gate silently stops compacting anything at all, so nothing here would
+//! notice the optimization regressing to element-by-element expansion. Closing
+//! that needs an out-of-band compaction counter, which SPEC_0032 §1 permits and
+//! records as a follow-up; it must not come back as IR state.
 
-use super::homogeneous_family_tests::instantiate;
+use super::homogeneous_family_tests::{assert_overlays_equivalent, instantiate};
 use crate::array_expansion::domain_probe_tuples;
-
-fn family_roots(overlay: &rumoca_ir_ast::InstanceOverlay) -> Vec<String> {
-    overlay
-        .component_families
-        .iter()
-        .map(|family| family.root.to_flat_string())
-        .collect()
-}
 
 fn domain(uppers: &[i64]) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
@@ -86,11 +91,7 @@ fn nested_class_modification_keeps_scalar_expansion() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert!(
-        family_roots(&compact).is_empty(),
-        "a nested class modification must keep scalar expansion, got {:?}",
-        family_roots(&compact)
-    );
+    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
     for index in 1..=3 {
         let path = format!("c[{index}].sub.R");
         let data = compact
@@ -122,11 +123,7 @@ fn component_reference_modifier_to_an_array_keeps_scalar_expansion() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert!(
-        !family_roots(&compact).contains(&"c".to_string()),
-        "a per-element component-reference modifier must keep scalar expansion, got {:?}",
-        family_roots(&compact)
-    );
+    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
     for index in 1..=3 {
         let path = format!("c[{index}].R");
         let data = compact
@@ -158,7 +155,7 @@ fn scalar_component_reference_modifier_stays_compact() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert_eq!(family_roots(&compact), vec!["c".to_string()]);
+    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
     for index in 1..=3 {
         let path = format!("c[{index}].R");
         let data = compact
@@ -200,8 +197,7 @@ fn enclosing_scope_modification_compacts_exactly_as_scalar_expansion_does() {
     ";
     let compact = instantiate(SOURCE, "Top", true);
     let scalar = instantiate(SOURCE, "Top", false);
-    assert_eq!(family_roots(&compact), vec!["s.c".to_string()]);
-    assert!(family_roots(&scalar).is_empty());
+    assert_overlays_equivalent(&compact, &scalar);
     for index in 1..=3 {
         let path = format!("s.c[{index}].R");
         let rendered = |overlay: &rumoca_ir_ast::InstanceOverlay| {

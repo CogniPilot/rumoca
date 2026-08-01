@@ -95,9 +95,7 @@ pub(super) fn expand_array_component(
             template_tuple: &first,
             span: attempt.span,
         };
-        let family =
-            family_replication::replicate_template(ctx, overlay, &attempt.watermarks, &request)?;
-        overlay.add_component_family(family);
+        family_replication::replicate_template(ctx, overlay, &attempt.watermarks, &request)?;
         return Ok(());
     }
 

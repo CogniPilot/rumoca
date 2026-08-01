@@ -166,6 +166,38 @@ impl InstanceSemanticScope {
         self.consensus(candidates)
     }
 
+    /// Declared extents of a reference prefix, or an abstention.
+    ///
+    /// `Missing` here is an abstention, never a scalar: two unrelated
+    /// conditions produce it and neither one says the prefix has no
+    /// dimensions.
+    ///
+    /// The first is a scope mismatch. `class_children` is keyed by the class
+    /// instance that *owns* the declaration, and a reference is resolved
+    /// against whichever class instance owns its occurrence. Record expansion
+    /// re-checks a declaration's binding inside the record's own class
+    /// instance, so `Cx yy = c.i[1]` resolves `c` from `yy`'s class instance
+    /// while `c` belongs to the enclosing model's — the identity walk finds no
+    /// row for the root and stops before it reaches any extents.
+    ///
+    /// The second is a literal subscript that selects no expanded element:
+    /// `filter_candidates_by_part` empties the candidate set for an
+    /// out-of-range index or the wrong number of indices. That is a real model
+    /// error whose declared extents *are* recorded, so answering `Missing`
+    /// costs the §10.6.9/§10.5.1 diagnostic its subject and the caller reports
+    /// the error from a later phase instead. Distinguishing the two — a shape
+    /// query has no business filtering by the very subscripts it is being asked
+    /// to measure — is the fix that would recover it (FS-ARR-009).
+    ///
+    /// Abstaining on `Missing` does **not** close the `has 0 dimension(s)`
+    /// class, because this function can also answer a *positive* wrong shape.
+    /// When the walk resolves to an instance that is not the one the reference
+    /// names, the answer is `Found(Some(_))` and no abstention is reachable:
+    /// a member array reached through a redeclared record answers
+    /// `Found(Some([]))` — a known scalar for a declaration the model gave a
+    /// dimension — and still reports zero dimensions where omc accepts the
+    /// model. That is wrong-instance resolution, tracked as its own defect;
+    /// it is a different failure from absence and no change here can reach it.
     pub(crate) fn lookup_reference_shape(
         &self,
         reference: &ComponentReference,
@@ -328,12 +360,10 @@ impl InstanceSemanticScope {
     /// the §10.6.9 arity question for the reference.
     ///
     /// The extents are read from `InstanceOverlay::array_parent_dims`, which
-    /// instantiation writes for *every* array component it expands. Reading
-    /// the compaction descriptor (`component_families`) instead would make the
-    /// declared shape depend on whether instantiation happened to compact the
-    /// array, and SPEC_0032 §1 both forbids treating that descriptor as the
-    /// array's owner and requires compaction to be indistinguishable from
-    /// element-by-element expansion.
+    /// instantiation writes for *every* array component it expands, compacted
+    /// or not. SPEC_0032 §1 requires compaction to be indistinguishable from
+    /// element-by-element expansion, so no record of it survives in Instance
+    /// IR and a declared shape must never be derived from one.
     fn index_array_extents(&mut self, overlay: &InstanceOverlay) {
         for (&instance_id, data) in &overlay.components {
             // Only members of an expanded array carry terminal subscripts, and
@@ -354,14 +384,22 @@ impl InstanceSemanticScope {
                 continue;
             };
             // Instantiation derives the element's subscripts and the recorded
-            // extents from one `dims`, so a row that is not a usable count, or
-            // whose rank disagrees with the subscripts, cannot be produced by
-            // any input reaching here. Both skips are therefore guards, not a
-            // policy: they record nothing for this declaration, which leaves
+            // extents from one `dims`, so neither skip below is expected to
+            // fire. That is an expectation, not a proof: no input is *known* to
+            // reach either, and the redeclared-record-member-array shape that
+            // motivated this note was measured not to (see
+            // `arr_026_redeclared_record_member_array_still_reports_zero_dimensions`,
+            // whose `has 0 dimension(s)` comes from a positive wrong shape
+            // rather than from these skips).
+            //
+            // Both skips record nothing for this declaration, which leaves
             // `identity_shape` answering from the element instance itself — a
-            // known scalar, not an abstention. Should a producer ever make one
-            // reachable, that is the behavior to revisit, because a wrong-rank
-            // row would then be reported as `has 0 dimension(s)`.
+            // known scalar, so a reference here would be told it has zero
+            // dimensions. Falling back to a positive wrong answer is the
+            // failure mode this file has already paid for once; if a producer
+            // ever makes one reachable, the fix is to record the declaration
+            // as *unevaluable* so `identity_shape` answers `Found(None)` and
+            // the subscript walk abstains (FS-ARR-008).
             let Some(extents) = dims
                 .iter()
                 .map(|dim| usize::try_from(*dim).ok())
