@@ -560,6 +560,9 @@ fn process_single_component(
         is_final: ctx.is_final,
         is_replaceable: ctx.is_replaceable,
         is_redeclare: ctx.is_redeclare,
+        // Set by instantiation when an extends modification redeclares this
+        // inherited component (MLS §7.3); never a parser-visible fact.
+        redeclared_by_modification: false,
         constrainedby: ctx.constrainedby.clone(),
         is_structural: false,
     };

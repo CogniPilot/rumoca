@@ -18,6 +18,52 @@
 //! is an inside or outside connector (MLS §9.2):
 //! - Inside connector (component port): sign = +1
 //! - Outside connector (model boundary): sign = -1
+//!
+//! ## Acceptance contract: subscripted connect endpoints (SPEC_0008)
+//!
+//! A `connect` argument may name one element or one slice of an array of
+//! connectors (MLS §9.1.1: "the arguments of a connect-equation are component
+//! references [...] the reference may include array subscripts"), and MLS §10.5
+//! defines what such a reference denotes: a subscript consumes one *leading*
+//! declared dimension, so a reference `a[i]` to a declaration `a[n, m]` denotes
+//! a value of dimensions `[m]`, and `a[i, j]` denotes a scalar.
+//!
+//! Two consequences bind this module, and both are stated as acceptance
+//! *before* any rejection:
+//!
+//! 1. **Accepted — element/slice endpoints count their own leaves.** The number
+//!    of scalar equations generated for a connection set is the number of
+//!    scalar leaves of its members (MLS §9.2: one equality per matched
+//!    potential leaf, one sum per flow leaf; MLS §4.8 counts those scalars when
+//!    balancing the model). The leaf count of an endpoint is therefore the
+//!    product of the dimensions the endpoint *denotes* (MLS §10.5), never a
+//!    constant 1 chosen because the endpoint carries a subscript. A connection
+//!    `connect(a[i], b)` where `a[i]` and `b` both denote `Real[m]` is legal and
+//!    must produce `m` scalar equations. Rejection as dimension-incompatible
+//!    (CONN-008, MLS §9.2 "same named elements with the same dimensions") is
+//!    admissible only when the denoted dimensions actually differ. This holds
+//!    for endpoints whose base is one declared array in the flat model — a
+//!    *primitive* connector array, or an array member of a connector. A slice of
+//!    a *composite* connector array never reaches leaf counting at all; see the
+//!    scope section below.
+//!
+//! 2. **Accepted — subscripts that a declaration can carry.** An endpoint
+//!    subscript is accepted whenever the subscripted path names a declared
+//!    component occurrence, whenever no declaration for its base is in view
+//!    here, whenever its declaration carries *any* dimension, whenever the
+//!    declaration still carries dimension expressions, and whenever the rank
+//!    this phase can see is not authoritative evidence about the source (see
+//!    `declared_rank_is_authoritative`). Only the provably impossible remainder
+//!    is rejected: a subscript applied to a component whose declaration is
+//!    proven to have *no* dimensions at all selects along a dimension MLS §10.5
+//!    does not give it, so it is reported against both the connect endpoint and
+//!    the declaration site (`EF026`) instead of being dropped. Dropping it would
+//!    silently connect the whole component the subscript was meant to index.
+//!
+//! The scope of that `EF026` rejection — every shape MLS §9.1/§10.5 also
+//! governs that the check structurally cannot see or deliberately does not
+//! judge, each named with its current behaviour and its owner — is stated in
+//! the [`endpoint_subscripts`] module docs.
 
 use rumoca_core::{ProvenanceSpan, Span, TypeId};
 use rumoca_ir_ast as ast;
@@ -28,9 +74,11 @@ use rustc_hash::FxHashMap;
 use crate::errors::FlattenError;
 use crate::path_utils::{segments as path_segments_of, strip_array_index};
 
+mod endpoint_subscripts;
 mod equation_generation;
 mod path_index;
 mod stream_operators;
+use endpoint_subscripts::*;
 use equation_generation::*;
 pub(crate) use equation_generation::{connection_involves_disabled, process_connections};
 use path_index::*;
@@ -67,44 +115,6 @@ struct ConnectionVarIndex {
     exact_by_base_path: FxHashMap<String, Vec<rumoca_core::VarName>>,
     /// Parsed path parts per variable name.
     parsed_parts_by_var: FxHashMap<rumoca_core::VarName, Vec<String>>,
-}
-
-struct ConnectionEndpointIndex {
-    declared: IndexMap<rumoca_core::ComponentPath, rumoca_core::InstanceId>,
-    expandable_owners: IndexMap<rumoca_core::ComponentPath, rumoca_core::InstanceId>,
-}
-
-impl ConnectionEndpointIndex {
-    fn new(overlay: &ast::InstanceOverlay) -> Self {
-        let mut declared = IndexMap::default();
-        let mut expandable_owners = IndexMap::default();
-        for (instance_id, component) in &overlay.components {
-            let path = component.qualified_name.to_component_path();
-            declared.insert(path.clone(), *instance_id);
-            if component.is_expandable_connector_type {
-                expandable_owners.insert(path, *instance_id);
-            }
-        }
-        Self {
-            declared,
-            expandable_owners,
-        }
-    }
-
-    fn needs_expandable_augmentation(&self, endpoint: &ast::QualifiedName) -> bool {
-        let endpoint = endpoint.to_component_path();
-        if self.declared.contains_key(&endpoint) {
-            return false;
-        }
-        let mut owner = endpoint.parent();
-        while let Some(candidate) = owner {
-            if self.expandable_owners.contains_key(&candidate) {
-                return true;
-            }
-            owner = candidate.parent();
-        }
-        false
-    }
 }
 
 impl ConnectionVarIndex {
@@ -356,6 +366,27 @@ fn subscripted_base_var_with_rank(
     flat: &flat::Model,
 ) -> Option<(rumoca_core::VarName, usize)> {
     declared_array_element(var, flat).map(|(base, _, indices)| (base, indices.len()))
+}
+
+/// Dimensions of the value one connection-set member denotes.
+///
+/// MLS §10.5: subscripting consumes leading dimensions, so an element path
+/// `a[i]` of a declaration `a[n, m]` denotes dimensions `[m]` and `a[i, j]`
+/// denotes a scalar `[]`. Whole-declaration members keep the declared
+/// dimensions.
+///
+/// Returns `None` when the member resolves to no declaration, so callers keep
+/// the difference between "denotes a scalar" and "unknown" instead of
+/// collapsing both onto 1.
+fn connection_endpoint_dims(flat: &flat::Model, var: &rumoca_core::VarName) -> Option<Vec<i64>> {
+    if let Some(declared) = flat.variables.get(var) {
+        return Some(declared.dims.clone());
+    }
+    let (_, base_var, indices) = declared_array_element(var, flat)?;
+    if indices.len() >= base_var.dims.len() {
+        return Some(Vec::new());
+    }
+    Some(base_var.dims[indices.len()..].to_vec())
 }
 
 fn subscripted_base_var(
@@ -632,25 +663,18 @@ fn get_validation_var_info(
         });
     }
 
-    // Subscripted references (e.g., "x[1]") refer to scalar elements of array vars.
-    if !is_subscripted_variable(var, flat) {
-        return None;
-    }
-
-    let (base_name, indexed_rank) = subscripted_base_var_with_rank(var, flat)?;
+    // Subscripted references (e.g., "x[1]") select from an array declaration.
+    let (base_name, _, _) = declared_array_element(var, flat)?;
     let base_var = flat.variables.get(&base_name)?;
-    let dims = if indexed_rank >= base_var.dims.len() {
-        Vec::new()
-    } else {
-        base_var.dims[indexed_rank..].to_vec()
-    };
 
     Some(ValidationVarInfo {
         flow: base_var.flow,
         type_id: base_var.type_id,
-        // MLS array indexing semantics: indexing a subset of dimensions
-        // preserves remaining dimensions (e.g., A[1] for A[2,3] yields [3]).
-        dims,
+        // MLS §10.5: indexing a subset of dimensions preserves the remaining
+        // dimensions (e.g., `A[1]` of `A[2,3]` denotes `Real[3]`). One shared
+        // resolution keeps CONN-008 validation and the generated equations'
+        // scalar counts from drifting apart.
+        dims: connection_endpoint_dims(flat, var)?,
         quantity: base_var.quantity.clone(),
     })
 }
@@ -1775,6 +1799,8 @@ fn create_sum(
 // Task 2.2: Generate Effort (Potential) Equality Equations (CONN-001, CONN-026)
 // =============================================================================
 
+#[cfg(test)]
+mod endpoint_subscript_tests;
 #[cfg(test)]
 mod family_view_tests;
 #[cfg(test)]

@@ -603,6 +603,18 @@ pub struct InstanceData {
     /// (e.g., `redeclare package Medium = Medium`) that is remapped to an active
     /// enclosing override during instantiation (MLS §7.3).
     pub has_forwarding_class_redeclare: bool,
+    /// True when a redeclare modification was consumed for this component —
+    /// either an `extends` modification that redeclared it
+    /// (`extends Base(redeclare C a[2])`) or a redeclare modifier written on
+    /// its own declaration (`Holder h(redeclare C a[2])`), MLS §7.3.
+    ///
+    /// Instantiation consumes only the redeclared *type*; the redeclaration's
+    /// array dimensions are dropped. `dims` on such an instance (and on
+    /// anything instantiated underneath it) is therefore this compiler's
+    /// residue of the *original* declaration, not a statement about the model,
+    /// and must never be reported to the user as one.
+    #[serde(default)]
+    pub had_redeclare: bool,
 
     // Type prefixes (MLS §4.4.2, SPEC_0022 §3.19-3.20)
     /// Variability (constant, parameter, discrete, continuous).
@@ -717,6 +729,7 @@ impl Default for InstanceData {
             declaration_source_scope: None,
             class_overrides: IndexMap::default(),
             has_forwarding_class_redeclare: false,
+            had_redeclare: false,
             variability: Variability::Empty,
             causality: Causality::Empty,
             flow: false,

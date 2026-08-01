@@ -29,6 +29,7 @@
 //! - [x] MLS §5.4 - Type compatibility checking (inheritance-aware)
 
 use crate::path_utils;
+use indexmap::IndexSet;
 use rumoca_core::{DefId, Span};
 use rumoca_core::{SourceMap, is_builtin_type};
 use rumoca_ir_ast as ast;
@@ -45,7 +46,8 @@ mod duplicate_identity;
 
 use crate::errors::{InstantiateError, InstantiateResult};
 use crate::traversal_adapter::{
-    redeclare_target_value, walk_extend_modifications, walk_nested_classes,
+    expression_contains_redeclare, redeclare_target_value, walk_extend_modifications,
+    walk_nested_classes,
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
 use duplicate_identity::{
@@ -1403,16 +1405,55 @@ fn merge_inherited_nested_class(
 ///
 /// MLS §7.3: Validates redeclarations against replaceable/final constraints.
 /// Collect and validate redeclarations from extends modifications (MLS §7.3).
+/// Returns the redeclared component types and, separately, the names of *every*
+/// inherited component an extends modification redeclared.
+///
+/// The two are not the same set: a redeclaration whose new type cannot be
+/// extracted contributes no type change but has still redeclared the component,
+/// and the modification may have carried array dimensions this phase does not
+/// propagate. Callers that record "this component was redeclared" must use the
+/// second set so that gap is never mistaken for a fact about the source.
+/// Name of the component an extends modification modifies, when a redeclaration
+/// appears anywhere inside that modification (MLS §7.3).
+///
+/// `extends Wrap(h(redeclare C a[2]))` carries the redeclaration one level down:
+/// the extends modification itself is an ordinary modification of `h`, and the
+/// redeclare flag lives on the nested class-modification argument. Since only
+/// the redeclared *type* is ever consumed, the enclosing component `h` is what
+/// must be recorded — everything instantiated beneath it inherits the dropped
+/// dimensions.
+fn enclosing_component_of_nested_redeclare(modification: &ast::ExtendModification) -> Option<&str> {
+    let ast::Expression::ClassModification { target, .. } = &modification.expr else {
+        return None;
+    };
+    if !expression_contains_redeclare(&modification.expr) {
+        return None;
+    }
+    target.parts.first().map(|part| part.ident.text.as_ref())
+}
+
 fn collect_redeclarations(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     extend: &ast::Extend,
     extend_span: Span,
-) -> InstantiateResult<IndexMap<String, String>> {
+) -> InstantiateResult<(IndexMap<String, String>, IndexSet<String>)> {
     let mut redeclare_types = IndexMap::default();
+    let mut redeclared_components: IndexSet<String> = IndexSet::new();
     let mut validation_error: Option<Box<InstantiateError>> = None;
 
     walk_extend_modifications(extend, |modification| {
+        // MLS §7.3: a redeclaration may sit *inside* an ordinary component
+        // modification of the extends clause — `extends Wrap(h(redeclare C
+        // a[2]))` modifies `h` and redeclares `h.a`. Only the outer `h(...)`
+        // reaches this walk, so the redeclaration is recorded against `h`, the
+        // enclosing component whose subtree inherits the dropped dimensions.
+        if !modification.redeclare
+            && let Some(enclosing) = enclosing_component_of_nested_redeclare(modification)
+            && class.components.contains_key(enclosing)
+        {
+            redeclared_components.insert(enclosing.to_string());
+        }
         let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
             return;
         };
@@ -1458,6 +1499,7 @@ fn collect_redeclarations(
             return;
         }
 
+        redeclared_components.insert(target_name_owned.clone());
         if let Some(new_type_name) = new_type {
             redeclare_types.insert(target_name_owned, new_type_name);
         }
@@ -1467,7 +1509,7 @@ fn collect_redeclarations(
         return Err(err);
     }
 
-    Ok(redeclare_types)
+    Ok((redeclare_types, redeclared_components))
 }
 
 /// MLS §7.3.2: Validates constrainedby type constraints.
@@ -1499,7 +1541,8 @@ fn merge_class_content(
     let value_modifications = collect_value_modifications(extend, class);
 
     // MLS §7.3: Validate redeclarations and collect type changes
-    let redeclare_types = collect_redeclarations(tree, class, extend, extend_span)?;
+    let (redeclare_types, redeclared_components) =
+        collect_redeclarations(tree, class, extend, extend_span)?;
 
     // MLS §5.6.1.4: same-named elements from several bases become one element,
     // so identity is decided on the merged class rather than on each base.
@@ -1531,6 +1574,17 @@ fn merge_class_content(
             let mut inherited_comp = comp.clone();
             apply_protected_visibility(&mut inherited_comp, extend.is_protected);
             target.components.insert(name.clone(), inherited_comp);
+        }
+    }
+
+    // MLS §7.3: record every redeclared inherited component *before* applying
+    // the type changes. Only the redeclared type is consumed below, so anything
+    // else the redeclaration stated — its array dimensions above all — is lost
+    // here. Marking the component keeps later phases from reading the surviving
+    // shape as evidence about the source.
+    for comp_name in &redeclared_components {
+        if let Some(comp) = target.components.get_mut(comp_name) {
+            comp.redeclared_by_modification = true;
         }
     }
 

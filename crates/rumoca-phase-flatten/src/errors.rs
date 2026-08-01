@@ -309,6 +309,27 @@ pub enum FlattenError {
         #[label("this declaration has no structured Flat identity")]
         span: Span,
     },
+
+    /// A connect endpoint subscripts a component whose declaration carries no
+    /// dimensions, so the subscript selects along a dimension that does not
+    /// exist.
+    #[error(
+        "connect endpoint `{endpoint}` subscripts `{component}`, which is declared without dimensions"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF026),
+        help(
+            "MLS §10.5: a subscript selects along a declared dimension, so a connect argument (MLS §9.1) may only subscript a component that declares at least that many dimensions"
+        )
+    )]
+    SubscriptedDimensionlessConnector {
+        endpoint: String,
+        component: String,
+        #[label("this connect endpoint is subscripted")]
+        span: Span,
+        #[label("declared here without dimensions")]
+        declaration_span: Span,
+    },
 }
 
 impl FlattenError {
@@ -345,6 +366,21 @@ impl FlattenError {
             name: name.into(),
             cycle: cycle.into(),
             span,
+        }
+    }
+
+    /// Create a SubscriptedDimensionlessConnector error.
+    pub fn subscripted_dimensionless_connector(
+        endpoint: impl Into<String>,
+        component: impl Into<String>,
+        span: rumoca_core::Span,
+        declaration_span: rumoca_core::Span,
+    ) -> Self {
+        Self::SubscriptedDimensionlessConnector {
+            endpoint: endpoint.into(),
+            component: component.into(),
+            span,
+            declaration_span,
         }
     }
 
@@ -516,7 +552,18 @@ impl FlattenError {
 
 impl PhaseError for FlattenError {
     fn to_diagnostic(&self) -> CommonDiagnostic {
-        let source_spans = match self {
+        // Holds the multi-label span list alive for the borrow below; the
+        // bridge maps `source_spans[i]` onto the i-th `#[label]` field.
+        let endpoint_and_declaration;
+        let source_spans: &[Span] = match self {
+            Self::SubscriptedDimensionlessConnector {
+                span,
+                declaration_span,
+                ..
+            } => {
+                endpoint_and_declaration = [*span, *declaration_span];
+                &endpoint_and_declaration
+            }
             Self::UndefinedVariable { span, .. }
             | Self::IncompatibleConnectors { span, .. }
             | Self::UnsupportedEquation { span, .. }

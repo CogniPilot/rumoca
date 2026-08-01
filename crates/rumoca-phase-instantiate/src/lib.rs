@@ -1290,6 +1290,25 @@ struct InstanceDataBuild<'a> {
     class_def: Option<&'a ast::ClassDef>,
 }
 
+/// True when this declaration carries a redeclare modifier of its own
+/// (`Holder h(redeclare C a[2])`, MLS §7.3).
+///
+/// The parser records one redeclare flag per source modifier, which settles the
+/// direct form. The redeclaration may also sit deeper inside an ordinary
+/// modifier — `Wrap w(h(redeclare C a[2]))` modifies `w.h` and redeclares
+/// `w.h.a` — so the modifier subtrees are searched as well. Only the redeclared
+/// type is ever propagated, so either shape leaves everything instantiated
+/// beneath this declaration carrying unproven dimensions.
+fn declaration_carries_redeclare_modifier(comp: &ast::Component) -> bool {
+    comp.source_modification_redeclare_flags
+        .iter()
+        .any(|is_redeclare| *is_redeclare)
+        || comp
+            .source_modifications
+            .iter()
+            .any(traversal_adapter::expression_contains_redeclare)
+}
+
 fn build_instance_data(
     args: InstanceDataBuild<'_>,
 ) -> InstantiateResult<(ast::InstanceData, Option<ast::Expression>)> {
@@ -1329,6 +1348,13 @@ fn build_instance_data(
         declaration_source_scope: args.declaration_source_scope,
         class_overrides: args.class_overrides,
         has_forwarding_class_redeclare: args.has_forwarding_class_redeclare,
+        // MLS §7.3 redeclarations reach a component from two directions: an
+        // `extends` modification (recorded on the merged declaration by
+        // `merge_extends`) or a redeclare modifier on this very declaration
+        // (`Holder h(redeclare C a[2])`). Only the redeclared type is consumed
+        // either way, so both must be recorded.
+        had_redeclare: args.comp.redeclared_by_modification
+            || declaration_carries_redeclare_modifier(args.comp),
         // Type prefixes (MLS §4.4.2, SPEC_0022 §3.19-3.20)
         variability: args.effective_variability.clone(),
         causality: args.causality.clone(),

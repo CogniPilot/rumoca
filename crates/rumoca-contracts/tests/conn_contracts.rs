@@ -3,6 +3,7 @@
 //! Tests for the 29 connection contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
+use rumoca_compile::{Session, SessionConfig};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
     expect_success,
@@ -581,6 +582,202 @@ fn conn_019_nested_connect_to_array_connector_element_accepted() {
         equation
             adder.u = 2.0;
             probe = adder.c;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+// An endpoint subscript may leave dimensions behind. MLS §10.5: a subscript
+// consumes one leading declared dimension, so `snk.u[1]` of a `Real[2,3]`
+// declaration denotes `Real[3]` and connects to another `Real[3]`. MLS §9.2
+// generates one equality per scalar leaf and MLS §4.8 counts those scalars, so
+// the connection contributes three equations, not one. Counting a subscripted
+// endpoint as a single scalar leaves this legal model short of equations and
+// gets it rejected as unbalanced. OMC (devshell build a96aa1a) `checkModel(M)` reports "14
+// equation(s) and 14 variable(s)" and simulates it to snk.s = 7.0.
+#[test]
+fn conn_019_connect_to_array_connector_slice_is_balanced() {
+    expect_balanced(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Src
+            RealOutput y[2,3];
+        equation
+            y = {{1.0,2.0,3.0},{4.0,5.0,6.0}};
+        end Src;
+        model Snk
+            RealInput u[2,3];
+            RealOutput s;
+        equation
+            s = u[1,1] + u[2,3];
+        end Snk;
+        model M
+            Src src;
+            Snk snk;
+            Real probe;
+        equation
+            connect(snk.u[1], src.y[1]);
+            connect(snk.u[2], src.y[2]);
+            probe = snk.s;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+// The counterpart rejection (CONN-008, MLS §9.2 "same named elements with the
+// same dimensions"): `snk.u[1]` denotes `Real[2]` while `src.y[1]` denotes
+// `Real[3]`, so the connection is genuinely unbalanced and keeps the typed
+// incompatible-connector error. OMC (devshell build a96aa1a) rejects the same model with "The
+// connectors in connect(snk.u[1], src.y[1]) are not type compatible."
+#[test]
+fn conn_008_connect_array_connector_slice_shape_mismatch_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Src
+            RealOutput y[2,3];
+        equation
+            y = {{1.0,2.0,3.0},{4.0,5.0,6.0}};
+        end Src;
+        model Snk
+            RealInput u[2,2];
+            RealOutput s;
+        equation
+            s = u[1,1] + u[2,2];
+        end Snk;
+        model M
+            Src src;
+            Snk snk;
+            Real probe;
+        equation
+            connect(snk.u[1], src.y[1]);
+            probe = snk.s;
+        end M;
+    "#,
+        "M",
+        FailedPhase::Flatten,
+        "EF002",
+    );
+}
+
+// MLS §10.5 gives a subscript no dimension to select along when the declaration
+// has none, so `connect(a[1], b)` on a scalar connector `a` is an error, not a
+// connection of the whole of `a`. OMC (devshell build a96aa1a) rejects it with "Wrong number of
+// subscripts in a[1] (1 subscripts for 0 dimensions)".
+#[test]
+fn conn_019_connect_subscript_on_dimensionless_connector_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector C
+            Real e;
+            flow Real f;
+        end C;
+        model M
+            C a;
+            C b;
+        equation
+            connect(a[1], b);
+            a.e = 1.0;
+        end M;
+    "#,
+        "M",
+        FailedPhase::Flatten,
+        "EF026",
+    );
+}
+
+// MLS §7.3 allows an extends-modification to redeclare a component together
+// with array dimensions the base declaration did not have. OMC accepts this
+// model. Rumoca's instantiation keeps only the redeclared *type*, so `a`
+// reaches flatten carrying the base declaration's rank of zero — a fact about
+// this compiler, not about the source. Whatever else this model does
+// downstream, the connection phase must not blame the source for it: the
+// rank-zero endpoint check is suppressed when the rank is not authoritative.
+#[test]
+fn conn_019_redeclared_array_dimensions_are_not_reported_as_a_dimensionless_connector() {
+    let source = r#"
+        connector C
+            Real e;
+            flow Real f;
+        end C;
+        model Base
+            replaceable C a;
+        end Base;
+        model Drv
+            C p[2];
+            Real s;
+        equation
+            s = p[1].e + p[2].e;
+        end Drv;
+        model M
+            extends Base(redeclare C a[2]);
+            Drv d;
+            Real probe;
+        equation
+            connect(a[1], d.p[1]);
+            connect(a[2], d.p[2]);
+            probe = d.s;
+        end M;
+    "#;
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse redeclared-dimension model");
+    let codes: Vec<String> = session
+        .compile_model_diagnostics("M")
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.code.clone())
+        .collect();
+    // The connection phase abstains, so what is left is the instantiate gap
+    // itself: the redeclared dimensions never arrive, `a` stays a scalar, and
+    // the model is short two equations. Asserting that exact outcome keeps this
+    // from passing vacuously on some third result, and makes it fail loudly if
+    // the redeclare-dimension gap is ever closed (then this model compiles and
+    // this expectation should become `expect_balanced`).
+    assert!(
+        !codes.iter().any(|code| code.ends_with("EF026")),
+        "a rank dropped by the redeclare-dimension gap must not be reported as a \
+         dimensionless connector, got codes: {codes:?}"
+    );
+    assert!(
+        codes.iter().any(|code| code.ends_with("ED001")),
+        "the surviving failure must be the unbalanced-model report caused by the \
+         dropped redeclare dimensions, got codes: {codes:?}"
+    );
+}
+
+// Acceptance before rejection: the subscript budget comes from the declaration,
+// so an element of a parameter-sized connector array stays a legal connect
+// argument. OMC (devshell build a96aa1a) `checkModel(M)` reports "6 equation(s) and 6 variable(s)".
+#[test]
+fn conn_019_connect_to_parameter_sized_connector_array_element_accepted() {
+    expect_balanced(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Gate
+            parameter Integer n = 2;
+            RealInput x[n];
+            RealOutput y;
+        equation
+            y = x[1] + x[2];
+        end Gate;
+        model M
+            Gate gate;
+            RealOutput a;
+            RealOutput b;
+            Real probe;
+        equation
+            connect(a, gate.x[1]);
+            connect(b, gate.x[2]);
+            probe = gate.y;
+            a = 1.0;
+            b = 2.0;
         end M;
     "#,
         "M",
