@@ -7,6 +7,8 @@
 
 #[path = "code_size_budget_test.rs"]
 mod code_size_budget_test;
+#[path = "dae_loc_trigger_test.rs"]
+mod dae_loc_trigger_test;
 #[path = "history_policy_test.rs"]
 mod history_policy_test;
 #[path = "spec_budget_test.rs"]

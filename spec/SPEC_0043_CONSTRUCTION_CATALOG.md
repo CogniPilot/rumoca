@@ -41,6 +41,36 @@ remain above a threshold when that report finds no bloat. Audit-hostile
 metaprogramming, code golfing, test deletion, and capability deletion are not
 valid LOC reductions.
 
+#### 1a. Measurement Convention
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Count physical lines of `crates/rumoca-ir-dae/src/**/*.rs` | trigger gate | One mechanical number |
+| Exclude a `tests/` or `generated/` path segment, `tests.rs`, and `*_tests.rs` | trigger gate | Matches the repository production-source rule |
+| Wire is `model/wire.rs` plus `model/wire/`; core is the rest; total is their sum | trigger gate | Three triggers partition one crate |
+
+#### 1b. Exceedance Acknowledgment Ledger
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| An exceeded trigger MUST carry a ledger row naming its ceiling and reduction owner | this section | Exceedance is acknowledged, never silent |
+| The ceiling MUST be the measured value rounded up to the next 250 lines | ledger row | A derived number, not chosen headroom |
+| Crossing a 250-line step in either direction MUST update the row in the same change | ledger row | The number moves both ways |
+| A trigger back at or below its threshold MUST lose its ledger row | ledger row | Retired debt must not linger |
+| Acknowledging debt does not discharge the module review the trigger demands | this section | A ledger note is not a review |
+
+| Trigger | Threshold | Acknowledged ceiling | Reduction owner |
+|---|---|---|---|
+| `dae-core-loc` | 11,000 | 12,750 | SPEC_0036 cutover: ranked non-wire reductions |
+| `dae-wire-loc` | 3,250 | 3,750 | SPEC_0036 cutover: operation-shaped wire |
+| `dae-total-loc` | 14,250 | 16,250 | Both items above; total follows their sum |
+
+**Why:** the triggers were unenforced and all three were exceeded in silence.
+The gate makes exceedance loud without blocking a landing: any measured value is
+legal once its ledger row records it, and only crossing a 250-line step forces
+the row to be rewritten. Measured, checked, and stated as an acceptance contract
+in `crates/rumoca/tests/dae_loc_trigger_test.rs`.
+
 ### 2. Reservation Owner Catalog (SPEC_0036 §Storage and Forward References)
 
 Only the entries listed here may reserve a slot before its complete value
@@ -104,6 +134,7 @@ exists. Every other object inserts complete values in proven order.
 | Transform tests preserve families | DAE/structural tests | Consistent views |
 | Consumers have no malformed-DAE branches | Repository review | Guarantees replace checks |
 | LOC thresholds trigger documented review | DAE cutover | Bounded complexity |
+| §1 triggers are measured and checked against the §1b ledger | `dae_loc_trigger_test.rs` | Unacknowledged growth fails |
 
 Tests may privately audit the complete aggregate. Production audits, public
 validation, superseded fallbacks, and compatibility are prohibited.
