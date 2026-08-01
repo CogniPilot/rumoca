@@ -40,11 +40,51 @@ fn add_connection_equation(
 /// those scalars when balancing the model, so an element or slice endpoint
 /// contributes the leaves of what it *denotes* (MLS §10.5), not one leaf per
 /// subscripted path.
-fn resolve_var_scalar_count(flat: &flat::Model, var: &rumoca_core::VarName) -> Option<usize> {
+///
+/// A member whose subscript sits on an inner path segment (`a[1].e`) has no
+/// declaration of its own and is not a trailing element of one either, so
+/// [`connection_endpoint_dims`] cannot answer for it. It is still measured by
+/// what MLS §10.5 says it denotes: the declaration its index-free path names,
+/// with one leading dimension consumed per literal subscript the path carries.
+/// Returning a constant 1 instead is the same defect the trailing-subscript
+/// case had — it silently shrinks the generated equation to one scalar and
+/// leaves the rest of the connected array unconstrained (MLS §4.8).
+///
+/// When the index-free path names no declaration either, the answer is `None`
+/// (unknown), never 1: callers distinguish "denotes one scalar" from "no
+/// evidence", and a fabricated 1 is what makes a mixed scalar/array flow set
+/// collapse to a single Kirchhoff equation in [`generate_flow_equation`].
+pub(super) fn resolve_var_scalar_count(
+    flat: &flat::Model,
+    var: &rumoca_core::VarName,
+) -> Option<usize> {
     if let Some(dims) = connection_endpoint_dims(flat, var) {
         return Some(scalar_count_of_dims(&dims));
     }
-    strip_embedded_array_indices(var.as_str()).map(|_| 1)
+    let index_free = strip_embedded_array_indices(var.as_str())?;
+    let dims = connection_endpoint_dims(flat, &rumoca_core::VarName::new(index_free))?;
+    let consumed = literal_subscript_count(var.as_str());
+    if consumed >= dims.len() {
+        // Every declared dimension is selected away (or the declaration lost
+        // its dimensions to connector-array collapsing, which this phase
+        // cannot distinguish from a scalar member): the member denotes one
+        // scalar, exactly as before.
+        return Some(1);
+    }
+    Some(scalar_count_of_dims(&dims[consumed..]))
+}
+
+/// Number of scalar subscripts a connection member path carries, over all of
+/// its segments. MLS §10.5 consumes one leading declared dimension per
+/// subscript, so this is how many of the index-free declaration's dimensions
+/// the member selects away.
+fn literal_subscript_count(path: &str) -> usize {
+    crate::path_utils::segments(path)
+        .iter()
+        .filter_map(|part| split_trailing_index_groups(part))
+        .flat_map(|(_, groups)| groups)
+        .map(|group| group.split(',').count())
+        .sum()
 }
 
 /// Scalar count of a dimension list, sharing one clamp with

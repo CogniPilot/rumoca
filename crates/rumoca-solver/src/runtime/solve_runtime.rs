@@ -38,6 +38,7 @@ mod plans;
 mod refresh_batch;
 mod sensitivity;
 mod support;
+pub use discrete_rows::SeededConditionMemory;
 use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput};
 pub use event_update::{EventUpdateRowFilter, ProjectedEventUpdateInput};
 use initial_continuation::InitialContinuationCoverage;

@@ -679,7 +679,9 @@ fn collect_condition_pre<'dae>(
             .expect("checked condition identity resolves")
             .operation()
         {
-            dae::ConditionOperation::Initial | dae::ConditionOperation::Clock(_) => {}
+            dae::ConditionOperation::Initial
+            | dae::ConditionOperation::Always
+            | dae::ConditionOperation::Clock(_) => {}
             dae::ConditionOperation::Relation(relation) => {
                 let expression = view
                     .relation(relation)
@@ -691,7 +693,9 @@ fn collect_condition_pre<'dae>(
                 collect_pre(view, expression, seen_variables, ids)?;
             }
             dae::ConditionOperation::Not(inner) => pending.push(inner),
-            dae::ConditionOperation::And(lhs, rhs) | dae::ConditionOperation::Or(lhs, rhs) => {
+            dae::ConditionOperation::And(lhs, rhs)
+            | dae::ConditionOperation::Or(lhs, rhs)
+            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
                 pending.extend([lhs, rhs]);
             }
         }
@@ -922,6 +926,19 @@ fn lower_action_guard<'dae>(
         dae::ConditionOperation::Or(lhs, rhs) => {
             combine_action_guards(view, lhs, rhs, expected, lowerer, gast::BinaryOp::Or, span)
         }
+        // A vector activation is `edge(b1) or … or edge(bn)`, and GALEC has no
+        // per-element activation buffer to build those edges from. Lowering the
+        // disjunction of *levels* here would fire the action whenever any
+        // element is merely true, so it is refused rather than approximated.
+        dae::ConditionOperation::AnyRise(_, _) => Err(unsupported(
+            "vector-activation-event-guard",
+            "a vector `when {…}` activation has no admitted per-element edge in a DoStep clock"
+                .to_owned(),
+            span,
+        )),
+        // An unguarded algorithm section and a section-level `assert` run
+        // whenever the section runs, so their guard adds nothing to the clock.
+        dae::ConditionOperation::Always => Ok(None),
     }
 }
 

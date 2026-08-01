@@ -123,6 +123,108 @@ fn flow_generation_counts_the_leaves_of_an_array_element_endpoint() {
     );
 }
 
+/// MLS §10.5 for a subscript that sits on an *inner* path segment. A collapsed
+/// connector-array member `a.e` of dims `[2, 3]` is denoted by `a[1].e` as
+/// `Real[3]`, so the connection covers three scalars. The embedded-index branch
+/// used to answer a constant 1 without consulting any declaration, which is the
+/// same defect the trailing-subscript case had.
+#[test]
+fn embedded_index_endpoints_count_the_leaves_their_base_denotes() {
+    let mut flat = flat::Model::new();
+    flat.add_variable(
+        rumoca_core::VarName::new("a.e"),
+        array_variable(vec![2, 3], false),
+    );
+
+    assert_eq!(
+        resolve_var_scalar_count(&flat, &rumoca_core::VarName::new("a[1].e")),
+        Some(3),
+        "one embedded subscript consumes one leading declared dimension"
+    );
+}
+
+/// Two embedded subscripts consume two leading dimensions.
+#[test]
+fn embedded_index_endpoints_consume_one_dimension_per_subscript() {
+    let mut flat = flat::Model::new();
+    flat.add_variable(
+        rumoca_core::VarName::new("a.e"),
+        array_variable(vec![2, 3, 4], false),
+    );
+
+    assert_eq!(
+        resolve_var_scalar_count(&flat, &rumoca_core::VarName::new("a[1,2].e")),
+        Some(4)
+    );
+}
+
+/// When the subscripts select every declared dimension away — or the collapsed
+/// declaration lost its dimensions, which this phase cannot tell apart — the
+/// member denotes one scalar, exactly as before.
+#[test]
+fn embedded_index_endpoints_denote_a_scalar_once_every_dimension_is_selected() {
+    let mut flat = flat::Model::new();
+    flat.add_variable(
+        rumoca_core::VarName::new("a.e"),
+        array_variable(vec![2], false),
+    );
+    flat.add_variable(
+        rumoca_core::VarName::new("b.e"),
+        array_variable(Vec::new(), false),
+    );
+
+    assert_eq!(
+        resolve_var_scalar_count(&flat, &rumoca_core::VarName::new("a[1].e")),
+        Some(1)
+    );
+    assert_eq!(
+        resolve_var_scalar_count(&flat, &rumoca_core::VarName::new("b[1].e")),
+        Some(1)
+    );
+}
+
+/// No declaration for the index-free path is no evidence, not one scalar:
+/// callers distinguish the two, and a fabricated 1 collapses a mixed
+/// scalar/array flow set onto a single Kirchhoff equation.
+#[test]
+fn embedded_index_endpoints_without_a_declaration_are_unknown() {
+    let flat = flat::Model::new();
+
+    assert_eq!(
+        resolve_var_scalar_count(&flat, &rumoca_core::VarName::new("a[1].e")),
+        None
+    );
+}
+
+/// A flow set whose member carries an embedded index keeps the leaf count of
+/// what that member denotes, instead of shrinking the sum to one scalar.
+#[test]
+fn flow_generation_counts_the_leaves_of_an_embedded_index_endpoint() {
+    let mut flat = flat::Model::new();
+    flat.add_variable(
+        rumoca_core::VarName::new("a.i"),
+        array_variable(vec![2, 3], true),
+    );
+    let rhs = rumoca_core::VarName::new("b.i");
+    flat.add_variable(rhs.clone(), array_variable(vec![3], true));
+    let lhs = rumoca_core::VarName::new("a[1].i");
+
+    generate_flow_equation(
+        &mut flat,
+        &[lhs, rhs],
+        "",
+        &IndexMap::default(),
+        test_span(),
+    )
+    .expect("connecting a collapsed member element to a same-shaped flow array is legal");
+
+    assert_eq!(flat.equations.len(), 1);
+    assert_eq!(
+        flat.equations[0].scalar_count, 3,
+        "`a[1].i` of a collapsed `a.i` with dims [2, 3] denotes Real[3]"
+    );
+}
+
 #[test]
 fn flow_generation_rejects_multiple_array_sizes() {
     let mut flat = flat::Model::new();

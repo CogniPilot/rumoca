@@ -26,9 +26,10 @@
 //!      state.
 //!   7. Assignment deltas that depend on another `pre(...)` value must not
 //!      refire on unrelated later events.
-//!   8. Initial events commit `pre(...)` slots after the event settles, so a
-//!      self-rescheduling guard that is already true at `t_start` continues to
-//!      advance on later periods.
+//!   8. A self-rescheduling guard that is *already true* at `t_start` has no
+//!      rising edge there, so it never fires and never re-arms — the counter
+//!      stays at its start value for the whole run, which is what OpenModelica
+//!      does (see `TSTART_THRESHOLD_STALLS`).
 //!   9. Indexed array thresholds keep structured subscript information through
 //!      DAE/Solve lowering instead of being treated as opaque names.
 
@@ -364,8 +365,35 @@ fn self_rescheduling_counter_advances_every_period() {
     }
 }
 
+/// The sample grid on which both `t_start`-threshold counters are read, with
+/// the OpenModelica value at each point.
+///
+/// `startTime = -period` puts the first threshold `(pre(count) + 1) * period +
+/// startTime` exactly on `t = 0`, so `time >= 0` is already true at the
+/// initialization instant. MLS §8.3.5.1 gives the activation buffer the start
+/// value `time.start >= …`, i.e. `true`, and §8.6 requires `v = pre(v)` before
+/// the start of the integration, so `edge` is false there: the `when` never
+/// runs, `pre(count)` never advances, and the threshold never re-arms.
+///
+/// `omc` (dassl, `stopTime = 0.36`, `numberOfIntervals = 18`) agrees exactly —
+/// `count = 0` in every row of both models, including the `t = 0` row. rumoca
+/// used to report `1, 2, 3, 4` here, from an activation buffer left at `false`
+/// that manufactured a rising edge at the initial event.
+///
+/// `self_rescheduling_counter_advances_every_period` is the same idiom with
+/// `startTime = -0.035`, whose first threshold `0.065` is *not* met at
+/// `t_start`; it rises normally and counts, and is the test that keeps this one
+/// from being read as "self-rescheduling thresholds do not work".
+const TSTART_THRESHOLD_STALLS: [(f64, f64); 5] = [
+    (0.00, 0.0),
+    (0.05, 0.0),
+    (0.15, 0.0),
+    (0.25, 0.0),
+    (0.35, 0.0),
+];
+
 #[test]
-fn initial_self_rescheduling_counter_advances_after_t_start_event() {
+fn initial_self_rescheduling_counter_never_starts_when_its_threshold_is_already_met() {
     let compiled = rumoca::Compiler::new()
         .model("InitialSelfReschedulingCounter")
         .compile_str(
@@ -383,19 +411,13 @@ fn initial_self_rescheduling_counter_advances_after_t_start_event() {
     )
     .expect("model should simulate");
 
-    let checks = [
-        (0.00, 1.0),
-        (0.05, 1.0),
-        (0.15, 2.0),
-        (0.25, 3.0),
-        (0.35, 4.0),
-    ];
-    for (t, expected) in checks {
+    for (t, expected) in TSTART_THRESHOLD_STALLS {
         let actual = value_at(&sim, "count", t);
         assert!(
             (actual - expected).abs() <= 1.0e-9,
             "initial self-rescheduling count at t={t} should be {expected}, got {actual} \
-             (initial event must commit pre slots before runtime threshold scheduling)"
+             (a threshold already met at t_start has no rising edge, so the counter \
+              never arms)"
         );
     }
 }
@@ -627,7 +649,7 @@ fn stateful_self_rescheduling_counter_advances_every_period() {
 }
 
 #[test]
-fn stateful_initial_self_rescheduling_counter_advances_after_t_start_event() {
+fn stateful_initial_self_rescheduling_counter_also_stalls_on_a_met_threshold() {
     let compiled = rumoca::Compiler::new()
         .model("StatefulInitialSelfReschedulingCounter")
         .compile_str(
@@ -645,19 +667,13 @@ fn stateful_initial_self_rescheduling_counter_advances_after_t_start_event() {
     )
     .expect("model should simulate");
 
-    let checks = [
-        (0.00, 1.0),
-        (0.05, 1.0),
-        (0.15, 2.0),
-        (0.25, 3.0),
-        (0.35, 4.0),
-    ];
-    for (t, expected) in checks {
+    for (t, expected) in TSTART_THRESHOLD_STALLS {
         let actual = value_at(&sim, "count", t);
         assert!(
             (actual - expected).abs() <= 1.0e-9,
             "stateful initial self-rescheduling count at t={t} should be {expected}, got {actual} \
-             (stateful initialization must commit pre slots before runtime roots)"
+             (adding a continuous state must not give the met threshold an edge the \
+              state-free model does not have)"
         );
     }
 }

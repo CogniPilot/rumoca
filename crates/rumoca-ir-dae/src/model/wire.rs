@@ -406,12 +406,14 @@ fn discrete_value_owner_output(storage: &FrozenStorage) -> Vec<DiscreteValueOwne
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ConditionNodeWire {
     Initial,
+    Always,
     Relation(u32),
     Discrete(u32),
     Clock(u32),
     Not(u32),
     And { lhs: u32, rhs: u32 },
     Or { lhs: u32, rhs: u32 },
+    AnyRise { lhs: u32, rhs: u32 },
 }
 
 #[derive(Deserialize)]
@@ -1313,6 +1315,12 @@ fn rebuild_coordinate<'dae>(
         CoordinateWire::PreDiscreteValue(variable) => CoordinateInput::PreDiscreteValue(
             DiscreteValueId::from_raw(mapped(&ids.variables, *variable, "variable", at)?.index()),
         ),
+        CoordinateWire::PreState(variable) => CoordinateInput::PreState(StateId::from_raw(
+            mapped(&ids.variables, *variable, "variable", at)?.index(),
+        )),
+        CoordinateWire::PreAlgebraic(variable) => CoordinateInput::PreAlgebraic(
+            AlgebraicId::from_raw(mapped(&ids.variables, *variable, "variable", at)?.index()),
+        ),
         CoordinateWire::Time => CoordinateInput::Time,
         CoordinateWire::ClockInterval(clock) => {
             CoordinateInput::ClockInterval(mapped(&ids.clocks, *clock, "clock", at)?.periodic(at)?)
@@ -1511,6 +1519,7 @@ fn rebuild_condition_input<'dae>(
 ) -> Result<ConditionInput<'dae>, DaeConstructionError> {
     Ok(match node {
         ConditionNodeWire::Initial => ConditionInput::Initial,
+        ConditionNodeWire::Always => ConditionInput::Always,
         ConditionNodeWire::Relation(raw) => {
             ConditionInput::Relation(mapped(&ids.relations, raw, "relation", at)?)
         }
@@ -1528,6 +1537,10 @@ fn rebuild_condition_input<'dae>(
             mapped(&ids.conditions, rhs, "condition", at)?,
         ),
         ConditionNodeWire::Or { lhs, rhs } => ConditionInput::Or(
+            mapped(&ids.conditions, lhs, "condition", at)?,
+            mapped(&ids.conditions, rhs, "condition", at)?,
+        ),
+        ConditionNodeWire::AnyRise { lhs, rhs } => ConditionInput::AnyRise(
             mapped(&ids.conditions, lhs, "condition", at)?,
             mapped(&ids.conditions, rhs, "condition", at)?,
         ),

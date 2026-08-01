@@ -65,28 +65,45 @@ fn terminate_inside_when_stops_at_root_event() {
     );
 }
 
+/// MLS §3.7.5 + §8.3.6: `pre(v)` inside a `reinit` value is the ordinary left
+/// limit `v(t^pre)`, so it reads the event-entry history lane like any other
+/// continuous `pre()`.
+///
+/// This used to be rewritten to a plain `v` during lowering, which happens to
+/// give the right number for a bounce but is the wrong value in general —
+/// `reinit(v, pre(v) + 1)` became the unsolvable `reinit(v, v + 1)`. The
+/// assertion below therefore pins the *coordinate* the reinit value reads, not
+/// just the resulting trajectory.
 #[test]
-fn pre_state_in_reinit_reads_the_pre_action_state() {
+fn pre_state_in_reinit_reads_the_event_entry_left_limit() {
     let compiled = Compiler::new()
         .model("BallReinit")
         .compile_str(BALL_WITH_PRE_REINIT, "ball_reinit.mo")
         .expect("compile BallReinit");
-    let pre_value_nodes = compiled.dae.inspect(|view| {
+    let pre_state_reads = compiled.dae.inspect(|view| {
         (0..view.expression_count())
             .filter_map(|index| {
                 let expression = view
                     .expression(view.expression_id(index).expect("dense expression id"))
                     .expect("dense expression resolves");
-                (expression.provenance().origin()
-                    == dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::PreValueLowering))
-                .then(|| view.source_text(expression.provenance()).map(str::to_owned))
+                match expression.operation() {
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::PreState(state)) => {
+                        Some(
+                            view.variable(state.into())
+                                .expect("checked state identity resolves")
+                                .name()
+                                .to_string(),
+                        )
+                    }
+                    _ => None,
+                }
             })
             .collect::<Vec<_>>()
     });
     assert_eq!(
-        pre_value_nodes,
-        vec![Some("pre(v)".to_owned())],
-        "the contextual state read keeps typed generated provenance"
+        pre_state_reads,
+        vec!["v".to_owned()],
+        "the reinit value must read v through its event-entry pre lane"
     );
 
     let sim = simulate_dae_with_diagnostics(

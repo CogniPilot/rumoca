@@ -240,14 +240,14 @@ fn append_pre_variables(
     let mut pre_variables = vec![None; view.variable_count()];
     let mut bindings = Vec::new();
     let mut scalar_count = 0usize;
-    for (id, variable) in view.variables().filter(|(_, variable)| {
+    let continuous_pre = continuous_pre_variables(view);
+    for (id, variable) in view.variables().filter(|(id, variable)| {
         matches!(
             variable.role(),
             dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue
-        )
+        ) || continuous_pre[id.index() as usize]
     }) {
         let current = variables[id.index() as usize];
-        debug_assert!(matches!(current.storage, StorageClass::P));
         let pre_base = first_pre_index.checked_add(scalar_count).ok_or_else(|| {
             LowerError::contract("pre-value layout overflow", variable.declaration().span())
         })?;
@@ -265,9 +265,16 @@ fn append_pre_variables(
                     variable.declaration().span(),
                 )
             })?;
+            // MLS §3.7.5: the history lane holds the coordinate's left limit,
+            // so it is snapshot from wherever the coordinate lives — solver
+            // state `y` for a continuous coordinate, `p` for a discrete one.
+            let source = match current.storage {
+                StorageClass::Y => solve::PreParamSource::Y { index: source },
+                StorageClass::P => solve::PreParamSource::P { index: source },
+            };
             bindings.push(solve::PreParamBinding {
                 dest_p_index,
-                source: solve::PreParamSource::P { index: source },
+                source,
                 clock_schedule: None,
             });
         }
@@ -328,6 +335,37 @@ fn append_pre_variables(
         bindings,
         scalar_count,
     })
+}
+
+/// Continuous coordinates some expression reads through `pre()`.
+///
+/// Every discrete coordinate gets a history lane unconditionally, because any
+/// of them may be read by a later `pre()` the DAE does not name yet. A
+/// continuous coordinate gets one only where the model actually takes its left
+/// limit: giving every state and algebraic a lane would grow the parameter
+/// vector of every model in the cohort for a value nothing reads.
+fn continuous_pre_variables(view: dae::DaeView<'_>) -> Vec<bool> {
+    let mut referenced = vec![false; view.variable_count()];
+    for index in 0..view.expression_count() {
+        let Some(expression) = view.expression(
+            view.expression_id(index)
+                .expect("dense expression identity"),
+        ) else {
+            continue;
+        };
+        let dae::ExpressionOperation::Coordinate(coordinate) = expression.operation() else {
+            continue;
+        };
+        let variable = match coordinate {
+            dae::CoordinateView::PreState(id) => id.index(),
+            dae::CoordinateView::PreAlgebraic(id) => id.index(),
+            _ => continue,
+        };
+        if let Some(slot) = referenced.get_mut(variable as usize) {
+            *slot = true;
+        }
+    }
+    referenced
 }
 
 fn previous_schedule<'dae>(

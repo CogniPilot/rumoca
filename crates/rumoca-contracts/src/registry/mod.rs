@@ -1,5 +1,7 @@
 //! Contract Registry backed by a compile-time static contract table.
 
+pub mod formal;
+
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +97,43 @@ impl ContractCategory {
             ContractCategory::Annotation => "ANN",
             ContractCategory::Unit => "UNIT",
         }
+    }
+
+    /// Every category, in SPEC_0022 order.
+    ///
+    /// [`ContractCategory::from_prefix`] reads this, so a new category enters
+    /// both the forward and the reverse mapping in one edit.
+    pub const ALL: [ContractCategory; 18] = [
+        ContractCategory::Lexical,
+        ContractCategory::Declaration,
+        ContractCategory::Instantiation,
+        ContractCategory::Expression,
+        ContractCategory::Equation,
+        ContractCategory::Algorithm,
+        ContractCategory::Connection,
+        ContractCategory::Function,
+        ContractCategory::Type,
+        ContractCategory::Array,
+        ContractCategory::Package,
+        ContractCategory::OperatorRecord,
+        ContractCategory::Simulation,
+        ContractCategory::Clock,
+        ContractCategory::Stream,
+        ContractCategory::StateMachine,
+        ContractCategory::Annotation,
+        ContractCategory::Unit,
+    ];
+
+    /// The category a contract-id prefix names, e.g. `EQN` for
+    /// [`ContractCategory::Equation`].
+    ///
+    /// This is the inverse of [`ContractCategory::prefix`], and it is what lets
+    /// an identifier carry its own category instead of restating it in a field
+    /// that could disagree.
+    pub fn from_prefix(prefix: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.prefix() == prefix)
     }
 
     /// Get the MLS section reference.

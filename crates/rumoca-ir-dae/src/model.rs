@@ -60,7 +60,18 @@ use crate::{
 /// enum variants positionally, so adding, removing, or reordering a wire
 /// variant changes the decodable shape. Every such change bumps this constant,
 /// and decode then rejects the superseded number instead of reading it.
-pub const DAE_SCHEMA_VERSION: u16 = 13;
+///
+/// 14 inserts `ConditionNodeWire::Always` at ordinal 1 and appends
+/// `ConditionNodeWire::AnyRise`. The insertion shifts every later condition
+/// ordinal, so a v13 payload decodes to the wrong variant rather than failing —
+/// which is exactly the case this constant exists to reject.
+///
+/// 15 appends `CoordinateWire::PreState` and `CoordinateWire::PreAlgebraic`.
+/// They sit at the tail deliberately: decode reads the whole payload before it
+/// checks this number, so appended ordinals keep every earlier variant stable
+/// and an old blob fails cleanly on the version instead of mis-decoding
+/// mid-stream.
+pub const DAE_SCHEMA_VERSION: u16 = 15;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

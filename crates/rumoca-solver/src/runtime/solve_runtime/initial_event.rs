@@ -4,7 +4,8 @@ use crate::{
 };
 
 use super::{
-    EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime, support::copy_runtime_values,
+    EventUpdateRowFilter, ProjectedEventUpdateInput, SeededConditionMemory, SolveRuntime,
+    support::copy_runtime_values,
 };
 
 pub struct ProjectedInitialEventInput<'a> {
@@ -79,6 +80,24 @@ fn initial_event_right_limit(
         event,
     });
     (right_t > event_t).then_some(right_t)
+}
+
+/// `snapshot` with every seeded activation buffer replaced by its seed.
+fn seeded_condition_memory_snapshot(
+    snapshot: &[f64],
+    seeded: &[SeededConditionMemory],
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut values = copy_runtime_values(snapshot, "seeded condition-memory event-entry snapshot")?;
+    for entry in seeded {
+        let slot = values.get_mut(entry.index).ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "seeded condition-memory parameter index {} is out of bounds",
+                entry.index
+            ))
+        })?;
+        *slot = entry.value;
+    }
+    Ok(values)
 }
 
 fn trace_values_match(left: &[f64], right: &[f64], tol: f64) -> bool {
@@ -169,6 +188,22 @@ impl SolveRuntime {
             dynamic_event,
             apply_without_initial_event,
         } = input;
+        // Every backend reaches the first event instant through this boundary,
+        // so the MLS §8.3.5.1 activation buffers are seeded here and only here:
+        // a solver path that seeded them itself would decide by accident which
+        // already-true `when` bodies run at `t_start`.
+        let seeded = self.seed_condition_memory_for_initialization(y, p, t_start, tol)?;
+        let seeded_event_pre_p;
+        let event_pre_p: &[f64] = if seeded.is_empty() {
+            event_pre_p
+        } else {
+            // The caller's event-entry snapshot may predate the settle that gave
+            // the seed its values (the rk-like session captures it first). An
+            // event action reads its activation buffer from that snapshot, so
+            // carry the seed into it rather than letting the two disagree.
+            seeded_event_pre_p = seeded_condition_memory_snapshot(event_pre_p, &seeded)?;
+            &seeded_event_pre_p
+        };
         let initial_event = initial_runtime_event_stop(&self.model.problem, t_start, dynamic_event);
         let action = if initial_event.is_some() || apply_without_initial_event {
             self.apply_initial_event_update(

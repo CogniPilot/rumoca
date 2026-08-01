@@ -495,6 +495,167 @@ fn test_eval_builtin_call() {
     assert!((result.as_real().unwrap() - 2.0).abs() < 1e-10);
 }
 
+/// MLS 3.6 §12.4.6: "if `A` is a vector of reals, then `sin(A)` is a vector
+/// where each element is the result of applying the function `sin` to the
+/// corresponding element in `A`".
+///
+/// The expected values are what OMC 4.1.0 returns for
+/// `cos({0.0, 2.0, 4.0})`. This is the fold
+/// `Modelica.Electrical.Machines.SpacePhasors.Blocks.ToSpacePhasor` needs for
+/// `TransformationMatrix[2, m] = 2/m*{cos(phi), sin(phi)}`, where `phi` is the
+/// `SI.Angle phi[m]` vector.
+#[test]
+fn scalar_builtin_applies_element_wise_to_an_array_argument() {
+    let ctx = EvalContext::new();
+    let expr = Expression::BuiltinCall {
+        function: BuiltinFunction::Cos,
+        args: vec![Expression::Array {
+            elements: vec![make_real(0.0), make_real(2.0), make_real(4.0)],
+            is_matrix: false,
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+
+    let result = eval_expr(&expr, &ctx).expect("cos over a vector folds");
+    let elements = result.as_array().expect("vector result");
+    let expected = [1.0, -0.4161468365471424, -0.6536436208636119];
+    assert_eq!(elements.len(), expected.len());
+    for (element, expected) in elements.iter().zip(expected) {
+        assert!(
+            (element.as_real().expect("Real element") - expected).abs() < 1e-15,
+            "{element} != {expected}"
+        );
+    }
+}
+
+/// The same rule carried through a matrix row by row, and the `2/m*{…}` scaling
+/// that reads it: MLS §10.6.3 scales every element by the numeric scalar.
+#[test]
+fn scalar_builtin_applies_element_wise_through_matrix_rows() {
+    let ctx = EvalContext::new();
+    let rows = Expression::Array {
+        elements: vec![
+            Expression::Array {
+                elements: vec![make_real(0.0), make_real(0.0)],
+                is_matrix: false,
+                span: test_span(),
+            },
+            Expression::Array {
+                elements: vec![make_real(0.0), make_real(0.0)],
+                is_matrix: false,
+                span: test_span(),
+            },
+        ],
+        is_matrix: true,
+        span: test_span(),
+    };
+    let expr = Expression::BuiltinCall {
+        function: BuiltinFunction::Cos,
+        args: vec![rows],
+        span: test_span(),
+    };
+
+    let result = eval_expr(&expr, &ctx).expect("cos over a matrix folds");
+    assert_eq!(
+        result,
+        Value::Array(vec![
+            Value::Array(vec![Value::Real(1.0), Value::Real(1.0)]),
+            Value::Array(vec![Value::Real(1.0), Value::Real(1.0)]),
+        ])
+    );
+}
+
+/// `sum`, `product`, `size` and the other builtins that declare array formals
+/// keep their reduction meaning: MLS §12.4.6 only makes an array actual a
+/// *foreach* argument where the formal parameter is a scalar.
+#[test]
+fn array_formal_builtins_are_not_vectorized() {
+    let ctx = EvalContext::new();
+    let vector = Expression::Array {
+        elements: vec![make_int(1), make_int(2), make_int(3)],
+        is_matrix: false,
+        span: test_span(),
+    };
+    for function in [
+        BuiltinFunction::Sum,
+        BuiltinFunction::Product,
+        BuiltinFunction::Size,
+    ] {
+        let expr = Expression::BuiltinCall {
+            function,
+            args: vec![vector.clone()],
+            span: test_span(),
+        };
+        let result = eval_expr(&expr, &ctx).expect("reduction folds");
+        assert!(
+            result.as_array().is_none(),
+            "{function:?} must reduce, not vectorize: {result}"
+        );
+    }
+}
+
+/// MLS 3.6 §10.6.5 "Division by Numeric Scalars": `a / s` divides every element
+/// of the numeric array by the scalar.
+#[test]
+fn array_divided_by_numeric_scalar_folds_element_wise() {
+    let ctx = EvalContext::new();
+    let expr = Expression::Binary {
+        op: OpBinary::Div,
+        lhs: Box::new(Expression::Array {
+            elements: vec![make_real(1.0), make_real(2.0)],
+            is_matrix: false,
+            span: test_span(),
+        }),
+        rhs: Box::new(make_real(4.0)),
+        span: test_span(),
+    };
+
+    let result = eval_expr(&expr, &ctx).expect("array / scalar folds");
+    assert_eq!(
+        result,
+        Value::Array(vec![Value::Real(0.25), Value::Real(0.5)])
+    );
+}
+
+/// MLS 3.6 §14 defines arithmetic over an operator record only through the
+/// operator functions the record declares, and this evaluator does not resolve
+/// that overload. The failure is therefore an unimplemented form, so a caller
+/// folding parameter bindings leaves the value for the runtime instead of
+/// rejecting the model — `Real * Complex` is not a defect in the model.
+#[test]
+fn record_operand_arithmetic_is_unimplemented_not_a_defect() {
+    let mut ctx = EvalContext::new();
+    ctx.add_parameter(
+        "z",
+        Value::Record(
+            [
+                ("re".to_string(), Value::Real(1.0)),
+                ("im".to_string(), Value::Real(2.0)),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    );
+    let expr = Expression::Binary {
+        op: OpBinary::Mul,
+        lhs: Box::new(make_real(5.0)),
+        rhs: Box::new(Expression::VarRef {
+            name: "z".into(),
+            subscripts: vec![],
+            span: test_span(),
+        }),
+        span: test_span(),
+    };
+
+    let error = eval_expr(&expr, &ctx).expect_err("an unresolved overload does not fold");
+    assert_eq!(
+        error.runtime_dependent_reason(),
+        Some(RuntimeDependentReason::UnimplementedForm),
+        "{error}"
+    );
+}
+
 #[test]
 fn test_eval_builtin_integer_overflow_returns_error() {
     let ctx = EvalContext::new();
@@ -633,4 +794,68 @@ fn only_undetermined_failures_carry_a_runtime_dependent_reason() {
             "{error} proves the expression wrong and must surface"
         );
     }
+}
+
+/// A declared `fixed = false` parameter is reported as deferred, not unknown.
+///
+/// MLS §4.4 lets a declaration defer its value to initialization, so the name
+/// resolves and only the number is missing. Reporting it through
+/// `UnknownVariable` describes a defect that is not there; a caller reading the
+/// message goes looking for a scope or flat-name bug instead of the construct.
+///
+/// The registration is also *scoped* like every other value lookup, so a
+/// component-qualified deferred parameter answers for its own occurrence — the
+/// MSL shape is `meanVoltage.t0`, never a bare `t0`.
+#[test]
+fn a_deferred_parameter_is_reported_as_deferred_rather_than_unknown() {
+    let span = test_span();
+    let mut ctx = EvalContext::new();
+    ctx.add_deferred_parameter("meanVoltage.t0", DeferredParameterSource::StartInstant);
+    ctx.add_deferred_parameter("later.t0", DeferredParameterSource::InitializationSystem);
+
+    let error = eval_expr_with_span(
+        &Expression::VarRef {
+            name: rumoca_core::Reference::new("meanVoltage.t0"),
+            subscripts: Vec::new(),
+            span,
+        },
+        &ctx,
+        span,
+    )
+    .expect_err("a deferred parameter has no translation-time value");
+    assert!(
+        matches!(
+            error,
+            EvalError::InitializationDeferred {
+                settled_by: DeferredParameterSource::StartInstant,
+                ..
+            }
+        ),
+        "expected a start-instant deferral, got {error}"
+    );
+    // MLS §4.4 names initialization as a legitimate origin, so the fold must
+    // treat this as "no value yet" rather than as a wrong model.
+    assert_eq!(
+        error.runtime_dependent_reason(),
+        Some(RuntimeDependentReason::UnknownValue)
+    );
+    assert_eq!(
+        ctx.deferred_parameter("later.t0"),
+        Some(DeferredParameterSource::InitializationSystem)
+    );
+    // A name that was never declared stays unknown: the new variant must not
+    // swallow the resolution failure it was introduced to be distinguished from.
+    assert!(matches!(
+        eval_expr_with_span(
+            &Expression::VarRef {
+                name: rumoca_core::Reference::new("absent"),
+                subscripts: Vec::new(),
+                span,
+            },
+            &ctx,
+            span,
+        )
+        .expect_err("an undeclared name is still unknown"),
+        EvalError::UnknownVariable { .. }
+    ));
 }

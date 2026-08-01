@@ -158,7 +158,7 @@ and constructor-derived row counts; `rumoca-eval-dae` owns evaluation/lazy proje
 | Coincident time events retain IDs | `EventSystem` | Preserve semantics |
 | Actions own trigger, branch guard, action, provenance | `EventSystem` | Preserve edge and branch semantics |
 | Clocks are typed; variables have one owner; exact `ClockLattice` is authoritative | `ClockSystem` | No rounded identity |
-| Pre pairs with current `z`/`m` | `TemporalSystem` | Explicit coordinates |
+| Pre pairs with a current `z`/`m`, or with a continuous `x`/`w` (the when-clause-body restriction on the latter is a phase-dae analysis rule, not an IR invariant) | `TemporalSystem` | Explicit coordinates |
 | Solve may slot typed history coordinates | Solve lowering | Slots are not parameters |
 | Previous retains its clock; terminal/delay coordinates are typed | `TemporalSystem` | No generated names |
 

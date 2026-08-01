@@ -26,6 +26,23 @@ fn flat_var_exists(result: &rumoca_compile::compile::CompilationResult, name: &s
         .any(|var_name| var_name.as_str() == name)
 }
 
+/// Extent of a scalarized component array, counted from the flat variables.
+///
+/// A component array is flattened per element (`a[1].x`, `a[2].x`, …) rather
+/// than kept as one variable with `dims`, so its extent is the number of
+/// consecutive elements that carry `member`. Counting from 1 upwards also
+/// proves the extent is not *larger* than expected, which is what the
+/// dimension-replacing redeclarations below need to pin.
+fn redeclared_array_extent(
+    result: &rumoca_compile::compile::CompilationResult,
+    array: &str,
+    member: &str,
+) -> usize {
+    (1..)
+        .take_while(|index| flat_var_exists(result, &format!("{array}[{index}].{member}")))
+        .count()
+}
+
 fn flat_var_dims(
     result: &rumoca_compile::compile::CompilationResult,
     name: &str,
@@ -467,6 +484,252 @@ fn inst_014_non_replaceable_nested_class_cannot_be_redeclared() {
 
         model Test
             Base b(redeclare model Worker = NewWorker);
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Instantiate,
+        "EI014",
+    );
+}
+
+// -----------------------------------------------------------------------------
+// MLS §7.3 / §A.2.5: an element-redeclaration is a whole component declaration
+// (`component-clause1` -> `declaration` -> `IDENT [ array-subscripts ]`), so the
+// subscripts it writes replace the replaced declaration's array dimensions, and
+// a redeclaration that writes none leaves them standing. Each case below was
+// checked against OpenModelica on the same source.
+// -----------------------------------------------------------------------------
+
+/// Shared fixture: `Holder` declares `a` with `holder_dims`, `Test` redeclares it.
+fn redeclared_dims_source(holder_dims: &str, redeclare: &str, extra_decls: &str) -> String {
+    format!(
+        r#"
+        model BaseType
+            Real x;
+        equation
+            x = 1;
+        end BaseType;
+
+        model DerivedType
+            extends BaseType;
+            Real y;
+        equation
+            y = 2;
+        end DerivedType;
+
+        partial model Holder
+            replaceable BaseType a{holder_dims} constrainedby BaseType;
+        end Holder;
+
+        model Test
+            {extra_decls}
+            extends Holder({redeclare});
+        end Test;
+    "#
+    )
+}
+
+#[test]
+fn redeclare_dimensions_replace_a_scalar_declaration() {
+    // `replaceable BaseType a;` redeclared as `DerivedType a[3]`.
+    // OMC on the same source: a[1..3], each with x and y.
+    let result = expect_success(
+        &redeclared_dims_source("", "redeclare DerivedType a[3]", ""),
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "a", "x"),
+        3,
+        "a rank-raising redeclaration must reshape the component"
+    );
+    assert!(
+        flat_var_exists(&result, "a[1].y"),
+        "the redeclared type's own members must be instantiated"
+    );
+}
+
+#[test]
+fn redeclare_dimensions_replace_a_declared_extent() {
+    // `replaceable BaseType a[2];` redeclared as `DerivedType a[4]`.
+    // OMC: a[1..4]. The replaced extent must not survive.
+    let result = expect_success(
+        &redeclared_dims_source("[2]", "redeclare DerivedType a[4]", ""),
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "a", "x"),
+        4,
+        "the redeclaration's extent must replace the declared one"
+    );
+}
+
+#[test]
+fn redeclare_dimensions_replace_a_declared_rank() {
+    // `replaceable BaseType a[2,2];` redeclared as `DerivedType a[4]`.
+    // OMC: a[1..4] — the rank drops from 2 to 1, and that is not an error.
+    let result = expect_success(
+        &redeclared_dims_source("[2,2]", "redeclare DerivedType a[4]", ""),
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "a", "x"),
+        4,
+        "the redeclaration's rank must replace the declared one"
+    );
+}
+
+#[test]
+fn redeclare_without_dimensions_keeps_the_declared_dimensions() {
+    // Ablation guard for the three cases above: propagating a redeclaration's
+    // dimensions must not be read as "a redeclaration always clears them".
+    // `replaceable BaseType a[3];` redeclared as `DerivedType a` (no
+    // subscripts) stays a[1..3] — OMC agrees.
+    let result = expect_success(
+        &redeclared_dims_source("[3]", "redeclare DerivedType a", ""),
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "a", "x"),
+        3,
+        "a redeclaration that states no dimensions must keep the declared ones"
+    );
+}
+
+#[test]
+fn redeclare_dimension_accepts_boolean_as_an_extent() {
+    // MLS §10.5: the type name `Boolean` is a dimension of extent 2. A
+    // redeclaration must read it exactly as a declaration does — OMC flattens
+    // both to `a[false], a[true]`.
+    //
+    // This is the case a private copy of the literal-dimension helper got
+    // wrong: without the `Boolean` arm the subscript decided nothing, the
+    // component collapsed to a scalar, and the model compiled clean with no
+    // diagnostic at all.
+    let result = expect_success(
+        &redeclared_dims_source("[3]", "redeclare DerivedType a[Boolean]", ""),
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "a", "x"),
+        2,
+        "`Boolean` as a redeclared dimension must give extent 2, not a scalar"
+    );
+}
+
+#[test]
+fn declared_dimension_accepts_boolean_as_an_extent() {
+    // Control for the case above: the declaration path reads `Boolean` as
+    // extent 2 both before and after this change, which is what makes a
+    // redeclaration that disagrees with it a defect rather than a policy.
+    let result = expect_success(
+        r#"
+        model BaseType
+            Real x;
+        equation
+            x = 1;
+        end BaseType;
+
+        model Test
+            BaseType a[Boolean];
+        end Test;
+    "#,
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "a", "x"),
+        2,
+        "`Boolean` as a declared dimension must give extent 2"
+    );
+}
+
+#[test]
+fn redeclare_dimension_expression_resolves_where_it_is_written() {
+    // The redeclaration's dimension expression is evaluated in the class that
+    // writes the redeclaration, not in the replaced declaration's own scope
+    // (OMC: `Holder h(n = 5, redeclare B a[k])` with a local `k = 2` yields
+    // a[1..2] while `h.n` stays 5).
+    let result = expect_success(
+        &redeclared_dims_source(
+            "[2]",
+            "redeclare DerivedType a[k]",
+            "parameter Integer k = 3;",
+        ),
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "a", "x"),
+        3,
+        "a parameter-expression dimension must resolve against the redeclaring class"
+    );
+}
+
+#[test]
+fn redeclare_dimensions_apply_to_connector_arrays() {
+    // The shape that used to reach typecheck as `has 0 dimension(s)`: a
+    // connector array whose extent only the redeclaration states.
+    // OMC: pin[1..3].
+    let result = expect_success(
+        r#"
+        connector Pin
+            Real v;
+            flow Real i;
+        end Pin;
+
+        connector PinAlt
+            extends Pin;
+        end PinAlt;
+
+        partial model Plug
+            replaceable Pin pin[2] constrainedby Pin;
+        end Plug;
+
+        model Test
+            extends Plug(redeclare PinAlt pin[3]);
+        equation
+            for k in 1:3 loop
+                pin[k].v = 0;
+            end for;
+        end Test;
+    "#,
+        "Test",
+    );
+    assert_eq!(
+        redeclared_array_extent(&result, "pin", "v"),
+        3,
+        "a redeclared connector array must carry the redeclaration's extent"
+    );
+}
+
+#[test]
+fn redeclare_with_dimensions_still_requires_a_replaceable_element() {
+    // MLS §7.3.3 still rejects a redeclaration of a non-replaceable element
+    // when that redeclaration also restates dimensions.
+    //
+    // Dimension propagation cannot weaken this by itself — the replaceable /
+    // final / constant / constrainedby check is dimension-blind, and
+    // `collect_redeclarations` propagates its error with `?` before any
+    // collected shape is applied. What this guards is that the new
+    // dimension-carrying path did not swallow or bypass that propagation: a
+    // dimensioned redeclaration must still surface `EI014`, not a reshaped
+    // component.
+    expect_failure_in_phase_with_code(
+        r#"
+        model BaseType
+            Real x;
+        equation
+            x = 1;
+        end BaseType;
+
+        model DerivedType
+            extends BaseType;
+        end DerivedType;
+
+        partial model Holder
+            BaseType a;
+        end Holder;
+
+        model Test
+            extends Holder(redeclare DerivedType a[3]);
         end Test;
     "#,
         "Test",

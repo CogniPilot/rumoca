@@ -98,8 +98,30 @@ pub(crate) enum Coordinate {
     Delay(u32),
     Previous(u32),
     Terminal(u32),
-    Binder { domain: u32, ordinal: u32 },
-    FunctionParameter { function: u32, ordinal: u32 },
+    Binder {
+        domain: u32,
+        ordinal: u32,
+    },
+    FunctionParameter {
+        function: u32,
+        ordinal: u32,
+    },
+    // Appended, not grouped with the other `Pre*` variants: `bincode` tags a
+    // variant by its declaration ordinal, and `Dae::deserialize` decodes the
+    // whole payload before it checks `DAE_SCHEMA_VERSION`. Inserting mid-enum
+    // would make a superseded blob misread `Time` as `PreState(u32)` and
+    // consume four bytes that are not there, corrupting the stream before the
+    // version check can reject it. Appending keeps every earlier ordinal fixed,
+    // so a stale blob still decodes structurally and fails on the version.
+    /// MLS §3.7.5 `pre(v)` where `v` is a continuous state coordinate.
+    ///
+    /// Legal only inside an unclocked when-clause body, where it denotes the
+    /// left limit `v(t^pre)` at event entry — the value before any body
+    /// definition or `reinit` of the same event takes effect.
+    PreState(u32),
+    /// MLS §3.7.5 `pre(v)` where `v` is a continuous algebraic (or output)
+    /// coordinate, with the same event-entry left-limit meaning.
+    PreAlgebraic(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +135,8 @@ pub enum CoordinateInput<'dae> {
     DiscreteValue(DiscreteValueId<'dae>),
     PreDiscreteReal(DiscreteRealId<'dae>),
     PreDiscreteValue(DiscreteValueId<'dae>),
+    PreState(StateId<'dae>),
+    PreAlgebraic(AlgebraicId<'dae>),
     Time,
     ClockInterval(PeriodicClockId<'dae>),
     Condition(crate::ConditionId<'dae>),
@@ -133,6 +157,8 @@ impl CoordinateInput<'_> {
             Self::DiscreteValue(id) => Coordinate::DiscreteValue(id.index()),
             Self::PreDiscreteReal(id) => Coordinate::PreDiscreteReal(id.index()),
             Self::PreDiscreteValue(id) => Coordinate::PreDiscreteValue(id.index()),
+            Self::PreState(id) => Coordinate::PreState(id.index()),
+            Self::PreAlgebraic(id) => Coordinate::PreAlgebraic(id.index()),
             Self::Time => Coordinate::Time,
             Self::ClockInterval(id) => Coordinate::ClockInterval(id.index()),
             Self::Condition(id) => Coordinate::Condition(id.index()),

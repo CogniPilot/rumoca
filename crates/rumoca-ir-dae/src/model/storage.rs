@@ -327,6 +327,22 @@ impl Storage {
                 &[VariableRole::Algebraic, VariableRole::Output],
                 at,
             )?,
+            // MLS §3.7.5: `pre()` of a continuous coordinate is the left limit
+            // captured at event entry, so the read is a discrete-time
+            // expression even though its source coordinate is continuous.
+            CoordinateInput::PreState(id) => {
+                let (raw, _) =
+                    self.coordinate_variable_facts(id.index(), &[VariableRole::State], at)?;
+                (raw, ExpressionVariability::Discrete)
+            }
+            CoordinateInput::PreAlgebraic(id) => {
+                let (raw, _) = self.coordinate_variable_facts(
+                    id.index(),
+                    &[VariableRole::Algebraic, VariableRole::Output],
+                    at,
+                )?;
+                (raw, ExpressionVariability::Discrete)
+            }
             CoordinateInput::DiscreteReal(id) | CoordinateInput::PreDiscreteReal(id) => {
                 self.coordinate_variable_facts(id.index(), &[VariableRole::DiscreteReal], at)?
             }

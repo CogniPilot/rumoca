@@ -99,6 +99,12 @@ fn eval_var_ref(
     if let Some((type_name, literal)) = ctx.get_enum(name) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
     }
+    // A declared `fixed = false` parameter resolves; only its value is absent
+    // (MLS §8.6). Reporting that as an unknown name reads as a resolution
+    // defect, so name the construct the fold actually hit.
+    if let Some(source) = ctx.deferred_parameter(name) {
+        return Err(EvalError::initialization_deferred(name, source, span));
+    }
     // DON'T guess that qualified names are enums - this causes bugs where
     // qualified variable names like "data.m" are incorrectly treated as enum literals
     // when they haven't been evaluated yet in multi-pass parameter evaluation.
@@ -135,15 +141,20 @@ fn eval_flat_logical(
             let rhs = eval_expr_with_span(rhs, ctx, span)?;
             eval_binary_op(op, &lhs, &rhs, span)
         }
-        Err(lhs_error @ (EvalError::UnknownVariable { .. } | EvalError::NotConstant { .. })) => {
-            match eval_expr_with_span(rhs, ctx, span) {
-                Ok(Value::Bool(rhs)) if logical_value_determines_result(op, rhs) => {
-                    Ok(Value::Bool(rhs))
-                }
-                Ok(Value::Bool(_)) | Err(_) => Err(lhs_error),
-                Ok(value) => Err(EvalError::type_mismatch("Boolean", value.type_name(), span)),
+        // A deferred parameter (MLS §8.6) is undetermined in exactly the sense
+        // this short circuit tolerates: the operand has no value yet, and the
+        // other operand may still decide the result on its own.
+        Err(
+            lhs_error @ (EvalError::UnknownVariable { .. }
+            | EvalError::InitializationDeferred { .. }
+            | EvalError::NotConstant { .. }),
+        ) => match eval_expr_with_span(rhs, ctx, span) {
+            Ok(Value::Bool(rhs)) if logical_value_determines_result(op, rhs) => {
+                Ok(Value::Bool(rhs))
             }
-        }
+            Ok(Value::Bool(_)) | Err(_) => Err(lhs_error),
+            Ok(value) => Err(EvalError::type_mismatch("Boolean", value.type_name(), span)),
+        },
         Err(error) => Err(error),
     }
 }
@@ -318,7 +329,11 @@ fn eval_flat_if(
             Ok(value) => {
                 return Err(EvalError::type_mismatch("Boolean", value.type_name(), span));
             }
-            Err(EvalError::UnknownVariable { .. } | EvalError::NotConstant { .. }) => {
+            Err(
+                EvalError::UnknownVariable { .. }
+                | EvalError::InitializationDeferred { .. }
+                | EvalError::NotConstant { .. },
+            ) => {
                 unknown_branch_values.push(eval_expr_with_span(then_expr, ctx, span)?);
             }
             Err(error) => return Err(error),

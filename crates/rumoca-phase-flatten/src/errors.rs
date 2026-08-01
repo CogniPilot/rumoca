@@ -330,6 +330,47 @@ pub enum FlattenError {
         #[label("declared here without dimensions")]
         declaration_span: Span,
     },
+
+    /// A `connect` matched a `stream` primitive member against a member that is
+    /// not declared `stream`.
+    #[error(
+        "connect matches stream variable `{stream_member}` with non-stream variable `{plain_member}`"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF027),
+        help(
+            "MLS §9.3: `stream variables only to other stream variables`. MLS §15.1 gives a stream variable mixing semantics instead of a connection equation, so a stream/non-stream pair has no defined equation at all"
+        )
+    )]
+    StreamMemberPairedWithNonStream {
+        stream_member: String,
+        plain_member: String,
+        #[label("this connection member is declared `stream`")]
+        stream_span: Span,
+        #[label("this connection member is not declared `stream`")]
+        plain_span: Span,
+    },
+
+    /// A `connect` matched a `parameter`/`constant` primitive member against a
+    /// member of higher variability.
+    #[error(
+        "connect matches {structural_variability} variable `{structural_member}` with non-structural variable `{variable_member}`"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF028),
+        help(
+            "MLS §9.3: `the primitive components may only connect parameter variables to parameter variables and constant variables to constant variables`. The same section generates an equality assertion rather than a connection equation for such a pair, so the non-structural side would be left with no equation at all"
+        )
+    )]
+    StructuralMemberPairedWithVariable {
+        structural_member: String,
+        structural_variability: &'static str,
+        variable_member: String,
+        #[label("this connection member is a parameter or constant")]
+        structural_span: Span,
+        #[label("this connection member is neither a parameter nor a constant")]
+        variable_span: Span,
+    },
 }
 
 impl FlattenError {
@@ -548,6 +589,38 @@ impl FlattenError {
             span,
         }
     }
+
+    /// Create a StreamMemberPairedWithNonStream error (MLS §9.3, §15.1).
+    pub fn stream_member_paired_with_non_stream(
+        stream_member: impl Into<String>,
+        stream_span: Span,
+        plain_member: impl Into<String>,
+        plain_span: Span,
+    ) -> Self {
+        Self::StreamMemberPairedWithNonStream {
+            stream_member: stream_member.into(),
+            plain_member: plain_member.into(),
+            stream_span,
+            plain_span,
+        }
+    }
+
+    /// Create a StructuralMemberPairedWithVariable error (MLS §9.3).
+    pub fn structural_member_paired_with_variable(
+        structural_member: impl Into<String>,
+        structural_variability: &'static str,
+        structural_span: Span,
+        variable_member: impl Into<String>,
+        variable_span: Span,
+    ) -> Self {
+        Self::StructuralMemberPairedWithVariable {
+            structural_member: structural_member.into(),
+            structural_variability,
+            variable_member: variable_member.into(),
+            structural_span,
+            variable_span,
+        }
+    }
 }
 
 impl PhaseError for FlattenError {
@@ -555,6 +628,7 @@ impl PhaseError for FlattenError {
         // Holds the multi-label span list alive for the borrow below; the
         // bridge maps `source_spans[i]` onto the i-th `#[label]` field.
         let endpoint_and_declaration;
+        let member_pair;
         let source_spans: &[Span] = match self {
             Self::SubscriptedDimensionlessConnector {
                 span,
@@ -563,6 +637,22 @@ impl PhaseError for FlattenError {
             } => {
                 endpoint_and_declaration = [*span, *declaration_span];
                 &endpoint_and_declaration
+            }
+            Self::StreamMemberPairedWithNonStream {
+                stream_span,
+                plain_span,
+                ..
+            } => {
+                member_pair = [*stream_span, *plain_span];
+                &member_pair
+            }
+            Self::StructuralMemberPairedWithVariable {
+                structural_span,
+                variable_span,
+                ..
+            } => {
+                member_pair = [*structural_span, *variable_span];
+                &member_pair
             }
             Self::UndefinedVariable { span, .. }
             | Self::IncompatibleConnectors { span, .. }
@@ -645,6 +735,65 @@ mod tests {
                 .notes
                 .iter()
                 .any(|note| note.contains("MLS §9.1"))
+        );
+    }
+
+    fn member_span(start: usize) -> Span {
+        Span::from_offsets(
+            SourceId::from_source_name("phase_flatten_member_pairing.mo"),
+            start,
+            start + 4,
+        )
+    }
+
+    /// Both member declarations reach the rendered diagnostic, in the order the
+    /// `#[label]` fields declare them. SPEC_0008: a pairing rejection points at
+    /// the two declarations that disagree, not only at one of them.
+    #[test]
+    fn stream_pairing_error_labels_both_member_declarations() {
+        let error = FlattenError::stream_member_paired_with_non_stream(
+            "a.h_outflow",
+            member_span(10),
+            "b.h_outflow",
+            member_span(40),
+        );
+        let diagnostic = error.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("EF027"));
+        assert_eq!(diagnostic.labels.len(), 2);
+        assert_eq!(diagnostic.labels[0].span, member_span(10));
+        assert_eq!(diagnostic.labels[1].span, member_span(40));
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("MLS §9.3"))
+        );
+    }
+
+    #[test]
+    fn variability_pairing_error_labels_both_member_declarations() {
+        let error = FlattenError::structural_member_paired_with_variable(
+            "a.m",
+            "parameter",
+            member_span(10),
+            "b.m",
+            member_span(40),
+        );
+        let diagnostic = error.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("EF028"));
+        assert_eq!(diagnostic.labels.len(), 2);
+        assert_eq!(diagnostic.labels[0].span, member_span(10));
+        assert_eq!(diagnostic.labels[1].span, member_span(40));
+        // The pairing clause this rejection quotes lives in MLS 3.6 §9.3, the
+        // same section SPEC_0022 files CONN-028 under — not §9.1, which only
+        // forbids declaring a *connector component* parameter/constant (ER027).
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("MLS §9.3"))
         );
     }
 }

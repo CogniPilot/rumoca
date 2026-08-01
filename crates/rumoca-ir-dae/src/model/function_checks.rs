@@ -429,6 +429,8 @@ pub(super) fn reject_model_coordinate(
         ExprNode::Coordinate(Coordinate::DiscreteValue(_)) => "discrete value",
         ExprNode::Coordinate(Coordinate::PreDiscreteReal(_)) => "pre(discrete real)",
         ExprNode::Coordinate(Coordinate::PreDiscreteValue(_)) => "pre(discrete value)",
+        ExprNode::Coordinate(Coordinate::PreState(_)) => "pre(state)",
+        ExprNode::Coordinate(Coordinate::PreAlgebraic(_)) => "pre(algebraic)",
         ExprNode::Coordinate(Coordinate::Time) => "time",
         ExprNode::Coordinate(Coordinate::ClockInterval(_)) => "clock interval",
         ExprNode::Coordinate(Coordinate::Condition(_)) => "condition",

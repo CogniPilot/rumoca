@@ -64,6 +64,23 @@
 //! governs that the check structurally cannot see or deliberately does not
 //! judge, each named with its current behaviour and its owner — is stated in
 //! the [`endpoint_subscripts`] module docs.
+//!
+//! ## Acceptance contract: matched primitive member pairs (SPEC_0008)
+//!
+//! Expanding a `connect` pairs the primitive members of the two connectors by
+//! name, and MLS §9.3 then constrains what such a matched pair may be: "flow
+//! variables may only connect to other flow variables, stream variables only to
+//! other stream variables" (CONN-003 and CONN-030), and "the primitive
+//! components may only connect parameter variables to parameter variables and
+//! constant variables to constant variables" (CONN-028). The stream and
+//! variability clauses are decided in one place,
+//! [`member_pairing::classify_connection_member_pair`], which
+//! [`connect_primitive_vars`] and [`connect_sub_variable`] consult before
+//! joining any pair to a connection set; the flow clause stays with
+//! [`validate_flow_consistency`]. That module's docs state the full acceptance
+//! contract — what is connected, what deliberately generates no equation, what
+//! is not judged for lack of evidence — and the scope of the `EF027`/`EF028`
+//! rejections it raises.
 
 use rumoca_core::{ProvenanceSpan, Span, TypeId};
 use rumoca_ir_ast as ast;
@@ -76,11 +93,15 @@ use crate::path_utils::{segments as path_segments_of, strip_array_index};
 
 mod endpoint_subscripts;
 mod equation_generation;
+mod member_pairing;
 mod path_index;
 mod stream_operators;
 use endpoint_subscripts::*;
 use equation_generation::*;
 pub(crate) use equation_generation::{connection_involves_disabled, process_connections};
+use member_pairing::{
+    MemberPairing, classify_connection_member_pair, connection_member_declaration,
+};
 use path_index::*;
 
 /// Context for array output connection operations.
@@ -280,13 +301,7 @@ impl ConnectionSubMatchIndex {
 /// end Pin;
 /// ```
 pub(crate) fn is_flow_variable(flat: &flat::Model, var_name: &rumoca_core::VarName) -> bool {
-    if let Some(v) = flat.variables.get(var_name) {
-        return v.flow;
-    }
-    subscripted_base_var(var_name, flat)
-        .and_then(|base| flat.variables.get(&base))
-        .map(|v| v.flow)
-        .unwrap_or(false)
+    connection_member_declaration(flat, var_name).is_some_and(|v| v.flow)
 }
 
 /// Check if a variable is a stream variable.
@@ -295,13 +310,7 @@ pub(crate) fn is_flow_variable(flat: &flat::Model, var_name: &rumoca_core::VarNa
 /// (`inStream`/`actualStream`) and must not be turned into direct potential
 /// equality equations by `connect()`.
 fn is_stream_variable(flat: &flat::Model, var_name: &rumoca_core::VarName) -> bool {
-    if let Some(v) = flat.variables.get(var_name) {
-        return v.stream;
-    }
-    subscripted_base_var(var_name, flat)
-        .and_then(|base| flat.variables.get(&base))
-        .map(|v| v.stream)
-        .unwrap_or(false)
+    connection_member_declaration(flat, var_name).is_some_and(|v| v.stream)
 }
 
 /// Check if a variable name is a subscripted reference to an existing array variable
@@ -1070,7 +1079,7 @@ fn connect_array_output_variables(
     flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
-) {
+) -> Result<(), FlattenError> {
     // Case 0: Neither side is primitive - both expand to array element variables
     // E.g., connect(positiveThreshold.y, timerPositive.u) where both are on array components
     // Expands to positiveThreshold[i].y = timerPositive[i].u
@@ -1081,9 +1090,9 @@ fn connect_array_output_variables(
             expanded_a.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
             expanded_b.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
             for (va, vb) in expanded_a.iter().zip(expanded_b.iter()) {
-                connect_primitive_vars(va, vb, flat, flow_pairs, potential_uf, stream_uf);
+                connect_primitive_vars(va, vb, flat, flow_pairs, potential_uf, stream_uf)?;
             }
-            return;
+            return Ok(());
         }
     }
 
@@ -1100,7 +1109,7 @@ fn connect_array_output_variables(
                 potential_uf,
                 stream_uf,
             );
-            return;
+            return Ok(());
         }
     }
 
@@ -1117,7 +1126,7 @@ fn connect_array_output_variables(
                 potential_uf,
                 stream_uf,
             );
-            return;
+            return Ok(());
         }
     }
 
@@ -1142,6 +1151,7 @@ fn connect_array_output_variables(
             }
         }
     }
+    Ok(())
 }
 
 /// Handle connection between a primitive output and an array element reference (MLS §9.2).
@@ -1291,21 +1301,9 @@ fn connect_sub_variable(
     path_b: &str,
     sub_match_index: &ConnectionSubMatchIndex,
     ctx: &mut ConnectionBuildCtx<'_>,
-) -> bool {
-    // Skip parameters and constants — they are structural, not equation unknowns.
-    // Connection equations for parameters (like connector.m = subcomponent.connector.m)
-    // inflate the equation count without adding corresponding unknowns.
-    if let Some(var_info) = ctx.flat.variables.get(sub_a)
-        && matches!(
-            var_info.variability,
-            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-        )
-    {
-        return false;
-    }
-
+) -> Result<bool, FlattenError> {
     let Some((suffix_a, indices_a)) = extract_suffix(sub_a.as_str(), path_a) else {
-        return false;
+        return Ok(false);
     };
     let normalized_indices_a = strip_explicit_path_indices(&indices_a, path_a);
 
@@ -1313,7 +1311,7 @@ fn connect_sub_variable(
     let Some(var_b_match) =
         find_matching_var_b_indexed(&suffix_a, &normalized_indices_a, sub_match_index)
     else {
-        return false;
+        return Ok(false);
     };
     let conn_a = scalarize_collapsed_connector_element(sub_a, path_a, ctx.flat);
     let mut conn_b = scalarize_collapsed_connector_element(&var_b_match, path_b, ctx.flat);
@@ -1371,6 +1369,13 @@ fn connect_sub_variable(
         }
     }
 
+    // MLS §9.3 pairing rules. A structural pair generates nothing (and, like
+    // the pre-match skip it replaces, reports "unmatched" so the reverse
+    // expansion direction is still attempted); a pair MLS forbids is rejected.
+    if classify_connection_member_pair(ctx.flat, &conn_a, &conn_b)? == MemberPairing::NoEquation {
+        return Ok(false);
+    }
+
     // Connect matching sub-variables based on flow/non-flow type
     if is_flow_variable(ctx.flat, &conn_a) {
         ctx.flow_pairs.push((conn_a, conn_b));
@@ -1378,9 +1383,11 @@ fn connect_sub_variable(
         // MLS §15.2 stream connectors are handled separately from flow/potential sets.
         ctx.stream_uf.union(&conn_a, &conn_b);
     } else {
+        // Both sides agree on the stream prefix: a one-sided `stream` was
+        // rejected above, so this branch can only be a potential pair.
         ctx.potential_uf.union(&conn_a, &conn_b);
     }
-    true
+    Ok(true)
 }
 
 /// Process a single connection and update the connection structures.
@@ -1392,7 +1399,7 @@ fn process_connection(
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
-) {
+) -> Result<(), FlattenError> {
     let path_a = conn.a.to_flat_string();
     let path_b = conn.b.to_flat_string();
     let var_a = rumoca_core::VarName::new(&path_a);
@@ -1402,8 +1409,7 @@ fn process_connection(
     let b_is_primitive = is_primitive_flat_var(flat, &var_b);
 
     if a_is_primitive && b_is_primitive {
-        connect_primitive_vars(&var_a, &var_b, flat, flow_pairs, potential_uf, stream_uf);
-        return;
+        return connect_primitive_vars(&var_a, &var_b, flat, flow_pairs, potential_uf, stream_uf);
     }
 
     // Handle subscripted references to array variables: e.g., "comp.v[1]" where
@@ -1413,8 +1419,7 @@ fn process_connection(
     let a_subscript_prim = !a_is_primitive && is_subscripted_variable(&var_a, flat);
     let b_subscript_prim = !b_is_primitive && is_subscripted_variable(&var_b, flat);
     if (a_is_primitive || a_subscript_prim) && (b_is_primitive || b_subscript_prim) {
-        connect_primitive_vars(&var_a, &var_b, flat, flow_pairs, potential_uf, stream_uf);
-        return;
+        return connect_primitive_vars(&var_a, &var_b, flat, flow_pairs, potential_uf, stream_uf);
     }
 
     // At least one is a connector - try expansion
@@ -1429,8 +1434,7 @@ fn process_connection(
             potential_uf,
             stream_uf,
         };
-        expand_connector_connection(&subs_a, &path_a, &path_b, &subs_b, &mut ctx);
-        return;
+        return expand_connector_connection(&subs_a, &path_a, &path_b, &subs_b, &mut ctx);
     }
 
     // Handle output-to-output connections with array expansion
@@ -1442,11 +1446,14 @@ fn process_connection(
         a_is_primitive,
         b_is_primitive,
     };
-    connect_array_output_variables(&ctx, flat, var_index, flow_pairs, potential_uf, stream_uf);
+    connect_array_output_variables(&ctx, flat, var_index, flow_pairs, potential_uf, stream_uf)
 }
 
 /// Connect two primitive variables directly based on flow type.
-/// Skips parameters and constants — they don't need connection equations.
+///
+/// MLS §9.3 pairing rules are decided by [`classify_connection_member_pair`]
+/// first: a structural pair generates nothing, and a pair MLS forbids is
+/// rejected here rather than dropped.
 fn connect_primitive_vars(
     var_a: &rumoca_core::VarName,
     var_b: &rumoca_core::VarName,
@@ -1454,35 +1461,26 @@ fn connect_primitive_vars(
     flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
-) {
-    // Skip parameters/constants — structural, not equation unknowns
-    for var in [var_a, var_b] {
-        if let Some(info) = flat.variables.get(var)
-            && matches!(
-                info.variability,
-                rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-            )
-        {
-            return;
-        }
+) -> Result<(), FlattenError> {
+    if classify_connection_member_pair(flat, var_a, var_b)? == MemberPairing::NoEquation {
+        return Ok(());
     }
 
     let is_flow_a = is_flow_variable(flat, var_a);
     let is_flow_b = is_flow_variable(flat, var_b);
-    let is_stream_a = is_stream_variable(flat, var_a);
-    let is_stream_b = is_stream_variable(flat, var_b);
 
     if is_flow_a && is_flow_b {
         flow_pairs.push((var_a.clone(), var_b.clone()));
-    } else if is_stream_a && is_stream_b {
+    } else if is_stream_variable(flat, var_a) && is_stream_variable(flat, var_b) {
         stream_uf.union(var_a, var_b);
     } else if !is_flow_a && !is_flow_b {
-        if is_stream_a || is_stream_b {
-            return;
-        }
+        // Both sides agree on the stream prefix here: `classify_connection_member_pair`
+        // has already rejected a one-sided `stream`, and a two-sided one took
+        // the branch above.
         potential_uf.union(var_a, var_b);
     }
     // Mismatched flow/non-flow is caught by validation
+    Ok(())
 }
 
 /// Expand a connector connection to its sub-variables.
@@ -1492,14 +1490,16 @@ fn expand_connector_connection(
     path_b: &str,
     subs_b: &[rumoca_core::VarName],
     ctx: &mut ConnectionBuildCtx<'_>,
-) {
+) -> Result<(), FlattenError> {
     let sub_match_index = ConnectionSubMatchIndex::new(path_b, subs_b, ctx.var_index);
-    let matched = subs_a
-        .iter()
-        .filter(|sub_a| connect_sub_variable(sub_a, path_a, path_b, &sub_match_index, ctx))
-        .count();
+    let mut matched = 0usize;
+    for sub_a in subs_a {
+        if connect_sub_variable(sub_a, path_a, path_b, &sub_match_index, ctx)? {
+            matched += 1;
+        }
+    }
     if matched != 0 {
-        return;
+        return Ok(());
     }
 
     // Connector arrays can be represented asymmetrically: one side may retain
@@ -1510,8 +1510,9 @@ fn expand_connector_connection(
     // representation produced no pairs.
     let reverse_match_index = ConnectionSubMatchIndex::new(path_a, subs_a, ctx.var_index);
     for sub_b in subs_b {
-        connect_sub_variable(sub_b, path_b, path_a, &reverse_match_index, ctx);
+        connect_sub_variable(sub_b, path_b, path_a, &reverse_match_index, ctx)?;
     }
+    Ok(())
 }
 
 /// Build connection sets from individual connections.
@@ -1593,7 +1594,7 @@ fn build_connection_sets(
                 &mut potential_uf,
                 &mut stream_uf,
                 prefix_children,
-            );
+            )?;
         }
 
         // Build flow union-find for this scope

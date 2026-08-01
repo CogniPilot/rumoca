@@ -155,7 +155,8 @@ fn test_connect_primitive_vars_routes_streams_to_stream_set() {
         &mut flow_pairs,
         &mut potential_uf,
         &mut stream_uf,
-    );
+    )
+    .expect("stream-to-stream is the pairing MLS §9.3 admits");
 
     assert!(flow_pairs.is_empty());
     assert!(
@@ -1496,4 +1497,5 @@ fn test_validate_type_compatibility_alias_root_allowed() {
     assert!(result.is_ok());
 }
 
+mod member_pairing_tests;
 mod path_matching_tests;

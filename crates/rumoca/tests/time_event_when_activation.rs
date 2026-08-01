@@ -1,4 +1,5 @@
-//! MLS §8.5 time events owned by a `when` activation over `time`.
+//! When a `when` activation fires: the §8.5 instant it owns, the §8.3.5.1 edge
+//! that runs its body, and the §8.3.5 priority between the branches of a chain.
 //!
 //! # Why this exists
 //!
@@ -68,26 +69,116 @@
 //! `2 * atol`, i.e. `0.500002` for `t = 0.5` at the default `atol = 1e-6`. The
 //! values agree; the stamps differ by 2e-6 out of a 0.05 output interval.
 //!
+//! # Activation at the initial instant
+//!
+//! MLS §8.6: *"The equations of a when-clause are active during initialization,
+//! if and only if they are explicitly enabled with `initial()`"*, in one of the
+//! two forms `when initial() then` or `when {…, initial(), …} then`. Everything
+//! else must have a rising edge to run, and §8.3.5.1 says where the edge comes
+//! from: a `when` is conceptually
+//!
+//! ```text
+//! Boolean b(start = x.start > 2);
+//! b  = x > 2;
+//! v1 = if edge(b) then expr1 else pre(v1);
+//! ```
+//!
+//! — the activation buffer *starts at the condition's own value*, and §8.6's
+//! *"Before the start of the integration, it must be guaranteed that for all
+//! variables `v`, `v = pre(v)`"* keeps `pre(b) = b` there. A condition already
+//! true at `t = 0` therefore has no edge at the initial event, and one that is
+//! true at `t = 0` and only ever falls has no edge for the whole run.
+//!
+//! rumoca left that buffer at `false`, which manufactured an edge at the initial
+//! event for every already-true activation, on both solver paths. The buffer is
+//! now seeded from the settled initialization values, with the `initial()` flag
+//! cleared — `initial()` is false everywhere except the initial event, so it is
+//! the one activation that keeps its edge there.
+//!
+//! | model                                    | omc | rumoca before          | rumoca after |
+//! | ---------------------------------------- | --- | ---------------------- | ------------ |
+//! | `when time < 0.5 then y = 1`             | 0   | 1 at `t = 0` (bdf)     | 0            |
+//! | `when x < 2 then y = 1`, `der(x) = 1`    | 0   | 1 at `t = 0` (bdf)     | 0            |
+//! | `when time < 0.5 and x < 2 then y = 1`   | 0   | 1 at `t = 0` (bdf)     | 0            |
+//! | the two above, beside a `when initial()` | 0   | 1 at `t = 0` (both)    | 0            |
+//! | `when not (time > 0.5) then y = 1`       | 0   | 1 from `t = 0.5` (rk)  | 0            |
+//! | `when initial() then y = 1`              | 1   | 1                      | 1            |
+//! | `when {initial(), time > 0.5}`           | 1→2 | 1→2                    | 1→2          |
+//!
+//! The `when initial()` row in that table is what makes the rest safe to read:
+//! the seed removes spurious activations without removing the §8.6 one. The
+//! `and`/`beside a when initial()` rows are what identify the defect as *one*
+//! bug rather than two: before the fix the rk-like session happened to agree on
+//! the first two models only because they own no initial event at all, and
+//! adding a `when initial()` — which creates one — made it disagree exactly as
+//! the diffsol session did.
+//!
+//! # Vector activations: one buffer per element
+//!
+//! §8.3.5 activates on *"any of the elements … becomes true"*, and §8.3.5.1
+//! realises that as one `Boolean bi` per element with the activation
+//! `edge(b1) or … or edge(bn)`. That is not the edge of the disjunction, and
+//! `omc` is where the difference is visible rather than merely arguable:
+//!
+//! | model                              | omc                     |
+//! | ---------------------------------- | ----------------------- |
+//! | `when {true, time > 0.5}`          | fires at `t = 0.5`      |
+//! | `when true or time > 0.5`          | never fires             |
+//! | `when {u, not u}`, `u = time > 0.3`| fires at `t = 0.3`      |
+//! | `when u or not u`                  | never fires             |
+//!
+//! rumoca folded a vector into one `Or` with one buffer, which makes the two
+//! rows of each pair indistinguishable — and once the buffer is seeded, a
+//! tautological disjunction seeds *true* and the activation is deleted outright.
+//!
+//! Three MSL blocks are written in that shape:
+//! `Modelica.Blocks.Logical.TriggeredTrapezoid` and `LogicalDelay`
+//! (`when {u, not u}`), and `Modelica.Blocks.Math.ContinuousSignalExtrema`
+//! (`when {u <= x, u >= x, terminal()}`). **None of the three compiles in rumoca
+//! today**, for reasons unrelated to activation — `initial()` inside an
+//! expression and `terminal()` (ED018), `pre` of a continuous variable (ED019),
+//! and an initialization-projection failure — so no claim is made here about
+//! what they do. They are the reason the shape matters, not evidence about it.
+//! The evidence is the OpenModelica table above and the tests below, measured on
+//! the shape itself.
+//!
+//! # `when <literal>` is a `when`
+//!
+//! A constant activation still has an activation buffer. §8.3.5.1 starts it at
+//! the condition's own value and §8.6 holds `pre(b) = b` before integration, so
+//! `when true then` never has a rising edge and never runs — `omc` leaves
+//! `y = 0` for `when true then y = pre(y) + 1`, and the same for a
+//! `parameter Boolean b = true`. What must *not* carry a buffer is the
+//! activation rumoca synthesises for an unguarded algorithm section and for a
+//! section-level `assert`, neither of which is a `when` at all; those are a
+//! distinct DAE node (`ConditionOperation::Always`) rather than a literal, so
+//! the two can no longer be confused by shape.
+//!
 //! # Divergences these tests deliberately do not claim
 //!
-//! One of the five below is a regression this change introduced and chose to
-//! land; the rest were there before it and are untouched by it. Each says which
-//! it is, because a recorded divergence that misdescribes its own origin is
-//! worse than an unrecorded one.
+//! Two of the five below are regressions this line of work introduced and chose
+//! to land; the rest were there before it and are untouched. Each says which it
+//! is, because a recorded divergence that misdescribes its own origin is worse
+//! than an unrecorded one.
 //!
-//! * **Activation at the initial event, on the state-free solver path.** MLS
-//!   §8.5: *"The equations of a when-clause are active during initialization, if
-//!   and only if they are explicitly enabled with `initial()`"*. `omc` leaves
-//!   `y = 0` for `when time < 0.5 then y = 1`. rumoca agrees whenever the model
-//!   carries a continuous state, and disagrees when it does not: the same model
-//!   with `der(x) = 1` added leaves `y = 0`, and without it fires at `t = 0`.
-//!   The divergence is therefore solver-path dependent — it belongs to the
-//!   state-free session, not to the event schedule — and it is shared with
-//!   `when x < 2 then y = 1`, so it is not a property of `time` either.
-//!   [`falling_time_activation_does_not_fire_at_its_instant`] accordingly asserts
-//!   only what the instant itself does, on a model that has a state.
+//! * **Two branches of one chain whose instants coincide — REGRESSION
+//!   INTRODUCED HERE.** `when time > 0.5 then y = 1; elsewhen x > 0.5 then
+//!   y = 2;` with `der(x) = 1`. Both conditions become true at `t = 0.5`, and
+//!   `omc` handles them in one event iteration, where §8.3.5's branch priority
+//!   picks the first: `y = 1` for the rest of the run. On the rk-like session the
+//!   first branch is a *scheduled instant* and the second a *located crossing*,
+//!   and the two land in different event iterations — so the second branch finds
+//!   its own edge at an instant where the first no longer has one, and `y` steps
+//!   to `2` at the next output sample. Before the branch guards were corrected,
+//!   the level subtraction masked this: `not (time > 0.5)` was false, so the
+//!   second branch was suppressed and `y` stayed `1` by accident. **`y` regressed
+//!   from 1 to 2 relative to the pre-change tree** on this shape. The cause is
+//!   the iteration split, not the guard — `omc` reaches the same answer as
+//!   rumoca whenever the two instants really are distinct — and it is the same
+//!   rk-like defect as the record below. The diffsol session leaves `y = 0` here,
+//!   before and after.
 //! * **A scheduled instant coinciding with a state crossing — REGRESSION
-//!   INTRODUCED HERE.** `when time > 0.5 then a = 1` beside
+//!   INTRODUCED EARLIER, same rk-like cause.** `when time > 0.5 then a = 1` beside
 //!   `when x > 0.5 then b = pre(a) + 10`, with `der(x) = 1`. `omc` handles both
 //!   in one event iteration at the instant, so `b = 10` with `pre(a) = 0`, as
 //!   §8.5 requires. Before this change rumoca also reached `b = 10`, one output
@@ -109,48 +200,80 @@
 //!   the diffsol session uses; that does not rescue this model, because on
 //!   `SimSolverMode::Bdf` neither `a` nor `b` fires at all, before or after this
 //!   change — a separate, pre-existing diffsol defect.
-//! * **The diffsol session at the start instant** (pre-existing). The same
-//!   models on `SimSolverMode::Bdf` leave `when time > 0` unfired and fire
-//!   `when time < 0.5` at `t = 0` — the mirror image of what omc does, and of
-//!   what the rk-like session asserted here does. That session applies a
-//!   crossing located at the start differently, which is its own defect and not
-//!   the schedule's; this file therefore names its solver mode explicitly rather
-//!   than asserting whatever the default happens to be.
-//!   [`the_diffsol_session_agrees_on_a_scheduled_instant`] pins the part of that
-//!   session this change *does* reach, so the divergence above stays a statement
-//!   about the start instant rather than about scheduling generally.
-//! * **A negated `time` relation** (pre-existing). `when not (time > 0.5)` is
-//!   true from the start and only ever falls, so `omc` never runs it; rumoca
-//!   runs it at `t = 0.5`. The instant is scheduled correctly — the activation
-//!   is the negation, whose buffered value has no seeded edge at the first event
-//!   it sees. Measured before and after this change on the rk-like session, the
-//!   trace is identical; the diffsol session instead fires it at `t = 0` under
-//!   the start-instant defect above.
-//! * **`elsewhen` priority.** MLS §8.3.5: *"The equations within a
-//!   when-equation are activated only at the instant when the scalar expression
-//!   or any of the elements of the vector expression becomes true"*, and the
-//!   earlier branch's higher priority *"can be used to resolve assignment
-//!   conflicts"* — i.e. priority ranks branches that activate together, and
-//!   activation is a rising edge. `omc` follows that: it runs the second branch
-//!   of `when time > 0.3 then y = 1; elsewhen time > 0.7 then y = 2;` at
-//!   `t = 0.7` (`y = 2`), because only that branch's condition becomes true
-//!   there. rumoca keeps `y = 1`, because its branch guard subtracts the
-//!   earlier branch's *level* rather than its edge. The same disagreement
-//!   appears for a state-relation chain (`when x > 0.3 … elsewhen x > 0.7`,
-//!   `der(x) = 1`: omc reaches `y = 2` at `t = 0.7`), so it is a branch-guard
-//!   bug and not a `time` one. Both instants are scheduled correctly, which is
-//!   all this file claims — see [`else_when_schedules_every_branch_instant`].
+//! * **The diffsol session and a located state crossing** (pre-existing). On
+//!   `SimSolverMode::Bdf` a crossing over a continuous state is located far from
+//!   where `omc` puts it: `when x > 0.3 then y = 1` with `der(x) = 1` first
+//!   reads `y = 1` at `t = 0.7` rather than `0.3`, and the second branch of a
+//!   chain over the same state never arrives inside a `[0, 1]` run. Measured
+//!   identical before and after this change, so it is that session's root
+//!   location and not the activation semantics; this file therefore names its
+//!   solver mode explicitly rather than asserting whatever the default happens
+//!   to be. [`the_diffsol_session_agrees_on_a_scheduled_instant`] pins the part
+//!   of that session the schedule *does* reach.
+//! * **The diffsol session applies the initial event more than once**
+//!   (pre-existing). Every `when` that legitimately runs at `t = 0` runs two or
+//!   three times there on `SimSolverMode::Bdf`: `when true then y = pre(y) + 1`
+//!   reads `y = 3` at `t = 0` before the activation buffers existed and `y = 2`
+//!   after, where `omc` leaves `0`. The count moved because the buffer removes
+//!   one of the applications, not because the multiple application was addressed
+//!   — it is the diffsol initial-event boundary running its update more than
+//!   once, and it is why every assertion below that reads `t = 0` on both
+//!   sessions reads a *level* (fired / did not fire) rather than a count.
+//! * **A scalar `initial()` inside a larger condition enables the whole
+//!   condition** (pre-existing). MLS §8.6 enables a when-clause during
+//!   initialization in exactly two spellings, `when initial() then` and
+//!   `when {…, initial(), …} then`; `omc` honours that and does not enable
+//!   `when initial() or time > 0.5`, nor `when not initial()`. rumoca treats any
+//!   condition containing `initial()` as enabling. The vector spelling is
+//!   correct (see [`initial_alternative_in_a_vector_activation_keeps_both_owners`]
+//!   and [`an_initial_element_does_not_enable_an_already_true_element`]); the
+//!   scalar one is a separate §8.6 admissibility question and no test below
+//!   asserts it.
+//! * **A `when` body reading a variable the same body assigns — SPEC VIOLATION**
+//!   (pre-existing). MLS §8.3.5.1 expands a `when` body to *simultaneous
+//!   equations*, one `v = if edge(b) then expr else pre(v)` per assigned
+//!   variable. They are equations, not statements, so a body that reads `a`
+//!   after assigning it must see the **new** `a`. rumoca evaluates the rows of
+//!   an event pass sequentially against the event-entry snapshot, so it sees the
+//!   old one.
+//!
+//!   ```modelica
+//!   when time > 0.5 then
+//!     a = pre(a) + 1;
+//!     b = if a > pre(a) then 100 else -100;
+//!   end when;
+//!   ```
+//!
+//!   `omc` gives `b = 100`; rumoca gives `b = -100`, on both solver sessions and
+//!   both before and after this change (`a` itself is correct in all four). The
+//!   same defect in its cross-`when` form is `when pre(b) then …` beside
+//!   `when time > 0.7 then b = false;`, where the two `when`s disagree about
+//!   which `b` the instant `t = 0.7` sees.
+//!
+//!   This is a §8.3.5.1 violation rather than a presentation difference, and it
+//!   is the whole of what still separates rumoca from `omc` on
+//!   `Modelica.Blocks.Math.ContinuousSignalExtrema`'s shape: its `t_min`/`t_max`
+//!   bodies are `if y_min < pre(y_min) then time else pre(t_min)`, read after
+//!   `y_min` is assigned in the same body, and they stay at their start values
+//!   for exactly this reason. Its `y_min`/`y_max` — which read nothing the body
+//!   assigns — track `omc` exactly. Fixing it is a separate change to
+//!   event-pass row scheduling; no test below asserts the violated shape.
+//! * **A `discrete Boolean` assigned by a relation equation** (pre-existing, and
+//!   not about `when` at all). `discrete Boolean b; b = time < 0.5; when b then
+//!   y = 1;` — `omc` gives `b = 1` until `t = 0.5` and `0` after. rumoca never
+//!   updates `b` at all on the rk-like session (`b = 0` throughout) and pins it
+//!   at `1` for the whole run on the diffsol one. Both `y` traces follow from
+//!   `b`, so nothing here can be read as an activation claim, and no test below
+//!   asserts this shape.
 
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
 
 /// Compile `source` and run it over `[0, 1]` with a 0.05 output interval — the
 /// grid the OpenModelica runs in the module table used.
 ///
-/// Every model here carries a `der(x) = 1` integrator. It is not decoration:
-/// the rk-like session refuses a model with no state equations, and the
-/// state-free session it would otherwise use has its own unrelated
-/// initial-activation defect (module header). An unused integrator cannot move
-/// any `y`, so the OpenModelica values in the table are unaffected by it.
+/// Every model here carries a `der(x) = 1` integrator: the rk-like session
+/// refuses a model with no state equations. An unused integrator cannot move any
+/// `y`, so the OpenModelica values in the table are unaffected by it.
 ///
 /// The entry point matters: plain `simulate_dae` is the diffsol module's own
 /// function and runs diffsol whatever `solver_mode` says, so a test that used it
@@ -158,6 +281,22 @@ use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnos
 /// on the mode, and the mode is the explicit rk-like session — the path the
 /// OpenModelica comparison in the module header was measured against.
 fn simulate(name: &str, source: &str) -> (rumoca::CompilationResult, SimResult) {
+    simulate_on(SimSolverMode::RkLike, name, source)
+}
+
+/// The same run on a named solver session.
+///
+/// Activation is a property of the model, not of the integrator, so the
+/// initial-instant tests below assert both sessions from one model rather than
+/// letting one path's answer stand for both. That distinction is not
+/// theoretical here: the two sessions disagreed about `when time < 0.5` before
+/// the activation buffer was seeded, and the rk-like one was right only for
+/// models that own no initial event.
+fn simulate_on(
+    mode: SimSolverMode,
+    name: &str,
+    source: &str,
+) -> (rumoca::CompilationResult, SimResult) {
     let compiled = rumoca::Compiler::new()
         .model(name)
         .compile_str(source, "time_event_when_activation.mo")
@@ -167,13 +306,16 @@ fn simulate(name: &str, source: &str) -> (rumoca::CompilationResult, SimResult) 
         &SimOptions {
             t_end: 1.0,
             dt: Some(0.05),
-            solver_mode: SimSolverMode::RkLike,
+            solver_mode: mode,
             ..SimOptions::default()
         },
     )
-    .unwrap_or_else(|error| panic!("`{name}` should simulate: {error}"));
+    .unwrap_or_else(|error| panic!("`{name}` should simulate on {mode:?}: {error}"));
     (compiled, sim)
 }
+
+/// Both solver sessions, so an assertion cannot pass by naming the lucky one.
+const SESSIONS: [SimSolverMode; 2] = [SimSolverMode::RkLike, SimSolverMode::Bdf];
 
 /// The last recorded sample at or before `t`.
 ///
@@ -421,10 +563,7 @@ fn strict_time_activation_applies_a_reinit_at_its_instant() {
 /// A falling `time` relation owns the same instant and still does not activate.
 ///
 /// omc leaves `y = 0` for the whole run: `time < 0.5` is true from the start and
-/// only ever falls, and a `when` runs on a rising edge. The model carries a
-/// continuous state deliberately — without one the state-free session fires
-/// every already-true activation at `t = 0` (see the module header), which is a
-/// different defect and not the one under test here.
+/// only ever falls, and a `when` runs on a rising edge.
 #[test]
 fn falling_time_activation_does_not_fire_at_its_instant() {
     let (compiled, sim) = simulate("Falling", FALLING);
@@ -432,6 +571,12 @@ fn falling_time_activation_does_not_fire_at_its_instant() {
         event_owners(&compiled),
         (0, 1),
         "`when time < 0.5` owns the same instant as the rising spellings"
+    );
+    assert_eq!(
+        value_at(&sim, "y", 0.0),
+        0.0,
+        "`time < 0.5` is true at t = 0, and MLS §8.3.5.1 starts its activation \
+         buffer there, so the initial event has no edge to run"
     );
     assert_eq!(
         value_at(&sim, "y", 0.45),
@@ -450,15 +595,487 @@ fn falling_time_activation_does_not_fire_at_its_instant() {
     );
 }
 
-/// Every branch of a `when`/`elsewhen` chain contributes its own instant.
+const STATE_CONDITION_TRUE_AT_START: &str = "model StateConditionTrueAtStart
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when x < 2 then
+    y = 1;
+  end when;
+end StateConditionTrueAtStart;
+";
+
+const COMPOUND_TRUE_AT_START: &str = "model CompoundTrueAtStart
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when time < 0.5 and x < 2 then
+    y = 1;
+  end when;
+end CompoundTrueAtStart;
+";
+
+const INITIAL_ONLY: &str = "model InitialOnly
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when initial() then
+    y = 1;
+  end when;
+end InitialOnly;
+";
+
+const INITIAL_BESIDE_FALLING: &str = "model InitialBesideFalling
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+  discrete Real z(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when initial() then
+    z = 1;
+  end when;
+  when time < 0.5 then
+    y = 1;
+  end when;
+end InitialBesideFalling;
+";
+
+const INITIAL_BESIDE_STATE_CONDITION: &str = "model InitialBesideStateCondition
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+  discrete Real z(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when initial() then
+    z = 1;
+  end when;
+  when x < 2 then
+    y = 1;
+  end when;
+end InitialBesideStateCondition;
+";
+
+const NEGATED_TIME: &str = "model NegatedTime
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when not (time > 0.5) then
+    y = 1;
+  end when;
+end NegatedTime;
+";
+
+/// `y` never leaves zero, on either session.
 ///
-/// omc schedules events at `t = 0.3` and `t = 0.7` for this chain. Which branch
-/// *runs* at `t = 0.7` is a branch-priority question this file does not settle
-/// (rumoca and omc disagree there — see the module header); that both instants
-/// are scheduled, and that the first branch runs at its own instant, is the
-/// event-owner property under test.
+/// The whole run is asserted, not only `t = 0`: a condition true at the start
+/// must neither run at the initial event nor pick up a spurious edge at some
+/// later instant it happens to own.
+fn assert_never_activates(name: &str, source: &str, model: &str) {
+    for mode in SESSIONS {
+        let (_, sim) = simulate_on(mode, name, source);
+        for t in [0.0, 0.25, 0.45, AFTER_INSTANT, 0.55, 1.0] {
+            assert_eq!(
+                value_at(&sim, "y", t),
+                0.0,
+                "`{model}` on {mode:?}: omc leaves y = 0 for the whole run; \
+                 t = {t} must not activate an already-true condition"
+            );
+        }
+    }
+}
+
+/// A condition already true at `t = 0` does not run its body at the initial
+/// event, on either session.
+///
+/// MLS §8.6 activates a when-clause during initialization *"if and only if"* it
+/// is enabled with `initial()`, and §8.3.5.1 says why `time < 0.5` is not
+/// enabled: its activation buffer starts at the condition's own value, so
+/// `edge = b and not pre(b)` is false at the initialization instant. omc leaves
+/// `y = 0` for the whole run.
 #[test]
-fn else_when_schedules_every_branch_instant() {
+fn a_falling_time_condition_never_activates_on_either_session() {
+    assert_never_activates("Falling", FALLING, "when time < 0.5");
+}
+
+/// The same for a relation over a continuous state, which is what rules `time`
+/// out as the axis.
+///
+/// `x` starts at `0`, so `x < 2` is true at the initialization instant and stays
+/// true past `t = 1`. omc leaves `y = 0`.
+#[test]
+fn a_state_condition_true_at_the_start_never_activates_on_either_session() {
+    assert_never_activates(
+        "StateConditionTrueAtStart",
+        STATE_CONDITION_TRUE_AT_START,
+        "when x < 2",
+    );
+}
+
+/// And for a conjunction of the two, so the seed is shown to reach a compound
+/// activation and not only a leaf.
+///
+/// omc leaves `y = 0`.
+#[test]
+fn a_compound_condition_true_at_the_start_never_activates_on_either_session() {
+    assert_never_activates(
+        "CompoundTrueAtStart",
+        COMPOUND_TRUE_AT_START,
+        "when time < 0.5 and x < 2",
+    );
+}
+
+/// A negated `time` relation never activates either — including at the instant
+/// it owns.
+///
+/// `not (time > 0.5)` is true from the start and falls at `t = 0.5`. Its buffer
+/// is seeded true, so the scheduled instant it owns finds no rising edge; with
+/// the buffer left at `false` the rk-like session ran the body *at* `t = 0.5`,
+/// where §8.5's buffered `time > 0.5` still reads false and the negation reads
+/// true. omc leaves `y = 0` for the whole run.
+#[test]
+fn a_negated_time_condition_never_activates_on_either_session() {
+    assert_never_activates("NegatedTime", NEGATED_TIME, "when not (time > 0.5)");
+}
+
+/// `when initial()` still runs at the initial event, on either session.
+///
+/// This is the assertion that keeps the seed honest. §8.6 names `initial()` as
+/// the one enabler of a when-clause during initialization, and the seed is taken
+/// with the `initial()` flag cleared precisely so that this activation keeps the
+/// edge every other one loses. omc: `y = 1` from the `t = 0` row on.
+#[test]
+fn an_initial_activation_still_runs_at_the_initial_event_on_either_session() {
+    for mode in SESSIONS {
+        let (_, sim) = simulate_on(mode, "InitialOnly", INITIAL_ONLY);
+        assert_eq!(
+            value_at(&sim, "y", 0.0),
+            1.0,
+            "`when initial()` must run at the initial event on {mode:?}, as omc does"
+        );
+        assert_eq!(
+            value_at(&sim, "y", 1.0),
+            1.0,
+            "and must run exactly once, not once per later event"
+        );
+    }
+}
+
+/// An already-true condition standing *beside* a `when initial()` still does not
+/// run.
+///
+/// This pair is what proves the two sessions had one bug rather than two. Before
+/// the seed, the rk-like session left `y = 0` for
+/// [`a_falling_time_condition_never_activates_on_either_session`]'s model — not
+/// because it applied §8.6, but because that model owns no initial event at all.
+/// Adding a `when initial()` creates one, and the rk-like session then ran the
+/// falling body at `t = 0` exactly as the diffsol session did.
+///
+/// omc: `z = 1` at `t = 0`, `y = 0` for the whole run, in both models.
+#[test]
+fn an_initial_event_does_not_activate_the_conditions_beside_it() {
+    for (name, source, model) in [
+        (
+            "InitialBesideFalling",
+            INITIAL_BESIDE_FALLING,
+            "when time < 0.5",
+        ),
+        (
+            "InitialBesideStateCondition",
+            INITIAL_BESIDE_STATE_CONDITION,
+            "when x < 2",
+        ),
+    ] {
+        for mode in SESSIONS {
+            let (_, sim) = simulate_on(mode, name, source);
+            assert_eq!(
+                value_at(&sim, "z", 0.0),
+                1.0,
+                "`{name}` on {mode:?}: the `when initial()` beside `{model}` must run"
+            );
+            for t in [0.0, 0.45, 1.0] {
+                assert_eq!(
+                    value_at(&sim, "y", t),
+                    0.0,
+                    "`{name}` on {mode:?}: the initial event `when initial()` creates \
+                     must not activate `{model}` at t = {t}, as omc does not"
+                );
+            }
+        }
+    }
+}
+
+const WHEN_LITERAL_TRUE: &str = "model WhenLiteralTrue
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+  discrete Real ticks(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when sample(0.1, 0.1) then
+    ticks = pre(ticks) + 1;
+  end when;
+  when true then
+    y = pre(y) + 1;
+  end when;
+end WhenLiteralTrue;
+";
+
+const WHEN_PARAMETER_TRUE: &str = "model WhenParameterTrue
+  parameter Boolean b = true;
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when b then
+    y = pre(y) + 1;
+  end when;
+end WhenParameterTrue;
+";
+
+const WHEN_LITERAL_TRUE_BARE: &str = "model WhenLiteralTrueBare
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when true then
+    y = pre(y) + 1;
+  end when;
+end WhenLiteralTrueBare;
+";
+
+const VECTOR_TAUTOLOGY: &str = "model VectorTautology
+  Real x(start = 0, fixed = true);
+  Boolean u;
+  discrete Real n(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  u = time > 0.3;
+  when {u, not u} then
+    n = pre(n) + 1;
+  end when;
+end VectorTautology;
+";
+
+const SCALAR_TAUTOLOGY: &str = "model ScalarTautology
+  Real x(start = 0, fixed = true);
+  Boolean u;
+  discrete Real n(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  u = time > 0.3;
+  when u or not u then
+    n = pre(n) + 1;
+  end when;
+end ScalarTautology;
+";
+
+const VECTOR_LITERAL_ELEMENT: &str = "model VectorLiteralElement
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when {true, time > 0.5} then
+    y = pre(y) + 1;
+  end when;
+end VectorLiteralElement;
+";
+
+const SCALAR_LITERAL_DISJUNCT: &str = "model ScalarLiteralDisjunct
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when true or time > 0.5 then
+    y = pre(y) + 1;
+  end when;
+end ScalarLiteralDisjunct;
+";
+
+const VECTOR_INITIAL_WITH_TRUE_ELEMENT: &str = "model VectorInitialWithTrueElement
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when {initial(), time < 0.5} then
+    y = pre(y) + 1;
+  end when;
+end VectorInitialWithTrueElement;
+";
+
+/// A model author's `when true then` never runs — on either session.
+///
+/// MLS §8.3.5.1 starts the activation buffer at the condition's own value and
+/// §8.6 keeps `pre(b) = b` before integration, so a constant condition has no
+/// rising edge, ever. `omc` leaves `y = 0` for the whole run.
+///
+/// The `sample` beside it is what gives the model events to run over: without
+/// one, "never fired" is indistinguishable from "was never asked". The buffer
+/// for the synthesised algorithm-section activation is deliberately *not* built
+/// this way (it is `ConditionOperation::Always`), and this test is what stops
+/// the two being confused again — a structural "is this a literal?" test would
+/// give this `when` the level activation of an algorithm section and count every
+/// sample tick.
+#[test]
+fn a_source_when_over_a_literal_never_runs() {
+    let (_, sim) = simulate("WhenLiteralTrue", WHEN_LITERAL_TRUE);
+    assert_eq!(
+        value_at(&sim, "ticks", 1.0),
+        10.0,
+        "the sample beside it must have produced ten events, so `y = 0` below is \
+         \"never fired\" and not \"never asked\""
+    );
+    for t in [0.0, 0.25, 0.55, 1.0] {
+        assert_eq!(
+            value_at(&sim, "y", t),
+            0.0,
+            "`when true` has no rising edge at t = {t}, as omc has none"
+        );
+    }
+}
+
+/// A literal condition and a `parameter Boolean` condition agree.
+///
+/// Neither can change, so §8.3.5.1 gives both a buffer that starts true, and
+/// `omc` leaves `y = 0` for both. Asserting them together is what keeps the
+/// answer a statement about constancy rather than about syntax: a rule that
+/// looked at expression shape would separate them.
+#[test]
+fn a_literal_and_a_parameter_boolean_activation_agree() {
+    for (name, source) in [
+        ("WhenLiteralTrueBare", WHEN_LITERAL_TRUE_BARE),
+        ("WhenParameterTrue", WHEN_PARAMETER_TRUE),
+    ] {
+        let (_, sim) = simulate(name, source);
+        for t in [0.0, 0.45, 1.0] {
+            assert_eq!(
+                value_at(&sim, "y", t),
+                0.0,
+                "`{name}` must not run at t = {t}: a constant activation never rises, \
+                 and omc leaves y = 0"
+            );
+        }
+    }
+}
+
+/// `when {u, not u}` fires on the element that rises; `when u or not u` never
+/// fires.
+///
+/// This pair is the whole of MLS §8.3.5's vector rule. The two models have the
+/// same operands and differ only in the spelling, and `omc` separates them:
+/// `n` steps to 1 at `t = 0.3` for the vector and stays 0 for the scalar
+/// disjunction, which is a tautology and so never becomes true.
+///
+/// The vector spelling is not a curiosity — it is how
+/// `Modelica.Blocks.Logical.TriggeredTrapezoid` and `LogicalDelay` are written.
+/// Neither compiles in rumoca yet (see the module header), so this asserts the
+/// shape rather than those blocks; folding a vector into one buffered `Or` makes
+/// both models here produce the scalar answer, which is what would reach them.
+#[test]
+fn a_vector_activation_rises_where_its_disjunction_cannot() {
+    let (_, sim) = simulate("VectorTautology", VECTOR_TAUTOLOGY);
+    assert_eq!(value_at(&sim, "n", 0.25), 0.0);
+    assert_eq!(
+        value_at(&sim, "n", 0.3 + 1.0e-4),
+        1.0,
+        "the element `u` becomes true at t = 0.3, so the vector activates there, \
+         as omc does"
+    );
+    assert_eq!(
+        value_at(&sim, "n", 1.0),
+        1.0,
+        "and exactly once: `not u` only ever falls"
+    );
+
+    let (_, sim) = simulate("ScalarTautology", SCALAR_TAUTOLOGY);
+    for t in [0.0, 0.25, 0.3 + 1.0e-4, 1.0] {
+        assert_eq!(
+            value_at(&sim, "n", t),
+            0.0,
+            "`u or not u` is true from the start and never becomes true, so it never \
+             activates at t = {t} — omc leaves n = 0"
+        );
+    }
+}
+
+/// The same separation with a literal element, which is where `omc`'s two
+/// answers are furthest apart.
+///
+/// `when {true, time > 0.5}` fires at `t = 0.5` — the *second* element becomes
+/// true there — while `when true or time > 0.5` never fires at all. One buffer
+/// for the vector cannot produce both.
+#[test]
+fn a_literal_vector_element_does_not_suppress_the_element_beside_it() {
+    let (_, sim) = simulate("VectorLiteralElement", VECTOR_LITERAL_ELEMENT);
+    assert_eq!(value_at(&sim, "y", 0.45), 0.0);
+    assert_eq!(
+        value_at(&sim, "y", AFTER_INSTANT),
+        1.0,
+        "the `time > 0.5` element rises at its own instant, as omc does"
+    );
+    assert_eq!(value_at(&sim, "y", 1.0), 1.0);
+
+    let (_, sim) = simulate("ScalarLiteralDisjunct", SCALAR_LITERAL_DISJUNCT);
+    for t in [0.0, 0.45, AFTER_INSTANT, 1.0] {
+        assert_eq!(
+            value_at(&sim, "y", t),
+            0.0,
+            "`true or time > 0.5` is true from the start, so it never rises — omc \
+             leaves y = 0 at t = {t}"
+        );
+    }
+}
+
+/// `when {initial(), <already true>}` runs once, at the initial event.
+///
+/// The `initial()` element is the §8.6 enabler and has its edge there; the
+/// `time < 0.5` element beside it is already true at `t = 0`, so §8.3.5.1 starts
+/// *its* buffer true and it contributes no activation — at `t = 0` or when it
+/// falls at `t = 0.5`. omc: `y = 1` from the `t = 0` row and never again.
+///
+/// Per-element buffers are what make that reachable: with one buffer for the
+/// vector, the disjunction is true at `t = 0` from the already-true element and
+/// seeding it deletes the `initial()` activation as well.
+#[test]
+fn an_initial_element_does_not_enable_an_already_true_element() {
+    let (_, sim) = simulate(
+        "VectorInitialWithTrueElement",
+        VECTOR_INITIAL_WITH_TRUE_ELEMENT,
+    );
+    assert_eq!(
+        value_at(&sim, "y", 0.0),
+        1.0,
+        "the `initial()` element runs the body at the initial event, as omc does"
+    );
+    for t in [0.45, AFTER_INSTANT, 1.0] {
+        assert_eq!(
+            value_at(&sim, "y", t),
+            1.0,
+            "and nothing else in the vector may run it again at t = {t}"
+        );
+    }
+}
+
+/// Every branch of a `when`/`elsewhen` chain owns an instant *and runs at it*.
+///
+/// MLS §8.3.5 activates the equations of a when-equation *"only at the instant
+/// when the scalar expression or any of the elements of the vector expression
+/// becomes true"*, and §8.3.5.1 writes the chain as an if-expression over one
+/// `edge(bi)` per branch condition. Each branch therefore runs on its own edge.
+/// The earlier branch's higher priority *"can be used to resolve assignment
+/// conflicts"* (§8.3.5) — it ranks branches that activate *together*, which is
+/// what [`else_when_priority_resolves_simultaneous_edges`] pins.
+///
+/// rumoca guarded branch `i` with `cond_i and not (cond_1 or …)` — the earlier
+/// branch's *level* — so a first condition that stays true suppressed every
+/// later branch forever, and `y` held `1` for the whole run.
+///
+/// omc: `y = 0` through `t = 0.25`, `1` from the `t = 0.3` right-limit row, `2`
+/// from the `t = 0.7` right-limit row, holding to `t = 1`.
+#[test]
+fn else_when_runs_every_branch_at_its_own_instant() {
     let (compiled, sim) = simulate("ElseWhen", ELSE_WHEN);
     assert_eq!(
         event_owners(&compiled),
@@ -470,6 +1087,257 @@ fn else_when_schedules_every_branch_instant() {
         value_at(&sim, "y", 0.3 + 1.0e-4),
         1.0,
         "the first branch runs at its own instant, as omc does"
+    );
+    assert_eq!(
+        value_at(&sim, "y", 0.65),
+        1.0,
+        "and holds until the second branch's own instant"
+    );
+    assert_eq!(
+        value_at(&sim, "y", 0.7 + 1.0e-4),
+        2.0,
+        "the elsewhen branch runs at t = 0.7, as omc does: its own condition \
+         becomes true there"
+    );
+    assert_eq!(value_at(&sim, "y", 1.0), 2.0);
+}
+
+const ELSE_WHEN_STATE: &str = "model ElseWhenState
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when x > 0.3 then
+    y = 1;
+  elsewhen x > 0.7 then
+    y = 2;
+  end when;
+end ElseWhenState;
+";
+
+const ELSE_WHEN_THREE: &str = "model ElseWhenThree
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when time > 0.3 then
+    y = 1;
+  elsewhen time > 0.5 then
+    y = 2;
+  elsewhen time > 0.7 then
+    y = 3;
+  end when;
+end ElseWhenThree;
+";
+
+const ELSE_WHEN_SIMULTANEOUS: &str = "model ElseWhenSimultaneous
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when time > 0.5 then
+    y = 1;
+  elsewhen time > 0.5 then
+    y = 2;
+  end when;
+end ElseWhenSimultaneous;
+";
+
+const ELSE_WHEN_FIRST_TRUE_AT_START: &str = "model ElseWhenFirstTrueAtStart
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when time < 0.5 then
+    y = 1;
+  elsewhen time > 0.7 then
+    y = 2;
+  end when;
+end ElseWhenFirstTrueAtStart;
+";
+
+const ELSE_WHEN_ALGORITHM: &str = "model ElseWhenAlgorithm
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+algorithm
+  when time > 0.3 then
+    y := 1;
+  elsewhen time > 0.7 then
+    y := 2;
+  end when;
+end ElseWhenAlgorithm;
+";
+
+const ELSE_WHEN_AFTER_INITIAL: &str = "model ElseWhenAfterInitial
+  Real x(start = 0, fixed = true);
+  discrete Real y(start = 0, fixed = true);
+equation
+  der(x) = 1;
+  when initial() then
+    y = 1;
+  elsewhen time > 0.7 then
+    y = 2;
+  end when;
+end ElseWhenAfterInitial;
+";
+
+/// The same chain over a continuous state, which is what identifies the defect
+/// as the branch guard rather than the `time` schedule.
+///
+/// Both branches here are located zero crossings, not scheduled instants, so
+/// nothing about §8.5's special `time` relations is involved — and the answer
+/// still used to be `y = 1` forever.
+///
+/// omc: `y = 0` through `t = 0.25`, `1` from `t = 0.3`, `2` from `t = 0.7`. The
+/// probes below sit one output interval past each crossing because a located
+/// crossing is only as accurate as its root solve, which is a separate
+/// property from which branch runs.
+#[test]
+fn else_when_over_a_state_reaches_its_second_branch() {
+    let (compiled, sim) = simulate("ElseWhenState", ELSE_WHEN_STATE);
+    assert_eq!(
+        event_owners(&compiled),
+        (2, 0),
+        "a chain over a state owns two crossings and no scheduled instant"
+    );
+    assert_eq!(value_at(&sim, "y", 0.25), 0.0);
+    assert_eq!(
+        value_at(&sim, "y", 0.35),
+        1.0,
+        "the first branch runs at its own crossing, as omc does"
+    );
+    assert_eq!(
+        value_at(&sim, "y", 0.75),
+        2.0,
+        "and the elsewhen branch at its own, as omc does"
+    );
+    assert_eq!(value_at(&sim, "y", 1.0), 2.0);
+}
+
+/// A three-branch chain reaches every branch, in order.
+///
+/// Two branches would leave open whether the fix merely swapped which single
+/// branch wins. omc: `1` from `t = 0.3`, `2` from `t = 0.5`, `3` from `t = 0.7`.
+#[test]
+fn a_three_branch_chain_reaches_every_branch() {
+    let (compiled, sim) = simulate("ElseWhenThree", ELSE_WHEN_THREE);
+    assert_eq!(event_owners(&compiled), (0, 3));
+    assert_eq!(value_at(&sim, "y", 0.25), 0.0);
+    assert_eq!(value_at(&sim, "y", 0.3 + 1.0e-4), 1.0);
+    assert_eq!(value_at(&sim, "y", INSTANT + 1.0e-4), 2.0);
+    assert_eq!(value_at(&sim, "y", 0.7 + 1.0e-4), 3.0);
+    assert_eq!(value_at(&sim, "y", 1.0), 3.0);
+}
+
+/// When two branch edges *are* simultaneous, the earlier branch wins.
+///
+/// This is the half of MLS §8.3.5 the fix must not throw away: the chain form
+/// *"can be used to resolve assignment conflicts since the first of the
+/// when/elsewhen parts are given higher priority than later ones"*. Both
+/// branches here are written `time > 0.5`, so both edges land at the same
+/// instant and only priority can decide.
+///
+/// omc: `y = 0` through `t = 0.45`, `1` from the `t = 0.5` right-limit row on —
+/// never `2`.
+#[test]
+fn else_when_priority_resolves_simultaneous_edges() {
+    let (compiled, sim) = simulate("ElseWhenSimultaneous", ELSE_WHEN_SIMULTANEOUS);
+    assert_eq!(
+        event_owners(&compiled),
+        (0, 2),
+        "the two spellings of one threshold still own one instant each"
+    );
+    assert_eq!(value_at(&sim, "y", 0.45), 0.0);
+    assert_eq!(
+        value_at(&sim, "y", AFTER_INSTANT),
+        1.0,
+        "the higher-priority branch takes the instant, as omc does"
+    );
+    assert_eq!(
+        value_at(&sim, "y", 1.0),
+        1.0,
+        "and the later branch must never overwrite it"
+    );
+}
+
+/// A chain whose *first* branch is already true at `t = 0` still reaches its
+/// second.
+///
+/// This is where the two fixes meet. §8.3.5.1 starts the first branch's
+/// activation buffer at `time.start < 0.5`, i.e. `true`, so that branch has no
+/// edge for the whole run — and the second branch must therefore be free to run
+/// at its own instant. Guarding it with the first branch's *level* would have
+/// suppressed it right through `t = 0.7`, and seeding its buffer to `false`
+/// would have run the first branch at `t = 0` instead.
+///
+/// omc: `y = 0` through `t = 0.65`, `2` from the `t = 0.7` right-limit row on.
+#[test]
+fn a_chain_whose_first_branch_is_true_at_the_start_reaches_its_second() {
+    let (compiled, sim) = simulate("ElseWhenFirstTrueAtStart", ELSE_WHEN_FIRST_TRUE_AT_START);
+    assert_eq!(event_owners(&compiled), (0, 2));
+    assert_eq!(
+        value_at(&sim, "y", 0.0),
+        0.0,
+        "`time < 0.5` is true at t = 0, so its branch has no edge to run"
+    );
+    assert_eq!(value_at(&sim, "y", 0.65), 0.0);
+    assert_eq!(
+        value_at(&sim, "y", 0.7 + 1.0e-4),
+        2.0,
+        "and the elsewhen branch runs at its own instant, as omc does"
+    );
+    assert_eq!(value_at(&sim, "y", 1.0), 2.0);
+}
+
+/// The same chain written as a `when` *statement* behaves identically.
+///
+/// MLS §11.2.7 gives a when-statement the same activation as a when-equation,
+/// so a chain that reaches its second branch in an equation section and holds at
+/// its first in an algorithm section would be two semantics for one construct.
+/// The two guards are built in different functions, which is exactly why this is
+/// asserted rather than assumed.
+///
+/// omc: `y = 0` through `t = 0.25`, `1` from `t = 0.3`, `2` from `t = 0.7`.
+#[test]
+fn an_algorithm_section_chain_reaches_its_second_branch_too() {
+    let (_, sim) = simulate("ElseWhenAlgorithm", ELSE_WHEN_ALGORITHM);
+    assert_eq!(value_at(&sim, "y", 0.25), 0.0);
+    assert_eq!(value_at(&sim, "y", 0.3 + 1.0e-4), 1.0);
+    assert_eq!(
+        value_at(&sim, "y", 0.7 + 1.0e-4),
+        2.0,
+        "a `when`/`elsewhen` statement must reach its second branch, as omc does"
+    );
+    assert_eq!(value_at(&sim, "y", 1.0), 2.0);
+}
+
+/// `when initial() … elsewhen …` runs both, each at its own instant.
+///
+/// The §8.6 initial activation and a later `elsewhen` are the shape MSL sources
+/// are written in, and it is the one chain where the first branch legitimately
+/// fires at `t = 0`. Its edge must not suppress the second branch afterwards.
+///
+/// omc: `y = 1` from the `t = 0` row, `2` from the `t = 0.7` right-limit row.
+#[test]
+fn an_initial_branch_does_not_suppress_its_else_when() {
+    let (compiled, sim) = simulate("ElseWhenAfterInitial", ELSE_WHEN_AFTER_INITIAL);
+    assert_eq!(
+        event_owners(&compiled),
+        (0, 1),
+        "`initial()` owns no crossing; the `time` branch owns its instant"
+    );
+    assert_eq!(
+        value_at(&sim, "y", 0.0),
+        1.0,
+        "the `initial()` branch runs at the initial event, as omc does"
+    );
+    assert_eq!(value_at(&sim, "y", 0.65), 1.0);
+    assert_eq!(
+        value_at(&sim, "y", 0.7 + 1.0e-4),
+        2.0,
+        "and the elsewhen branch runs at its own instant, as omc does"
     );
 }
 

@@ -482,3 +482,161 @@ fn an_instant_at_the_start_is_left_to_its_crossing() {
         });
     }
 }
+
+/// Build `when sample(<start>, 0.25) then y = 1.0; end when;` over a model that
+/// declares `parameter Real t0(fixed = false)` settled by an initial equation.
+///
+/// `t0` is the shape MSL is made of: `Modelica.Blocks.Math.Mean` and
+/// `Modelica.Blocks.Math.SignalExtrema` both declare it and both write
+/// `sample(t0 + P, P)`.
+fn deferred_start_sample_model(
+    source: &TestSource,
+    settling: Expression,
+    sample_text: &str,
+) -> flat::Model {
+    let mut model = test_model();
+    add_primitive_variable(
+        &mut model,
+        source,
+        "y",
+        "discrete Real y",
+        8,
+        Vec::new(),
+        false,
+    );
+    model
+        .variables
+        .get_mut(&VarName::new("y"))
+        .unwrap()
+        .variability = Variability::Discrete(Default::default());
+    add_primitive_variable(
+        &mut model,
+        source,
+        "t0",
+        "parameter Real t0(fixed = false)",
+        9,
+        Vec::new(),
+        false,
+    );
+    let t0 = model.variables.get_mut(&VarName::new("t0")).unwrap();
+    t0.variability = Variability::Parameter(Default::default());
+    // The declaration defers the value (MLS §4.4) and carries no binding, so
+    // the initial section is its only determining owner (MLS §8.6).
+    t0.fixed = Some(false);
+    t0.binding = None;
+
+    let settling_span = source.span("t0", 0);
+    model.initial_equations.push(flat::Equation {
+        residual: Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(variable_reference(source, "t0", "t0", 0, Vec::new())),
+            rhs: Box::new(settling),
+            span: settling_span,
+        },
+        span: settling_span,
+        origin: flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+        scalar_count: 1,
+    });
+
+    let sample_span = source.span(sample_text, 0);
+    let condition = Expression::BuiltinCall {
+        function: BuiltinFunction::Sample,
+        args: vec![
+            variable_reference(source, "t0", "t0", 1, Vec::new()),
+            Expression::Literal {
+                value: Literal::Real(0.25),
+                span: source.span("0.25", 0),
+            },
+        ],
+        span: sample_span,
+    };
+    let mut branch = flat::WhenBranch::new(condition, sample_span);
+    branch.add_equation(flat::WhenEquation::assign(
+        VarName::new("y"),
+        Expression::Literal {
+            value: Literal::Real(1.0),
+            span: source.span("1.0", 0),
+        },
+        source.span("y = 1.0", 0),
+        "when assignment",
+    ));
+    model
+        .when_chains
+        .push(flat::WhenChain::new(branch, sample_span));
+    model
+}
+
+/// A `sample` start settled by the start instant is refused by that name.
+///
+/// MLS §3.7.5 requires `start` to be a parameter expression, and a `fixed =
+/// false` parameter *is* one — so the model is legal and the refusal is
+/// rumoca's, not the language's. What makes it unrepresentable here is which
+/// number settles it: MLS §8.6 evaluates the initial section at the
+/// initialization instant, so `t0 = time` is the simulation start instant,
+/// while a [`rumoca_core::ClockLattice`] phase is an absolute translation-time
+/// rational. Naming that is the whole point of this test: the refusal used to
+/// read `unknown variable: t0`, which describes a name-resolution defect that
+/// does not exist and sends a reader hunting for one.
+#[test]
+fn a_sample_start_settled_by_the_start_instant_is_refused_by_that_name() {
+    let text = "model M discrete Real y; parameter Real t0(fixed = false); \
+                initial equation t0 = time; equation when sample(t0, 0.25) then y = 1.0; \
+                end when; end M;";
+    let source = TestSource::new(text);
+    let settling = Expression::VarRef {
+        name: Reference::new("time"),
+        subscripts: Vec::new(),
+        span: source.span("time", 0),
+    };
+    let model = deferred_start_sample_model(&source, settling, "sample(t0, 0.25)");
+
+    let error = construct(&model, source.map).expect_err("a start with no translation-time value");
+    let message = error.to_string();
+    assert!(
+        message.contains(
+            "`t0` is a `fixed = false` parameter determined by the simulation start instant"
+        ),
+        "the refusal must name the deferred parameter and what settles it, got: {message}"
+    );
+    assert!(
+        !message.contains("unknown variable"),
+        "a declared parameter must never be reported as an unresolved name, got: {message}"
+    );
+}
+
+/// The same declaration settled without a syntactic `time` read falls to the
+/// initialization-system tier, not the start-instant one.
+///
+/// Both are `fixed = false` parameters with no binding, so a refusal keyed on
+/// the declaration alone would give them one message; the determining operand
+/// is what tells them apart. This pins the *floor* tier, and the floor is all
+/// it pins: `InitializationSystem` says the parameter has no translation-time
+/// value, and deliberately does not claim the value is independent of the
+/// simulation start instant. A start-instant dependency reached indirectly,
+/// through an initial algorithm, or through a residual that is not a top-level
+/// subtraction on the target also lands here — see `deferred_parameter_source`
+/// for the exact shape the stronger tier proves. Here the determining operand
+/// is the literal `0.5`, which genuinely needs no start instant.
+#[test]
+fn a_sample_start_settled_without_time_names_the_initialization_system() {
+    let text = "model M discrete Real y; parameter Real t0(fixed = false); \
+                initial equation t0 = 0.5; equation when sample(t0, 0.25) then y = 1.0; \
+                end when; end M;";
+    let source = TestSource::new(text);
+    let settling = Expression::Literal {
+        value: Literal::Real(0.5),
+        span: source.span("0.5", 0),
+    };
+    let model = deferred_start_sample_model(&source, settling, "sample(t0, 0.25)");
+
+    let error = construct(&model, source.map).expect_err("a start the fold cannot settle");
+    let message = error.to_string();
+    assert!(
+        message.contains(
+            "`t0` is a `fixed = false` parameter determined by the initialization system"
+        ),
+        "the refusal must name the initialization system as the owner, got: {message}"
+    );
+}

@@ -464,7 +464,8 @@ fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
         "plugs_n.pin",
         &sub_match_index,
         &mut ctx,
-    );
+    )
+    .expect("two flow members are a pairing MLS §9.3 admits");
 
     assert_eq!(
         flow_pairs,
@@ -508,7 +509,8 @@ fn test_connect_sub_variable_does_not_index_scalar_b_member() {
     };
     let sub_match_index = ConnectionSubMatchIndex::new("r0.n", &subs_b, &var_index);
 
-    connect_sub_variable(&sub_a, "resistor.p", "r0.n", &sub_match_index, &mut ctx);
+    connect_sub_variable(&sub_a, "resistor.p", "r0.n", &sub_match_index, &mut ctx)
+        .expect("two flow members are a pairing MLS §9.3 admits");
 
     assert_eq!(
         flow_pairs,
@@ -559,7 +561,8 @@ fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
         "starpoints.pin",
         &sub_match_index,
         &mut ctx,
-    );
+    )
+    .expect("two flow members are a pairing MLS §9.3 admits");
 
     assert_eq!(
         flow_pairs,

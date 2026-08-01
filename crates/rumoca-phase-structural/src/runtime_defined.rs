@@ -142,6 +142,11 @@ fn contains_event_coordinate<'dae>(
             dae::ExpressionOperation::Coordinate(
                 dae::CoordinateView::PreDiscreteReal(_)
                     | dae::CoordinateView::PreDiscreteValue(_)
+                    // `pre()` of a continuous coordinate holds its left limit
+                    // from the last event, so a residual that reads one is
+                    // event-defined exactly like a discrete `pre()` read.
+                    | dae::CoordinateView::PreState(_)
+                    | dae::CoordinateView::PreAlgebraic(_)
                     | dae::CoordinateView::Condition(_)
                     | dae::CoordinateView::Previous(_)
                     | dae::CoordinateView::Terminal(_)

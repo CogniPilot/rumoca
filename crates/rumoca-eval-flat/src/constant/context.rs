@@ -6,6 +6,7 @@ use rustc_hash::FxBuildHasher;
 use std::borrow::Cow;
 use std::hash::BuildHasher;
 
+use super::errors::DeferredParameterSource;
 use super::value::Value;
 use super::{EvalIndexMap, Function, VarName};
 
@@ -36,6 +37,14 @@ pub struct EvalContext {
     /// the same declaration would share.
     values_by_instance: IndexMap<InstanceId, Value, FxBuildHasher>,
 
+    /// Declared `fixed = false` parameters the initialization system settles.
+    ///
+    /// These names are *declared* and resolve fine; what they lack is a
+    /// translation-time number. Keeping them apart from the value table lets a
+    /// failed lookup report the construct (MLS §8.6 deferred parameter) instead
+    /// of reporting the name as unknown.
+    deferred_parameters: EvalIndexMap<DeferredParameterSource>,
+
     /// Lexical instance scope used for modification-binding lookup.
     lookup_scope: Option<ComponentPath>,
 }
@@ -60,6 +69,7 @@ impl EvalContext {
             functions: IndexMap::with_capacity_and_hasher(functions, FxBuildHasher),
             array_dimensions: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
             values_by_instance: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
+            deferred_parameters: IndexMap::with_capacity_and_hasher(0, FxBuildHasher),
             lookup_scope: None,
         }
     }
@@ -92,6 +102,22 @@ impl EvalContext {
     /// readable, or the inner scope would fold an outer coordinate's value.
     pub fn remove_parameter(&mut self, name: &str) {
         self.parameters.shift_remove(name);
+    }
+
+    /// Record that `name` is a declared parameter the initialization system
+    /// determines, so a failed value lookup can name that construct.
+    pub fn add_deferred_parameter(
+        &mut self,
+        name: impl Into<String>,
+        source: DeferredParameterSource,
+    ) {
+        self.deferred_parameters.insert(name.into(), source);
+    }
+
+    /// What settles `name`, when it is a declared but translation-time
+    /// valueless parameter.
+    pub fn deferred_parameter(&self, name: &str) -> Option<DeferredParameterSource> {
+        self.lookup_value(&self.deferred_parameters, name).copied()
     }
 
     /// Add shape metadata without materializing placeholder element values.

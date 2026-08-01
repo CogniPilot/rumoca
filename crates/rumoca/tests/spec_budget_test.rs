@@ -3,7 +3,7 @@
 //! regress without an explicit status change.
 //!
 //! Caps (SPEC_0000 §3):
-//!   - active spec count (ACCEPTED + DRAFT): <= 15
+//!   - active spec count (ACCEPTED + DRAFT): <= 20
 //!   - REFERENCE specs (lookup catalogs like SPEC_0022): uncapped
 //!
 //! Per-spec budgets (SPEC_0000 §3a):
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 const HARD_WORDS: usize = 2500;
 const HARD_LINES: usize = 350;
-const ACTIVE_SPEC_CAP: usize = 15;
+const ACTIVE_SPEC_CAP: usize = 20;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

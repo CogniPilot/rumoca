@@ -291,6 +291,10 @@ pub(super) struct FunctionShapeAnalysis {
     dependencies: Vec<Vec<usize>>,
     constructor_names: HashSet<VarName>,
     constructor_fields_by_key: HashMap<FunctionSpecializationKey, Vec<ValueShape>>,
+    /// Declared input count per callable, so the MLS §12.4.2.1 partial
+    /// application check runs at every call-shape entry point and not only
+    /// inside discovery, which is the only one that still holds `flat`.
+    declared_input_counts: HashMap<VarName, usize>,
     /// Input positions each callable keys a specialization on by value.
     ///
     /// An input qualifies only when MLS §4.4.2 admits its declared type in a
@@ -323,6 +327,11 @@ impl FunctionShapeAnalysis {
             })
             .collect();
         let value_read_inputs = ValueReadInputs::analyze(flat, &dimension_typed_inputs);
+        let declared_input_counts = flat
+            .functions
+            .iter()
+            .map(|(name, function)| (name.clone(), function.inputs.len()))
+            .collect();
         let mut analyzer = ShapeAnalyzer {
             flat,
             analysis: Self {
@@ -332,6 +341,7 @@ impl FunctionShapeAnalysis {
                 dependencies: Vec::new(),
                 constructor_names,
                 constructor_fields_by_key: HashMap::new(),
+                declared_input_counts,
                 value_read_inputs,
             },
             active_specializations: Vec::new(),
@@ -451,6 +461,12 @@ impl FunctionShapeAnalysis {
             if self.constructor_names.contains(name.var_name()) {
                 return Ok(Vec::new());
             }
+            reject_function_partial_application(
+                self.declared_input_counts.get(name.var_name()).copied(),
+                name,
+                arguments,
+                span,
+            )?;
             let key = self.call_key(name, arguments, values, span)?;
             self.certificate(&key)
                 .and_then(|certificate| certificate.results.first())
@@ -517,6 +533,14 @@ impl ShapeAnalyzer<'_> {
             self.discover_expression(expression, values)?;
             return Ok(());
         }
+        if let Expression::Array {
+            elements,
+            is_matrix: true,
+            span,
+        } = expression
+        {
+            reject_non_scalar_matrix_row(elements, values, *span)?;
+        }
         for child in expression_children(expression) {
             self.discover_calls(child, values)?;
         }
@@ -548,6 +572,15 @@ impl ShapeAnalyzer<'_> {
             return Ok(Vec::new());
         }
         let mut resolve = |name: &rumoca_core::Reference, arguments: &[Expression], span: Span| {
+            reject_function_partial_application(
+                self.flat
+                    .functions
+                    .get(name.var_name())
+                    .map(|function| function.inputs.len()),
+                name,
+                arguments,
+                span,
+            )?;
             let inputs = arguments
                 .iter()
                 .map(|argument| self.discover_expression(argument, values))
@@ -918,6 +951,110 @@ impl ShapeAnalyzer<'_> {
             }
         }
     }
+}
+
+/// Refuse a `[ ]` row whose operands are proven non-scalar, by name.
+///
+/// MLS §10.4.2.1 builds `[A, B, …]` as `cat(2, promote(A, n), …)`, so a
+/// non-scalar operand needs the promoting `cat` the canonical DAE has no owner
+/// for: a vector operand becomes an n x 1 column and a row of vectors
+/// transposes into the result.
+///
+/// [`expression_rules::matrix_row_columns`] already names this for a call
+/// argument, but that rule only runs where a shape is demanded. A `[ ]` written
+/// directly in a model equation demands none, so `[v1, v2]` over declared
+/// vectors reached the constructor and failed as a bare `ED020` that named no
+/// construct — after the base compiler had silently transposed it. This walk
+/// sees every model expression, so it is where the model scope gets the same
+/// named refusal.
+///
+/// Only a *proven* non-scalar operand is refused; an operand this scope cannot
+/// shape keeps the lowering it already had, which holds the accepted set fixed.
+fn reject_non_scalar_matrix_row(
+    elements: &[Expression],
+    values: &ShapeEnvironment,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    for element in elements {
+        if matches!(element, Expression::Array { .. }) {
+            // A nested row of this constructor, not an operand of one row.
+            continue;
+        }
+        let Some(shape) = call_free_expression_shape(element, values) else {
+            continue;
+        };
+        if !shape.is_empty() {
+            return Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                format!(
+                    "MLS §10.4.2.1 `[ ]` concatenation of a rank-{} operand needs a `cat` \
+                     promotion owner the canonical DAE does not have; only scalar operands have \
+                     an exact checked shape rule",
+                    shape.len()
+                ),
+                span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse an MLS §12.4.2.1 function partial application by name.
+///
+/// MLS §12.4.2.1: "A function partial application is specified by the function
+/// keyword followed by a function call to func_name giving named formal
+/// parameter associations for the formal parameters to be bound", and it
+/// "returns a partially evaluated function that is also a function, with the
+/// remaining not bound formal parameters still present in the same order as in
+/// the original function declaration".
+///
+/// The value such an expression denotes is a *function*, not an array of
+/// scalars, so it has no [`ValueShape`] at all — and Flat carries no marker
+/// distinguishing it from an under-applied call, because `is_partial_application`
+/// is an AST-only field. Without that marker the shape prover would otherwise
+/// report it as the arity mismatch of a full call, which names the wrong
+/// construct and points a reader at the callee's declaration instead of at the
+/// unimplemented feature. The signature Flat does preserve is exact: a call
+/// whose every argument is a retained named-argument wrapper and which supplies
+/// fewer arguments than the callee declares is the partial-application form,
+/// since flatten materializes default and positional slots for every executable
+/// call and keeps source-shaped named arguments only for a partial application.
+fn reject_function_partial_application(
+    declared_inputs: Option<usize>,
+    name: &rumoca_core::Reference,
+    arguments: &[Expression],
+    span: Span,
+) -> Result<(), ToDaeError> {
+    let Some(declared_inputs) = declared_inputs else {
+        return Ok(());
+    };
+    if arguments.is_empty() || arguments.len() >= declared_inputs {
+        return Ok(());
+    }
+    let is_named_association = |argument: &Expression| {
+        matches!(
+            argument,
+            Expression::FunctionCall {
+                name,
+                is_constructor: true,
+                ..
+            } if name.as_str().starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+        )
+    };
+    if !arguments.iter().all(is_named_association) {
+        return Ok(());
+    }
+    Err(ToDaeError::unsupported_flat(
+        "function partial application",
+        format!(
+            "MLS §12.4.2.1 partial application of `{}` binds {} of {} formal parameters and \
+             denotes a function value, which the canonical DAE has no value shape for",
+            name.as_str(),
+            arguments.len(),
+            declared_inputs
+        ),
+        span,
+    ))
 }
 
 /// The shapes, and the settled translation-time values, of the model scope.

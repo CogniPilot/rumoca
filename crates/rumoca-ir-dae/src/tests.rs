@@ -1011,11 +1011,20 @@ fn add_variable_role_coordinates<'dae>(
             (spans.input, CoordinateInput::Input(variables.input)),
             (spans.state, CoordinateInput::State(variables.state)),
             (spans.state, CoordinateInput::Derivative(variables.state)),
+            (spans.state, CoordinateInput::PreState(variables.state)),
             (
                 spans.algebraic,
                 CoordinateInput::Algebraic(variables.algebraic),
             ),
+            (
+                spans.algebraic,
+                CoordinateInput::PreAlgebraic(variables.algebraic),
+            ),
             (spans.output, CoordinateInput::Algebraic(variables.output)),
+            (
+                spans.output,
+                CoordinateInput::PreAlgebraic(variables.output),
+            ),
             (
                 spans.discrete_real,
                 CoordinateInput::DiscreteReal(variables.discrete_real),
@@ -1066,7 +1075,7 @@ fn assert_variable_role_round_trip(encoded: &str, discrete_action: DaeProvenance
     let decoded: Dae = serde_json::from_str(encoded).unwrap();
     decoded.inspect(|view| {
         assert_eq!(view.variable_count(), 8);
-        assert_eq!(view.expression_count(), 13);
+        assert_eq!(view.expression_count(), 16);
         assert_eq!(view.discrete_value_owner_count(), 1);
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
@@ -1123,29 +1132,35 @@ fn assert_forged_state_role_is_rejected(encoded: &str) {
 }
 
 fn assert_coordinate_variability(view: DaeView<'_>) {
-    let variability = (0..13)
+    let variability = (0..16)
         .map(|index| {
             view.expression(view.expression_id(index).unwrap())
                 .unwrap()
                 .variability()
         })
         .collect::<Vec<_>>();
+    // MLS §3.7.5: `pre()` of a *continuous* coordinate is still a discrete-time
+    // expression — it reads a value frozen at event entry — so `PreState` and
+    // `PreAlgebraic` are Discrete here even though what they name is not.
     assert_eq!(
         variability,
         [
-            ExpressionVariability::Parameter,
-            ExpressionVariability::Constant,
-            ExpressionVariability::Continuous,
-            ExpressionVariability::Continuous,
-            ExpressionVariability::Continuous,
-            ExpressionVariability::Continuous,
-            ExpressionVariability::Continuous,
-            ExpressionVariability::Discrete,
-            ExpressionVariability::Discrete,
-            ExpressionVariability::Discrete,
-            ExpressionVariability::Discrete,
-            ExpressionVariability::Discrete,
-            ExpressionVariability::Constant,
+            ExpressionVariability::Parameter,  // parameter
+            ExpressionVariability::Constant,   // constant
+            ExpressionVariability::Continuous, // input
+            ExpressionVariability::Continuous, // state
+            ExpressionVariability::Continuous, // der(state)
+            ExpressionVariability::Discrete,   // pre(state)
+            ExpressionVariability::Continuous, // algebraic
+            ExpressionVariability::Discrete,   // pre(algebraic)
+            ExpressionVariability::Continuous, // output
+            ExpressionVariability::Discrete,   // pre(output)
+            ExpressionVariability::Discrete,   // discrete real
+            ExpressionVariability::Discrete,   // pre(discrete real)
+            ExpressionVariability::Discrete,   // previous(discrete real)
+            ExpressionVariability::Discrete,   // discrete value
+            ExpressionVariability::Discrete,   // pre(discrete value)
+            ExpressionVariability::Constant,   // boolean literal
         ]
     );
     let state = match view

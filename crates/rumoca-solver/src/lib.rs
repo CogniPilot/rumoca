@@ -1,5 +1,6 @@
 //! Backend-neutral simulation contracts and runtime helpers for Rumoca.
 
+pub mod fmi_me;
 pub mod report_payload;
 pub mod runtime;
 pub mod solver;

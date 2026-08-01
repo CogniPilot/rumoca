@@ -403,6 +403,8 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::Coordinate(CoordinateView::PreDiscreteReal(id)) => Some(id.index()),
         ExpressionOperation::Coordinate(CoordinateView::DiscreteValue(id))
         | ExpressionOperation::Coordinate(CoordinateView::PreDiscreteValue(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(CoordinateView::PreState(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(CoordinateView::PreAlgebraic(id)) => Some(id.index()),
         ExpressionOperation::Coordinate(
             CoordinateView::Time
             | CoordinateView::ClockInterval(_)

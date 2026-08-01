@@ -36,6 +36,8 @@ enum RecordArrayFieldPlanKey {
         root: rumoca_core::DefId,
         target: rumoca_core::DefId,
         declarations: Box<[rumoca_core::DefId]>,
+        /// Ordinal of the path part the subscripts belong to (MLS §10.5).
+        sliced_part: usize,
         rank: usize,
     },
 }
@@ -44,29 +46,50 @@ pub(in crate::construction) struct RecordArrayFieldPlans {
     by_occurrence: HashMap<RecordArrayFieldPlanKey, RecordArrayFieldPlan>,
 }
 
+/// Flat coordinates indexed by the declaration they materialize.
+///
+/// A Flat coordinate carries its whole path from the model root, while a
+/// reference written inside a class names only the part of that path visible
+/// from its own scope (MLS §5.3.1) — `ac.pin[1].v` inside `Probe` materializes
+/// as `probe.ac.pin[1].v`. Indexing on the target declaration alone therefore
+/// keeps every coordinate a written path could name; which of them it actually
+/// names is settled by the occurrence graph, never by the two spellings.
 struct CoordinateCandidates<'flat> {
-    by_declarations: HashMap<Box<[rumoca_core::DefId]>, Vec<&'flat flat::Variable>>,
+    by_target: HashMap<rumoca_core::DefId, Vec<&'flat flat::Variable>>,
 }
 
 impl<'flat> CoordinateCandidates<'flat> {
     fn new(flat: &'flat flat::Model) -> Self {
-        let mut by_declarations = HashMap::<_, Vec<_>>::new();
+        let mut by_target = HashMap::<_, Vec<_>>::new();
         for variable in flat.variables.values() {
             let Some(reference) = variable.component_ref.as_ref() else {
                 continue;
             };
-            by_declarations
-                .entry(reference_declarations(reference))
+            by_target
+                .entry(reference.target_def_id())
                 .or_default()
                 .push(variable);
         }
-        Self { by_declarations }
+        Self { by_target }
     }
 
-    fn get(&self, declarations: &[rumoca_core::DefId]) -> &[&'flat flat::Variable] {
-        self.by_declarations
-            .get(declarations)
-            .map_or(&[], Vec::as_slice)
+    /// The coordinates whose path ends in exactly the written declarations.
+    fn ending_in(&self, declarations: &[rumoca_core::DefId]) -> Vec<&'flat flat::Variable> {
+        let Some(target) = declarations.last() else {
+            return Vec::new();
+        };
+        self.by_target
+            .get(target)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .copied()
+            .filter(|variable| {
+                variable.component_ref.as_ref().is_some_and(|reference| {
+                    reference_declarations(reference).ends_with(declarations)
+                })
+            })
+            .collect()
     }
 }
 
@@ -161,7 +184,7 @@ fn plan_materialized_coordinate(
     })?;
     let Some(variable) = materialized_variable(
         flat,
-        candidates.get(&reference_declarations(&reference)),
+        &candidates.ending_in(&reference_declarations(&reference)),
         scope,
         root,
         target,
@@ -210,12 +233,34 @@ fn plan_projection(
     let root = pattern.reference.root_def_id();
     let target = pattern.reference.target_def_id();
     let rank = pattern.subscripts.len();
+    // The certificate describes one linear run of coordinates, and the lowering
+    // realizes it as a rank-one array indexed by the written subscripts. A
+    // multi-dimensional written slice (`ac.pin[:, :].v`, MLS §10.5) denotes a
+    // rank-`n` member array that this shape cannot carry: accepting it would
+    // mint a certificate the lowering then mis-indexes against a flattened
+    // element order. Abstain here, by name, rather than downstream.
+    if rank != 1 {
+        return Err(ToDaeError::unsupported_flat(
+            "record-array member slice",
+            "a multi-dimensional member slice has no rank-preserving canonical projection; \
+             this certificate describes exactly one subscripted dimension",
+            span,
+        ));
+    }
     let declarations = reference_declarations(&pattern.reference);
     let mut elements = candidates
-        .get(&declarations)
+        .ending_in(&declarations)
         .iter()
         .filter_map(|&variable| {
-            match projected_variable_indices(flat, pattern.base, variable, rank, span) {
+            match projected_variable_indices(
+                flat,
+                pattern.base,
+                &declarations,
+                pattern.sliced_part,
+                variable,
+                rank,
+                span,
+            ) {
                 Ok(Some(indices)) => {
                     Some(require_runtime_coordinate(variable, roles, span).map(|()| {
                         ProjectedElement {
@@ -248,6 +293,7 @@ fn plan_projection(
             root,
             target,
             declarations,
+            sliced_part: pattern.sliced_part,
             rank,
         },
         RecordArrayFieldPlan::Projection {
@@ -268,6 +314,13 @@ struct ProjectionPattern<'expression> {
     base: &'expression rumoca_core::Reference,
     reference: rumoca_core::ComponentReference,
     subscripts: &'expression [Subscript],
+    /// Ordinal within `reference` of the part the subscripts belong to.
+    ///
+    /// MLS §10.5 binds a subscript to the component array named by the part it
+    /// is written on, so `a.b[e].c` slices `b` — declared inside `a` — and not
+    /// the head of the path. Flat lowering splits a reference at its first
+    /// subscripted part, which puts that part last in `base`.
+    sliced_part: usize,
 }
 
 fn projection_pattern(expression: &Expression) -> Option<ProjectionPattern<'_>> {
@@ -308,6 +361,7 @@ fn projection_pattern(expression: &Expression) -> Option<ProjectionPattern<'_>> 
                 let mut reference = name.component_ref()?.clone();
                 members.reverse();
                 let mut parts = reference.parts().to_vec();
+                let sliced_part = parts.len().checked_sub(1)?;
                 parts.extend(members);
                 reference = rumoca_core::ComponentReference::construct(
                     reference.local(),
@@ -319,6 +373,7 @@ fn projection_pattern(expression: &Expression) -> Option<ProjectionPattern<'_>> 
                     base: name,
                     reference,
                     subscripts,
+                    sliced_part,
                 });
             }
             _ => return None,
@@ -349,6 +404,7 @@ fn field_access_key(expression: &Expression) -> Option<RecordArrayFieldPlanKey> 
         root: pattern.reference.root_def_id(),
         target: pattern.reference.target_def_id(),
         declarations: reference_declarations(&pattern.reference),
+        sliced_part: pattern.sliced_part,
         rank: pattern.subscripts.len(),
     })
 }
@@ -537,9 +593,21 @@ fn reference_indices(reference: &rumoca_core::ComponentReference) -> Option<Exac
     })
 }
 
+/// Prove the slice extent one Flat coordinate contributes to a member
+/// projection, reading it off the part the subscripts were written on.
+///
+/// MLS §10.5 binds an array subscript to the component array named by the part
+/// carrying it: in `a.b[e].c` the sliced array is `b`, declared inside `a`, and
+/// the expression denotes the member `c` of element `e`. The proof therefore
+/// matches the whole declaration chain the Flat occurrence graph records for a
+/// coordinate against the reference's parts and reports the indices of the
+/// subscripted part alone — anchoring on the head of the path would only ever
+/// admit `b[e].c`, never `a.b[e].c`.
 fn projected_variable_indices(
     flat: &flat::Model,
     base: &rumoca_core::Reference,
+    declarations: &[rumoca_core::DefId],
+    sliced_part: usize,
     variable: &flat::Variable,
     rank: usize,
     span: Span,
@@ -550,18 +618,41 @@ fn projected_variable_indices(
     let scope = base
         .instance_id()
         .ok_or_else(|| ToDaeError::unresolved_reference(base.as_str(), span))?;
-    let root_declaration = base
-        .root_def_id()
-        .ok_or_else(|| ToDaeError::unresolved_reference(base.as_str(), span))?;
-    let indices =
-        projection_owner_indices(flat, scope, root_declaration, variable.instance_id, span)?;
-    let Some(indices) = indices else {
+    let Some(chain) = component_ancestry(flat, scope, variable.instance_id, span)? else {
         return Ok(None);
     };
-    if indices.len() != rank {
+    if chain.len() != declarations.len()
+        || chain
+            .iter()
+            .zip(declarations)
+            .any(|(occurrence, declaration)| occurrence.declaration != *declaration)
+    {
         return Ok(None);
     }
-    Ok(Some(indices))
+    let Some(sliced) = chain.get(sliced_part) else {
+        return Ok(None);
+    };
+    if sliced.kind != flat::InstanceKind::Aggregate || sliced.indices.len() != rank {
+        return Ok(None);
+    }
+    // One `Index` node carries one part's subscripts, so exactly one part of
+    // this path may be an array occurrence. A second array part would make the
+    // expression denote a higher-rank array (MLS §10.5) that this certificate
+    // cannot describe, and silently projecting one of the two would fabricate a
+    // shape the model never wrote.
+    if chain
+        .iter()
+        .enumerate()
+        .any(|(ordinal, occurrence)| ordinal != sliced_part && !occurrence.indices.is_empty())
+    {
+        return Err(ToDaeError::unsupported_flat(
+            "record-array member slice",
+            "a member slice subscripts one component array, but another part of this path is \
+             itself an array occurrence",
+            span,
+        ));
+    }
+    Ok(Some(sliced.indices.to_vec()))
 }
 
 fn projection_owner_indices(
@@ -571,6 +662,40 @@ fn projection_owner_indices(
     candidate: rumoca_core::InstanceId,
     span: Span,
 ) -> Result<Option<Vec<i64>>, ToDaeError> {
+    let Some(chain) = component_ancestry(flat, scope, candidate, span)? else {
+        return Ok(None);
+    };
+    let Some(root) = chain.first() else {
+        return Ok(None);
+    };
+    if root.declaration != root_declaration || root.kind != flat::InstanceKind::Aggregate {
+        return Ok(None);
+    }
+    Ok(Some(root.indices.to_vec()))
+}
+
+/// One component occurrence on the path between an instantiated class scope and
+/// a Flat coordinate.
+struct AncestorOccurrence {
+    declaration: rumoca_core::DefId,
+    indices: Box<[i64]>,
+    kind: flat::InstanceKind,
+}
+
+/// The component occurrences the Flat graph proves between `scope` and
+/// `candidate`, outermost first.
+///
+/// Only components name a part of a component reference — an `extends` adds
+/// class occurrences that no part spells (MLS §7.1) — so class occurrences are
+/// stepped over and never enter the chain. `None` means `candidate` is not
+/// owned by `scope`, which is how a same-spelled coordinate belonging to a
+/// sibling instance is excluded without consulting a rendered name.
+fn component_ancestry(
+    flat: &flat::Model,
+    scope: rumoca_core::InstanceId,
+    candidate: rumoca_core::InstanceId,
+    span: Span,
+) -> Result<Option<Vec<AncestorOccurrence>>, ToDaeError> {
     let scope_relation = flat.instance_relations.get(&scope).ok_or_else(|| {
         ToDaeError::unsupported_flat(
             "record-array member slice",
@@ -585,6 +710,7 @@ fn projection_owner_indices(
             span,
         ));
     }
+    let mut chain = Vec::new();
     let mut current = Some(candidate);
     for _ in 0..flat.instance_relations.len() {
         let Some(instance) = current else {
@@ -597,16 +723,21 @@ fn projection_owner_indices(
                 span,
             )
         })?;
-        if relation.owner == Some(scope)
-            && relation.declaration == Some(root_declaration)
-            && relation.kind == flat::InstanceKind::Aggregate
-        {
-            return Ok(Some(relation.indices.to_vec()));
+        if relation.kind != flat::InstanceKind::Class {
+            let Some(declaration) = relation.declaration else {
+                return Ok(None);
+            };
+            chain.push(AncestorOccurrence {
+                declaration,
+                indices: relation.indices.clone(),
+                kind: relation.kind,
+            });
+        }
+        if relation.owner == Some(scope) {
+            chain.reverse();
+            return Ok(Some(chain));
         }
         current = relation.owner;
-    }
-    if current.is_none() {
-        return Ok(None);
     }
     Err(ToDaeError::unsupported_flat(
         "record-array member slice",

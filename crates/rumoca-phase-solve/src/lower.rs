@@ -1763,6 +1763,8 @@ fn coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Option<u32> {
         | dae::CoordinateView::ClockInterval(_)
         | dae::CoordinateView::PreDiscreteReal(_)
         | dae::CoordinateView::PreDiscreteValue(_)
+        | dae::CoordinateView::PreState(_)
+        | dae::CoordinateView::PreAlgebraic(_)
         | dae::CoordinateView::Condition(_)
         | dae::CoordinateView::Delay(_)
         | dae::CoordinateView::Previous(_)
@@ -1772,10 +1774,18 @@ fn coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Option<u32> {
     }
 }
 
+/// Coordinates whose value is read from an event-entry history lane.
+///
+/// `pre()` of a continuous state or algebraic joins the discrete pre lanes
+/// here: `append_pre_variables` gives it a `p` slot fed from its `y` slot at
+/// event entry, so the read resolves to the left limit rather than the live
+/// value the event body is in the middle of changing.
 fn pre_coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Option<u32> {
     match coordinate {
         dae::CoordinateView::PreDiscreteReal(id) => Some(id.index()),
         dae::CoordinateView::PreDiscreteValue(id) => Some(id.index()),
+        dae::CoordinateView::PreState(id) => Some(id.index()),
+        dae::CoordinateView::PreAlgebraic(id) => Some(id.index()),
         _ => None,
     }
 }

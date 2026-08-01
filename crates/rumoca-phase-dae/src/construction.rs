@@ -59,7 +59,7 @@ use equation_systems::{lower_equation_expression, lower_equation_systems};
 use expression::{
     FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
     classify_function_call, derivative_reference, expression_children, expression_span,
-    lower_clocked_expression, lower_coordinate_reference, lower_expression,
+    lower_call_operands, lower_clocked_expression, lower_coordinate_reference, lower_expression,
     lower_expression_scoped, lower_function_array_update, lower_function_expression,
     lower_function_expression_scoped, lower_model_algorithm_expression, planned_input_variability,
     require_span, variable_attribute_expressions,
@@ -77,8 +77,8 @@ use function_construction::{
 use function_external::define_external_function;
 use function_record_assembly::lower_function_record_assembly;
 use function_shapes::{
-    FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,
-    call_free_expression_shape, call_free_target_shape, evaluate_shape_integer,
+    FunctionShapeAnalysis, FunctionShapeCertificate, FunctionSpecializationKey, ShapeEnvironment,
+    ValueShape, call_free_expression_shape, call_free_target_shape, evaluate_shape_integer,
     proven_conditional_branch,
 };
 use model_algorithm::{
@@ -138,18 +138,25 @@ impl<'dae> Coordinate<'dae> {
         }
     }
 
+    /// MLS §3.7.5 `pre(v)`: the left limit `v(t^pre)` at event entry.
+    ///
+    /// Discrete coordinates keep their event history in the discrete pre lane.
+    /// A continuous state or algebraic gets its own event-entry snapshot lane,
+    /// which is what makes `y = f*pre(x); reinit(x, 0)` in one when-body read
+    /// the accumulated `x` rather than the reinitialized one. Analysis proves
+    /// the read sits in a when-clause before this constructor runs.
     fn previous(self, span: Span) -> Result<dae::CoordinateInput<'dae>, ToDaeError> {
         match self {
             Self::DiscreteReal(id) => Ok(dae::CoordinateInput::PreDiscreteReal(id)),
             Self::DiscreteValue(id) => Ok(dae::CoordinateInput::PreDiscreteValue(id)),
+            Self::State(id) => Ok(dae::CoordinateInput::PreState(id)),
+            Self::Algebraic(id) => Ok(dae::CoordinateInput::PreAlgebraic(id)),
             Self::Parameter(_)
             | Self::Input(_)
-            | Self::State(_)
-            | Self::Algebraic(_)
             | Self::FunctionParameter(_)
             | Self::FunctionValue(_) => Err(ToDaeError::unsupported_flat(
                 "pre expression",
-                "pre(...) must name a discrete coordinate in canonical DAE",
+                "pre(...) must name a discrete or continuous variable coordinate in canonical DAE",
                 span,
             )),
         }
@@ -236,7 +243,6 @@ fn build_checked<'dae>(
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
-        reinit_state_pre: &analysis.reinit_state_pre,
         coordinate_instances: &no_coordinate_instances,
         expression_events: &analysis.expression_events,
     };
@@ -260,7 +266,6 @@ fn build_checked<'dae>(
             record_array_fields: &analysis.record_array_fields,
             constants: &analysis.constants,
             delay_plans: &analysis.delay_plans,
-            reinit_state_pre: &analysis.reinit_state_pre,
             coordinate_instances: coordinates.by_instance(),
             expression_events: &analysis.expression_events,
         },
@@ -274,7 +279,6 @@ fn build_checked<'dae>(
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
-        reinit_state_pre: &analysis.reinit_state_pre,
         coordinate_instances: coordinates.by_instance(),
         expression_events: &analysis.expression_events,
     };
@@ -544,17 +548,61 @@ fn lower_function_statement<'dae>(
             },
         ),
         (
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                span,
+            statement @ rumoca_core::Statement::If { .. },
+            FunctionStatementPlan::If { .. } | FunctionStatementPlan::ProvenBranch { .. },
+        ) => lower_function_conditional_statement(construction, symbols, body, statement, plan),
+        (
+            rumoca_core::Statement::FunctionCall {
+                comp, args, span, ..
             },
-            FunctionStatementPlan::If {
-                branches,
-                fallback,
-                targets,
-            },
+            FunctionStatementPlan::MultiOutputCall { outputs },
         ) => {
+            let call = FunctionMultiOutputCall {
+                callee: comp,
+                args,
+                span: *span,
+                outputs,
+            };
+            lower_function_multi_output_call(construction, symbols, &mut body, call)?;
+            Ok(body)
+        }
+        (_, FunctionStatementPlan::ArrayAssemblyMember) => {
+            unreachable!("array assembly members are consumed by their leading owner")
+        }
+        (_, FunctionStatementPlan::RecordAssemblyMember) => {
+            unreachable!("record assembly members are consumed by their leading owner")
+        }
+        _ => unreachable!("function analysis and construction plans remain aligned"),
+    }
+}
+
+/// Lower one MLS §11.5 conditional statement of a function body.
+///
+/// The conditional reaches the DAE either as its own branches, or — when
+/// analysis settled every condition this specialization evaluates — as the
+/// unconditional sequence the executed branch denotes, in which case no
+/// condition reaches the DAE at all.
+fn lower_function_conditional_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    mut body: dae::FunctionBody<'dae>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    let rumoca_core::Statement::If {
+        cond_blocks,
+        else_block,
+        span,
+    } = statement
+    else {
+        unreachable!("a conditional plan owns a conditional statement")
+    };
+    match plan {
+        FunctionStatementPlan::If {
+            branches,
+            fallback,
+            targets,
+        } => {
             lower_function_conditional(
                 construction,
                 &mut body,
@@ -570,29 +618,13 @@ fn lower_function_statement<'dae>(
             )?;
             Ok(body)
         }
-        (
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            },
-            FunctionStatementPlan::ProvenBranch {
-                selected,
-                statements,
-            },
-        ) => {
-            // Analysis settled every condition MLS §11.5 evaluates here, so the
-            // selected statements are lowered as the unconditional sequence they
-            // denote and no condition reaches the DAE.
+        FunctionStatementPlan::ProvenBranch {
+            selected,
+            statements,
+        } => {
             let selected =
                 selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
             lower_function_statements(construction, symbols, body, selected, statements)
-        }
-        (_, FunctionStatementPlan::ArrayAssemblyMember) => {
-            unreachable!("array assembly members are consumed by their leading owner")
-        }
-        (_, FunctionStatementPlan::RecordAssemblyMember) => {
-            unreachable!("record assembly members are consumed by their leading owner")
         }
         _ => unreachable!("function analysis and construction plans remain aligned"),
     }
@@ -602,6 +634,60 @@ struct FunctionAssignment<'statement> {
     value: &'statement Expression,
     span: Span,
     plan: &'statement FunctionAssignmentPlan,
+}
+
+struct FunctionMultiOutputCall<'statement> {
+    callee: &'statement rumoca_core::ComponentReference,
+    args: &'statement [Expression],
+    span: Span,
+    outputs: &'statement [Option<FunctionAssignmentPlan>],
+}
+
+/// Lower one MLS §11.2.1.1 multi-result call statement.
+///
+/// The call's *arguments* are lowered once and each read result ordinal becomes
+/// the `call(function, ordinal, ..)` node that defines its receiving variable —
+/// the same owner an MLS §11.2.1 single-result assignment builds at ordinal 0.
+/// An omitted receiver reads no result, so it mints no expression.
+///
+/// Only the arguments are shared: reading k results denotes k evaluations of
+/// the callee body, not the one evaluation MLS §12.4.3 describes. That is
+/// observationally equal only for a pure callee, which is why an impure
+/// external callee is refused by name during planning. See
+/// [`expression::LoweredCallOperands`] for the cost this leaves behind.
+fn lower_function_multi_output_call<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    call: FunctionMultiOutputCall<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::source(call.span)?;
+    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
+    let binders = HashMap::new();
+    let operands = lower_call_operands(
+        construction,
+        LoweringSymbols {
+            coordinates: symbols.coordinates,
+            functions: symbols.functions,
+            shapes: symbols.shapes,
+            function_body: Some(body),
+            values: None,
+            owner_clock: None,
+        },
+        &binders,
+        &reference,
+        call.args,
+        provenance,
+    )?;
+    for (ordinal, plan) in call.outputs.iter().enumerate() {
+        let Some(plan) = plan else {
+            continue;
+        };
+        let target = function_value_coordinate(symbols.coordinates, plan.target());
+        let value = operands.result(construction, ordinal, provenance)?;
+        construction.functions(|owner| owner.assign(body, target, value, provenance))?;
+    }
+    Ok(())
 }
 
 fn lower_function_assignment<'dae>(
@@ -891,6 +977,26 @@ fn generated_residual<'dae>(
     })
 }
 
+/// Lower the assertions an equation, initial-equation, or initial-algorithm
+/// section owns.
+///
+/// The activation is a *level*, not an edge. MLS §8.3.7 violates an assertion
+/// because its condition *is* false — *"assert(condition, message) ... the
+/// assertion is violated if the condition is false"* — not because it became
+/// false, and none of these three sections is a `when`, whose §8.3.5 "becomes
+/// true" activation is what an edge encodes. An assertion written inside a
+/// `when` body keeps its edge, because there the activation belongs to the
+/// `when` (see `WhenLowering::lower_assert`).
+///
+/// The level is expressed by giving the action [`dae::ConditionInput::Always`]
+/// as its *trigger*, which carries no §8.5 buffer, so `edge(trigger)` reads
+/// `true` and the action's own guard — the negated assertion condition — is
+/// what decides. Every assertion lowered here takes that path, whatever its
+/// condition: `assert(x > 0, …)` is level-checked exactly like
+/// `assert(false, …)`. Handing the assertion its own violation as the trigger
+/// instead makes it an edge, and an assertion already violated at the
+/// initialization instant then has no edge to report on — which silently
+/// dropped the `initial algorithm` guard assertions this exists for.
 fn lower_assertions<'dae, 'flat>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -907,6 +1013,7 @@ fn lower_assertions<'dae, 'flat>(
             &assertion.condition,
         )?;
         let action_guard = negate_condition(construction, condition, assertion.span)?;
+        let trigger = always_condition(construction, assertion.span)?;
         let message = lower_expression(
             construction,
             coordinates,
@@ -922,7 +1029,7 @@ fn lower_assertions<'dae, 'flat>(
         )?;
         let provenance = dae::DaeProvenance::source(assertion.span)?;
         construction.events(|events| {
-            events.assert_with_level(action_guard, action_guard, message, level, provenance)
+            events.assert_with_level(trigger, action_guard, message, level, provenance)
         })?;
     }
     Ok(())
@@ -1248,7 +1355,6 @@ fn lower_algorithm_when<'dae>(
     blocks: &[rumoca_core::StatementBlock],
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
-    let mut previous = None;
     let mut guarded_blocks = Vec::with_capacity(blocks.len());
     for block in blocks {
         let (condition, owner_clock) = lower_condition(
@@ -1258,13 +1364,12 @@ fn lower_algorithm_when<'dae>(
             environment.sample_lattices,
             &block.cond,
         )?;
-        let available = match previous {
-            Some(previous) => {
-                let not_previous = negate_condition(construction, previous, span)?;
-                combine_conditions(construction, condition, not_previous, false, span)?
-            }
-            None => condition,
-        };
+        // MLS §8.3.5 activates each branch of a `when`/`elsewhen` chain on its
+        // own rising edge; the textual order of the branches resolves the
+        // simultaneous ones. See `lower_chain_guards` for the equation form —
+        // the algorithm form has to agree with it or the same chain would mean
+        // two things depending on which section it was written in.
+        let available = condition;
         let guard = match owner.parent {
             Some(parent) => EventGuard {
                 trigger: available,
@@ -1300,10 +1405,6 @@ fn lower_algorithm_when<'dae>(
             },
         };
         guarded_blocks.push((block, guard));
-        previous = Some(match previous {
-            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
-            None => condition,
-        });
     }
     for (block, guard) in &guarded_blocks {
         if let Some(clock) = guard.owner_clock {

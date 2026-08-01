@@ -394,7 +394,9 @@ fn collect_condition_current_reads<'dae>(
             .expect("checked condition identity resolves")
             .operation()
         {
-            dae::ConditionOperation::Initial | dae::ConditionOperation::Clock(_) => {}
+            dae::ConditionOperation::Initial
+            | dae::ConditionOperation::Always
+            | dae::ConditionOperation::Clock(_) => {}
             dae::ConditionOperation::Relation(relation) => {
                 let expression = view
                     .relation(relation)
@@ -406,7 +408,9 @@ fn collect_condition_current_reads<'dae>(
                 collect_current_reads(view, expression, reads);
             }
             dae::ConditionOperation::Not(inner) => pending.push(inner),
-            dae::ConditionOperation::And(lhs, rhs) | dae::ConditionOperation::Or(lhs, rhs) => {
+            dae::ConditionOperation::And(lhs, rhs)
+            | dae::ConditionOperation::Or(lhs, rhs)
+            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
                 pending.extend([lhs, rhs]);
             }
         }
@@ -451,13 +455,17 @@ fn condition_requires_clock<'dae>(
             condition_requires_clock(view, lhs, expected, &mut lhs_seen)
                 || condition_requires_clock(view, rhs, expected, &mut rhs_seen)
         }
-        dae::ConditionOperation::Or(lhs, rhs) => {
+        // Every arm of a disjunction — and every element of a vector activation
+        // — must be owned by the clock, or the activation can reach the
+        // assignment off-tick.
+        dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
             let mut lhs_seen = seen.clone();
             let mut rhs_seen = seen.clone();
             condition_requires_clock(view, lhs, expected, &mut lhs_seen)
                 && condition_requires_clock(view, rhs, expected, &mut rhs_seen)
         }
         dae::ConditionOperation::Initial
+        | dae::ConditionOperation::Always
         | dae::ConditionOperation::Relation(_)
         | dae::ConditionOperation::Discrete(_)
         | dae::ConditionOperation::Not(_) => false,

@@ -427,6 +427,166 @@ fn conn_028_parameter_connector_component_rejected() {
     );
 }
 
+/// The MLS §9.3 clause itself, which is the one SPEC_0022 files CONN-028
+/// under: a `connect` may pair a parameter member only with another parameter
+/// member. (The sibling `conn_028_parameter_connector_component_rejected` above
+/// covers the *other* rule, MLS §9.1's ban on declaring a connector component
+/// `parameter`, enforced in resolve as `ER027`.) Two connector classes agreeing
+/// on member names but disagreeing on the `parameter` prefix leave the
+/// non-parameter side with no connection equation, so the pair is rejected
+/// instead of dropped.
+///
+/// The repro is doubly invalid and this test does **not** isolate the clause:
+/// a member that is `parameter` on one side and a variable on the other also
+/// makes one connector violate the §9.3.1 balance rule (`PlugQ` has two
+/// potential variables against one flow), which is inherent — MLS §4.7 excludes
+/// parameters from the potential count, so the prefix difference always shifts
+/// the balance. OMC reports exactly that as a warning while still accepting the
+/// model. rumoca's own CONN-017 balance check does not fire here because it
+/// skips non-Real members, so the failure observed below is the intended
+/// `EF028` and not a balance rejection — but a future CONN-017 that counts
+/// Integer members would give this model a second, independent reason to fail.
+#[test]
+fn conn_028_parameter_member_connected_to_variable_member_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector PlugP
+            parameter Integer m = 3;
+            Real v;
+            flow Real i;
+        end PlugP;
+        connector PlugQ
+            Integer m;
+            Real v;
+            flow Real i;
+        end PlugQ;
+        model Test
+            PlugP a;
+            PlugQ b;
+        equation
+            connect(a, b);
+            a.v = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF028",
+    );
+}
+
+/// The accepting half of the same clause: parameter-to-parameter is legal, and
+/// MLS §9.3 generates no connection equation for it. A generated `a.p.m = b.p.m`
+/// would add a fifth equation over the same four unknowns, so the balance is
+/// what pins "connections are not generated".
+#[test]
+fn conn_028_parameter_member_connected_to_parameter_member_accepted() {
+    expect_balanced(
+        r#"
+        connector Plug
+            parameter Integer m = 3;
+            Real v;
+            flow Real i;
+        end Plug;
+        model Comp
+            Plug p;
+            parameter Real r = 1;
+        equation
+            p.v = r * p.i;
+        end Comp;
+        model Test
+            Comp a;
+            Comp b;
+        equation
+            connect(a.p, b.p);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+// =============================================================================
+// CONN-030: Stream-to-stream
+// "Stream variables may only connect to other stream variables" (MLS §9.3)
+// =============================================================================
+
+/// MLS §9.3 admits "stream variables only to other stream variables", and MLS
+/// §15.1 (STRM-005) says a stream variable at an inside connector leads to no
+/// connection equation at all. Pairing a stream member with a non-stream member
+/// therefore selects no equation on either reading: the flat model used to get
+/// either nothing (silently under-constraining the non-stream side) or a
+/// potential equality that STRM-005 forbids on the stream side.
+///
+/// OMC rejects the same model outright: "The connectors in connect(a, b) are
+/// not type compatible."
+#[test]
+fn conn_030_stream_member_matched_with_non_stream_member_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector StreamPort
+            Real p;
+            flow Real m_flow;
+            stream Real h_outflow;
+        end StreamPort;
+        connector PlainPort
+            Real h_outflow;
+            flow Real m_flow;
+        end PlainPort;
+        model Test
+            StreamPort a;
+            PlainPort b;
+        equation
+            connect(a, b);
+            a.p = 1;
+            a.h_outflow = 300;
+            b.h_outflow = 400;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF027",
+    );
+}
+
+/// The accepting half: matched stream members still form a §15.2 stream set and
+/// never receive a §9.2 equality of their own.
+#[test]
+fn conn_030_stream_member_matched_with_stream_member_accepted() {
+    let result = expect_success(
+        r#"
+        connector StreamPort
+            Real p;
+            flow Real m_flow;
+            stream Real h_outflow;
+        end StreamPort;
+        model Vol
+            StreamPort port;
+            parameter Real h_out = 2;
+            Real h_in;
+        equation
+            port.h_outflow = h_out;
+            h_in = inStream(port.h_outflow);
+        end Vol;
+        model Test
+            Vol v1(h_out = 2);
+            Vol v2(h_out = 4);
+        equation
+            connect(v1.port, v2.port);
+            v1.port.p = 1;
+            v1.port.m_flow = 1;
+        end Test;
+    "#,
+        "Test",
+    );
+    assert!(
+        result
+            .flat
+            .variables
+            .iter()
+            .any(|(name, variable)| name.as_str() == "v1.port.h_outflow" && variable.connected),
+        "a stream-to-stream connect must still join a stream connection set"
+    );
+}
+
 // =============================================================================
 // CONN-023: Overconstrained not in function
 // "None of these operators allowed inside function classes" (MLS §9.4)

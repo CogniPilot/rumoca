@@ -422,6 +422,8 @@ fn coordinate_fingerprint(coordinate: dae::CoordinateView<'_>) -> String {
         dae::CoordinateView::PreDiscreteValue(id) => {
             format!("pre_discrete_value:{}", id.index())
         }
+        dae::CoordinateView::PreState(id) => format!("pre_state:{}", id.index()),
+        dae::CoordinateView::PreAlgebraic(id) => format!("pre_algebraic:{}", id.index()),
         dae::CoordinateView::Time => "time".to_owned(),
         dae::CoordinateView::ClockInterval(id) => format!("clock_interval:{}", id.index()),
         dae::CoordinateView::Condition(id) => format!("condition:{}", id.index()),

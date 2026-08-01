@@ -288,6 +288,8 @@ fn instantaneous_coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Opt
         | dae::CoordinateView::ClockInterval(_)
         | dae::CoordinateView::PreDiscreteReal(_)
         | dae::CoordinateView::PreDiscreteValue(_)
+        | dae::CoordinateView::PreState(_)
+        | dae::CoordinateView::PreAlgebraic(_)
         | dae::CoordinateView::Condition(_)
         | dae::CoordinateView::Delay(_)
         | dae::CoordinateView::Previous(_)

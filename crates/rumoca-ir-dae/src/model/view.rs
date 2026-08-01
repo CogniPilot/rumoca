@@ -476,6 +476,7 @@ impl<'dae> DaeView<'dae> {
             .expect("final DAE cannot contain an undefined condition")
         {
             crate::conditions::ConditionNode::Initial => ConditionOperation::Initial,
+            crate::conditions::ConditionNode::Always => ConditionOperation::Always,
             crate::conditions::ConditionNode::Relation(raw) => {
                 ConditionOperation::Relation(RelationId::from_raw(*raw))
             }
@@ -494,6 +495,10 @@ impl<'dae> DaeView<'dae> {
             crate::conditions::ConditionNode::Or { lhs, rhs } => {
                 ConditionOperation::Or(ConditionId::from_raw(*lhs), ConditionId::from_raw(*rhs))
             }
+            crate::conditions::ConditionNode::AnyRise { lhs, rhs } => ConditionOperation::AnyRise(
+                ConditionId::from_raw(*lhs),
+                ConditionId::from_raw(*rhs),
+            ),
         };
         Some(ConditionView {
             operation,
@@ -1391,7 +1396,9 @@ impl<'dae> ExpressionView<'dae> {
                 | Coordinate::DiscreteReal(variable)
                 | Coordinate::DiscreteValue(variable)
                 | Coordinate::PreDiscreteReal(variable)
-                | Coordinate::PreDiscreteValue(variable),
+                | Coordinate::PreDiscreteValue(variable)
+                | Coordinate::PreState(variable)
+                | Coordinate::PreAlgebraic(variable),
             ) => Some(VariableId::from_raw(*variable)),
             _ => None,
         }
@@ -1486,6 +1493,10 @@ pub enum CoordinateView<'dae> {
     DiscreteValue(DiscreteValueId<'dae>),
     PreDiscreteReal(DiscreteRealId<'dae>),
     PreDiscreteValue(DiscreteValueId<'dae>),
+    /// `pre()` of a continuous state: its left limit at event entry.
+    PreState(StateId<'dae>),
+    /// `pre()` of a continuous algebraic/output: its left limit at event entry.
+    PreAlgebraic(AlgebraicId<'dae>),
     Time,
     ClockInterval(crate::PeriodicClockId<'dae>),
     Condition(ConditionId<'dae>),
@@ -1652,6 +1663,8 @@ fn coordinate_view<'dae>(coordinate: Coordinate) -> CoordinateView<'dae> {
         Coordinate::PreDiscreteValue(raw) => {
             CoordinateView::PreDiscreteValue(DiscreteValueId::from_raw(raw))
         }
+        Coordinate::PreState(raw) => CoordinateView::PreState(StateId::from_raw(raw)),
+        Coordinate::PreAlgebraic(raw) => CoordinateView::PreAlgebraic(AlgebraicId::from_raw(raw)),
         Coordinate::Time => CoordinateView::Time,
         Coordinate::ClockInterval(raw) => {
             CoordinateView::ClockInterval(crate::PeriodicClockId::from_raw(raw))

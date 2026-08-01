@@ -1,6 +1,5 @@
 //! Backend-neutral solver contracts shared by simulation backends.
 
-use crate::RuntimeEventBoundaryHandler;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,7 +217,15 @@ pub enum StepUntilOutcome {
     Finished,
 }
 
-pub trait SimulationBackend: RuntimeEventBoundaryHandler {
+/// An integrator that advances a model in time.
+///
+/// SPEC_0038 §Internal Solver Boundary: a backend integrates; it does not own
+/// event semantics. Applying an event boundary is a separate capability
+/// ([`RuntimeEventBoundaryHandler`]), required only by hosts that drive the
+/// shared orchestration loop rather than an ME component's own event mode.
+pub trait SimulationBackend {
+    type Error;
+
     fn init(&mut self) -> Result<(), Self::Error>;
     fn step_until(&mut self, stop_time: f64) -> Result<StepUntilOutcome, Self::Error>;
     fn read_state(&self) -> BackendState;

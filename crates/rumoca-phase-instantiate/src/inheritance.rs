@@ -1401,26 +1401,16 @@ fn merge_inherited_nested_class(
     )))
 }
 
-/// Merge content from a class definition into inherited content.
-///
-/// MLS §7.3: Validates redeclarations against replaceable/final constraints.
-/// Collect and validate redeclarations from extends modifications (MLS §7.3).
-/// Returns the redeclared component types and, separately, the names of *every*
-/// inherited component an extends modification redeclared.
-///
-/// The two are not the same set: a redeclaration whose new type cannot be
-/// extracted contributes no type change but has still redeclared the component,
-/// and the modification may have carried array dimensions this phase does not
-/// propagate. Callers that record "this component was redeclared" must use the
-/// second set so that gap is never mistaken for a fact about the source.
 /// Name of the component an extends modification modifies, when a redeclaration
 /// appears anywhere inside that modification (MLS §7.3).
 ///
 /// `extends Wrap(h(redeclare C a[2]))` carries the redeclaration one level down:
 /// the extends modification itself is an ordinary modification of `h`, and the
-/// redeclare flag lives on the nested class-modification argument. Since only
-/// the redeclared *type* is ever consumed, the enclosing component `h` is what
-/// must be recorded — everything instantiated beneath it inherits the dropped
+/// redeclare flag lives on the nested class-modification argument.
+/// [`collect_redeclarations`] only reads redeclarations written directly on an
+/// extends modification, so for this nested form neither the redeclared type nor
+/// its dimensions are consumed. The enclosing component `h` is what must be
+/// recorded — everything instantiated beneath it inherits the dropped
 /// dimensions.
 fn enclosing_component_of_nested_redeclare(modification: &ast::ExtendModification) -> Option<&str> {
     let ast::Expression::ClassModification { target, .. } = &modification.expr else {
@@ -1432,13 +1422,109 @@ fn enclosing_component_of_nested_redeclare(modification: &ast::ExtendModificatio
     target.parts.first().map(|part| part.ident.text.as_ref())
 }
 
+/// What an `extends` modification's redeclarations state about the inherited
+/// components they replace (MLS §7.3).
+struct CollectedRedeclarations {
+    /// Redeclared component name -> new type name, for the redeclarations whose
+    /// type this phase could extract.
+    types: IndexMap<String, String>,
+    /// Redeclared component name -> the array dimensions the redeclaration
+    /// states, for the redeclarations that state any.
+    ///
+    /// A missing entry means the redeclaration wrote no subscripts at all,
+    /// which is not the same as declaring it scalar: MLS §7.3 leaves the
+    /// replaced declaration's dimensions standing in that case, so only the
+    /// entries present here reshape anything (see
+    /// [`apply_redeclared_dimensions`]).
+    dims: IndexMap<String, Vec<ast::Subscript>>,
+    /// Every inherited component an extends modification redeclared, including
+    /// the ones that contributed no type change.
+    components: IndexSet<String>,
+}
+
+/// Apply the array dimensions a redeclaration states to the component it
+/// replaces (MLS §7.3).
+///
+/// An element-redeclaration is a whole component declaration (MLS §A.2.5:
+/// `component-clause1` -> `declaration` -> `IDENT [ array-subscripts ]`), so the
+/// subscripts it writes are its own statement of the component's shape and
+/// *replace* the replaced declaration's dimensions — rank and extent alike.
+/// `extends Base(redeclare C a[4])` over `replaceable C a[2]` yields `a[4]`, and
+/// over a scalar `replaceable C a` it yields an array; neither is an error.
+/// OpenModelica agrees on every one of those (probe matrix in the task record:
+/// scalar -> `[3]`, `[3]` -> `[4]`, `[2]` -> `[4]` through `extends`,
+/// scalar -> `[2,2]`, `[2,2]` -> `[4]`), and a redeclaration that writes no
+/// subscripts leaves the replaced dimensions standing — which is why this is
+/// only ever called for a redeclaration that wrote some.
+///
+/// The dimension *expressions* are evaluated later against the class that owns
+/// the `extends` clause, which is the scope the redeclaration was written in, as
+/// MLS §7.3 requires (OMC probe: `Holder h(n = 5, redeclare B a[k])` with a
+/// local `k = 2` yields `h.a[1..2]` while `h.n` stays 5).
+///
+/// ## Latent risk: the subscripts arrive carrying base-scope `def_id`s
+///
+/// These subscripts reach us through the extends modification, whose target
+/// reference Resolve walks in the *base* class's scope
+/// (`resolve_extend_modification`). So a `def_id` already attached to a
+/// dimension expression here may point at a declaration of the base class, not
+/// at the enclosing class the expression must actually be read in. Nothing
+/// consumes those `def_id`s today — `resolve_component_dimensions` re-evaluates
+/// `shape_expr` by name against the enclosing class's effective components,
+/// which is why the two-scope probe above gets the right extent. A future
+/// consumer that trusted them would silently take the base class's binding.
+/// Clearing or re-resolving them belongs with that consumer, which can say what
+/// the right scope is; guessing here would only move the trap.
+///
+/// ## `:` in a redeclaration is not judged here
+///
+/// `extends Base(redeclare C a[:])` leaves a `Subscript::Range`, which states no
+/// extent and no binding follows it, so the component ends up rank-zero and the
+/// model is accepted (probe C15). OpenModelica rejects it — "Failed to deduce
+/// dimension 1 of a due to missing binding equation". This is *not* specific to
+/// redeclarations: the identical declaration `C a[:]` with no binding takes the
+/// same silent rank-zero path in this compiler (probe C14/C15 control), so
+/// rejecting it only for redeclarations would split one gap into two behaviours.
+/// The whole `:`-without-binding rule belongs to whoever closes the declaration
+/// path; this function deliberately matches it rather than diverging.
+fn apply_redeclared_dimensions(comp: &mut ast::Component, dims: &[ast::Subscript]) {
+    comp.shape.clear();
+    comp.shape_expr.clear();
+    // Mirror the parser's declaration convention (`process_component_clause`):
+    // every subscript is kept symbolically, and `shape` additionally records the
+    // ones [`ast::Subscript::literal_dimension`] can decide on sight. That
+    // helper is shared with the parser on purpose — a private copy here once
+    // dropped its `Boolean` arm, so `redeclare C a[Boolean]` produced a scalar
+    // while the identical declaration produced two elements.
+    for subscript in dims {
+        comp.shape_expr.push(subscript.clone());
+        if let Some(dim) = subscript.literal_dimension() {
+            comp.shape.push(dim);
+        }
+    }
+}
+
+/// The array dimensions a redeclare modification states, if any.
+///
+/// The parser keeps them on the redeclared name's own `ComponentRefPart`
+/// (`redeclare C a[2]` -> target `a[2]`), so an empty subscript list and an
+/// absent one are both reported as "stated nothing".
+fn redeclared_dimensions(modification: &ast::ExtendModification) -> Option<Vec<ast::Subscript>> {
+    let ast::Expression::Modification { target, .. } = &modification.expr else {
+        return None;
+    };
+    let subs = target.parts.first()?.subs.as_ref()?;
+    (!subs.is_empty()).then(|| subs.clone())
+}
+
 fn collect_redeclarations(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     extend: &ast::Extend,
     extend_span: Span,
-) -> InstantiateResult<(IndexMap<String, String>, IndexSet<String>)> {
+) -> InstantiateResult<CollectedRedeclarations> {
     let mut redeclare_types = IndexMap::default();
+    let mut redeclare_dims: IndexMap<String, Vec<ast::Subscript>> = IndexMap::default();
     let mut redeclared_components: IndexSet<String> = IndexSet::new();
     let mut validation_error: Option<Box<InstantiateError>> = None;
 
@@ -1500,6 +1586,13 @@ fn collect_redeclarations(
         }
 
         redeclared_components.insert(target_name_owned.clone());
+        // MLS §7.3: the redeclaration's own array dimensions, when it states
+        // any, describe the component it replaces. Record them even when the
+        // new type could not be extracted — the shape is stated independently
+        // of whether this phase can name the type.
+        if let Some(dims) = redeclared_dimensions(modification) {
+            redeclare_dims.insert(target_name_owned.clone(), dims);
+        }
         if let Some(new_type_name) = new_type {
             redeclare_types.insert(target_name_owned, new_type_name);
         }
@@ -1509,7 +1602,11 @@ fn collect_redeclarations(
         return Err(err);
     }
 
-    Ok((redeclare_types, redeclared_components))
+    Ok(CollectedRedeclarations {
+        types: redeclare_types,
+        dims: redeclare_dims,
+        components: redeclared_components,
+    })
 }
 
 /// MLS §7.3.2: Validates constrainedby type constraints.
@@ -1540,9 +1637,8 @@ fn merge_class_content(
     // These override default bindings in inherited components, e.g., extends Foo(n=2)
     let value_modifications = collect_value_modifications(extend, class);
 
-    // MLS §7.3: Validate redeclarations and collect type changes
-    let (redeclare_types, redeclared_components) =
-        collect_redeclarations(tree, class, extend, extend_span)?;
+    // MLS §7.3: Validate redeclarations and collect what they state
+    let redeclarations = collect_redeclarations(tree, class, extend, extend_span)?;
 
     // MLS §5.6.1.4: same-named elements from several bases become one element,
     // so identity is decided on the merged class rather than on each base.
@@ -1578,19 +1674,35 @@ fn merge_class_content(
     }
 
     // MLS §7.3: record every redeclared inherited component *before* applying
-    // the type changes. Only the redeclared type is consumed below, so anything
-    // else the redeclaration stated — its array dimensions above all — is lost
-    // here. Marking the component keeps later phases from reading the surviving
-    // shape as evidence about the source.
-    for comp_name in &redeclared_components {
+    // the type changes. The redeclared type and its array dimensions are
+    // consumed below; anything else the redeclaration stated is still lost
+    // here, and the mark keeps later phases from reading the surviving
+    // declaration as evidence about the source.
+    //
+    // The mark is deliberately *not* narrowed by the dimension propagation
+    // below: a redeclaration reaching a component through a modifier on an
+    // enclosing declaration (`Holder h(redeclare C a[2])`) still loses its
+    // dimensions — and its type — on a path this function does not own, so
+    // `InstanceData::had_redeclare` must keep covering it.
+    for comp_name in &redeclarations.components {
         if let Some(comp) = target.components.get_mut(comp_name) {
             comp.redeclared_by_modification = true;
         }
     }
 
+    // MLS §7.3: a redeclaration is a whole declaration, so the dimensions it
+    // states replace the replaced declaration's. This is keyed independently of
+    // the type changes below, because a redeclaration states its shape whether
+    // or not this phase could extract its type.
+    for (comp_name, dims) in &redeclarations.dims {
+        if let Some(comp) = target.components.get_mut(comp_name) {
+            apply_redeclared_dimensions(comp, dims);
+        }
+    }
+
     // MLS §7.3: Apply redeclared types to inherited components
     // This updates the component's type so that instantiation uses the new type's fields
-    for (comp_name, new_type_name) in &redeclare_types {
+    for (comp_name, new_type_name) in &redeclarations.types {
         if let Some(comp) = target.components.get_mut(comp_name) {
             // Update the type_name to the new type
             comp.type_name = rumoca_ir_ast::Name::from_string(new_type_name);

@@ -1,7 +1,7 @@
 # SPEC_0038: Unified FMI Execution
 
 ## Status
-DEFERRED
+DRAFT
 
 ## Summary
 Rumoca's sole internal numerical-solver boundary is the FMI 3 Model Exchange
@@ -105,6 +105,28 @@ that decision in the trace. A transport implementation may not swallow a send
 error, convert a receive error to "no input", or allow a failed lockstep
 exchange to advance as a successful model step.
 
+### Phasing
+
+The cutover lands in four phases. Each phase is behaviour-freezing unless its
+row says otherwise: a phase that only moves code MUST prove bit-identical sim
+traces against the pre-phase binary, because a divergence introduced while
+relocating semantics cannot be told apart from the divergence being fixed.
+
+| Phase | Scope | Exit evidence |
+|---|---|---|
+| 1 | Internal ME kernel trait in `rumoca-solver` and one `SolveModel` projection; migrate the rk-like session onto it | Bit-identical traces vs. the pre-migration binary; the rk-like crate links Solve IR from no dependency table except `dev-dependencies`, so no production path there can name it |
+| 2 | Migrate the Diffsol/BDF session; delete the private model paths both backends used | One shared event loop; recorded rk-like/diffsol divergences resolve on the shared semantics, with the band table as the record |
+| 3 | FMI CS profile as an ME host plus a selected integrator | ME/CS trace parity on one kernel artifact |
+| 4 | Packaged FMU and Wasm deployment forms | Linked-versus-packaged and native-versus-Wasm lifecycle parity |
+
+Phase 1 does not fix event-semantics divergences; it removes the reason they
+have to be fixed twice. Fixing them is phase 2 work, on the one event loop.
+
+Composing work: the target/backend registry (#121) supplies the capability
+discovery the profile table above assumes, and declarative buffer starts (#119)
+remove the last initialization state a host would otherwise have to reach for
+directly.
+
 ### External I/O Profile Semantics
 
 `rumoca-input` and `rumoca-codec` do not select ME or CS and do not own an FMI
@@ -197,7 +219,7 @@ Diffsol or a private in-memory Rumoca backend.
 
 ## References
 
-- [SPEC_0007](../../SPEC_0007_IR_PIPELINE.md)
-- [SPEC_0034](../../SPEC_0034_GALEC_EFMI_EXPORT.md)
+- [SPEC_0007](SPEC_0007_IR_PIPELINE.md)
+- [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md)
 - [FMI layered standard for WebAssembly](https://github.com/modelica/fmi-ls-wasm)
 - [Rumoca issue #34](https://github.com/CogniPilot/rumoca/issues/34)

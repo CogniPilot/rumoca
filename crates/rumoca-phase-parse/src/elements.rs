@@ -64,32 +64,6 @@ fn extract_causality(type_prefix: &modelica_grammar_trait::TypePrefix) -> rumoca
     }
 }
 
-/// Try to extract a dimension from a subscript.
-/// Returns Some(dim) if the subscript is an integer literal or Boolean type.
-fn try_extract_dimension(subscript: &rumoca_ir_ast::Subscript) -> Option<usize> {
-    match subscript {
-        rumoca_ir_ast::Subscript::Expression(rumoca_ir_ast::Expression::Terminal {
-            token,
-            terminal_type: rumoca_ir_ast::TerminalType::UnsignedInteger,
-            ..
-        }) => token.text.parse::<usize>().ok(),
-        rumoca_ir_ast::Subscript::Expression(rumoca_ir_ast::Expression::ComponentReference(
-            comp_ref,
-        )) => {
-            // Check for Boolean type as dimension (MLS §10.5)
-            if comp_ref.parts.len() == 1
-                && &*comp_ref.parts[0].ident.text == "Boolean"
-                && comp_ref.parts[0].subs.is_none()
-            {
-                Some(2)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
 /// Extract type-level array shape from component clause.
 fn extract_type_level_shape(
     clause_opt: &Option<modelica_grammar_trait::ComponentClauseOpt>,
@@ -101,7 +75,7 @@ fn extract_type_level_shape(
     let mut shape_expr = Vec::new();
     for subscript in &opt.array_subscripts.subscripts {
         shape_expr.push(subscript.clone());
-        if let Some(dim) = try_extract_dimension(subscript) {
+        if let Some(dim) = subscript.literal_dimension() {
             shape.push(dim);
         }
     }
@@ -571,7 +545,7 @@ fn process_single_component(
     if let Some(decl_opt) = &c.declaration.declaration_opt {
         for subscript in &decl_opt.array_subscripts.subscripts {
             value.shape_expr.push(subscript.clone());
-            if let Some(dim) = try_extract_dimension(subscript) {
+            if let Some(dim) = subscript.literal_dimension() {
                 value.shape.push(dim);
             }
         }

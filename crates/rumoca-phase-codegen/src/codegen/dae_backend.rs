@@ -589,6 +589,8 @@ fn project_coordinate(coordinate: dae::CoordinateView<'_>) -> Value {
         dae::CoordinateView::PreDiscreteValue(id) => {
             coordinate_id("pre_discrete_value", id.index())
         }
+        dae::CoordinateView::PreState(id) => coordinate_id("pre_state", id.index()),
+        dae::CoordinateView::PreAlgebraic(id) => coordinate_id("pre_algebraic", id.index()),
         dae::CoordinateView::Time => json!({ "kind": "time" }),
         dae::CoordinateView::Condition(id) => coordinate_id("condition", id.index()),
         dae::CoordinateView::Delay(id) => coordinate_id("delay", id.index()),
@@ -834,6 +836,7 @@ fn project_conditions(view: dae::DaeView<'_>) -> Value {
 fn project_condition_operation(operation: dae::ConditionOperation<'_>) -> Value {
     match operation {
         dae::ConditionOperation::Initial => json!({ "kind": "initial" }),
+        dae::ConditionOperation::Always => json!({ "kind": "always" }),
         dae::ConditionOperation::Relation(id) => {
             json!({ "kind": "relation", "relation": id.index() })
         }
@@ -853,6 +856,11 @@ fn project_condition_operation(operation: dae::ConditionOperation<'_>) -> Value 
         }),
         dae::ConditionOperation::Or(lhs, rhs) => json!({
             "kind": "or",
+            "lhs": lhs.index(),
+            "rhs": rhs.index(),
+        }),
+        dae::ConditionOperation::AnyRise(lhs, rhs) => json!({
+            "kind": "any_rise",
             "lhs": lhs.index(),
             "rhs": rhs.index(),
         }),

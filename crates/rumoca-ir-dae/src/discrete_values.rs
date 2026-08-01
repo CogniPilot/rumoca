@@ -525,7 +525,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 .and_then(|entry| entry.node)
                 .ok_or_else(|| unknown("condition", index, provenance))?;
             match node {
-                ConditionNode::Initial | ConditionNode::Clock(_) => {}
+                ConditionNode::Initial | ConditionNode::Always | ConditionNode::Clock(_) => {}
                 ConditionNode::Relation(relation) => {
                     let expression = self
                         .storage
@@ -537,7 +537,9 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 }
                 ConditionNode::Discrete(expression) => expressions.push(expression),
                 ConditionNode::Not(inner) => conditions.push(inner),
-                ConditionNode::And { lhs, rhs } | ConditionNode::Or { lhs, rhs } => {
+                ConditionNode::And { lhs, rhs }
+                | ConditionNode::Or { lhs, rhs }
+                | ConditionNode::AnyRise { lhs, rhs } => {
                     conditions.extend([lhs, rhs]);
                 }
             }

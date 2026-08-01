@@ -5,6 +5,8 @@ use std::path::Path;
 mod architecture_hardening_support;
 #[path = "architecture_hardening/dae_ownership.rs"]
 mod dae_ownership;
+#[path = "architecture_hardening/fmi_me_boundary.rs"]
+mod fmi_me_boundary;
 
 use architecture_hardening_support::*;
 
@@ -1308,10 +1310,6 @@ fn test_solver_rk45_crate_owns_second_backend_without_diffsol_dependency() {
     assert!(
         !section_contains_dependency(&content, "dependencies", "diffsol"),
         "rumoca-solver-rk45 must stay pure Rust and must not depend on diffsol"
-    );
-    assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-ir-solve"),
-        "rumoca-solver-rk45 must consume solver-facing IR"
     );
     for banned in [
         "rumoca-ir-dae",

@@ -832,3 +832,328 @@ fn eqn_035_initialization_pre_consistency() {
     );
     assert_eq!(trace.final_value("x"), 6.0);
 }
+
+// =============================================================================
+// MLS §3.7.5: `pre(y)` is the left limit `y(t^pre)`, and it is defined for a
+// continuous-time `y` where the read is itself a discrete-time expression.
+//
+// The canonical MSL shape is `Modelica.Blocks.Math.Mean`
+// (`Modelica 4.1.0/Blocks/Math.mo:2269-2274`):
+//
+//     der(x) = u;
+//     when sample(t0 + 1/f, 1/f) then
+//       y_last = if not yGreaterOrEqualZero then f*pre(x) else max(0.0, f*pre(x));
+//       reinit(x, 0);
+//     end when;
+//
+// `x` is a continuous state, `pre(x)` is read in the when-body, and the same
+// body reinitializes `x`. The tick must observe the integral accumulated up to
+// the event, not the reinitialized value.
+// =============================================================================
+
+#[test]
+fn sim_009_pre_of_continuous_state_in_when_body_is_left_limit_before_reinit() {
+    // `Modelica.Blocks.Math.Mean` reduced to its semantic core: with `u = 1`
+    // and `f = 1`, one period accumulates exactly 1.0. Reading the post-reinit
+    // value would give 0.0 instead.
+    //
+    // `x` starts at 5, not 0, so the MLS §8.6 seed is observable: the tick at
+    // t_start reads pre(x) = x(t_start) = 5. With start = 0 a seeded lane and
+    // an unseeded one are indistinguishable.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real x(start = 5, fixed = true);
+            discrete Real y_last(start = -1, fixed = true);
+        equation
+            der(x) = 1;
+            when sample(0, 1) then
+                y_last = pre(x);
+                reinit(x, 0);
+            end when;
+        end M;
+    "#,
+        "M",
+        3.5,
+    );
+    let y_last = trace.channel("y_last");
+    assert!(
+        y_last.iter().any(|value| (value - 5.0).abs() < 1.0e-6),
+        "MLS §8.6 seeds pre(v) = v at t_start, so the tick at t_start must read \
+         x(t_start) = 5; got {y_last:?}"
+    );
+    for (index, value) in y_last.iter().enumerate() {
+        assert!(
+            (value + 1.0).abs() < 1.0e-6
+                || (value - 5.0).abs() < 1.0e-6
+                || (value - 1.0).abs() < 1.0e-6,
+            "after the first tick every tick must read the period integral 1.0 \
+             (the left limit), not the reinitialized 0.0; sample {index} was {value}"
+        );
+    }
+    assert!(
+        (trace.final_value("y_last") - 1.0).abs() < 1.0e-6,
+        "the last tick must still read the left limit, got {}",
+        trace.final_value("y_last")
+    );
+}
+
+#[test]
+fn sim_009_pre_of_continuous_state_in_a_clocked_when_is_rejected() {
+    // MLS §16.5/§16.8.1: a clock partition has no continuous-time left limit.
+    // It reads its own coordinates with `previous()`, and a continuous value
+    // enters only through `sample()`. OMC rejects this shape outright
+    // ("Argument 1 of pre must be a discrete expression, but x is continuous").
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Real x(start = 0, fixed = true);
+            Clock c = Clock(0.1);
+            discrete Real y(start = -1, fixed = true);
+        equation
+            der(x) = 1;
+            when c then
+                y = pre(x);
+            end when;
+        end M;
+    "#,
+        "M",
+        FailedPhase::ToDae,
+        "ED019",
+    );
+}
+
+#[test]
+fn sim_009_pre_of_a_continuous_state_inside_a_reinit_value_is_the_left_limit() {
+    // `reinit(x, pre(x) + 1)` evaluates its value at the event instant, so
+    // `pre(x)` is the ordinary left limit. Rewriting it to a plain `x` (as this
+    // wave's predecessor did) makes the equation `reinit(x, x + 1)`, which has
+    // no solution and diverges.
+    //
+    // OMC integrates x from 0, so the pre-event values at the ticks are
+    // 1, 3, 5 and x jumps to 2, 4, 6 respectively.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real x(start = 0, fixed = true);
+            discrete Real n(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+            when sample(1, 1) then
+                n = pre(n) + 1;
+                reinit(x, pre(x) + 1);
+            end when;
+        end M;
+    "#,
+        "M",
+        3.5,
+    );
+    // Post-tick values follow OMC exactly: 1 -> 2 at t=1, 3 -> 4 at t=2,
+    // 5 -> 6 at t=3, then free integration to 6.5 at t=3.5.
+    assert!(
+        (trace.final_value("x") - 6.5).abs() < 1.0e-4,
+        "x must follow the OMC sequence and reach 6.5 at t = 3.5, got {}",
+        trace.final_value("x")
+    );
+    assert!(
+        (trace.final_value("n") - 3.0).abs() < 1.0e-9,
+        "three ticks must have fired, got n = {}",
+        trace.final_value("n")
+    );
+}
+
+#[test]
+fn sim_009_continuous_signal_extrema_body_tracks_min_and_max() {
+    // `Modelica.Blocks.Math.ContinuousSignalExtrema` (Blocks/Math.mo:2589-2599)
+    // is the second MSL site that reads `pre()` of continuous coordinates —
+    // `pre(u)` on a continuous algebraic plus `pre(y_min)`/`pre(y_max)`/
+    // `pre(t_min)`/`pre(t_max)`. This is its body with a scalar `sample()`
+    // trigger; the block's own vector-when form is a separate construct that
+    // only becomes reachable after the in-flight vector-when fix.
+    //
+    // Values are OMC's, from a dassl run at tolerance 1e-8.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real u;
+            Real y_min;
+            Real y_max;
+            Real t_min;
+            Real t_max;
+            // The block itself is stateless; this carries one continuous state
+            // so the model is an ODE the solver can advance.
+            Real ramp(start = 0, fixed = true);
+        initial equation
+            y_min = u;
+            y_max = u;
+            t_min = time;
+            t_max = time;
+        equation
+            der(ramp) = 1;
+            u = sin(6.2831853 * time);
+            when sample(0.05, 0.05) then
+                y_min = min({pre(y_min), u, pre(u)});
+                y_max = max({pre(y_max), u, pre(u)});
+                t_min = if y_min < pre(y_min) then time else pre(t_min);
+                t_max = if y_max > pre(y_max) then time else pre(t_max);
+            end when;
+        end M;
+    "#,
+        "M",
+        1.0,
+    );
+    // Over a full period of a unit sine the extrema are +/-1, found at the
+    // quarter points; OMC reports t_max = 0.25 and t_min = 0.75.
+    assert!(
+        (trace.final_value("y_max") - 1.0).abs() < 1.0e-3,
+        "y_max must reach +1, got {}",
+        trace.final_value("y_max")
+    );
+    assert!(
+        (trace.final_value("y_min") + 1.0).abs() < 1.0e-3,
+        "y_min must reach -1, got {}",
+        trace.final_value("y_min")
+    );
+    assert!(
+        (trace.final_value("t_max") - 0.25).abs() < 0.05,
+        "t_max must be the first quarter point, got {}",
+        trace.final_value("t_max")
+    );
+    assert!(
+        (trace.final_value("t_min") - 0.75).abs() < 0.05,
+        "t_min must be the third quarter point, got {}",
+        trace.final_value("t_min")
+    );
+}
+
+#[test]
+fn sim_009_msl_mean_block_body_averages_over_its_period() {
+    // The body of `Modelica.Blocks.Math.Mean` verbatim, with the single change
+    // that `t0` is a plain parameter instead of `parameter SI.Time t0(fixed =
+    // false)` fixed by `initial equation t0 = time` — that spelling is a
+    // separate unsupported construct (a non-parameter-evaluable `sample` start)
+    // and would mask this one. The input and frequency match the OMC reference
+    // run for this block (`Mean(f = 1)` fed a constant 2), which reports y = 2.0
+    // exactly at every tick from t = 1 on. That value is only reachable if
+    // `pre(x)` reads the state accumulated up to the tick rather than the value
+    // `reinit(x, 0)` installs, which would give 0.0.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            parameter Real f = 1 "Base frequency";
+            parameter Real x0 = 0 "Start value of integrator state";
+            parameter Real y0 = 0 "Start value of output";
+            parameter Boolean yGreaterOrEqualZero = false;
+            parameter Real t0 = 0 "Start time of simulation";
+            Real u;
+            Real y;
+            Real x "Integrator state";
+            discrete Real y_last "Last sampled mean value";
+        initial equation
+            x = x0;
+            y_last = y0;
+        equation
+            u = 2;
+            der(x) = u;
+            when sample(t0 + 1/f, 1/f) then
+                y_last = if not yGreaterOrEqualZero then f*pre(x) else max(0.0, f*pre(x));
+                reinit(x, 0);
+            end when;
+            y = y_last;
+        end M;
+    "#,
+        "M",
+        2.5,
+    );
+    assert!(
+        (trace.final_value("y") - 2.0).abs() < 1.0e-6,
+        "the mean of u = 2 over a 1 s period is 2.0 (the OMC reference value), got {}",
+        trace.final_value("y")
+    );
+}
+
+#[test]
+fn sim_009_pre_of_continuous_algebraic_in_when_body_snapshots_event_entry() {
+    // The discriminating case: `a` depends on a discrete the same event
+    // updates, so `pre(a)` and `a` differ at the tick. An implementation that
+    // aliased `pre(a)` to `a` would read 11 at t = 1 instead of 1.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real ramp(start = 0, fixed = true);
+            Real a;
+            discrete Real d(start = 0, fixed = true);
+            discrete Real a_pre(start = 0, fixed = true);
+        equation
+            der(ramp) = 1;
+            a = 10 * d + time;
+            when sample(1, 1) then
+                d = pre(d) + 1;
+                a_pre = pre(a);
+            end when;
+        end M;
+    "#,
+        "M",
+        1.5,
+    );
+    // The tolerance only has to separate the left limit from the live value,
+    // which differ by 10; it absorbs the solver's event-localization error.
+    assert!(
+        (trace.final_value("a_pre") - 1.0).abs() < 1.0e-3,
+        "pre(a) must be the left limit a(t^pre) = 10*0 + 1, got {}",
+        trace.final_value("a_pre")
+    );
+    // The live `a` has already moved to 10*1 + t by the same event, so an
+    // implementation that aliased `pre(a)` to `a` could not have passed the
+    // assertion above.
+    assert!(
+        (trace.final_value("a") - 11.5).abs() < 1.0e-3,
+        "the live `a` after the tick is 10*1 + 1.5, got {}",
+        trace.final_value("a")
+    );
+}
+
+#[test]
+fn sim_009_pre_of_continuous_state_outside_when_clause_is_rejected() {
+    // Ablation for the accept cases above: the same `pre(x)` on the same
+    // continuous state is a typed rejection when no when-clause owns the read.
+    // OMC rejects it too ("Argument 1 of pre must be a discrete expression,
+    // but x is continuous").
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Real x(start = 0, fixed = true);
+            discrete Real y(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+            y = pre(x);
+        end M;
+    "#,
+        "M",
+        FailedPhase::ToDae,
+        "ED019",
+    );
+}
+
+#[test]
+fn sim_009_pre_of_continuous_state_in_when_condition_is_rejected() {
+    // A when-clause's activation condition decides whether the event happens,
+    // so it is not itself inside the event: there is no left limit to read.
+    // OMC rejects this shape with the same discrete-expression diagnostic.
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            Real x(start = 0, fixed = true);
+            discrete Real y(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+            when pre(x) > 0.5 then
+                y = 1;
+            end when;
+        end M;
+    "#,
+        "M",
+        FailedPhase::ToDae,
+        "ED019",
+    );
+}

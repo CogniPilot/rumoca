@@ -1576,6 +1576,46 @@ pub enum Subscript {
     },
 }
 
+impl Subscript {
+    /// The array extent this subscript states, when it states one syntactically.
+    ///
+    /// Two subscript forms are dimensions on sight, with no scope or modifier
+    /// environment needed (MLS §10.5):
+    ///
+    /// - an unsigned integer literal — `Real x[3]` has extent 3;
+    /// - the type name `Boolean`, whose two values index the array — `Real
+    ///   x[Boolean]` has extent 2, and OpenModelica flattens it to
+    ///   `x[false], x[true]`.
+    ///
+    /// Everything else (a parameter reference, `:`, an enumeration type name, an
+    /// arbitrary expression) is *not* decided here and stays symbolic for a
+    /// later phase that has the scope to evaluate it.
+    ///
+    /// This lives on the AST node rather than in a phase because both places
+    /// that record a component's shape must agree: the parser, for a shape read
+    /// off a declaration, and instantiation, for a shape restated by a
+    /// redeclaration (MLS §7.3). They drifted once — instantiation's private
+    /// copy dropped the `Boolean` arm, so `redeclare C a[Boolean]` silently
+    /// produced a scalar while the identical declaration produced two elements.
+    pub fn literal_dimension(&self) -> Option<usize> {
+        match self {
+            Subscript::Expression(Expression::Terminal {
+                token,
+                terminal_type: TerminalType::UnsignedInteger,
+                ..
+            }) => token.text.parse::<usize>().ok(),
+            // MLS §10.5: `Boolean` as a dimension means the two Boolean values.
+            Subscript::Expression(Expression::ComponentReference(comp_ref)) => {
+                (comp_ref.parts.len() == 1
+                    && &*comp_ref.parts[0].ident.text == "Boolean"
+                    && comp_ref.parts[0].subs.is_none())
+                .then_some(2)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl Display for Subscript {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
