@@ -585,6 +585,7 @@ Defines state-to-state transitions with priority and timing control.
 | CONN-027 | potentialRoot priority | §9.4.1 | "Priority p for potentialRoot must be p ≥ 0" |
 | CONN-028 | Parameter/constant variability | §9.3 | "Primitive components may only connect parameter to parameter and constant to constant" |
 | CONN-029 | Connect arguments are connectors | §9.3 | "Both arguments of connect must be connector references" |
+| CONN-030 | Stream-to-stream | §9.3 | "Stream variables may only connect to other stream variables" |
 
 ### 4.8 Function Contracts (FUNC)
 
@@ -901,7 +902,7 @@ areas.
 | Expressions | EXPR | 40 |
 | Equations | EQN | 38 |
 | Algorithms | ALG | 17 |
-| Connections | CONN | 29 |
+| Connections | CONN | 30 |
 | Functions | FUNC | 35 |
 | Types/Interfaces | TYPE | 35 |
 | Arrays | ARR | 40 |
@@ -913,7 +914,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 15 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **431** |
+| **Total** | | **432** |
 
 ---
 

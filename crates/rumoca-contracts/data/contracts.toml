@@ -1091,6 +1091,15 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'CONN-030'
+category = 'Connection'
+name = 'Stream-to-stream'
+mls_ref = '§9.3'
+requirement = 'Stream variables may only connect to other stream variables'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'DECL-001'
 category = 'Declaration'
 name = 'Name uniqueness'

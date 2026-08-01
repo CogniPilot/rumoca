@@ -331,6 +331,20 @@ kind = 'Balance'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'CONN-030'
+case_id = 'conn_030_stream_member_matched_with_non_stream_member_rejected'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-030'
+case_id = 'conn_030_stream_member_matched_with_stream_member_accepted'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'CONN-029'
 case_id = 'conn_029_connect_requires_connectors'
 test_file = 'tests/conn_contracts.rs'
@@ -2205,6 +2219,20 @@ case_id = 'conn_028_parameter_connector_component_rejected'
 test_file = 'tests/conn_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-028'
+case_id = 'conn_028_parameter_member_connected_to_variable_member_rejected'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'CONN-028'
+case_id = 'conn_028_parameter_member_connected_to_parameter_member_accepted'
+test_file = 'tests/conn_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
 
 [[cases]]
 contract_id = 'CLK-014'

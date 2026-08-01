@@ -5,7 +5,7 @@
 //!
 //! # Overview
 //!
-//! The MLS defines 431 contracts across 18 categories. This framework:
+//! The MLS defines 432 contracts across 18 categories. This framework:
 //! - Registers all contracts with metadata
 //! - Provides test infrastructure and macros
 //! - Tracks compliance status
@@ -146,6 +146,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "CONN-027",
     "CONN-028",
     "CONN-029",
+    "CONN-030",
     "DECL-001",
     "DECL-002",
     "DECL-003",
@@ -452,11 +453,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 431 contracts
+        // SPEC_0022 defines 432 contracts
         assert_eq!(
             registry.len(),
-            431,
-            "Expected 431 contracts, got {}",
+            432,
+            "Expected 432 contracts, got {}",
             registry.len()
         );
     }
@@ -478,7 +479,7 @@ mod tests {
         assert_eq!(registry.count_by_category(ContractCategory::Expression), 40);
         assert_eq!(registry.count_by_category(ContractCategory::Equation), 38);
         assert_eq!(registry.count_by_category(ContractCategory::Algorithm), 17);
-        assert_eq!(registry.count_by_category(ContractCategory::Connection), 29);
+        assert_eq!(registry.count_by_category(ContractCategory::Connection), 30);
         assert_eq!(registry.count_by_category(ContractCategory::Function), 35);
         assert_eq!(registry.count_by_category(ContractCategory::Type), 35);
         assert_eq!(registry.count_by_category(ContractCategory::Array), 40);
