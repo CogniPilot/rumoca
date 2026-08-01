@@ -117,7 +117,7 @@ pub(crate) struct InstanceSemanticScope {
     class_children: HashMap<(InstanceId, DefId), Vec<InstanceId>>,
     children_by_def: HashMap<InstanceId, HashMap<DefId, Vec<InstanceId>>>,
     children_by_name: HashMap<InstanceId, HashMap<UnresolvedMemberSegment, Vec<InstanceId>>>,
-    family_shape_by_owner_def: HashMap<(InstanceId, DefId), Vec<usize>>,
+    array_extents_by_owner_def: HashMap<(InstanceId, DefId), Vec<usize>>,
     class_path_ids: HashMap<ComponentPath, CandidateSet>,
 }
 
@@ -127,7 +127,7 @@ impl InstanceSemanticScope {
         scope.index_classes(overlay);
         scope.index_components(overlay);
         scope.index_relationships(overlay);
-        scope.index_component_family_shapes(overlay);
+        scope.index_array_extents(overlay);
         scope
     }
 
@@ -319,21 +319,61 @@ impl InstanceSemanticScope {
         }
     }
 
-    fn index_component_family_shapes(&mut self, overlay: &InstanceOverlay) {
-        for family in &overlay.component_families {
-            let Some(root_id) = family.template_components.first().copied() else {
+    /// Declared extents of every expanded array component, keyed by identity.
+    ///
+    /// MLS §10.1/§10.6.9: the array dimensions belong to the declaration, so
+    /// `c[1]` in an equation is a subscript on the declared array, not on the
+    /// element instance that the subscript selects. The per-element overlay
+    /// entries are scalars by construction, so their own `dims` cannot answer
+    /// the §10.6.9 arity question for the reference.
+    ///
+    /// The extents are read from `InstanceOverlay::array_parent_dims`, which
+    /// instantiation writes for *every* array component it expands. Reading
+    /// the compaction descriptor (`component_families`) instead would make the
+    /// declared shape depend on whether instantiation happened to compact the
+    /// array, and SPEC_0032 §1 both forbids treating that descriptor as the
+    /// array's owner and requires compaction to be indistinguishable from
+    /// element-by-element expansion.
+    fn index_array_extents(&mut self, overlay: &InstanceOverlay) {
+        for (&instance_id, data) in &overlay.components {
+            // Only members of an expanded array carry terminal subscripts, and
+            // the array root path drops exactly those.
+            let Some((_, subscripts)) = data.qualified_name.parts.last() else {
                 continue;
             };
+            if subscripts.is_empty() {
+                continue;
+            }
             let (Some(owner_class_id), Some(def_id)) = (
-                self.owner_class_by_id.get(&root_id).copied(),
-                self.source_def_by_id.get(&root_id).copied(),
+                self.owner_class_by_id.get(&instance_id).copied(),
+                self.source_def_by_id.get(&instance_id).copied(),
             ) else {
                 continue;
             };
-            if let Ok(shape) = family.domain.extents() {
-                self.family_shape_by_owner_def
-                    .insert((owner_class_id, def_id), shape);
+            let Some(dims) = overlay.array_parent_dims.get(&array_root_key(data)) else {
+                continue;
+            };
+            // Instantiation derives the element's subscripts and the recorded
+            // extents from one `dims`, so a row that is not a usable count, or
+            // whose rank disagrees with the subscripts, cannot be produced by
+            // any input reaching here. Both skips are therefore guards, not a
+            // policy: they record nothing for this declaration, which leaves
+            // `identity_shape` answering from the element instance itself — a
+            // known scalar, not an abstention. Should a producer ever make one
+            // reachable, that is the behavior to revisit, because a wrong-rank
+            // row would then be reported as `has 0 dimension(s)`.
+            let Some(extents) = dims
+                .iter()
+                .map(|dim| usize::try_from(*dim).ok())
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            if extents.len() != subscripts.len() {
+                continue;
             }
+            self.array_extents_by_owner_def
+                .insert((owner_class_id, def_id), extents);
         }
     }
 
@@ -480,26 +520,26 @@ impl InstanceSemanticScope {
     }
 
     fn identity_shape(&self, ids: &[InstanceId]) -> SemanticLookup<Option<Vec<usize>>> {
-        let family_shapes = ids
+        let array_extents = ids
             .iter()
             .filter_map(|id| {
                 let key = (
                     *self.owner_class_by_id.get(id)?,
                     *self.source_def_by_id.get(id)?,
                 );
-                self.family_shape_by_owner_def.get(&key)
+                self.array_extents_by_owner_def.get(&key)
             })
             .collect::<std::collections::HashSet<_>>();
-        if family_shapes.len() == 1 {
+        if array_extents.len() == 1 {
             return SemanticLookup::Found(Some(
-                family_shapes
+                array_extents
                     .into_iter()
                     .next()
-                    .expect("one family shape")
+                    .expect("one array extent row")
                     .clone(),
             ));
         }
-        if family_shapes.len() > 1 {
+        if array_extents.len() > 1 {
             return SemanticLookup::Ambiguous;
         }
         self.consensus(SemanticLookup::Found(ids.to_vec()))
@@ -649,6 +689,36 @@ where
         .map(TryInto::try_into)
         .collect::<Result<Vec<_>, _>>()
         .ok()
+}
+
+/// Instantiation's key for the array a member instance belongs to.
+///
+/// `expand_array_component` records the extents under the array component's own
+/// path, which is the member's qualified name with its terminal subscripts
+/// dropped (`plug_p[1].pin[2]` -> `plug_p[1].pin`). Enclosing parts keep theirs:
+/// a nested array under one element of an outer array is its own declaration.
+fn array_root_key(data: &rumoca_ir_ast::InstanceData) -> String {
+    use std::fmt::Write;
+    let parts = &data.qualified_name.parts;
+    let mut key = String::new();
+    for (index, (name, subscripts)) in parts.iter().enumerate() {
+        if index > 0 {
+            key.push('.');
+        }
+        key.push_str(name);
+        if subscripts.is_empty() || index + 1 == parts.len() {
+            continue;
+        }
+        key.push('[');
+        for (position, subscript) in subscripts.iter().enumerate() {
+            if position > 0 {
+                key.push(',');
+            }
+            let _ = write!(key, "{subscript}");
+        }
+        key.push(']');
+    }
+    key
 }
 
 fn terminal_instance_subscripts(qualified_name: &rumoca_ir_ast::QualifiedName) -> Vec<i64> {

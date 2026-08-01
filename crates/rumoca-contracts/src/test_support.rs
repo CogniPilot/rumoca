@@ -133,6 +133,63 @@ pub fn expect_failure_in_phase_reporting_code(
     );
 }
 
+/// Compile a model from source, expecting failure in a specific compile phase
+/// with a diagnostic that carries a code *and* states a specific detail.
+///
+/// Use this when the code alone does not distinguish the rejection the contract
+/// is about. `ET009` is reported both for a subscript the declaration has no
+/// dimension for and for a subscript outside a dimension it does have, and a
+/// wrong declared rank is reported with the same code as a right one — so a
+/// test that only reads the code cannot tell a correct rejection from a
+/// rejection that named the wrong shape.
+///
+/// # Panics
+/// Panics if parsing fails, compilation succeeds, needs synthesized inner
+/// bindings, fails in a different phase, reports no diagnostic with the code, or
+/// no such diagnostic states `expected_detail`.
+pub fn expect_failure_in_phase_with_detail(
+    source: &str,
+    model: &str,
+    expected_phase: FailedPhase,
+    expected_code: &str,
+    expected_detail: &str,
+) {
+    let phase_result = compile_model_phases_or_panic(source, model);
+    let (actual_phase, messages) = match phase_result {
+        PhaseResult::Success(_) => {
+            panic!("Expected compilation failure for model {model}, but it succeeded")
+        }
+        PhaseResult::NeedsInner { .. } => panic!(
+            "Expected compile-phase failure for model {model}, got NeedsInner (missing inner declarations)"
+        ),
+        PhaseResult::Failed {
+            phase, diagnostics, ..
+        } => {
+            let messages: Vec<String> = diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .code
+                        .as_deref()
+                        .is_some_and(|code| error_code_matches(code, expected_code))
+                })
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect();
+            (phase, messages)
+        }
+    };
+    assert_eq!(
+        actual_phase, expected_phase,
+        "Expected failure in phase {expected_phase} for model {model}, got {actual_phase}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains(expected_detail)),
+        "Expected a {expected_code} diagnostic stating {expected_detail:?} for model {model}, got {messages:?}"
+    );
+}
+
 fn compile_model_phases_or_panic(source: &str, model: &str) -> PhaseResult {
     let mut session = Session::new(SessionConfig::default());
     session

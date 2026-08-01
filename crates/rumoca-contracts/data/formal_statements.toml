@@ -942,6 +942,24 @@ pin_polarity = 'PinsDivergence'
 status = 'Unimplemented'
 note = 'The abstention is by name rather than by minting a shape the compiler cannot realize; the test pins the abstention, not the meaning.'
 
+[[statements]]
+id = 'FS-ARR-007'
+statement = 'The subscripts a component reference may carry are budgeted against the dimensions the declaration gives the component, so the reference is measured against the declared array and never against the scalar element a subscript selects.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = 'the array dimensions belong to the declaration, so `c[1]` in an equation is a subscript on the declared array, not on the element instance that the subscript selects'
+quote_source = 'crates/rumoca-phase-typecheck/src/semantic_scope.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_element_expanded_array_reports_its_declared_rank_when_over_subscripted'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-026']
+related_sections = ['§10.1', '§10.4.1', '§10.5']
+note = 'The declared extents are read from the record instantiation writes for every array it expands, not from the descriptor it writes only for the ones it compacted: SPEC_0032 §1 makes compaction an optimization, and a diagnostic that changed with it was reporting the compiler rather than the model. 56 MSL models (57 by diagnostic text; one carries it under the ET000 summary) were rejected as `has 0 dimension(s)` on legal subscripts because of it. The section follows the contract it cites: SPEC_0022 stamps ARR-026 = §10.6.9 for the subscript-count rule, and §10.5.1 for ARR-025, which is about index type.'
+
 # ---------------------------------------------------------------------------
 # INST / PKG — scoping and class occurrences (MLS §5.3.1, §7.1, §13.2)
 # ---------------------------------------------------------------------------
