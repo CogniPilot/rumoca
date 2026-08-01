@@ -14,7 +14,7 @@ fn state_demotion_preserves_recursive_functions_folds_records_and_wire() {
     let prepared = prepare_for_solve(&model).expect("function owners survive reconstruction");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         assert_rebuilt_functions(view);
@@ -43,7 +43,7 @@ fn state_demotion_preserves_distinct_definitions_with_one_rhs() {
     let prepared = prepare_for_solve(&model).expect("same-RHS definitions survive reconstruction");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(assert_same_rhs_definitions);
 }

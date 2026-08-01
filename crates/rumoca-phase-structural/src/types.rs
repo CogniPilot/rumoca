@@ -172,6 +172,21 @@ pub enum StructuralError {
         "index reduction would discard the stated initial value of `{variable}`: MLS 3.6 section 8.6 adds `{variable} = {variable}.start` to the initialization equations for a `fixed = true` variable, and demoting `{variable}` leaves no equation that states it"
     )]
     DroppedStatedInitialValue { variable: String, span: Span },
+    /// Two coordinates the system proves equal — up to sign and a time-invariant
+    /// displacement — each carry a `fixed = true` start, and the two starts do
+    /// not state the same value. MLS 3.6 §8.6 adds both as initialization
+    /// equations, so the initialization system they describe has no solution;
+    /// picking one silently would answer with an initial condition the model
+    /// never stated.
+    #[error(
+        "conflicting stated initial values: `{variable}` and `{other}` are the same quantity, and MLS 3.6 section 8.6 adds both `fixed = true` starts to the initialization equations"
+    )]
+    ConflictingStatedInitialValues {
+        variable: String,
+        other: String,
+        span: Span,
+        other_span: Span,
+    },
     #[error("checked DAE scalar projection failed: {reason}")]
     Projection { reason: String, span: Span },
     #[error("invalid structural IR contract: {reason}")]
@@ -189,6 +204,9 @@ impl StructuralError {
             Self::Singular { .. } => codes::ES010_SINGULAR_SYSTEM,
             Self::EmptySystem => codes::ES011_EMPTY_SYSTEM,
             Self::DroppedStatedInitialValue { .. } => codes::ES012_DROPPED_STATED_INITIAL_VALUE,
+            Self::ConflictingStatedInitialValues { .. } => {
+                codes::ES013_CONFLICTING_STATED_INITIAL_VALUES
+            }
             Self::Projection { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => codes::ES014_CONTRACT_VIOLATION,
@@ -203,6 +221,7 @@ impl StructuralError {
                 ..
             } => unmatched_unknown_spans.first().copied(),
             Self::DroppedStatedInitialValue { span, .. }
+            | Self::ConflictingStatedInitialValues { span, .. }
             | Self::Projection { span, .. }
             | Self::ContractViolation { span, .. }
                 if !span.is_dummy() =>
@@ -211,6 +230,7 @@ impl StructuralError {
             }
             Self::EmptySystem
             | Self::DroppedStatedInitialValue { .. }
+            | Self::ConflictingStatedInitialValues { .. }
             | Self::Projection { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => None,
@@ -223,6 +243,9 @@ impl PhaseError for StructuralError {
         let label = match self {
             Self::DroppedStatedInitialValue { .. } => {
                 "this stated initial value has no equation left after index reduction"
+            }
+            Self::ConflictingStatedInitialValues { .. } => {
+                "this stated initial value contradicts the one below"
             }
             _ => "structural analysis failed here",
         };
@@ -244,6 +267,14 @@ impl PhaseError for StructuralError {
                     Label::secondary(span).with_message("unmatched structural unknown"),
                 );
             }
+        }
+        if let Self::ConflictingStatedInitialValues { other_span, .. } = self
+            && !other_span.is_dummy()
+        {
+            diagnostic = diagnostic.with_label(
+                Label::secondary(*other_span)
+                    .with_message("the same quantity is pinned to a different value here"),
+            );
         }
         diagnostic
     }

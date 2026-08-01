@@ -22,7 +22,9 @@ use std::collections::HashSet;
 use rumoca_ir_dae as dae;
 
 pub use causal_definitions::CausalDefinitions;
-pub use dae_transform::{PreparedDae, prepare_for_solve};
+pub use dae_transform::{
+    InitialValuePin, InitialValueRole, PinTerm, PreparedDae, PreparedSystem, prepare_for_solve,
+};
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
 pub use incidence::{Incidence, solver_incidence};

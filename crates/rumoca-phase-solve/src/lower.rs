@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use rumoca_core::{ComprehensionScalarView, Span};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
-use rumoca_phase_structural::{BltBlock, EquationRef, UnknownId};
+use rumoca_phase_structural::{self as structural, BltBlock, EquationRef, UnknownId};
 
 use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
@@ -11,13 +11,19 @@ use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 mod clocks;
 mod events;
 mod initial_discrete;
+mod initial_parameters;
+mod initial_pins;
 mod scalar;
 use scalar::{ScalarCompiler, ScalarSelector, ScaledDerivativeProgram};
 
-pub(crate) fn lower_solve_problem<'dae>(
-    view: dae::DaeView<'dae>,
-    manifold: &[dae::ExprId<'dae>],
+pub(crate) fn lower_solve_problem(
+    prepared: structural::PreparedSystem<'_, '_>,
 ) -> Result<solve::SolveProblem, LowerError> {
+    let structural::PreparedSystem {
+        view,
+        manifold,
+        pins,
+    } = prepared;
     if view.variable_count() == 0
         && view.continuous_owner_count() == 0
         && view.initialization_owner_count() == 0
@@ -34,7 +40,7 @@ pub(crate) fn lower_solve_problem<'dae>(
     let structural = structural_matching(view)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
-    let initialization = lower_initialization(view, &lowered, &derivatives)?;
+    let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;
     let (discrete, events) = events::lower_discrete_and_events(view, &lowered, &clocks)?;
     Ok(solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
@@ -1225,9 +1231,21 @@ fn lower_initialization<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     derivatives: &DerivativeRowIndex<'dae>,
+    pins: &[structural::InitialValuePin],
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
+    // Every parameter coordinate the initialization determines gets exactly one
+    // owner, decided before any row is lowered: the residual rows below have to
+    // recompute a bound owner's binding rather than read the seed the parameter
+    // set stored for it.
+    let ownership = initial_parameters::initialization_parameter_ownership(view, layout)?;
+    let context = InitializationRowContext {
+        view,
+        layout,
+        derivatives,
+        ownership: &ownership,
+    };
     let mut rows = ScalarRows::default();
-    let mut row_residuals: Vec<Option<dae::ExprId<'dae>>> = Vec::new();
+    let mut row_incidence: Vec<initial_parameters::InitialRowIncidence<'dae>> = Vec::new();
     for owner in view.initialization_owners() {
         match owner {
             dae::InitializationOwnerView::Residual { equation, .. } => {
@@ -1237,23 +1255,55 @@ fn lower_initialization<'dae>(
                     // the continuous row that defines it supplies its value.
                     let program = ScalarCompiler::new(view, layout, None)
                         .with_derivative_definitions(derivatives)
+                        .with_parameter_substitutions(ownership.substitutions())
                         .program(equation.residual(), scalar)?;
                     let output = rows.programs.len();
                     rows.push(program, equation.provenance().span(), output);
                     // Only a one-scalar equation lets a whole-expression coordinate
                     // walk stand in for exact per-scalar incidence.
-                    row_residuals.push((count == 1).then_some(equation.residual()));
+                    row_incidence.push(match count {
+                        1 => initial_parameters::InitialRowIncidence::Residual(equation.residual()),
+                        _ => initial_parameters::InitialRowIncidence::Opaque,
+                    });
                 }
             }
             dae::InitializationOwnerView::Structured { family, .. } => {
-                lower_initialization_family(view, layout, derivatives, family, &mut rows)?;
-                row_residuals.resize(rows.programs.len(), None);
+                lower_initialization_family(context, family, &mut rows)?;
+                row_incidence.resize_with(rows.programs.len(), || {
+                    initial_parameters::InitialRowIncidence::Opaque
+                });
             }
         }
     }
+    // A stated initial value the structural proof carried onto the coordinate
+    // that holds it (MLS §8.6). A proof that the value *defines* a state makes
+    // it an assignment below; a value the proof could only place beside another
+    // stated one stays a residual here, so the initialization instant decides
+    // with numbers whether the two agree.
+    let transferred =
+        initial_pins::lower_transferred_initial_values(view, layout, &ownership, pins)?;
+    rows.extend(transferred.checks);
+    // A carried value is a sum of time-invariant terms about an already-seeded
+    // state, so its parameter incidence is exactly the incidence of those terms.
+    // Handing it to the planner is what lets such a row *determine* a
+    // `fixed = false` parameter its displacement reads, instead of standing as a
+    // residual no block can ever satisfy.
+    row_incidence.extend(transferred.check_incidence);
     let row_count = rows.programs.len();
-    let plan = plan_initial_parameter_projection(view, layout, &row_residuals)?;
-    let updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
+    let plan =
+        initial_parameters::plan_initial_parameter_projection(view, &ownership, &row_incidence)?;
+    let mut updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
+    // MLS §8.6 orders these after the projection that solves the `fixed = false`
+    // unknowns they read; `settle_initialization_system` iterates the whole set
+    // to a fixed point, so the two row groups share one update block.
+    let dependents = ownership.lower_solved_parameter_reads(view, layout)?;
+    updates.rows.extend(dependents.rows);
+    updates.targets.extend(dependents.targets);
+    // The carried values that are definitions join the same update block: each
+    // reads only parameters and constants, so applying it before or after the
+    // projection reaches the same fixed point.
+    updates.rows.extend(transferred.updates);
+    updates.targets.extend(transferred.update_targets);
     Ok(solve::InitializationSolveSystem {
         residual: rows.into_compute_block()?,
         row_targets: vec![None; row_count],
@@ -1264,214 +1314,22 @@ fn lower_initialization<'dae>(
     })
 }
 
-struct InitialParameterProjection {
-    unknowns: Vec<solve::ScalarSlot>,
-    plan: solve::InitializationProjectionPlan,
-}
-
-/// Plan the initialization unknowns that only the initialization system can determine.
-///
-/// MLS §8.6 gives a `parameter` declared `fixed = false` no value of its own: its `start`
-/// attribute is the iteration guess and the initialization equations are what actually
-/// determine it (`Modelica.Electrical.Analog.Basic.SaturatingInductor.Ipar` is the
-/// canonical case). Without a projection block the runtime can only *check* such a row,
-/// so the guess survives into the trajectory — a numerically plausible but wrong run, or
-/// the residual failure this planner removes.
-///
-/// Only rows whose sole unknowns are `fixed = false` parameters are planned here. A row
-/// that also reads a state, algebraic, or discrete coordinate belongs to the full
-/// initialization system, which has no checked plan yet; leaving it unplanned keeps its
-/// typed residual failure instead of inventing a block that cannot be square.
-fn plan_initial_parameter_projection<'dae>(
+/// Everything a lowered initialization row resolves its leaves against.
+#[derive(Clone, Copy)]
+struct InitializationRowContext<'a, 'dae> {
     view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    row_residuals: &[Option<dae::ExprId<'dae>>],
-) -> Result<InitialParameterProjection, LowerError> {
-    let unsolved = unsolved_parameter_slots(view, layout)?;
-    if unsolved.is_empty() {
-        return Ok(InitialParameterProjection {
-            unknowns: Vec::new(),
-            plan: solve::InitializationProjectionPlan::default(),
-        });
-    }
-    let mut incidence: Vec<(usize, BTreeSet<usize>)> = Vec::new();
-    for (row, residual) in row_residuals.iter().enumerate() {
-        let Some(residual) = *residual else {
-            continue;
-        };
-        let Some(unknowns) = row_parameter_unknowns(view, &unsolved, residual) else {
-            continue;
-        };
-        if unknowns.is_empty() {
-            continue;
-        }
-        incidence.push((row, unknowns));
-    }
-    let mut blocks = Vec::new();
-    let mut unknowns = Vec::new();
-    for component in connected_components(&incidence) {
-        let rows = component.rows;
-        let parameters = component.unknowns;
-        // A block the runtime can solve has one equation per unknown. A component that
-        // is not square is under- or over-determined by the rows this planner can see;
-        // it keeps the residual check rather than becoming a non-square Newton block.
-        if rows.len() != parameters.len() {
-            continue;
-        }
-        let slots = parameters
-            .iter()
-            .map(|index| solve::scalar_slot_p(*index))
-            .collect::<Vec<_>>();
-        unknowns.extend(slots.iter().copied());
-        blocks.push(solve::InitializationProjectionBlock {
-            rows,
-            unknowns: slots,
-        });
-    }
-    Ok(InitialParameterProjection {
-        unknowns,
-        plan: solve::InitializationProjectionPlan { blocks },
-    })
-}
-
-/// P-slot indices of every `fixed = false` parameter scalar.
-fn unsolved_parameter_slots<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-) -> Result<HashMap<u32, Vec<usize>>, LowerError> {
-    let mut slots = HashMap::new();
-    for (id, variable) in view.variables() {
-        if variable.role() != dae::VariableRole::Parameter || variable.fixed() != Some(false) {
-            continue;
-        }
-        let span = variable.declaration().span();
-        let mut indices = Vec::with_capacity(variable.scalar_count());
-        for scalar in 0..variable.scalar_count() {
-            let solve::ScalarSlot::P { index, .. } =
-                variable_scalar_slot(layout, id.index(), scalar, span)?
-            else {
-                return Err(LowerError::contract(
-                    format!(
-                        "`fixed = false` parameter `{}` does not occupy parameter storage",
-                        variable.name()
-                    ),
-                    span,
-                ));
-            };
-            indices.push(index);
-        }
-        if !indices.is_empty() {
-            slots.insert(id.index(), indices);
-        }
-    }
-    Ok(slots)
-}
-
-/// The `fixed = false` parameter scalars a residual reads, or `None` when the residual
-/// also reads a coordinate the initialization projection cannot own.
-fn row_parameter_unknowns<'dae>(
-    view: dae::DaeView<'dae>,
-    unsolved: &HashMap<u32, Vec<usize>>,
-    residual: dae::ExprId<'dae>,
-) -> Option<BTreeSet<usize>> {
-    let mut unknowns = BTreeSet::new();
-    let mut owned = true;
-    dae::for_each_expression(view, residual, |_, expression| {
-        let dae::ExpressionOperation::Coordinate(coordinate) = expression.operation() else {
-            return;
-        };
-        match coordinate {
-            dae::CoordinateView::Parameter(parameter) => {
-                if let Some(indices) = unsolved.get(&parameter.index()) {
-                    unknowns.extend(indices.iter().copied());
-                }
-            }
-            // A domain binder and a clock interval are compile-time constants, and
-            // `time` is the known initialization instant.
-            dae::CoordinateView::Time
-            | dae::CoordinateView::ClockInterval(_)
-            | dae::CoordinateView::Binder(_) => {}
-            _ => owned = false,
-        }
-    });
-    owned.then_some(unknowns)
-}
-
-struct ProjectionComponent {
-    rows: Vec<usize>,
-    unknowns: Vec<usize>,
-}
-
-/// Group rows that share a `fixed = false` parameter into one solvable component.
-///
-/// Two rows that read the same unknown must be solved together, so the components of the
-/// row/unknown bipartite graph are the coarsest blocks that stay independent.
-fn connected_components(incidence: &[(usize, BTreeSet<usize>)]) -> Vec<ProjectionComponent> {
-    let mut sets = DisjointSets::new(incidence.len());
-    let mut owner: HashMap<usize, usize> = HashMap::new();
-    for (position, (_, unknowns)) in incidence.iter().enumerate() {
-        for unknown in unknowns {
-            let first = *owner.entry(*unknown).or_insert(position);
-            sets.union(first, position);
-        }
-    }
-    let mut grouped: Vec<ProjectionComponent> = Vec::new();
-    let mut group_of: HashMap<usize, usize> = HashMap::new();
-    for (position, (row, unknowns)) in incidence.iter().enumerate() {
-        let root = sets.find(position);
-        let group = *group_of.entry(root).or_insert_with(|| {
-            grouped.push(ProjectionComponent {
-                rows: Vec::new(),
-                unknowns: Vec::new(),
-            });
-            grouped.len() - 1
-        });
-        grouped[group].rows.push(*row);
-        grouped[group].unknowns.extend(unknowns.iter().copied());
-    }
-    for component in &mut grouped {
-        component.unknowns.sort_unstable();
-        component.unknowns.dedup();
-    }
-    grouped
-}
-
-/// Union-find over the rows of one initialization incidence.
-struct DisjointSets {
-    parent: Vec<usize>,
-}
-
-impl DisjointSets {
-    fn new(len: usize) -> Self {
-        Self {
-            parent: (0..len).collect(),
-        }
-    }
-
-    fn find(&mut self, mut node: usize) -> usize {
-        while self.parent[node] != node {
-            self.parent[node] = self.parent[self.parent[node]];
-            node = self.parent[node];
-        }
-        node
-    }
-
-    fn union(&mut self, left: usize, right: usize) {
-        let (left, right) = (self.find(left), self.find(right));
-        if left != right {
-            self.parent[right] = left;
-        }
-    }
+    layout: &'a LoweredLayout<'dae>,
+    derivatives: &'a DerivativeRowIndex<'dae>,
+    ownership: &'a initial_parameters::InitializationParameterOwnership<'dae>,
 }
 
 fn lower_initialization_family<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    derivatives: &DerivativeRowIndex<'dae>,
+    context: InitializationRowContext<'_, 'dae>,
     family: dae::StructuredFamilyView<'dae>,
     rows: &mut ScalarRows,
 ) -> Result<(), LowerError> {
-    let domain = view
+    let domain = context
+        .view
         .domain(family.domain())
         .expect("checked family domain resolves");
     for point in 0..domain.scalar_count() as usize {
@@ -1480,21 +1338,20 @@ fn lower_initialization_family<'dae>(
             .index_tuple_at(point)
             .expect("checked domain remains valid")
             .expect("checked point ordinal is in range");
-        lower_initialization_family_point(view, layout, derivatives, family, point, &values, rows)?;
+        lower_initialization_family_point(context, family, point, &values, rows)?;
     }
     Ok(())
 }
 
 fn lower_initialization_family_point<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    derivatives: &DerivativeRowIndex<'dae>,
+    context: InitializationRowContext<'_, 'dae>,
     family: dae::StructuredFamilyView<'dae>,
     point: usize,
     values: &[i64],
     rows: &mut ScalarRows,
 ) -> Result<(), LowerError> {
-    let domain = view
+    let domain = context
+        .view
         .domain(family.domain())
         .expect("checked family domain resolves");
     for body in family.bodies().iter() {
@@ -1502,9 +1359,14 @@ fn lower_initialization_family_point<'dae>(
             .scalar_view()
             .body_scalar(point, domain.extents())
             .expect("checked family view projects its domain point");
-        let program = ScalarCompiler::new(view, layout, Some((family.domain(), values)))
-            .with_derivative_definitions(derivatives)
-            .program(body, scalar)?;
+        let program = ScalarCompiler::new(
+            context.view,
+            context.layout,
+            Some((family.domain(), values)),
+        )
+        .with_derivative_definitions(context.derivatives)
+        .with_parameter_substitutions(context.ownership.substitutions())
+        .program(body, scalar)?;
         let output = rows.programs.len();
         rows.push(program, family.provenance().span(), output);
     }
@@ -1527,6 +1389,17 @@ impl ScalarRows {
         self.programs.push(program);
         self.spans.push(span);
         self.output_indices.push(output);
+    }
+
+    /// Append `other`, re-basing its output ordinals onto this block.
+    ///
+    /// Each row writes the block output at its own position, so a row appended
+    /// after `self` must name the position it lands at, not the one it had.
+    pub(super) fn extend(&mut self, other: Self) {
+        for (program, span) in other.programs.into_iter().zip(other.spans) {
+            let output = self.programs.len();
+            self.push(program, span, output);
+        }
     }
 
     pub(super) fn into_scalar_block(self) -> Result<solve::ScalarProgramBlock, LowerError> {

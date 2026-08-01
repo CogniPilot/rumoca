@@ -18,7 +18,49 @@ pub const ES011_EMPTY_SYSTEM: &str = "ES011";
 /// [`crate::StructuralError::DroppedStatedInitialValue`]: the only available
 /// index reduction would discard an MLS 3.6 §8.6 `fixed = true` initial
 /// equation.
+///
+/// SPEC_0008 acceptance contract (a rejection is only as good as the acceptance
+/// it bounds):
+///
+/// * **rejects** a state demotion, or a holonomic reduction, after which no
+///   coordinate the runtime answers states a `fixed = true` value the system it
+///   came from stated — proved by re-reading the rebuilt system, never predicted;
+/// * **accepts**, and must keep accepting: a demotion whose class carries the
+///   value onto the surviving state (transferred as an MLS 3.6 §8.6 definition);
+///   a class another seeded declaration already answers; a class whose asserted
+///   value the stated one is not *proved* to differ from, including every
+///   difference that still reads a parameter; and any coordinate the model never
+///   pinned;
+/// * **owner** `crate::dae_transform::constraints::discarded_stated_initial_value`
+///   over `crate::dae_transform::initial_pins::represented_initial_values`;
+/// * **evidence** `dae_transform::tests::initial_values` —
+///   `a_pinned_state_is_demoted_when_the_class_carries_its_value_to_the_survivor`,
+///   `an_invariant_class_that_asserts_the_stated_value_admits_the_demotion` and
+///   `a_parameter_valued_asserted_value_is_left_to_the_initialization_instant`
+///   for the accepted shapes;
+///   `a_pinned_state_no_surviving_equation_states_is_still_refused` and
+///   `an_invariant_class_that_asserts_another_value_refuses_the_demotion` for the
+///   rejected one.
 pub const ES012_DROPPED_STATED_INITIAL_VALUE: &str = "ES012";
+/// [`crate::StructuralError::ConflictingStatedInitialValues`]: two coordinates
+/// the system proves equal each pin an MLS 3.6 §8.6 `fixed = true` start, and
+/// the two starts state different values.
+///
+/// SPEC_0008 acceptance contract:
+///
+/// * **rejects** two `fixed = true` declarations of one proved-equal class whose
+///   stated values differ by a constant this phase evaluates to a nonzero number
+///   — no parameter value can close that gap, so the initialization system MLS
+///   3.6 §8.6 describes has no solution;
+/// * **accepts**, and must keep accepting: two declarations whose difference
+///   still reads a parameter (`a(start = 3)` and `b(start = 1)` under
+///   `a = b + L` state one value exactly when `L = 2`), which is left to the
+///   initialization instant as a checked residual;
+/// * **owner** `crate::dae_transform::initial_pins::ValueClosure::reject_contradicted_pins`;
+/// * **evidence** `dae_transform::tests::initial_values::two_pinned_members_that_disagree_report_the_inconsistent_initialization`
+///   and `initial_value_alias_transfer::stated_values_that_agree_through_a_parameter_are_not_a_conflict`
+///   for the accepted shape.
+pub const ES013_CONFLICTING_STATED_INITIAL_VALUES: &str = "ES013";
 /// [`crate::StructuralError::ContractViolation`] and
 /// [`crate::StructuralError::UnspannedContractViolation`]: DAE IR metadata
 /// required by structural analysis is missing or inconsistent.
@@ -39,6 +81,7 @@ pub const STRUCTURAL_DIAGNOSTIC_CODES: &[&str] = &[
     ES010_SINGULAR_SYSTEM,
     ES011_EMPTY_SYSTEM,
     ES012_DROPPED_STATED_INITIAL_VALUE,
+    ES013_CONFLICTING_STATED_INITIAL_VALUES,
     ES014_CONTRACT_VIOLATION,
 ];
 
@@ -76,6 +119,12 @@ mod tests {
             StructuralError::DroppedStatedInitialValue {
                 variable: "x".to_string(),
                 span: structural_code_test_span(),
+            },
+            StructuralError::ConflictingStatedInitialValues {
+                variable: "x".to_string(),
+                other: "y".to_string(),
+                span: structural_code_test_span(),
+                other_span: structural_code_test_span(),
             },
             StructuralError::Projection {
                 reason: "dynamic index".to_string(),
@@ -144,9 +193,9 @@ mod tests {
             .collect();
         let unique: BTreeSet<&&str> = codes.iter().collect();
 
-        // Six variants, four codes: all checked-contract failures share ES014.
-        assert_eq!(codes.len(), 6);
-        assert_eq!(unique.len(), 4, "unexpected code aliasing: {codes:?}");
+        // Seven variants, five codes: all checked-contract failures share ES014.
+        assert_eq!(codes.len(), 7);
+        assert_eq!(unique.len(), 5, "unexpected code aliasing: {codes:?}");
     }
 
     #[test]
@@ -156,6 +205,7 @@ mod tests {
         assert_eq!(ES010_SINGULAR_SYSTEM, "ES010");
         assert_eq!(ES011_EMPTY_SYSTEM, "ES011");
         assert_eq!(ES012_DROPPED_STATED_INITIAL_VALUE, "ES012");
+        assert_eq!(ES013_CONFLICTING_STATED_INITIAL_VALUES, "ES013");
         assert_eq!(ES014_CONTRACT_VIOLATION, "ES014");
     }
 

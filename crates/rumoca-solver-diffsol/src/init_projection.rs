@@ -44,7 +44,6 @@ fn initialize_state_runtime_values_inner(
     let tol = opts.atol.max(1.0e-10);
     runtime.initialize_delay_history(*current_t, current_y, params)?;
     runtime.set_initial_event_flag(params, true);
-    let event_pre = InitialEventPreValues::snapshot(current_y, params);
     let t_start = *current_t;
     let initial_projection_params = state_initial_projection_params(
         runtime,
@@ -71,6 +70,7 @@ fn initialize_state_runtime_values_inner(
         model.state_scalar_count(),
         tol,
     )?;
+    let event_pre = InitialEventPreValues::snapshot(current_y, params);
     let outcome = apply_state_initial_event_updates(StateInitialEventUpdates {
         opts,
         runtime,
@@ -87,6 +87,20 @@ fn initialize_state_runtime_values_inner(
     Ok(outcome.observations)
 }
 
+/// The `pre()` the event iteration at the initial time reads.
+///
+/// MLS 3.6 §8.6: "Before the start of the integration, it must be guaranteed
+/// that for all variables `v`, `v = pre(v)`. If this is not the case for some
+/// variables `vi`, `pre(vi) := vi` must be set and an event iteration at the
+/// initial time must follow, so the model is re-evaluated, until this condition
+/// is fulfilled."
+///
+/// `vi` there is the value initialization settled, so this snapshot is taken
+/// *after* the initialization system, the discrete initialization fixed point,
+/// and the algebraic/relation-memory settle have run — never from the declared
+/// `start` values they replaced. Taking it earlier makes every `pre()` read of
+/// the initial event fall back to `start`, which silently discards the whole
+/// §8.6 initialization result for any coordinate initialization moved.
 struct InitialEventPreValues {
     y: Vec<f64>,
     p: Vec<f64>,

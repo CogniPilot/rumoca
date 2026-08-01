@@ -186,8 +186,7 @@ end ReachedInitialAssertion;
         .compile_str(SOURCE, "reached_initial_assertion.mo")
         .expect("a guarded assertion has a checked owner");
     let error = simulate_dae(&compiled.dae, &SimOptions::default())
-        .err()
-        .expect("a reached guard fails its assertion");
+        .expect_err("a reached guard fails its assertion");
     let rendered = format!("{error:?}");
     assert!(
         rendered.contains("guard must fire"),
@@ -249,8 +248,7 @@ fn every_unrolled_iteration_of_a_checking_call_owns_its_own_assertion() {
         .compile_str(&source, "initial_algorithm_checking_call.mo")
         .expect("a zero-output checking call has a checked initialization owner");
     let error = simulate_dae(&compiled.dae, &SimOptions::default())
-        .err()
-        .expect("a table that is not monotonic fails the assertion the call raises");
+        .expect_err("a table that is not monotonic fails the assertion the call raises");
     let rendered = format!("{error:?}");
     assert!(
         rendered.contains("table not strict monotonically increasing"),

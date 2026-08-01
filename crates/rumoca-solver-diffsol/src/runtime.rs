@@ -543,11 +543,6 @@ pub(crate) fn initialize_no_state_runtime(
     let equilibrium_model = OdeModel::new(model)?;
     runtime.initialize_delay_history(current_t, &current_y, &mut params)?;
     runtime.set_initial_event_flag(&mut params, true);
-    // `pre()` at the initial event is defined by the declared/start values.
-    // Initialization projection may settle current condition memory before the
-    // event update runs, so preserve the pre-event snapshot first.
-    let event_pre_y = current_y.clone();
-    let event_pre_p = params.clone();
     runtime.settle_initialization_system(
         &mut current_y,
         &mut params,
@@ -564,6 +559,14 @@ pub(crate) fn initialize_no_state_runtime(
         0,
         tol,
     )?;
+    // MLS 3.6 §8.6: "Before the start of the integration, it must be guaranteed
+    // that for all variables `v`, `v = pre(v)`. If this is not the case for
+    // some variables `vi`, `pre(vi) := vi` must be set and an event iteration
+    // at the initial time must follow". `vi` is the settled initialization
+    // value, so the snapshot the event iteration reads `pre()` from is taken
+    // here, after the settle, not from the declared `start` values it replaced.
+    let event_pre_y = current_y.clone();
+    let event_pre_p = params.clone();
     let dynamic_event = runtime.current_dynamic_time_event_stop(&current_y, &params, current_t)?;
     let outcome = runtime.apply_projected_initial_event_boundary(
         rumoca_solver::ProjectedInitialEventInput {

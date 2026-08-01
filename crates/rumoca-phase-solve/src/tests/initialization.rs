@@ -278,3 +278,135 @@ fn fixed_false_parameter_becomes_an_initialization_projection_unknown() {
         [rumoca_ir_solve::scalar_slot_p(index)]
     );
 }
+
+/// MLS 3.6 §8.6: "All variables declared as parameter having `fixed = false` are
+/// treated as unknowns during the initialization phase, i.e., there must be
+/// additional equations for them — and the start-value can be used as a
+/// guess-value during initialization."
+///
+/// The parameter set therefore holds only the guess for `q`, and the binding
+/// `g = 2*q` it evaluated from that guess is a seed, not a value. The binding
+/// becomes an initialization update row writing `g`'s own parameter slot, which
+/// `settle_initialization_system` re-applies after the projection solves `q` —
+/// without it a plausible wrong number reaches the whole trajectory.
+#[test]
+fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve() {
+    let model = dependent_parameter_model();
+    let solve = lower_solve_problem(&model).unwrap();
+    solve
+        .validate()
+        .expect("the dependent parameter update satisfies the Solve shape contract");
+    let dependent_slot = solve
+        .layout
+        .binding("g")
+        .expect("the dependent parameter keeps its parameter storage");
+    assert_eq!(
+        solve.initialization.update_targets,
+        [dependent_slot],
+        "the dependent binding is the only initialization update row"
+    );
+    let unsolved_slot = solve
+        .layout
+        .binding("q")
+        .expect("the unsolved parameter keeps its parameter storage");
+    let ScalarSlot::P {
+        index: unsolved_index,
+        ..
+    } = unsolved_slot
+    else {
+        panic!("a parameter occupies P storage");
+    };
+    assert!(
+        solve.initialization.update_rhs.programs()[0]
+            .iter()
+            .any(|operation| matches!(
+                operation,
+                LinearOp::LoadP { index, .. } if *index == unsolved_index
+            )),
+        "the re-applied row reads the slot the projection solves"
+    );
+    assert!(
+        !solve
+            .initialization
+            .projection_unknowns
+            .contains(&dependent_slot),
+        "the dependent parameter is assigned by its binding, not solved as an unknown"
+    );
+}
+
+/// `parameter Real q(fixed=false); parameter Real g=2*q; initial equation q*q=4;`
+fn dependent_parameter_model() -> dae::Dae {
+    let source = TestSource::new(
+        "parameter Real q(fixed=false); parameter Real g=2*q; initial equation q*q=4;",
+    );
+    let declaration = source.at(0, 29);
+    let dependent = source.at(31, 50);
+    let owner = source.at(69, 74);
+    dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let start = model.expressions(|expressions| {
+            expressions
+                .at(declaration)
+                .literal(dae::DaeLiteral::Real(3.0))
+        })?;
+        let unsolved = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("q"),
+                real,
+                declaration,
+                dae::VariableAttributes {
+                    start: Some(start),
+                    fixed: Some(false),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let binding = model.expressions(|expressions| {
+            let two = expressions
+                .at(dependent)
+                .literal(dae::DaeLiteral::Real(2.0))?;
+            let read = expressions
+                .at(dependent)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+            expressions
+                .at(dependent)
+                .binary(dae::BinaryOperator::Multiply, two, read)
+        })?;
+        model.variables(|variables| {
+            variables.parameter(
+                VarName::new("g"),
+                real,
+                dependent,
+                dae::VariableAttributes {
+                    binding: Some(binding),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let left = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+            let right = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+            let square =
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Multiply, left, right)?;
+            let four = expressions.at(owner).literal(dae::DaeLiteral::Real(4.0))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, square, four)
+        })?;
+        model.initialization(|initialization| initialization.value_equation(owner, residual))?;
+        Ok(())
+    })
+    .unwrap()
+}

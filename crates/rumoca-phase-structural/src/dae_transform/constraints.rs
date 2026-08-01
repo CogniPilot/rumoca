@@ -18,7 +18,9 @@ use rumoca_core::{Span, StateSelect};
 use rumoca_ir_dae as dae;
 
 use super::equalities::{EqualityAnchor, EqualitySign, SystemEqualities};
+use super::initial_pins::represented_initial_values;
 use super::{DirectStateConstraint, HolonomicConstraint};
+use crate::StructuralError;
 
 /// The exact indirections reconstruction is allowed to follow while
 /// differentiating, gathered once per source system.
@@ -44,24 +46,26 @@ enum Visit {
     Differentiable,
 }
 
-/// Every state demotion one system offers, split by whether taking it would
-/// keep the initial values the model states.
+/// Every state demotion one system offers, split by what taking it costs the
+/// initial values the model states.
 pub(super) struct StateDemotionCandidates {
-    /// Demotions the reduction may take, in the order it should try them.
+    /// Demotions the source system alone proves keep every stated initial
+    /// value, in the order the reduction should try them.
     pub(super) admissible: Vec<DirectStateConstraint>,
-    /// Demotions refused because the state they demote carries an MLS 3.6 §8.6
-    /// `fixed = true` start that no surviving equation reproduces. Kept so a
-    /// reduction that finds no other way forward can name the initial condition
-    /// it would have had to discard instead of reporting a bare singularity.
-    pub(super) refused: Vec<RefusedDemotion>,
+    /// Demotions that drop the MLS 3.6 §8.6 initial equation of the coordinate
+    /// they demote, as the source system reads it. §8.6 states that equation
+    /// about a *quantity*, so such a demotion is legal exactly when the system
+    /// it produces still states the value about a coordinate the runtime
+    /// answers — a question only the rebuilt system can settle, which
+    /// [`discarded_stated_initial_value`] asks of it. Tried after every
+    /// unconditional demotion, so a reduction never spends a stated value while
+    /// another way forward is open.
+    pub(super) conditional: Vec<DirectStateConstraint>,
 }
 
-/// One demotion refused for dropping a stated initial value.
+/// One stated initial value a rebuilt system no longer states.
 #[derive(Clone)]
-pub(super) struct RefusedDemotion {
-    /// The demotion as it would have been applied, so a caller can prove the
-    /// refusal is load-bearing by rebuilding with it.
-    pub(super) constraint: DirectStateConstraint,
+pub(super) struct DiscardedInitialValue {
     /// The pinned variable, named as the model declares it.
     pub(super) variable: String,
     /// That variable's declaration.
@@ -80,28 +84,6 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
         })
         .collect::<Vec<_>>();
     constraints.extend(redundant_state_constraints(view, &facts.equalities));
-    // MLS 3.6 §8.6 turns every `fixed = true` start into an initialization
-    // equation, and a demoted state has no initialization equation of its own
-    // left. The filter therefore runs over the merged candidate list, so it
-    // covers the residual path and the equality-closure path alike, and it runs
-    // before the per-state deduplication below, so a refused residual candidate
-    // can never shadow an admissible closure candidate for the same state.
-    let mut refused = Vec::new();
-    constraints.retain(|candidate| {
-        if keeps_stated_initial_value(view, &facts.equalities, candidate.state) {
-            return true;
-        }
-        let variable = view
-            .variable_id(candidate.state as usize)
-            .and_then(|id| view.variable(id))
-            .expect("candidate state declaration resolves");
-        refused.push(RefusedDemotion {
-            constraint: *candidate,
-            variable: variable.name().as_str().to_string(),
-            span: variable.declaration().span(),
-        });
-        false
-    });
     let mut claimed = vec![false; view.variable_count()];
     constraints
         .retain(|candidate| !std::mem::replace(&mut claimed[candidate.state as usize], true));
@@ -121,9 +103,88 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionC
             .all(|candidate| carries_a_differentiable_definition(view, *candidate)),
         "a demotion candidate must satisfy the contract its RHS is consumed under"
     );
+    // MLS 3.6 §8.6 turns every `fixed = true` start into an initialization
+    // equation, and a demoted state has no initialization equation of its own
+    // left. The split runs over the merged candidate list, so it covers the
+    // residual path and the equality-closure path alike, and it reads only the
+    // state each candidate demotes, so every candidate for one state lands on
+    // the same side of it however that candidate was detected.
+    let (admissible, conditional) = constraints.into_iter().partition(|candidate| {
+        keeps_stated_initial_value(view, &facts.equalities, candidate.state)
+    });
     StateDemotionCandidates {
-        admissible: constraints,
-        refused,
+        admissible,
+        conditional,
+    }
+}
+
+/// The MLS 3.6 §8.6 initial equation `rebuilt` no longer states, out of the ones
+/// `stated` records about the system it was built from.
+///
+/// This is the postcondition a state demotion is accepted under. The source
+/// system's own reading decides *which* obligations have to survive, and the
+/// rebuilt system decides whether they did: a demotion that turns a pinned
+/// state into an algebraic is legal when the equalities carry the stated value
+/// onto a coordinate the runtime still answers, and is a dropped initial
+/// condition when they do not. Checking it on the rebuilt system is what makes
+/// the answer a proof rather than a prediction — the roles, the classes and the
+/// substituted derivatives are all the reduction's own output.
+///
+/// Both reduction routes are checked against this. A state demotion changes a
+/// coordinate's role outright; a holonomic reduction *replaces* the residual it
+/// differentiates (`reconstruction::rebuild_holonomic_constraint`), which can
+/// take an equality that carried a stated value onto another coordinate out of
+/// the system. Neither is trusted to preserve what it does not name.
+pub(super) fn discarded_stated_initial_value(
+    source: dae::DaeView<'_>,
+    rebuilt: dae::DaeView<'_>,
+    stated: &[u32],
+) -> Result<Option<DiscardedInitialValue>, StructuralError> {
+    if stated.is_empty() {
+        return Ok(None);
+    }
+    let kept = represented_initial_values(rebuilt);
+    let mut discarded = None;
+    for variable in stated.iter().copied() {
+        // The two systems are compared by variable ordinal, which reconstruction
+        // preserves by reserving one target variable per source variable in
+        // source order. Every ordinal this comparison rests on is checked, on
+        // the path that finds a discarded value and on the path that finds none,
+        // because a silent renumbering would make the second one a lie.
+        let declaration = |view: dae::DaeView<'_>| {
+            view.variable_id(variable as usize)
+                .and_then(|id| view.variable(id))
+                .map(|declaration| {
+                    (
+                        declaration.name().as_str().to_string(),
+                        declaration.declaration().span(),
+                    )
+                })
+        };
+        let (Some((name, span)), Some((rebuilt_name, _))) =
+            (declaration(source), declaration(rebuilt))
+        else {
+            return Err(renumbered(variable));
+        };
+        if name != rebuilt_name {
+            return Err(renumbered(variable));
+        }
+        if !kept.contains(&variable) && discarded.is_none() {
+            discarded = Some(DiscardedInitialValue {
+                variable: name,
+                span,
+            });
+        }
+    }
+    Ok(discarded)
+}
+
+fn renumbered(variable: u32) -> StructuralError {
+    StructuralError::UnspannedContractViolation {
+        reason: format!(
+            "a structural reduction renumbered variable {variable}, so the stated initial \
+             values proved about the source system name nothing in the rebuilt one"
+        ),
     }
 }
 
@@ -203,31 +264,33 @@ fn redundant_state_constraints(
         .collect()
 }
 
-/// Whether demoting `state` keeps every initial value the model states about
-/// the quantity it names.
+/// Whether the source system alone proves that demoting `state` keeps every
+/// initial value the model states about the quantity it names.
 ///
 /// MLS 3.6 §8.6: "For every Real variable vc with fixed = true, the equation
 /// vc = startExpression is added to the initialization equations." A demoted
 /// state is no longer a state, so it has no initialization equation of its own
 /// left; that stated equation survives only when an equation the reduction
-/// keeps reproduces it. Exactly two such proofs exist here, both read off the
-/// offset-free equality layer because it is the only one that proves anything
-/// about a *value*:
+/// keeps reproduces it. Exactly one such proof is available from the source
+/// system by itself, read off the offset-free equality layer because it is the
+/// only one that proves anything about a *value*: a class anchored on another
+/// state keeps that state, so the obligation survives when the anchor carries
+/// the same one — `fixed = true` with the same stated start, same-signed.
 ///
-///   * a class pinned to a time-invariant value asserts `vc = c` at every
-///     instant, initial time included, and the residual asserting it stays in
-///     the system;
-///   * a class anchored on another state keeps that state, so the obligation
-///     survives exactly when the anchor carries the same one — `fixed = true`
-///     with the same stated start, same-signed.
+/// Everything else is not a refusal but a *question*, and this layer is the
+/// wrong place to answer it. A state that anchors its own class, an
+/// opposite-signed member, an unpinned anchor, a class pinned to a
+/// time-invariant value, two pinned members that disagree: whether the value
+/// survives depends on the classes, roles and displacements of the system the
+/// demotion produces, none of which exist yet. Those candidates go to
+/// [`StateDemotionCandidates::conditional`], where the rebuilt system answers
+/// with [`discarded_stated_initial_value`].
 ///
-/// Everything else would replace a stated initial condition with whatever guess
-/// the rest of the system happens to produce, so the demotion is refused: a
-/// state that anchors its own class (no equality proves anything about it), an
-/// opposite-signed member (its initial value is the anchor's negated), an
-/// anchor that is not pinned, and two pinned members that disagree on the start
-/// — which is MLS 3.6 §8.6 inconsistent initialization, not a choice to make
-/// silently.
+/// In particular an [`EqualityAnchor::Invariant`] class proves only that the
+/// class holds *some* constant — `EqualityAnchor::Invariant { value: None, .. }`
+/// names no expression at all, and the anchor carries no displacement — so it
+/// cannot show the constant is the stated start. Accepting it here is what let
+/// `x(start = 1, fixed = true)` in a class the system pins to 5 initialize at 5.
 fn keeps_stated_initial_value(
     view: dae::DaeView<'_>,
     equalities: &SystemEqualities,
@@ -243,7 +306,6 @@ fn keeps_stated_initial_value(
         return true;
     }
     match equalities.value_anchor_of(state) {
-        Some((EqualityAnchor::Invariant { .. }, _)) => true,
         Some((EqualityAnchor::State(anchor), EqualitySign::Same)) if anchor != state => view
             .variable_id(anchor as usize)
             .and_then(|id| view.variable(id))
@@ -275,7 +337,7 @@ fn states_the_same_start<'dae>(
 }
 
 /// Whether two time-invariant expressions are the same expression as written.
-fn states_the_same_expression<'dae>(
+pub(super) fn states_the_same_expression<'dae>(
     view: dae::DaeView<'dae>,
     left: dae::ExprId<'dae>,
     right: dae::ExprId<'dae>,
@@ -329,7 +391,10 @@ fn states_the_same_expression<'dae>(
     }
 }
 
-fn numeric_literal<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> Option<f64> {
+pub(super) fn numeric_literal<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<f64> {
     match view.expression(expression)?.operation() {
         dae::ExpressionOperation::Literal(literal) => literal_value(literal),
         _ => None,

@@ -18,6 +18,30 @@ pub(super) struct ScaledDerivativeProgram<'dae> {
     pub(super) span: Span,
 }
 
+/// Parameter bindings a program must recompute instead of loading from storage.
+///
+/// The parameter set evaluates a binding once, before the initialization system
+/// has solved anything, so a binding that reads an MLS §8.6 initialization
+/// unknown only ever held a number derived from that unknown's `start` guess.
+/// A row lowered with these substitutions reads the binding itself, so the value
+/// it sees is the one the current iterate implies rather than the stale seed.
+#[derive(Default)]
+pub(super) struct ParameterBindingSubstitutions<'dae> {
+    bindings: HashMap<u32, dae::ExprId<'dae>>,
+}
+
+impl<'dae> ParameterBindingSubstitutions<'dae> {
+    pub(super) const fn new(bindings: HashMap<u32, dae::ExprId<'dae>>) -> Self {
+        Self { bindings }
+    }
+
+    /// The binding to recompute for a parameter, when this parameter is one the
+    /// initialization system re-derives rather than reads.
+    pub(super) fn binding(&self, parameter: u32) -> Option<dae::ExprId<'dae>> {
+        self.bindings.get(&parameter).copied()
+    }
+}
+
 pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
@@ -27,6 +51,8 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     active_clock: Option<dae::ClockId<'dae>>,
     derivative_definitions: Option<&'layout DerivativeRowIndex<'dae>>,
     active_derivatives: Vec<(u32, usize)>,
+    parameter_substitutions: Option<&'layout ParameterBindingSubstitutions<'dae>>,
+    active_parameters: Vec<u32>,
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
 }
@@ -48,6 +74,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             active_clock: None,
             derivative_definitions: None,
             active_derivatives: Vec::new(),
+            parameter_substitutions: None,
+            active_parameters: Vec::new(),
             ops: Vec::new(),
             next_register: 0,
         }
@@ -60,6 +88,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         definitions: &'layout DerivativeRowIndex<'dae>,
     ) -> Self {
         self.derivative_definitions = Some(definitions);
+        self
+    }
+
+    /// Let this program recompute a calculated parameter from its binding
+    /// instead of loading the number the parameter set stored for it.
+    pub(super) const fn with_parameter_substitutions(
+        mut self,
+        substitutions: &'layout ParameterBindingSubstitutions<'dae>,
+    ) -> Self {
+        self.parameter_substitutions = Some(substitutions);
         self
     }
 
@@ -82,6 +120,82 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.active_clock = Some(clock);
         let output = self.expression(expression, scalar)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    /// Compile the signed sum `Σ ±termᵢ` into one program.
+    ///
+    /// An empty sum is the value zero: the terms a structural proof hands over
+    /// are already reduced, so a displacement that cancelled leaves nothing to
+    /// add rather than a missing row.
+    pub(super) fn signed_sum_program(
+        mut self,
+        terms: &[(dae::ExprId<'dae>, bool)],
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let mut total: Option<solve::Reg> = None;
+        for (expression, negated) in terms.iter().copied() {
+            let value = self.expression(expression, 0)?;
+            let operator = if negated {
+                dae::BinaryOperator::Subtract
+            } else {
+                dae::BinaryOperator::Add
+            };
+            total = Some(match (total, negated) {
+                (None, false) => value,
+                (None, true) => self.unary(dae::UnaryOperator::Negate, value, span)?,
+                (Some(total), _) => self.binary(operator, total, value, span)?,
+            });
+        }
+        let output = match total {
+            Some(total) => total,
+            None => self.constant(0.0, span)?,
+        };
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    /// Compile `slot - Σ ±termᵢ` into one residual program.
+    ///
+    /// The coordinate is read from its storage rather than through an
+    /// expression, because the equation being restated is the declaration's own
+    /// `v = v.start` — a claim about the coordinate, which the DAE need not
+    /// contain an expression for.
+    pub(super) fn slot_residual_program(
+        mut self,
+        slot: solve::ScalarSlot,
+        terms: &[(dae::ExprId<'dae>, bool)],
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let coordinate = self.register(span)?;
+        match slot {
+            solve::ScalarSlot::Y { index, .. } => self.ops.push(solve::LinearOp::LoadY {
+                dst: coordinate,
+                index,
+            }),
+            solve::ScalarSlot::P { index, .. } => self.ops.push(solve::LinearOp::LoadP {
+                dst: coordinate,
+                index,
+            }),
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
+                return Err(LowerError::contract(
+                    "a stated initial value names a coordinate with no runtime storage",
+                    span,
+                ));
+            }
+        }
+        let mut residual = coordinate;
+        for (expression, negated) in terms.iter().copied() {
+            let value = self.expression(expression, 0)?;
+            let operator = if negated {
+                dae::BinaryOperator::Add
+            } else {
+                dae::BinaryOperator::Subtract
+            };
+            residual = self.binary(operator, residual, value, span)?;
+        }
+        self.ops
+            .push(solve::LinearOp::StoreOutput { src: residual });
         Ok(self.ops)
     }
 

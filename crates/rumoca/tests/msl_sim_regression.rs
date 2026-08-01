@@ -153,6 +153,60 @@ fn switched_rlc_msl_retains_storage_states_through_step() {
     );
 }
 
+/// A translational spring between a support and a mass, with the initial
+/// condition stated where the library states relative positions:
+/// `spring1.s_rel(start = 1, fixed = true)`.
+///
+/// MSL writes `s_rel = flange_b.s - flange_a.s` and `flange_a.s = s - L/2`, so
+/// the pinned quantity reaches the integrated position `m1.s` through a
+/// connector chain, a support held at a parameter, and the body's own
+/// half-length displacement. MLS 3.6 §8.6 makes the pin an initialization
+/// equation, so `m1.s` starts where the pin puts it and not at its own guess.
+const PINNED_SPRING_MASS: &str = r#"
+model PinnedSpringMass
+  Modelica.Mechanics.Translational.Components.Fixed fixed1(s0 = 0);
+  Modelica.Mechanics.Translational.Components.Spring spring1(
+    c = 100, s_rel(start = 1, fixed = true));
+  Modelica.Mechanics.Translational.Components.Mass m1(
+    m = 1, L = 0.5, s(start = 1.5), v(start = 0, fixed = true));
+equation
+  connect(fixed1.flange, spring1.flange_a);
+  connect(spring1.flange_b, m1.flange_a);
+end PinnedSpringMass;
+"#;
+
+/// OMC 4.1.0 on the same source: `spring1.s_rel(0) = 1`, `m1.s(0) = 1.25`.
+#[test]
+fn pinned_relative_position_initializes_the_mass_it_holds() {
+    let msl_compiler = require_msl_compiler();
+    let compiled = msl_compiler
+        .model("PinnedSpringMass")
+        .compile_str(PINNED_SPRING_MASS, "PinnedSpringMass.mo")
+        .expect("pinned spring/mass model should compile");
+
+    let result = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.05),
+            solver_mode: SimSolverMode::Bdf,
+            ..SimOptions::default()
+        },
+    )
+    .expect("pinned spring/mass model should simulate");
+
+    let s_rel = result_series(&result, &["spring1.s_rel"])[0];
+    let position = result_series(&result, &["m1.s"])[0];
+    assert!(
+        (s_rel - 1.0).abs() <= 1.0e-9,
+        "spring1.s_rel started at {s_rel}, expected the stated 1.0"
+    );
+    assert!(
+        (position - 1.25).abs() <= 1.0e-9,
+        "m1.s started at {position}, expected 1.25 = s_rel + L/2 + s0"
+    );
+}
+
 #[test]
 fn pid_msl_responds_to_step_error() {
     let msl_compiler = require_msl_compiler();

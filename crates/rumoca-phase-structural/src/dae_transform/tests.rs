@@ -1,5 +1,6 @@
 mod equalities;
 mod functions;
+mod initial_pins;
 mod initial_values;
 
 use rumoca_core::{SourceMap, Span, TypeId, VarName};
@@ -1032,7 +1033,7 @@ fn state_demotion_preserves_structured_families_and_binder_provenance() {
     let prepared = prepare_for_solve(&model).expect("structured companion family is preserved");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         assert_eq!(view.domain_count(), 1);
@@ -1084,7 +1085,7 @@ fn state_demotion_preserves_discrete_equations_and_exact_provenance() {
     let prepared = prepare_for_solve(&model).expect("discrete companion equations survive");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         assert_eq!(view.discrete_real_equation_count(), 1);
@@ -1141,7 +1142,7 @@ fn state_demotion_preserves_conditional_discrete_real_activation() {
     let prepared = prepare_for_solve(&model).expect("conditional B.1b equation survives");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         let equation = view
@@ -1168,7 +1169,7 @@ fn state_demotion_preserves_conditions_roots_and_event_owners() {
     let prepared = prepare_for_solve(&model).expect("event companion owners survive");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         assert_eq!(view.relation_count(), 1);
@@ -1231,7 +1232,7 @@ fn state_demotion_preserves_clock_history_and_terminal_owners() {
     let prepared = prepare_for_solve(&model).expect("clock companion owners survive");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         assert_eq!(view.clock_count(), 1);
@@ -1307,7 +1308,7 @@ fn state_demotion_preserves_delay_owner_coordinate_and_timing_provenance() {
     let prepared = prepare_for_solve(&model).expect("delay companion owner survives");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         assert_eq!(view.delay_count(), 1);
@@ -1361,7 +1362,7 @@ fn state_demotion_preserves_bounded_delay_capability_and_provenance() {
     let prepared = prepare_for_solve(&model).expect("bounded delay owner survives");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(|view| {
         let delay_id = view.delay_id(0).expect("dense delay identity survives");
@@ -1418,7 +1419,7 @@ fn state_demotion_preserves_record_layout_values_and_use_sites() {
     let prepared = prepare_for_solve(&model).expect("unrelated record companion survives");
     let transformed = match prepared {
         PreparedDae::Transformed { dae, .. } => dae,
-        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        PreparedDae::Borrowed { .. } => panic!("singular fixture requires state demotion"),
     };
     transformed.inspect(assert_rebuilt_record_companion);
 }

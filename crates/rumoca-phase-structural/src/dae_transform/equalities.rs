@@ -362,19 +362,19 @@ impl AssertedEquality {
 
 /// The signed operands of one additive residual, split by what they name.
 #[derive(Default)]
-struct AdditiveOperands {
+pub(super) struct AdditiveOperands {
     /// Scalar real coordinates, with the sign each carries in the residual.
-    variables: Vec<(u32, bool)>,
+    pub(super) variables: Vec<(u32, bool)>,
     /// Time-invariant operands, with their sign and whether they are exactly
     /// zero.
-    invariants: Vec<AdditiveInvariant>,
+    pub(super) invariants: Vec<AdditiveInvariant>,
 }
 
 #[derive(Clone, Copy)]
-struct AdditiveInvariant {
-    expression: u32,
-    negated: bool,
-    zero: bool,
+pub(super) struct AdditiveInvariant {
+    pub(super) expression: u32,
+    pub(super) negated: bool,
+    pub(super) zero: bool,
 }
 
 impl AdditiveOperands {
@@ -447,20 +447,23 @@ fn asserted_equality<'dae>(
 }
 
 /// Split `expression` into signed additive leaves, reporting whether every leaf
-/// is one this closure can read.
+/// is one a reader can use.
 ///
-/// The walk stops as soon as a third variable appears: no equality this closure
-/// records relates more than two coordinates, so a longer balance — a flow node
-/// over three terminals, say — is rejected rather than partially read.
-fn flatten_additive<'dae>(
+/// The whole residual is read, however many coordinates it names, and each
+/// reader then decides what the operand list proves: [`AdditiveOperands::classify`]
+/// records nothing about a balance over more than two coordinates, and the
+/// initial-value closure defers one until enough of its coordinates are known
+/// constant. Counting after the walk rather than during it is what makes
+/// admissibility a property of the *equation*: `f1 + f2 + f3 + f4 = 0`,
+/// `0 = f1 + f2 + f3 + f4` and `f4 = -(f1 + f2 + f3)` are the same balance, and
+/// a bound applied mid-walk would accept them by where the association happened
+/// to put the leaves.
+pub(super) fn flatten_additive<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
     negated: bool,
     operands: &mut AdditiveOperands,
 ) -> bool {
-    if operands.variables.len() > 2 {
-        return false;
-    }
     let Some(node) = whole_model_expression(view, expression) else {
         return false;
     };
@@ -539,7 +542,10 @@ fn push_variable(
 /// that varies, a reference to `time`, and anything scoped to a function or a
 /// comprehension are all excluded, so an accepted expression really is a
 /// constant of the whole-model system.
-fn is_time_invariant<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> bool {
+pub(super) fn is_time_invariant<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> bool {
     let Some(node) = whole_model_expression(view, expression) else {
         return false;
     };
@@ -585,7 +591,7 @@ fn whole_model_expression<'dae>(
         .then_some(expression)
 }
 
-fn is_scalar_real(variable: dae::VariableView<'_>) -> bool {
+pub(super) fn is_scalar_real(variable: dae::VariableView<'_>) -> bool {
     variable.value_type().is_scalar()
         && variable.value_type().scalar_type() == dae::ScalarType::Real
 }
