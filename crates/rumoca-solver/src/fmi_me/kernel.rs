@@ -681,10 +681,6 @@ impl ModelExchangeKernel for SolveMeKernel {
     }
 
     fn exit_initialization_mode(&mut self) -> Result<(), MeError> {
-        // MLS 3.6 §8.6: the `pre()` the initial event iteration reads is the
-        // settled initialization value, so latch it before settling starts.
-        self.pending_event_pre_y = Some(self.current_solver_y()?);
-        self.pending_event_pre_p = Some(self.params.clone());
         let mut solver_y = self.current_solver_y()?;
         self.runtime.settle_initialization_system(
             &mut solver_y,
@@ -709,6 +705,11 @@ impl ModelExchangeKernel for SolveMeKernel {
             self.tolerance,
             UPDATE_MAX_ITERS,
         )?;
+        // MLS 3.6 §8.6: before integration, v = pre(v). The initial event
+        // therefore reads the values the initialization system just settled,
+        // never the declared starts that seeded that solve.
+        self.pending_event_pre_y = Some(solver_y.clone());
+        self.pending_event_pre_p = Some(self.params.clone());
         self.settled_initialization_y = Some(solver_y);
         self.initial_event_pending = true;
         self.lifecycle = MeState::EventMode;
