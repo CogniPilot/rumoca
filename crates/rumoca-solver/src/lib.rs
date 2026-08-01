@@ -5,6 +5,7 @@ pub mod report_payload;
 pub mod runtime;
 pub mod solver;
 pub mod timeline;
+mod verification;
 
 pub use report_payload::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,

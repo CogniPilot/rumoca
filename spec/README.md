@@ -29,6 +29,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md) | eFMI/GALEC Algorithm Code Export | target/codegen | ~160 | DRAFT |
 | [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) | Complex Numeric Types in Solve IR | IR | ~135 | DRAFT |
 | [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~280 | DRAFT |
+| [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Formally Verified Compiler | verification | ~250 | DRAFT |
 | [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md) | Unified FMI Execution | target/runtime | ~225 | DRAFT |
 | [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) | Proof-Carrying Structural Sparsity | IR | ~150 | DRAFT |
 | [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) | IR Stage Contract Catalog | architecture | ~85 | REFERENCE |
@@ -56,4 +57,3 @@ useful after the 0.9 stabilization work.
 | [SPEC_0014](archive/deferred/SPEC_0014_EVAL_MEMO.md) | Eval Memoization at Phase Boundaries | performance | ~200 | DEFERRED |
 | [SPEC_0015](archive/deferred/SPEC_0015_FORMATTER.md) | Token-Based Formatter | tooling | ~250 | DEFERRED |
 | [SPEC_0028](archive/deferred/SPEC_0028_CERTIFICATION_CODEGEN.md) | Safety-Oriented Code Generation | codegen | ~100 | DEFERRED |
-| [SPEC_0037](archive/deferred/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Formally Verified Compiler | verification | ~240 | DEFERRED |

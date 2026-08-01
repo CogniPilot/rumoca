@@ -10,6 +10,8 @@ members = [
     "crates/rumoca-test-msl",
     "crates/rumoca-core",
     "crates/rumoca-contracts",
+    # Executable reference semantics (SPEC_0037 verification track)
+    "crates/rumoca-reference",
     "crates/rumoca-ir-dae",
     "crates/rumoca-ir-solve",
     "crates/rumoca-eval-ast",
@@ -86,6 +88,7 @@ rumoca = { path = "crates/rumoca", default-features = false }
 rumoca-worker = { path = "crates/rumoca-worker" }
 rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
+rumoca-reference = { path = "crates/rumoca-reference" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
 rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
 rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
@@ -187,6 +190,11 @@ console_error_panic_hook = "0.1"
 pyo3 = { version = "0.22", features = ["extension-module"] }
 
 [workspace.lints.rust]
+# `cfg(kani)` is set only by the Kani verifier, which is not in the dev shell
+# (see CONTRIBUTING.md). Declaring it here keeps the bounded-verification
+# harnesses warning-free without a blanket `allow`, so a *typo* in any other
+# cfg name still warns.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 unsafe_code = "deny"
 unreachable_pub = "deny"
 unnameable_types = "deny"

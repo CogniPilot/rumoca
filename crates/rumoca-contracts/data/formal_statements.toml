@@ -1178,3 +1178,75 @@ status = 'Enforced'
 contracts = ['STRM-004', 'STRM-005']
 related_sections = ['§15.2']
 note = 'Per §15.2 the right-hand side is the mixing enthalpy of the connection set declared inside the connector own model with the connector excluded, not inStream() of the connector, which by definition looks in the opposite direction.'
+
+# ---------------------------------------------------------------------------
+# Rows added by the executable-reference track (crates/rumoca-reference).
+#
+# Appended at the end rather than filed into the category blocks above so the
+# addition cannot collide textually with concurrent edits to those blocks. Note
+# that appending does not protect the *identifiers*: these were allocated
+# against the branch head, after a concurrently landed row had already taken
+# FS-SIM-015. Check the highest id in each category before adding a row, not
+# just the end of this file.
+#
+# Two of the three rows (FS-EQN-019, FS-SIM-016) pin the differential harness,
+# which runs one model through the compiler and through an independently
+# written reference semantics and requires them to agree. That makes those pins
+# two-sided: they fail when the compiler changes AND when the reference does.
+# Two-sided is what a differential pin is, and it is weaker than a one-sided pin
+# on exactly one axis — a reader who sees one red must check which side moved
+# before concluding the compiler regressed.
+#
+# FS-SIM-017 is the exception and says so in its own note: it pins a
+# reference-only test, because its statement is about how a §8.6 sentence should
+# be read rather than about what this compiler does. Its compiler-facing
+# consequences are FS-EQN-001 through FS-EQN-004, which carry their own pins in
+# the compiler's own tests. No other row here may follow that pattern without
+# the same justification: a reference-only pin is evidence about the reference,
+# and on its own it says nothing about this tree.
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-EQN-019'
+statement = 'An activation condition is re-evaluated live inside the event iteration while its pre value is seeded once from the instant left limit, so an activation whose operand another activation writes in the same instant still rises, and a guard whose body advances its own threshold still settles.'
+tier = 'SpecSilent'
+rationale = 'MLS Appendix B fixes the answer and leaves the machinery free. Its event iteration says "solve equations for unknowns, with pre(z) and pre(m) fixed", and a condition variable c := f(relation(v)) is among the unknowns it solves — so conditions are live within the instant, and §8.5 freezing relations *between* events says nothing about *within* one. The silence is in the word "solve": for a self-rescheduling guard `when time >= nextTime` whose body advances nextTime, the inner system has no solution at all with pre held fixed, because the condition is true exactly when the body has not run and false once it has. A tool must therefore choose what "solve" means for an inner system that has no solution, and Appendix B does not choose for it. This tree performs one ordered pass per outer iteration and lets the outer loop, which does advance pre, carry the propagation. That reaches the state Appendix B is defined to stop at without searching for a fixed point that does not exist.'
+alternatives_considered = 'An inner fixed point was the first implementation and spins forever on the self-rescheduling shape. Latching every condition at the instant two limits and freezing it for the whole iteration was the second, and it terminates, but it is broader than any section supports and it breaks a cascade: `when time >= 0.5 then x = 3` beside `when x > 2 then y = 1` samples `x > 2` before `x` is written, so the second clause never fires, and never fires afterwards either because by then the condition holds on both limits. Both sessions of this compiler give y = 1, which is what Appendix B gives. Narrowing the latch to only those conditions whose own body writes their operands was considered and refused as unprincipled: it is a syntactic test standing in for a semantic one, and it would have no answer for a condition two activations downstream.'
+oracle_consulted = 'None. OpenModelica settles the values a model takes, and on the cascade above it would agree with the answer this row already reaches, so it cannot separate the candidates on the case that matters. What distinguishes them is the self-rescheduling shape, where the disagreement is not about a value but about whether an inner solve terminates — which is a property of a tool, not of a trajectory, and therefore not something an oracle run can settle.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/differential.rs'
+pin_anchor = 'hand_written_models_agree_between_reference_and_pipeline'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Found by the reference failing twice, not by reasoning, which is why this row is SpecSilent rather than SpecSourced: the first version of the statement asserted the latching rule as though §8.5 required it, and the cascade counterexample above refuted it. The StateConditionCascade and SelfReschedulingCounter cases in the pinned file are the two shapes that pull in opposite directions; a change satisfying only one of them fails the other.'
+
+[[statements]]
+id = 'FS-SIM-016'
+statement = 'A self-rescheduling time-event guard whose first threshold is not met at the start instant fires on its own grid for the whole run.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Paraphrase'
+quote = 'A guard whose instant its own body advances re-arms at every crossing.'
+quote_source = 'crates/rumoca-reference/tests/semantics.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/differential.rs'
+pin_anchor = 'the_diffsol_session_never_fires_a_self_rescheduling_time_event'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+related_sections = ['§8.5']
+note = 'The rk-like session and the reference both count 1, 2, 3, 4 on a 0.2 s grid; the diffsol session never fires the guard at all and leaves the accumulator and the threshold at their start values for the whole run. This is not FS-SIM-009, whose subject is a guard already met at the start and whose own note says a guard not met at the start counts normally, and it is not FS-SIM-011, which is about the accuracy of a located state crossing rather than about a dynamic time event failing to occur. The row is filed against §8.3.5.1 because the reference reaches the firing grid from the edge expansion alone; it is deliberately not filed as OracleImplied, because no omc measurement was taken for it and naming an oracle that was never run would be worse than naming none.'
+
+[[statements]]
+id = 'FS-SIM-017'
+statement = 'The §8.6 requirement that every variable satisfies v = pre(v) before integration constrains the values pre is seeded from and not the meaning of the operator, so an activation buffer enters the initial instant holding its condition on the start values while initial() is false in that seed.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.6 says "before the start of the integration, it must be guaranteed that for all variables v, v = pre(v)", and it also says the equations of a when-clause are active during initialization if and only if they are explicitly enabled with initial(). Read as an instruction to make pre the identity operator during initialization, the first sentence contradicts the second: edge(b) becomes b and not b, which is false for every buffer, and `when initial() then ...` can never run. §8.6 does not say which reading it means, and the two are not distinguishable from its text — that is the silence. This tree reads the requirement as a constraint on the values pre starts from: committed is seeded from the start environment, so v = pre(v) holds on entry for every declared variable, while a buffer gated on initial() still sees a rising edge because its own seed is evaluated with initial() false.'
+alternatives_considered = 'Making pre the identity during initialization was implemented first and refused when it silently disabled every initial()-gated when-clause — a failure that no start-value test detects, because it changes nothing about start values. Seeding buffers to false unconditionally was refused because it manufactures a rising edge at the initial instant for every already-true condition, which is precisely the defect FS-EQN-001 records having fixed. Evaluating the seed with initial() true was refused because it removes the only edge an initial()-gated clause can have, arriving back at the first alternative by a different route.'
+oracle_consulted = 'None was run for this row. The observable consequences are already settled by omc through FS-EQN-001 to FS-EQN-004, which this reading reproduces; what is unsettled is the interpretation those rows leave implicit, and an oracle returns trajectories rather than interpretations. The row exists so the choice is written down where the next reader of §8.6 will look, rather than being rediscovered from a failing test.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/semantics.rs'
+pin_anchor = 'an_initial_gated_activation_runs_at_initialization'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Unlike the two rows above, this pin exercises the reference alone. It is admissible here because the statement is about an interpretation of §8.6 rather than about compiler behavior — the compiler-facing consequences are FS-EQN-001 through FS-EQN-004, which carry their own pins in crates/rumoca/tests/time_event_when_activation.rs. A reader wanting evidence about this tree should follow those.'

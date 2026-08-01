@@ -70,6 +70,37 @@ Cargo builds must remain Rust-only. If a selected package/web command reports a
 missing `node` or `npm`, install Node 20 using your platform package manager,
 Volta, nvm, or the official Node installer, then retry that command.
 
+### Kani (bounded verification) — not yet in the dev shell
+
+The SPEC_0037 verification track carries bounded-verification harnesses in
+`rumoca-ir-dae` and `rumoca-solver`. Each property is written once as a plain
+function with two drivers: `#[cfg(kani)]` proof harnesses and, under
+`#[cfg(not(kani))]`, a `proptest` fallback stating the identical property.
+
+**Only the fallbacks run today.** `cargo test` executes them; nothing needs
+installing, and a green run is validation evidence, never proof evidence.
+
+Enabling the Kani driver is not a one-line flake change, for two reasons:
+
+1. **Kani is not packaged in nixpkgs.** There is no `kani` or `cargo-kani`
+   attribute (checked against this flake's pinned nixpkgs). It would need a new
+   flake input pulling a release bundle from `model-checking/kani`, plus
+   `autoPatchelfHook`, because the bundle ships prebuilt CBMC and Rust binaries
+   that expect a normal FHS layout. `flake.nix` already uses that hook for the
+   same reason in the `rumoca` package (~line 150) and the `msl-artifacts`
+   package (~line 217); copy either.
+2. **Kani pins its own Rust nightly**, which will not be
+   `nightly-2026-02-27` from `rust-toolchain.toml`. Adding it to
+   `devShells.default` would put two nightlies on `PATH`. It belongs in a
+   separate `devShells.verify` so the normal shell keeps the pinned toolchain
+   that WASM threading depends on.
+
+Until that lands, harnesses under `#[cfg(kani)]` are inert. One further change
+is needed before Kani could even see them: `mod tests` in
+`crates/rumoca-ir-dae/src/lib.rs` is `#[cfg(test)]`, so its harness needs
+`#[cfg(any(test, kani))]`. `rumoca-solver`'s harnesses are already gated that
+way.
+
 ## Common Commands
 
 Typical local verification:

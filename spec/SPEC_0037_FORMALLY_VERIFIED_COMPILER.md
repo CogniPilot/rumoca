@@ -1,11 +1,13 @@
 # SPEC_0037: Formally Verified Compiler
 
 ## Status
-DEFERRED
+DRAFT
 
-> This is non-active future work. It does not claim that Rumoca or any compiler
-> phase is formally verified. Promotion requires a reviewed formalization and
-> machine-checked evidence.
+> **This spec does not claim that Rumoca or any compiler phase is formally
+> verified, and moving it out of `archive/deferred/` does not change that.** It
+> became active because work under it started (see Phasing); acceptance still
+> requires a reviewed formalization and machine-checked evidence, and every
+> Promotion Criterion below is still open.
 
 ## Summary
 
@@ -204,6 +206,26 @@ tool versions, and remaining trusted assumptions.
 OMC/MSL parity, fuzzing, property tests, and differential traces remain
 validation evidence for the formal definitions. They are not proof evidence.
 
+### Phasing
+
+Each wave is additive: a wave adds evidence, and none of them upgrades a claim
+about the compiler on its own.
+
+| Wave | Scope | Exit evidence |
+|---|---|---|
+| W1 | Bounded-verification harnesses over the stable kernels, and slice 1 of an executable reference semantics for the discrete/event core | Harness properties stated and running; reference differentially validated against the compiler on hand-written and generated models; every disagreement fixed or recorded |
+| W2 | Reference slices 2–4 (continuous coupling, clocked partitions, arrays) | Differential agreement across the wider fragment |
+| W3 | Proof assistant selected by maintainer vote; one phase theorem checked | Reproducible proof build; bounded proof CI |
+
+W1 harnesses are written so a Kani proof and a property-test fallback drive the
+same property function; the property text is the deliverable, and the driver is
+whichever the toolchain supports. A fallback run is validation evidence and
+MUST NOT be reported as a proof.
+
+`rumoca-reference` ([SPEC_0041 §4](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#4-layering-ownership-catalog-spec_0029-12))
+is the W1 executable definition. It is a candidate for the "One IR semantics
+implemented" criterion below, not a discharge of it.
+
 ## Promotion Criteria
 
 | Requirement | Evidence |
@@ -218,9 +240,10 @@ validation evidence for the formal definitions. They are not proof evidence.
 
 ## References
 
-- [SPEC_0007](../../SPEC_0007_IR_PIPELINE.md) — production phase contracts.
-- [SPEC_0036](../../SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) — proof-friendly IR construction.
-- [SPEC_0028](SPEC_0028_CERTIFICATION_CODEGEN.md) — deferred safety-oriented code generation.
+- [SPEC_0007](SPEC_0007_IR_PIPELINE.md) — production phase contracts.
+- [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) — proof-friendly IR construction.
+- [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) — ownership row for the reference-semantics crate.
+- [SPEC_0028](archive/deferred/SPEC_0028_CERTIFICATION_CODEGEN.md) — deferred safety-oriented code generation.
 - [CompCert semantic preservation](https://compcert.org/man/manual001.html)
 - [CakeML verified compiler](https://cakeml.org/)
 - [seL4 verification](https://sel4.systems/Verification/)

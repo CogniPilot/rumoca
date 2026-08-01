@@ -10,6 +10,7 @@ mod string_conversion;
 mod temporal_wire;
 mod type_arena;
 mod wire_buffers;
+mod wire_roundtrip_verification;
 
 use rumoca_core::{
     ClockLattice, ClockRational, SourceId, SourceMap, Span, StructuredIndexBinder,

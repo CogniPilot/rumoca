@@ -4572,6 +4572,7 @@ version = "0.9.20"
 dependencies = [
  "bincode",
  "indexmap 2.14.0",
+ "proptest",
  "rumoca-core",
  "rustc-hash",
  "serde",
@@ -4793,6 +4794,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-reference"
+version = "0.9.20"
+dependencies = [
+ "proptest",
+ "rumoca-compile",
+ "rumoca-sim",
+]
+
+[[package]]
 name = "rumoca-signal-frame"
 version = "0.9.20"
 dependencies = [
@@ -4842,6 +4852,7 @@ dependencies = [
  "indexmap 2.14.0",
  "instant",
  "nalgebra",
+ "proptest",
  "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-ir-solve",
