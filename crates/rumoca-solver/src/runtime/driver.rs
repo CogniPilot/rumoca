@@ -484,6 +484,44 @@ fn bracket_event_limits_kernel<St: SolverAdvanceBackend + ?Sized>(
     Ok(())
 }
 
+/// Advance the continuous state from a scheduled instant to its right limit.
+///
+/// A scheduled instant is not found by a sign change, so nothing has moved the
+/// state across it: the right-limit pass would otherwise evaluate every state
+/// relation at the instant itself, where a relation whose crossing lands there
+/// still reads its left-limit value. MLS §8.5 requires the events at one
+/// instant to be handled in one event iteration — *"the integration is halted
+/// and an event occurs whenever an event generation expression [...] changes its
+/// value"*, once, for all of them — so a state crossing that coincides with a
+/// scheduled instant has to become true in this pass rather than in a later one
+/// with a `pre` the scheduled event has already advanced.
+///
+/// Leaving the state at the instant while the clock moves to the right limit
+/// also silently discards that interval of integration, which accumulates once
+/// per scheduled event.
+///
+/// Only `y` moves. Unlike a zero-crossing, whose located instant is bracketed
+/// from both sides, a scheduled instant needs no left probe: the continuous
+/// state is continuous across it, so the snapshot taken at the instant is
+/// already the left limit.
+fn advance_state_to_right_limit_kernel<St: SolverAdvanceBackend + ?Sized>(
+    backend: &St,
+    y: &mut [f64],
+    p: &[f64],
+    event_t: f64,
+    right_t: f64,
+) -> Result<(), SimDriverError> {
+    let dt = right_t - event_t;
+    if dt <= 0.0 || sample_time_match_with_tol(event_t, right_t) {
+        return Ok(());
+    }
+    let dy = backend.derivative_guess(y, p, event_t)?;
+    for (slot, d) in y.iter_mut().zip(dy) {
+        *slot += dt * d;
+    }
+    Ok(())
+}
+
 /// Transient [`RuntimeEventBoundaryHandler`] that applies the Modelica left/right
 /// limit event semantics using only the backend-neutral kernels + the backend's
 /// `project_algebraics` / `derivative_guess` / `refresh_observation` /
@@ -502,6 +540,10 @@ struct EventBoundary<'a, St: SolverAdvanceBackend + ?Sized> {
     /// `[root_t, right_t]` and settle); `None` for a scheduled time event
     /// (already at the event instant, apply at the left limit too).
     root_t: Option<f64>,
+    /// The instant a scheduled event was applied at, recorded by
+    /// `on_event_time` so the right-limit pass knows the interval to advance
+    /// the continuous state across.
+    applied_event_t: Option<f64>,
     /// Observation buffers for events that fall on the output schedule; absent
     /// for zero-crossings between output points.
     recorded_times: Option<&'a mut Vec<f64>>,
@@ -561,6 +603,7 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
                 },
             )?;
             self.record(event_t)?;
+            self.applied_event_t = Some(event_t);
         }
         Ok(())
     }
@@ -570,15 +613,26 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
         right_t: f64,
         _event: RuntimeEventStop,
     ) -> Result<(), SimDriverError> {
-        if let Some(root_t) = self.root_t {
-            bracket_event_limits_kernel(
+        match self.root_t {
+            Some(root_t) => bracket_event_limits_kernel(
                 self.backend,
                 &mut self.event_pre_y,
                 self.y,
                 self.p,
                 root_t,
                 right_t,
-            )?;
+            )?,
+            None => {
+                if let Some(event_t) = self.applied_event_t {
+                    advance_state_to_right_limit_kernel(
+                        self.backend,
+                        self.y,
+                        self.p,
+                        event_t,
+                        right_t,
+                    )?;
+                }
+            }
         }
         apply_event_update_kernel(
             self.runtime,
@@ -657,6 +711,7 @@ fn apply_scheduled_time_event<St: SolverAdvanceBackend + ?Sized>(
                 .solve_layout
                 .terminal_event_parameter_index,
             root_t: None,
+            applied_event_t: None,
             recorded_times: Some(observations.recorded_times),
             data: Some(observations.data),
         };

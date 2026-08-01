@@ -794,7 +794,34 @@ end ClockedConnectedInput;
         .model("ClockedConnectedInput")
         .compile_str(source, "clocked_connected_input.mo")
         .expect("a connected clocked input must compile");
-    compiled.dae.inspect(|view| {
+    assert_connected_input_left_the_continuous_system(&compiled.dae);
+
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.3,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("a connected clocked input must simulate");
+    let y = trace_values(&sim, "assignClock.y");
+    let u = trace_values(&sim, "assignClock.u");
+    assert_eq!(y, u, "AssignClock passes its clocked input through");
+    for (index, value) in y.iter().enumerate() {
+        let expected = index as f64 * 0.1;
+        assert!(
+            (value - expected).abs() <= 1.0e-12,
+            "tick {index} must hold the ramp value sampled at its own tick; got {value}"
+        );
+    }
+}
+
+/// The connected clocked input is owned by its partition clock and by nothing
+/// else: it carries a clock ownership and is absent from the continuous unknown
+/// set. Leaving it in both is the singular `2 equations / 3 unknowns` shape.
+fn assert_connected_input_left_the_continuous_system(model: &rumoca_ir_dae::Dae) {
+    model.inspect(|view| {
         let clocked = (0..view.clock_ownership_count())
             .map(|index| {
                 let id = view
@@ -827,29 +854,10 @@ end ClockedConnectedInput;
             .collect::<std::collections::BTreeSet<_>>();
         assert!(
             !continuous.contains("assignClock.u"),
-            "a clock-partition coordinate must not enter the continuous unknown set; continuous={continuous:?}"
+            "a clock-partition coordinate must not enter the continuous unknown set; \
+             continuous={continuous:?}"
         );
     });
-
-    let sim = simulate_dae(
-        &compiled.dae,
-        &SimOptions {
-            t_end: 0.3,
-            dt: Some(0.1),
-            ..SimOptions::default()
-        },
-    )
-    .expect("a connected clocked input must simulate");
-    let y = trace_values(&sim, "assignClock.y");
-    let u = trace_values(&sim, "assignClock.u");
-    assert_eq!(y, u, "AssignClock passes its clocked input through");
-    for (index, value) in y.iter().enumerate() {
-        let expected = index as f64 * 0.1;
-        assert!(
-            (value - expected).abs() <= 1.0e-12,
-            "tick {index} must hold the ramp value sampled at its own tick; got {value}"
-        );
-    }
 }
 
 fn assert_periodic_clock_period(model: &rumoca_ir_dae::Dae, numerator: i128, denominator: i128) {

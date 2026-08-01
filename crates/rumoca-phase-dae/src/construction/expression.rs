@@ -206,12 +206,20 @@ fn lower_expression_event<'dae>(
     }
     // Expansions such as MLS §15.3 `actualStream` build several nodes from one
     // source span, so the span alone does not name the planned owner. Only the
-    // relation node itself may claim the plan.
-    if !matches!(expression, Expression::Binary { op, .. } if op.is_relational()) {
+    // relation node itself may claim the plan, and only for the operands this
+    // occurrence of the span resolved: flattening gives every instance of a
+    // class the same span, and each instance owns its own event.
+    let Expression::Binary { op, lhs, rhs, .. } = expression else {
+        return Ok(());
+    };
+    if !op.is_relational() {
         return Ok(());
     }
     if !matches!(
-        symbols.functions.expression_events.plan(span),
+        symbols
+            .functions
+            .expression_events
+            .plan(span, &[lhs.as_ref(), rhs.as_ref()]),
         Some(ExpressionEventPlan::StateRelation)
     ) {
         return Ok(());
@@ -331,7 +339,7 @@ fn lower_builtin_expression<'dae>(
         }
         BuiltinFunction::Sample => {
             let Some(value) = clocked_value_sample(symbols.functions.flat, arguments) else {
-                return lower_sample_event_operator(construction, symbols, provenance);
+                return lower_sample_event_operator(construction, symbols, arguments, provenance);
             };
             lower_temporal_identity(construction, symbols, binders, value, provenance)
         }
@@ -817,11 +825,13 @@ fn clocked_value_sample<'expression>(
 fn lower_sample_event_operator<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
+    arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let span = provenance.span();
+    let operands: Vec<&Expression> = arguments.iter().collect();
     let Some(ExpressionEventPlan::SampleClock(lattice)) =
-        symbols.functions.expression_events.plan(span)
+        symbols.functions.expression_events.plan(span, &operands)
     else {
         return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
     };
