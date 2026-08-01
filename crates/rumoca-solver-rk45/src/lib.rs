@@ -90,7 +90,11 @@ impl From<TimeoutExceeded> for SimError {
 
 impl From<MeError> for SimError {
     fn from(value: MeError) -> Self {
-        match value {
+        // The component's stage annotation is machine metadata for a host that
+        // buckets failures; this host reports failures by variant, so peeling it
+        // keeps every mapping — and every rendered message — exactly what it was
+        // before the component started minting stages.
+        match value.into_kind() {
             MeError::NoContinuousStates => Self::EmptySystem,
             MeError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
             MeError::Evaluation { message } => Self::SolveIr(message),
@@ -98,6 +102,12 @@ impl From<MeError> for SimError {
             MeError::Contract { reason } => Self::RuntimeContract { reason },
             MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
             MeError::Allocation { context, entries } => Self::Allocation { context, entries },
+            // `into_kind` peels every annotation, so the annotated variant
+            // cannot reach here; naming it keeps the match exhaustive without a
+            // catch-all that would silently absorb a future variant.
+            staged @ MeError::Staged { .. } => Self::RuntimeContract {
+                reason: format!("stage annotation survived peeling: {staged}"),
+            },
         }
     }
 }

@@ -10,7 +10,7 @@ use std::{cell::RefCell, rc::Rc};
 use super::{
     MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop, MeFmuState,
     MeIndicatorCrossing, MeInstanceConfig, MeModelDescription, MeModelSource, MeObservation,
-    MeOutputSeries, MeStepCompletion, MeTime, MeValueRef, ModelExchangeKernel,
+    MeOutputSeries, MeStage, MeStepCompletion, MeTime, MeValueRef, ModelExchangeKernel,
 };
 use crate::runtime::event::{
     RuntimeEventBoundary, RuntimeEventBoundaryHandler, process_runtime_event_boundary,
@@ -25,8 +25,8 @@ use crate::runtime::solve_ops::{
     filter_scheduled_root_crossings, root_crossings_with_relation_memory, runtime_values_changed,
 };
 use crate::runtime::solve_runtime::{
-    EventUpdateRowFilter, InitialEventObservation, ProjectedEventUpdateInput,
-    ProjectedInitialEventInput, SolveRuntime,
+    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
+    ProjectedEventUpdateInput, ProjectedInitialEventInput, SolveRuntime,
 };
 use crate::runtime::time::time_match_with_tol;
 use crate::solver::{SimTermination, SimVariableMeta};
@@ -121,6 +121,18 @@ impl SolveMeKernel {
     /// Rejects a model the component cannot represent before any evaluation,
     /// per SPEC_0038 "Unsupported lifecycle capability fails before execution".
     pub fn instantiate(
+        source: MeModelSource<'_>,
+        config: &MeInstanceConfig,
+    ) -> Result<Self, MeError> {
+        // `NoContinuousStates` is a routing answer, not a failure: a host reads
+        // it to pick its zero-state path, so it stays unannotated.
+        Self::instantiate_inner(source, config).map_err(|error| match error {
+            routing @ MeError::NoContinuousStates => routing,
+            failure => failure.at_stage(MeStage::Instantiate),
+        })
+    }
+
+    fn instantiate_inner(
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
     ) -> Result<Self, MeError> {
@@ -328,6 +340,110 @@ impl SolveMeKernel {
             state: state.to_vec(),
             values: values.to_vec(),
         });
+    }
+
+    // -- initialization ----------------------------------------------------
+
+    /// `fmi3EnterInitializationMode`, unannotated; the trait method attaches
+    /// [`MeStage::Initialization`].
+    fn enter_initialization_mode_inner(&mut self) -> Result<(), MeError> {
+        self.runtime.initialize_delay_history(
+            self.time,
+            &self.runtime.model.initial_y,
+            &mut self.params,
+        )?;
+        self.runtime.set_initial_event_flag(&mut self.params, true);
+        self.lifecycle = MeState::InitializationMode;
+        Ok(())
+    }
+
+    /// `fmi3ExitInitializationMode`, unannotated; the trait method attaches
+    /// [`MeStage::Initialization`].
+    fn exit_initialization_mode_inner(&mut self) -> Result<(), MeError> {
+        let mut solver_y = self.current_solver_y()?;
+        self.runtime.settle_initialization_system(
+            &mut solver_y,
+            &mut self.params,
+            self.time,
+            self.tolerance,
+            UPDATE_MAX_ITERS,
+        )?;
+        project_algebraics(
+            &self.runtime,
+            &mut solver_y,
+            &self.params,
+            self.time,
+            self.state_count,
+            self.tolerance,
+        )?;
+        self.copy_states_from_solver_y(&solver_y);
+        self.runtime.update_relation_memory_from_state(
+            self.time,
+            &self.states,
+            &mut self.params,
+            self.tolerance,
+            UPDATE_MAX_ITERS,
+        )?;
+        // MLS 3.6 §8.6: before integration, v = pre(v). The initial event
+        // therefore reads the values the initialization system just settled,
+        // never the declared starts that seeded that solve.
+        self.pending_event_pre_y = Some(solver_y.clone());
+        self.pending_event_pre_p = Some(self.params.clone());
+        self.settled_initialization_y = Some(solver_y);
+        self.initial_event_pending = true;
+        self.lifecycle = MeState::EventMode;
+        Ok(())
+    }
+
+    // -- continuous time mode ----------------------------------------------
+
+    /// [`ModelExchangeKernel::project_continuous_states`], unannotated; the
+    /// trait method attaches [`MeStage::ManifoldProjection`].
+    fn project_continuous_states_inner(&mut self, states: &mut [f64]) -> Result<bool, MeError> {
+        let time = self.time;
+        let mut solver_y = self.runtime.full_solver_y(
+            time,
+            states,
+            &self.params,
+            ALGEBRAIC_REFRESH_TOL,
+            UPDATE_MAX_ITERS,
+        )?;
+        let changed = self.runtime.project_state_manifold(
+            &mut solver_y,
+            &self.params,
+            time,
+            self.tolerance,
+        )?;
+        states.copy_from_slice(&solver_y[..self.state_count]);
+        self.runtime.full_solver_y_with_guess(
+            time,
+            states,
+            &self.params,
+            &mut solver_y,
+            ALGEBRAIC_REFRESH_TOL,
+            UPDATE_MAX_ITERS,
+        )?;
+        *self.solver_y_guess.borrow_mut() = solver_y;
+        self.last_projection_changed = changed;
+        Ok(changed)
+    }
+
+    /// [`ModelExchangeKernel::next_event_stop`], unannotated; the trait method
+    /// attaches [`MeStage::Integration`].
+    fn next_event_stop_inner(&mut self, horizon: f64) -> Result<MeEventStop, MeError> {
+        let solver_y = self.current_solver_y()?;
+        let (time, event) = self.runtime.next_runtime_event_stop(
+            &solver_y,
+            &self.params,
+            &mut self.stop_schedule,
+            self.time,
+            horizon,
+        )?;
+        self.pending_event_stop = event;
+        Ok(MeEventStop {
+            time,
+            is_event: event.is_some(),
+        })
     }
 
     // -- event boundary ----------------------------------------------------
@@ -670,50 +786,13 @@ impl ModelExchangeKernel for SolveMeKernel {
     }
 
     fn enter_initialization_mode(&mut self) -> Result<(), MeError> {
-        self.runtime.initialize_delay_history(
-            self.time,
-            &self.runtime.model.initial_y,
-            &mut self.params,
-        )?;
-        self.runtime.set_initial_event_flag(&mut self.params, true);
-        self.lifecycle = MeState::InitializationMode;
-        Ok(())
+        self.enter_initialization_mode_inner()
+            .map_err(|error| error.at_stage(MeStage::Initialization))
     }
 
     fn exit_initialization_mode(&mut self) -> Result<(), MeError> {
-        let mut solver_y = self.current_solver_y()?;
-        self.runtime.settle_initialization_system(
-            &mut solver_y,
-            &mut self.params,
-            self.time,
-            self.tolerance,
-            UPDATE_MAX_ITERS,
-        )?;
-        project_algebraics(
-            &self.runtime,
-            &mut solver_y,
-            &self.params,
-            self.time,
-            self.state_count,
-            self.tolerance,
-        )?;
-        self.copy_states_from_solver_y(&solver_y);
-        self.runtime.update_relation_memory_from_state(
-            self.time,
-            &self.states,
-            &mut self.params,
-            self.tolerance,
-            UPDATE_MAX_ITERS,
-        )?;
-        // MLS 3.6 §8.6: before integration, v = pre(v). The initial event
-        // therefore reads the values the initialization system just settled,
-        // never the declared starts that seeded that solve.
-        self.pending_event_pre_y = Some(solver_y.clone());
-        self.pending_event_pre_p = Some(self.params.clone());
-        self.settled_initialization_y = Some(solver_y);
-        self.initial_event_pending = true;
-        self.lifecycle = MeState::EventMode;
-        Ok(())
+        self.exit_initialization_mode_inner()
+            .map_err(|error| error.at_stage(MeStage::Initialization))
     }
 
     fn enter_event_mode(&mut self, entry: MeEventEntry) -> Result<(), MeError> {
@@ -724,13 +803,17 @@ impl ModelExchangeKernel for SolveMeKernel {
 
     fn update_discrete_states(&mut self) -> Result<MeDiscreteStates, MeError> {
         if self.initial_event_pending {
-            return self.run_initial_event_boundary();
+            return self
+                .run_initial_event_boundary()
+                .map_err(|error| error.at_stage(MeStage::Initialization));
         }
         let entry = self
             .pending_event_entry
             .take()
-            .ok_or_else(|| contract("update_discrete_states called outside event mode"))?;
+            .ok_or_else(|| contract("update_discrete_states called outside event mode"))
+            .map_err(|error| error.at_stage(MeStage::EventIteration))?;
         self.run_runtime_event_boundary(entry)
+            .map_err(|error| error.at_stage(MeStage::EventIteration))
     }
 
     fn enter_continuous_time_mode(&mut self) -> Result<(), MeError> {
@@ -782,21 +865,73 @@ impl ModelExchangeKernel for SolveMeKernel {
             *derivatives = cached;
             return Ok(());
         }
-        let values = self.with_delay_evaluation_params(time, &self.states, |params| {
-            let mut guess = self.solver_y_guess.borrow_mut();
-            self.runtime
-                .eval_state_derivatives_with_guess(
-                    time,
-                    &self.states,
-                    params,
-                    &mut guess,
-                    ALGEBRAIC_REFRESH_TOL,
-                    UPDATE_MAX_ITERS,
-                )
-                .map_err(MeError::from)
-        })??;
+        let values = self
+            .with_delay_evaluation_params(time, &self.states, |params| {
+                let mut guess = self.solver_y_guess.borrow_mut();
+                self.runtime
+                    .eval_state_derivatives_with_guess(
+                        time,
+                        &self.states,
+                        params,
+                        &mut guess,
+                        ALGEBRAIC_REFRESH_TOL,
+                        UPDATE_MAX_ITERS,
+                    )
+                    .map_err(MeError::from)
+            })
+            .map_err(|error| error.at_stage(MeStage::Integration))?
+            .map_err(|error| error.at_stage(MeStage::Integration))?;
         *derivatives = values;
         Ok(())
+    }
+
+    fn get_directional_derivative(
+        &self,
+        seed: &[f64],
+        sensitivity: &mut [f64],
+    ) -> Result<(), MeError> {
+        if seed.len() != self.state_count {
+            return Err(contract(format!(
+                "directional-derivative seed has {} entries for {} continuous states",
+                seed.len(),
+                self.state_count
+            ))
+            .at_stage(MeStage::Integration));
+        }
+        if sensitivity.len() != self.state_count {
+            return Err(contract(format!(
+                "directional-derivative sensitivity buffer has {} entries for {} state derivatives",
+                sensitivity.len(),
+                self.state_count
+            ))
+            .at_stage(MeStage::Integration));
+        }
+        // The same evaluation time and the same algebraic settle
+        // `get_continuous_state_derivatives` uses, so the returned sensitivity
+        // is the derivative of exactly the vector that operation reports rather
+        // than of a differently-settled one.
+        let time = self.continuous_eval_time();
+        self.with_delay_evaluation_params(time, &self.states, |params| {
+            let mut guess = self.solver_y_guess.borrow_mut();
+            self.runtime
+                .eval_state_jacobian_v_ad_with_guess_into(
+                    AlgebraicLinearization {
+                        t: time,
+                        params,
+                        settle: AlgebraicSettle {
+                            tol: ALGEBRAIC_REFRESH_TOL,
+                            max_iters: UPDATE_MAX_ITERS,
+                        },
+                    },
+                    &self.states,
+                    seed,
+                    &mut guess,
+                    sensitivity,
+                )
+                .map_err(MeError::from)
+        })
+        .map_err(|error| error.at_stage(MeStage::Integration))?
+        .map_err(|error| error.at_stage(MeStage::Integration))
     }
 
     fn get_event_indicators(&self, indicators: &mut Vec<f64>) -> Result<(), MeError> {
@@ -805,51 +940,30 @@ impl ModelExchangeKernel for SolveMeKernel {
             *indicators = cached;
             return Ok(());
         }
-        let values = self.with_delay_evaluation_params(time, &self.states, |params| {
-            self.runtime
-                .eval_root_conditions(
-                    time,
-                    &self.states,
-                    params,
-                    ALGEBRAIC_REFRESH_TOL,
-                    UPDATE_MAX_ITERS,
-                )
-                .inspect(|values| {
-                    self.cache_root_conditions(time, &self.states, values);
-                })
-                .map_err(MeError::from)
-        })??;
+        let values = self
+            .with_delay_evaluation_params(time, &self.states, |params| {
+                self.runtime
+                    .eval_root_conditions(
+                        time,
+                        &self.states,
+                        params,
+                        ALGEBRAIC_REFRESH_TOL,
+                        UPDATE_MAX_ITERS,
+                    )
+                    .inspect(|values| {
+                        self.cache_root_conditions(time, &self.states, values);
+                    })
+                    .map_err(MeError::from)
+            })
+            .map_err(|error| error.at_stage(MeStage::Integration))?
+            .map_err(|error| error.at_stage(MeStage::Integration))?;
         *indicators = values;
         Ok(())
     }
 
     fn project_continuous_states(&mut self, states: &mut [f64]) -> Result<bool, MeError> {
-        let time = self.time;
-        let mut solver_y = self.runtime.full_solver_y(
-            time,
-            states,
-            &self.params,
-            ALGEBRAIC_REFRESH_TOL,
-            UPDATE_MAX_ITERS,
-        )?;
-        let changed = self.runtime.project_state_manifold(
-            &mut solver_y,
-            &self.params,
-            time,
-            self.tolerance,
-        )?;
-        states.copy_from_slice(&solver_y[..self.state_count]);
-        self.runtime.full_solver_y_with_guess(
-            time,
-            states,
-            &self.params,
-            &mut solver_y,
-            ALGEBRAIC_REFRESH_TOL,
-            UPDATE_MAX_ITERS,
-        )?;
-        *self.solver_y_guess.borrow_mut() = solver_y;
-        self.last_projection_changed = changed;
-        Ok(changed)
+        self.project_continuous_states_inner(states)
+            .map_err(|error| error.at_stage(MeStage::ManifoldProjection))
     }
 
     fn completed_integrator_step(&mut self, step: MeStepCompletion<'_>) -> Result<(), MeError> {
@@ -867,6 +981,7 @@ impl ModelExchangeKernel for SolveMeKernel {
             }
         }
         self.commit_delay_point()
+            .map_err(|error| error.at_stage(MeStage::Integration))
     }
 
     fn max_step_size(&self) -> Option<f64> {
@@ -874,19 +989,8 @@ impl ModelExchangeKernel for SolveMeKernel {
     }
 
     fn next_event_stop(&mut self, horizon: f64) -> Result<MeEventStop, MeError> {
-        let solver_y = self.current_solver_y()?;
-        let (time, event) = self.runtime.next_runtime_event_stop(
-            &solver_y,
-            &self.params,
-            &mut self.stop_schedule,
-            self.time,
-            horizon,
-        )?;
-        self.pending_event_stop = event;
-        Ok(MeEventStop {
-            time,
-            is_event: event.is_some(),
-        })
+        self.next_event_stop_inner(horizon)
+            .map_err(|error| error.at_stage(MeStage::Integration))
     }
 
     fn event_indicator_crossings(

@@ -28,6 +28,7 @@
 //! | [`ModelExchangeKernel::get_continuous_states`] | `fmi3GetContinuousStates` |
 //! | [`ModelExchangeKernel::get_nominals_of_continuous_states`] | `fmi3GetNominalsOfContinuousStates` |
 //! | [`ModelExchangeKernel::get_continuous_state_derivatives`] | `fmi3GetContinuousStateDerivatives` |
+//! | [`ModelExchangeKernel::get_directional_derivative`] | `fmi3GetDirectionalDerivative` |
 //! | [`ModelExchangeKernel::get_event_indicators`] | `fmi3GetEventIndicators` |
 //! | [`ModelExchangeKernel::record_outputs`] / [`ModelExchangeKernel::get_outputs`] | batched `fmi3GetFloat64` |
 //! | [`ModelExchangeKernel::value_reference`] / [`ModelExchangeKernel::set_float64`] | model description + batched `fmi3SetFloat64` |
@@ -90,9 +91,15 @@
 //! - [`ModelExchangeKernel::max_step_size`]: rumoca's delay channels bound the
 //!   next step. FMI 3.0 ME has no counterpart at all — a host that ignores it
 //!   would step over delay history.
+//! - [`MeStage`]: FMI 3.0 reports one undifferentiated `fmi3Error`. rumoca's
+//!   MSL harness buckets every failure by the sub-stage that raised it, so the
+//!   component mints that stage where the failure happens rather than letting a
+//!   host re-derive it from rendered text.
 
 mod kernel;
 mod no_state;
+#[cfg(test)]
+mod tests;
 
 pub use kernel::SolveMeKernel;
 pub use no_state::MeNoStateSession;
@@ -122,6 +129,49 @@ impl<'a> MeModelSource<'a> {
 impl<'a> From<&'a rumoca_ir_solve::SolveModel> for MeModelSource<'a> {
     fn from(model: &'a rumoca_ir_solve::SolveModel) -> Self {
         Self::new(model)
+    }
+}
+
+/// The ME lifecycle stage a component failure was raised in.
+///
+/// Extension beyond FMI 3.0: see the module docs. This is *producer knowledge*
+/// — the operation that fails attaches the stage it was running, so a host
+/// never has to recognise a sub-stage by pattern-matching a rendered message.
+/// Hosts map it onto their own failure buckets; the map is total in both
+/// directions for the stages a component can be in, which is what keeps a
+/// failure histogram stable across the SPEC_0038 migration.
+///
+/// Stages a *host* owns — isolating an output stop, interpolating, timing out —
+/// are deliberately absent: the component is never running when they happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MeStage {
+    /// `fmi3InstantiateModelExchange`: projecting the checked kernel, before
+    /// any model evaluation.
+    Instantiate,
+    /// Initialization Mode, plus the initial event iteration MLS 3.6 §8.6
+    /// requires before integration starts.
+    Initialization,
+    /// Event Mode: `fmi3UpdateDiscreteStates` and the boundary it runs.
+    EventIteration,
+    /// Projecting a point back onto the model's constraint manifold.
+    ManifoldProjection,
+    /// Continuous-Time Mode evaluation on behalf of the host's integrator.
+    Integration,
+}
+
+/// Which stage an annotation resolves to when one is already recorded.
+///
+/// The innermost annotation wins: an outer lifecycle boundary sees failures
+/// from every stage nested under it, and relabelling them with its own coarser
+/// stage would destroy the precision the stage exists to carry.
+///
+/// Pure predicate over `Copy` value types so it can be proved rather than
+/// exercised: `resolve` is idempotent and never invents a stage.
+#[must_use]
+pub fn resolve_me_stage(recorded: Option<MeStage>, incoming: MeStage) -> MeStage {
+    match recorded {
+        Some(stage) => stage,
+        None => incoming,
     }
 }
 
@@ -165,6 +215,62 @@ pub enum MeError {
         context: &'static str,
         entries: usize,
     },
+
+    /// A failure annotated with the ME stage that raised it.
+    ///
+    /// The rendered form is exactly the inner failure's, so annotating a path
+    /// never changes a user-visible message; the stage travels alongside for
+    /// machine consumers. Hosts that switch on the failure *variant* go through
+    /// [`MeError::kind`] / [`MeError::into_kind`], so an annotated path behaves
+    /// exactly like the unannotated one.
+    #[error("{inner}")]
+    Staged { stage: MeStage, inner: Box<MeError> },
+}
+
+impl MeError {
+    /// The stage the raising operation recorded, if any.
+    #[must_use]
+    pub fn stage(&self) -> Option<MeStage> {
+        match self {
+            Self::Staged { stage, .. } => Some(*stage),
+            _ => None,
+        }
+    }
+
+    /// The failure itself, with every stage annotation peeled off.
+    #[must_use]
+    pub fn kind(&self) -> &MeError {
+        match self {
+            Self::Staged { inner, .. } => inner.kind(),
+            other => other,
+        }
+    }
+
+    /// [`MeError::kind`] by value, for a host converting into its own error.
+    #[must_use]
+    pub fn into_kind(self) -> MeError {
+        match self {
+            Self::Staged { inner, .. } => inner.into_kind(),
+            other => other,
+        }
+    }
+
+    /// Annotate with the stage that raised this failure, innermost winning
+    /// (see [`resolve_me_stage`]).
+    #[must_use]
+    pub fn at_stage(self, stage: MeStage) -> Self {
+        let resolved = resolve_me_stage(self.stage(), stage);
+        match self {
+            Self::Staged { inner, .. } => Self::Staged {
+                stage: resolved,
+                inner,
+            },
+            other => Self::Staged {
+                stage: resolved,
+                inner: Box::new(other),
+            },
+        }
+    }
 }
 
 impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
@@ -458,6 +564,26 @@ pub trait ModelExchangeKernel {
 
     /// `fmi3GetContinuousStateDerivatives`.
     fn get_continuous_state_derivatives(&self, derivatives: &mut Vec<f64>) -> Result<(), MeError>;
+
+    /// `fmi3GetDirectionalDerivative`.
+    ///
+    /// The Model Exchange profile fixes the two variable lists FMI 3.0 passes
+    /// explicitly: `unknowns` is the continuous-state-derivative vector and
+    /// `knowns` is the continuous-state vector, both whole and both in value-
+    /// reference order. Only the seed and sensitivity vectors therefore travel,
+    /// and both have `continuous_state_count` entries. The component returns
+    /// the exact directional derivative
+    /// `sensitivity = ∂(der(x))/∂x · seed` at the currently set time and
+    /// continuous states — including the path through any algebraic coordinate
+    /// the state derivatives read, which the component recovers itself.
+    ///
+    /// A host that needs a Jacobian column seeds a unit vector; an implicit
+    /// integrator hands its Newton direction straight through.
+    fn get_directional_derivative(
+        &self,
+        seed: &[f64],
+        sensitivity: &mut [f64],
+    ) -> Result<(), MeError>;
 
     /// `fmi3GetEventIndicators`.
     fn get_event_indicators(&self, indicators: &mut Vec<f64>) -> Result<(), MeError>;

@@ -11,8 +11,8 @@
 
 use super::model_fixture::{divergent_initialization_model, single_state_model};
 use crate::fmi_me::{
-    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeStepCompletion, MeTime,
-    ModelExchangeKernel, SolveMeKernel,
+    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeStage,
+    MeStepCompletion, MeTime, ModelExchangeKernel, SolveMeKernel,
 };
 
 const START_TIME: f64 = 0.0;
@@ -442,21 +442,30 @@ fn property_the_event_boundary_clamps_time_upwards(earlier: f64, later: f64) {
 ///
 /// A model whose MLS §8.6 initialization updates can never reach a fixed point
 /// makes the component stop at its own iteration ceiling and report
-/// `MeError::Evaluation`, rather than looping forever or panicking.
+/// an initialization-stage error whose kind is `MeError::Evaluation`, rather
+/// than looping forever or panicking.
 ///
 /// `UPDATE_MAX_ITERS = 32` (`fmi_me/kernel.rs:38`) is the bound every internal
 /// fixed point in the component is given; `eval_and_apply_update_rows` returns
 /// `EvalSolveError::UpdateDidNotConverge` when it is reached, which the FMI
-/// boundary maps to `MeError::Evaluation`.
+/// boundary maps to `MeError::Evaluation` and annotates with the lifecycle
+/// stage where the failure arose.
 fn property_a_non_convergent_fixed_point_returns_an_error(increment: f64) {
     let model = divergent_initialization_model(increment);
     let mut kernel = instantiate(&model);
     kernel
         .enter_initialization_mode()
         .expect("initialization mode should be enterable from Instantiated");
-    let outcome = kernel.exit_initialization_mode();
+    let error = kernel
+        .exit_initialization_mode()
+        .expect_err("a fixed point that cannot settle must fail");
+    assert_eq!(
+        error.stage(),
+        Some(MeStage::Initialization),
+        "the component must preserve the stage that raised the failure"
+    );
     assert!(
-        matches!(outcome, Err(MeError::Evaluation { .. })),
+        matches!(error.kind(), MeError::Evaluation { .. }),
         "a fixed point that cannot settle must be reported to the host as an \
          evaluation failure, not run forever"
     );
