@@ -670,8 +670,9 @@ pub fn parse_formal_statements(raw: &str) -> Result<Vec<FormalStatement>, Formal
 /// # Panics
 ///
 /// Panics when the embedded table is malformed. The table ships inside the
-/// binary, so a failure here is a build-time defect, not a runtime condition.
+/// binary and the invariant tests parse it on every run, so a failure here is
+/// a build-time defect, not a runtime condition.
 pub fn load_all_formal_statements() -> Vec<FormalStatement> {
     parse_formal_statements(include_str!("../../data/formal_statements.toml"))
-        .unwrap_or_else(|error| panic!("formal_statements.toml must be well formed: {error}"))
+        .expect("formal_statements.toml ships in the binary and is gated by formal_statement_invariants; a malformed table is a build-time defect")
 }
