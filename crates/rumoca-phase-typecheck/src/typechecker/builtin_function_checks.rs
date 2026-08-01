@@ -199,7 +199,7 @@ impl TypeChecker {
         Some(match name {
             "abs" | "sign" | "sqrt" | "exp" | "log" | "log10" | "sin" | "cos" | "tan" | "asin"
             | "acos" | "sinh" | "cosh" | "tanh" | "atan" | "der" | "pre" | "edge" | "change"
-            | "noEvent" => (1, 1),
+            | "noEvent" | "pure" => (1, 1),
             "atan2" | "div" | "mod" | "rem" => (2, 2),
             "semiLinear" => (3, 3),
             "initial" | "terminal" => (0, 0),

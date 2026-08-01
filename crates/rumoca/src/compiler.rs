@@ -46,7 +46,7 @@ use rumoca_compile::codegen::{
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, Session, SessionConfig,
-    SourceRootKind, VariableRole,
+    SourceRootKind, VariableRole, core::DiagnosticSeverity,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
@@ -553,6 +553,7 @@ impl Compiler {
             }
         })?;
         let (result, resolved) = compilation.into_parts();
+        report_compile_warnings(&mut session, model_name);
 
         if self.verbose {
             eprintln!("[rumoca] Compilation complete.");
@@ -614,9 +615,11 @@ impl Compiler {
         let mut session = Session::new(SessionConfig::default());
         self.load_required_source_roots(&mut session, source)?;
         self.load_local_compile_unit(&mut session, source, file_name)?;
-        session
+        let flat = session
             .compile_model_flat_strict_reachable_uncached_with_recovery(model_name)
-            .map_err(CompilerError::FlattenError)
+            .map_err(CompilerError::FlattenError)?;
+        report_compile_warnings(&mut session, model_name);
+        Ok(flat)
     }
 
     /// Compile Modelica source code through DAE only.
@@ -666,6 +669,8 @@ impl Compiler {
                 }
             };
 
+        report_compile_warnings(&mut session, model_name);
+
         if self.verbose {
             eprintln!("[rumoca] DAE compilation complete.");
             let counts = dae_counts(&result.dae);
@@ -680,6 +685,56 @@ impl Compiler {
         }
 
         Ok(*result)
+    }
+}
+
+/// Print every warning-severity diagnostic the compiled model carries.
+///
+/// A compile that succeeds still has things the language requires a tool to
+/// say — MLS 3.7 §12.3 deprecates an external function that declares no
+/// purity, and MLS 3.6 §12.3 stated the report as a requirement. Those
+/// diagnostics exist in the session, but until they are printed the only
+/// consumers are the editor and the API, so a `rumoca compile` run reports
+/// nothing and the deprecation reaches nobody. Warnings never change the exit
+/// status: they are reports, not rejections.
+///
+/// Cost, measured and not yet paid down: this asks the session for the model's
+/// diagnostics, and that query re-walks the interface, body, and model stages
+/// behind their own caches, which the compile above did not fill in the same
+/// shape. On one MSL model (`…OpAmps.OpAmpCircuits.Add`, three runs each, same
+/// binary) the report adds 0.64 s to a plain compile (11.81 → 12.45 s), 0.52 s
+/// to `--emit flat-json` (11.90 → 12.42 s), and 2.10 s to `--emit dae-json`
+/// (11.48 → 13.58 s). Paying nothing needs either a stage-limited diagnostics
+/// query or warnings carried out of the compile that already ran, both of which
+/// are new session plumbing in `rumoca-compile`; that is filed rather than
+/// hidden here.
+fn report_compile_warnings(session: &mut Session, model_name: &str) {
+    let diagnostics = session.compile_model_diagnostics(model_name);
+    let source_map = diagnostics.source_map;
+    for diagnostic in diagnostics
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.severity, DiagnosticSeverity::Warning))
+    {
+        let code = diagnostic.code.as_deref().unwrap_or("warning");
+        match source_map
+            .as_ref()
+            .zip(diagnostic.labels.first())
+            .and_then(|(map, label)| rumoca_compile::compile::source_span_location(map, label.span))
+        {
+            // `TextPosition` is the editor-protocol form: zero-based line and
+            // zero-based UTF-16 column. A terminal `file:line:col` is one-based
+            // everywhere else this compiler prints one, so both fields are
+            // shifted here rather than reported in an editor's coordinates.
+            Some(location) => eprintln!(
+                "[rumoca] warning[{code}]: {} ({}:{}:{})",
+                diagnostic.message,
+                location.file_name,
+                location.start.line + 1,
+                location.start.character + 1
+            ),
+            None => eprintln!("[rumoca] warning[{code}]: {}", diagnostic.message),
+        }
     }
 }
 

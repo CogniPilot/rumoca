@@ -647,7 +647,19 @@ pub const BUILTIN_FUNCTIONS: &[&str] = &[
     // Special (MLS §3.7.4)
     "noEvent",
     "connect",
+    // MLS §12.3 purity wrapper; see [`PURITY_WRAPPER`].
+    PURITY_WRAPPER,
 ];
+
+/// MLS 3.7 §12.3 purity wrapper: `pure(impureFunction(…))`.
+///
+/// `pure` is a keyword, so this name can never be shadowed by a declaration.
+/// The wrapper "only by-passes the purity checking of the callee
+/// impureFunction; the argument expressions of the function call are not
+/// affected", so it carries no value of its own: the purity checks skip the
+/// callee it wraps, the type checker gives it the type of what it wraps, and
+/// lowering erases it.
+pub const PURITY_WRAPPER: &str = "pure";
 
 /// Built-in variables/constants available in all scopes.
 ///
@@ -753,6 +765,7 @@ pub fn is_builtin_function(name: &str) -> bool {
             | "array"
             | "noEvent"
             | "connect"
+            | "pure"
     )
 }
 

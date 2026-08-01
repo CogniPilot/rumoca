@@ -1019,9 +1019,15 @@ fn convert_function<'tree>(
     // backends that need it.
     rewrite_record_field_access_in_body(&mut func);
 
-    // Use pure flag from ast::ClassDef (MLS §12.3)
-    // Functions are pure by default unless declared with `impure` keyword
+    // MLS 3.7 §12.3 purity, carried as the two facts the declaration states:
+    // the written prefix (`pure` unless `impure` was written) and whether a
+    // prefix was written at all. Flat keeps both because they answer different
+    // questions: an external function that wrote no prefix "shall be treated as
+    // impure" for transformations while the deprecation of its bare form is a
+    // report, not a call restriction. `Function::body_is_pure` owns the first
+    // question for every consumer.
     func.pure = class_def.pure;
+    func.purity_declared = class_def.purity_declared;
 
     // Convert external function declaration (MLS §12.9)
     if let Some(ref ext) = class_def.external {

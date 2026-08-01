@@ -15,6 +15,10 @@ fn linkage() -> ExternalLinkage {
 /// Build the reference fixture: one pure external function whose declaration
 /// binds `y` through the return form and `s` through an output argument.
 fn external_fixture() -> Dae {
+    external_fixture_with_purity(FunctionPurity::Pure)
+}
+
+fn external_fixture_with_purity(purity: FunctionPurity) -> Dae {
     let source = TestSource::new(EXTERNAL_SOURCE);
     let function_at = source.source("pure function f", 0);
     let input_at = source.source("input Real u", 0);
@@ -43,7 +47,7 @@ fn external_fixture() -> Dae {
                         .coordinate(CoordinateInput::FunctionParameter(parameter))
                 })?;
                 let body = ExternalFunctionBody::new(
-                    FunctionPurity::Pure,
+                    purity,
                     ExternalLanguage::C,
                     VarName::new("my_func"),
                     [
@@ -123,6 +127,52 @@ fn external_interface_round_trips_through_the_checked_wire() {
     assert_eq!(external["symbol"], serde_json::json!("my_func"));
     assert_eq!(external["purity"], serde_json::json!("pure"));
     assert_eq!(external["language"], serde_json::json!("c"));
+}
+
+/// Replay reconstructs the declared purity, it does not re-derive one.
+///
+/// MLS §12.3 purity is a body fact a replayed DAE cannot recompute: an impure
+/// body that came back pure would license exactly the optimizations MLS
+/// forbids ("A tool is not allowed to perform any optimizations on function
+/// calls to an impure function"). The impure direction is the one omission
+/// silently produces, so it is proven on the wire in both encodings.
+#[test]
+fn an_impure_external_interface_replays_as_impure() {
+    let dae = external_fixture_with_purity(FunctionPurity::Impure);
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(
+            function.external().unwrap().purity(),
+            FunctionPurity::Impure
+        );
+    });
+
+    let encoded = serde_json::to_string(&dae).expect("checked DAE serializes");
+    let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        canonical["storage"]["functions"][0]["external"]["purity"],
+        serde_json::json!("impure")
+    );
+
+    let decoded: Dae = serde_json::from_str(&encoded).expect("external replay reconstructs");
+    decoded.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(
+            function.external().unwrap().purity(),
+            FunctionPurity::Impure,
+            "replay carries the declared purity instead of defaulting it"
+        );
+    });
+
+    let binary = bincode::serialize(&dae).expect("external interface serializes");
+    let replayed: Dae = bincode::deserialize(&binary).expect("external interface reconstructs");
+    replayed.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(
+            function.external().unwrap().purity(),
+            FunctionPurity::Impure
+        );
+    });
 }
 
 #[test]

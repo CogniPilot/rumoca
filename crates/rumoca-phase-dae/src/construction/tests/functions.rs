@@ -799,9 +799,20 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
     ));
 }
 
+/// The MLS §12.3 purity prefix the fixture's external declaration writes.
+#[derive(Clone, Copy)]
+enum DeclaredExternalPurity {
+    /// `pure function f … external "C" …`.
+    Pure,
+    /// `impure function f … external "C" …`.
+    Impure,
+    /// `function f … external "C" …`: no prefix, the deprecated form.
+    Undeclared,
+}
+
 fn external_random_model(
     source: &TestSource,
-    pure: bool,
+    purity: DeclaredExternalPurity,
     annotations: Vec<rumoca_core::ExternalFunctionAnnotation>,
 ) -> flat::Model {
     let function_span = source.span("function f", 0);
@@ -809,7 +820,13 @@ fn external_random_model(
     let output_span = source.span("output Real y0", 0);
     let state_span = source.span("output Real q0", 0);
     let mut function = rumoca_core::Function::new("f", function_span);
+    let (pure, purity_declared) = match purity {
+        DeclaredExternalPurity::Pure => (true, true),
+        DeclaredExternalPurity::Impure => (false, true),
+        DeclaredExternalPurity::Undeclared => (true, false),
+    };
     function.pure = pure;
+    function.purity_declared = purity_declared;
     function.add_input(real_function_param("p0", Vec::new(), input_span));
     function.add_output(real_function_param("y0", Vec::new(), output_span));
     function.add_output(real_function_param("q0", Vec::new(), state_span));
@@ -862,7 +879,7 @@ fn pure_external_function_lowers_as_a_purity_bearing_callable() {
     let annotation_span = source.span("my_random", 0);
     let model = external_random_model(
         &source,
-        true,
+        DeclaredExternalPurity::Pure,
         vec![rumoca_core::ExternalFunctionAnnotation {
             name: vec!["Library".to_string()],
             value: Expression::Literal {
@@ -898,7 +915,7 @@ fn pure_external_function_lowers_as_a_purity_bearing_callable() {
 fn external_function_with_an_unproduced_output_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let state_span = source.span("output Real q0", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))
@@ -926,7 +943,7 @@ fn external_function_with_an_unproduced_output_is_rejected() {
 fn external_function_with_an_undefined_language_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let function_span = source.span("function f", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))
@@ -953,7 +970,7 @@ fn external_function_link_facts_must_be_string_literals() {
     let annotation_span = source.span("my_random", 0);
     let model = external_random_model(
         &source,
-        true,
+        DeclaredExternalPurity::Pure,
         vec![rumoca_core::ExternalFunctionAnnotation {
             name: vec!["Library".to_string()],
             value: Expression::Literal {
@@ -980,7 +997,7 @@ fn external_function_with_both_bodies_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let function_span = source.span("function f", 0);
     let assignment_span = source.span("y0 = my_random", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))
@@ -1013,7 +1030,7 @@ fn external_function_with_both_bodies_is_rejected() {
 fn impure_call_from_a_continuous_equation_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let call_span = source.span("f(2.5)", 0);
-    let model = external_random_model(&source, false, Vec::new());
+    let model = external_random_model(&source, DeclaredExternalPurity::Impure, Vec::new());
 
     let error = construct(&model, source.map).unwrap_err();
     assert!(matches!(
@@ -1034,7 +1051,7 @@ fn impure_call_from_a_continuous_equation_is_rejected() {
 fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let call_span = source.span("f(2.5)", 0);
-    let mut model = external_random_model(&source, false, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Impure, Vec::new());
     model.equations.clear();
     model.initial_equations.push(flat::Equation::new(
         Expression::FunctionCall {
@@ -1064,6 +1081,30 @@ fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
     });
 }
 
+/// MLS 3.7 §12.3: a function "shall be treated as impure" when "It is an
+/// external function without explicit purity", and writing no prefix "is
+/// deprecated" rather than illegal. MLS 3.6 §12.3 (historical; 3.7 deprecates
+/// the bare form) said the same in one sentence — "assumed to be impure, but
+/// without any restriction on calling them" — and both halves are proven here:
+/// the stored body fact is impure, and the fixture's continuous-time call is
+/// still accepted.
+#[test]
+fn external_function_without_a_purity_prefix_is_impure_and_callable_anywhere() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let model = external_random_model(&source, DeclaredExternalPurity::Undeclared, Vec::new());
+
+    let dae = construct(&model, source.map)
+        .expect("the deprecated form carries no restriction on calling it");
+    dae.inspect(|view| {
+        let external = view
+            .function(view.function_id(0).unwrap())
+            .unwrap()
+            .external()
+            .expect("the body is external");
+        assert_eq!(external.purity(), dae::FunctionPurity::Impure);
+    });
+}
+
 /// MLS §12.9 defaults an omitted entry point to the function's simple name.
 /// Flat keeps only the flattened path, so the omitted form is rejected with
 /// exact provenance rather than recovered from rendered text.
@@ -1071,7 +1112,7 @@ fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
 fn external_function_without_a_declared_entry_point_is_rejected() {
     let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
     let function_span = source.span("function f", 0);
-    let mut model = external_random_model(&source, true, Vec::new());
+    let mut model = external_random_model(&source, DeclaredExternalPurity::Pure, Vec::new());
     model
         .functions
         .get_mut(&VarName::new("f"))

@@ -9,9 +9,21 @@ use super::*;
 
 /// Reject every impure call that reaches a context MLS §12.3 forbids.
 ///
-/// Legal contexts (`when` bodies, initial equations, initial algorithms, and
-/// impure function bodies) are not visited here; the DAE owns them through
-/// their own checked owners.
+/// The rule is stated of the written prefix — "With the prefix keyword impure
+/// it is stated that a Modelica function is impure and it is only allowed to
+/// call such a function from within: …" — so it is proven against
+/// `Function::pure`, the written prefix. The bare external form is not proven
+/// against it: MLS 3.7 §12.3 makes that form "treated as impure" for
+/// transformations while stating only that it "is deprecated", so it is
+/// reported (WR001) and compiled. The same section's recursive case — a
+/// function treated as impure because it calls one — is a call-graph closure
+/// this pass does not compute either; that is task #76.
+///
+/// The contexts that list permits are not visited here; the DAE owns them
+/// through their own checked owners. Two of them are not reachable in this
+/// compiler yet and so are not advertised by the diagnostics: `pure(…)` is
+/// erased during lowering without carrying its bypass this far (task #57), and
+/// an external-object binding cannot be constructed at all (ED019).
 pub(super) fn validate_impure_call_contexts(flat: &flat::Model) -> Result<(), ToDaeError> {
     for equation in &flat.equations {
         // `when` assignments and `reinit` are event actions: MLS §12.3 permits
@@ -150,8 +162,9 @@ fn reject_impure_target(
         Some(function) if !function.pure => Err(ToDaeError::unsupported_flat(
             "impure call context",
             format!(
-                "impure function `{}` is called from {context}; MLS §12.3 permits impure calls \
-                 only in `when` bodies, initial sections, and impure functions",
+                "impure function `{}` is called from {context}; MLS §12.3 permits an impure \
+                 call only in an impure function, a `when` equation or statement, an initial \
+                 equation or initial algorithm, or a `parameter` binding",
                 function.name
             ),
             span,
@@ -172,8 +185,9 @@ fn reject_impure_calls(
         return Err(ToDaeError::unsupported_flat(
             "impure call context",
             format!(
-                "impure function `{}` is called from {context}; MLS §12.3 permits impure calls \
-                 only in `when` bodies, initial sections, and impure functions",
+                "impure function `{}` is called from {context}; MLS §12.3 permits an impure \
+                 call only in an impure function, a `when` equation or statement, an initial \
+                 equation or initial algorithm, or a `parameter` binding",
                 function.name
             ),
             *span,

@@ -838,6 +838,9 @@ fn convert_function_call_with_context(
 
     if comp.parts.len() == 1 {
         let func_name = &comp.parts[0].ident.text;
+        if func_name.as_ref() == rumoca_core::PURITY_WRAPPER {
+            return lower_purity_wrapper(args, call_span, context);
+        }
         if comp.target_def_id() == context.predefined_string_declaration
             && context.predefined_string_declaration.is_some()
         {
@@ -869,6 +872,36 @@ fn convert_function_call_with_context(
     }
 
     lower_user_function_call(comp, args, call_span, context)
+}
+
+/// Erase an MLS §12.3 `pure(functionCall(…))` wrapper.
+///
+/// The wrapper "only by-passes the purity checking of the callee
+/// impureFunction; the argument expressions of the function call are not
+/// affected" (MLS 3.7 §12.3): it computes nothing, so Flat carries the call it
+/// wraps and nothing else. Resolve already suppressed the one purity check the
+/// wrapper exists for, and it has no second meaning to preserve here.
+///
+/// The grammar admits `pure(…)` with any argument list, so a wrapper that does
+/// not wrap exactly one expression is rejected with its own span rather than
+/// lowered to something invented.
+fn lower_purity_wrapper(
+    args: &[ast::Expression],
+    call_span: Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    let [wrapped] = args else {
+        return Err(FlattenError::invalid_function_call_args(
+            rumoca_core::PURITY_WRAPPER,
+            format!(
+                "MLS §12.3 `pure(…)` wraps exactly one function call; this call passes {} \
+                 argument(s)",
+                args.len()
+            ),
+            call_span,
+        ));
+    };
+    expression_from_ast_with_context(wrapped, context)
 }
 
 fn lower_user_function_call(

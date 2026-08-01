@@ -103,7 +103,17 @@ pub(super) fn validate_external_function(
         }
     }
     Ok(ExternalFunctionPlan {
-        purity: if function.pure {
+        // MLS 3.7 §12.3: a function "shall be treated as impure" when "It is
+        // an external function without explicit purity", stated "For purposes
+        // of symbolic transformations and optimizations". That is exactly what
+        // this field is for, so an external declaration that wrote no prefix
+        // is impure here and never pure by omission. Callability is the other
+        // fact and is not decided here: §12.3 restricts the written `impure`
+        // prefix and only *deprecates* the bare external form, so its callers
+        // are checked against the written prefix. The recursive half of the
+        // same rule — a function that only *calls* one of these — needs a
+        // call-graph closure no declaration carries; that is task #76.
+        purity: if function.body_is_pure() {
             dae::FunctionPurity::Pure
         } else {
             dae::FunctionPurity::Impure

@@ -238,6 +238,40 @@ fn magic_number_still_reports_literals_inside_a_for_loop_body() {
 }
 
 // ---------------------------------------------------------------------------
+// external-purity-undeclared
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bare_external_function_is_reported() {
+    let source = "function f \"bare\"\n  input Real u;\n  output Real y;\nexternal \"C\" y = my_func(u);\nend f;\n";
+    let found = messages(&ExternalPurityRule, source);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("treated as impure"), "{found:?}");
+}
+
+#[test]
+fn declared_external_purity_reports_nothing() {
+    for source in [
+        "pure function f \"pure\"\n  input Real u;\n  output Real y;\nexternal \"C\" y = my_func(u);\nend f;\n",
+        "impure function f \"impure\"\n  input Real u;\n  output Real y;\nexternal \"C\" y = my_func(u);\nend f;\n",
+    ] {
+        assert!(
+            messages(&ExternalPurityRule, source).is_empty(),
+            "an explicit prefix is what the rule asks for: {source}"
+        );
+    }
+}
+
+/// The rule is about the external interface, not about functions in general: a
+/// Modelica body is pure by default and needs no prefix (MLS §12.3).
+#[test]
+fn modelica_function_without_a_purity_prefix_reports_nothing() {
+    let source =
+        "function f \"body\"\n  input Real u;\n  output Real y;\nalgorithm\n  y := u;\nend f;\n";
+    assert!(messages(&ExternalPurityRule, source).is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // end-to-end through `lint`
 // ---------------------------------------------------------------------------
 
