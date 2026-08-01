@@ -891,6 +891,26 @@ fn generated_residual<'dae>(
     })
 }
 
+/// Lower the assertions an equation, initial-equation, or initial-algorithm
+/// section owns.
+///
+/// The activation is a *level*, not an edge. MLS §8.3.7 violates an assertion
+/// because its condition *is* false — *"assert(condition, message) ... the
+/// assertion is violated if the condition is false"* — not because it became
+/// false, and none of these three sections is a `when`, whose §8.3.5 "becomes
+/// true" activation is what an edge encodes. An assertion written inside a
+/// `when` body keeps its edge, because there the activation belongs to the
+/// `when` (see `WhenLowering::lower_assert`).
+///
+/// The level is expressed by giving the action [`dae::ConditionInput::Always`]
+/// as its *trigger*, which carries no §8.5 buffer, so `edge(trigger)` reads
+/// `true` and the action's own guard — the negated assertion condition — is
+/// what decides. Every assertion lowered here takes that path, whatever its
+/// condition: `assert(x > 0, …)` is level-checked exactly like
+/// `assert(false, …)`. Handing the assertion its own violation as the trigger
+/// instead makes it an edge, and an assertion already violated at the
+/// initialization instant then has no edge to report on — which silently
+/// dropped the `initial algorithm` guard assertions this exists for.
 fn lower_assertions<'dae, 'flat>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -907,6 +927,7 @@ fn lower_assertions<'dae, 'flat>(
             &assertion.condition,
         )?;
         let action_guard = negate_condition(construction, condition, assertion.span)?;
+        let trigger = always_condition(construction, assertion.span)?;
         let message = lower_expression(
             construction,
             coordinates,
@@ -922,7 +943,7 @@ fn lower_assertions<'dae, 'flat>(
         )?;
         let provenance = dae::DaeProvenance::source(assertion.span)?;
         construction.events(|events| {
-            events.assert_with_level(action_guard, action_guard, message, level, provenance)
+            events.assert_with_level(trigger, action_guard, message, level, provenance)
         })?;
     }
     Ok(())
@@ -1248,7 +1269,6 @@ fn lower_algorithm_when<'dae>(
     blocks: &[rumoca_core::StatementBlock],
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
-    let mut previous = None;
     let mut guarded_blocks = Vec::with_capacity(blocks.len());
     for block in blocks {
         let (condition, owner_clock) = lower_condition(
@@ -1258,13 +1278,12 @@ fn lower_algorithm_when<'dae>(
             environment.sample_lattices,
             &block.cond,
         )?;
-        let available = match previous {
-            Some(previous) => {
-                let not_previous = negate_condition(construction, previous, span)?;
-                combine_conditions(construction, condition, not_previous, false, span)?
-            }
-            None => condition,
-        };
+        // MLS §8.3.5 activates each branch of a `when`/`elsewhen` chain on its
+        // own rising edge; the textual order of the branches resolves the
+        // simultaneous ones. See `lower_chain_guards` for the equation form —
+        // the algorithm form has to agree with it or the same chain would mean
+        // two things depending on which section it was written in.
+        let available = condition;
         let guard = match owner.parent {
             Some(parent) => EventGuard {
                 trigger: available,
@@ -1300,10 +1319,6 @@ fn lower_algorithm_when<'dae>(
             },
         };
         guarded_blocks.push((block, guard));
-        previous = Some(match previous {
-            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
-            None => condition,
-        });
     }
     for (block, guard) in &guarded_blocks {
         if let Some(clock) = guard.owner_clock {

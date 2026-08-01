@@ -368,6 +368,90 @@ fn initial_condition_is_typed_and_round_trips_through_wire_v12() {
     assert_initial(&decoded);
 }
 
+/// `Always` and `AnyRise` survive the wire together, at their own ordinals.
+///
+/// The two were added in the same change and land on opposite sides of the
+/// ordinal-tagged encoding: `Always` was *inserted* at ordinal 1, shifting every
+/// later condition variant, and `AnyRise` was appended. A round trip that
+/// carries only one of them cannot catch a mis-shifted table, because a payload
+/// written with the old ordinals still decodes — to the wrong variant. This
+/// therefore builds a model holding both plus the neighbours the insertion moved
+/// (`Relation`, `Discrete`, `Not`, `Or`) and asserts every node comes back as
+/// itself, with its provenance.
+///
+/// `DAE_SCHEMA_VERSION` is bumped for the same reason; see its doc comment.
+#[test]
+fn always_and_any_rise_round_trip_through_wire_v14() {
+    let source = TestSource::new("when {u, not u} then end when; algorithm x := 1;");
+    let vector_at = source.source("{u, not u}", 0);
+    let element_at = source.source("u", 0);
+    let negated_at = source.source("not u", 0);
+    let section_at = source.source("algorithm x := 1;", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        // `u` and `not u`: a discrete leaf and its negation.
+        let u_value = dae.expressions(|expressions| {
+            expressions
+                .at(element_at)
+                .literal(DaeLiteral::Boolean(true))
+        })?;
+        let u = dae.conditions(|conditions| conditions.reserve(element_at))?;
+        dae.conditions(|conditions| {
+            conditions.define(u, ConditionInput::Discrete(u_value), element_at)
+        })?;
+        let not_u = dae.conditions(|conditions| conditions.reserve(negated_at))?;
+        dae.conditions(|conditions| conditions.define(not_u, ConditionInput::Not(u), negated_at))?;
+        // The vector activation over the two, and the disjunction it is *not*.
+        let any_rise = dae.conditions(|conditions| conditions.reserve(vector_at))?;
+        dae.conditions(|conditions| {
+            conditions.define(any_rise, ConditionInput::AnyRise(u, not_u), vector_at)
+        })?;
+        let disjunction = dae.conditions(|conditions| conditions.reserve(vector_at))?;
+        dae.conditions(|conditions| {
+            conditions.define(disjunction, ConditionInput::Or(u, not_u), vector_at)
+        })?;
+        // The activation an unguarded algorithm section carries.
+        let always = dae.conditions(|conditions| conditions.reserve(section_at))?;
+        dae.conditions(|conditions| conditions.define(always, ConditionInput::Always, section_at))
+    })
+    .unwrap();
+
+    let assert_nodes = |model: &Dae| {
+        model.inspect(|view| {
+            let node = |index: usize| {
+                view.condition(view.condition_id(index).unwrap())
+                    .expect("checked condition identity resolves")
+            };
+            assert!(matches!(
+                node(0).operation(),
+                ConditionOperation::Discrete(_)
+            ));
+            let ConditionOperation::Not(operand) = node(1).operation() else {
+                panic!("condition 1 must stay a negation");
+            };
+            assert_eq!(operand.index(), 0);
+            let ConditionOperation::AnyRise(lhs, rhs) = node(2).operation() else {
+                panic!("condition 2 must stay a vector activation, not a disjunction");
+            };
+            assert_eq!((lhs.index(), rhs.index()), (0, 1));
+            let ConditionOperation::Or(lhs, rhs) = node(3).operation() else {
+                panic!("condition 3 must stay a disjunction, not a vector activation");
+            };
+            assert_eq!((lhs.index(), rhs.index()), (0, 1));
+            assert!(matches!(node(4).operation(), ConditionOperation::Always));
+            assert_eq!(model.source_text(node(2).provenance()), Some("{u, not u}"));
+            assert_eq!(
+                model.source_text(node(4).provenance()),
+                Some("algorithm x := 1;")
+            );
+        });
+    };
+    assert_nodes(&dae);
+    let wire = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&wire).unwrap();
+    assert_eq!(decoded.schema_version(), DAE_SCHEMA_VERSION);
+    assert_nodes(&decoded);
+}
+
 fn assert_event_wire_requires_trigger(encoded: &str) {
     let mut value: serde_json::Value = serde_json::from_str(encoded).unwrap();
     value["storage"]["event_actions"][0]

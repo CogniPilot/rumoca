@@ -10,12 +10,14 @@ use crate::{
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ConditionNode {
     Initial,
+    Always,
     Relation(u32),
     Discrete(u32),
     Clock(u32),
     Not(u32),
     And { lhs: u32, rhs: u32 },
     Or { lhs: u32, rhs: u32 },
+    AnyRise { lhs: u32, rhs: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -59,12 +61,30 @@ impl<'dae> RelationView<'dae> {
 #[derive(Debug, Clone, Copy)]
 pub enum ConditionOperation<'dae> {
     Initial,
+    /// The activation of a section that is not a `when` at all.
+    ///
+    /// An unguarded algorithm section runs because the section runs, and MLS
+    /// §8.3.7 violates an `assert` because its condition *is* false — neither is
+    /// an event-generating expression, so neither holds a §8.5 buffer and
+    /// neither activates on an edge. Keeping this distinct from a literal `true`
+    /// written by a model author is the whole point of the variant: a source
+    /// `when true then` *is* a `when`, keeps its buffer, and by §8.3.5.1 never
+    /// has a rising edge to run on.
+    Always,
     Relation(RelationId<'dae>),
     Discrete(ExprId<'dae>),
     Clock(ClockId<'dae>),
     Not(ConditionId<'dae>),
     And(ConditionId<'dae>, ConditionId<'dae>),
     Or(ConditionId<'dae>, ConditionId<'dae>),
+    /// MLS §8.3.5 vector activation: fires when *any element* becomes true.
+    ///
+    /// §8.3.5.1 gives one `Boolean bi` per element and activates on
+    /// `edge(b1) or … or edge(bn)`, which is not the edge of the disjunction:
+    /// `when {u, not u}` has an element rising at every switch of `u` while
+    /// `u or not u` is a tautology that never rises at all. The two operands
+    /// nest to the left for more than two elements.
+    AnyRise(ConditionId<'dae>, ConditionId<'dae>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -107,12 +127,16 @@ impl<'dae> RootView<'dae> {
 #[derive(Debug, Clone, Copy)]
 pub enum ConditionInput<'dae> {
     Initial,
+    /// See [`ConditionOperation::Always`].
+    Always,
     Relation(RelationId<'dae>),
     Discrete(ExprId<'dae>),
     Clock(ClockId<'dae>),
     Not(ConditionId<'dae>),
     And(ConditionId<'dae>, ConditionId<'dae>),
     Or(ConditionId<'dae>, ConditionId<'dae>),
+    /// See [`ConditionOperation::AnyRise`].
+    AnyRise(ConditionId<'dae>, ConditionId<'dae>),
 }
 
 pub struct Conditions<'storage, 'dae> {
@@ -221,6 +245,7 @@ impl<'dae> Conditions<'_, 'dae> {
     ) -> Result<ConditionNode, DaeConstructionError> {
         Ok(match input {
             ConditionInput::Initial => ConditionNode::Initial,
+            ConditionInput::Always => ConditionNode::Always,
             ConditionInput::Relation(id) => {
                 self.storage
                     .relations
@@ -263,6 +288,14 @@ impl<'dae> Conditions<'_, 'dae> {
                 self.expect_condition(lhs, at)?;
                 self.expect_condition(rhs, at)?;
                 ConditionNode::Or {
+                    lhs: lhs.index(),
+                    rhs: rhs.index(),
+                }
+            }
+            ConditionInput::AnyRise(lhs, rhs) => {
+                self.expect_condition(lhs, at)?;
+                self.expect_condition(rhs, at)?;
+                ConditionNode::AnyRise {
                     lhs: lhs.index(),
                     rhs: rhs.index(),
                 }
@@ -325,12 +358,15 @@ fn owner_clock_for_node(
             condition_owner_clock(storage, rhs, provenance)?,
             false,
         )),
-        ConditionNode::Or { lhs, rhs } => Ok(merge_owner_clocks(
-            condition_owner_clock(storage, lhs, provenance)?,
-            condition_owner_clock(storage, rhs, provenance)?,
-            true,
-        )),
+        ConditionNode::Or { lhs, rhs } | ConditionNode::AnyRise { lhs, rhs } => {
+            Ok(merge_owner_clocks(
+                condition_owner_clock(storage, lhs, provenance)?,
+                condition_owner_clock(storage, rhs, provenance)?,
+                true,
+            ))
+        }
         ConditionNode::Initial
+        | ConditionNode::Always
         | ConditionNode::Relation(_)
         | ConditionNode::Discrete(_)
         | ConditionNode::Not(_) => Ok(None),

@@ -1,23 +1,27 @@
 use super::*;
 
+/// The activation of a section that is not a `when`.
+///
+/// An unguarded algorithm section and an `assert` in an equation,
+/// initial-equation, or initial-algorithm section both run because the section
+/// runs — MLS §8.3.7 violates an assertion because its condition *is* false, not
+/// because it became false — so their activation is a level.
+///
+/// This is [`dae::ConditionInput::Always`] and deliberately *not* a literal
+/// `true`. A model author's `when true then` is a real `when`: §8.3.5.1 starts
+/// its activation buffer at the condition's own value and §8.6 holds
+/// `pre(b) = b` before integration, so it has no rising edge and never runs.
+/// Lowering the two to the same node made "is this a `when`?" a question about
+/// expression shape, and answered it wrong for every source `when <literal>`.
 pub(super) fn always_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     owner_span: Span,
 ) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, owner_span)?;
-    let expression = construction.expressions(|expressions| {
-        expressions
-            .at(provenance)
-            .literal(dae::DaeLiteral::Boolean(true))
-    })?;
     let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
     construction.conditions(|conditions| {
-        conditions.define(
-            condition,
-            dae::ConditionInput::Discrete(expression),
-            provenance,
-        )
+        conditions.define(condition, dae::ConditionInput::Always, provenance)
     })?;
     Ok(condition)
 }
@@ -232,47 +236,45 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
         Ok(())
     }
 
+    /// The activation of each branch of a `when`/`elsewhen` chain (MLS §8.3.5).
+    ///
+    /// Each branch is activated by *its own* rising edge and by nothing else:
+    /// §8.3.5 activates the equations of a when-equation *"only at the instant
+    /// when the scalar expression or any of the elements of the vector expression
+    /// becomes true"*, and §8.3.5.1 spells the chain out as one if-expression per
+    /// assigned variable whose arms are `edge(b1)`, `edge(b2)`, … over one
+    /// `Boolean bi` per branch condition. An `elsewhen` therefore carries no
+    /// condition of its own beyond its own edge.
+    ///
+    /// What the earlier branches do own is *priority*, and §8.3.5 scopes that
+    /// precisely: the chain form *"can be used to resolve assignment conflicts
+    /// since the first of the when/elsewhen parts are given higher priority than
+    /// later ones"*. A conflict exists only where two arms of the same
+    /// if-expression are selected at one instant, i.e. where two branch edges
+    /// coincide — and the arms are ordered, so the earlier one wins. §8.3.5.1
+    /// also requires every branch of a chain to assign the same component
+    /// references, so ordering the arms is the whole of the resolution.
+    ///
+    /// Subtracting the earlier branches' *level* here instead — guarding branch
+    /// `i` with `cond_i and not (cond_1 or …)` — outlaws far more than a
+    /// conflict: a `cond_1` that stays true suppresses every later branch for the
+    /// rest of the run, so `when time > 0.3 then y = 1; elsewhen time > 0.7 then
+    /// y = 2;` held `y = 1` where OpenModelica reaches `y = 2` at `t = 0.7`.
     fn lower_chain_guards(
         &mut self,
         chain: &flat::WhenChain,
     ) -> Result<Vec<EventGuard<'dae>>, dae::DaeConstructionError> {
         let mut guards = Vec::with_capacity(chain.branch_count());
-        let mut previous = None;
-        for (index, branch) in chain.branches().enumerate() {
+        for branch in chain.branches() {
             let (condition, owner_clock) = self.lower_condition(branch)?;
-            let action_condition = match previous {
-                Some(previous) => {
-                    let no_previous = negate_condition(self.construction, previous, branch.span)?;
-                    combine_conditions(
-                        self.construction,
-                        condition,
-                        no_previous,
-                        false,
-                        branch.span,
-                    )?
-                }
-                None => condition,
-            };
             guards.push(EventGuard {
                 trigger: condition,
-                condition: action_condition,
+                condition,
                 owner_clock,
                 branch_provenance: dae::DaeProvenance::source(branch.span)?,
                 always: false,
                 parent_activation: None,
             });
-            if index + 1 < chain.branch_count() {
-                previous = Some(match previous {
-                    Some(previous) => combine_conditions(
-                        self.construction,
-                        previous,
-                        condition,
-                        true,
-                        branch.span,
-                    )?,
-                    None => condition,
-                });
-            }
         }
         Ok(guards)
     }

@@ -406,12 +406,14 @@ fn discrete_value_owner_output(storage: &FrozenStorage) -> Vec<DiscreteValueOwne
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ConditionNodeWire {
     Initial,
+    Always,
     Relation(u32),
     Discrete(u32),
     Clock(u32),
     Not(u32),
     And { lhs: u32, rhs: u32 },
     Or { lhs: u32, rhs: u32 },
+    AnyRise { lhs: u32, rhs: u32 },
 }
 
 #[derive(Deserialize)]
@@ -1511,6 +1513,7 @@ fn rebuild_condition_input<'dae>(
 ) -> Result<ConditionInput<'dae>, DaeConstructionError> {
     Ok(match node {
         ConditionNodeWire::Initial => ConditionInput::Initial,
+        ConditionNodeWire::Always => ConditionInput::Always,
         ConditionNodeWire::Relation(raw) => {
             ConditionInput::Relation(mapped(&ids.relations, raw, "relation", at)?)
         }
@@ -1528,6 +1531,10 @@ fn rebuild_condition_input<'dae>(
             mapped(&ids.conditions, rhs, "condition", at)?,
         ),
         ConditionNodeWire::Or { lhs, rhs } => ConditionInput::Or(
+            mapped(&ids.conditions, lhs, "condition", at)?,
+            mapped(&ids.conditions, rhs, "condition", at)?,
+        ),
+        ConditionNodeWire::AnyRise { lhs, rhs } => ConditionInput::AnyRise(
             mapped(&ids.conditions, lhs, "condition", at)?,
             mapped(&ids.conditions, rhs, "condition", at)?,
         ),

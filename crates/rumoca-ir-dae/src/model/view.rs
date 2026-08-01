@@ -476,6 +476,7 @@ impl<'dae> DaeView<'dae> {
             .expect("final DAE cannot contain an undefined condition")
         {
             crate::conditions::ConditionNode::Initial => ConditionOperation::Initial,
+            crate::conditions::ConditionNode::Always => ConditionOperation::Always,
             crate::conditions::ConditionNode::Relation(raw) => {
                 ConditionOperation::Relation(RelationId::from_raw(*raw))
             }
@@ -494,6 +495,10 @@ impl<'dae> DaeView<'dae> {
             crate::conditions::ConditionNode::Or { lhs, rhs } => {
                 ConditionOperation::Or(ConditionId::from_raw(*lhs), ConditionId::from_raw(*rhs))
             }
+            crate::conditions::ConditionNode::AnyRise { lhs, rhs } => ConditionOperation::AnyRise(
+                ConditionId::from_raw(*lhs),
+                ConditionId::from_raw(*rhs),
+            ),
         };
         Some(ConditionView {
             operation,

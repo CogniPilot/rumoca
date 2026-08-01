@@ -134,7 +134,54 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(self.ops)
     }
 
+    /// The rising edge that activates `trigger`.
+    ///
+    /// MLS §8.3.5.1 gives a `when` the activation `edge(b)` over one `Boolean b`
+    /// holding the condition, and a *vector* `when` one `bi` per element with
+    /// the activation `edge(b1) or … or edge(bn)`. The two are different
+    /// functions of the same operands — `{u, not u}` rises at every switch of
+    /// `u` while `u or not u` never rises — so a vector activation is expanded
+    /// leaf by leaf here rather than read as a single buffered disjunction.
     fn trigger_edge(
+        &mut self,
+        trigger: dae::ConditionId<'dae>,
+        trigger_memory: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if matches!(
+            self.view
+                .condition(trigger)
+                .expect("checked condition identity resolves")
+                .operation(),
+            dae::ConditionOperation::AnyRise(_, _)
+        ) {
+            return self.any_element_edge(trigger, span);
+        }
+        self.buffered_edge(trigger, trigger_memory, span)
+    }
+
+    /// `edge(b1) or … or edge(bn)` over the leaves of an `AnyRise` tree.
+    fn any_element_edge(
+        &mut self,
+        condition: dae::ConditionId<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let operation = self
+            .view
+            .condition(condition)
+            .expect("checked condition identity resolves")
+            .operation();
+        let dae::ConditionOperation::AnyRise(lhs, rhs) = operation else {
+            // A leaf of the vector: its own buffer, its own edge.
+            let memory = crate::lower::events::condition_memory(self.layout, condition, span)?;
+            return self.buffered_edge(condition, memory, span);
+        };
+        let lhs = self.any_element_edge(lhs, span)?;
+        let rhs = self.any_element_edge(rhs, span)?;
+        self.binary(dae::BinaryOperator::Or, lhs, rhs, span)
+    }
+
+    fn buffered_edge(
         &mut self,
         trigger: dae::ConditionId<'dae>,
         trigger_memory: usize,
@@ -195,11 +242,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 let rhs = self.condition(rhs)?;
                 self.binary(dae::BinaryOperator::And, lhs, rhs, span)
             }
-            dae::ConditionOperation::Or(lhs, rhs) => {
+            // The *level* of a vector activation is the disjunction of its
+            // elements; only its edge is per-element (`trigger_edge`). Reading
+            // it as a level is what a guard does, and `edge(bi)` implies `bi`,
+            // so the guard never narrows the activation it accompanies.
+            dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
                 let lhs = self.condition(lhs)?;
                 let rhs = self.condition(rhs)?;
                 self.binary(dae::BinaryOperator::Or, lhs, rhs, span)
             }
+            // An unguarded algorithm section and a section-level `assert` are
+            // not `when`s; they carry no §8.5 buffer, so `edge` over this reads
+            // the level itself (see `lower_condition_memory`).
+            dae::ConditionOperation::Always => self.constant(1.0, span),
         }
     }
 }

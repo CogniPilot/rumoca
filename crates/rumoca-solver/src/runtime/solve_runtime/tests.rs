@@ -1353,6 +1353,7 @@ fn runtime_rejects_missing_algebraic_implicit_row() {
     );
 }
 
+mod condition_memory_seed;
 mod visibility;
 
 fn non_assignment_targeted_residual_row() -> Vec<solve::LinearOp> {

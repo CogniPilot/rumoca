@@ -213,6 +213,37 @@ fn lower_binary_condition<'dae>(
     Ok((input, relations, owner_clock))
 }
 
+/// MLS §8.3.5 vector activation: `when {c1, …, cn}`.
+///
+/// §8.3.5 activates the body *"at the instant when … any of the elements of the
+/// vector expression becomes true"*, and §8.3.5.1 realises that as one
+/// `Boolean bi` per element with the activation `edge(b1) or … or edge(bn)`.
+/// That is emphatically not the edge of the disjunction, and OpenModelica
+/// distinguishes the two: `when {true, time > 0.5}` fires at `t = 0.5`, while
+/// the scalar `when true or time > 0.5` never fires at all, because the
+/// disjunction is true from the start and so never rises.
+///
+/// Folding the elements into one `Or` — one buffer for the whole vector —
+/// therefore silently deletes every activation whose disjunction is a tautology.
+/// Three MSL blocks are *written* in exactly that shape:
+/// `Modelica.Blocks.Logical.TriggeredTrapezoid` and
+/// `Modelica.Blocks.Logical.LogicalDelay` (`when {u, not u}`), and
+/// `Modelica.Blocks.Math.ContinuousSignalExtrema`
+/// (`when {u <= x, u >= x, terminal()}`).
+///
+/// None of the three compiles in rumoca today, for reasons that have nothing to
+/// do with activation — `TriggeredTrapezoid` uses `initial()` inside an
+/// expression (ED018), `ContinuousSignalExtrema` uses `terminal()` (ED018) and
+/// `pre` of a continuous variable (ED019), and `LogicalDelay` fails its
+/// initialization projection. So this is not a claim about their measured
+/// behaviour: it is the shape they are written in, and it becomes live for them
+/// the moment those operators are supported. What *is* measured is the shape
+/// itself, against OpenModelica, on reductions of each block and on the
+/// `{u, not u}` and `{true, time > 0.5}` probes.
+///
+/// The nodes nest to the left, so `{c1, c2, c3}` is
+/// `AnyRise(AnyRise(c1, c2), c3)`; the Solve lowering flattens the tree back
+/// into one edge per leaf.
 fn lower_vector_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -255,11 +286,26 @@ fn lower_vector_condition<'dae>(
             sample_lattices,
             element,
         )?;
-        condition = combine_conditions(construction, condition, rhs, true, span)?;
+        condition = combine_element_activations(construction, condition, rhs, span)?;
         relations.extend(rhs_relations);
         owner_clock = merge_condition_clock(owner_clock, rhs_clock, true, generated)?;
     }
     Ok((condition, relations, owner_clock))
+}
+
+/// Join two vector elements under [`dae::ConditionInput::AnyRise`].
+fn combine_element_activations<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    lhs: dae::ConditionId<'dae>,
+    rhs: dae::ConditionId<'dae>,
+    span: Span,
+) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, span)?;
+    let combined = construction.conditions(|conditions| conditions.reserve(provenance))?;
+    construction.conditions(|conditions| {
+        conditions.define(combined, dae::ConditionInput::AnyRise(lhs, rhs), provenance)
+    })?;
+    Ok(combined)
 }
 
 fn lower_change_expression<'dae>(

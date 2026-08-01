@@ -48,6 +48,7 @@ pub(super) fn define_conditions<'target>(
             .expect("finalized condition identity resolves");
         let input = match condition.operation() {
             dae::ConditionOperation::Initial => dae::ConditionInput::Initial,
+            dae::ConditionOperation::Always => dae::ConditionInput::Always,
             dae::ConditionOperation::Relation(id) => {
                 dae::ConditionInput::Relation(relations[id.index() as usize])
             }
@@ -62,6 +63,10 @@ pub(super) fn define_conditions<'target>(
                 conditions[rhs.index() as usize],
             ),
             dae::ConditionOperation::Or(lhs, rhs) => dae::ConditionInput::Or(
+                conditions[lhs.index() as usize],
+                conditions[rhs.index() as usize],
+            ),
+            dae::ConditionOperation::AnyRise(lhs, rhs) => dae::ConditionInput::AnyRise(
                 conditions[lhs.index() as usize],
                 conditions[rhs.index() as usize],
             ),

@@ -968,6 +968,17 @@ fn lower_condition_memory<'dae>(
         if condition_clock_owner(view, condition).is_some() {
             continue;
         }
+        // An `Always` activation is not a `when`: MLS §8.5 gives an internal
+        // buffer to an *event generating expression*, and a section that runs
+        // because the section runs generates no event. With no buffer its slot
+        // stays zero and `edge(c) = c and not pre(c)` reads the level, which is
+        // what an unguarded algorithm section and a section-level `assert`
+        // mean. The test is the node, not the shape of an expression: a source
+        // `when true then` is a real `when` and keeps its buffer, so §8.3.5.1
+        // starts that buffer true and it never has an edge to run on.
+        if matches!(condition_view.operation(), dae::ConditionOperation::Always) {
+            continue;
+        }
         let span = condition_view.provenance().span();
         let memory = condition_memory(layout, condition, span)?;
         let target = solve::scalar_slot_p(memory);
@@ -1030,11 +1041,15 @@ fn condition_operand_clock<'dae>(
                 }
             }
             dae::ConditionOperation::Not(operand) => pending.push(operand),
-            dae::ConditionOperation::And(lhs, rhs) | dae::ConditionOperation::Or(lhs, rhs) => {
+            dae::ConditionOperation::And(lhs, rhs)
+            | dae::ConditionOperation::Or(lhs, rhs)
+            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
                 pending.push(lhs);
                 pending.push(rhs);
             }
-            dae::ConditionOperation::Initial | dae::ConditionOperation::Clock(_) => {}
+            dae::ConditionOperation::Initial
+            | dae::ConditionOperation::Always
+            | dae::ConditionOperation::Clock(_) => {}
         }
     }
     if conflict {
@@ -1061,12 +1076,15 @@ fn condition_clock_owner<'dae>(
             condition_clock_owner(view, rhs),
             false,
         ),
-        dae::ConditionOperation::Or(lhs, rhs) => merge_condition_clocks(
-            condition_clock_owner(view, lhs),
-            condition_clock_owner(view, rhs),
-            true,
-        ),
-        dae::ConditionOperation::Relation(_)
+        dae::ConditionOperation::Or(lhs, rhs) | dae::ConditionOperation::AnyRise(lhs, rhs) => {
+            merge_condition_clocks(
+                condition_clock_owner(view, lhs),
+                condition_clock_owner(view, rhs),
+                true,
+            )
+        }
+        dae::ConditionOperation::Always
+        | dae::ConditionOperation::Relation(_)
         | dae::ConditionOperation::Discrete(_)
         | dae::ConditionOperation::Not(_) => None,
     }
@@ -1084,7 +1102,7 @@ fn merge_condition_clocks<'dae>(
     }
 }
 
-fn condition_memory(
+pub(in crate::lower) fn condition_memory(
     layout: &LoweredLayout<'_>,
     condition: dae::ConditionId<'_>,
     span: Span,
@@ -1275,9 +1293,11 @@ fn condition_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ConditionId
                     return true;
                 }
             }
-            dae::ConditionOperation::Clock(_) => {}
+            dae::ConditionOperation::Clock(_) | dae::ConditionOperation::Always => {}
             dae::ConditionOperation::Not(operand) => pending.push(operand),
-            dae::ConditionOperation::And(lhs, rhs) | dae::ConditionOperation::Or(lhs, rhs) => {
+            dae::ConditionOperation::And(lhs, rhs)
+            | dae::ConditionOperation::Or(lhs, rhs)
+            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
                 pending.push(rhs);
                 pending.push(lhs);
             }

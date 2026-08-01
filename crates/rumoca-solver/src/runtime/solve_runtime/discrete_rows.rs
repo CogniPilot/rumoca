@@ -20,7 +20,115 @@ struct DiscreteRowEvalScope {
     initialization_equations_only: bool,
 }
 
+/// One activation buffer seeded at the initialization instant.
+#[derive(Clone, Copy)]
+pub struct SeededConditionMemory {
+    /// The parameter slot the buffer occupies.
+    pub index: usize,
+    /// The condition's value at the initialization instant.
+    pub value: f64,
+}
+
 impl SolveRuntime {
+    /// Seed every activation buffer with the condition's value at the
+    /// initialization instant, so no already-true activation has a rising edge
+    /// at the initial event.
+    ///
+    /// MLS §8.3.5.1 gives the buffer a *value*, not a default: `when x > 2 then
+    /// v1 = expr1; end when` is conceptually
+    ///
+    /// ```text
+    /// Boolean b(start = x.start > 2);
+    /// b  = x > 2;
+    /// v1 = if edge(b) then expr1 else pre(v1);
+    /// ```
+    ///
+    /// — the buffer starts at the condition evaluated on the initial values, and
+    /// §8.6 then requires `v = pre(v)` before the start of the integration, so
+    /// `edge(b) = b and not pre(b)` is false for a condition that is already true
+    /// there. Leaving the buffer at `false` instead manufactures a rising edge at
+    /// the initial event for every such condition, which is what made
+    /// `when time < 0.5 then y = 1` and `when x < 2 then y = 1` run their bodies
+    /// at `t = 0` where OpenModelica leaves `y = 0`. §8.6 permits exactly one
+    /// `when` to run there — *"The equations of a when-clause are active during
+    /// initialization, if and only if they are explicitly enabled with
+    /// `initial()`"* — and that one keeps its edge because the seed is taken with
+    /// the `initial()` flag cleared: `initial()` is false everywhere except the
+    /// initial event, so its buffer seeds to false and its edge is the initial
+    /// event itself.
+    ///
+    /// The seed is also what stops a *falling* condition from activating at a
+    /// later instant. `when not (time > 0.5)` is true from the start; with an
+    /// unseeded buffer the first event it saw — the instant `t = 0.5`, where the
+    /// §8.5 buffered relation `time > 0.5` still reads false — looked like a
+    /// rising edge and ran the body. Seeded, there is no edge to find.
+    ///
+    /// Returns the slots it wrote, so a caller holding a separate event-entry
+    /// parameter snapshot can carry the same seed into it.
+    pub fn seed_condition_memory_for_initialization(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+    ) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
+        if self
+            .model
+            .problem
+            .events
+            .condition_memory_parameter_indices
+            .is_empty()
+            || self.model.problem.discrete.rhs.is_empty()
+        {
+            return Ok(Vec::new());
+        }
+        self.validate_discrete_event_rows()?;
+        // MLS §8.6: "Before the start of the integration, it must be guaranteed
+        // that for all variables `v`, `v = pre(v)`." A condition that reads
+        // `pre(s)` must therefore be seeded against `s` itself, not against
+        // whatever the `pre` slot happens to hold — the lowered `pre` slots are
+        // committed from the settled values only *after* the initial event
+        // (`commit_pre_params_after_event`), so reading them raw here gives a
+        // buffer seeded against `0.0` and `when pre(s) > 2` with `s.start = 5`
+        // finds a rising edge that §8.6 says is not there.
+        let mut seed_p = crate::event_eval_params_for_pre_mode(&self.model, p, y, p, tol);
+        // `initial()` is true only at the initial event, so the buffered value
+        // it enters that event with is the value it has everywhere else.
+        self.set_initial_event_flag(&mut seed_p, false);
+        let mut seeded = Vec::new();
+        let mut writes = Vec::new();
+        for row_idx in 0..self.model.problem.discrete.rhs.len() {
+            if self.model.problem.discrete.row_roles[row_idx]
+                != solve::DiscreteRowRole::ConditionMemory
+            {
+                continue;
+            }
+            // A clocked buffer is only defined on its own ticks (MLS §16.5).
+            if !discrete_row_active_at(&self.model, row_idx, t)? {
+                continue;
+            }
+            let value = self.discrete_rhs.eval_row_unchecked_with_context(
+                row_idx,
+                y,
+                &seed_p,
+                t,
+                self.row_eval_context(),
+            )?;
+            let target = self.model.problem.discrete.update_targets[row_idx];
+            let solve::ScalarSlot::P { index, .. } = target else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "condition-memory row {row_idx} does not target a parameter slot"
+                )));
+            };
+            seeded.push(SeededConditionMemory { index, value });
+            writes.push((target, value));
+        }
+        for (target, value) in writes {
+            solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+        }
+        Ok(seeded)
+    }
+
     pub(super) fn settle_discrete_rows_for_pre_snapshot<P>(
         &self,
         snapshot: &DiscretePreSnapshot<'_>,

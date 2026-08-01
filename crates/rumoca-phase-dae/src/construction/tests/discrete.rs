@@ -3,9 +3,34 @@ use rumoca_core::Reference;
 use super::super::*;
 use super::support::*;
 
+/// `time > <threshold>`, with both spans taken from the caller's source text.
+fn chain_time_relation(source: &TestSource, text: &str, threshold: f64) -> Expression {
+    Expression::Binary {
+        op: OpBinary::Gt,
+        lhs: Box::new(Expression::VarRef {
+            name: Reference::new("time"),
+            subscripts: Vec::new(),
+            span: source.span("time", 0),
+        }),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Real(threshold),
+            span: source.span(text, 0),
+        }),
+        span: source.span(text, 0),
+    }
+}
+
+/// `when time > 0.5 then m = true; elsewhen time > 0.5 then m = false;`
+///
+/// Both branches are *relations*, and deliberately the same one. A literal
+/// `true` would not do: MLS §8.3.5.1 starts its activation buffer at the
+/// condition's own value, so it has no rising edge at all and therefore cannot
+/// exhibit the simultaneous-edge case this fixture exists to pin. Two spellings
+/// of one threshold do become true at the same instant, which is exactly when
+/// §8.3.5's branch priority has anything to resolve.
 fn source_priority_when_model(source: &TestSource) -> flat::Model {
-    let first_condition_span = source.span("true", 0);
-    let second_condition_span = source.span("true", 2);
+    let first_condition_span = source.span("0.5", 0);
+    let second_condition_span = source.span("0.5", 1);
     let first_assignment_span = source.span("m = true", 0);
     let second_assignment_span = source.span("m = false", 0);
     let mut model = test_model();
@@ -19,24 +44,30 @@ fn source_priority_when_model(source: &TestSource) -> flat::Model {
         true,
     );
     let mut first = flat::WhenBranch::new(
-        Expression::Literal {
-            value: Literal::Boolean(true),
-            span: first_condition_span,
-        },
+        chain_time_relation(source, "0.5", 0.5),
         first_condition_span,
     );
     first.add_equation(flat::WhenEquation::assign(
         VarName::new("m"),
         Expression::Literal {
             value: Literal::Boolean(true),
-            span: source.span("true", 1),
+            span: source.span("true", 0),
         },
         first_assignment_span,
         "first branch",
     ));
     let mut second = flat::WhenBranch::new(
-        Expression::Literal {
-            value: Literal::Boolean(true),
+        Expression::Binary {
+            op: OpBinary::Gt,
+            lhs: Box::new(Expression::VarRef {
+                name: Reference::new("time"),
+                subscripts: Vec::new(),
+                span: source.span("time", 1),
+            }),
+            rhs: Box::new(Expression::Literal {
+                value: Literal::Real(0.5),
+                span: second_condition_span,
+            }),
             span: second_condition_span,
         },
         second_condition_span,
@@ -53,7 +84,7 @@ fn source_priority_when_model(source: &TestSource) -> flat::Model {
     let mut chain = flat::WhenChain::new(
         first,
         source.span(
-            "when true then m = true; elsewhen true then m = false; end when",
+            "when time > 0.5 then m = true; elsewhen time > 0.5 then m = false; end when",
             0,
         ),
     );
@@ -191,13 +222,39 @@ fn atomic_when_dependency_model(source: &TestSource, cyclic: bool) -> flat::Mode
     model
 }
 
+/// Every branch of a `when`/`elsewhen` chain is activated by its own condition
+/// and nothing else, and the branches reach the owner in source order.
+///
+/// MLS §8.3.5 activates the equations of a when-equation *"only at the instant
+/// when the scalar expression or any of the elements of the vector expression
+/// becomes true"*, and §8.3.5.1 writes the chain as one if-expression per
+/// assigned variable whose arms are `edge(b1)`, `edge(b2)`, … over one `Boolean
+/// bi` per branch condition. An `elsewhen` guard is therefore its own condition,
+/// unqualified: nothing about the earlier branches belongs in it.
+///
+/// Source priority is the *order* of those arms, which is why this test pins the
+/// branch order and the exact assignment each branch carries. §8.3.5 scopes the
+/// priority to the same thing: the chain *"can be used to resolve assignment
+/// conflicts since the first of the when/elsewhen parts are given higher
+/// priority than later ones"*, and a conflict is two arms selected at one
+/// instant — resolved by taking the earlier arm.
+///
+/// The guard used to be `cond_i and not (cond_1 or …)`. That subtracts the
+/// earlier branch's *level*, not its edge, so a first condition that stays true
+/// suppressed every later branch permanently: `when time > 0.3 then y = 1;
+/// elsewhen time > 0.7 then y = 2;` held `y = 1` for the whole run where
+/// OpenModelica reaches `y = 2` at `t = 0.7`. Both branches here are the same
+/// relation `time > 0.5` — the case where the two edges really are simultaneous
+/// — so branch order is the only thing that can resolve it, and the order is
+/// what is asserted.
 #[test]
-fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
+fn when_chain_activates_each_branch_by_its_own_condition_in_source_order() {
     let source = TestSource::new(
         "model M discrete Boolean m; equation \
-         when true then m = true; elsewhen true then m = false; end when; end M;",
+         when time > 0.5 then m = true; elsewhen time > 0.5 then m = false; end when; end M;",
     );
-    let second_condition_span = source.span("true", 2);
+    let first_condition_span = source.span("0.5", 0);
+    let second_condition_span = source.span("0.5", 1);
     let model = source_priority_when_model(&source);
     let dae = construct(&model, source.map).unwrap();
 
@@ -211,11 +268,13 @@ fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
         let second = owner.branches().get(1).unwrap();
         assert_eq!(
             view.source_text(first.values().get(0).unwrap().1),
-            Some("m = true")
+            Some("m = true"),
+            "the higher-priority arm must stay first"
         );
         assert_eq!(
             view.source_text(second.values().get(0).unwrap().1),
-            Some("m = false")
+            Some("m = false"),
+            "and the elsewhen arm must stay second"
         );
         let dae::DiscreteBranchActivation::When {
             trigger: first_trigger,
@@ -231,29 +290,33 @@ fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
         else {
             panic!("source elsewhen branch must remain condition-owned");
         };
-        assert_eq!(first_guard, first_trigger);
-        assert_ne!(second_guard, second_trigger);
+        assert_eq!(
+            first_guard, first_trigger,
+            "the first branch is activated by its own edge"
+        );
+        assert_eq!(
+            second_guard, second_trigger,
+            "and so is the elsewhen branch: MLS §8.3.5.1 gives it `edge(b2)`, not \
+             `edge(b2) and not b1`"
+        );
+        assert_ne!(
+            first_trigger, second_trigger,
+            "each branch condition is its own `Boolean bi`, even when the two are \
+             written with the same text"
+        );
 
-        let guard = view.condition(second_guard).unwrap();
-        assert_eq!(guard.provenance().span(), second_condition_span);
+        let first_condition = view.condition(first_trigger).unwrap();
+        assert_eq!(first_condition.provenance().span(), first_condition_span);
         assert_eq!(
-            guard.provenance().origin(),
-            dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::ConditionLowering)
+            first_condition.provenance().origin(),
+            dae::DaeProvenanceOrigin::Source
         );
-        let dae::ConditionOperation::And(branch_trigger, no_previous) = guard.operation() else {
-            panic!("later branch guard must combine its trigger with source priority");
-        };
-        assert_eq!(branch_trigger, second_trigger);
-        let negated = view.condition(no_previous).unwrap();
-        assert_eq!(negated.provenance().span(), second_condition_span);
+        let second_condition = view.condition(second_trigger).unwrap();
+        assert_eq!(second_condition.provenance().span(), second_condition_span);
         assert_eq!(
-            negated.provenance().origin(),
-            dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::ConditionLowering)
+            second_condition.provenance().origin(),
+            dae::DaeProvenanceOrigin::Source
         );
-        assert!(matches!(
-            negated.operation(),
-            dae::ConditionOperation::Not(previous) if previous == first_trigger
-        ));
     });
 }
 

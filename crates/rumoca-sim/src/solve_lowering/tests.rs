@@ -402,8 +402,28 @@ fn checked_event_trigger_does_not_reapply_at_a_branch_guard_root() {
     );
 }
 
+/// An `elsewhen` branch runs at its own rising edge even while the earlier
+/// branch's condition is still true.
+///
+/// MLS §8.3.5 activates the equations of a when-equation *"only at the instant
+/// when the scalar expression or any of the elements of the vector expression
+/// becomes true"*, and §8.3.5.1 writes the chain as one if-expression per
+/// assigned variable over `edge(b1)`, `edge(b2)`, …. `x >= 0.25` stays true past
+/// `t = 0.75`, but it stopped *becoming* true at `t = 0.25`, so it holds no
+/// claim on the later instant.
+///
+/// `omc` (dassl, `stopTime = 1.0`, `numberOfIntervals = 20`) runs the second
+/// branch: `selected` is `0` through `t = 0.25`, `1` from the `0.25` right-limit
+/// row, and `2` from the `0.75` right-limit row, alongside the independent
+/// `secondSeen` witness which also steps to `1` there. rumoca used to hold
+/// `selected = 1` for the whole run, because the branch guard subtracted the
+/// earlier branch's *level* rather than its edge.
+///
+/// The `secondSeen` witness is kept because it is what separates the two ways
+/// the second branch can fail to run: a condition that never rose at all, and a
+/// condition that rose but was outranked. Only the second is the branch guard.
 #[test]
-fn checked_when_elsewhen_priority_blocks_later_rise_while_first_is_true() {
+fn checked_when_elsewhen_runs_its_later_branch_while_the_first_is_still_true() {
     let dae = compile(
         concat!(
             "model PersistentFirstPriority\n",
@@ -463,8 +483,9 @@ fn checked_when_elsewhen_priority_blocks_later_rise_while_first_is_true() {
     );
     assert_eq!(
         result.data[selected].last().copied(),
-        Some(1.0),
-        "a later rising condition must not outrank an earlier condition that remains true"
+        Some(2.0),
+        "the elsewhen branch runs at its own rising edge, as omc does: an earlier \
+         condition that merely remains true has no edge left to outrank it with"
     );
 }
 
