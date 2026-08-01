@@ -795,3 +795,67 @@ fn only_undetermined_failures_carry_a_runtime_dependent_reason() {
         );
     }
 }
+
+/// A declared `fixed = false` parameter is reported as deferred, not unknown.
+///
+/// MLS §4.4 lets a declaration defer its value to initialization, so the name
+/// resolves and only the number is missing. Reporting it through
+/// `UnknownVariable` describes a defect that is not there; a caller reading the
+/// message goes looking for a scope or flat-name bug instead of the construct.
+///
+/// The registration is also *scoped* like every other value lookup, so a
+/// component-qualified deferred parameter answers for its own occurrence — the
+/// MSL shape is `meanVoltage.t0`, never a bare `t0`.
+#[test]
+fn a_deferred_parameter_is_reported_as_deferred_rather_than_unknown() {
+    let span = test_span();
+    let mut ctx = EvalContext::new();
+    ctx.add_deferred_parameter("meanVoltage.t0", DeferredParameterSource::StartInstant);
+    ctx.add_deferred_parameter("later.t0", DeferredParameterSource::InitializationSystem);
+
+    let error = eval_expr_with_span(
+        &Expression::VarRef {
+            name: rumoca_core::Reference::new("meanVoltage.t0"),
+            subscripts: Vec::new(),
+            span,
+        },
+        &ctx,
+        span,
+    )
+    .expect_err("a deferred parameter has no translation-time value");
+    assert!(
+        matches!(
+            error,
+            EvalError::InitializationDeferred {
+                settled_by: DeferredParameterSource::StartInstant,
+                ..
+            }
+        ),
+        "expected a start-instant deferral, got {error}"
+    );
+    // MLS §4.4 names initialization as a legitimate origin, so the fold must
+    // treat this as "no value yet" rather than as a wrong model.
+    assert_eq!(
+        error.runtime_dependent_reason(),
+        Some(RuntimeDependentReason::UnknownValue)
+    );
+    assert_eq!(
+        ctx.deferred_parameter("later.t0"),
+        Some(DeferredParameterSource::InitializationSystem)
+    );
+    // A name that was never declared stays unknown: the new variant must not
+    // swallow the resolution failure it was introduced to be distinguished from.
+    assert!(matches!(
+        eval_expr_with_span(
+            &Expression::VarRef {
+                name: rumoca_core::Reference::new("absent"),
+                subscripts: Vec::new(),
+                span,
+            },
+            &ctx,
+            span,
+        )
+        .expect_err("an undeclared name is still unknown"),
+        EvalError::UnknownVariable { .. }
+    ));
+}

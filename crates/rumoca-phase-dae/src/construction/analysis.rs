@@ -793,7 +793,148 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
             break;
         }
     }
+    register_deferred_parameters(flat, &mut context);
     Ok(context)
+}
+
+/// Name every `fixed = false` parameter the initialization system settles, and
+/// what settles it.
+///
+/// MLS §4.4 lets a parameter declaration defer its value and MLS §8.6 gives the
+/// initial section the job of establishing it. Such a parameter is absent from
+/// the fold above for a *reason*, not by accident: it has no binding to fold.
+/// A later consumer that asks the fold for its value — a `sample(start,
+/// interval)` phase, a `delay` bound, a `Clock` argument — otherwise learns
+/// only that the name has no value and reports it as unknown, which reads as a
+/// name-resolution defect and hides the construct that was actually hit.
+///
+/// The distinction recorded here is the one that matters to those consumers:
+/// a determining expression that reads `time` is settled by the *simulation
+/// start instant*, because MLS §8.6 evaluates the initial section at the
+/// initialization instant. That instant is chosen when the model is simulated,
+/// not when it is translated, so no translation-time value exists for it at
+/// all — as opposed to a value that merely waits for the initialization system
+/// to run.
+///
+/// The two tiers are ordered, not symmetric: [`DeferredParameterSource::
+/// StartInstant`] is a *proof* about the shape it recognizes, while
+/// [`DeferredParameterSource::InitializationSystem`] is the conservative floor
+/// every other deferred parameter falls to and asserts nothing about the start
+/// instant either way. See [`deferred_parameter_source`] for exactly what is
+/// proven and which start-instant-dependent shapes land in the weaker tier.
+///
+/// # Known remaining
+///
+/// A parameter that *has* a binding reading a deferred parameter is not
+/// registered here — the guard below skips binding-holders, and the fold at
+/// [`constant_context`] discards its failure through the
+/// `runtime_dependent_reason` arm — so such a parameter is still reported as an
+/// unknown name. This is real MSL, not a hypothetical:
+/// `Modelica.Blocks.Math.ContinuousMean` (`Blocks/Math.mo:2349-2352`) declares
+/// `parameter Real t_0(fixed = false)` with `initial equation t_0 = time` and
+/// then `parameter Real actualStartTime = max(t_0, startTime)`, so
+/// `actualStartTime` is start-instant-dependent through its binding. Closing it
+/// needs one of: propagating the deferred source through the binding fold, or
+/// registering a failed-fold binding over deferred free names as deferred
+/// itself. Both belong with the start-relative-schedule work that would let
+/// these sample starts construct at all, rather than with this diagnostic.
+fn register_deferred_parameters(flat: &flat::Model, context: &mut EvalContext) {
+    for (name, variable) in &flat.variables {
+        if !matches!(variable.variability, Variability::Parameter(_))
+            || variable.fixed != Some(false)
+            || variable.binding.is_some()
+            || context.instance_value(variable.instance_id).is_some()
+        {
+            continue;
+        }
+        context.add_deferred_parameter(name.to_string(), deferred_parameter_source(flat, name));
+    }
+}
+
+/// What settles `target`: the start instant, or the initialization system.
+///
+/// This proves exactly one shape and claims nothing beyond it. `StartInstant`
+/// is returned when some initial equation's residual is a *top-level*
+/// subtraction with `target` itself as one direct operand, and the other
+/// operand *syntactically* reads `time`. That is the shape flat lowering gives
+/// `t0 = time`, and it is the shape both MSL sample-start sites are written in.
+///
+/// Everything else falls to `InitializationSystem`, which is therefore a floor
+/// — "this parameter has no translation-time value" — and **not** a claim that
+/// the value is independent of the start instant. Reachable shapes that do
+/// depend on the start instant and still land in the weaker tier:
+///
+/// - indirectly, through another deferred parameter (`a = time; t0 = a`);
+/// - through an initial *algorithm* target (`t0 := time`), which is owned by
+///   [`initial_algorithms`] and never appears in `flat.initial_equations`;
+/// - through a residual that is not a top-level subtraction on `target`
+///   (`t0*t0 = time + 1.0`).
+///
+/// Each is refused either way, and the weaker label is true of all of them, so
+/// the floor costs precision in the message and never correctness. Widening the
+/// rule is deliberately left to the start-relative-schedule work, where a
+/// start-instant dependency has to be *represented* rather than only named.
+fn deferred_parameter_source(
+    flat: &flat::Model,
+    target: &VarName,
+) -> rumoca_eval_flat::constant::DeferredParameterSource {
+    use rumoca_eval_flat::constant::DeferredParameterSource;
+    let determined_by_time = flat
+        .initial_equations
+        .iter()
+        .filter_map(|equation| determining_value(&equation.residual, target))
+        .any(reads_time);
+    if determined_by_time {
+        DeferredParameterSource::StartInstant
+    } else {
+        DeferredParameterSource::InitializationSystem
+    }
+}
+
+/// The side of a `target - value` residual that is not `target`.
+///
+/// Flat lowering writes `t0 = time` as the residual `t0 - time`, so this
+/// recognizes a residual that is a top-level subtraction with `target` as one
+/// *direct* operand, and returns the other operand. It is a syntactic match on
+/// that one shape, not a solve: a residual that merely constrains `target`
+/// (`t0*t0 - (time + 1.0)`) yields `None`, and its caller then labels the
+/// parameter by the weaker tier rather than inspecting it further.
+fn determining_value<'a>(residual: &'a Expression, target: &VarName) -> Option<&'a Expression> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = residual
+    else {
+        return None;
+    };
+    if names_variable(lhs, target) {
+        return Some(rhs);
+    }
+    if names_variable(rhs, target) {
+        return Some(lhs);
+    }
+    None
+}
+
+fn names_variable(expression: &Expression, target: &VarName) -> bool {
+    matches!(
+        expression,
+        Expression::VarRef { name, subscripts, .. }
+            if subscripts.is_empty() && name.var_name() == target
+    )
+}
+
+/// True when the expression reads `time`, whose value MLS §8.6 fixes at the
+/// initialization instant.
+fn reads_time(expression: &Expression) -> bool {
+    if let Expression::VarRef { name, .. } = expression
+        && name.as_str() == "time"
+    {
+        return true;
+    }
+    expression_children(expression).into_iter().any(reads_time)
 }
 
 fn validate_known_function_calls(

@@ -23,6 +23,37 @@ pub enum RuntimeDependentReason {
     UnimplementedForm,
 }
 
+/// What establishes a `fixed = false` parameter's value, when the
+/// translation-time constant fold cannot.
+///
+/// MLS §8.6 lets an initial section determine a parameter whose declaration
+/// defers its value. Such a parameter is still a *parameter* — MLS §3.7.5
+/// admits it wherever a parameter expression is required — but its number
+/// exists only once the initialization system has run. Naming which of the two
+/// establishes it is what lets a caller report the construct it actually hit
+/// instead of reporting the name as unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredParameterSource {
+    /// The determining expression reads `time`, and MLS §8.6 evaluates the
+    /// initial section at the initialization instant — so the value is the
+    /// simulation start instant, which translation does not choose.
+    StartInstant,
+    /// The initialization system determines the value from coordinates that
+    /// have no translation-time value of their own.
+    InitializationSystem,
+}
+
+impl std::fmt::Display for DeferredParameterSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StartInstant => {
+                f.write_str("the simulation start instant, which the compiled model does not fix")
+            }
+            Self::InitializationSystem => f.write_str("the initialization system"),
+        }
+    }
+}
+
 /// Errors that can occur during constant expression evaluation.
 #[derive(Debug, Error)]
 pub enum EvalError {
@@ -45,6 +76,22 @@ pub enum EvalError {
     /// Unknown variable or constant
     #[error("unknown variable: {name}")]
     UnknownVariable { name: String, span: Span },
+
+    /// A `fixed = false` parameter the initialization system determines.
+    ///
+    /// The name is not unknown — it is a declared parameter whose value MLS
+    /// §8.6 establishes during initialization rather than at translation time.
+    /// Reporting it as unknown reads as a name-resolution defect and sends a
+    /// reader looking for one; this says which construct the fold actually hit.
+    #[error(
+        "`{name}` is a `fixed = false` parameter determined by {settled_by}, so it has no \
+         translation-time value"
+    )]
+    InitializationDeferred {
+        name: String,
+        settled_by: DeferredParameterSource,
+        span: Span,
+    },
 
     /// Circular dependency detected during evaluation
     #[error("circular dependency detected: {path}")]
@@ -101,9 +148,12 @@ impl EvalError {
     /// not a value that initialization will supply.
     pub fn runtime_dependent_reason(&self) -> Option<RuntimeDependentReason> {
         match self {
-            Self::UnknownVariable { .. } | Self::UnknownFunction { .. } => {
-                Some(RuntimeDependentReason::UnknownValue)
-            }
+            Self::UnknownVariable { .. }
+            | Self::UnknownFunction { .. }
+            // MLS §4.4 names initialization as a legitimate place for a
+            // parameter to acquire its value, so a deferred parameter leaves
+            // the fold undetermined rather than proving the model wrong.
+            | Self::InitializationDeferred { .. } => Some(RuntimeDependentReason::UnknownValue),
             Self::NotConstant { .. } => Some(RuntimeDependentReason::NotConstant),
             // `FunctionError` is the single channel the user-function
             // interpreter reports both unimplemented body forms and rejected
@@ -132,6 +182,7 @@ impl EvalError {
             | Self::DivisionByZero { span }
             | Self::UnknownFunction { span, .. }
             | Self::UnknownVariable { span, .. }
+            | Self::InitializationDeferred { span, .. }
             | Self::CircularDependency { span, .. }
             | Self::UnsupportedExpression { span, .. }
             | Self::IndexOutOfBounds { span, .. }
@@ -161,6 +212,19 @@ impl EvalError {
     pub fn unknown_variable(name: impl Into<String>, span: Span) -> Self {
         Self::UnknownVariable {
             name: name.into(),
+            span,
+        }
+    }
+
+    /// Create an initialization-deferred parameter error.
+    pub fn initialization_deferred(
+        name: impl Into<String>,
+        settled_by: DeferredParameterSource,
+        span: Span,
+    ) -> Self {
+        Self::InitializationDeferred {
+            name: name.into(),
+            settled_by,
             span,
         }
     }
