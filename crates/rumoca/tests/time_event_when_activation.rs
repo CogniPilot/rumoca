@@ -650,6 +650,78 @@ fn an_activation_at_the_start_instant_fires_exactly_once() {
     );
 }
 
+const STEP_AT_START: &str = "model StepAtStart
+  parameter Real startTime = 0;
+  Real x(start = 0, fixed = true);
+  Real y;
+equation
+  der(x) = 1;
+  y = if time < startTime then 0 else 1;
+end StepAtStart;
+";
+
+const STEP_LATER: &str = "model StepLater
+  parameter Real startTime = 0.5;
+  Real x(start = 0, fixed = true);
+  Real y;
+equation
+  der(x) = 1;
+  y = if time < startTime then 0 else 1;
+end StepLater;
+";
+
+/// The start-instant rule holds for a relation written in an equation too.
+///
+/// `an_activation_at_the_start_instant_fires_exactly_once` pins the rule for a
+/// `when` activation; this pins it for the other collector, the one that walks
+/// equation residuals. The two share `time_event_instant`'s bound but reach it
+/// by different paths, and the shape that reaches it through the residual walk
+/// is the one MSL writes everywhere: `Modelica.Blocks.Sources.Step` is
+/// `y = offset + (if time < startTime then 0 else height)`, and its default
+/// `startTime = 0` puts the crossing exactly on the start.
+///
+/// Both directions of the bound are asserted because the bound *is* the
+/// behaviour. A threshold at the start is not an instant at which anything
+/// changes — §8.5 defines an event as the instant an event generating expression
+/// *changes* value, and initialization has already fixed this one there — so it
+/// stays an ordinary crossing and owns a root. A threshold after the start is
+/// the §8.5 special relation `time < discrete expression` and is scheduled
+/// exactly, owning no root. Scheduling the start instant instead was live for
+/// the whole of `Modelica.Magnetic.FluxTubes.Examples.BasicExamples`
+/// `SaturatedInductor`, which reaches this relation through its voltage source.
+///
+/// omc: `y = 1` from the `t = 0` row on for `StepAtStart` — the source is past
+/// its start time for the entire run — and `y = 0` through `t = 0.45` then `1`
+/// from the `t = 0.5` right-limit row on for `StepLater`.
+#[test]
+fn an_equation_relation_at_the_start_instant_keeps_its_crossing() {
+    let (compiled, sim) = simulate("StepAtStart", STEP_AT_START);
+    assert_eq!(
+        event_owners(&compiled),
+        (1, 0),
+        "a threshold at the start is a crossing, not a scheduled stop"
+    );
+    assert_eq!(
+        value_at(&sim, "y", 0.0),
+        1.0,
+        "`time < 0` is false from the start, so the else branch holds"
+    );
+    assert_eq!(value_at(&sim, "y", 1.0), 1.0, "and holds for the whole run");
+
+    let (compiled, sim) = simulate("StepLater", STEP_LATER);
+    assert_eq!(
+        event_owners(&compiled),
+        (0, 1),
+        "a threshold after the start is scheduled exactly, owning no root"
+    );
+    assert_eq!(value_at(&sim, "y", 0.45), 0.0);
+    assert_eq!(
+        value_at(&sim, "y", AFTER_INSTANT),
+        1.0,
+        "the scheduled instant must switch the branch, as omc does"
+    );
+}
+
 const BDF_SCHEDULED: &str = "model BdfScheduled
   Real x(start = 0, fixed = true);
   discrete Real y(start = 0, fixed = true);
