@@ -757,6 +757,54 @@ end P;
 }
 
 #[test]
+fn conditional_component_folds_forwarded_enum_modifiers() {
+    let source = r#"
+package P
+  type Frame = enumeration(world, frame_a, frame_b, frame_resolve);
+
+  model Transform
+    parameter Frame frame_r_in = Frame.frame_a;
+    parameter Frame frame_r_out = frame_r_in;
+    Real resolveConnector if
+      frame_r_in == Frame.frame_resolve or frame_r_out == Frame.frame_resolve;
+  end Transform;
+
+  model Relative
+    parameter Frame resolveInFrame = Frame.frame_a;
+    parameter Frame resolveAfter = resolveInFrame;
+    Transform transform(
+      frame_r_in = resolveInFrame,
+      frame_r_out = resolveAfter);
+  end Relative;
+
+  model Root
+    Relative relative(resolveInFrame = Frame.frame_a);
+  end Root;
+end P;
+"#;
+    let file_name = "forwarded_enum_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
+        .expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source should resolve");
+
+    let instanced = instantiate(resolved, "P.Root")
+        .expect("forwarded enum modifiers should decide the component");
+
+    assert!(
+        !instanced.overlay.components.iter().any(|(_, instance)| {
+            instance
+                .qualified_name
+                .to_flat_string()
+                .ends_with("resolveConnector")
+        }),
+        "the enum aliases all resolve to frame_a, so the conditional component is absent"
+    );
+}
+
+#[test]
 fn test_equations_to_instance_without_connections_filters_connect_equations()
 -> InstantiateResult<()> {
     let equations = vec![
