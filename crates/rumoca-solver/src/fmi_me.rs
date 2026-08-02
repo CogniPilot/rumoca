@@ -7,12 +7,13 @@
 //! through [`ModelExchangeKernel`]. They MUST NOT inspect Solve rows,
 //! layouts, opcodes, events, or private runtime objects.
 //!
-//! # Operation map
+//! # Transitional operation map
 //!
-//! Every operation on [`ModelExchangeKernel`] mirrors one FMI 3.0 ME entry
-//! point. Where rumoca needs something FMI 3.0 does not name, the doc comment
-//! says so explicitly and the report calls it an extension; there is no silent
-//! second interface.
+//! The standard operations below map to FMI 3.0 ME entry points. The trait also
+//! still carries phase-2 migration debt listed under "Non-standard operations"
+//! below. SPEC_0038 requires those conveniences to move to the importer/host
+//! layer so the final component-facing surface is an exact semantic projection
+//! of FMI 3.0.2 rather than an extended private protocol.
 //!
 //! | Kernel operation | FMI 3.0 ME |
 //! |---|---|
@@ -35,7 +36,7 @@
 //! | [`ModelExchangeKernel::fmu_state`] / [`ModelExchangeKernel::reset_to_fmu_state`] | `fmi3GetFMUState` / `fmi3Reset` + `fmi3SetFMUState` |
 //! | [`ModelExchangeKernel::terminate`] | `fmi3Terminate` |
 //!
-//! ## Extensions beyond FMI 3.0 ME, and why
+//! ## Non-standard operations scheduled for removal from this surface
 //!
 //! - [`ModelExchangeKernel::project_continuous_states`]: FMI 3.0 forbids the
 //!   FMU from changing continuous states in Continuous-Time Mode. Rumoca's
@@ -374,7 +375,11 @@ pub enum MeNumericsProfile {
     DiffsolFrozen,
 }
 
-/// The subset of the FMI model description an ME host needs.
+/// Transitional subset of the FMI model description used by the linked host.
+///
+/// SPEC_0038 requires this to become the checked metadata artifact used to emit
+/// the complete FMI 3.0.2 `modelDescription.xml`; this subset must not be
+/// mistaken for that final component contract.
 #[derive(Debug, Clone, Copy)]
 pub struct MeModelDescription<'a> {
     pub continuous_state_count: usize,

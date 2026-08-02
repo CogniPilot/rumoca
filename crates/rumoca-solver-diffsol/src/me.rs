@@ -10,6 +10,7 @@ use rumoca_solver::{
 
 use crate::SimError;
 
+#[cfg(test)]
 pub(crate) use rumoca_solver::fmi_me::{
     MeRuntimeInitialState as MeInitialState, MeRuntimePostEventState as MePostEventState,
 };

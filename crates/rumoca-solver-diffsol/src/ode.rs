@@ -173,6 +173,8 @@ pub(crate) struct OdeModel {
     pub(crate) initial_targets: Vec<Option<solve::ScalarSlot>>,
     implicit_jacobian_v: PreparedComputeBlock,
     implicit_scalar_jacobian_v: PreparedScalarProgramBlock,
+    #[cfg(test)]
+    #[allow(dead_code)] // Used only by the frozen-driver comparison scaffold.
     pub(crate) root_conditions: PreparedScalarProgramBlock,
     pub(crate) implicit_targets: Vec<Option<solve::ScalarSlot>>,
     algebraic_projection_plan: solve::AlgebraicProjectionPlan,
@@ -218,6 +220,7 @@ impl OdeModel {
                     &model.artifacts.continuous.implicit_jacobian_v,
                 )?,
             )?,
+            #[cfg(test)]
             root_conditions: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
             )?,
@@ -298,6 +301,8 @@ impl OdeModel {
             .map_err(|err| SimError::SolveIr(err.to_string()))
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn eval_roots(
         &self,
         y: &[f64],

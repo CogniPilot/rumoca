@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use rumoca_ir_solve as solve;
-use rumoca_solver::{SimBackend, SimOptions, SimResult, SolveRuntime};
+use rumoca_solver::{SimBackend, SimOptions, SimResult};
 
-use crate::{OdeModel, SimError, check_initialization, run_prepared_simulation};
+use crate::{SimError, check_initialization, run_prepared_simulation};
 
 pub struct PreparedSimulation {
     pub(crate) model: solve::SolveModel,
@@ -22,10 +20,7 @@ pub struct PreparedSimulation {
 /// [`crate::StateOnlyRejection`].
 pub(crate) enum PreparedSimulationState {
     NoState,
-    StateOnly {
-        equilibrium_model: Arc<OdeModel>,
-        runtime: Arc<SolveRuntime>,
-    },
+    StateOnly,
 }
 
 impl PreparedSimulation {

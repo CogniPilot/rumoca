@@ -16,6 +16,7 @@ use crate::{SimTermination, time_match_with_tol, timeline::sample_time_match_wit
 
 type SharedMeKernel = Rc<RefCell<SolveMeKernel>>;
 type SharedCallbackError = Rc<RefCell<Option<MeError>>>;
+type SharedAcceptedPoint = Rc<RefCell<Option<(f64, Vec<f64>)>>>;
 
 /// Settled state handed from the ME initialization lifecycle to an integrator.
 pub struct MeRuntimeInitialState {
@@ -30,6 +31,7 @@ pub struct MeRuntimePostEventState {
     pub time: f64,
     pub states: Vec<f64>,
     pub entry: MeEventEntry,
+    pub observation: Option<MeRuntimeOutput>,
     pub termination: Option<SimTermination>,
 }
 
@@ -44,6 +46,7 @@ pub struct MeRuntimeOutput {
 pub struct MeRuntimeHost {
     kernel: SharedMeKernel,
     callback_error: SharedCallbackError,
+    accepted_point: SharedAcceptedPoint,
 }
 
 impl MeRuntimeHost {
@@ -55,6 +58,7 @@ impl MeRuntimeHost {
         Ok(Self {
             kernel: Rc::new(RefCell::new(kernel)),
             callback_error: Rc::new(RefCell::new(None)),
+            accepted_point: Rc::new(RefCell::new(None)),
         })
     }
 
@@ -76,12 +80,15 @@ impl MeRuntimeHost {
             frozen_parameters,
             MeStage::Initialization,
         )?;
-        Ok(MeRuntimeInitialState {
+        let initial = MeRuntimeInitialState {
             time: discrete.time,
             states,
             observations: kernel.initial_observations().to_vec(),
             termination: discrete.terminate_simulation,
-        })
+        };
+        drop(kernel);
+        self.store_accepted_point(initial.time, &initial.states);
+        Ok(initial)
     }
 
     /// Initialize through the ordinary ME lifecycle without a migration
@@ -94,12 +101,15 @@ impl MeRuntimeHost {
         kernel.enter_continuous_time_mode()?;
         let mut states = vec![0.0; kernel.model_description().continuous_state_count];
         kernel.get_continuous_states(&mut states)?;
-        Ok(MeRuntimeInitialState {
+        let initial = MeRuntimeInitialState {
             time: discrete.time,
             states,
             observations: kernel.initial_observations().to_vec(),
             termination: discrete.terminate_simulation,
-        })
+        };
+        drop(kernel);
+        self.store_accepted_point(initial.time, &initial.states);
+        Ok(initial)
     }
 
     #[must_use]
@@ -142,7 +152,9 @@ impl MeRuntimeHost {
     }
 
     pub fn next_event_stop(&self, horizon: f64) -> Result<MeEventStop, MeError> {
-        self.kernel.borrow_mut().next_event_stop(horizon)
+        let mut kernel = self.kernel.borrow_mut();
+        self.restore_accepted_point(&mut kernel)?;
+        kernel.next_event_stop(horizon)
     }
 
     #[must_use]
@@ -155,6 +167,19 @@ impl MeRuntimeHost {
         let observation = kernel.observe()?;
         let mut values = vec![0.0; kernel.model_description().output_names.len()];
         kernel.get_outputs(&observation, observation.time(), &mut values)?;
+        Ok(MeRuntimeOutput {
+            time: observation.time(),
+            values,
+        })
+    }
+
+    pub fn outputs_for_observation(
+        &self,
+        observation: &MeObservation,
+    ) -> Result<MeRuntimeOutput, MeError> {
+        let kernel = self.kernel.borrow();
+        let mut values = vec![0.0; kernel.model_description().output_names.len()];
+        kernel.get_outputs(observation, observation.time(), &mut values)?;
         Ok(MeRuntimeOutput {
             time: observation.time(),
             values,
@@ -196,6 +221,8 @@ impl MeRuntimeHost {
         kernel.completed_integrator_step(MeStepCompletion::Continuous {
             accepted_derivatives: None,
         })?;
+        drop(kernel);
+        self.store_accepted_point(time, &projected);
         Ok(projected)
     }
 
@@ -206,7 +233,10 @@ impl MeRuntimeHost {
     pub fn sync_continuous_point(&self, time: f64, states: &[f64]) -> Result<(), MeError> {
         let mut kernel = self.kernel.borrow_mut();
         kernel.set_time(MeTime::at(time))?;
-        kernel.set_continuous_states(states)
+        kernel.set_continuous_states(states)?;
+        drop(kernel);
+        self.store_accepted_point(time, states);
+        Ok(())
     }
 
     pub fn accept_continuous_step(
@@ -231,6 +261,8 @@ impl MeRuntimeHost {
             frozen_parameters,
             MeStage::Integration,
         )?;
+        drop(kernel);
+        self.store_accepted_point(time, &projected);
         Ok(projected)
     }
 
@@ -287,7 +319,10 @@ impl MeRuntimeHost {
         kernel.enter_event_mode(entry)?;
         let discrete = update_discrete_states_to_completion(&mut *kernel)?;
         kernel.enter_continuous_time_mode()?;
-        post_event_state(&mut *kernel, entry, discrete)
+        let post = post_event_state(&mut *kernel, entry, discrete, true)?;
+        drop(kernel);
+        self.store_accepted_point(post.time, &post.states);
+        Ok(post)
     }
 
     pub fn process_state_event(
@@ -318,7 +353,8 @@ impl MeRuntimeHost {
         retain_reported_root_crossing(root_index, &after, &mut crossings);
         kernel.arm_state_event(&crossings)?;
         kernel.completed_integrator_step(MeStepCompletion::AtStateEvent)?;
-        if kernel.has_scheduled_event_at(root_time) {
+        let includes_scheduled_event = kernel.has_scheduled_event_at(root_time);
+        if includes_scheduled_event {
             kernel.set_time(MeTime::at(root_time))?;
             kernel.set_continuous_states(root_states)?;
         }
@@ -330,7 +366,10 @@ impl MeRuntimeHost {
         kernel.enter_event_mode(entry)?;
         let discrete = update_discrete_states_to_completion(&mut *kernel)?;
         kernel.enter_continuous_time_mode()?;
-        post_event_state(&mut *kernel, entry, discrete)
+        let post = post_event_state(&mut *kernel, entry, discrete, includes_scheduled_event)?;
+        drop(kernel);
+        self.store_accepted_point(post.time, &post.states);
+        Ok(post)
     }
 
     /// Integrator RHS callback: set time/states, then read derivatives.
@@ -389,6 +428,19 @@ impl MeRuntimeHost {
             }
         }
     }
+
+    fn store_accepted_point(&self, time: f64, states: &[f64]) {
+        *self.accepted_point.borrow_mut() = Some((time, states.to_vec()));
+    }
+
+    fn restore_accepted_point(&self, kernel: &mut SolveMeKernel) -> Result<(), MeError> {
+        let accepted = self.accepted_point.borrow();
+        let Some((time, states)) = accepted.as_ref() else {
+            return Ok(());
+        };
+        kernel.set_time(MeTime::at(*time))?;
+        kernel.set_continuous_states(states)
+    }
 }
 
 fn bracket_root_states(
@@ -438,14 +490,29 @@ fn post_event_state(
     kernel: &mut impl ModelExchangeKernel,
     entry: MeEventEntry,
     discrete: MeDiscreteStates,
+    record_observation: bool,
 ) -> Result<MeRuntimePostEventState, MeError> {
     let mut states = vec![0.0; kernel.model_description().continuous_state_count];
     kernel.get_continuous_states(&mut states)?;
+    let observation = record_observation
+        .then(|| runtime_output(kernel))
+        .transpose()?;
     Ok(MeRuntimePostEventState {
         time: discrete.time,
         states,
         entry,
+        observation,
         termination: discrete.terminate_simulation,
+    })
+}
+
+fn runtime_output(kernel: &mut impl ModelExchangeKernel) -> Result<MeRuntimeOutput, MeError> {
+    let observation = kernel.observe()?;
+    let mut values = vec![0.0; kernel.model_description().output_names.len()];
+    kernel.get_outputs(&observation, observation.time(), &mut values)?;
+    Ok(MeRuntimeOutput {
+        time: observation.time(),
+        values,
     })
 }
 

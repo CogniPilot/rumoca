@@ -63,6 +63,58 @@ interface, use borrowed slices, and batch variable access. Those optimizations
 MUST preserve the FMI 3 ME state machine and observable results; "in process"
 does not define a second interface.
 
+#### Strict FMI 3 ME surface
+
+The component-facing interface MUST be a semantic projection of the normative
+FMI 3.0.2 Model Exchange functions and `modelDescription.xml`. A Rust method
+MUST NOT be named or documented as an FMI operation while omitting a standard
+argument, return value, capability flag, lifecycle effect, or XML-declared
+ordering rule. Native batching and static dispatch may change representation,
+but not the information available to either side of the boundary.
+
+Importer orchestration and numerical policy live in a separate ME-host layer.
+That layer may provide conveniences such as "next integration stop", root
+localization, trace recording, timeout enforcement, and solver reset, but each
+convenience MUST be derived only from standard FMI calls, their returned
+values, and `modelDescription.xml`. It MUST NOT call a private component
+operation to reveal Modelica relations, `pre()` state, event ownership, delay
+storage, Solve rows, or a constraint projection.
+
+The current linked-kernel extensions are disposed as follows during phase 2:
+
+| Current surface | Required disposition |
+|---|---|
+| `MeTime::event_boundary` | Remove; `fmi3SetTime` carries only `time`. Continuous-Time Mode keeps relations frozen until the importer enters Event Mode. |
+| `MeEventEntry` arguments to `enter_event_mode` | Remove; `fmi3EnterEventMode` has no arguments. Event cause is importer state, not component input. |
+| `MeStepCompletion` | Replace with the complete `fmi3CompletedIntegratorStep` contract: `noSetFMUStatePriorToCurrentPoint`, `enterEventMode`, and `terminateSimulation`, gated by `needsCompletedIntegratorStep`. |
+| `project_continuous_states` | Remove from Continuous-Time Mode. A DAE projection may change states only through Event Mode / `fmi3UpdateDiscreteStates`, reported by `valuesOfContinuousStatesChanged`. |
+| `next_event_stop` | Make host-only derivation of `nextEventTimeDefined` / `nextEventTime` returned by `fmi3UpdateDiscreteStates`; the component does not expose a second scheduling query. |
+| `event_indicator_crossings` | Make importer-owned classification over `fmi3GetEventIndicators` results. |
+| `capture_pre_event_state` / `arm_state_event` | Remove from the host boundary. The component updates its own discrete/relation state when standard Event Mode is entered. |
+| `max_step_size` | Remove as a component capability. Delay history is updated through `fmi3CompletedIntegratorStep`; any accuracy step cap is importer numerical policy. |
+| `observe`, output recorders, and initial-observation queues | Keep only as host conveniences composed from legal `fmi3Get{VariableType}` calls at the current FMI state; they are not component operations. |
+| `restart_from_fmu_state` | Keep only as explicit host composition of standard reset/state operations, subject to advertised FMU-state capabilities. |
+| `extend_stop_time` | Remove. An extendable live session instantiates without a defined stop time or resets and re-enters Initialization Mode with a new experiment. |
+| fixed-list directional derivative helper | Make host-only preparation of the standard value-reference lists passed to `fmi3GetDirectionalDerivative`. |
+
+The linked model description is the same checked artifact used to emit a
+packaged FMU's `modelDescription.xml`. It MUST include the FMI version,
+instantiation token, `<ModelExchange>` capabilities (including
+`needsCompletedIntegratorStep`), typed model variables and value references,
+continuous-state derivative ordering, event-indicator ordering, clocks,
+dependencies, units, dimensions, causality, variability, initial/start data,
+and `ModelStructure` required by the implemented model. Packaged XML MUST
+validate against the official FMI 3 schema, and linked-versus-packaged tests
+MUST prove that the importer sees the same metadata and call results.
+
+Ratifying this boundary requires a coordinated amendment to SPEC_0029 §12 and
+the concrete-solver row in SPEC_0041 §4. Their current accepted wording says a
+concrete solver consumes Solve IR; the replacement wording must say that a
+concrete numerical solver consumes only `rumoca-solver`'s generic FMI ME
+importer/host contract. Until that accepted-spec amendment lands, this draft is
+the migration proposal and MUST NOT be used to silently weaken either accepted
+crate-boundary rule.
+
 `rumoca-input` retains physical-device adapters, local input state, debounce,
 preconditions, derived controls, and signal mapping. Its model-facing product
 is a typed batch of FMI value references and values, not `(name, f64)` calls
