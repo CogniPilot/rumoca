@@ -15,6 +15,12 @@ pub(in crate::construction) struct DiscreteValueAssignmentPlan<'flat> {
     pub(in crate::construction) value: Cow<'flat, Expression>,
     pub(in crate::construction) generated: bool,
     pub(in crate::construction) scalar_count: Option<usize>,
+    /// The owner was constructed from exact, row-major element coverage.
+    ///
+    /// This is only permission for the typed DAE constructor to attempt its
+    /// independent strictly-backward self-dependency proof. It is not itself
+    /// evidence that a recurrence is valid.
+    pub(in crate::construction) ordered_scalar_self_dependencies: bool,
 }
 
 #[derive(Default)]
@@ -27,6 +33,7 @@ struct AggregateDiscreteConnection {
     target: VarName,
     value: Expression,
     scalar_count: usize,
+    ordered_scalar_self_dependencies: bool,
 }
 
 pub(in crate::construction) fn equation_partition<'flat>(
@@ -44,6 +51,7 @@ pub(in crate::construction) fn equation_partition<'flat>(
                 value: Cow::Borrowed(&plan.value),
                 generated: true,
                 scalar_count: Some(plan.scalar_count),
+                ordered_scalar_self_dependencies: plan.ordered_scalar_self_dependencies,
             },
         ));
     }
@@ -127,6 +135,7 @@ fn discrete_connection_assignment<'flat>(
         generated: matches!(&value, Cow::Owned(_)),
         value,
         scalar_count: None,
+        ordered_scalar_self_dependencies: false,
     }))
 }
 
@@ -179,11 +188,18 @@ pub(super) fn aggregate_discrete_connections(
 ) -> Result<AggregateDiscreteConnections, ToDaeError> {
     let mut groups = HashMap::<VarName, AggregateConnectionGroup>::new();
     for (row, equation) in flat.equations.iter().enumerate() {
-        let Some((target, subscripts, value)) =
-            oriented_discrete_connection(flat, equation, roles, connection_ranks)
-        else {
-            continue;
-        };
+        let (target, subscripts, value, ordered_scalar_self_dependencies) =
+            if let Some((target, subscripts, value)) =
+                oriented_discrete_connection(flat, equation, roles, connection_ranks)
+            {
+                (target, subscripts, value, false)
+            } else if let Some((target, subscripts, value)) =
+                discrete_element_assignment(equation, roles)
+            {
+                (target, subscripts, value, true)
+            } else {
+                continue;
+            };
         if subscripts.is_empty()
             || selection_denotes_whole_aggregate(&flat.variables[target], subscripts)
         {
@@ -194,7 +210,13 @@ pub(super) fn aggregate_discrete_connections(
         let group = groups.entry(target.clone()).or_insert_with(|| {
             AggregateConnectionGroup::new(variable, prefix.extents.clone(), equation)
         });
-        group.insert(row, prefix, value, equation)?;
+        group.insert(
+            row,
+            prefix,
+            value,
+            ordered_scalar_self_dependencies,
+            equation,
+        )?;
     }
     let mut result = AggregateDiscreteConnections::default();
     for target in flat.variables.keys() {
@@ -215,6 +237,7 @@ struct AggregateConnectionMember {
     row: usize,
     value: Expression,
     span: Span,
+    ordered_scalar_self_dependencies: bool,
 }
 
 struct AggregateConnectionGroup {
@@ -246,6 +269,7 @@ impl AggregateConnectionGroup {
         row: usize,
         prefix: SelectedPrefix,
         value: &Expression,
+        ordered_scalar_self_dependencies: bool,
         equation: &flat::Equation,
     ) -> Result<(), ToDaeError> {
         if prefix.extents != self.prefix_extents {
@@ -256,7 +280,7 @@ impl AggregateConnectionGroup {
         };
         if slot.is_some() {
             return Err(ToDaeError::discrete_solved_form_violation(
-                "overlapping element connections cannot define one discrete coordinate",
+                "overlapping element assignments cannot define one discrete coordinate",
                 equation.span,
             ));
         }
@@ -264,6 +288,7 @@ impl AggregateConnectionGroup {
             row,
             value: value.clone(),
             span: equation.span,
+            ordered_scalar_self_dependencies,
         });
         Ok(())
     }
@@ -275,7 +300,7 @@ impl AggregateConnectionGroup {
     ) -> Result<(), ToDaeError> {
         if self.members.iter().any(Option::is_none) {
             return Err(ToDaeError::discrete_solved_form_violation(
-                "element connections must cover a discrete coordinate exactly once",
+                "element assignments must cover a discrete coordinate exactly once",
                 self.first_span,
             ));
         }
@@ -292,6 +317,9 @@ impl AggregateConnectionGroup {
             .collect::<Vec<_>>();
         let value = pack_connection_prefix(&values, &self.prefix_extents, owner_span);
         let scalar_count = checked_connection_shape_size(&self.target_dims, owner_span)?;
+        let ordered_scalar_self_dependencies = members
+            .iter()
+            .any(|member| member.ordered_scalar_self_dependencies);
         result
             .members
             .extend(members.iter().map(|member| member.row));
@@ -301,10 +329,54 @@ impl AggregateConnectionGroup {
                 target,
                 value,
                 scalar_count,
+                ordered_scalar_self_dependencies,
             },
         );
         Ok(())
     }
+}
+
+/// Select an ordinary element equation whose left side names one exact
+/// discrete coordinate. Aggregate construction later proves that all selected
+/// prefixes cover the declared coordinate exactly once before any member is
+/// consumed.
+fn discrete_element_assignment<'flat>(
+    equation: &'flat flat::Equation,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<(&'flat VarName, &'flat [Subscript], &'flat Expression)> {
+    if matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
+        return None;
+    }
+    discrete_element_expression(&equation.residual, roles)
+}
+
+fn discrete_element_expression<'flat>(
+    expression: &'flat Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<(&'flat VarName, &'flat [Subscript], &'flat Expression)> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    let (target, subscripts) = discrete_value_base_reference(lhs, roles)?;
+    (!subscripts.is_empty()).then_some((target, subscripts, rhs.as_ref()))
+}
+
+/// Whether every body is an exact discrete element assignment whose
+/// materialized rows must be validated by the aggregate coverage analysis.
+pub(in crate::construction) fn structured_discrete_element_assignments(
+    bodies: &[Expression],
+    roles: &HashMap<VarName, PlannedRole>,
+) -> bool {
+    !bodies.is_empty()
+        && bodies
+            .iter()
+            .all(|body| discrete_element_expression(body, roles).is_some())
 }
 
 fn selected_prefix_index(
@@ -527,6 +599,7 @@ pub(in crate::construction) fn discrete_value_assignment<'flat>(
                 value: Cow::Borrowed(rhs),
                 generated: false,
                 scalar_count: None,
+                ordered_scalar_self_dependencies: false,
             }))
         }
         Expression::If {
@@ -573,6 +646,7 @@ pub(in crate::construction) fn discrete_value_assignment<'flat>(
                 }),
                 generated: true,
                 scalar_count: None,
+                ordered_scalar_self_dependencies: false,
             }))
         }
         _ if expression_mentions_discrete_value(expression, roles) => {

@@ -39,7 +39,15 @@ pub(super) fn validate_structured_families(
             ));
         }
         if let Some(template) = &family.template {
-            structured_discrete_assignments(&template.body, roles, family.span)?;
+            // A materialized element-assignment family is validated together
+            // with all other element rows for its target. The aggregate pass
+            // derives exact declared-shape coverage and overlap evidence; the
+            // template is only the compact second view of those same rows.
+            if !family.interiors_materialized
+                || !structured_discrete_element_assignments(&template.body, roles)
+            {
+                structured_discrete_assignments(&template.body, roles, family.span)?;
+            }
         }
         let represented_rows = match &family.template {
             Some(template) => represented_template_rows(

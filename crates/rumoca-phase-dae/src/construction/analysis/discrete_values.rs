@@ -57,6 +57,7 @@ struct SourceTarget {
     name: VarName,
     dependencies: HashSet<VarName>,
     span: Span,
+    ordered_scalar_self_dependencies: bool,
 }
 
 fn require_target_occurrence(
@@ -114,6 +115,7 @@ fn collect_binding_owners(
                 name: name.clone(),
                 dependencies: current_discrete_dependencies(binding, roles),
                 span: expression_span(binding)?,
+                ordered_scalar_self_dependencies: false,
             }],
             span: variable.source_span,
         });
@@ -145,6 +147,7 @@ fn collect_equation_owners(
                 name: plan.target.clone(),
                 dependencies: current_discrete_dependencies(plan.value.as_ref(), roles),
                 span: equation.span,
+                ordered_scalar_self_dependencies: plan.ordered_scalar_self_dependencies,
             }],
             span: equation.span,
         });
@@ -184,6 +187,7 @@ fn collect_algorithm_owners(
                     name,
                     dependencies,
                     span,
+                    ordered_scalar_self_dependencies: false,
                 })
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
@@ -224,6 +228,7 @@ fn collect_when_owners(
                     name,
                     dependencies,
                     span,
+                    ordered_scalar_self_dependencies: false,
                 })
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
@@ -256,6 +261,7 @@ fn add_held_owners(
                     name: name.clone(),
                     dependencies: HashSet::new(),
                     span: variable.source_span,
+                    ordered_scalar_self_dependencies: false,
                 }],
                 span: variable.source_span,
             });
@@ -381,6 +387,9 @@ fn order_owner_targets(owner: &mut SourceOwner) -> Result<(), ToDaeError> {
             .dependencies
             .iter()
             .filter_map(|dependency| target_by_name.get(dependency).copied())
+            .filter(|&predecessor| {
+                predecessor != target_index || !target.ordered_scalar_self_dependencies
+            })
             .collect::<BTreeSet<_>>();
         indegree[target_index] = predecessors.len();
         for predecessor in predecessors {

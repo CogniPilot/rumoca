@@ -4,7 +4,7 @@ use rumoca_core::ComprehensionScalarView;
 use rustc_hash::FxHashSet;
 
 use crate::conditions::{ConditionNode, condition_owner_clock};
-use crate::expression::{Coordinate, ExprNode};
+use crate::expression::{Coordinate, ExprNode, PackedSubscriptKind};
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
     ConditionId, DaeConstructionError, DaeProvenance, DiscreteValueId, ExprId, VariableRole,
@@ -749,6 +749,8 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         issued_prefix: &FxHashSet<u32>,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
+        let ordered_scalar_self_dependencies =
+            self.proves_ordered_scalar_self_dependencies(expression, target, provenance)?;
         let mut pending = vec![expression];
         let mut visited = FxHashSet::default();
         while let Some(index) = pending.pop() {
@@ -762,7 +764,9 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 .get(index as usize)
                 .ok_or_else(|| unknown("expression", index, provenance))?;
             match node {
-                ExprNode::Coordinate(Coordinate::DiscreteValue(dependency)) => {
+                ExprNode::Coordinate(Coordinate::DiscreteValue(dependency))
+                    if *dependency != target || !ordered_scalar_self_dependencies =>
+                {
                     self.expect_dependency_issued(*dependency, target, issued_prefix, provenance)?;
                 }
                 ExprNode::Coordinate(Coordinate::Condition(condition)) => {
@@ -778,6 +782,240 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             node.for_each_child(&self.storage.expressions, |child| pending.push(child));
         }
         Ok(())
+    }
+
+    /// Independently prove that an aggregate value's current-target reads are
+    /// strictly earlier than the scalar segment being defined.
+    ///
+    /// Phase lowering may use exact element coverage to construct an aggregate
+    /// owner, but this typed constructor does not trust that source-side fact.
+    /// It replays the row-major proof from typed expression nodes, so wire
+    /// decoding and direct IR construction enforce the same invariant.
+    fn proves_ordered_scalar_self_dependencies(
+        &self,
+        expression: u32,
+        target: u32,
+        provenance: DaeProvenance,
+    ) -> Result<bool, DaeConstructionError> {
+        if !matches!(
+            self.storage.expressions.nodes.get(expression as usize),
+            Some(ExprNode::Array { .. })
+        ) {
+            return Ok(false);
+        }
+        let variable = self
+            .storage
+            .variables
+            .get(target as usize)
+            .ok_or_else(|| unknown("variable", target, provenance))?;
+        let dimensions = self
+            .storage
+            .value_type_at(variable.value_type, provenance)?
+            .dimensions()
+            .to_vec();
+        let mut output_start = 0usize;
+        self.proves_ordered_array_segments(
+            expression,
+            target,
+            &dimensions,
+            &mut output_start,
+            provenance,
+        )
+    }
+
+    fn proves_ordered_array_segments(
+        &self,
+        expression: u32,
+        target: u32,
+        target_dimensions: &[u32],
+        output_start: &mut usize,
+        provenance: DaeProvenance,
+    ) -> Result<bool, DaeConstructionError> {
+        let node = self
+            .storage
+            .expressions
+            .nodes
+            .get(expression as usize)
+            .ok_or_else(|| unknown("expression", expression, provenance))?;
+        if let ExprNode::Array { operands } = node {
+            return self.storage.expressions.operands[operands.indices()]
+                .iter()
+                .try_fold(true, |valid, &operand| match valid {
+                    false => Ok(false),
+                    true => self.proves_ordered_array_segments(
+                        operand,
+                        target,
+                        target_dimensions,
+                        output_start,
+                        provenance,
+                    ),
+                });
+        }
+        if !self.proves_segment_dependencies_precede(
+            expression,
+            target,
+            target_dimensions,
+            *output_start,
+            provenance,
+        )? {
+            return Ok(false);
+        }
+        let Some(scalar_count) = self.expression_scalar_count(expression, provenance)? else {
+            return Ok(false);
+        };
+        let Some(next) = output_start.checked_add(scalar_count) else {
+            return Ok(false);
+        };
+        *output_start = next;
+        Ok(true)
+    }
+
+    fn proves_segment_dependencies_precede(
+        &self,
+        expression: u32,
+        target: u32,
+        target_dimensions: &[u32],
+        output_start: usize,
+        provenance: DaeProvenance,
+    ) -> Result<bool, DaeConstructionError> {
+        let node = self
+            .storage
+            .expressions
+            .nodes
+            .get(expression as usize)
+            .ok_or_else(|| unknown("expression", expression, provenance))?;
+        if let ExprNode::Index { base, subscripts } = node
+            && matches!(
+                self.storage.expressions.nodes.get(*base as usize),
+                Some(ExprNode::Coordinate(Coordinate::DiscreteValue(dependency)))
+                    if *dependency == target
+            )
+        {
+            if !self.selected_target_range_precedes(*subscripts, target_dimensions, output_start) {
+                return Ok(false);
+            }
+            return self.proves_subscript_dependencies_precede(
+                *subscripts,
+                target,
+                target_dimensions,
+                output_start,
+                provenance,
+            );
+        }
+        if matches!(
+            node,
+            ExprNode::Coordinate(Coordinate::DiscreteValue(dependency)) if *dependency == target
+        ) {
+            return Ok(false);
+        }
+        let mut valid = Ok(true);
+        node.for_each_child(&self.storage.expressions, |child| {
+            if matches!(valid, Ok(true)) {
+                valid = self.proves_segment_dependencies_precede(
+                    child,
+                    target,
+                    target_dimensions,
+                    output_start,
+                    provenance,
+                );
+            }
+        });
+        valid
+    }
+
+    fn proves_subscript_dependencies_precede(
+        &self,
+        subscripts: crate::expression::OperandRange,
+        target: u32,
+        target_dimensions: &[u32],
+        output_start: usize,
+        provenance: DaeProvenance,
+    ) -> Result<bool, DaeConstructionError> {
+        self.storage.expressions.subscripts[subscripts.indices()]
+            .iter()
+            .filter_map(|subscript| match subscript.kind {
+                PackedSubscriptKind::Index(index) | PackedSubscriptKind::Slice(index) => {
+                    Some(index)
+                }
+                PackedSubscriptKind::Whole => None,
+            })
+            .try_fold(true, |valid, index| {
+                if !valid {
+                    return Ok(false);
+                }
+                self.proves_segment_dependencies_precede(
+                    index,
+                    target,
+                    target_dimensions,
+                    output_start,
+                    provenance,
+                )
+            })
+    }
+
+    fn selected_target_range_precedes(
+        &self,
+        subscripts: crate::expression::OperandRange,
+        dimensions: &[u32],
+        output_start: usize,
+    ) -> bool {
+        let packed = &self.storage.expressions.subscripts[subscripts.indices()];
+        if packed.is_empty() || packed.len() > dimensions.len() {
+            return false;
+        }
+        let mut ordinal = 0usize;
+        for (subscript, &extent) in packed.iter().zip(dimensions) {
+            let PackedSubscriptKind::Index(index) = subscript.kind else {
+                return false;
+            };
+            let Some(ExprNode::Literal(crate::DaeLiteral::Integer(value))) =
+                self.storage.expressions.nodes.get(index as usize)
+            else {
+                return false;
+            };
+            let Ok(value) = usize::try_from(*value) else {
+                return false;
+            };
+            let extent = extent as usize;
+            if value == 0 || value > extent {
+                return false;
+            }
+            let Some(next) = ordinal
+                .checked_mul(extent)
+                .and_then(|base| base.checked_add(value - 1))
+            else {
+                return false;
+            };
+            ordinal = next;
+        }
+        let Some(selected_count) = dimensions[packed.len()..]
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+        else {
+            return false;
+        };
+        ordinal
+            .checked_mul(selected_count)
+            .and_then(|start| start.checked_add(selected_count))
+            .is_some_and(|end| end <= output_start)
+    }
+
+    fn expression_scalar_count(
+        &self,
+        expression: u32,
+        provenance: DaeProvenance,
+    ) -> Result<Option<usize>, DaeConstructionError> {
+        let value_type = self
+            .storage
+            .expressions
+            .value_types
+            .get(expression as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression", expression, provenance))?;
+        Ok(self
+            .storage
+            .value_type_at(value_type, provenance)?
+            .scalar_count())
     }
 
     fn expect_dependency_issued(
