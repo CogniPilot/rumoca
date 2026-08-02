@@ -33,7 +33,7 @@ use diffsol::{
     Vector as _, VectorHost,
 };
 use init_projection::initialize_state_runtime_values;
-use me::{DiffsolMeHost, MeInitialState, MePostEventState};
+use me::{DiffsolMeHost, MeInitialState, MePostEventState, instantiate as instantiate_me_host};
 use rumoca_eval_solve::{self as solve_eval, RowEvalContext};
 use rumoca_ir_solve as solve;
 use rumoca_solver::runtime::driver::{
@@ -367,7 +367,7 @@ fn simulate_state_only_bdf(
     // `OdeBuilder` probes RHS while constructing the problem, before the BDF
     // host has performed its one-time accepted-seed preparation.
     if let Some(error) = me_host.take_callback_error() {
-        return Err(error);
+        return Err(error.into());
     }
     let state = initial_state_only_bdf_state(
         runtime,
@@ -389,7 +389,7 @@ fn simulate_state_only_bdf(
         diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
     });
     if let Some(error) = me_host.take_callback_error() {
-        return Err(error);
+        return Err(error.into());
     }
     let solver = solver?;
     let stage_recorder = StageRecorder::default();
@@ -473,7 +473,7 @@ fn initialize_state_only_bdf(
         &mut params,
         &mut current_t,
     )?;
-    let me_host = DiffsolMeHost::instantiate(model, opts)?;
+    let me_host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(model), opts)?;
     let current_state = &current_y[..model.state_scalar_count()];
     verify_me_initial_state(
         &me_host.initialize(&current_y, &params)?,
@@ -560,7 +560,7 @@ where
     if let Some(me_host) = me_host
         && let Some(error) = me_host.take_callback_error()
     {
-        return Err(error);
+        return Err(error.into());
     }
     let mut state = state?;
     let mut solver_y = algebraic_warm_start.speculative();
@@ -574,10 +574,12 @@ where
     )?;
     algebraic_warm_start.commit(solver_y.clone());
     if let Some(me_host) = me_host {
-        me_host
-            .prepare_bdf_initial_seed(&solver_y, rumoca_solver::fmi_me::MeStage::Initialization)?;
+        me_host.prepare_integrator_initial_seed(
+            &solver_y,
+            rumoca_solver::fmi_me::MeStage::Initialization,
+        )?;
         if let Some(error) = me_host.take_callback_error() {
-            return Err(error);
+            return Err(error.into());
         }
     }
     {
@@ -590,7 +592,7 @@ where
     if let Some(me_host) = me_host
         && let Some(error) = me_host.take_callback_error()
     {
-        return Err(error);
+        return Err(error.into());
     }
     Ok(state)
 }
@@ -709,8 +711,8 @@ where
         note_stage(&self.stage_recorder, stage, error)
     }
 
-    fn me_to_driver(&self, error: SimError) -> SimDriverError {
-        staged_sim_to_driver(&self.stage_recorder, error)
+    fn me_to_driver(&self, error: impl Into<SimError>) -> SimDriverError {
+        staged_sim_to_driver(&self.stage_recorder, error.into())
     }
 
     fn take_me_callback_error(&self) -> Option<SimDriverError> {
@@ -1088,7 +1090,7 @@ where
         .map_err(sim_to_driver)
         .map_err(|error| self.note(failure_stage, error));
         if let Some(error) = self.me_host.take_callback_error() {
-            return Err(self.note(failure_stage, sim_to_driver(error)));
+            return Err(self.note(failure_stage, sim_to_driver(error.into())));
         }
         reset?;
         let stop_time = self.active_stop_time.unwrap_or(self.opts.t_end);
@@ -1102,7 +1104,7 @@ where
         let frozen_solver_y = self.algebraic_warm_start.speculative();
         let frozen_parameters = self.runtime_params.borrow();
         self.me_host
-            .prepare_bdf_initial_seed(&frozen_solver_y, me_stage)
+            .prepare_integrator_initial_seed(&frozen_solver_y, me_stage)
             .map_err(|error| self.me_to_driver(error))?;
         self.me_host
             .verify_frozen_compatibility_state(&frozen_solver_y, &frozen_parameters, me_stage)

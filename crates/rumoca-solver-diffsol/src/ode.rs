@@ -694,7 +694,7 @@ where
     Error: std::fmt::Display,
 {
     if let Some(error) = host.take_callback_error() {
-        return Err(error);
+        return Err(error.into());
     }
     let problem = problem.map_err(|error| {
         SimError::SolverError(format!("ME ODE problem builder failed: {error}"))

@@ -1,0 +1,384 @@
+//! Solver-neutral linked host for the FMI 3 Model Exchange runtime.
+//!
+//! Numerical integrator plugins share this host. It owns the ME lifecycle,
+//! discrete iteration, event crossing classification, and callback failure
+//! state; a plugin only supplies continuous integration and calls the ME
+//! evaluation operations exposed here.
+
+use std::{cell::RefCell, rc::Rc};
+
+use super::{
+    MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig,
+    MeModelSource, MeObservation, MeStage, MeStepCompletion, MeTime, ModelExchangeKernel,
+    SolveMeKernel,
+};
+use crate::{SimTermination, time_match_with_tol, timeline::sample_time_match_with_tol};
+
+type SharedMeKernel = Rc<RefCell<SolveMeKernel>>;
+type SharedCallbackError = Rc<RefCell<Option<MeError>>>;
+
+/// Settled state handed from the ME initialization lifecycle to an integrator.
+pub struct MeRuntimeInitialState {
+    pub time: f64,
+    pub states: Vec<f64>,
+    pub observations: Vec<MeObservation>,
+    pub termination: Option<SimTermination>,
+}
+
+/// State returned after the shared ME runtime completes an event boundary.
+pub struct MeRuntimePostEventState {
+    pub time: f64,
+    pub states: Vec<f64>,
+    pub entry: MeEventEntry,
+    pub termination: Option<SimTermination>,
+}
+
+/// Linked FMI 3 ME host shared by every numerical integrator plugin.
+#[derive(Clone)]
+pub struct MeRuntimeHost {
+    kernel: SharedMeKernel,
+    callback_error: SharedCallbackError,
+}
+
+impl MeRuntimeHost {
+    pub fn instantiate(
+        source: MeModelSource<'_>,
+        config: &MeInstanceConfig,
+    ) -> Result<Self, MeError> {
+        let kernel = SolveMeKernel::instantiate(source, config)?;
+        Ok(Self {
+            kernel: Rc::new(RefCell::new(kernel)),
+            callback_error: Rc::new(RefCell::new(None)),
+        })
+    }
+
+    pub fn initialize(
+        &self,
+        frozen_solver_y: &[f64],
+        frozen_parameters: &[f64],
+    ) -> Result<MeRuntimeInitialState, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.enter_initialization_mode()?;
+        kernel.exit_initialization_mode()?;
+        let discrete = update_discrete_states_to_completion(&mut *kernel)?;
+        kernel.enter_continuous_time_mode()?;
+        let state_count = kernel.model_description().continuous_state_count;
+        let mut states = vec![0.0; state_count];
+        kernel.get_continuous_states(&mut states)?;
+        kernel.verify_frozen_compatibility_state(
+            frozen_solver_y,
+            frozen_parameters,
+            MeStage::Initialization,
+        )?;
+        Ok(MeRuntimeInitialState {
+            time: discrete.time,
+            states,
+            observations: kernel.initial_observations().to_vec(),
+            termination: discrete.terminate_simulation,
+        })
+    }
+
+    #[must_use]
+    pub fn state_count(&self) -> usize {
+        self.kernel
+            .borrow()
+            .model_description()
+            .continuous_state_count
+    }
+
+    pub fn prepare_integrator_initial_seed(
+        &self,
+        frozen_solver_y: &[f64],
+        stage: MeStage,
+    ) -> Result<(), MeError> {
+        self.synchronize_frozen_callback_seed(frozen_solver_y)
+            .map_err(|error| error.at_stage(stage))
+    }
+
+    pub fn synchronize_frozen_callback_seed(&self, frozen_solver_y: &[f64]) -> Result<(), MeError> {
+        self.kernel
+            .borrow_mut()
+            .prepare_frozen_bdf_initial_seed(frozen_solver_y)
+    }
+
+    #[must_use]
+    pub fn event_indicator_count(&self) -> usize {
+        self.kernel
+            .borrow()
+            .model_description()
+            .event_indicator_count
+    }
+
+    pub fn take_callback_error(&self) -> Option<MeError> {
+        self.callback_error.borrow_mut().take()
+    }
+
+    pub fn sync_continuous_point(&self, time: f64, states: &[f64]) -> Result<(), MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(time))?;
+        kernel.set_continuous_states(states)
+    }
+
+    pub fn accept_continuous_step(
+        &self,
+        time: f64,
+        states: &[f64],
+        frozen_solver_y: &[f64],
+        frozen_parameters: &[f64],
+    ) -> Result<Vec<f64>, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(time))?;
+        kernel
+            .prepare_frozen_bdf_initial_seed(frozen_solver_y)
+            .map_err(|error| error.at_stage(MeStage::Integration))?;
+        let projected = states.to_vec();
+        kernel.set_continuous_states(&projected)?;
+        kernel.completed_integrator_step(MeStepCompletion::Continuous {
+            accepted_derivatives: None,
+        })?;
+        kernel.verify_frozen_compatibility_state(
+            frozen_solver_y,
+            frozen_parameters,
+            MeStage::Integration,
+        )?;
+        Ok(projected)
+    }
+
+    pub fn verify_frozen_compatibility_state(
+        &self,
+        frozen_solver_y: &[f64],
+        frozen_parameters: &[f64],
+        stage: MeStage,
+    ) -> Result<(), MeError> {
+        self.kernel.borrow().verify_frozen_compatibility_state(
+            frozen_solver_y,
+            frozen_parameters,
+            stage,
+        )
+    }
+
+    pub fn arm_time_event(
+        &self,
+        current_time: f64,
+        current_states: &[f64],
+        event_time: f64,
+        horizon: f64,
+    ) -> Result<(), MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(current_time))?;
+        kernel.set_continuous_states(current_states)?;
+        let stop = kernel.next_event_stop(horizon)?;
+        if !stop.is_event || !time_match_with_tol(stop.time, event_time) {
+            return Err(MeError::Contract {
+                reason: format!(
+                    "integrator selected time event {event_time}, but the ME runtime returned \
+                     time={} is_event={}",
+                    stop.time, stop.is_event
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn process_time_event(
+        &self,
+        event_time: f64,
+        states: &[f64],
+        horizon: f64,
+    ) -> Result<MeRuntimePostEventState, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(event_time))?;
+        kernel.set_continuous_states(states)?;
+        let entry = MeEventEntry {
+            cause: MeEventCause::TimeEvent,
+            event_time,
+            horizon,
+        };
+        kernel.enter_event_mode(entry)?;
+        let discrete = update_discrete_states_to_completion(&mut *kernel)?;
+        kernel.enter_continuous_time_mode()?;
+        post_event_state(&mut *kernel, entry, discrete)
+    }
+
+    pub fn process_state_event(
+        &self,
+        root_time: f64,
+        root_index: usize,
+        root_states: &[f64],
+        right_time: f64,
+        horizon: f64,
+    ) -> Result<MeRuntimePostEventState, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(root_time))?;
+        kernel.set_continuous_states(root_states)?;
+        let derivatives = kernel.frozen_event_state_derivatives(root_time, root_states)?;
+        let (pre_states, right_states) =
+            bracket_root_states(root_states, &derivatives, root_time, right_time);
+        kernel.capture_frozen_located_event_pre(&pre_states)?;
+        kernel.set_continuous_states(&pre_states)?;
+        let mut before = Vec::new();
+        kernel.get_event_indicators(&mut before)?;
+
+        kernel.set_time(MeTime::at(right_time))?;
+        kernel.set_continuous_states(&right_states)?;
+        let mut after = Vec::new();
+        kernel.get_event_indicators(&mut after)?;
+        let mut crossings = Vec::new();
+        kernel.event_indicator_crossings(&before, &after, &mut crossings)?;
+        retain_reported_root_crossing(root_index, &after, &mut crossings);
+        kernel.arm_state_event(&crossings)?;
+        kernel.completed_integrator_step(MeStepCompletion::AtStateEvent)?;
+        if kernel.has_scheduled_event_at(root_time) {
+            kernel.set_time(MeTime::at(root_time))?;
+            kernel.set_continuous_states(root_states)?;
+        }
+        let entry = MeEventEntry {
+            cause: MeEventCause::StateEvent,
+            event_time: root_time,
+            horizon,
+        };
+        kernel.enter_event_mode(entry)?;
+        let discrete = update_discrete_states_to_completion(&mut *kernel)?;
+        kernel.enter_continuous_time_mode()?;
+        post_event_state(&mut *kernel, entry, discrete)
+    }
+
+    /// Integrator RHS callback: set time/states, then read derivatives.
+    pub fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) {
+        let result = (|| {
+            let mut kernel = self.kernel.borrow_mut();
+            kernel.set_time(MeTime::at(time))?;
+            kernel.set_continuous_states(states)?;
+            let mut values = Vec::new();
+            kernel.get_continuous_state_derivatives(&mut values)?;
+            copy_callback_values("state derivative", &values, out)
+        })();
+        self.finish_callback(result, out);
+    }
+
+    /// Integrator JVP callback through the FMI directional derivative.
+    pub fn directional_derivative_into(
+        &self,
+        time: f64,
+        states: &[f64],
+        seed: &[f64],
+        out: &mut [f64],
+    ) {
+        let result = (|| {
+            let mut kernel = self.kernel.borrow_mut();
+            kernel.set_time(MeTime::at(time))?;
+            kernel.set_continuous_states(states)?;
+            kernel.get_directional_derivative(seed, out)
+        })();
+        self.finish_callback(result, out);
+    }
+
+    /// Integrator root callback through FMI event indicators.
+    pub fn event_indicators_into(&self, time: f64, states: &[f64], out: &mut [f64]) {
+        let result = (|| {
+            let mut kernel = self.kernel.borrow_mut();
+            kernel.set_time(MeTime::at(time))?;
+            kernel.set_continuous_states(states)?;
+            let mut values = Vec::new();
+            kernel.get_event_indicators(&mut values)?;
+            if values.is_empty() {
+                out.fill(1.0);
+                return Ok(());
+            }
+            copy_callback_values("event indicator", &values, out)
+        })();
+        self.finish_callback(result, out);
+    }
+
+    fn finish_callback(&self, result: Result<(), MeError>, out: &mut [f64]) {
+        if let Err(error) = result {
+            out.fill(f64::NAN);
+            let mut pending = self.callback_error.borrow_mut();
+            if pending.is_none() {
+                *pending = Some(error);
+            }
+        }
+    }
+}
+
+fn bracket_root_states(
+    root_states: &[f64],
+    derivatives: &[f64],
+    root_time: f64,
+    right_time: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let dt = right_time - root_time;
+    let mut pre_states = root_states.to_vec();
+    let mut right_states = root_states.to_vec();
+    if dt > 0.0 && !sample_time_match_with_tol(root_time, right_time) {
+        for ((pre, right), derivative) in pre_states
+            .iter_mut()
+            .zip(&mut right_states)
+            .zip(derivatives)
+        {
+            *pre -= dt * derivative;
+            *right += dt * derivative;
+        }
+    }
+    (pre_states, right_states)
+}
+
+fn retain_reported_root_crossing(
+    root_index: usize,
+    after: &[f64],
+    crossings: &mut Vec<MeIndicatorCrossing>,
+) {
+    if crossings
+        .iter()
+        .any(|crossing| crossing.index == root_index)
+    {
+        return;
+    }
+    let post_indicator_value = after
+        .get(root_index)
+        .copied()
+        .map_or(1.0, |value| if value >= 0.0 { 1.0 } else { 0.0 });
+    crossings.push(MeIndicatorCrossing {
+        index: root_index,
+        post_indicator_value,
+    });
+}
+
+fn post_event_state(
+    kernel: &mut impl ModelExchangeKernel,
+    entry: MeEventEntry,
+    discrete: MeDiscreteStates,
+) -> Result<MeRuntimePostEventState, MeError> {
+    let mut states = vec![0.0; kernel.model_description().continuous_state_count];
+    kernel.get_continuous_states(&mut states)?;
+    Ok(MeRuntimePostEventState {
+        time: discrete.time,
+        states,
+        entry,
+        termination: discrete.terminate_simulation,
+    })
+}
+
+fn update_discrete_states_to_completion(
+    kernel: &mut impl ModelExchangeKernel,
+) -> Result<MeDiscreteStates, MeError> {
+    let mut discrete = kernel.update_discrete_states()?;
+    while discrete.discrete_states_need_update {
+        discrete = kernel.update_discrete_states()?;
+    }
+    Ok(discrete)
+}
+
+fn copy_callback_values(label: &str, values: &[f64], out: &mut [f64]) -> Result<(), MeError> {
+    if values.len() != out.len() {
+        return Err(MeError::Contract {
+            reason: format!(
+                "{label} callback produced {} values for {} integrator slots",
+                values.len(),
+                out.len()
+            ),
+        });
+    }
+    out.copy_from_slice(values);
+    Ok(())
+}

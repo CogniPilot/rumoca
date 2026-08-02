@@ -96,12 +96,14 @@
 //!   component mints that stage where the failure happens rather than letting a
 //!   host re-derive it from rendered text.
 
+mod host;
 mod kernel;
 pub(crate) mod lifecycle;
 mod no_state;
 #[cfg(test)]
 mod tests;
 
+pub use host::{MeRuntimeHost, MeRuntimeInitialState, MeRuntimePostEventState};
 pub use kernel::SolveMeKernel;
 pub use no_state::MeNoStateSession;
 

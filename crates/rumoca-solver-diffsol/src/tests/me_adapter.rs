@@ -89,7 +89,8 @@ fn me_rhs_callbacks_preserve_frozen_algebraic_seed_and_commit_policy() {
     )
     .expect("legacy initialization should settle the accepted full solver vector");
 
-    let host = DiffsolMeHost::instantiate(&model, &opts).expect("ME host should instantiate");
+    let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
+        .expect("ME host should instantiate");
     host.initialize(&accepted_y, &params)
         .expect("ME initialization should match the frozen full solver vector");
 
@@ -197,7 +198,8 @@ fn frozen_me_state_event_keeps_located_nonstate_lanes_when_time_snaps_back() {
     let right_time = runtime_root_event_application_time(LOCATED_ROOT, HORIZON, CALLBACK_TOLERANCE);
     assert_eq!(right_time.to_bits(), HORIZON.to_bits());
 
-    let host = DiffsolMeHost::instantiate(&model, &opts).expect("ME host should instantiate");
+    let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
+        .expect("ME host should instantiate");
     host.initialize(&accepted_y, &params)
         .expect("ME initialization should preserve the frozen seed");
     let root_states = [LOCATED_ROOT];
@@ -229,7 +231,7 @@ fn frozen_me_state_event_keeps_located_nonstate_lanes_when_time_snaps_back() {
     );
     host.sync_continuous_point(HORIZON, &event.states)
         .expect("the component should accept the reset point");
-    host.prepare_bdf_initial_seed(&frozen_solver_y, MeStage::EventIteration)
+    host.prepare_integrator_initial_seed(&frozen_solver_y, MeStage::EventIteration)
         .expect("the accepted frozen seed should transfer");
     host.verify_frozen_compatibility_state(
         &frozen_solver_y,
@@ -275,7 +277,8 @@ fn frozen_me_state_event_uses_snapped_host_time_for_discrete_rows() {
 
     let right_time = runtime_root_event_application_time(LOCATED_ROOT, HORIZON, CALLBACK_TOLERANCE);
     assert_eq!(right_time.to_bits(), HORIZON.to_bits());
-    let host = DiffsolMeHost::instantiate(&model, &opts).expect("ME host should instantiate");
+    let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
+        .expect("ME host should instantiate");
     host.initialize(&accepted_y, &params)
         .expect("ME initialization should preserve the frozen seed");
     let event = host
@@ -294,7 +297,7 @@ fn frozen_me_state_event_uses_snapped_host_time_for_discrete_rows() {
             CALLBACK_MAX_ITERS,
         )
         .expect("frozen accepted vector should rebuild at the horizon");
-    host.prepare_bdf_initial_seed(&frozen_solver_y, MeStage::EventIteration)
+    host.prepare_integrator_initial_seed(&frozen_solver_y, MeStage::EventIteration)
         .expect("accepted frozen seed should transfer");
     host.verify_frozen_compatibility_state(
         &frozen_solver_y,
@@ -415,7 +418,8 @@ fn frozen_me_positive_dt_state_event_keeps_located_nonstate_lanes() {
 
     let right_time = runtime_root_event_application_time(ROOT_TIME, HORIZON, CALLBACK_TOLERANCE);
     assert!(right_time > ROOT_TIME, "fixture must exercise positive dt");
-    let host = DiffsolMeHost::instantiate(&model, &opts).expect("ME host should instantiate");
+    let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
+        .expect("ME host should instantiate");
     host.initialize(&accepted_y, &params)
         .expect("ME initialization should preserve the frozen seed");
     let event = host
@@ -435,7 +439,7 @@ fn frozen_me_positive_dt_state_event_keeps_located_nonstate_lanes() {
             CALLBACK_MAX_ITERS,
         )
         .expect("the accepted frozen vector should rebuild at the right limit");
-    host.prepare_bdf_initial_seed(&frozen_solver_y, MeStage::EventIteration)
+    host.prepare_integrator_initial_seed(&frozen_solver_y, MeStage::EventIteration)
         .expect("the accepted frozen seed should transfer");
     host.verify_frozen_compatibility_state(
         &frozen_solver_y,
@@ -477,7 +481,8 @@ fn frozen_coincident_clock_root_returns_the_post_clock_right_limit_state() {
     )
     .expect("legacy initialization should settle");
 
-    let host = DiffsolMeHost::instantiate(&model, &opts).expect("ME host should instantiate");
+    let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
+        .expect("ME host should instantiate");
     host.initialize(&accepted_y, &params)
         .expect("ME initialization should preserve the frozen seed");
     let right_time = runtime_root_event_application_time(ROOT_TIME, HORIZON, CALLBACK_TOLERANCE);
