@@ -572,13 +572,12 @@ fn semicolon_matrix_of_vectors_constructs_with_promoted_shape() {
         .expect("two promoted length-2 columns concatenate to a checked 4 x 1 matrix");
 }
 
-/// The same MLS §10.4.2.1 refusal must reach a `[ ]` written in a *model*
-/// equation, where no call-argument shape rule runs. `[v1, v2]` over declared
-/// vectors is syntactically a scalar-operand row, so without this the
-/// constructor reported a bare `ED020` naming no construct — and the base
-/// compiler silently transposed it (y = 2 where OMC gives 3).
+/// A syntactically unambiguous horizontal row of vector references uses the
+/// same checked promoted-concatenation owner as a function argument. MLS
+/// §10.4.2.1 promotes each length-3 vector to 3 x 1 and concatenates the result
+/// to 3 x 2 before `sum` reduces it.
 #[test]
-fn model_scope_matrix_row_of_vectors_is_rejected_by_name() {
+fn model_scope_matrix_row_of_vectors_uses_checked_promotion() {
     let source =
         TestSource::new("model M Real v1[3]; Real v2[3]; equation 0 = sum([v1, v2]); end M;");
     let mut model = test_model();
@@ -603,20 +602,17 @@ fn model_scope_matrix_row_of_vectors_is_rejected_by_name() {
         span: row_span,
     };
     model.add_equation(flat::Equation::new(
-        row,
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Sum,
+            args: vec![row],
+            span: row_span,
+        },
         row_span,
         flat::EquationOrigin::ComponentEquation {
             component: String::new(),
         },
     ));
 
-    let error = construct(&model, source.map)
-        .expect_err("a model-scope row of vectors needs `cat` promotion");
-    let message = error.to_string();
-    assert!(
-        message.contains("MLS §10.4.2.1")
-            && message.contains("ambiguous horizontal")
-            && message.contains("rank-1 operand"),
-        "unexpected rejection: {message}"
-    );
+    construct(&model, source.map)
+        .expect("the DAE constructor proves the promoted 3 x 2 concatenation");
 }

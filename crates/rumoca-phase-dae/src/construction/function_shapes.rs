@@ -660,7 +660,7 @@ impl ShapeAnalyzer<'_> {
         if let Expression::Array {
             elements,
             is_matrix: true,
-            span,
+            ..
         } = expression
         {
             if elements.iter().all(|element| {
@@ -680,7 +680,6 @@ impl ShapeAnalyzer<'_> {
                 // top-level horizontal-row rejection to those operands.
                 return self.discover_promoted_matrix_calls(elements, values);
             }
-            reject_non_scalar_matrix_row(elements, values, *span)?;
         }
         for child in expression_children(expression) {
             self.discover_calls(child, values)?;
@@ -1350,52 +1349,6 @@ fn require_exact_vectorization_owner(
             ),
             span,
         ));
-    }
-    Ok(())
-}
-
-/// Refuse a `[ ]` row whose operands are proven non-scalar, by name.
-///
-/// MLS §10.4.2.1 builds `[A, B, …]` as `cat(2, promote(A, n), …)`, so a
-/// non-scalar operand needs the promoting `cat` the canonical DAE has no owner
-/// for: a vector operand becomes an n x 1 column and a row of vectors
-/// transposes into the result.
-///
-/// [`expression_rules::matrix_row_columns`] already names this for a call
-/// argument, but that rule only runs where a shape is demanded. A `[ ]` written
-/// directly in a model equation demands none, so `[v1, v2]` over declared
-/// vectors reached the constructor and failed as a bare `ED020` that named no
-/// construct — after the base compiler had silently transposed it. This walk
-/// sees every model expression, so it is where the model scope gets the same
-/// named refusal.
-///
-/// Only a *proven* non-scalar operand is refused; an operand this scope cannot
-/// shape keeps the lowering it already had, which holds the accepted set fixed.
-fn reject_non_scalar_matrix_row(
-    elements: &[Expression],
-    values: &ShapeEnvironment,
-    span: Span,
-) -> Result<(), ToDaeError> {
-    for element in elements {
-        if matches!(element, Expression::Array { .. }) {
-            // A nested row of this constructor, not an operand of one row.
-            continue;
-        }
-        let Some(shape) = call_free_expression_shape(element, values) else {
-            continue;
-        };
-        if !shape.is_empty() {
-            return Err(ToDaeError::unsupported_flat(
-                "function shape proof",
-                format!(
-                    "MLS §10.4.2.1 ambiguous horizontal `[ ]` row has a rank-{} operand; only \
-                     the structurally unambiguous `;` form has a checked promoted-concatenation \
-                     owner",
-                    shape.len()
-                ),
-                span,
-            ));
-        }
     }
     Ok(())
 }
