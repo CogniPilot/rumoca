@@ -10,8 +10,7 @@ use rumoca_ir_solve as solve;
 use super::kernel::{event_update_application_time, frozen_projection_changed};
 use super::{
     MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig, MeModelSource,
-    MeNoStateSession, MeStage, MeStepCompletion, MeTime, ModelExchangeKernel, SolveMeKernel,
-    resolve_me_stage,
+    MeNoStateSession, MeStage, MeTime, ModelExchangeKernel, SolveMeKernel, resolve_me_stage,
 };
 
 #[test]
@@ -577,9 +576,14 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
             post_indicator_value: 1.0,
         }])
         .expect("the typed crossing should arm the post-root side");
-    kernel
-        .completed_integrator_step(MeStepCompletion::AtStateEvent)
+    assert!(
+        kernel.model_description().needs_completed_integrator_step,
+        "the linked kernel declares its accepted-step history requirement"
+    );
+    let completed = kernel
+        .completed_integrator_step(true)
         .expect("the integrator should report the located root");
+    assert_eq!(completed, super::MeCompletedIntegratorStep::default());
     kernel
         .enter_event_mode(MeEventEntry {
             cause: MeEventCause::StateEvent,

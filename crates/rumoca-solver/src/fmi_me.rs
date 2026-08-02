@@ -56,22 +56,6 @@
 //!   integrator not to step across a known event instant; rumoca additionally
 //!   needs the FMU to evaluate the *left limit* of that instant, so the
 //!   boundary travels with `fmi3SetTime`.
-//! - [`ModelExchangeKernel::completed_integrator_step`]: occupies the
-//!   lifecycle position of `fmi3CompletedIntegratorStep` but is **not** that
-//!   call. It omits the `noSetFMUStatePriorToCurrentPoint` in-param (rumoca
-//!   never rolls a component back to an earlier point) and both mandated
-//!   out-params: `enterEventMode` (this host detects events from the event
-//!   indicators it already reads, so the component never requests event mode
-//!   here) and `terminateSimulation` (termination is reported by
-//!   [`ModelExchangeKernel::update_discrete_states`] instead). They are absent
-//!   rather than hardcoded so no host can mistake an unimplemented answer for
-//!   a measured one; add them when a host needs them.
-//! - [`MeStepCompletion::accepted_derivatives`]: the FSAL stage an explicit
-//!   Runge-Kutta method already computed at the accepted point, handed back so
-//!   the FMU does not recompute it.
-//! - [`MeStepCompletion::AtStateEvent`]: FMI has no way for a host to say that
-//!   the step it just completed lands *on* a located state event. Rumoca needs
-//!   it because the component drops different caches in that case.
 //! - [`MeEventEntry`]: `fmi3EnterEventMode` takes no arguments in FMI 3.0.
 //!   Rumoca's component needs the event `cause` (state event versus its own
 //!   scheduled instant), the `event_time` the host located, and the `horizon`
@@ -423,6 +407,8 @@ pub enum MeNumericsProfile {
 pub struct MeModelDescription<'a> {
     pub continuous_state_count: usize,
     pub event_indicator_count: usize,
+    /// FMI `<ModelExchange needsCompletedIntegratorStep="...">`.
+    pub needs_completed_integrator_step: bool,
     /// Names of every variable the component exposes through
     /// [`ModelExchangeKernel::get_outputs`], in value-reference order.
     pub output_names: &'a [String],
@@ -534,21 +520,13 @@ pub struct MeEventStop {
     pub is_event: bool,
 }
 
-/// [`ModelExchangeKernel::completed_integrator_step`] arguments.
-///
-/// Extension: see the module docs for how this differs from
-/// `fmi3CompletedIntegratorStep`.
-#[derive(Debug, Clone, Copy)]
-pub enum MeStepCompletion<'a> {
-    /// A plain accepted continuous step.
-    Continuous {
-        /// The FSAL stage derivative at the accepted point, if the method
-        /// produced one; the component may reuse it instead of recomputing.
-        accepted_derivatives: Option<&'a [f64]>,
-    },
-    /// The accepted step ends on a located state event. The component drops
-    /// every cached evaluation because Event Mode will change discrete state.
-    AtStateEvent,
+/// `fmi3CompletedIntegratorStep` outputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MeCompletedIntegratorStep {
+    /// FMI `enterEventMode`: the component requests a step event.
+    pub enter_event_mode: bool,
+    /// FMI `terminateSimulation`: the component requests termination.
+    pub terminate_simulation: bool,
 }
 
 /// An observation point: the component's refreshed observable state.
@@ -706,10 +684,15 @@ pub trait ModelExchangeKernel {
     /// Extension: see the module docs.
     fn project_continuous_states(&mut self, states: &mut [f64]) -> Result<bool, MeError>;
 
-    /// Accept the step the host just took. Extension: see the module docs —
-    /// this occupies the lifecycle position of `fmi3CompletedIntegratorStep`
-    /// but omits its in-param and both of its out-params.
-    fn completed_integrator_step(&mut self, step: MeStepCompletion<'_>) -> Result<(), MeError>;
+    /// `fmi3CompletedIntegratorStep`.
+    ///
+    /// `no_set_fmu_state_prior_to_current_point` is FMI's rollback promise.
+    /// The two booleans in [`MeCompletedIntegratorStep`] are the standard
+    /// `enterEventMode` and `terminateSimulation` out-parameters.
+    fn completed_integrator_step(
+        &mut self,
+        no_set_fmu_state_prior_to_current_point: bool,
+    ) -> Result<MeCompletedIntegratorStep, MeError>;
 
     /// The largest step the component's internal history allows next, if any.
     ///

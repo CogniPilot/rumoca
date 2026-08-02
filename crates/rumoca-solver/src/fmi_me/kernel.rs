@@ -9,9 +9,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use super::lifecycle::{MeLifecycle, MeLifecycleCommand, MeLifecycleViolation, MeState};
 use super::{
-    MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop, MeFmuState,
-    MeIndicatorCrossing, MeInstanceConfig, MeModelDescription, MeModelSource, MeNumericsProfile,
-    MeObservation, MeOutputSeries, MeRootProfile, MeStage, MeStepCompletion, MeTime, MeValueRef,
+    MeCompletedIntegratorStep, MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop,
+    MeFmuState, MeIndicatorCrossing, MeInstanceConfig, MeModelDescription, MeModelSource,
+    MeNumericsProfile, MeObservation, MeOutputSeries, MeRootProfile, MeStage, MeTime, MeValueRef,
     ModelExchangeKernel,
 };
 use crate::runtime::event::{
@@ -1406,6 +1406,11 @@ impl ModelExchangeKernel for SolveMeKernel {
         MeModelDescription {
             continuous_state_count: self.state_count,
             event_indicator_count: self.runtime.root_condition_count(),
+            // The linked kernel commits accepted-point history and invalidates
+            // component caches here. Discrete-delay models need this even when
+            // they have no continuous delay channel, so the current component
+            // profile honestly requires the call for every model.
+            needs_completed_integrator_step: true,
             output_names: &self.runtime.model.visible_names,
             input_names: self.runtime.model.problem.solve_layout.input_scalar_names(),
             output_meta: &self.output_meta,
@@ -1464,6 +1469,10 @@ impl ModelExchangeKernel for SolveMeKernel {
         if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
             self.frozen_event_accepted_seed = Some(self.solver_y_guess.borrow().clone());
         }
+        // Entering Event Mode is the standard signal that any continuous-
+        // mode accepted-point cache is no longer authoritative. This replaces
+        // the retired Rumoca-only `AtStateEvent` completed-step variant.
+        self.clear_runtime_caches();
         self.last_event_entry = Some(entry);
         self.pending_event_entry = Some(entry);
         self.commit_lifecycle_transition(MeLifecycleCommand::EnterEventMode)
@@ -1586,6 +1595,7 @@ impl ModelExchangeKernel for SolveMeKernel {
             })
             .map_err(|error| error.at_stage(MeStage::Integration))?
             .map_err(|error| error.at_stage(MeStage::Integration))?;
+        self.cache_derivative(time, &self.states, &values);
         *derivatives = values;
         Ok(())
     }
@@ -1686,23 +1696,28 @@ impl ModelExchangeKernel for SolveMeKernel {
             .map_err(|error| error.at_stage(MeStage::ManifoldProjection))
     }
 
-    fn completed_integrator_step(&mut self, step: MeStepCompletion<'_>) -> Result<(), MeError> {
+    fn completed_integrator_step(
+        &mut self,
+        _no_set_fmu_state_prior_to_current_point: bool,
+    ) -> Result<MeCompletedIntegratorStep, MeError> {
         self.require_active_lifecycle("completed_integrator_step")?;
         self.post_event_eval_time = None;
-        match step {
-            MeStepCompletion::AtStateEvent => self.clear_runtime_caches(),
-            MeStepCompletion::Continuous {
-                accepted_derivatives,
-            } => {
-                if self.last_projection_changed {
-                    self.clear_derivative_cache();
-                } else if let Some(derivatives) = accepted_derivatives {
-                    self.cache_derivative(self.time, &self.states, derivatives);
-                }
-            }
+        if !self.pending_root_crossings.is_empty() {
+            self.clear_runtime_caches();
+        } else if self.last_projection_changed {
+            self.clear_derivative_cache();
+        } else {
+            // FMI does not let an importer hand an FSAL stage into the FMU.
+            // Keep the ordinary accepted-point cache private by evaluating it
+            // through the same standard derivative operation the importer
+            // could call here. A located event stays cache-free until Event
+            // Mode consumes it.
+            let mut accepted_derivatives = Vec::new();
+            self.get_continuous_state_derivatives(&mut accepted_derivatives)?;
         }
         self.commit_delay_point()
-            .map_err(|error| error.at_stage(MeStage::Integration))
+            .map_err(|error| error.at_stage(MeStage::Integration))?;
+        Ok(MeCompletedIntegratorStep::default())
     }
 
     fn max_step_size(&self) -> Option<f64> {

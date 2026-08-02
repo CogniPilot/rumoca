@@ -9,8 +9,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use super::{
     MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop, MeIndicatorCrossing,
-    MeInstanceConfig, MeModelSource, MeObservation, MeStage, MeStepCompletion, MeTime,
-    ModelExchangeKernel, SolveMeKernel,
+    MeInstanceConfig, MeModelSource, MeObservation, MeStage, MeTime, ModelExchangeKernel,
+    SolveMeKernel,
 };
 use crate::{SimTermination, time_match_with_tol, timeline::sample_time_match_with_tol};
 
@@ -230,9 +230,7 @@ impl MeRuntimeHost {
         let mut projected = states.to_vec();
         kernel.project_continuous_states(&mut projected)?;
         kernel.set_continuous_states(&projected)?;
-        kernel.completed_integrator_step(MeStepCompletion::Continuous {
-            accepted_derivatives: None,
-        })?;
+        complete_integrator_step(&mut *kernel)?;
         drop(kernel);
         self.store_accepted_point(time, &projected);
         Ok(projected)
@@ -265,9 +263,7 @@ impl MeRuntimeHost {
             .map_err(|error| error.at_stage(MeStage::Integration))?;
         let projected = states.to_vec();
         kernel.set_continuous_states(&projected)?;
-        kernel.completed_integrator_step(MeStepCompletion::Continuous {
-            accepted_derivatives: None,
-        })?;
+        complete_integrator_step(&mut *kernel)?;
         kernel.verify_frozen_compatibility_state(
             frozen_solver_y,
             frozen_parameters,
@@ -364,7 +360,7 @@ impl MeRuntimeHost {
         kernel.event_indicator_crossings(&before, &after, &mut crossings)?;
         retain_reported_root_crossing(root_index, &after, &mut crossings);
         kernel.arm_state_event(&crossings)?;
-        kernel.completed_integrator_step(MeStepCompletion::AtStateEvent)?;
+        complete_integrator_step(&mut *kernel)?;
         let includes_scheduled_event = kernel.has_scheduled_event_at(root_time);
         if includes_scheduled_event {
             kernel.set_time(MeTime::at(root_time))?;
@@ -536,6 +532,23 @@ fn update_discrete_states_to_completion(
         discrete = kernel.update_discrete_states()?;
     }
     Ok(discrete)
+}
+
+fn complete_integrator_step(kernel: &mut impl ModelExchangeKernel) -> Result<(), MeError> {
+    if !kernel.model_description().needs_completed_integrator_step {
+        return Ok(());
+    }
+    let completed = kernel.completed_integrator_step(true)?;
+    if completed.enter_event_mode || completed.terminate_simulation {
+        return Err(MeError::Contract {
+            reason: format!(
+                "ME host cannot yet consume completed-integrator-step outputs: \
+                 enter_event_mode={} terminate_simulation={}",
+                completed.enter_event_mode, completed.terminate_simulation
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn copy_callback_values(label: &str, values: &[f64], out: &mut [f64]) -> Result<(), MeError> {

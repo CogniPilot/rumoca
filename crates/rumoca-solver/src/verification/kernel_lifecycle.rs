@@ -13,8 +13,8 @@ use super::model_fixture::{
 use crate::fmi_me::lifecycle::{MeLifecycle, MeLifecycleCommand, MeState};
 use crate::fmi_me::{
     MeError, MeEventCause, MeEventEntry, MeFmuState, MeIndicatorCrossing, MeInstanceConfig,
-    MeModelSource, MeOutputSeries, MeRootProfile, MeStage, MeStepCompletion, MeTime,
-    ModelExchangeKernel, SolveMeKernel,
+    MeModelSource, MeOutputSeries, MeRootProfile, MeStage, MeTime, ModelExchangeKernel,
+    SolveMeKernel,
 };
 
 const START_TIME: f64 = 0.0;
@@ -441,11 +441,7 @@ fn property_terminated_facade_is_fail_closed(operation: ActiveFacadeOperation) {
         ActiveFacadeOperation::ProjectStates => kernel
             .project_continuous_states(&mut state_buffer)
             .map(|_| ()),
-        ActiveFacadeOperation::CompleteStep => {
-            kernel.completed_integrator_step(MeStepCompletion::Continuous {
-                accepted_derivatives: None,
-            })
-        }
+        ActiveFacadeOperation::CompleteStep => kernel.completed_integrator_step(true).map(|_| ()),
         ActiveFacadeOperation::NextEventStop => kernel.next_event_stop(STOP_TIME).map(|_| ()),
         ActiveFacadeOperation::ClassifyCrossings => {
             kernel.event_indicator_crossings(&[], &[], &mut Vec::new())

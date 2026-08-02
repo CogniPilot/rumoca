@@ -19,8 +19,8 @@ use rumoca_solver::{
     StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
     fmi_me::{
         MeError, MeEventCause, MeEventEntry, MeEventStop, MeIndicatorCrossing, MeInstanceConfig,
-        MeModelSource, MeObservation, MeOutputSeries, MeRootProfile, MeStepCompletion, MeTime,
-        ModelExchangeKernel, SolveMeKernel, event_indicator_crossed,
+        MeModelSource, MeObservation, MeOutputSeries, MeRootProfile, MeTime, ModelExchangeKernel,
+        SolveMeKernel, event_indicator_crossed,
     },
     timeline,
 };
@@ -955,19 +955,36 @@ impl Rk45Backend {
             self.state = root.state;
             self.kernel.set_time(MeTime::at(self.time))?;
             self.kernel.set_continuous_states(&self.state)?;
-            self.kernel
-                .completed_integrator_step(MeStepCompletion::AtStateEvent)?;
+            self.complete_integrator_step()?;
             return Ok(Some(StepUntilOutcome::RootFound { t_root: root.time }));
         }
         self.time = new_t;
         self.state = projected_next;
         self.kernel.set_time(MeTime::at(self.time))?;
         self.kernel.set_continuous_states(&self.state)?;
-        self.kernel
-            .completed_integrator_step(MeStepCompletion::Continuous {
-                accepted_derivatives: Some(&trial.stages[6]),
-            })?;
+        self.complete_integrator_step()?;
         Ok(None)
+    }
+
+    fn complete_integrator_step(&mut self) -> Result<(), SimError> {
+        if !self
+            .kernel
+            .model_description()
+            .needs_completed_integrator_step
+        {
+            return Ok(());
+        }
+        let completed = self.kernel.completed_integrator_step(true)?;
+        if completed.enter_event_mode || completed.terminate_simulation {
+            return Err(SimError::RuntimeContract {
+                reason: format!(
+                    "RK45 host cannot yet consume completed-integrator-step outputs: \
+                     enter_event_mode={} terminate_simulation={}",
+                    completed.enter_event_mode, completed.terminate_simulation
+                ),
+            });
+        }
+        Ok(())
     }
 
     fn locate_step_roots(
