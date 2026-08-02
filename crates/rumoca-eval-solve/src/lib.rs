@@ -59,8 +59,8 @@ pub use table_runtime::{
     eval_table_lookup_value_in, eval_time_table_next_event_value_in,
 };
 pub use update_rows::{
-    UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_values,
-    eval_and_apply_update_rows,
+    UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_value_exact,
+    apply_scalar_slot_values, apply_scalar_slot_values_exact, eval_and_apply_update_rows,
 };
 
 #[cfg(test)]

@@ -1271,6 +1271,7 @@ impl SolveMeKernel {
                 }
                 self.finish_frozen_runtime_event(entry.event_time)?;
                 if coincident_time_event.is_some() {
+                    self.stop_schedule.advance_past(event_time);
                     self.pending_event_stop = None;
                     self.set_post_event_eval_time(right_limit_t);
                     self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
@@ -1296,6 +1297,7 @@ impl SolveMeKernel {
                 )?;
                 self.advance_state_to_event_right_limit = false;
                 self.finish_frozen_runtime_event(entry.event_time)?;
+                self.stop_schedule.advance_past(entry.event_time);
                 self.set_post_event_eval_time(outcome.right_limit_t);
                 self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
                 self.clear_runtime_caches();

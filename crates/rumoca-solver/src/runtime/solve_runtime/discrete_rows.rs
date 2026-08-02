@@ -82,7 +82,7 @@ impl SolveRuntime {
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
-        tol: f64,
+        _tol: f64,
     ) -> Result<bool, RuntimeSolveError> {
         let eval_y = copy_runtime_values(y, "unfiltered discrete y snapshot")?;
         let eval_p = copy_runtime_values(p, "unfiltered discrete p snapshot")?;
@@ -118,7 +118,7 @@ impl SolveRuntime {
         }
         let mut changed = false;
         for (target, value) in assignments {
-            changed |= solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+            changed |= solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
         }
         Ok(changed)
     }
@@ -283,7 +283,7 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
         writes.push((target, value));
     }
     for (target, value) in writes {
-        solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+        solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
     }
     Ok(seeded)
 }
@@ -371,7 +371,7 @@ impl SolveRuntime {
             writes.push((row.target, value));
         }
         for (target, value) in writes {
-            solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+            solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
         }
         Ok(seeded)
     }
@@ -530,7 +530,7 @@ impl SolveRuntime {
         self.override_relation_memory_row_values(snapshot.root_relation_overrides, &mut row_values);
         let mut changed = false;
         for (target, value) in row_values {
-            changed |= solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+            changed |= solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
         }
         Ok(changed)
     }

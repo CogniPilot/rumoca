@@ -9,7 +9,6 @@ pub struct UpdateRowApplication<'a> {
     pub p: &'a mut [f64],
     pub t: f64,
     pub context: RowEvalContext<'a>,
-    pub tol: f64,
     pub max_iters: usize,
 }
 
@@ -34,12 +33,11 @@ pub fn eval_and_apply_update_rows(
             application.context,
             &mut values,
         )?;
-        let changed = apply_scalar_slot_values(
+        let changed = apply_scalar_slot_values_exact(
             application.targets,
             values.as_slice(),
             application.y,
             application.p,
-            application.tol,
         )?;
         if !changed {
             return Ok(changed_any);
@@ -86,6 +84,43 @@ pub fn apply_scalar_slot_value(
     }
 }
 
+/// Apply assignment-owned scalar values using exact discrete change semantics.
+///
+/// Modelica event iteration terminates when the assigned discrete values equal
+/// their `pre` values.  Solver residual tolerances therefore must not suppress
+/// an assignment whose value happens to be small.
+pub fn apply_scalar_slot_values_exact(
+    targets: &[ScalarSlot],
+    values: &[f64],
+    y: &mut [f64],
+    p: &mut [f64],
+) -> Result<bool, EvalSolveError> {
+    if targets.len() != values.len() {
+        return Err(EvalSolveError::UpdateRowTargetMismatch {
+            rows: values.len(),
+            targets: targets.len(),
+        });
+    }
+    let mut changed = false;
+    for (target, value) in targets.iter().zip(values.iter().copied()) {
+        changed |= apply_scalar_slot_value_exact(*target, value, y, p)?;
+    }
+    Ok(changed)
+}
+
+pub fn apply_scalar_slot_value_exact(
+    target: ScalarSlot,
+    value: f64,
+    y: &mut [f64],
+    p: &mut [f64],
+) -> Result<bool, EvalSolveError> {
+    match target {
+        ScalarSlot::Y { index, .. } => update_indexed_slot_exact("y", y, index, value),
+        ScalarSlot::P { index, .. } => update_indexed_slot_exact("p", p, index, value),
+        ScalarSlot::Time | ScalarSlot::Constant(_) => Ok(false),
+    }
+}
+
 fn validate_update_shape(
     block: &ScalarProgramBlock,
     targets: &[ScalarSlot],
@@ -114,6 +149,26 @@ fn update_indexed_slot(
         span: None,
     })?;
     let changed = (*slot - value).abs() > tol;
+    if changed {
+        *slot = value;
+    }
+    Ok(changed)
+}
+
+fn update_indexed_slot_exact(
+    vector: &'static str,
+    slots: &mut [f64],
+    index: usize,
+    value: f64,
+) -> Result<bool, EvalSolveError> {
+    let len = slots.len();
+    let slot = slots.get_mut(index).ok_or(EvalSolveError::MissingInput {
+        vector,
+        index,
+        len,
+        span: None,
+    })?;
+    let changed = slot.to_bits() != value.to_bits();
     if changed {
         *slot = value;
     }
@@ -164,7 +219,10 @@ mod tests {
     fn update_rows_apply_scalar_slot_targets_until_stable() {
         let block = ScalarProgramBlock::with_source_span(
             vec![vec![
-                LinearOp::Const { dst: 0, value: 2.0 },
+                LinearOp::Const {
+                    dst: 0,
+                    value: 2.5e-9,
+                },
                 LinearOp::StoreOutput { src: 0 },
             ]],
             fixture_span()
@@ -181,13 +239,29 @@ mod tests {
             p: &mut p,
             t: 0.0,
             context: RowEvalContext::default(),
-            tol: 1.0e-12,
             max_iters: 4,
         })
         .expect("update rows should evaluate");
 
         assert!(changed);
-        assert_eq!(p, vec![2.0]);
+        assert_eq!(p, vec![2.5e-9]);
+    }
+
+    #[test]
+    fn exact_assignment_applies_change_below_solver_tolerance() {
+        let mut y = Vec::new();
+        let mut p = vec![0.0];
+        let value = 2.5e-9;
+
+        assert!(
+            apply_scalar_slot_value_exact(scalar_slot_p(0), value, &mut y, &mut p)
+                .expect("exact assignment should apply")
+        );
+        assert_eq!(p, [value]);
+        assert!(
+            !apply_scalar_slot_value_exact(scalar_slot_p(0), value, &mut y, &mut p)
+                .expect("repeated exact assignment should be stable")
+        );
     }
 
     #[test]

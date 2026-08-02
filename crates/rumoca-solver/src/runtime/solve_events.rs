@@ -79,9 +79,9 @@ pub fn apply_discrete_slot_values(
     values: &[f64],
     y: &mut [f64],
     p: &mut [f64],
-    tol: f64,
+    _tol: f64,
 ) -> Result<(), RuntimeSolveError> {
-    solve_eval::apply_scalar_slot_values(targets, values, y, p, tol)
+    solve_eval::apply_scalar_slot_values_exact(targets, values, y, p)
         .map(|_| ())
         .map_err(Into::into)
 }

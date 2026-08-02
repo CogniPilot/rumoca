@@ -37,8 +37,13 @@ impl SolveStopSchedule {
         schedule
     }
 
-    pub fn next_stop(&mut self, t_current: f64, t_target: f64) -> (f64, Option<RuntimeEventStop>) {
-        self.advance_past(t_current);
+    /// Inspect the next stop without consuming it.
+    ///
+    /// A time comparison cannot prove that an event iteration occurred.  The
+    /// owner of a completed event boundary must call [`Self::advance_past`]
+    /// explicitly; keeping this query read-only prevents output-grid points
+    /// near a future stop from silently consuming that stop.
+    pub fn next_stop(&self, t_current: f64, t_target: f64) -> (f64, Option<RuntimeEventStop>) {
         let mut next = None;
         if let Some(event) = self.events.get(self.next_idx)
             && !sample_time_match_with_tol(event.time, t_current)
@@ -383,7 +388,7 @@ mod tests {
             .clocks
             .periodic_event_schedules
             .push(periodic(0.1, 0.0));
-        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.3);
+        let schedule = SolveStopSchedule::new(&problem, 0.0, 0.3);
 
         let (stop, mode) = schedule.next_stop(0.0, 0.2);
 
@@ -401,7 +406,7 @@ mod tests {
             .clocks
             .periodic_event_schedules
             .push(periodic(0.05, 0.0));
-        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.1);
+        let schedule = SolveStopSchedule::new(&problem, 0.0, 0.1);
 
         let (first_stop, first_mode) = schedule.next_stop(0.0, 0.05);
         let (horizon_stop, horizon_mode) = schedule.next_stop(0.05, 0.1);
@@ -419,13 +424,31 @@ mod tests {
     }
 
     #[test]
+    fn inspecting_near_future_static_stop_does_not_consume_it() {
+        let mut problem = solve::SolveProblem::default();
+        problem.events.scheduled_time_events.push(2.5e-9);
+        let schedule = SolveStopSchedule::new(&problem, 0.0, 2.0e-8);
+
+        let (preview_stop, preview_event) = schedule.next_stop(1.6e-9, 1.7e-9);
+        assert_eq!(preview_stop.to_bits(), 1.7e-9_f64.to_bits());
+        assert!(preview_event.is_none());
+
+        let (event_stop, event) = schedule.next_stop(1.7e-9, 2.5e-9);
+        assert_eq!(event_stop.to_bits(), 2.5e-9_f64.to_bits());
+        assert_eq!(
+            event,
+            Some(RuntimeEventStop::static_event(EventPreMode::FollowCurrent))
+        );
+    }
+
+    #[test]
     fn solve_stop_schedule_keeps_ticks_after_former_materialization_cap() {
         let mut problem = solve::SolveProblem::default();
         problem
             .clocks
             .periodic_event_schedules
             .push(periodic(1.0e-4, 0.0));
-        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 100.0);
+        let schedule = SolveStopSchedule::new(&problem, 0.0, 100.0);
 
         let (stop, mode) = schedule.next_stop(20.000_05, 100.0);
 
@@ -444,7 +467,7 @@ mod tests {
             .clocks
             .periodic_event_schedules
             .push(periodic(0.1, 0.0));
-        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
+        let schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
 
         let (stop, mode) = schedule.next_stop(0.0, 1.0);
 
@@ -516,7 +539,7 @@ mod tests {
     fn terminal_operator_schedules_terminal_event_at_horizon() {
         let mut problem = solve::SolveProblem::default();
         problem.events.has_terminal_event = true;
-        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
+        let schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
 
         let (stop, event) = schedule.next_stop(0.0, 1.0);
 

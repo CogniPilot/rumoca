@@ -221,12 +221,11 @@ where
     if no_state_output_target_is_stale(backend.current_time(), target) {
         return Ok(false);
     }
-    while no_state_step_is_required(
-        backend.current_time(),
-        target,
-        tol,
-        backend.max_accepted_step_size(),
-    ) {
+    // Time-event ownership is independent of the algebraic value tolerance:
+    // even a target closer than `tol` must be offered to the schedule before
+    // it can become an accepted point.  Otherwise fine output grids can step
+    // over a component event without ever entering Event Mode.
+    while backend.current_time() < target {
         let current = backend.current_time();
         let max_step = backend.max_accepted_step_size();
         let step_target = capped_no_state_step_target(current, target, max_step);
@@ -275,17 +274,6 @@ fn capped_no_state_step_target(current: f64, target: f64, max_step: Option<f64>)
     } else {
         current.next_up().min(target)
     }
-}
-
-fn no_state_step_is_required(current: f64, target: f64, tol: f64, max_step: Option<f64>) -> bool {
-    if target <= current {
-        return false;
-    }
-    let gap = target - current;
-    gap > tol
-        || max_step
-            .filter(|step| step.is_finite() && *step > 0.0)
-            .is_some_and(|step| gap > step)
 }
 
 fn no_state_output_target_is_stale(current: f64, target: f64) -> bool {
@@ -605,6 +593,16 @@ mod tests {
             backend.root_scan_targets.contains(&0.5),
             "root scanning must stop at the exact scheduled deadline"
         );
+    }
+
+    #[test]
+    fn output_target_below_value_tolerance_still_executes_its_time_event() {
+        let event_time = 2.5e-9;
+        let mut backend = OscillatoryBackend::new(Some(event_time), Some(event_time));
+
+        run_no_state_output_schedule(&mut backend, [event_time], 1.0e-6).unwrap();
+
+        assert_eq!(backend.scheduled_events, vec![event_time]);
     }
 
     #[test]
