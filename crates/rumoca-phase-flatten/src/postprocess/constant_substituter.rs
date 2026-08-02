@@ -133,14 +133,11 @@ impl KnownConstantSubstituter<'_> {
                 .and_then(|value| value.as_bool());
             match constant {
                 Some(false) => {}
+                Some(true) if retained.is_empty() => return self.rewrite_expression(value),
                 Some(true) => {
-                    let value = self.rewrite_expression(value)?;
-                    if retained.is_empty() {
-                        return Ok(value);
-                    }
                     return Ok(rumoca_core::Expression::If {
                         branches: retained,
-                        else_branch: Box::new(value),
+                        else_branch: Box::new(self.rewrite_expression(value)?),
                         span,
                     });
                 }

@@ -192,7 +192,7 @@ fn insert_plan(
     plan: RecordArrayFieldPlan,
     span: Span,
 ) -> Result<(), ToDaeError> {
-    let alternatives = plans.entry(key).or_insert_with(Vec::new);
+    let alternatives = plans.entry(key).or_default();
     if alternatives.contains(&plan) {
         return Ok(());
     }
