@@ -1,0 +1,25 @@
+source_roots = [
+    "../../../target/cmm/CMM-a642c381",
+]
+
+[model]
+file = "SportCubFirmwareMission.mo"
+name = "SportCubFirmwareMission"
+
+[plot]
+views = []
+
+[rumoca]
+task = "simulate"
+version = "1"
+
+[signals]
+
+[sim]
+dt = 0.02
+output = "figures/nominal_modelica.csv"
+solver = "rk-like"
+t_end = 70
+
+[viewer]
+mode = "results_panel"
