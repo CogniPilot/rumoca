@@ -24,6 +24,7 @@ use crate::runtime::no_state::{
 };
 use crate::runtime::pre_params::commit_pre_params_after_event_at;
 use crate::runtime::schedule::{RuntimeEventStop, SolveStopSchedule};
+use crate::runtime::solve_ops::build_sim_result_from_solve_model;
 use crate::runtime::solve_ops::{
     EventActionOutcome, EventPreMode, RootCrossing, RuntimeSolveError,
     root_crossings_with_relation_memory, runtime_values_changed,
@@ -31,7 +32,7 @@ use crate::runtime::solve_ops::{
 use crate::runtime::solve_runtime::{
     EventUpdateRowFilter, ProjectedEventUpdateInput, ProjectedInitialEventInput, SolveRuntime,
 };
-use crate::solver::{SimOptions, SimTermination};
+use crate::solver::{SimOptions, SimResult, SimTermination};
 use crate::timeline::{event_left_probe_time, sample_time_match_with_tol};
 
 const NO_STATE_EVENT_UPDATE_MAX_ITERS: usize = 256;
@@ -56,11 +57,21 @@ struct NoStateRuntime {
     root_before_scratch: Vec<f64>,
     root_after_scratch: Vec<f64>,
     pending_root_crossings: Vec<RootCrossing>,
+    recorded_times: Vec<f64>,
+    data: Vec<Vec<f64>>,
 }
 
 impl MeNoStateSession {
     /// `fmi3InstantiateModelExchange` for a zero-state model.
     pub fn instantiate(source: MeModelSource<'_>, opts: SimOptions) -> Result<Self, MeError> {
+        Self::instantiate_with_initial_event(source, opts, false)
+    }
+
+    fn instantiate_with_initial_event(
+        source: MeModelSource<'_>,
+        opts: SimOptions,
+        apply_without_initial_event: bool,
+    ) -> Result<Self, MeError> {
         let model = source.model();
         if model.state_scalar_count() != 0 {
             return Err(MeError::UnsupportedModel {
@@ -68,12 +79,55 @@ impl MeNoStateSession {
             });
         }
         let model = model.clone();
-        let runtime = initialize_no_state_runtime(&model, &opts)?;
+        let runtime = initialize_no_state_runtime(&model, &opts, apply_without_initial_event)?;
         Ok(Self {
             model,
             opts,
             runtime,
         })
+    }
+
+    /// Run the zero-state ME component over the configured output schedule.
+    ///
+    /// No numerical solver participates because there are no continuous
+    /// states. The shared ME executor owns initialization, events, clocks, and
+    /// observations and returns the same backend-neutral trace a solver host
+    /// would consume.
+    pub fn simulate(source: MeModelSource<'_>, opts: SimOptions) -> Result<SimResult, MeError> {
+        let mut session = Self::instantiate_with_initial_event(source, opts, true)?;
+        let dt = session
+            .opts
+            .dt
+            .unwrap_or((session.opts.t_end - session.opts.t_start).abs() / 500.0);
+        let times =
+            crate::timeline::try_build_output_times(session.opts.t_start, session.opts.t_end, dt)
+                .map_err(|error| MeError::Contract {
+                reason: error.to_string(),
+            })?;
+        let tol = session.tol();
+        run_no_state_output_schedule(
+            &mut NoStateOrchestration {
+                model: &session.model,
+                opts: &session.opts,
+                runtime: &mut session.runtime,
+            },
+            times,
+            tol,
+        )?;
+        Ok(build_sim_result_from_solve_model(
+            &session.model,
+            session.runtime.recorded_times,
+            session.runtime.data,
+            session.runtime.termination,
+        ))
+    }
+
+    /// Validate and settle the zero-state ME component without advancing it.
+    pub fn check_initialization(
+        source: MeModelSource<'_>,
+        opts: SimOptions,
+    ) -> Result<(), MeError> {
+        Self::instantiate_with_initial_event(source, opts, true).map(|_| ())
     }
 
     /// Batched `fmi3SetFloat64` by input name.
@@ -144,7 +198,7 @@ impl MeNoStateSession {
     pub fn reset(&mut self, t_start: f64) -> Result<(), MeError> {
         let mut opts = self.opts.clone();
         opts.t_start = t_start;
-        self.runtime = initialize_no_state_runtime(&self.model, &opts)?;
+        self.runtime = initialize_no_state_runtime(&self.model, &opts, false)?;
         self.opts = opts;
         Ok(())
     }
@@ -260,13 +314,14 @@ impl NoStateOrchestrationBackend for NoStateOrchestration<'_> {
     }
 
     fn record_output(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+        record_no_state_observation(self.runtime, self.runtime.current_t, false)
     }
 }
 
 fn initialize_no_state_runtime(
     model: &solve::SolveModel,
     opts: &SimOptions,
+    apply_without_initial_event: bool,
 ) -> Result<NoStateRuntime, MeError> {
     let runtime = SolveRuntime::new(model)?;
     let mut params = model.parameters.clone();
@@ -303,14 +358,14 @@ fn initialize_no_state_runtime(
             event_pre_p: &event_pre_p,
             max_iters: NO_STATE_EVENT_UPDATE_MAX_ITERS,
             dynamic_event,
-            apply_without_initial_event: false,
+            apply_without_initial_event,
         },
         |y, p, t| refresh_algebraics_and_detect_changes(&runtime, y, p, t, tol),
     )?;
     current_t = outcome.final_t;
     let mut termination = None;
     apply_event_action_outcome(&mut termination, outcome.action, current_t)?;
-    if !outcome.observations.is_empty() {
+    if apply_without_initial_event || !outcome.observations.is_empty() {
         refresh_observation_rows_and_relation_memory(
             &runtime,
             &mut current_y,
@@ -321,6 +376,20 @@ fn initialize_no_state_runtime(
     }
     runtime.commit_delay_history(current_t, &current_y, &params)?;
     let root_count = runtime.root_condition_count();
+    let mut recorded_times = Vec::new();
+    let mut data = vec![Vec::new(); model.visible_names.len()];
+    for observation in &outcome.observations {
+        let mut y = observation.y.clone();
+        let mut p = observation.p.clone();
+        refresh_observation_rows_and_relation_memory(&runtime, &mut y, &mut p, observation.t, tol)?;
+        runtime.record_visible_sample_if_new(
+            &mut recorded_times,
+            &mut data,
+            &y,
+            &p,
+            observation.t,
+        )?;
+    }
     let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
     // Initialization owns every event at the start instant, including a
     // phase-zero periodic tick. The continuation schedule begins strictly
@@ -340,6 +409,8 @@ fn initialize_no_state_runtime(
         root_before_scratch: vec![0.0; root_count],
         root_after_scratch: vec![0.0; root_count],
         pending_root_crossings: Vec::new(),
+        recorded_times,
+        data,
     })
 }
 
@@ -383,20 +454,30 @@ fn apply_no_state_event_step(
             root_event: step.root_event,
             root_relation_overrides: &root_relation_overrides,
             terminal_p_index: model.problem.solve_layout.terminal_event_parameter_index,
+            recorded_times: &mut runtime.recorded_times,
+            data: &mut runtime.data,
         };
-        process_runtime_event_boundary(
-            RuntimeEventBoundary {
-                event_t,
-                horizon_t: root_boundary.map_or_else(
-                    || runtime_event_horizon(event, step.target, opts.t_end),
-                    |boundary| boundary.evaluation_time(),
-                ),
-                tolerance: NO_STATE_EVENT_TIME_TOLERANCE,
-                event,
-            },
-            &mut handler,
-        )?
+        if let Some(boundary) = root_boundary {
+            handler.on_event_time(boundary.evaluation_time(), event)?;
+            crate::runtime::event::RuntimeEventBoundaryOutcome {
+                final_t: boundary.continuation_time(),
+                right_limit_t: None,
+            }
+        } else {
+            process_runtime_event_boundary(
+                RuntimeEventBoundary {
+                    event_t,
+                    horizon_t: runtime_event_horizon(event, step.target, opts.t_end),
+                    tolerance: NO_STATE_EVENT_TIME_TOLERANCE,
+                    event,
+                },
+                &mut handler,
+            )?
+        }
     };
+    if let Some(boundary) = root_boundary {
+        record_no_state_observation(runtime, boundary.observation_time(), false)?;
+    }
     runtime.current_t =
         root_boundary.map_or(outcome.final_t, |boundary| boundary.continuation_time());
     commit_pre_params_after_event_at(
@@ -424,6 +505,8 @@ struct NoStateEventBoundary<'a> {
     root_event: bool,
     root_relation_overrides: &'a [(usize, f64)],
     terminal_p_index: Option<usize>,
+    recorded_times: &'a mut Vec<f64>,
+    data: &'a mut [Vec<f64>],
 }
 
 impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
@@ -474,9 +557,6 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
         }
         self.event_pre_y = self.y.to_vec();
         self.event_pre_p = self.p.to_vec();
-        if self.root_event {
-            return Ok(());
-        }
         self.apply_event_updates(event_t)?;
         refresh_observation_rows_and_relation_memory(
             self.runtime,
@@ -484,7 +564,17 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
             self.p,
             event_t,
             self.tol,
-        )
+        )?;
+        if !self.root_event {
+            self.runtime.record_visible_sample_if_new(
+                self.recorded_times,
+                self.data,
+                self.y,
+                self.p,
+                event_t,
+            )?;
+        }
+        Ok(())
     }
 
     fn on_event_right_limit(
@@ -499,8 +589,37 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
             self.p,
             right_t,
             self.tol,
-        )
+        )?;
+        self.recorded_times.push(right_t);
+        self.runtime
+            .record_visible_sample(self.data, self.y, self.p, right_t)?;
+        Ok(())
     }
+}
+
+fn record_no_state_observation(
+    runtime: &mut NoStateRuntime,
+    observation_t: f64,
+    force_distinct: bool,
+) -> Result<(), MeError> {
+    if force_distinct {
+        runtime.recorded_times.push(observation_t);
+        runtime.runtime.record_visible_sample(
+            &mut runtime.data,
+            &runtime.current_y,
+            &runtime.params,
+            observation_t,
+        )?;
+    } else {
+        runtime.runtime.record_visible_sample_if_new(
+            &mut runtime.recorded_times,
+            &mut runtime.data,
+            &runtime.current_y,
+            &runtime.params,
+            observation_t,
+        )?;
+    }
+    Ok(())
 }
 
 impl NoStateEventBoundary<'_> {
@@ -793,6 +912,8 @@ mod tests {
         let mut y = Vec::new();
         let mut p = vec![0.0];
         let mut termination = None;
+        let mut recorded_times = Vec::new();
+        let mut data = Vec::new();
         let mut boundary = NoStateEventBoundary {
             runtime: &runtime,
             y: &mut y,
@@ -804,6 +925,8 @@ mod tests {
             root_event: true,
             root_relation_overrides: &[(0, 1.0)],
             terminal_p_index: None,
+            recorded_times: &mut recorded_times,
+            data: &mut data,
         };
 
         boundary

@@ -32,7 +32,7 @@ use diffsol::{
     NewtonNonlinearSolver, OdeEquations, OdeSolverMethod, OdeSolverState, OdeSolverStopReason,
     Vector as _, VectorHost,
 };
-use init_projection::{EventObservation, initialize_state_runtime_values};
+use init_projection::initialize_state_runtime_values;
 use me::{DiffsolMeHost, MeInitialState, MePostEventState};
 use rumoca_eval_solve::{self as solve_eval, RowEvalContext};
 use rumoca_ir_solve as solve;
@@ -40,20 +40,15 @@ use rumoca_solver::runtime::driver::{
     SimDriverError, SolverAdvanceBackend, StateTrajectory, StepOutcome, simulate_state_targets,
 };
 use rumoca_solver::{
-    RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventStop, SimOptions, SimResult,
-    SimTermination, SolveRuntime, SolveStopSchedule, TimeoutExceeded,
-    build_sim_result_from_solve_model, commit_pre_params_after_event_at,
-    current_dynamic_time_event_stop, next_runtime_event_stop, process_runtime_event_boundary,
-    push_visible_values, replace_last_visible_values, runtime_event_horizon,
-    runtime_root_event_application_time, runtime_values_changed, stop_time_reached_with_tol,
-    timeline::sample_time_match_with_tol, visible_values_with_context,
+    SimOptions, SimResult, SimTermination, SolveRuntime, TimeoutExceeded,
+    build_sim_result_from_solve_model, current_dynamic_time_event_stop, push_visible_values,
+    replace_last_visible_values, runtime_root_event_application_time, runtime_values_changed,
+    stop_time_reached_with_tol, timeline::sample_time_match_with_tol, visible_values_with_context,
 };
 pub(crate) use runtime::{
-    EventUpdateInput, apply_event_updates, apply_event_updates_with_event_pre,
-    refresh_algebraics_and_detect_changes, seed_initial_discrete_values,
+    apply_event_updates, refresh_algebraics_and_detect_changes, seed_initial_discrete_values,
     settle_algebraics_and_relation_memory,
 };
-use runtime::{check_no_state_initialization, simulate_no_state_solve_ir};
 
 type Matrix = FaerSparseMat<f64>;
 type Vector = <Matrix as MatrixCommon>::V;
@@ -180,7 +175,11 @@ fn check_initialization_inner(
     runtime_context.hydrate_solve_model(model);
     validate_model(model)?;
     if model.state_scalar_count() == 0 {
-        return check_no_state_initialization(model, opts);
+        return rumoca_solver::fmi_me::MeNoStateSession::check_initialization(
+            rumoca_solver::fmi_me::MeModelSource::new(model),
+            opts.clone(),
+        )
+        .map_err(Into::into);
     }
     // Same contract, same rejection, as [`build_simulation_inner`]: a model
     // that cannot be built cannot be initialization-checked either, and both
@@ -259,7 +258,11 @@ fn simulate_prepared(prepared: &PreparedSimulation) -> Result<SimResult, SimErro
     let opts = &prepared.opts;
     solve_eval::reset_solve_row_eval_trace();
     let result = match &prepared.state {
-        PreparedSimulationState::NoState => simulate_no_state_solve_ir(model, opts),
+        PreparedSimulationState::NoState => rumoca_solver::fmi_me::MeNoStateSession::simulate(
+            rumoca_solver::fmi_me::MeModelSource::new(model),
+            opts.clone(),
+        )
+        .map_err(Into::into),
         PreparedSimulationState::StateOnly {
             equilibrium_model,
             runtime,

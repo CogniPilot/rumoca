@@ -1,7 +1,6 @@
 use super::*;
-// `project_algebraics` over an `OdeModel` is the *no-state* path's projection
-// kernel (see `runtime::prepare_fixed_event_left_limit`), so these tests import
-// it directly from `rumoca-solver` rather than through the diffsol crate root.
+// Projection is owned by the shared solver/ME kernel, so these tests import it
+// directly rather than recreating it in the Diffsol adapter.
 use rumoca_solver::project_algebraics;
 
 #[test]
@@ -277,6 +276,74 @@ fn no_state_root_at_target_tolerance_applies_at_target() {
 }
 
 #[test]
+fn no_state_strict_relation_uses_the_typed_post_root_side_at_a_rounded_boundary() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.events.root_conditions =
+        scalar_program_block!(vec![rounded_strict_relation_row(true)], fixture_span!(),);
+    model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(0))];
+    model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Positive];
+    model.problem.discrete.rhs =
+        scalar_program_block!(vec![rounded_strict_relation_row(false)], fixture_span!(),);
+    ordinary_equation_row_metadata(&mut model);
+    model.parameters = vec![0.0];
+    model.visible_names = vec!["m".to_string()];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_start: 0.49,
+            t_end: 0.51,
+            dt: Some(0.01),
+            ..Default::default()
+        },
+    )
+    .expect("the located crossing should own the strict relation's post-root value");
+
+    assert_eq!(result.times, vec![0.49, 0.5, 0.51]);
+    assert_eq!(result.data, vec![vec![0.0, 1.0, 1.0]]);
+}
+
+fn rounded_strict_relation_row(root_surface: bool) -> Vec<solve::LinearOp> {
+    let mut row = vec![
+        solve::LinearOp::LoadTime { dst: 0 },
+        solve::LinearOp::Const { dst: 1, value: 0.5 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::Const { dst: 3, value: 1.0 },
+        solve::LinearOp::Binary {
+            dst: 4,
+            op: solve::BinaryOp::Add,
+            lhs: 2,
+            rhs: 3,
+        },
+    ];
+    row.push(if root_surface {
+        solve::LinearOp::Binary {
+            dst: 5,
+            op: solve::BinaryOp::Sub,
+            lhs: 3,
+            rhs: 4,
+        }
+    } else {
+        solve::LinearOp::Compare {
+            dst: 5,
+            op: solve::CompareOp::Gt,
+            lhs: 4,
+            rhs: 3,
+        }
+    });
+    row.push(solve::LinearOp::StoreOutput { src: 5 });
+    row
+}
+
+#[test]
 fn no_state_runtime_uses_dt_as_a_resolution_bounded_root_scan_ceiling() {
     let model = oscillatory_root_event_model();
     let resolved_options = SimOptions {
@@ -284,27 +351,19 @@ fn no_state_runtime_uses_dt_as_a_resolution_bounded_root_scan_ceiling() {
         dt: Some(0.2),
         ..Default::default()
     };
-    let mut resolved =
-        crate::runtime::initialize_no_state_runtime(&model, &resolved_options, 1, false)
-            .expect("bounded zero-state root session should initialize");
-
-    crate::runtime::advance_no_state_runtime_to(
-        &model,
-        &resolved_options,
-        &mut resolved,
-        1.0,
-        1.0e-10,
-    )
-    .expect("interior root scans should process both sign transitions");
+    let resolved = simulate(&model, &resolved_options)
+        .expect("bounded zero-state root session should initialize");
 
     assert_eq!(
-        resolved.params[0], 2.0,
+        resolved.data[0].last().copied(),
+        Some(2.0),
         "the two relation crossings at 0.25 and 0.75 must be processed in order"
     );
     assert!(
         resolved
-            .last_event_t
-            .is_some_and(|event| (event - 0.75).abs() <= 1.0e-9)
+            .times
+            .iter()
+            .any(|event| (*event - 0.75).abs() <= 1.0e-9)
     );
 
     let unresolved_options = SimOptions {
@@ -312,24 +371,15 @@ fn no_state_runtime_uses_dt_as_a_resolution_bounded_root_scan_ceiling() {
         dt: Some(1.0),
         ..Default::default()
     };
-    let mut unresolved =
-        crate::runtime::initialize_no_state_runtime(&model, &unresolved_options, 1, false)
-            .expect("coarse zero-state root session should initialize");
-
-    crate::runtime::advance_no_state_runtime_to(
-        &model,
-        &unresolved_options,
-        &mut unresolved,
-        1.0,
-        1.0e-10,
-    )
-    .expect("coarse endpoint scan should remain a valid bounded simulation");
+    let unresolved = simulate(&model, &unresolved_options)
+        .expect("coarse endpoint scan should remain a valid bounded simulation");
 
     assert_eq!(
-        unresolved.params[0], 0.0,
+        unresolved.data[0].last().copied(),
+        Some(0.0),
         "equal endpoint signs may hide both roots when dt is coarser than the relation changes"
     );
-    assert_eq!(unresolved.last_event_t, None);
+    assert_eq!(unresolved.times, vec![0.0, 1.0]);
 }
 
 fn root_event_update_model(root_time: f64) -> solve::SolveModel {
