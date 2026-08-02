@@ -721,6 +721,42 @@ end P;
 }
 
 #[test]
+fn conditional_component_folds_record_field_in_record_scope() {
+    let source = r#"
+package P
+  record Settings
+    parameter String layout = "Y3";
+    parameter Boolean connect3 = layout == "Y3" or layout == "D3";
+  end Settings;
+
+  model Brake
+    parameter Settings settings(layout = "D3");
+    Real plugToPin3 if settings.connect3;
+  end Brake;
+end P;
+"#;
+    let file_name = "record_scoped_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
+        .expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source should resolve");
+
+    let instanced = instantiate(resolved, "P.Brake")
+        .expect("the record parameter expression should decide the component");
+
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "plugToPin3"),
+        "the modified record sibling is evaluated in the record instance scope"
+    );
+}
+
+#[test]
 fn test_equations_to_instance_without_connections_filters_connect_equations()
 -> InstantiateResult<()> {
     let equations = vec![

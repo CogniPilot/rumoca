@@ -288,38 +288,30 @@ fn eval_param_ref(
         );
     }
 
-    // MLS §5.3.2: qualified references to class-level constants
-    // (`P.pT_explicit`) resolve through the class tree. MLS §7.1/§7.2: they may
-    // instead name a field of a record component (`smpmData.useDamperCage`),
-    // whose value is the record's modification or its declared field default —
-    // the Integer path already reaches those, and a Boolean condition that reads
-    // a record field needs the same reach.
-    if let Some(binding) =
-        resolve_class_redeclare_field_expr(comp_ref, mod_env, tree, resolve_class_components)
-            .or_else(|| resolve_class_constant_binding(comp_ref, tree, resolve_class_components))
-            .or_else(|| {
-                resolve_component_ref_from_record_defaults(
-                    comp_ref,
-                    effective_components,
-                    tree,
-                    resolve_class_components,
-                )
-            })
-    {
-        if let Some(val) = expr_to_bool(&binding) {
-            return Some(val);
-        }
-        return evaluate_component_condition_with_depth(
-            &binding,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            depth + 1,
-        );
-    }
-
-    None
+    // Qualified references keep the declaration scope of the value they find.
+    // This matters for a record field such as `settings.connect3` whose binding
+    // reads its sibling `layout`: evaluating that binding in the model scope
+    // would silently lose the record-member lookup required by MLS §5.3/§7.2.
+    let env = ConditionEvalEnv {
+        mod_env,
+        effective_components,
+        tree,
+        resolve_class_components,
+    };
+    let (binding, binding_scope) = resolve_component_ref_expr(
+        comp_ref,
+        mod_env,
+        effective_components,
+        tree,
+        resolve_class_components,
+        None,
+    )?;
+    eval_scoped_string_condition_with_depth(
+        &binding,
+        env,
+        binding_scope.as_deref(),
+        depth + 1,
+    )
 }
 
 /// Build a ast::QualifiedName from a ast::ComponentReference's parts.
