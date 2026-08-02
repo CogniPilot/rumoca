@@ -111,6 +111,125 @@ fn int_literal(value: i64) -> rumoca_core::Expression {
     }
 }
 
+fn bool_literal(value: bool, span: Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Boolean(value),
+        span,
+    }
+}
+
+#[test]
+fn substitution_removes_a_dead_specialized_conditional_branch() {
+    let source = rumoca_core::SourceId::from_source_name("dead_specialized_branch.mo");
+    let if_span = Span::from_offsets(source, 0, 48);
+    let selected_span = Span::from_offsets(source, 15, 23);
+    let dead_span = Span::from_offsets(source, 29, 47);
+    let condition = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Eq,
+        lhs: Box::new(int_literal(1)),
+        rhs: Box::new(int_literal(1)),
+        span: Span::from_offsets(source, 3, 9),
+    };
+    let selected = rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(7),
+        span: selected_span,
+    };
+    let dead = rumoca_core::Expression::Index {
+        base: Box::new(spanned_var_ref("inPort")),
+        subscripts: vec![rumoca_core::Subscript::Index {
+            value: 0,
+            span: dead_span,
+        }],
+        span: dead_span,
+    };
+    let expression = rumoca_core::Expression::If {
+        branches: vec![(condition, selected)],
+        else_branch: Box::new(dead),
+        span: if_span,
+    };
+
+    let rewritten = substitute_known_constants_expr(
+        expression,
+        &Context::new(),
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .expect("a settled condition selects exactly its live branch");
+
+    assert!(matches!(
+        rewritten,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(7),
+            span,
+        } if span == selected_span
+    ));
+}
+
+#[test]
+fn substitution_preserves_unknown_condition_order_and_provenance() {
+    let source = rumoca_core::SourceId::from_source_name("partly_static_conditional.mo");
+    let if_span = Span::from_offsets(source, 0, 64);
+    let unknown_span = Span::from_offsets(source, 3, 10);
+    let value_span = Span::from_offsets(source, 16, 21);
+    let fallback_span = Span::from_offsets(source, 42, 50);
+    let unknown = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(component_ref("active")),
+        subscripts: Vec::new(),
+        span: unknown_span,
+    };
+    let expression = rumoca_core::Expression::If {
+        branches: vec![
+            (
+                unknown,
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: value_span,
+                },
+            ),
+            (
+                bool_literal(false, Span::from_offsets(source, 24, 29)),
+                int_literal(2),
+            ),
+            (
+                bool_literal(true, Span::from_offsets(source, 33, 37)),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(3),
+                    span: fallback_span,
+                },
+            ),
+        ],
+        else_branch: Box::new(int_literal(4)),
+        span: if_span,
+    };
+
+    let rewritten = substitute_known_constants_expr(
+        expression,
+        &Context::new(),
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .expect("unknown branches remain ahead of a settled fallback");
+
+    assert!(matches!(
+        rewritten,
+        rumoca_core::Expression::If { branches, else_branch, span }
+            if span == if_span
+                && matches!(branches.as_slice(),
+                    [(rumoca_core::Expression::VarRef { span, .. },
+                      rumoca_core::Expression::Literal {
+                          value: rumoca_core::Literal::Integer(1),
+                          span: value,
+                      })] if *span == unknown_span && *value == value_span)
+                && matches!(else_branch.as_ref(),
+                    rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(3),
+                        span,
+                    } if *span == fallback_span)
+    ));
+}
+
 fn reference_x_fill_expr() -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
