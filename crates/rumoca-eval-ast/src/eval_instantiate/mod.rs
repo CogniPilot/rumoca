@@ -859,6 +859,16 @@ impl AstScalarContext for InstantiateScalarAdapter<'_> {
         {
             return Some(value);
         }
+        // Integer-valued parameter declarations and pure function calls are
+        // promoted when they occur in a Real expression (MLS §10.6.2).  Ask
+        // the Integer evaluator first: it only returns a value when the full
+        // declaration expression is exact, while `/` inside the surrounding
+        // Real expression remains Real division.
+        if let Some(value) =
+            eval_integer_component_ref(reference, self.env, depth, self.local_ints)
+        {
+            return Some(value as f64);
+        }
         let declaration = resolve_scalar_declaration_expr(reference, self.env)?;
         ast_scalar::eval_real(declaration.as_ref(), self, scope, depth)
     }
@@ -919,6 +929,22 @@ impl AstScalarContext for InstantiateScalarAdapter<'_> {
             self.local_ints,
             self.local_bools,
         )
+    }
+
+    fn call_real(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        _scope: &str,
+        depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<f64> {
+        // A structurally evaluated Integer result is a valid Real operand by
+        // MLS §10.6.2.  The Integer evaluator remains the certificate here: it
+        // rejects functions whose result cannot be established exactly, so
+        // this promotion cannot turn an undecidable Real call into a value.
+        eval_integer_function_call(function, args, self.env, depth, self.local_ints)
+            .map(|value| value as f64)
     }
 
     fn enum_equal(

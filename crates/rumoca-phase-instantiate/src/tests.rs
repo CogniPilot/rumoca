@@ -644,6 +644,83 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
 }
 
 #[test]
+fn conditional_component_folds_transitive_integer_function_parameter() {
+    let source = r#"
+package P
+  function numberOfBaseSystems
+    input Integer m = 3;
+    output Integer n;
+  algorithm
+    n := 1;
+    if mod(m, 2) == 0 then
+      if m == 2 then
+        n := 1;
+      else
+        n := n * 2 * numberOfBaseSystems(integer(m / 2));
+      end if;
+    else
+      n := 1;
+    end if;
+  end numberOfBaseSystems;
+
+  model Winding
+    parameter Integer m = 3;
+    final parameter Integer nBase = numberOfBaseSystems(m);
+    final parameter Integer mBase = integer(m / nBase);
+    final parameter Integer floored = integer(numberOfBaseSystems(4) / 3);
+    Real zeroInductor if mBase <> 2;
+    Real floorWitness if floored == 0;
+  end Winding;
+end P;
+"#;
+    let file_name = "transitive_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
+        .expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source should resolve");
+
+    let winding = resolved
+        .get_class_by_qualified_name("P.Winding")
+        .expect("resolved winding class");
+    let effective_components = resolve_effective_components_for_eval(&resolved, winding);
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&resolved, &mod_env, &effective_components);
+    for (name, expected) in [("m", 3), ("nBase", 1), ("mBase", 3), ("floored", 0)] {
+        let binding = effective_components[name]
+            .binding
+            .as_ref()
+            .expect("structural parameter binding");
+        assert_eq!(
+            rumoca_eval_ast::eval_instantiate::try_eval_integer_expr(&eval_ctx, binding),
+            Some(expected),
+            "{name} should fold transitively"
+        );
+    }
+
+    let instanced = instantiate(resolved, "P.Winding")
+        .expect("the parameter expression should decide the conditional component");
+
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "zeroInductor"),
+        "mBase=3 keeps the conditional component enabled"
+    );
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "floorWitness"),
+        "integer(2 / 3) uses Real division followed by floor"
+    );
+}
+
+#[test]
 fn test_equations_to_instance_without_connections_filters_connect_equations()
 -> InstantiateResult<()> {
     let equations = vec![
