@@ -60,14 +60,10 @@ impl Context {
         }
 
         // Collect new values to avoid cloning HashMaps for borrow splitting.
-        // Build eval context once per pass (not per parameter).
-        let eval_ctx = build_eval_context(
-            &self.parameter_values,
-            &self.real_parameter_values,
-            &self.boolean_parameter_values,
-            &self.array_dimensions,
-            &self.functions,
-        );
+        // Build one evaluator per pass (not per parameter). `ParamEvaluator`
+        // owns the same constant evaluator used by the former fallback, plus
+        // scoped lookup and enumeration identity, so a second full context
+        // would only duplicate every parameter and function.
         let mut param_evaluator = ParamEvaluator::new(&ParamEvalContext {
             known_ints: &self.parameter_values,
             known_reals: &self.real_parameter_values,
@@ -95,13 +91,8 @@ impl Context {
                         return Some(((*name).to_string(), val));
                     }
 
-                    // Try evaluation with full context including functions.
-                    if let Some(val) = param_evaluator.eval_integer(binding, Some(name)) {
-                        return Some(((*name).to_string(), val));
-                    }
-
-                    // Fallback to rumoca_eval_const for complex expressions
-                    rumoca_eval_flat::constant::try_eval_integer(binding, &eval_ctx)
+                    param_evaluator
+                        .eval_integer(binding, Some(name))
                         .map(|val| ((*name).to_string(), val))
                 },
             )

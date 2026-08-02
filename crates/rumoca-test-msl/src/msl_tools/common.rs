@@ -5,10 +5,12 @@ use rumoca_compile::compile::core::{
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MSL_VERSION: &str = "4.1.0";
@@ -344,6 +346,18 @@ pub fn run_command_with_timeout(
 ) -> std::io::Result<CommandRunOutput> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn()?;
+    let stdout_reader = spawn_pipe_reader(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("child stdout pipe was not available"))?,
+    );
+    let stderr_reader = spawn_pipe_reader(
+        child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("child stderr pipe was not available"))?,
+    );
     let deadline = Instant::now() + timeout;
     let timed_out = loop {
         if child.try_wait()?.is_some() {
@@ -355,12 +369,31 @@ pub fn run_command_with_timeout(
         }
         thread::sleep(OMC_BATCH_TIMEOUT_POLL);
     };
-    let output = child.wait_with_output()?;
+    child.wait()?;
+    let stdout = join_pipe_reader(stdout_reader, "stdout")?;
+    let stderr = join_pipe_reader(stderr_reader, "stderr")?;
     Ok(CommandRunOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
         timed_out,
     })
+}
+
+fn spawn_pipe_reader(mut pipe: impl Read + Send + 'static) -> JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_pipe_reader(
+    reader: JoinHandle<io::Result<Vec<u8>>>,
+    stream_name: &str,
+) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other(format!("child {stream_name} reader panicked")))?
 }
 
 pub fn apply_omc_thread_env(command: &mut Command, omc_threads: usize) {
@@ -637,6 +670,24 @@ mod tests {
     }
 
     #[test]
+    fn command_timeout_reader_drains_output_larger_than_a_pipe_buffer() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("head -c 1048576 /dev/zero | tr '\\000' x; printf stderr-sentinel >&2");
+
+        let output = run_command_with_timeout(&mut command, Duration::from_secs(5))
+            .expect("large child output should be drained while the process runs");
+
+        assert!(
+            !output.timed_out,
+            "a finite producer must not deadlock on its pipe"
+        );
+        assert_eq!(output.stdout.len(), 1_048_576);
+        assert_eq!(output.stderr, "stderr-sentinel");
+    }
+
+    #[test]
     fn apply_omc_thread_env_sets_process_and_library_caps() {
         let mut command = Command::new("omc");
         apply_omc_thread_env(&mut command, 3);
@@ -822,14 +873,13 @@ mod tests {
     /// a shape change that breaks it would silence models with no reason on
     /// record.
     #[test]
-    fn the_tracked_exclusions_file_parses_with_reasons() {
+    fn the_tracked_exclusions_file_parses_without_name_keyed_trace_classification() {
         let path = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .join(TRACE_EXCLUSIONS_FILE_REL);
         let exclusions = load_trace_exclusions_file(&path).expect("tracked exclusions must parse");
-        assert!(!exclusions.is_empty());
         assert!(
-            exclusions.values().all(|reason| !reason.trim().is_empty()),
-            "every tracked exclusion must record its own reason"
+            exclusions.is_empty(),
+            "stochastic and chaotic trace classification must come from typed evidence, not model names"
         );
     }
 }

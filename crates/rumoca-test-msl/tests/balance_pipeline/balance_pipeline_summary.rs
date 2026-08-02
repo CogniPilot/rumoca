@@ -178,18 +178,59 @@ fn build_summary_from_counters(
     }
 }
 
-pub(super) fn update_phase_timing_totals(timings: &mut MslPhaseTimings) {
+fn aggregate_worker_phase_durations(
+    durations: impl Iterator<Item = Option<f64>>,
+) -> Option<(f64, u64)> {
+    let mut seconds = 0.0;
+    let mut calls = 0;
+    for duration in durations.flatten().filter(|value| value.is_finite()) {
+        seconds += duration;
+        calls += 1;
+    }
+    (calls != 0).then_some((seconds, calls))
+}
+
+fn worker_or_in_process_phase_timing(
+    durations: impl Iterator<Item = Option<f64>>,
+    in_process: rumoca_compile::compile::CompilePhaseTimingStat,
+) -> (f64, u64) {
+    aggregate_worker_phase_durations(durations)
+        .unwrap_or_else(|| (in_process.total_seconds(), in_process.calls))
+}
+
+pub(super) fn update_phase_timing_totals(
+    timings: &mut MslPhaseTimings,
+    results: &[MslModelResult],
+) {
     let compile_phase_timings = compile_phase_timing_stats();
     let flatten_phase_timings = flatten_phase_timing_stats();
 
-    timings.compile_instantiate_seconds = compile_phase_timings.instantiate.total_seconds();
-    timings.compile_typecheck_seconds = compile_phase_timings.typecheck.total_seconds();
-    timings.compile_flatten_seconds = compile_phase_timings.flatten.total_seconds();
-    timings.compile_todae_seconds = compile_phase_timings.todae.total_seconds();
-    timings.compile_instantiate_calls = compile_phase_timings.instantiate.calls;
-    timings.compile_typecheck_calls = compile_phase_timings.typecheck.calls;
-    timings.compile_flatten_calls = compile_phase_timings.flatten.calls;
-    timings.compile_todae_calls = compile_phase_timings.todae.calls;
+    (
+        timings.compile_instantiate_seconds,
+        timings.compile_instantiate_calls,
+    ) = worker_or_in_process_phase_timing(
+        results.iter().map(|result| result.instantiate_seconds),
+        compile_phase_timings.instantiate,
+    );
+    (
+        timings.compile_typecheck_seconds,
+        timings.compile_typecheck_calls,
+    ) = worker_or_in_process_phase_timing(
+        results.iter().map(|result| result.typecheck_seconds),
+        compile_phase_timings.typecheck,
+    );
+    (
+        timings.compile_flatten_seconds,
+        timings.compile_flatten_calls,
+    ) = worker_or_in_process_phase_timing(
+        results.iter().map(|result| result.flatten_seconds),
+        compile_phase_timings.flatten,
+    );
+    (timings.compile_todae_seconds, timings.compile_todae_calls) =
+        worker_or_in_process_phase_timing(
+            results.iter().map(|result| result.dae_seconds),
+            compile_phase_timings.todae,
+        );
     timings.flatten_connections_seconds = flatten_phase_timings.connections.total_seconds();
     timings.flatten_connections_calls = flatten_phase_timings.connections.calls;
     timings.flatten_eval_fallback_seconds = flatten_phase_timings.eval_fallback.total_seconds();

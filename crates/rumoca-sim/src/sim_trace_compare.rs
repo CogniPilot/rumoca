@@ -53,6 +53,168 @@ pub struct SimTrace {
     pub data: Vec<Vec<Option<f64>>>,
     #[serde(default)]
     pub variable_meta: Option<Vec<SimTraceVariableMeta>>,
+    /// Typed evidence that pointwise comparison cannot certify this trace.
+    ///
+    /// Absence means the trace remains a normal pointwise-comparison candidate;
+    /// it does not mean the trace has been certified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certification_profile: Option<TraceCertificationProfile>,
+}
+
+/// Why a trace is not identifiable by pointwise comparison against one OMC run.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceNonidentifiabilityReason {
+    /// A random operation makes one unaligned realization non-identifying.
+    Stochastic,
+    /// Exponential sensitivity makes a long pointwise trajectory non-identifying.
+    DeterministicChaotic,
+}
+
+/// Proof work that must replace pointwise comparison before the trace is certified.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceProofObligation {
+    GeneratorAndSeedParity,
+    InvariantRefinement,
+    StatisticalRefinement,
+}
+
+/// Solve operations whose result depends on a random stream or seed.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TraceRandomOpKind {
+    RandomInitialState,
+    RandomResult,
+    RandomState,
+    ImpureRandomInit,
+    ImpureRandom,
+    ImpureRandomInteger,
+}
+
+/// Machine-readable evidence for a non-identifiability classification.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum TraceNonidentifiabilityEvidence {
+    Stochastic {
+        /// Random Solve op kinds found by typed IR traversal.
+        random_op_kinds: Vec<TraceRandomOpKind>,
+    },
+    DeterministicChaotic {
+        /// A strictly positive lower bound supplied by an analysis artifact.
+        maximum_lyapunov_exponent_lower_bound: f64,
+        /// Lower-case SHA-256 digest of that analysis artifact.
+        analysis_sha256: String,
+        analysis_samples: usize,
+    },
+}
+
+/// A non-identifiable trace is explicitly uncertified until its obligations exist.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct TraceCertificationProfile {
+    pub evidence: TraceNonidentifiabilityEvidence,
+    pub outstanding_proof_obligations: Vec<TraceProofObligation>,
+}
+
+impl TraceCertificationProfile {
+    #[must_use]
+    pub fn stochastic(mut random_op_kinds: Vec<TraceRandomOpKind>) -> Self {
+        random_op_kinds.sort();
+        random_op_kinds.dedup();
+        Self {
+            evidence: TraceNonidentifiabilityEvidence::Stochastic { random_op_kinds },
+            outstanding_proof_obligations: vec![
+                TraceProofObligation::GeneratorAndSeedParity,
+                TraceProofObligation::StatisticalRefinement,
+            ],
+        }
+    }
+
+    #[must_use]
+    pub fn reason(&self) -> TraceNonidentifiabilityReason {
+        match &self.evidence {
+            TraceNonidentifiabilityEvidence::Stochastic { .. } => {
+                TraceNonidentifiabilityReason::Stochastic
+            }
+            TraceNonidentifiabilityEvidence::DeterministicChaotic { .. } => {
+                TraceNonidentifiabilityReason::DeterministicChaotic
+            }
+        }
+    }
+
+    /// Fail closed: malformed or incomplete evidence cannot remove a trace from
+    /// pointwise certification.
+    pub fn validate(&self) -> Result<(), String> {
+        match &self.evidence {
+            TraceNonidentifiabilityEvidence::Stochastic { random_op_kinds } => {
+                if random_op_kinds.is_empty() {
+                    return Err("stochastic evidence names no random Solve operation".to_string());
+                }
+                if !random_op_kinds.windows(2).all(|pair| pair[0] < pair[1]) {
+                    return Err(
+                        "stochastic random Solve operations must be sorted and unique".to_string(),
+                    );
+                }
+                require_obligations(
+                    &self.outstanding_proof_obligations,
+                    &[
+                        TraceProofObligation::GeneratorAndSeedParity,
+                        TraceProofObligation::StatisticalRefinement,
+                    ],
+                )
+            }
+            TraceNonidentifiabilityEvidence::DeterministicChaotic {
+                maximum_lyapunov_exponent_lower_bound,
+                analysis_sha256,
+                analysis_samples,
+            } => {
+                if !maximum_lyapunov_exponent_lower_bound.is_finite()
+                    || *maximum_lyapunov_exponent_lower_bound <= 0.0
+                {
+                    return Err(
+                        "deterministic-chaotic evidence requires a positive finite Lyapunov lower bound"
+                            .to_string(),
+                    );
+                }
+                if *analysis_samples < 2 {
+                    return Err(
+                        "deterministic-chaotic evidence requires at least two analysis samples"
+                            .to_string(),
+                    );
+                }
+                if analysis_sha256.len() != 64
+                    || !analysis_sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(
+                        "deterministic-chaotic evidence requires a lower-case SHA-256 digest"
+                            .to_string(),
+                    );
+                }
+                require_obligations(
+                    &self.outstanding_proof_obligations,
+                    &[
+                        TraceProofObligation::InvariantRefinement,
+                        TraceProofObligation::StatisticalRefinement,
+                    ],
+                )
+            }
+        }
+    }
+}
+
+fn require_obligations(
+    actual: &[TraceProofObligation],
+    required: &[TraceProofObligation],
+) -> Result<(), String> {
+    if required
+        .iter()
+        .all(|obligation| actual.contains(obligation))
+    {
+        Ok(())
+    } else {
+        Err("trace-nonidentifiable evidence omits a required proof obligation".to_string())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

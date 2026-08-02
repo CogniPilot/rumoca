@@ -625,6 +625,24 @@ fn unknown_array_extent_is_not_treated_as_scalar_during_subscript_validation() {
 }
 
 #[test]
+fn colon_dimension_with_literal_suffix_is_not_treated_as_lower_rank() {
+    let source = r#"
+        model Test
+            input Real lines[:, 2, 2];
+            output Real first;
+        equation
+            first = lines[1, 2, 1];
+        end Test;
+    "#;
+    let tree = parsed_tree(source);
+    let mut overlay = InstanceOverlay::new();
+    add_model_components(&tree, &mut overlay, "Test", &["lines", "first"]);
+
+    typecheck_instanced(&tree, &mut overlay, "Test")
+        .expect("a `[:, 2, 2]` declaration has unknown extent, not rank two");
+}
+
+#[test]
 fn qualified_package_array_absent_from_instance_overlay_is_not_treated_as_scalar() {
     let source = r#"
         package Tables

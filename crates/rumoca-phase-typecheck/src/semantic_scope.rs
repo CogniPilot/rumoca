@@ -34,7 +34,7 @@ impl ComponentSemantics {
     pub(crate) fn from_declaration_with_type(component: &Component, type_id: TypeId) -> Self {
         Self {
             type_id,
-            shape: component_shape(&component.shape, component.shape_expr.is_empty()),
+            shape: component_shape(&component.shape, component.shape_expr.len()),
             variability: VariabilityLevel::from_variability(&component.variability),
         }
     }
@@ -117,7 +117,7 @@ pub(crate) struct InstanceSemanticScope {
     class_children: HashMap<(InstanceId, DefId), Vec<InstanceId>>,
     children_by_def: HashMap<InstanceId, HashMap<DefId, Vec<InstanceId>>>,
     children_by_name: HashMap<InstanceId, HashMap<UnresolvedMemberSegment, Vec<InstanceId>>>,
-    family_shape_by_owner_def: HashMap<(InstanceId, DefId), Vec<usize>>,
+    array_extents_by_owner_def: HashMap<(InstanceId, DefId), Vec<usize>>,
     class_path_ids: HashMap<ComponentPath, CandidateSet>,
 }
 
@@ -127,7 +127,7 @@ impl InstanceSemanticScope {
         scope.index_classes(overlay);
         scope.index_components(overlay);
         scope.index_relationships(overlay);
-        scope.index_component_family_shapes(overlay);
+        scope.index_array_extents(overlay);
         scope
     }
 
@@ -166,6 +166,38 @@ impl InstanceSemanticScope {
         self.consensus(candidates)
     }
 
+    /// Declared extents of a reference prefix, or an abstention.
+    ///
+    /// `Missing` here is an abstention, never a scalar: two unrelated
+    /// conditions produce it and neither one says the prefix has no
+    /// dimensions.
+    ///
+    /// The first is a scope mismatch. `class_children` is keyed by the class
+    /// instance that *owns* the declaration, and a reference is resolved
+    /// against whichever class instance owns its occurrence. Record expansion
+    /// re-checks a declaration's binding inside the record's own class
+    /// instance, so `Cx yy = c.i[1]` resolves `c` from `yy`'s class instance
+    /// while `c` belongs to the enclosing model's — the identity walk finds no
+    /// row for the root and stops before it reaches any extents.
+    ///
+    /// The second is a literal subscript that selects no expanded element:
+    /// `filter_candidates_by_part` empties the candidate set for an
+    /// out-of-range index or the wrong number of indices. That is a real model
+    /// error whose declared extents *are* recorded, so answering `Missing`
+    /// costs the §10.6.9/§10.5.1 diagnostic its subject and the caller reports
+    /// the error from a later phase instead. Distinguishing the two — a shape
+    /// query has no business filtering by the very subscripts it is being asked
+    /// to measure — is the fix that would recover it (FS-ARR-009).
+    ///
+    /// Abstaining on `Missing` does **not** close the `has 0 dimension(s)`
+    /// class, because this function can also answer a *positive* wrong shape.
+    /// When the walk resolves to an instance that is not the one the reference
+    /// names, the answer is `Found(Some(_))` and no abstention is reachable:
+    /// a member array reached through a redeclared record answers
+    /// `Found(Some([]))` — a known scalar for a declaration the model gave a
+    /// dimension — and still reports zero dimensions where omc accepts the
+    /// model. That is wrong-instance resolution, tracked as its own defect;
+    /// it is a different failure from absence and no change here can reach it.
     pub(crate) fn lookup_reference_shape(
         &self,
         reference: &ComponentReference,
@@ -226,7 +258,7 @@ impl InstanceSemanticScope {
         for (&map_id, data) in &overlay.components {
             let semantics = ComponentSemantics {
                 type_id: data.type_id,
-                shape: component_shape(&data.dims, data.dims_expr.is_empty()),
+                shape: component_shape(&data.dims, data.dims_expr.len()),
                 variability: VariabilityLevel::from_variability(&data.variability),
             };
             let path = data.qualified_name.to_component_path();
@@ -319,21 +351,67 @@ impl InstanceSemanticScope {
         }
     }
 
-    fn index_component_family_shapes(&mut self, overlay: &InstanceOverlay) {
-        for family in &overlay.component_families {
-            let Some(root_id) = family.template_components.first().copied() else {
+    /// Declared extents of every expanded array component, keyed by identity.
+    ///
+    /// MLS §10.1/§10.6.9: the array dimensions belong to the declaration, so
+    /// `c[1]` in an equation is a subscript on the declared array, not on the
+    /// element instance that the subscript selects. The per-element overlay
+    /// entries are scalars by construction, so their own `dims` cannot answer
+    /// the §10.6.9 arity question for the reference.
+    ///
+    /// The extents are read from `InstanceOverlay::array_parent_dims`, which
+    /// instantiation writes for *every* array component it expands, compacted
+    /// or not. SPEC_0032 §1 requires compaction to be indistinguishable from
+    /// element-by-element expansion, so no record of it survives in Instance
+    /// IR and a declared shape must never be derived from one.
+    fn index_array_extents(&mut self, overlay: &InstanceOverlay) {
+        for (&instance_id, data) in &overlay.components {
+            // Only members of an expanded array carry terminal subscripts, and
+            // the array root path drops exactly those.
+            let Some((_, subscripts)) = data.qualified_name.parts.last() else {
                 continue;
             };
+            if subscripts.is_empty() {
+                continue;
+            }
             let (Some(owner_class_id), Some(def_id)) = (
-                self.owner_class_by_id.get(&root_id).copied(),
-                self.source_def_by_id.get(&root_id).copied(),
+                self.owner_class_by_id.get(&instance_id).copied(),
+                self.source_def_by_id.get(&instance_id).copied(),
             ) else {
                 continue;
             };
-            if let Ok(shape) = family.domain.extents() {
-                self.family_shape_by_owner_def
-                    .insert((owner_class_id, def_id), shape);
+            let Some(dims) = overlay.array_parent_dims.get(&array_root_key(data)) else {
+                continue;
+            };
+            // Instantiation derives the element's subscripts and the recorded
+            // extents from one `dims`, so neither skip below is expected to
+            // fire. That is an expectation, not a proof: no input is *known* to
+            // reach either, and the redeclared-record-member-array shape that
+            // motivated this note was measured not to (see
+            // `arr_026_redeclared_record_member_array_still_reports_zero_dimensions`,
+            // whose `has 0 dimension(s)` comes from a positive wrong shape
+            // rather than from these skips).
+            //
+            // Both skips record nothing for this declaration, which leaves
+            // `identity_shape` answering from the element instance itself — a
+            // known scalar, so a reference here would be told it has zero
+            // dimensions. Falling back to a positive wrong answer is the
+            // failure mode this file has already paid for once; if a producer
+            // ever makes one reachable, the fix is to record the declaration
+            // as *unevaluable* so `identity_shape` answers `Found(None)` and
+            // the subscript walk abstains (FS-ARR-008).
+            let Some(extents) = dims
+                .iter()
+                .map(|dim| usize::try_from(*dim).ok())
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            if extents.len() != subscripts.len() {
+                continue;
             }
+            self.array_extents_by_owner_def
+                .insert((owner_class_id, def_id), extents);
         }
     }
 
@@ -480,26 +558,26 @@ impl InstanceSemanticScope {
     }
 
     fn identity_shape(&self, ids: &[InstanceId]) -> SemanticLookup<Option<Vec<usize>>> {
-        let family_shapes = ids
+        let array_extents = ids
             .iter()
             .filter_map(|id| {
                 let key = (
                     *self.owner_class_by_id.get(id)?,
                     *self.source_def_by_id.get(id)?,
                 );
-                self.family_shape_by_owner_def.get(&key)
+                self.array_extents_by_owner_def.get(&key)
             })
             .collect::<std::collections::HashSet<_>>();
-        if family_shapes.len() == 1 {
+        if array_extents.len() == 1 {
             return SemanticLookup::Found(Some(
-                family_shapes
+                array_extents
                     .into_iter()
                     .next()
-                    .expect("one family shape")
+                    .expect("one array extent row")
                     .clone(),
             ));
         }
-        if family_shapes.len() > 1 {
+        if array_extents.len() > 1 {
             return SemanticLookup::Ambiguous;
         }
         self.consensus(SemanticLookup::Found(ids.to_vec()))
@@ -636,12 +714,15 @@ impl InstanceSemanticScope {
     }
 }
 
-fn component_shape<T>(dimensions: &[T], has_no_dimension_expressions: bool) -> Option<Vec<usize>>
+fn component_shape<T>(dimensions: &[T], dimension_expression_count: usize) -> Option<Vec<usize>>
 where
     T: Copy + TryInto<usize>,
 {
+    if dimension_expression_count != 0 && dimensions.len() != dimension_expression_count {
+        return None;
+    }
     if dimensions.is_empty() {
-        return has_no_dimension_expressions.then(Vec::new);
+        return (dimension_expression_count == 0).then(Vec::new);
     }
     dimensions
         .iter()
@@ -649,6 +730,36 @@ where
         .map(TryInto::try_into)
         .collect::<Result<Vec<_>, _>>()
         .ok()
+}
+
+/// Instantiation's key for the array a member instance belongs to.
+///
+/// `expand_array_component` records the extents under the array component's own
+/// path, which is the member's qualified name with its terminal subscripts
+/// dropped (`plug_p[1].pin[2]` -> `plug_p[1].pin`). Enclosing parts keep theirs:
+/// a nested array under one element of an outer array is its own declaration.
+fn array_root_key(data: &rumoca_ir_ast::InstanceData) -> String {
+    use std::fmt::Write;
+    let parts = &data.qualified_name.parts;
+    let mut key = String::new();
+    for (index, (name, subscripts)) in parts.iter().enumerate() {
+        if index > 0 {
+            key.push('.');
+        }
+        key.push_str(name);
+        if subscripts.is_empty() || index + 1 == parts.len() {
+            continue;
+        }
+        key.push('[');
+        for (position, subscript) in subscripts.iter().enumerate() {
+            if position > 0 {
+                key.push(',');
+            }
+            let _ = write!(key, "{subscript}");
+        }
+        key.push(']');
+    }
+    key
 }
 
 fn terminal_instance_subscripts(qualified_name: &rumoca_ir_ast::QualifiedName) -> Vec<i64> {

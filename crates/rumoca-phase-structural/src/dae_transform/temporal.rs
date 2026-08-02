@@ -53,8 +53,8 @@ pub(super) fn rebuild_clocks<'target>(
             .expect("finalized clock ordinal resolves");
         let clock = source.clock(id).expect("finalized clock identity resolves");
         let rebuilt = target.clocks(|target| match clock.operation() {
-            dae::ClockOperation::Periodic(lattice) => target
-                .periodic(*lattice, clock.provenance())
+            dae::ClockOperation::Periodic(schedule) => target
+                .scheduled(*schedule, clock.provenance())
                 .map(RebuiltClock::Periodic),
             dae::ClockOperation::Triggered(condition) => target
                 .triggered(conditions[condition.index() as usize], clock.provenance())
@@ -83,6 +83,14 @@ fn rebuild_clock_ownership<'target>(
         .expect("finalized clock ownership identity resolves");
     let clock = clocks[ownership.clock().index() as usize].clock_id();
     target.clocks(|target| match ownership.kind() {
+        dae::ClockedVariableKind::DiscreteReal if ownership.sampled() => {
+            let TargetVariable::DiscreteReal(variable) =
+                variables[ownership.variable().index() as usize].identity
+            else {
+                unreachable!("sampled clock ownership retains its discrete-real role")
+            };
+            target.own_sampled_discrete_real(clock, variable, ownership.provenance())
+        }
         dae::ClockedVariableKind::DiscreteReal => {
             let TargetVariable::DiscreteReal(variable) =
                 variables[ownership.variable().index() as usize].identity
@@ -90,6 +98,14 @@ fn rebuild_clock_ownership<'target>(
                 unreachable!("clock ownership retains its discrete-real role")
             };
             target.own_discrete_real(clock, variable, ownership.provenance())
+        }
+        dae::ClockedVariableKind::DiscreteValue if ownership.sampled() => {
+            let TargetVariable::DiscreteValue(variable) =
+                variables[ownership.variable().index() as usize].identity
+            else {
+                unreachable!("sampled clock ownership retains its discrete-value role")
+            };
+            target.own_sampled_discrete_value(clock, variable, ownership.provenance())
         }
         dae::ClockedVariableKind::DiscreteValue => {
             let TargetVariable::DiscreteValue(variable) =

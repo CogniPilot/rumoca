@@ -57,6 +57,8 @@ mod clocked_sample_regression;
 mod connection_normalization_golden;
 #[path = "enumeration_compact_range_test.rs"]
 mod enumeration_compact_range_test;
+#[path = "fmi_me_host_divergence.rs"]
+mod fmi_me_host_divergence;
 #[path = "for_eq_array_test.rs"]
 mod for_eq_array_test;
 #[path = "for_loop_element_derivative_alias.rs"]

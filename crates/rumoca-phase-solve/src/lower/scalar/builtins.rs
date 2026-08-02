@@ -39,6 +39,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         &mut self,
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
+        dims: &[u32],
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
@@ -85,6 +86,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 arguments.get(0).expect("checked noEvent value argument"),
                 scalar,
             ),
+            dae::PureBuiltin::Vector => {
+                self.expression(arguments.get(0).expect("checked vector operand"), scalar)
+            }
+            dae::PureBuiltin::Transpose => self.transpose(arguments, scalar),
+            dae::PureBuiltin::Diagonal | dae::PureBuiltin::OuterProduct => {
+                self.matrix(builtin, arguments, dims, scalar, span)
+            }
             dae::PureBuiltin::Homotopy => self.homotopy(arguments, scalar, span),
             dae::PureBuiltin::Sum => self.reduction(
                 arguments.get(0).expect("checked reduction argument"),
@@ -124,7 +132,129 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
             dae::PureBuiltin::Linspace => self.linspace(arguments, scalar, span),
             dae::PureBuiltin::Cross => self.cross(arguments, scalar, span),
+            dae::PureBuiltin::Skew => self.skew(arguments, scalar, span),
+            dae::PureBuiltin::Identity => self.identity(dims, scalar, span),
+            dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2 => {
+                let axis = usize::from(builtin == dae::PureBuiltin::PromotedCat2);
+                self.promoted_concatenation(arguments, axis, scalar)
+            }
         }
+    }
+
+    fn transpose(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+    ) -> Result<solve::Reg, LowerError> {
+        let operand = arguments.get(0).expect("checked transpose operand");
+        let selector = ScalarSelector::from_points(self.view, &self.domain_points);
+        self.expression(operand, selector.transpose_scalar(operand, scalar))
+    }
+
+    fn identity(
+        &mut self,
+        dimensions: &[u32],
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let [_, columns] = dimensions else {
+            unreachable!("checked identity result has rank two")
+        };
+        let diagonal = scalar / *columns as usize == scalar % *columns as usize;
+        self.constant(f64::from(u8::from(diagonal)), span)
+    }
+
+    fn diagonal(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        result_dimensions: &[u32],
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let [_, columns] = result_dimensions else {
+            unreachable!("checked diagonal result has rank two")
+        };
+        let row = scalar / *columns as usize;
+        let column = scalar % *columns as usize;
+        if row != column {
+            return self.constant(0.0, span);
+        }
+        self.expression(
+            arguments.get(0).expect("checked diagonal has one operand"),
+            row,
+        )
+    }
+
+    fn outer_product(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        result_dimensions: &[u32],
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let [_, columns] = result_dimensions else {
+            unreachable!("checked outerProduct result has rank two")
+        };
+        let lhs = self.expression(
+            arguments
+                .get(0)
+                .expect("checked outerProduct has a left operand"),
+            scalar / *columns as usize,
+        )?;
+        let rhs = self.expression(
+            arguments
+                .get(1)
+                .expect("checked outerProduct has a right operand"),
+            scalar % *columns as usize,
+        )?;
+        self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)
+    }
+
+    fn matrix(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        result_dimensions: &[u32],
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        match builtin {
+            dae::PureBuiltin::Diagonal => self.diagonal(arguments, result_dimensions, scalar, span),
+            dae::PureBuiltin::OuterProduct => {
+                self.outer_product(arguments, result_dimensions, scalar, span)
+            }
+            _ => unreachable!("only compact matrix products use this lowering"),
+        }
+    }
+
+    fn promoted_concatenation(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        axis: usize,
+        scalar: usize,
+    ) -> Result<solve::Reg, LowerError> {
+        let rank = arguments
+            .iter()
+            .map(|argument| self.node(argument).value_type().dimensions().len())
+            .max()
+            .unwrap_or(0)
+            .max(2);
+        let mut result_dimensions = vec![1_u32; rank];
+        let first = arguments
+            .get(0)
+            .expect("checked concatenation owns an operand");
+        let first_dimensions = self.node(first).value_type().dimensions();
+        result_dimensions[..first_dimensions.len()].copy_from_slice(first_dimensions);
+        for argument in arguments.iter().skip(1) {
+            let dimensions = self.node(argument).value_type().dimensions();
+            result_dimensions[axis] = result_dimensions[axis]
+                .checked_add(dimensions.get(axis).copied().unwrap_or(1))
+                .expect("checked concatenation extent remains in the u32 domain");
+        }
+        let selector = ScalarSelector::from_points(self.view, &self.domain_points);
+        let (argument, argument_scalar) =
+            selector.promoted_concatenation_scalar(arguments, axis, &result_dimensions, scalar)?;
+        self.expression(argument, argument_scalar)
     }
 
     fn atan2(
@@ -260,6 +390,33 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let rhs = self.expression(arguments.get(1).expect("checked cross rhs"), first)?;
         let negative = self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)?;
         self.binary(dae::BinaryOperator::Subtract, positive, negative, span)
+    }
+
+    fn skew(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let (operand_scalar, negate) = match scalar {
+            0 | 4 | 8 => return self.constant(0.0, span),
+            1 => (2, true),
+            2 => (1, false),
+            3 => (2, false),
+            5 => (0, true),
+            6 => (1, true),
+            7 => (0, false),
+            _ => unreachable!("checked skew scalar belongs to its 3x3 result"),
+        };
+        let value = self.expression(
+            arguments.get(0).expect("checked skew has one operand"),
+            operand_scalar,
+        )?;
+        if negate {
+            self.unary(dae::UnaryOperator::Negate, value, span)
+        } else {
+            Ok(value)
+        }
     }
 
     fn reduction(

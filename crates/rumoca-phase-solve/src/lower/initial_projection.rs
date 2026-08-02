@@ -54,12 +54,13 @@
 //! [`solve::InitializationRowRole`] carries the difference to the runtime so a
 //! failure names the right defect instead of the friendliest one.
 //!
-//! **Algebraic and output reads: the check is vacuous, in both directions.** The
-//! residual is evaluated before `settle_algebraics_and_relation_memory` runs, so
-//! an algebraic still holds the number its `start` seeded rather than the value
-//! the continuous system gives it. The row is therefore neither solvable — the
-//! projection cannot move an algebraic — nor meaningfully checkable. Both failure
-//! modes are real and measured:
+//! **Algebraic and output reads fail closed until the reduced solve owns them.**
+//! The runtime reconstructs those coordinates before evaluating the complete
+//! initialization residual, so declaration seeds cannot certify a wrong initial
+//! state. The projection still cannot move an algebraic or account for its total
+//! derivative through the continuous system, so a row that needs that coupled
+//! capability remains typed as unowned rather than being admitted unsoundly.
+//! The two historical failure modes were:
 //!
 //! * `a = 2*time + 5; der(x) = a - x;` with `initial equation der(x) = 0`
 //!   *silently simulates* `x(0) = 0` where OpenModelica gives `5`: the seeds
@@ -67,18 +68,11 @@
 //! * the consistent `initial equation x = 5; x = a;` on the same model is
 //!   *refused* on the stale seed (`EX001`) where OpenModelica initializes.
 //!
-//! A typed refusal for exactly these rows was implemented and measured against the
-//! 19 MSL models that both compile through Solve and carry an initial section. It
-//! fires on 5 of them, and two are models that simulate today —
-//! `Blocks.Examples.SlewRateLimiter` (over `limit_v.y`) and
-//! `Clocked.Examples.SimpleControlledDrive.Continuous` (over `PI.y`), both
-//! `Init.InitialOutput` blocks whose stated output happens to equal its own seed,
-//! so OpenModelica and rumoca agree on `0.0` at `t = 0` either way. Refusing would
-//! have traded two certified models for loudness that buys no correctness on them,
-//! so it is not landed here; the honest reading is written down instead and the
-//! runtime says which kind it hit. The owner that makes the shape *right* is the
-//! algebraic refresh joining the initialization solve — folded into the projection
-//! loop, or the algebraics carried as unknowns over their own continuous rows.
+//! The evaluation-local refresh closes the false-certificate hole without
+//! claiming the larger capability. The owner that makes the shape fully solvable
+//! remains algebraic refresh joining the initialization solve — folded into the
+//! projection loop, or the algebraics carried as unknowns over their own
+//! continuous rows with a checked total derivative.
 //!
 //! **Discrete reads: the check is honest, and the refusal is an over-refusal.** A
 //! discrete coordinate *is* at its §8.6 value when the residual runs — the runtime
@@ -489,9 +483,10 @@ impl<'dae> InitialIncidence<'dae> {
             dae::CoordinateView::Parameter(parameter) => self.visit_parameter(space, parameter),
             dae::CoordinateView::State(state) => self.visit_state(space, state),
             dae::CoordinateView::Derivative(state) => self.visit_derivative(space, state),
-            // An algebraic still holds its seeded `start` when the initialization
-            // residual is evaluated (module header), so a row that reads one is
-            // neither solved nor meaningfully checked.
+            // The runtime reconstructs an algebraic before it certifies the
+            // complete residual (module header), but this planner cannot yet
+            // differentiate through or solve the simultaneous continuous
+            // system, so the row remains outside the admitted reduced solve.
             dae::CoordinateView::Algebraic(_) => {
                 self.exclude(solve::InitializationCoordinateKind::Algebraic);
             }

@@ -559,6 +559,89 @@ pub struct ClockLattice {
     phase: ClockRational,
 }
 
+/// The runtime anchor of a periodic schedule's phase.
+///
+/// Ordinary clocks carry an absolute phase. Modelica's event form
+/// `sample(t0 + offset, interval)`, where initialization proves `t0 = time`,
+/// instead anchors the phase at the simulation start instant. Keeping that
+/// distinction typed prevents translation from silently assuming a particular
+/// `startTime`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockPhaseAnchor {
+    #[default]
+    Absolute,
+    SimulationStart,
+}
+
+/// An exact periodic lattice together with the runtime anchor of its phase.
+///
+/// For [`ClockPhaseAnchor::SimulationStart`], `lattice.phase()` is the exact
+/// offset from the simulation start rather than an absolute time. The schedule
+/// remains unresolved in compiler IR and is resolved exactly once at the
+/// simulation boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct PeriodicClockSchedule {
+    lattice: ClockLattice,
+    anchor: ClockPhaseAnchor,
+}
+
+impl PeriodicClockSchedule {
+    /// Construct an absolute periodic schedule.
+    pub fn absolute(lattice: ClockLattice) -> LatticeResult<Self> {
+        Ok(Self {
+            lattice: ClockLattice::new(lattice.period(), lattice.phase())?,
+            anchor: ClockPhaseAnchor::Absolute,
+        })
+    }
+
+    /// Construct a schedule whose phase is relative to simulation start.
+    pub fn simulation_start_relative(lattice: ClockLattice) -> LatticeResult<Self> {
+        Ok(Self {
+            lattice: ClockLattice::new(lattice.period(), lattice.phase())?,
+            anchor: ClockPhaseAnchor::SimulationStart,
+        })
+    }
+
+    pub const fn lattice(self) -> ClockLattice {
+        self.lattice
+    }
+
+    pub const fn anchor(self) -> ClockPhaseAnchor {
+        self.anchor
+    }
+
+    /// Exact interval retained by this schedule.
+    pub const fn period(self) -> ClockRational {
+        self.lattice.period()
+    }
+
+    /// Exact absolute phase, or start-relative offset according to [`Self::anchor`].
+    pub const fn phase(self) -> ClockRational {
+        self.lattice.phase()
+    }
+
+    pub fn period_seconds(self) -> f64 {
+        self.lattice.period_seconds()
+    }
+
+    /// Absolute phase seconds, or the exact offset from simulation start for a
+    /// start-relative schedule.
+    pub fn phase_seconds(self) -> f64 {
+        self.lattice.phase_seconds()
+    }
+
+    /// Resolve a start-relative phase at the simulation boundary.
+    pub fn resolve_at(self, start_time: f64) -> LatticeResult<Self> {
+        if self.anchor == ClockPhaseAnchor::Absolute {
+            return Self::absolute(self.lattice);
+        }
+        let start = ClockRational::from_seconds(start_time)?;
+        let phase = start.checked_add(self.lattice.phase())?;
+        Self::absolute(ClockLattice::new(self.lattice.period(), phase)?)
+    }
+}
+
 impl ClockLattice {
     /// Build a lattice from an exact period and phase.
     ///

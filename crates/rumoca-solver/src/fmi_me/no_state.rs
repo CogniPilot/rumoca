@@ -18,19 +18,21 @@ use crate::runtime::event::{
     runtime_event_horizon,
 };
 use crate::runtime::no_state::{
-    NoStateEventStep, NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
-    first_no_state_root_crossing, no_state_root_scan_step_ceiling, run_no_state_output_schedule,
+    NO_STATE_EVENT_TIME_TOLERANCE, NoStateEventStep, NoStateOrchestrationBackend,
+    NoStateRootSearchScratch, NoStateScheduledStop, first_no_state_root_crossing,
+    no_state_root_scan_step_ceiling, run_no_state_output_schedule,
 };
 use crate::runtime::pre_params::commit_pre_params_after_event_at;
 use crate::runtime::schedule::{RuntimeEventStop, SolveStopSchedule};
-use crate::runtime::solve_events::apply_discrete_slot_values;
+use crate::runtime::solve_ops::build_sim_result_from_solve_model;
 use crate::runtime::solve_ops::{
-    EventActionOutcome, EventPreMode, RuntimeSolveError, runtime_values_changed,
+    EventActionOutcome, EventPreMode, RootCrossing, RuntimeSolveError,
+    root_crossings_with_relation_memory, runtime_values_changed,
 };
 use crate::runtime::solve_runtime::{
     EventUpdateRowFilter, ProjectedEventUpdateInput, ProjectedInitialEventInput, SolveRuntime,
 };
-use crate::solver::{SimOptions, SimTermination};
+use crate::solver::{SimOptions, SimResult, SimTermination};
 use crate::timeline::{event_left_probe_time, sample_time_match_with_tol};
 
 const NO_STATE_EVENT_UPDATE_MAX_ITERS: usize = 256;
@@ -52,11 +54,24 @@ struct NoStateRuntime {
     stop_schedule: SolveStopSchedule,
     root_params_scratch: Vec<f64>,
     root_search_scratch: NoStateRootSearchScratch,
+    root_before_scratch: Vec<f64>,
+    root_after_scratch: Vec<f64>,
+    pending_root_crossings: Vec<RootCrossing>,
+    recorded_times: Vec<f64>,
+    data: Vec<Vec<f64>>,
 }
 
 impl MeNoStateSession {
     /// `fmi3InstantiateModelExchange` for a zero-state model.
     pub fn instantiate(source: MeModelSource<'_>, opts: SimOptions) -> Result<Self, MeError> {
+        Self::instantiate_with_initial_event(source, opts, false)
+    }
+
+    fn instantiate_with_initial_event(
+        source: MeModelSource<'_>,
+        opts: SimOptions,
+        apply_without_initial_event: bool,
+    ) -> Result<Self, MeError> {
         let model = source.model();
         if model.state_scalar_count() != 0 {
             return Err(MeError::UnsupportedModel {
@@ -64,12 +79,55 @@ impl MeNoStateSession {
             });
         }
         let model = model.clone();
-        let runtime = initialize_no_state_runtime(&model, &opts)?;
+        let runtime = initialize_no_state_runtime(&model, &opts, apply_without_initial_event)?;
         Ok(Self {
             model,
             opts,
             runtime,
         })
+    }
+
+    /// Run the zero-state ME component over the configured output schedule.
+    ///
+    /// No numerical solver participates because there are no continuous
+    /// states. The shared ME executor owns initialization, events, clocks, and
+    /// observations and returns the same backend-neutral trace a solver host
+    /// would consume.
+    pub fn simulate(source: MeModelSource<'_>, opts: SimOptions) -> Result<SimResult, MeError> {
+        let mut session = Self::instantiate_with_initial_event(source, opts, true)?;
+        let dt = session
+            .opts
+            .dt
+            .unwrap_or((session.opts.t_end - session.opts.t_start).abs() / 500.0);
+        let times =
+            crate::timeline::try_build_output_times(session.opts.t_start, session.opts.t_end, dt)
+                .map_err(|error| MeError::Contract {
+                reason: error.to_string(),
+            })?;
+        let tol = session.tol();
+        run_no_state_output_schedule(
+            &mut NoStateOrchestration {
+                model: &session.model,
+                opts: &session.opts,
+                runtime: &mut session.runtime,
+            },
+            times,
+            tol,
+        )?;
+        Ok(build_sim_result_from_solve_model(
+            &session.model,
+            session.runtime.recorded_times,
+            session.runtime.data,
+            session.runtime.termination,
+        ))
+    }
+
+    /// Validate and settle the zero-state ME component without advancing it.
+    pub fn check_initialization(
+        source: MeModelSource<'_>,
+        opts: SimOptions,
+    ) -> Result<(), MeError> {
+        Self::instantiate_with_initial_event(source, opts, true).map(|_| ())
     }
 
     /// Batched `fmi3SetFloat64` by input name.
@@ -140,7 +198,7 @@ impl MeNoStateSession {
     pub fn reset(&mut self, t_start: f64) -> Result<(), MeError> {
         let mut opts = self.opts.clone();
         opts.t_start = t_start;
-        self.runtime = initialize_no_state_runtime(&self.model, &opts)?;
+        self.runtime = initialize_no_state_runtime(&self.model, &opts, false)?;
         self.opts = opts;
         Ok(())
     }
@@ -211,18 +269,28 @@ impl NoStateOrchestrationBackend for NoStateOrchestration<'_> {
     }
 
     fn next_root_event_time(&mut self, target: f64, tol: f64) -> Result<Option<f64>, Self::Error> {
-        next_no_state_root_event_time(
+        let located = next_no_state_root_event(
             NoStateRootEvaluation {
                 runtime: &self.runtime.runtime,
                 y: &self.runtime.current_y,
                 p: &self.runtime.params,
                 params_scratch: &mut self.runtime.root_params_scratch,
                 root_scratch: &mut self.runtime.root_search_scratch,
+                before_scratch: &mut self.runtime.root_before_scratch,
+                after_scratch: &mut self.runtime.root_after_scratch,
             },
             self.runtime.current_t,
             target,
             tol,
-        )
+        )?;
+        self.runtime.pending_root_crossings.clear();
+        self.runtime.pending_root_crossings.extend(
+            located
+                .as_ref()
+                .into_iter()
+                .flat_map(|root| root.crossings.iter().copied()),
+        );
+        Ok(located.map(|root| root.time))
     }
 
     fn handle_event_step(&mut self, step: NoStateEventStep) -> Result<(), Self::Error> {
@@ -246,13 +314,14 @@ impl NoStateOrchestrationBackend for NoStateOrchestration<'_> {
     }
 
     fn record_output(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+        record_no_state_observation(self.runtime, self.runtime.current_t, false)
     }
 }
 
 fn initialize_no_state_runtime(
     model: &solve::SolveModel,
     opts: &SimOptions,
+    apply_without_initial_event: bool,
 ) -> Result<NoStateRuntime, MeError> {
     let runtime = SolveRuntime::new(model)?;
     let mut params = model.parameters.clone();
@@ -289,14 +358,14 @@ fn initialize_no_state_runtime(
             event_pre_p: &event_pre_p,
             max_iters: NO_STATE_EVENT_UPDATE_MAX_ITERS,
             dynamic_event,
-            apply_without_initial_event: false,
+            apply_without_initial_event,
         },
         |y, p, t| refresh_algebraics_and_detect_changes(&runtime, y, p, t, tol),
     )?;
     current_t = outcome.final_t;
     let mut termination = None;
     apply_event_action_outcome(&mut termination, outcome.action, current_t)?;
-    if !outcome.observations.is_empty() {
+    if apply_without_initial_event || !outcome.observations.is_empty() {
         refresh_observation_rows_and_relation_memory(
             &runtime,
             &mut current_y,
@@ -307,6 +376,26 @@ fn initialize_no_state_runtime(
     }
     runtime.commit_delay_history(current_t, &current_y, &params)?;
     let root_count = runtime.root_condition_count();
+    let mut recorded_times = Vec::new();
+    let mut data = vec![Vec::new(); model.visible_names.len()];
+    for observation in &outcome.observations {
+        let mut y = observation.y.clone();
+        let mut p = observation.p.clone();
+        refresh_observation_rows_and_relation_memory(&runtime, &mut y, &mut p, observation.t, tol)?;
+        runtime.record_visible_sample_if_new(
+            &mut recorded_times,
+            &mut data,
+            &y,
+            &p,
+            observation.t,
+        )?;
+    }
+    let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
+    // Initialization owns every event at the start instant, including a
+    // phase-zero periodic tick. The continuation schedule begins strictly
+    // after that completed superdense instant so the first advance cannot
+    // execute the same clock owner again.
+    stop_schedule.advance_past(current_t);
     Ok(NoStateRuntime {
         runtime,
         params,
@@ -314,9 +403,14 @@ fn initialize_no_state_runtime(
         current_t,
         last_event_t: None,
         termination,
-        stop_schedule: SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end),
+        stop_schedule,
         root_params_scratch: vec![0.0; model.parameters.len()],
         root_search_scratch: NoStateRootSearchScratch::new(root_count),
+        root_before_scratch: vec![0.0; root_count],
+        root_after_scratch: vec![0.0; root_count],
+        pending_root_crossings: Vec::new(),
+        recorded_times,
+        data,
     })
 }
 
@@ -328,6 +422,16 @@ fn apply_no_state_event_step(
 ) -> Result<(), MeError> {
     let event_t = step.event_time();
     let root_boundary = step.root_boundary();
+    let root_relation_overrides = if step.root_event {
+        runtime
+            .pending_root_crossings
+            .drain(..)
+            .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
+            .collect::<Vec<_>>()
+    } else {
+        runtime.pending_root_crossings.clear();
+        Vec::new()
+    };
     runtime.last_event_t = Some(event_t);
     let event = if step.root_event {
         RuntimeEventStop::static_event(EventPreMode::EventEntry)
@@ -348,21 +452,32 @@ fn apply_no_state_event_step(
             event_pre_p: Vec::new(),
             termination: &mut runtime.termination,
             root_event: step.root_event,
+            root_relation_overrides: &root_relation_overrides,
             terminal_p_index: model.problem.solve_layout.terminal_event_parameter_index,
+            recorded_times: &mut runtime.recorded_times,
+            data: &mut runtime.data,
         };
-        process_runtime_event_boundary(
-            RuntimeEventBoundary {
-                event_t,
-                horizon_t: root_boundary.map_or_else(
-                    || runtime_event_horizon(event, step.target, opts.t_end),
-                    |boundary| boundary.evaluation_time(),
-                ),
-                tolerance: step.tol,
-                event,
-            },
-            &mut handler,
-        )?
+        if let Some(boundary) = root_boundary {
+            handler.on_event_time(boundary.evaluation_time(), event)?;
+            crate::runtime::event::RuntimeEventBoundaryOutcome {
+                final_t: boundary.continuation_time(),
+                right_limit_t: None,
+            }
+        } else {
+            process_runtime_event_boundary(
+                RuntimeEventBoundary {
+                    event_t,
+                    horizon_t: runtime_event_horizon(event, step.target, opts.t_end),
+                    tolerance: NO_STATE_EVENT_TIME_TOLERANCE,
+                    event,
+                },
+                &mut handler,
+            )?
+        }
     };
+    if let Some(boundary) = root_boundary {
+        record_no_state_observation(runtime, boundary.observation_time(), false)?;
+    }
     runtime.current_t =
         root_boundary.map_or(outcome.final_t, |boundary| boundary.continuation_time());
     commit_pre_params_after_event_at(
@@ -388,7 +503,10 @@ struct NoStateEventBoundary<'a> {
     event_pre_p: Vec<f64>,
     termination: &'a mut Option<SimTermination>,
     root_event: bool,
+    root_relation_overrides: &'a [(usize, f64)],
     terminal_p_index: Option<usize>,
+    recorded_times: &'a mut Vec<f64>,
+    data: &'a mut [Vec<f64>],
 }
 
 impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
@@ -439,9 +557,6 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
         }
         self.event_pre_y = self.y.to_vec();
         self.event_pre_p = self.p.to_vec();
-        if self.root_event {
-            return Ok(());
-        }
         self.apply_event_updates(event_t)?;
         refresh_observation_rows_and_relation_memory(
             self.runtime,
@@ -449,7 +564,17 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
             self.p,
             event_t,
             self.tol,
-        )
+        )?;
+        if !self.root_event {
+            self.runtime.record_visible_sample_if_new(
+                self.recorded_times,
+                self.data,
+                self.y,
+                self.p,
+                event_t,
+            )?;
+        }
+        Ok(())
     }
 
     fn on_event_right_limit(
@@ -464,8 +589,37 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
             self.p,
             right_t,
             self.tol,
-        )
+        )?;
+        self.recorded_times.push(right_t);
+        self.runtime
+            .record_visible_sample(self.data, self.y, self.p, right_t)?;
+        Ok(())
     }
+}
+
+fn record_no_state_observation(
+    runtime: &mut NoStateRuntime,
+    observation_t: f64,
+    force_distinct: bool,
+) -> Result<(), MeError> {
+    if force_distinct {
+        runtime.recorded_times.push(observation_t);
+        runtime.runtime.record_visible_sample(
+            &mut runtime.data,
+            &runtime.current_y,
+            &runtime.params,
+            observation_t,
+        )?;
+    } else {
+        runtime.runtime.record_visible_sample_if_new(
+            &mut runtime.recorded_times,
+            &mut runtime.data,
+            &runtime.current_y,
+            &runtime.params,
+            observation_t,
+        )?;
+    }
+    Ok(())
 }
 
 impl NoStateEventBoundary<'_> {
@@ -480,7 +634,7 @@ impl NoStateEventBoundary<'_> {
                 event_pre_p: &self.event_pre_p,
                 max_iters: NO_STATE_EVENT_UPDATE_MAX_ITERS,
                 row_filter: EventUpdateRowFilter::All,
-                root_relation_overrides: &[],
+                root_relation_overrides: self.root_relation_overrides,
             },
             |y, p| refresh_algebraics_and_detect_changes(self.runtime, y, p, t, self.tol),
         )?;
@@ -495,17 +649,10 @@ fn apply_no_state_deadline_tick(
     tol: f64,
 ) -> Result<(), MeError> {
     runtime.current_t = target;
-    let values = runtime.runtime.eval_scalar_program_block(
-        &model.problem.discrete.rhs,
-        &runtime.current_y,
-        &runtime.params,
-        target,
-    )?;
-    apply_discrete_slot_values(
-        &model.problem.discrete.update_targets,
-        &values,
+    runtime.runtime.apply_unfiltered_discrete_rows_once(
         &mut runtime.current_y,
         &mut runtime.params,
+        target,
         tol,
     )?;
     runtime.runtime.apply_runtime_assignments_once(
@@ -605,20 +752,29 @@ struct NoStateRootEvaluation<'a> {
     p: &'a [f64],
     params_scratch: &'a mut Vec<f64>,
     root_scratch: &'a mut NoStateRootSearchScratch,
+    before_scratch: &'a mut Vec<f64>,
+    after_scratch: &'a mut Vec<f64>,
 }
 
-fn next_no_state_root_event_time(
+struct LocatedNoStateRoot {
+    time: f64,
+    crossings: Vec<RootCrossing>,
+}
+
+fn next_no_state_root_event(
     input: NoStateRootEvaluation<'_>,
     current_t: f64,
     target: f64,
     tol: f64,
-) -> Result<Option<f64>, MeError> {
+) -> Result<Option<LocatedNoStateRoot>, MeError> {
     let NoStateRootEvaluation {
         runtime,
         y,
         p,
         params_scratch,
         root_scratch,
+        before_scratch,
+        after_scratch,
     } = input;
     let planned_root = runtime.next_planned_time_root(p, current_t, target, tol)?;
     let search_target = planned_root.unwrap_or(target);
@@ -632,15 +788,78 @@ fn next_no_state_root_event_time(
         |t, out| eval_refreshed_roots(runtime, y, p, params_scratch, t, tol, out),
     )?
     else {
-        return Ok(planned_root);
+        return locate_no_state_root_post_side(
+            runtime,
+            y,
+            p,
+            params_scratch,
+            before_scratch,
+            after_scratch,
+            current_t,
+            planned_root,
+            tol,
+        );
     };
-    if root_time > current_t + tol
+    let root_time = if root_time > current_t + tol
         && (root_time < target || sample_time_match_with_tol(root_time, target))
     {
-        Ok(Some(root_time))
+        Some(root_time)
     } else {
-        Ok(planned_root)
-    }
+        planned_root
+    };
+    locate_no_state_root_post_side(
+        runtime,
+        y,
+        p,
+        params_scratch,
+        before_scratch,
+        after_scratch,
+        current_t,
+        root_time,
+        tol,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn locate_no_state_root_post_side(
+    runtime: &SolveRuntime,
+    y: &[f64],
+    p: &[f64],
+    params_scratch: &mut Vec<f64>,
+    before_scratch: &mut Vec<f64>,
+    after_scratch: &mut Vec<f64>,
+    current_t: f64,
+    root_time: Option<f64>,
+    tol: f64,
+) -> Result<Option<LocatedNoStateRoot>, MeError> {
+    let Some(root_time) = root_time else {
+        return Ok(None);
+    };
+    let root_count = runtime.root_condition_count();
+    before_scratch.resize(root_count, 0.0);
+    after_scratch.resize(root_count, 0.0);
+    let before_t = event_left_probe_time(root_time, tol).max(current_t);
+    eval_refreshed_roots(runtime, y, p, params_scratch, before_t, tol, before_scratch)?;
+    eval_refreshed_roots(
+        runtime,
+        y,
+        p,
+        params_scratch,
+        root_time.next_up(),
+        tol,
+        after_scratch,
+    )?;
+    let crossings = root_crossings_with_relation_memory(
+        before_scratch,
+        after_scratch,
+        tol,
+        &runtime.model.problem.events.root_relation_memory_targets,
+        p,
+    );
+    Ok(Some(LocatedNoStateRoot {
+        time: root_time,
+        crossings,
+    }))
 }
 
 fn eval_refreshed_roots(
@@ -680,4 +899,148 @@ fn collect_visible_values(
         });
     }
     Ok(names.iter().cloned().zip(values).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_root_crossing_side_overrides_a_strict_relation_at_the_exact_boundary() {
+        let model = strict_no_state_relation_model();
+        let runtime = SolveRuntime::new(&model).expect("strict relation fixture prepares");
+        let mut y = Vec::new();
+        let mut p = vec![0.0];
+        let mut termination = None;
+        let mut recorded_times = Vec::new();
+        let mut data = Vec::new();
+        let mut boundary = NoStateEventBoundary {
+            runtime: &runtime,
+            y: &mut y,
+            p: &mut p,
+            tol: 1.0e-10,
+            event_pre_y: Vec::new(),
+            event_pre_p: vec![0.0],
+            termination: &mut termination,
+            root_event: true,
+            root_relation_overrides: &[(0, 1.0)],
+            terminal_p_index: None,
+            recorded_times: &mut recorded_times,
+            data: &mut data,
+        };
+
+        boundary
+            .apply_event_updates(0.5)
+            .expect("typed crossing side settles at the exact root");
+        drop(boundary);
+
+        assert_eq!(p, vec![1.0]);
+    }
+
+    #[test]
+    fn no_state_root_search_retains_the_typed_post_side() {
+        let model = strict_no_state_relation_model();
+        let runtime = SolveRuntime::new(&model).expect("strict relation fixture prepares");
+        let mut params_scratch = vec![0.0];
+        let mut root_scratch = NoStateRootSearchScratch::new(1);
+        let mut before_scratch = vec![0.0];
+        let mut after_scratch = vec![0.0];
+
+        let located = next_no_state_root_event(
+            NoStateRootEvaluation {
+                runtime: &runtime,
+                y: &[],
+                p: &model.parameters,
+                params_scratch: &mut params_scratch,
+                root_scratch: &mut root_scratch,
+                before_scratch: &mut before_scratch,
+                after_scratch: &mut after_scratch,
+            },
+            0.0,
+            1.0,
+            1.0e-10,
+        )
+        .expect("root search succeeds")
+        .expect("strict root is located");
+
+        assert!((located.time - 0.5).abs() <= 1.0e-10);
+        assert_eq!(
+            located.crossings,
+            [RootCrossing {
+                index: 0,
+                post_relation_memory_value: 1.0,
+            }]
+        );
+    }
+
+    fn strict_no_state_relation_model() -> solve::SolveModel {
+        let relation = scalar_block(
+            vec![
+                solve::LinearOp::LoadTime { dst: 0 },
+                solve::LinearOp::Const { dst: 1, value: 0.5 },
+                solve::LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Gt,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+            "no_state_strict_relation.mo",
+        );
+        let root = scalar_block(
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.5 },
+                solve::LinearOp::LoadTime { dst: 1 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+            "no_state_strict_root.mo",
+        );
+        solve::SolveModel {
+            problem: solve::SolveProblem {
+                discrete: solve::DiscreteSolveSystem {
+                    rhs: relation,
+                    update_targets: vec![solve::scalar_slot_p(0)],
+                    row_roles: vec![solve::DiscreteRowRole::Equation],
+                    pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                    observation_refresh: vec![false],
+                    clock_owners: vec![None],
+                    ..Default::default()
+                },
+                events: solve::SolveEventPartition {
+                    root_conditions: root,
+                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                    root_zero_domains: vec![solve::RootZeroDomain::Positive],
+                    ..Default::default()
+                },
+                solve_layout: solve::SolveLayout {
+                    compiled_parameter_len: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            parameters: vec![0.0],
+            ..Default::default()
+        }
+    }
+
+    fn scalar_block(
+        program: Vec<solve::LinearOp>,
+        name: &'static str,
+    ) -> solve::ScalarProgramBlock {
+        let span =
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 1, 2);
+        solve::ScalarProgramBlock::with_source_span(
+            vec![program],
+            span.require_provenance("no-state ME fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable")
+    }
 }

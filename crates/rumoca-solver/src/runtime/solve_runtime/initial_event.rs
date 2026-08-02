@@ -121,17 +121,7 @@ fn trace_value_matches(left: f64, right: f64, tol: f64) -> bool {
 
 impl SolveRuntime {
     pub fn set_initial_event_flag(&self, p: &mut [f64], value: bool) {
-        let Some(index) = self
-            .model
-            .problem
-            .solve_layout
-            .initial_event_parameter_index
-        else {
-            return;
-        };
-        if let Some(slot) = p.get_mut(index) {
-            *slot = f64::from(value);
-        }
+        super::set_initial_event_flag(&self.model, p, value);
     }
 
     pub fn apply_projected_post_initial_event_update<P>(
@@ -267,6 +257,12 @@ impl SolveRuntime {
         // only the continuous projection may move.
         let post_row_filter = if right_t.is_some() {
             EventUpdateRowFilter::Hold
+        } else if event.pre_mode == EventPreMode::EventEntry {
+            // A phase-zero periodic schedule ticks at the simulation start,
+            // after initialization has settled. Its EventEntry rows must see
+            // `initial() = false` at that same semantic instant. Fixed rows are
+            // initialization actions and remain excluded from this projection.
+            EventUpdateRowFilter::PostInitialClockTick
         } else {
             EventUpdateRowFilter::FollowCurrentOnly
         };
@@ -281,15 +277,12 @@ impl SolveRuntime {
             },
             |y, p| project_algebraics(y, p, post_t),
         )?;
-        if let Some(right_t) = right_t {
-            let post_observation = InitialEventObservation::snapshot(right_t, y, p);
-            if !self.initial_event_observations_match_trace(
-                &observations[0],
-                &post_observation,
-                tol,
-            )? {
-                observations.push(post_observation);
-            }
+        let post_observation = InitialEventObservation::snapshot(post_t, y, p);
+        if !self.initial_event_observations_match_trace(&observations[0], &post_observation, tol)? {
+            // This can be a synthetic right-limit point or the second
+            // superdense value at `t_start` after `initial()` is cleared. The
+            // recorder replaces equal-time points with the latter value.
+            observations.push(post_observation);
         }
         Ok(ProjectedInitialEventOutcome {
             final_t: post_t,
@@ -327,7 +320,15 @@ impl SolveRuntime {
             max_iters,
             initial_event,
         } = input;
-        if initial_event.is_some() {
+        if let Some(event) = initial_event {
+            let row_filter = if event.pre_mode == EventPreMode::EventEntry {
+                // A periodic clock at t_start is the first superdense event
+                // after initialization. Settle initialization rows now; the
+                // EventEntry rows execute exactly once after initial() clears.
+                EventUpdateRowFilter::UnownedOnly
+            } else {
+                EventUpdateRowFilter::All
+            };
             return self.apply_projected_event_update(
                 ProjectedEventUpdateInput {
                     y,
@@ -337,7 +338,7 @@ impl SolveRuntime {
                     event_pre_y,
                     event_pre_p,
                     max_iters,
-                    row_filter: EventUpdateRowFilter::All,
+                    row_filter,
                     root_relation_overrides: &[],
                 },
                 |y, p| project_algebraics(y, p, t),

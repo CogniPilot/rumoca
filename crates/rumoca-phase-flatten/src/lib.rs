@@ -106,14 +106,13 @@ pub(crate) use function_precollect::{
 use pipeline::*;
 use postprocess::*;
 use record_constant_arrays::{
-    is_record_like_type, synthesize_component_modification_binding,
+    component_type_is_record, synthesize_component_modification_binding,
     try_extract_record_array_constructor_constant,
 };
 use rumoca_eval_flat::phase_constant::{
-    ParamEvalContext, ParamEvaluator, build_eval_context, eval_user_func_real,
-    infer_array_dimensions, infer_array_dimensions_full_with_functions,
-    looks_like_enum_literal_path, try_eval_flat_expr_enum, try_eval_integer_with_context,
-    try_infer_better_dims,
+    ParamEvalContext, ParamEvaluator, eval_user_func_real, infer_array_dimensions,
+    infer_array_dimensions_full_with_functions, looks_like_enum_literal_path,
+    try_eval_flat_expr_enum, try_eval_integer_with_context, try_infer_better_dims,
 };
 
 /// Options controlling flatten strictness.

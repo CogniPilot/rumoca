@@ -746,6 +746,7 @@ mod tests {
         .with_resolved_function(rumoca_core::ResolvedFunctionReference {
             instance_id,
             base_part_count: 2,
+            transitively_non_replaceable: true,
         });
         rumoca_core::Expression::FunctionCall {
             name: reference,

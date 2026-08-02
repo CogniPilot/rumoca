@@ -1570,7 +1570,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
     timings.compile_chunk_count = chunked_output.chunk_count;
     timings.worker_threads = chunked_output.worker_threads;
     timings.scheduler = chunked_output.scheduler;
-    update_phase_timing_totals(&mut timings);
+    update_phase_timing_totals(&mut timings, &chunked_output.model_results);
     timings.frontend_compile_seconds =
         timings.parse_seconds + timings.session_build_seconds + timings.compile_seconds;
     print_compile_timing_summary(compile_count, &timings);

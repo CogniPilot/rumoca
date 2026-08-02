@@ -13,11 +13,27 @@
 
 use rumoca_ir_dae as dae;
 
+use super::HolonomicDifferentiationProof;
 use super::equalities::{EqualityAnchor, EqualitySign};
 use super::expressions::ExpressionRebuilder;
 use super::variables::TargetVariable;
 
 impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
+    /// Differentiate only under the certificate collected for this exact
+    /// residual from the finalized source DAE.
+    pub(super) fn differentiate_holonomic(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        order: u8,
+        proof: &HolonomicDifferentiationProof,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        assert_eq!(source_id.index(), proof.residual);
+        assert!(order <= proof.maximum_order);
+        assert!(!proof.anchored_states.is_empty());
+        self.differentiate_order(source_id, order, provenance)
+    }
+
     pub(super) fn differentiate(
         &mut self,
         source_id: dae::ExprId<'source>,

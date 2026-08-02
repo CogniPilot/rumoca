@@ -445,6 +445,28 @@ impl ExpressionValidator<'_> {
         if function == BuiltinFunction::Pre {
             return self.validate_pre(arguments, span);
         }
+        if function == BuiltinFunction::Initial {
+            return if arguments.is_empty() {
+                Ok(())
+            } else {
+                Err(ToDaeError::unsupported_runtime_operator(
+                    function.name(),
+                    "initial() takes no arguments",
+                    span,
+                ))
+            };
+        }
+        if function == BuiltinFunction::Terminal {
+            return if arguments.is_empty() {
+                Ok(())
+            } else {
+                Err(ToDaeError::unsupported_runtime_operator(
+                    function.name(),
+                    "terminal() takes no arguments",
+                    span,
+                ))
+            };
+        }
         if function == BuiltinFunction::Interval {
             if arguments.len() > 1 {
                 return Err(ToDaeError::unsupported_runtime_operator(
@@ -667,6 +689,12 @@ fn is_supported_builtin(function: BuiltinFunction) -> bool {
             | BuiltinFunction::Ones
             | BuiltinFunction::Fill
             | BuiltinFunction::Linspace
+            | BuiltinFunction::Identity
+            | BuiltinFunction::Vector
+            | BuiltinFunction::Transpose
+            | BuiltinFunction::Diagonal
+            | BuiltinFunction::OuterProduct
+            | BuiltinFunction::Skew
             | BuiltinFunction::Cross
             | BuiltinFunction::Sample
             | BuiltinFunction::Clock

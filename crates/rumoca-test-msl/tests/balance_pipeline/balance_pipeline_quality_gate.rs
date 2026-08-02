@@ -482,7 +482,11 @@ pub(super) fn msl_simulation_targets_path() -> PathBuf {
 }
 
 pub(super) fn omc_parity_cache_dir() -> PathBuf {
-    msl_results_dir().join(OMC_PARITY_CACHE_DIR_REL)
+    // Results directories are intentionally disposable and often unique per
+    // diagnostic run. Keep the content-keyed OMC cache at the relocatable MSL
+    // cache root so a fresh results directory can reuse the same verified
+    // reference without coupling it to a machine-specific path.
+    msl_cache_dir().join(OMC_PARITY_CACHE_DIR_REL)
 }
 
 pub(super) fn load_msl_quality_baseline(path: &Path) -> io::Result<MslQualityBaseline> {
@@ -1019,6 +1023,15 @@ fn current_msl_quality_snapshot_json(
     partial: bool,
 ) -> io::Result<serde_json::Value> {
     let baseline = current_msl_quality_baseline(summary, parity_input);
+    let certified_simulations = parity_input
+        .and_then(|parity| parity.trace_accuracy_stats.as_ref())
+        .map_or(0, |trace| trace.agreement_high);
+    let uncertified_simulations = summary.sim_ok.saturating_sub(certified_simulations);
+    let simulation_soundness_percent = if summary.sim_ok == 0 {
+        100.0
+    } else {
+        100.0 * certified_simulations as f64 / summary.sim_ok as f64
+    };
     let mut value = serde_json::to_value(&baseline).map_err(|error| {
         io::Error::other(format!("failed to serialize baseline JSON value: {error}"))
     })?;
@@ -1063,6 +1076,9 @@ fn current_msl_quality_snapshot_json(
             "ic_ok": summary.ic_ok,
             "ic_solver_fail": summary.ic_solver_fail,
             "sim_ok": summary.sim_ok,
+            "certified_simulations_strict_high": certified_simulations,
+            "uncertified_simulations": uncertified_simulations,
+            "simulation_soundness_percent": simulation_soundness_percent,
             "sim_nan": summary.sim_nan,
             "sim_solver_fail": summary.sim_solver_fail,
             "sim_timeout": summary.sim_timeout,
@@ -1228,14 +1244,15 @@ pub(super) fn msl_quality_regression_reasons(
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     push_compile_balance_regression_reasons(&mut reasons, gate_input, baseline);
-    // `sim_ok` is completion, never parity: its movement is REPORTED here and
-    // gated nowhere. Gating on it rewards producing traces nobody compared,
-    // which is the failure mode SPEC 0033 (38464fd8) exists to stop.
+    // `sim_ok` is completion, never parity: its movement is reported rather
+    // than ratcheted. The separate soundness invariant below gates the only
+    // meaningful relationship: every completion must also be strict-high.
     for note in sim_completion_report_notes(gate_input, baseline) {
         println!("MSL simulation completion (reported, not gated): {note}");
     }
     push_tensor_preservation_regression_reasons(&mut reasons, gate_input, baseline);
     push_trace_regression_reasons(&mut reasons, baseline, parity_input);
+    push_trace_soundness_reasons(&mut reasons, gate_input, parity_input);
     push_runtime_ratio_regression_reasons(&mut reasons, baseline, parity_input);
     reasons
 }
@@ -1633,6 +1650,28 @@ pub(super) fn push_trace_regression_reasons(
                 TRACE_MODELS_COMPARED_ALLOWED_DROP
             ));
         }
+    }
+}
+
+/// Fail closed when the runtime completes a model whose semantics the OMC
+/// comparator did not place in the strict-high band. `sim_ok` is useful
+/// execution telemetry, but support is the intersection of completion and
+/// independently checked trace parity.
+pub(super) fn push_trace_soundness_reasons(
+    reasons: &mut Vec<String>,
+    gate_input: MslQualityGateInput<'_>,
+    parity_input: Option<&MslParityGateInput>,
+) {
+    let Some(trace) = parity_input.and_then(|parity| parity.trace_accuracy_stats.as_ref()) else {
+        return;
+    };
+    if gate_input.sim_ok != trace.agreement_high {
+        reasons.push(format!(
+            "simulation soundness requires every sim_ok model to be strict-high: sim_ok={} strict_high={} uncertified={}",
+            gate_input.sim_ok,
+            trace.agreement_high,
+            gate_input.sim_ok.saturating_sub(trace.agreement_high),
+        ));
     }
 }
 

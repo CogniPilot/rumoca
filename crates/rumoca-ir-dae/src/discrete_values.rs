@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use rumoca_core::ComprehensionScalarView;
 use rustc_hash::FxHashSet;
 
 use crate::conditions::{ConditionNode, condition_owner_clock};
@@ -34,7 +35,17 @@ impl PackedRange {
 pub(crate) struct DiscreteValueOwnerEntry {
     pub(crate) targets: PackedRange,
     pub(crate) branches: PackedRange,
+    pub(crate) structure: Option<StructuredDiscreteValueEntry>,
     pub(crate) provenance: DaeProvenance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StructuredDiscreteValueEntry {
+    pub(crate) domain: u32,
+    pub(crate) scalar_view: ComprehensionScalarView,
+    #[serde(skip_serializing)]
+    pub(crate) scalar_rows: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -58,6 +69,7 @@ pub enum DiscreteBranchActivation<'dae> {
 pub struct DiscreteValueOwnerView<'dae> {
     pub(crate) targets: DiscreteValueTargets<'dae>,
     pub(crate) branches: DiscreteValueBranches<'dae>,
+    pub(crate) structure: Option<StructuredDiscreteValueView<'dae>>,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -70,8 +82,33 @@ impl<'dae> DiscreteValueOwnerView<'dae> {
         self.branches
     }
 
+    pub const fn structure(self) -> Option<StructuredDiscreteValueView<'dae>> {
+        self.structure
+    }
+
     pub const fn provenance(self) -> DaeProvenance {
         self.provenance
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StructuredDiscreteValueView<'dae> {
+    pub(crate) domain: crate::DomainId<'dae>,
+    pub(crate) scalar_view: ComprehensionScalarView,
+    pub(crate) scalar_rows: u32,
+}
+
+impl<'dae> StructuredDiscreteValueView<'dae> {
+    pub const fn domain(self) -> crate::DomainId<'dae> {
+        self.domain
+    }
+
+    pub const fn scalar_view(self) -> ComprehensionScalarView {
+        self.scalar_view
+    }
+
+    pub const fn scalar_rows(self) -> u32 {
+        self.scalar_rows
     }
 }
 
@@ -361,6 +398,33 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
         build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
     ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
+        self.build_owner(provenance, targets, None, build)
+    }
+
+    pub fn structured_owner(
+        &mut self,
+        provenance: DaeProvenance,
+        domain: crate::DomainId<'dae>,
+        scalar_view: ComprehensionScalarView,
+        targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
+        build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
+    ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
+        let scalar_count = self.storage.domain_scalar_count(domain, provenance)?;
+        self.build_owner(
+            provenance,
+            targets,
+            Some((domain, scalar_view, scalar_count)),
+            build,
+        )
+    }
+
+    fn build_owner(
+        &mut self,
+        provenance: DaeProvenance,
+        targets: impl IntoIterator<Item = DiscreteValueId<'dae>>,
+        structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
+        build: impl FnOnce(&mut DiscreteValueOwner<'_, 'dae>) -> Result<(), DaeConstructionError>,
+    ) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         let targets = targets
             .into_iter()
@@ -383,6 +447,9 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         for &target in &targets {
             self.storage
                 .expect_discrete_value_target_id(target, provenance)?;
+        }
+        if let Some((domain, _, _)) = structure {
+            self.validate_structured_targets(domain, &targets, provenance)?;
         }
 
         let owner = checked_u32(
@@ -410,30 +477,14 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             marker: PhantomData,
         })
         .and_then(|()| {
-            let branch_len = self.storage.discrete_value_branches.len() - branch_start;
-            if branch_len == 0 {
-                return Err(DaeConstructionError::EmptyDiscreteValueOwner {
-                    span: provenance.span(),
-                });
-            }
-            self.validate_owner(&targets, branch_start)?;
-            let branch_start = checked_u32(branch_start, "B.1c branch arena", provenance)?;
-            let branch_len = checked_u32(branch_len, "B.1c branch arena", provenance)?;
-            expect_packed_capacity(branch_start, branch_len, "B.1c branch arena", provenance)?;
-            self.storage
-                .discrete_value_owners
-                .push(DiscreteValueOwnerEntry {
-                    targets: PackedRange {
-                        start: target_start,
-                        len: target_len,
-                    },
-                    branches: PackedRange {
-                        start: branch_start,
-                        len: branch_len,
-                    },
-                    provenance,
-                });
-            Ok(())
+            self.commit_owner(
+                provenance,
+                &targets,
+                structure,
+                target_start,
+                target_len,
+                branch_start,
+            )
         });
         if let Err(error) = result {
             checkpoint.rollback(self.storage);
@@ -446,10 +497,67 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         Ok(crate::DiscreteValueOwnerId::from_raw(owner))
     }
 
+    fn commit_owner(
+        &mut self,
+        provenance: DaeProvenance,
+        targets: &[u32],
+        structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
+        target_start: u32,
+        target_len: u32,
+        branch_start: usize,
+    ) -> Result<(), DaeConstructionError> {
+        let branch_len = self.storage.discrete_value_branches.len() - branch_start;
+        if branch_len == 0 {
+            return Err(DaeConstructionError::EmptyDiscreteValueOwner {
+                span: provenance.span(),
+            });
+        }
+        self.validate_owner(targets, branch_start, structure)?;
+        let branch_start = checked_u32(branch_start, "B.1c branch arena", provenance)?;
+        let branch_len = checked_u32(branch_len, "B.1c branch arena", provenance)?;
+        expect_packed_capacity(branch_start, branch_len, "B.1c branch arena", provenance)?;
+        let structure = structure
+            .map(|(domain, scalar_view, scalar_count)| {
+                let scalar_rows = scalar_count.checked_mul(targets.len()).ok_or(
+                    DaeConstructionError::CapacityExceeded {
+                        arena: "structured B.1c scalar rows",
+                        attempted_index: usize::MAX,
+                        span: provenance.span(),
+                    },
+                )?;
+                Ok(StructuredDiscreteValueEntry {
+                    domain: domain.index(),
+                    scalar_view,
+                    scalar_rows: checked_u32(
+                        scalar_rows,
+                        "structured B.1c scalar rows",
+                        provenance,
+                    )?,
+                })
+            })
+            .transpose()?;
+        self.storage
+            .discrete_value_owners
+            .push(DiscreteValueOwnerEntry {
+                targets: PackedRange {
+                    start: target_start,
+                    len: target_len,
+                },
+                branches: PackedRange {
+                    start: branch_start,
+                    len: branch_len,
+                },
+                structure,
+                provenance,
+            });
+        Ok(())
+    }
+
     fn validate_owner(
         &self,
         targets: &[u32],
         branch_start: usize,
+        structure: Option<(crate::DomainId<'dae>, ComprehensionScalarView, usize)>,
     ) -> Result<(), DaeConstructionError> {
         let branches = &self.storage.discrete_value_branches[branch_start..];
         for branch in branches {
@@ -463,8 +571,18 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 let value_index = branch.values.start as usize + ordinal;
                 let value = self.storage.discrete_value_branch_values[value_index];
                 let provenance = self.storage.discrete_value_branch_value_provenance[value_index];
-                self.storage
-                    .expect_discrete_value_raw(target, value, provenance)?;
+                match structure {
+                    Some((domain, scalar_view, _)) => self.expect_structured_value(
+                        target,
+                        value,
+                        domain,
+                        scalar_view,
+                        provenance,
+                    )?,
+                    None => self
+                        .storage
+                        .expect_discrete_value_raw(target, value, provenance)?,
+                }
                 self.expect_expression_dependencies_issued(
                     value,
                     target,
@@ -473,6 +591,75 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 )?;
             }
             issued_prefix.insert(target);
+        }
+        Ok(())
+    }
+
+    fn validate_structured_targets(
+        &self,
+        domain: crate::DomainId<'dae>,
+        targets: &[u32],
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        let extents = self.storage.domain_extents(domain, provenance)?;
+        for &target in targets {
+            let variable = self
+                .storage
+                .variables
+                .get(target as usize)
+                .ok_or_else(|| unknown("variable", target, provenance))?;
+            let value_type = self
+                .storage
+                .value_type_at(variable.value_type, provenance)?;
+            if value_type.dimensions() != extents {
+                return Err(DaeConstructionError::ShapeMismatch {
+                    span: provenance.span(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn expect_structured_value(
+        &self,
+        target: u32,
+        value: u32,
+        domain: crate::DomainId<'dae>,
+        scalar_view: ComprehensionScalarView,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        let value = ExprId::from_raw(value);
+        self.storage
+            .expect_domain_expression(value, domain, provenance)?;
+        let variable = self
+            .storage
+            .variables
+            .get(target as usize)
+            .ok_or_else(|| unknown("variable", target, provenance))?;
+        let expected = self
+            .storage
+            .value_type_at(variable.value_type, provenance)?;
+        let found = self.storage.expr_type(value, provenance)?;
+        if expected.scalar_type() != found.scalar_type() {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected: expected.scalar_type(),
+                found: found.scalar_type(),
+                span: provenance.span(),
+            });
+        }
+        let extents = self.storage.domain_extents(domain, provenance)?;
+        let shape_matches = match scalar_view {
+            ComprehensionScalarView::BinderSubstitution => found.is_scalar(),
+            ComprehensionScalarView::RowMajorProjection => found.dimensions() == extents,
+            ComprehensionScalarView::BinderPrefixProjection { binder_count } => {
+                extents.get(usize::try_from(binder_count).unwrap_or(usize::MAX)..)
+                    == Some(found.dimensions())
+            }
+        };
+        if !shape_matches {
+            return Err(DaeConstructionError::ShapeMismatch {
+                span: provenance.span(),
+            });
         }
         Ok(())
     }

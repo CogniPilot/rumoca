@@ -71,7 +71,34 @@ use crate::{
 /// checks this number, so appended ordinals keep every earlier variant stable
 /// and an old blob fails cleanly on the version instead of mis-decoding
 /// mid-stream.
-pub const DAE_SCHEMA_VERSION: u16 = 15;
+///
+/// 16 extends periodic clock records with their typed phase anchor. This keeps
+/// a schedule based on the simulation start instant distinct from an absolute
+/// translation-time phase throughout checked DAE serialization.
+///
+/// 17 appends `PureBuiltin::Identity`. Appending preserves every prior enum
+/// ordinal so superseded payloads decode structurally before the version gate
+/// rejects them.
+///
+/// 18 appends `PureBuiltin::Vector` at ordinal 38. Its result shape remains
+/// absent from the wire and is re-derived from the compact operand by checked
+/// replay.
+///
+/// 19 appends `PureBuiltin::Transpose` at ordinal 39. Checked replay derives
+/// its result by swapping only the first two operand axes.
+///
+/// 20 appends `PureBuiltin::Diagonal` at ordinal 40. Checked replay derives
+/// both matrix extents from the compact vector operand.
+///
+/// 21 appends `PureBuiltin::OuterProduct` at ordinal 41. Checked replay derives
+/// the matrix extents from the two compact vector operands in source order.
+///
+/// 22 adds the optional structured B.1c owner operation. Checked replay derives
+/// scalar coverage from the referenced domain, view, targets, and branch values.
+///
+/// 23 appends `PureBuiltin::Skew` at ordinal 42. Checked replay derives the
+/// fixed Real `[3, 3]` result from its compact Real 3-vector operand.
+pub const DAE_SCHEMA_VERSION: u16 = 23;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -434,7 +461,7 @@ struct FrozenStorage {
     delays: Box<[DelayEntry]>,
 }
 
-/// Immutable, valid-by-construction schema-v13 DAE.
+/// Immutable, valid-by-construction current-schema DAE.
 #[derive(Debug, Serialize)]
 pub struct Dae {
     schema_version: u16,

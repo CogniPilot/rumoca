@@ -536,9 +536,40 @@ fn matrix_with_a_non_scalar_operand_is_rejected_by_name() {
     let error = construct(&model, source.map).expect_err("a vector operand needs `cat` promotion");
     let message = error.to_string();
     assert!(
-        message.contains("MLS §10.4.2.1") && message.contains("concatenation of a rank-1 operand"),
+        message.contains("MLS §10.4.2.1")
+            && message.contains("ambiguous horizontal")
+            && message.contains("rank-1 operand"),
         "unexpected rejection: {message}"
     );
+}
+
+/// The `;` spelling has an unambiguous nested-row owner, so its vector
+/// operands are promoted to columns and concatenated through the checked DAE
+/// operation instead of being rejected or scalarized during ToDAE.
+#[test]
+fn semicolon_matrix_of_vectors_constructs_with_promoted_shape() {
+    let source = TestSource::new(MATRIX_TEXT);
+    let vector = |occurrence| Expression::Array {
+        elements: vec![
+            scalar(&source, "0", occurrence),
+            scalar(&source, "1", occurrence),
+        ],
+        is_matrix: false,
+        span: source.span("0, 1", 0),
+    };
+    let row = |occurrence| Expression::Array {
+        elements: vec![vector(occurrence)],
+        is_matrix: true,
+        span: source.span("[0, 1, 1, 0, 0]", 0),
+    };
+    let argument = Expression::Array {
+        elements: vec![row(0), row(1)],
+        is_matrix: true,
+        span: source.span("[0, 1, 1, 0, 0]", 0),
+    };
+    let model = rank2_call_model(&source, argument);
+    construct(&model, source.map)
+        .expect("two promoted length-2 columns concatenate to a checked 4 x 1 matrix");
 }
 
 /// The same MLS §10.4.2.1 refusal must reach a `[ ]` written in a *model*
@@ -583,7 +614,9 @@ fn model_scope_matrix_row_of_vectors_is_rejected_by_name() {
         .expect_err("a model-scope row of vectors needs `cat` promotion");
     let message = error.to_string();
     assert!(
-        message.contains("MLS §10.4.2.1") && message.contains("concatenation of a rank-1 operand"),
+        message.contains("MLS §10.4.2.1")
+            && message.contains("ambiguous horizontal")
+            && message.contains("rank-1 operand"),
         "unexpected rejection: {message}"
     );
 }

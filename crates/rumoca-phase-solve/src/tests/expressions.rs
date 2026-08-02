@@ -7,6 +7,416 @@
 use super::*;
 
 #[test]
+fn integer_builtin_lowers_to_floor_without_conflating_division_semantics() {
+    let source = TestSource::new("Real y; y = integer(time - 0.5);");
+    let owner = source.at(0, 32);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                owner,
+            )
+        })?;
+        let algebraic = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("y"),
+                real,
+                owner,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let y = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            let time = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Time)?;
+            let half = expressions.at(owner).literal(dae::DaeLiteral::Real(0.5))?;
+            let shifted =
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Subtract, time, half)?;
+            let integer = expressions
+                .at(owner)
+                .builtin(dae::PureBuiltin::Integer, [shifted])?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, y, integer)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected");
+    };
+    assert!(rows.programs()[0].iter().any(|operation| matches!(
+        operation,
+        LinearOp::Unary {
+            op: rumoca_ir_solve::UnaryOp::Floor,
+            ..
+        }
+    )));
+    assert!(!rows.programs()[0].iter().any(|operation| matches!(
+        operation,
+        LinearOp::Unary {
+            op: rumoca_ir_solve::UnaryOp::Trunc,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn promoted_concatenation_selects_each_operand_scalar_in_result_order() {
+    let source = TestSource::new("[1,2;3,4]");
+    let owner = source.at(0, 9);
+    let model = dae::Dae::construct(source.map, |model| {
+        let matrix = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [2, 2]),
+                owner,
+            )
+        })?;
+        let algebraic = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("y"),
+                matrix,
+                owner,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            let two = expressions.at(owner).literal(dae::DaeLiteral::Real(2.0))?;
+            let three = expressions.at(owner).literal(dae::DaeLiteral::Real(3.0))?;
+            let four = expressions.at(owner).literal(dae::DaeLiteral::Real(4.0))?;
+            let first = expressions.at(owner).array([one, two])?;
+            let second = expressions.at(owner).array([three, four])?;
+            let concatenation = expressions
+                .at(owner)
+                .builtin(dae::PureBuiltin::PromotedCat2, [first, second])?;
+            let lhs = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, lhs, concatenation)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    solve
+        .validate()
+        .expect("constructor-certified concatenation produces valid Solve rows");
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected");
+    };
+    let values = rows
+        .programs()
+        .iter()
+        .map(|program| {
+            program
+                .iter()
+                .find_map(|operation| match operation {
+                    LinearOp::Const { value, .. } => Some(*value),
+                    _ => None,
+                })
+                .expect("each constant concatenation scalar owns a literal")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(values, [1.0, 3.0, 2.0, 4.0]);
+}
+
+#[test]
+fn identity_derives_diagonal_constants_without_materializing_dae_scalars() {
+    let source = TestSource::new("Real y[2,2]; y = identity(2);");
+    let owner = source.at(0, 29);
+    let model = dae::Dae::construct(source.map, |model| {
+        let matrix = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [2, 2]),
+                owner,
+            )
+        })?;
+        let algebraic = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("y"),
+                matrix,
+                owner,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let extent = expressions.at(owner).literal(dae::DaeLiteral::Integer(2))?;
+            let identity = expressions
+                .at(owner)
+                .builtin(dae::PureBuiltin::Identity, [extent])?;
+            let lhs = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, lhs, identity)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    assert_eq!(
+        model.inspect(|view| view.expression_count()),
+        4,
+        "identity remains one compact expression"
+    );
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected")
+    };
+    let diagonal = rows
+        .programs()
+        .iter()
+        .map(|program| {
+            program
+                .iter()
+                .find_map(|operation| match operation {
+                    LinearOp::Const { value, .. } => Some(*value),
+                    _ => None,
+                })
+                .expect("each identity projection derives one constant")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(diagonal, [1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn vector_lowers_each_result_scalar_directly_from_its_compact_operand() {
+    let source = TestSource::new("parameter Real p[1,3,1]; Real y[3]; y = vector(p);");
+    let owner = source.at(0, 50);
+    let model = dae::Dae::construct(source.map, |model| {
+        let tensor = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [1, 3, 1]),
+                owner,
+            )
+        })?;
+        let vector = model.types(|types| {
+            types.intern(
+                TypeId::new(1),
+                dae::ValueType::array(dae::ScalarType::Real, [3]),
+                owner,
+            )
+        })?;
+        let (p, y) = model.variables(|variables| {
+            Ok((
+                variables.parameter(
+                    VarName::new("p"),
+                    tensor,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.algebraic(
+                    VarName::new("y"),
+                    vector,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let residual = model.expressions(|expressions| {
+            let p = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(p))?;
+            let vector = expressions
+                .at(owner)
+                .builtin(dae::PureBuiltin::Vector, [p])?;
+            let y = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(y))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, y, vector)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    assert_eq!(
+        model.inspect(|view| view.expression_count()),
+        4,
+        "vector remains one compact DAE node"
+    );
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected")
+    };
+    assert_eq!(rows.programs().len(), 3);
+    for (index, program) in rows.programs().iter().enumerate() {
+        assert!(program.iter().any(
+            |operation| matches!(operation, LinearOp::LoadP { index: found, .. } if *found == index)
+        ));
+    }
+}
+
+#[test]
+fn transpose_lowers_rank_three_rows_through_the_exact_operand_permutation() {
+    let source = TestSource::new("parameter Real p[2,3,2]; Real y[3,2,2]; y = transpose(p);");
+    let owner = source.at(0, 57);
+    let model = dae::Dae::construct(source.map, |model| {
+        let input_type = model.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Real, [2, 3, 2]),
+                owner,
+            )
+        })?;
+        let result_type = model.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Real, [3, 2, 2]),
+                owner,
+            )
+        })?;
+        let (p, y) = model.variables(|variables| {
+            Ok((
+                variables.parameter(
+                    VarName::new("p"),
+                    input_type,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.algebraic(
+                    VarName::new("y"),
+                    result_type,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let residual = model.expressions(|expressions| {
+            let p = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(p))?;
+            let transpose = expressions
+                .at(owner)
+                .builtin(dae::PureBuiltin::Transpose, [p])?;
+            let y = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(y))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, y, transpose)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    assert_eq!(model.inspect(|view| view.expression_count()), 4);
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected")
+    };
+    let expected = [0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11];
+    assert_eq!(rows.programs().len(), expected.len());
+    for (program, expected) in rows.programs().iter().zip(expected) {
+        assert!(program.iter().any(
+            |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == expected)
+        ));
+    }
+}
+
+#[test]
+fn skew_lowers_each_matrix_scalar_from_one_compact_parameter_vector() {
+    let source = TestSource::new("parameter Real p[3]; Real y[3,3]; y = skew(p);");
+    let owner = source.at(0, 46);
+    let model = dae::Dae::construct(source.map, |model| {
+        let (vector, matrix) = model.types(|types| {
+            Ok((
+                types.derived(dae::ValueType::array(dae::ScalarType::Real, [3]), owner)?,
+                types.derived(dae::ValueType::array(dae::ScalarType::Real, [3, 3]), owner)?,
+            ))
+        })?;
+        let (p, y) = model.variables(|variables| {
+            Ok((
+                variables.parameter(
+                    VarName::new("p"),
+                    vector,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.algebraic(
+                    VarName::new("y"),
+                    matrix,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let residual = model.expressions(|expressions| {
+            let p = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(p))?;
+            let skew = expressions.at(owner).builtin(dae::PureBuiltin::Skew, [p])?;
+            let y = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(y))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, y, skew)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    assert_eq!(
+        model.inspect(|view| view.expression_count()),
+        4,
+        "skew remains one compact DAE node"
+    );
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected")
+    };
+    let expected = [
+        None,
+        Some((2, true)),
+        Some((1, false)),
+        Some((2, false)),
+        None,
+        Some((0, true)),
+        Some((1, true)),
+        Some((0, false)),
+        None,
+    ];
+    assert_eq!(rows.programs().len(), expected.len());
+    for (program, expected) in rows.programs().iter().zip(expected) {
+        let Some((parameter, negative)) = expected else {
+            assert!(program.iter().any(
+                |operation| matches!(operation, LinearOp::Const { value, .. } if *value == 0.0)
+            ));
+            continue;
+        };
+        assert!(program.iter().any(
+            |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == parameter)
+        ));
+        assert_eq!(
+            program.iter().any(|operation| matches!(
+                operation,
+                LinearOp::Unary {
+                    op: rumoca_ir_solve::UnaryOp::Neg,
+                    ..
+                }
+            )),
+            negative
+        );
+    }
+}
+
+#[test]
 fn static_quotient_family_lowers_to_computable_solve_operations() {
     let source = TestSource::new("Real y; y = div(-7,3) + mod(-7,3) + rem(-7,3);");
     let declaration = source.at(0, 6);

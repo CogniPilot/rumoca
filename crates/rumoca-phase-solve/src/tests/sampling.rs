@@ -111,7 +111,8 @@ fn clocked_hold_sample_model(source: TestSource, path: SampledPath) -> dae::Dae 
         })?;
         let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
         model.clocks(|clocks| clocks.own_discrete_real(clock.into(), held, hold_at))?;
-        model.clocks(|clocks| clocks.own_discrete_real(clock.into(), sampled, sample_at))?;
+        model
+            .clocks(|clocks| clocks.own_sampled_discrete_real(clock.into(), sampled, sample_at))?;
 
         // `hold(h)`: a continuous-time value written by the clocked partition.
         let hold_residual = model.expressions(|expressions| {
@@ -178,31 +179,31 @@ fn clocked_hold_sample_model(source: TestSource, path: SampledPath) -> dae::Dae 
     .unwrap()
 }
 
-/// MLS §16.5.1: `sample(u)` is the left limit of `u`. Lowering it as an identity
-/// read of `u` is only that left limit when the sampling tick cannot move `u`.
-/// A clocked row sampling a value its own tick recomputes has no checked
-/// schedule, so it must fail here rather than be settled as an algebraic loop.
+/// MLS §16.5.1: `sample(u)` is the left limit of `u`. A sampled ownership
+/// therefore compiles its source through an event-entry snapshot lane even when
+/// the same clock recomputes the live continuous coordinate at the tick.
 #[test]
-fn clocked_row_sampling_its_own_tick_output_is_rejected() {
+fn sampled_owner_reads_its_own_tick_output_from_the_left_limit() {
     let source = TestSource::new("Real h,s; Clock c=Clock(0.1); y=hold(h); s=sample(y);");
 
-    let error = lower_solve_problem(&clocked_hold_sample_model(
+    let solve = lower_solve_problem(&clocked_hold_sample_model(
         source,
         SampledPath::Instantaneous,
     ))
-    .expect_err("a clocked row may not sample a value its own tick recomputes");
+    .expect("a sampled owner carries the left-limit boundary explicitly");
 
-    let LowerError::Unsupported { reason, span } = error else {
-        panic!("the clocked schedule contract is an unsupported-semantics rejection");
-    };
     assert!(
-        reason.contains("left limit"),
-        "the rejection must name the MLS operator semantics it protects: {reason}"
+        solve
+            .discrete
+            .pre_modes
+            .contains(&rumoca_ir_solve::DiscreteEventPreMode::EventEntry),
+        "the sampled row must request the event-entry snapshot"
     );
-    assert_eq!(
-        (span.start.0, span.end.0),
-        (36, 48),
-        "the rejection carries the sampling row's own span"
+    assert!(
+        solve.discrete.rhs.programs().iter().all(|program| !program
+            .iter()
+            .any(|op| matches!(op, LinearOp::LoadY { .. }))),
+        "the sampled source must load its hidden left-limit P lane, not live Y"
     );
 }
 
@@ -265,7 +266,7 @@ fn clocked_row_sampling_an_independent_continuous_value_stays_accepted() {
             )
         })?;
         let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
-        model.clocks(|clocks| clocks.own_discrete_real(clock.into(), sampled, owner))?;
+        model.clocks(|clocks| clocks.own_sampled_discrete_real(clock.into(), sampled, owner))?;
         let carrier_residual = model.expressions(|expressions| {
             let lhs = expressions
                 .at(owner)

@@ -51,6 +51,16 @@ pub struct Expressions<'storage, 'dae> {
 }
 
 impl<'storage, 'dae> Expressions<'storage, 'dae> {
+    /// Read the constructor-derived type of an expression already owned by
+    /// this aggregate.
+    pub fn value_type(
+        &self,
+        expression: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<ValueType, DaeConstructionError> {
+        Ok(self.storage.expr_type(expression, provenance)?.clone())
+    }
+
     /// Ordinal of the field `field` declares in the record layout of `base`.
     ///
     /// The record layout is the authority on which fields a value declares and

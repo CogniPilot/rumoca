@@ -193,7 +193,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.binary(dae::BinaryOperator::And, current, not_previous, span)
     }
 
-    fn condition(&mut self, condition: dae::ConditionId<'dae>) -> Result<solve::Reg, LowerError> {
+    pub(super) fn condition(
+        &mut self,
+        condition: dae::ConditionId<'dae>,
+    ) -> Result<solve::Reg, LowerError> {
         let condition = self
             .view
             .condition(condition)
@@ -228,10 +231,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     "clocked condition refers to a different activation owner",
                     span,
                 )),
-                None => Err(LowerError::unsupported(
-                    "clock condition has no owning Solve schedule",
-                    span,
-                )),
+                None => {
+                    let index = self
+                        .layout
+                        .clock_activations
+                        .get(clock.index() as usize)
+                        .copied()
+                        .ok_or_else(|| {
+                            LowerError::contract(
+                                "clock condition has no derived Solve activation lane",
+                                span,
+                            )
+                        })?;
+                    self.load_slot(solve::scalar_slot_p(index), span)
+                }
             },
             dae::ConditionOperation::Not(operand) => {
                 let operand = self.condition(operand)?;

@@ -418,7 +418,8 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
         seed_nonfinite_projection_unknowns(y, plan);
         let mut changed = false;
         let mut all_settled = true;
-        for block in &plan.blocks {
+        let mut earlier_row_invalidated = false;
+        for (block_index, block) in plan.blocks.iter().enumerate() {
             let update = project_algebraic_block(
                 model,
                 y,
@@ -428,10 +429,25 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
                 args.tolerance,
                 step_limit,
             )?;
+            if update.changed && !earlier_row_invalidated {
+                earlier_row_invalidated = block.y_indices.iter().any(|y_index| {
+                    plan.blocks[..block_index].iter().any(|earlier| {
+                        earlier
+                            .rows
+                            .iter()
+                            .any(|row| model.implicit_jacobian_v_row_depends_on(*row, *y_index))
+                    })
+                });
+            }
             changed |= update.changed;
             all_settled &= update.settled;
         }
-        if all_settled {
+        // A block is settled at the point where it is visited. A later block
+        // may still change one of that row's dependencies. The model exposes
+        // the compiler-proven row sparsity, so only repeat a sweep when such a
+        // reverse dependency was actually invalidated; causal plans retain
+        // their one-sweep fast path.
+        if all_settled && !earlier_row_invalidated {
             tracing::debug!(
                 target: "rumoca_solver::projection",
                 iteration,
@@ -620,6 +636,13 @@ fn try_seed_algebraic_target<M: ImplicitProjectionModel>(
     row: usize,
     y_index: usize,
 ) -> Result<Option<bool>, RuntimeSolveError> {
+    let Some(before) =
+        context
+            .model
+            .eval_implicit_residual_row(row, y, context.parameters, context.time)?
+    else {
+        return Ok(None);
+    };
     let Some(value) = context.model.eval_implicit_target_value(
         row,
         y_index,
@@ -639,12 +662,16 @@ fn try_seed_algebraic_target<M: ImplicitProjectionModel>(
         .model
         .eval_implicit_residual_row(row, y, context.parameters, context.time)?
         .is_some_and(|after| {
-            after.is_finite()
-                && after.abs()
-                    <= scaled_tolerance(
-                        context.tolerance,
-                        model_variable_scale(context.model, y_index),
-                    )
+            let (row_tol, _) = assignment_tolerances(
+                context.model,
+                y_index,
+                before,
+                after,
+                previous,
+                value,
+                context.tolerance,
+            );
+            after.is_finite() && after.abs() <= row_tol
         });
     if accepted {
         return Ok(Some(previous != value));
@@ -667,8 +694,6 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let Some(before) = model.eval_implicit_residual_row(*row, y, p, t)? else {
         return Ok(None);
     };
-    let scale = model_variable_scale(model, *y_index);
-    let variable_tol = scaled_tolerance(tol, scale);
     if !before.is_finite() {
         return Ok(Some(ProjectionBlockUpdate {
             changed: false,
@@ -684,16 +709,63 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let previous = y[*y_index];
     y[*y_index] = value;
     let after = model.eval_implicit_residual_row(*row, y, p, t)?;
-    if let Some(after) =
-        after.filter(|after| after.is_finite() && after.abs() + variable_tol < before.abs())
-    {
-        return Ok(Some(ProjectionBlockUpdate {
-            changed: (previous - value).abs() > variable_tol,
-            settled: after.abs() <= variable_tol,
-        }));
+    if let Some(after) = after.filter(|after| after.is_finite()) {
+        let (row_tol, variable_tol) =
+            assignment_tolerances(model, *y_index, before, after, previous, value, tol);
+        if singleton_assignment_improves(SingletonAssignmentStep {
+            before,
+            after,
+            step: previous - value,
+            row_tol,
+            variable_tol,
+        }) {
+            // An accepted exact assignment is semantic progress even when its
+            // coordinate delta is below the solver tolerance. Downstream rows
+            // may amplify that small coordinate, so suppressing `changed`
+            // would let the outer sweep stop with a stale dependent value.
+            return Ok(Some(ProjectionBlockUpdate {
+                changed: previous != value,
+                settled: after.abs() <= row_tol,
+            }));
+        }
     }
     y[*y_index] = previous;
     Ok(None)
+}
+
+/// Tolerances for one isolated assignment, preserving the distinction between
+/// the residual row's units and the target coordinate's units.
+///
+/// The target evaluator proves a scalar assignment for this row. Its observed
+/// residual change over the target step therefore supplies the row/coordinate
+/// scale conversion without invoking a second Jacobian evaluation on the hot
+/// singleton path.
+fn assignment_tolerances<M: ImplicitProjectionModel + ?Sized>(
+    model: &M,
+    y_index: usize,
+    before: f64,
+    after: f64,
+    previous: f64,
+    value: f64,
+    tol: f64,
+) -> (f64, f64) {
+    let variable_scale = model_variable_scale(model, y_index);
+    let step = (previous - value).abs();
+    let residual_change = (before - after).abs();
+    let row_scale = if step.is_finite() && step > 0.0 && residual_change.is_finite() {
+        let scale = residual_change / step * variable_scale;
+        if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            variable_scale
+        }
+    } else {
+        variable_scale
+    };
+    (
+        scaled_tolerance(tol, row_scale),
+        scaled_tolerance(tol, variable_scale),
+    )
 }
 
 struct AlgebraicBlockDeltaContext<'a, M> {

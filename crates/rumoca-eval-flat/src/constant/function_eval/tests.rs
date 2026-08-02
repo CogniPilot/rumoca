@@ -45,6 +45,23 @@ fn component_reference(name: &str) -> rumoca_core::ComponentReference {
     .expect("fixture assignment target is exact")
 }
 
+fn exact_reference(name: &str, def_id: rumoca_core::DefId) -> rumoca_core::Reference {
+    rumoca_core::Reference::with_component_reference(
+        name,
+        rumoca_core::ComponentReference::construct(
+            false,
+            test_span(),
+            vec![rumoca_core::ComponentRefPart {
+                ident: name.to_string(),
+                span: test_span(),
+                subs: Vec::new(),
+                def_id,
+            }],
+        )
+        .expect("fixture reference has exact identity"),
+    )
+}
+
 fn make_simple_function() -> Function {
     // function f(input Real x) output Real y; algorithm y := x * 2; end f;
     let mut func = Function::new("test.f", Span::DUMMY);
@@ -721,6 +738,82 @@ fn record_constructor_folds_to_the_record_value() {
     assert_eq!(fields.get("re"), Some(&Value::Real(1.5)));
     assert_eq!(fields.get("im"), Some(&Value::Real(-2.5)));
     assert_eq!(fields.len(), 2);
+}
+
+/// Flat gives a record-valued function call an explicit projection through
+/// its sole output before projecting the record's own field. Constant
+/// evaluation returns the sole output directly, so the output projection is
+/// discharged by its exact call/output identities rather than searched as a
+/// field inside the returned record.
+#[test]
+fn exact_record_output_projection_is_not_read_as_a_record_field() {
+    let orientation = rumoca_core::DefId::new(100);
+    let axes_id = rumoca_core::DefId::new(101);
+    let output_r = rumoca_core::DefId::new(102);
+    let field_t = rumoca_core::DefId::new(103);
+    let field_w = rumoca_core::DefId::new(104);
+
+    let mut constructor = Function::new("Orientation", test_span());
+    constructor.def_id = Some(orientation);
+    constructor.is_constructor = true;
+    constructor.pure = true;
+    constructor.add_input(real_param("T").with_def_id(field_t));
+    constructor.add_input(real_param("w").with_def_id(field_w));
+
+    let mut axes = Function::new("axes", test_span());
+    axes.def_id = Some(axes_id);
+    axes.pure = true;
+    axes.add_output(
+        function_param("R", "Orientation", rumoca_core::TypeId::new(20))
+            .with_def_id(output_r)
+            .with_type_class(rumoca_core::ClassType::Record),
+    );
+    axes.body.push(rumoca_core::Statement::Assignment {
+        comp: rumoca_core::ComponentReference::construct(
+            false,
+            test_span(),
+            vec![rumoca_core::ComponentRefPart {
+                ident: "R".to_string(),
+                span: test_span(),
+                subs: Vec::new(),
+                def_id: output_r,
+            }],
+        )
+        .unwrap(),
+        value: Expression::FunctionCall {
+            name: exact_reference("Orientation", orientation),
+            args: vec![real_literal(1.5), real_literal(2.5)],
+            is_constructor: true,
+            span: test_span(),
+        },
+        span: test_span(),
+    });
+
+    let mut ctx = EvalContext::new();
+    ctx.add_function(constructor);
+    ctx.add_function(axes);
+    let output = Expression::FieldAccess {
+        base: Box::new(Expression::FunctionCall {
+            name: exact_reference("axes", axes_id),
+            args: Vec::new(),
+            is_constructor: false,
+            span: test_span(),
+        }),
+        field: "R".to_string(),
+        field_def_id: output_r,
+        span: test_span(),
+    };
+    let field = Expression::FieldAccess {
+        base: Box::new(output),
+        field: "T".to_string(),
+        field_def_id: field_t,
+        span: test_span(),
+    };
+
+    assert_eq!(
+        super::super::eval_expr(&field, &ctx).expect("exact output projection folds"),
+        Value::Real(1.5)
+    );
 }
 
 /// MLS 3.6 §12.2: a record local's field is read through the joined

@@ -5,7 +5,7 @@ pub(super) fn validate_when_chains(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     for chain in chains {
         for branch in chain.branches() {
@@ -47,7 +47,7 @@ fn validate_when_equations(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
     clocked: bool,
 ) -> Result<(), ToDaeError> {
     for equation in equations {

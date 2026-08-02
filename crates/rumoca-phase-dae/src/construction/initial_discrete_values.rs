@@ -29,18 +29,55 @@ pub(super) fn lower_initial_discrete_values<'dae>(
             .get(target)
             .copied()
             .expect("a planned discrete initial target has a lowered coordinate");
-        construction.initialization(|initialization| match coordinate {
-            Coordinate::DiscreteReal(id) => initialization
-                .discrete_real_initial_value(id, value, provenance)
-                .map(|_| ()),
-            Coordinate::DiscreteValue(id) => initialization
-                .discrete_value_initial_value(id, value, provenance)
-                .map(|_| ()),
+        match coordinate {
+            Coordinate::DiscreteReal(id) => {
+                let value = promote_initial_integer_to_real(construction, value, provenance)?;
+                construction.initialization(|initialization| {
+                    initialization
+                        .discrete_real_initial_value(id, value, provenance)
+                        .map(|_| ())
+                })
+            }
+            Coordinate::DiscreteValue(id) => construction.initialization(|initialization| {
+                initialization
+                    .discrete_value_initial_value(id, value, provenance)
+                    .map(|_| ())
+            }),
             _ => Err(dae::DaeConstructionError::InvalidVariableRole {
                 name: target.clone(),
                 span: definition.span,
             }),
-        })?;
+        }?;
     }
     Ok(())
+}
+
+/// MLS §10.6.13 promotes an Integer expression in a Real assignment context.
+///
+/// DAE owners retain exact primitive types, so the phase makes the promotion
+/// explicit as the checked mixed-numeric identity `value + 0.0`. The ordinary
+/// binary constructor derives the Real result type and preserves the value's
+/// variability and dependencies; no owner or caller supplies those facts.
+fn promote_initial_integer_to_real<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    value: dae::ExprId<'dae>,
+    owner: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let value_type =
+        construction.expressions(|expressions| expressions.value_type(value, owner))?;
+    if !value_type.is_scalar() || value_type.scalar_type() != dae::ScalarType::Integer {
+        return Ok(value);
+    }
+    let generated =
+        dae::DaeProvenance::generated(dae::DaeGeneration::InitializationEquation, owner.span())?;
+    let zero = construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .literal(dae::DaeLiteral::Real(0.0))
+    })?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .binary(dae::BinaryOperator::Add, value, zero)
+    })
 }

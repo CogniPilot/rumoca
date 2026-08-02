@@ -47,17 +47,21 @@ fn check_view(view: dae::DaeView<'_>) -> Result<AdmittedClock, Vec<GalecTargetEr
             event_actions: 0,
         });
     }
-    let triggered = (0..view.clock_count())
+    let dynamic = (0..view.clock_count())
         .filter(|index| {
             let id = view.clock_id(*index).expect("dense checked clock identity");
             matches!(
                 view.clock(id).expect("checked clock resolves").operation(),
                 dae::ClockOperation::Triggered(_)
+            ) || matches!(
+                view.clock(id).expect("checked clock resolves").operation(),
+                dae::ClockOperation::Periodic(schedule)
+                    if schedule.anchor() == rumoca_core::ClockPhaseAnchor::SimulationStart
             )
         })
         .count();
-    if triggered != 0 {
-        errors.push(GalecTargetError::DynamicClock { count: triggered });
+    if dynamic != 0 {
+        errors.push(GalecTargetError::DynamicClock { count: dynamic });
     }
     let periodic = periodic_clocks(view);
     if periodic.len() != 1 {
@@ -112,9 +116,12 @@ fn periodic_clocks(view: dae::DaeView<'_>) -> Vec<(f64, f64)> {
         .filter_map(|index| {
             let id = view.clock_id(index).expect("dense checked clock identity");
             match view.clock(id).expect("checked clock resolves").operation() {
-                dae::ClockOperation::Periodic(lattice) => {
-                    Some((lattice.period_seconds(), lattice.phase_seconds()))
+                dae::ClockOperation::Periodic(schedule)
+                    if schedule.anchor() == rumoca_core::ClockPhaseAnchor::Absolute =>
+                {
+                    Some((schedule.period_seconds(), schedule.phase_seconds()))
                 }
+                dae::ClockOperation::Periodic(_) => None,
                 dae::ClockOperation::Triggered(_) => None,
             }
         })

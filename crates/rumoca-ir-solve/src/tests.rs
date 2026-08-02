@@ -495,7 +495,37 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
         pre_modes: vec![DiscreteEventPreMode::Fixed],
         observation_refresh: vec![true],
         clock_owners: vec![None],
+        structured_rhs: ComputeBlock::default(),
+        structured_updates: Vec::new(),
     }
+}
+
+fn structured_discrete_fixture(base: ScalarSlot) -> (ComputeBlock, StructuredDiscreteUpdate) {
+    let domain = test_tensor_domain(2);
+    let node = ComputeNode::Map {
+        output_map: TensorOutputMap::dense_contiguous(0, &domain).unwrap(),
+        domain: domain.clone(),
+        base_ops: vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+        load_strides: Vec::new(),
+        const_strides: Vec::new(),
+        metadata: TensorNodeMetadata::default(),
+        span: fixture_span(),
+    };
+    let update = StructuredDiscreteUpdate {
+        node_index: 0,
+        target: StructuredDiscreteTargetMap {
+            base,
+            map: TensorOutputMap::dense_contiguous(0, &domain).unwrap(),
+        },
+        role: DiscreteRowRole::Equation,
+        pre_mode: DiscreteEventPreMode::FollowCurrent,
+        observation_refresh: false,
+        clock_owner: None,
+    };
+    (ComputeBlock { nodes: vec![node] }, update)
 }
 
 fn representative_event_partition() -> SolveEventPartition {
@@ -528,7 +558,27 @@ fn representative_clock_partition() -> SolveClockPartition {
             PeriodicEventSchedule::new(rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap())
                 .unwrap(),
         ],
+        activation_parameter_indices: vec![0],
     }
+}
+
+#[test]
+fn solve_model_resolves_start_relative_schedules_at_instance_boundary() {
+    let lattice = rumoca_core::ClockLattice::from_seconds(0.25, 0.25).unwrap();
+    let schedule = rumoca_core::PeriodicClockSchedule::simulation_start_relative(lattice).unwrap();
+    let mut model = SolveModel::default();
+    model.problem.clocks.periodic_event_schedules =
+        vec![PeriodicEventSchedule::from_schedule(schedule).unwrap()];
+
+    let resolved = model.resolved_periodic_schedules_at(2.0).unwrap();
+    let schedule = &resolved.problem.clocks.periodic_event_schedules[0];
+    assert_eq!(schedule.anchor(), rumoca_core::ClockPhaseAnchor::Absolute);
+    assert_eq!(schedule.phase_seconds(), 2.25);
+    assert_eq!(
+        model.problem.clocks.periodic_event_schedules[0].anchor(),
+        rumoca_core::ClockPhaseAnchor::SimulationStart,
+        "compile-time Solve IR must remain independent of instance startTime"
+    );
 }
 
 fn assert_same_json_shape<T: serde::Serialize>(actual: &T, expected: &T) {
@@ -939,6 +989,74 @@ fn solve_problem_shape_contract_rejects_bad_schema_version() {
         Err(SolveProblemShapeContractError::SchemaVersion {
             actual: SOLVE_SCHEMA_VERSION + 1,
             expected: SOLVE_SCHEMA_VERSION,
+        })
+    );
+}
+
+#[test]
+fn structured_discrete_map_has_one_checked_compact_target_owner() {
+    let mut problem = representative_solve_problem_fixture();
+    let (block, update) = structured_discrete_fixture(scalar_slot_y(0));
+    problem.discrete.structured_rhs = block;
+    problem.discrete.structured_updates = vec![update];
+
+    assert_eq!(
+        problem.discrete.structured_assignments(0).unwrap(),
+        vec![(scalar_slot_y(0), 0), (scalar_slot_y(1), 1)]
+    );
+    problem.validate_shape_contract().unwrap();
+}
+
+#[test]
+fn structured_discrete_shape_rejects_unclaimed_compute_nodes() {
+    let mut problem = representative_solve_problem_fixture();
+    let (block, _) = structured_discrete_fixture(scalar_slot_y(0));
+    problem.discrete.structured_rhs = block;
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "discrete.structured_updates",
+            expected: 1,
+            actual: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn structured_discrete_shape_rejects_parallel_scalar_target_owner() {
+    let mut problem = representative_solve_problem_fixture();
+    let (block, update) = structured_discrete_fixture(scalar_slot_y(2));
+    problem.discrete.structured_rhs = block;
+    problem.discrete.structured_updates = vec![update];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+            update_index: 0,
+            node_index: 0,
+            detail: "target is also owned by a scalar discrete update",
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_duplicate_clock_activation_lanes() {
+    let mut problem = representative_solve_problem_fixture();
+    problem
+        .clocks
+        .periodic_event_schedules
+        .push(problem.clocks.periodic_event_schedules[0].clone());
+    problem.clocks.activation_parameter_indices = vec![0, 0];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "clocks.activation_parameter_indices",
+            index: 0,
+            span: None,
         })
     );
 }

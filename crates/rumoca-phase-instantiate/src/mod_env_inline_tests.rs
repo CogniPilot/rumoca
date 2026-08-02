@@ -60,6 +60,17 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
     })
 }
 
+fn make_resolved_comp_ref_expr(parts: &[(&str, u32)]) -> ast::Expression {
+    let mut expr = make_comp_ref_expr(&parts.iter().map(|(name, _)| *name).collect::<Vec<_>>());
+    let ast::Expression::ComponentReference(comp_ref) = &mut expr else {
+        unreachable!("component-reference helper must return a component reference");
+    };
+    for (part, (_, def_id)) in comp_ref.parts.iter_mut().zip(parts) {
+        part.def_id = Some(rumoca_core::DefId::new(*def_id));
+    }
+    expr
+}
+
 fn resolved_component(def_id: u32) -> ast::Component {
     let mut component = ast::Component::empty_with_span(test_span());
     component.def_id = Some(rumoca_core::DefId::new(def_id));
@@ -813,9 +824,12 @@ fn test_propagate_record_binding_overrides_non_targeted_field_values() {
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        None,
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
         &nested_record,
         &targeted_keys,
     )
@@ -848,6 +862,84 @@ fn test_propagate_record_binding_overrides_non_targeted_field_values() {
 }
 
 #[test]
+fn test_record_projection_preserves_written_source_and_exact_field_identity() {
+    let mut core_parameters = ast::ClassDef {
+        name: make_token("CoreParameters"),
+        class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(408)),
+        ..Default::default()
+    };
+    core_parameters
+        .components
+        .insert("PRef".to_string(), resolved_component(414));
+
+    let resolved = make_resolved_comp_ref_expr(&[("aimcData", 305), ("statorCoreParameters", 519)]);
+    let written = make_resolved_comp_ref_expr(&[("statorCoreParameters", 519)]);
+    let source_scope = ast::QualifiedName::from_ident("aimc");
+    let mut ctx = InstantiateContext::new();
+
+    propagate_record_binding_to_fields(
+        &ast::ClassTree::default(),
+        &mut ctx,
+        RecordBindingProjection {
+            value: &resolved,
+            source: Some(&written),
+            source_scope: Some(source_scope.clone()),
+            each: false,
+        },
+        &core_parameters,
+        &IndexMap::default(),
+    )
+    .expect("record field projection should preserve value and source provenance");
+
+    let projected = ctx
+        .mod_env()
+        .get(&ast::QualifiedName::from_ident("PRef"))
+        .expect("projected field binding should exist");
+    assert_eq!(projected.source_scope, Some(source_scope));
+    assert_projected_ref(&projected.value, &[305, 519], 414);
+    assert_projected_ref(
+        projected
+            .source
+            .as_ref()
+            .expect("projected binding should retain its written source"),
+        &[519],
+        414,
+    );
+}
+
+fn assert_projected_ref(expr: &ast::Expression, base_def_ids: &[u32], field_def_id: u32) {
+    let ast::Expression::FieldAccess {
+        base,
+        field,
+        field_def_id: actual_field_def_id,
+        ..
+    } = expr
+    else {
+        panic!("expected projected field access, got {expr:?}");
+    };
+    let ast::Expression::ComponentReference(comp_ref) = base.as_ref() else {
+        panic!("expected component-reference projection base, got {base:?}");
+    };
+    assert_eq!(field, "PRef");
+    assert_eq!(
+        *actual_field_def_id,
+        Some(rumoca_core::DefId::new(field_def_id))
+    );
+    assert_eq!(
+        comp_ref
+            .parts
+            .iter()
+            .map(|part| part.def_id.expect("base segment must have exact identity"))
+            .collect::<Vec<_>>(),
+        base_def_ids
+            .iter()
+            .map(|def_id| rumoca_core::DefId::new(*def_id))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_propagate_record_binding_preserves_each_prefix_for_fields() {
     let mut nested_record = ast::ClassDef {
         name: make_token("Orientation"),
@@ -863,9 +955,12 @@ fn test_propagate_record_binding_preserves_each_prefix_for_fields() {
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &make_comp_ref_expr(&["R"]),
-        None,
-        true,
+        RecordBindingProjection {
+            value: &make_comp_ref_expr(&["R"]),
+            source: None,
+            source_scope: None,
+            each: true,
+        },
         &nested_record,
         &IndexMap::default(),
     )
@@ -901,9 +996,12 @@ fn test_propagate_record_binding_does_not_treat_start_as_field_default() {
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        None,
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
         &nested_record,
         &IndexMap::default(),
     )
@@ -953,9 +1051,12 @@ fn test_propagate_record_binding_preserves_targeted_field_modifiers() {
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        None,
-        true,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: None,
+            each: true,
+        },
         &nested_record,
         &targeted_keys,
     )
@@ -1001,9 +1102,12 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        None,
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
         &nested_record,
         &targeted_keys,
     )
@@ -1075,9 +1179,12 @@ fn test_record_alias_from_outer_scope_projects_declared_default_field() {
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        Some(ast::QualifiedName::new()),
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: Some(ast::QualifiedName::new()),
+            each: false,
+        },
         &nested_record,
         &IndexMap::default(),
     )
@@ -1140,9 +1247,12 @@ fn test_propagate_record_binding_preserves_matching_default_record_constructor()
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        None,
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
         &nested_record,
         &IndexMap::default(),
     )
@@ -1192,9 +1302,12 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        None,
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
         &nested_record,
         &IndexMap::default(),
     )
@@ -1274,9 +1387,12 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
     propagate_record_binding_to_fields(
         &tree,
         &mut ctx,
-        &binding_expr,
-        Some(ast::QualifiedName::from_ident("Pkg")),
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: Some(ast::QualifiedName::from_ident("Pkg")),
+            each: false,
+        },
         &inner_record,
         &IndexMap::default(),
     )
@@ -1330,9 +1446,12 @@ fn test_propagate_record_binding_skips_non_record_classes() {
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
-        &binding_expr,
-        None,
-        false,
+        RecordBindingProjection {
+            value: &binding_expr,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
         &nested_block,
         &targeted_keys,
     )

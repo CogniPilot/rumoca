@@ -32,7 +32,6 @@ pub(super) struct ReplicationWatermarks {
     disabled_components: usize,
     each_modifier_bindings: usize,
     array_parent_dims: usize,
-    component_families: usize,
     outer_prefix_to_inner: usize,
     inner_outer_to_parent_inner: usize,
     synthesized_inners: usize,
@@ -77,7 +76,6 @@ pub(super) fn watermarks(
         disabled_components: overlay.disabled_components.len(),
         each_modifier_bindings: overlay.each_modifier_bindings.len(),
         array_parent_dims: overlay.array_parent_dims.len(),
-        component_families: overlay.component_families.len(),
         outer_prefix_to_inner: overlay.outer_prefix_to_inner.len(),
         inner_outer_to_parent_inner: overlay.inner_outer_to_parent_inner.len(),
         synthesized_inners: overlay.synthesized_inners.len(),
@@ -158,8 +156,6 @@ struct TemplateSnapshot {
     disabled_components: Vec<ComponentPath>,
     each_modifier_bindings: Vec<ComponentPath>,
     array_parent_dims: Vec<(String, Vec<i64>)>,
-    /// Compact owners recorded by nested arrays inside the template element.
-    nested_families: Vec<ast::InstanceComponentFamily>,
     known_int_params: Vec<(String, i64)>,
     known_bool_params: Vec<(String, bool)>,
     known_real_params: Vec<(String, f64)>,
@@ -206,12 +202,6 @@ fn snapshot_template(
             .skip(before.array_parent_dims)
             .map(|(path, dims)| (path.clone(), dims.clone()))
             .collect(),
-        nested_families: overlay
-            .component_families
-            .iter()
-            .skip(before.component_families)
-            .cloned()
-            .collect(),
         known_int_params: ctx
             .known_int_params
             .iter()
@@ -247,7 +237,7 @@ pub(super) fn replicate_template(
     overlay: &mut ast::InstanceOverlay,
     before: &ReplicationWatermarks,
     request: &ReplicationRequest<'_>,
-) -> InstantiateResult<ast::InstanceComponentFamily> {
+) -> InstantiateResult<()> {
     let depth = request.subscript_depth();
     let segment = request.segment().to_string();
     // Rendered instance segments enclosing the array component. Reindexing is
@@ -256,16 +246,6 @@ pub(super) fn replicate_template(
     let ancestors: Vec<String> = request.root.parts()[..depth].to_vec();
     let template_prefix = rendered_prefix(request.root, &segment, request.template_tuple);
     let template = snapshot_template(ctx, overlay, before, &template_prefix);
-    let template_components: Vec<InstanceId> = template
-        .components
-        .iter()
-        .map(|data| data.instance_id)
-        .collect();
-    let template_classes: Vec<InstanceId> = template
-        .classes
-        .iter()
-        .map(|data| data.instance_id)
-        .collect();
 
     let count = request
         .domain
@@ -293,14 +273,7 @@ pub(super) fn replicate_template(
         replicate_member(ctx, overlay, &template, &reindex, request.span)?;
     }
 
-    Ok(ast::InstanceComponentFamily {
-        domain: request.domain.clone(),
-        root: request.root.clone(),
-        subscript_depth: depth,
-        template_components,
-        template_classes,
-        span: request.span,
-    })
+    Ok(())
 }
 
 fn replicate_member(
@@ -355,7 +328,6 @@ fn replicate_member(
         PathKeyedMetadataTarget { ctx, overlay },
         template,
         reindex,
-        &ids,
         span,
     )
 }
@@ -436,14 +408,6 @@ impl AllocationPlan {
         ids.get(*self.class_ranks.get(position)?).copied()
     }
 
-    fn map_components(&self, template_ids: &[InstanceId], ids: &[InstanceId]) -> Vec<InstanceId> {
-        map_ranks(&self.component_rank_by_id, template_ids, ids)
-    }
-
-    fn map_classes(&self, template_ids: &[InstanceId], ids: &[InstanceId]) -> Vec<InstanceId> {
-        map_ranks(&self.class_rank_by_id, template_ids, ids)
-    }
-
     fn map_instance_or_same(&self, template_id: InstanceId, ids: &[InstanceId]) -> InstanceId {
         self.component_rank_by_id
             .get(&template_id)
@@ -452,17 +416,6 @@ impl AllocationPlan {
             .copied()
             .unwrap_or(template_id)
     }
-}
-
-fn map_ranks(
-    ranks: &rustc_hash::FxHashMap<InstanceId, usize>,
-    template_ids: &[InstanceId],
-    ids: &[InstanceId],
-) -> Vec<InstanceId> {
-    template_ids
-        .iter()
-        .filter_map(|id| ids.get(*ranks.get(id)?).copied())
-        .collect()
 }
 
 /// The mutable state that path-keyed instantiation metadata is written into.
@@ -475,7 +428,6 @@ fn replicate_path_keyed_metadata(
     target: PathKeyedMetadataTarget<'_>,
     template: &TemplateSnapshot,
     reindex: &FamilyReindex<'_>,
-    ids: &[InstanceId],
     span: Span,
 ) -> InstantiateResult<()> {
     let PathKeyedMetadataTarget { ctx, overlay } = target;
@@ -496,18 +448,6 @@ fn replicate_path_keyed_metadata(
     for (path, value) in &template.known_real_params {
         let member_path = reindex.flat_path_or_same(path);
         ctx.known_real_params.insert(member_path, *value);
-    }
-    // A nested array inside the template element owns its own compact family;
-    // each derived element needs the same owner rooted at its own path.
-    for family in &template.nested_families {
-        overlay.add_component_family(ast::InstanceComponentFamily {
-            root: reindex.component_path(&family.root),
-            template_components: template
-                .plan
-                .map_components(&family.template_components, ids),
-            template_classes: template.plan.map_classes(&family.template_classes, ids),
-            ..family.clone()
-        });
     }
     Ok(())
 }

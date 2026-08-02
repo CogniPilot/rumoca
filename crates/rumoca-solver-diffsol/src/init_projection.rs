@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::SimFailureStage;
-use rumoca_solver::EventActionOutcome;
+use rumoca_solver::{EventActionOutcome, RuntimeEventStop};
 
 pub(crate) fn initialize_state_runtime_values(
     model: &solve::SolveModel,
@@ -220,114 +220,5 @@ fn initial_event_action_to_result(
             time: if time.is_finite() { time } else { event_t },
             message,
         }),
-    }
-}
-
-pub(crate) struct EventObservation<'a> {
-    pub(crate) runtime: &'a SolveRuntime,
-    pub(crate) model: &'a solve::SolveModel,
-    pub(crate) equilibrium_model: &'a OdeModel,
-    pub(crate) y: &'a mut [f64],
-    pub(crate) params: &'a mut [f64],
-    pub(crate) tol: f64,
-    pub(crate) recorded_times: &'a mut Vec<f64>,
-    pub(crate) data: &'a mut [Vec<f64>],
-    /// Solver/parameter state captured *before* the event update was first
-    /// applied at `event_t`. Modelica `pre()` is frozen for the whole event
-    /// instant, so the right-limit re-application must read `pre()` from this
-    /// snapshot rather than re-snapshotting the already-updated state (which
-    /// would double-count `pre()`-accumulators such as `count = pre(count)+1`).
-    pub(crate) event_pre_y: &'a [f64],
-    pub(crate) event_pre_p: &'a [f64],
-}
-
-impl EventObservation<'_> {
-    pub(crate) fn record_time_event(
-        &mut self,
-        event_t: f64,
-        horizon_t: f64,
-        event: RuntimeEventStop,
-    ) -> Result<f64, SimError> {
-        let outcome = process_runtime_event_boundary(
-            RuntimeEventBoundary {
-                event_t,
-                horizon_t,
-                tolerance: self.tol,
-                event,
-            },
-            self,
-        )?;
-        Ok(outcome.final_t)
-    }
-}
-
-impl RuntimeEventBoundaryHandler for EventObservation<'_> {
-    type Error = SimError;
-
-    fn on_event_time(&mut self, event_t: f64, _event: RuntimeEventStop) -> Result<(), Self::Error> {
-        refresh_observation_rows_and_relation_memory(
-            self.model,
-            self.runtime,
-            self.equilibrium_model,
-            self.y,
-            self.params,
-            event_t,
-            self.tol,
-        )?;
-        let mut samples = SampleRecorder {
-            runtime: Some(self.runtime),
-            model: self.model,
-            recorded_times: &mut *self.recorded_times,
-            data: &mut *self.data,
-        };
-        record_sample_if_new(
-            &mut samples,
-            SamplePoint {
-                y: self.y,
-                params: self.params,
-                t: event_t,
-            },
-        )?;
-        Ok(())
-    }
-
-    fn on_event_right_limit(
-        &mut self,
-        right_t: f64,
-        _event: RuntimeEventStop,
-    ) -> Result<(), Self::Error> {
-        apply_event_updates_with_event_pre(EventUpdateInput {
-            runtime: self.runtime,
-            y: self.y,
-            p: self.params,
-            t: right_t,
-            tol: self.tol,
-            event_pre_y: self.event_pre_y,
-            event_pre_p: self.event_pre_p,
-        })?;
-        refresh_observation_rows_and_relation_memory(
-            self.model,
-            self.runtime,
-            self.equilibrium_model,
-            self.y,
-            self.params,
-            right_t,
-            self.tol,
-        )?;
-        let mut samples = SampleRecorder {
-            runtime: Some(self.runtime),
-            model: self.model,
-            recorded_times: &mut *self.recorded_times,
-            data: &mut *self.data,
-        };
-        record_sample_if_new(
-            &mut samples,
-            SamplePoint {
-                y: self.y,
-                params: self.params,
-                t: right_t,
-            },
-        )?;
-        Ok(())
     }
 }

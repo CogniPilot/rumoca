@@ -116,23 +116,20 @@ fn cartesian_pendulum_stays_on_reduced_manifold_to_t60() {
         assert_manifold_trace(&result, solver_mode, diffsol_method, dt);
     }
 
-    for diffsol_method in [DiffsolMethod::Esdirk34, DiffsolMethod::TrBdf2] {
-        let error = simulate_dae_with_diagnostics(
-            &compiled.dae,
-            &SimOptions {
-                t_end: 60.0,
-                dt: Some(0.01),
-                solver_mode: SimSolverMode::Bdf,
-                diffsol_method,
-                ..SimOptions::default()
-            },
-        )
-        .expect_err("unvalidated implicit tableaus must fail instead of silently drifting");
+    // The SDIRK tableaus used to be *containable* on a manifold model: they were
+    // reachable, unvalidated against the index-reduction manifold, and rejected
+    // at build time by a `diffsol_method != Bdf` guard. They went with the
+    // general/implicit DAE path they were wired onto (SPEC 0038), so the guard
+    // that has to hold now is at the point of *naming* one: the request is
+    // reported against the valid set, never dropped and silently run as BDF on
+    // this manifold model.
+    for name in ["esdirk34", "trbdf2"] {
+        let error = rumoca_core::canonical_solver_name(name)
+            .expect_err("a solver this tree cannot run must not resolve to one it can");
+        let rendered = error.to_string();
         assert!(
-            error
-                .to_string()
-                .contains("index-reduction manifold projection is not supported"),
-            "{diffsol_method:?} returned an unclear containment error: {error:?}"
+            rendered.contains(name) && rendered.contains("bdf") && rendered.contains("rk-like"),
+            "'{name}' must be reported against the valid solver set: {rendered}"
         );
     }
 

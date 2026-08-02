@@ -26,7 +26,52 @@ fn trace(model_name: &str, times: Vec<f64>, names: Vec<&str>, data: Vec<Vec<f64>
             .map(|col| col.into_iter().map(Some).collect())
             .collect(),
         variable_meta: None,
+        certification_profile: None,
     }
+}
+
+#[test]
+fn stochastic_profile_is_typed_sorted_and_uncertified() {
+    let profile = TraceCertificationProfile::stochastic(vec![
+        TraceRandomOpKind::RandomResult,
+        TraceRandomOpKind::RandomInitialState,
+        TraceRandomOpKind::RandomResult,
+    ]);
+    assert_eq!(profile.reason(), TraceNonidentifiabilityReason::Stochastic);
+    assert_eq!(
+        profile.evidence,
+        TraceNonidentifiabilityEvidence::Stochastic {
+            random_op_kinds: vec![
+                TraceRandomOpKind::RandomInitialState,
+                TraceRandomOpKind::RandomResult,
+            ],
+        }
+    );
+    profile
+        .validate()
+        .expect("compiler-derived profile validates");
+    assert!(
+        profile
+            .outstanding_proof_obligations
+            .contains(&TraceProofObligation::StatisticalRefinement),
+        "non-identifiability records missing proof work; it is not certification"
+    );
+}
+
+#[test]
+fn malformed_chaos_profile_fails_closed() {
+    let profile = TraceCertificationProfile {
+        evidence: TraceNonidentifiabilityEvidence::DeterministicChaotic {
+            maximum_lyapunov_exponent_lower_bound: 0.0,
+            analysis_sha256: "0".repeat(64),
+            analysis_samples: 100,
+        },
+        outstanding_proof_obligations: vec![
+            TraceProofObligation::InvariantRefinement,
+            TraceProofObligation::StatisticalRefinement,
+        ],
+    };
+    assert!(profile.validate().is_err());
 }
 
 #[test]
@@ -469,6 +514,7 @@ fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
             variability: Some("continuous".to_string()),
             time_domain: Some("event-discontinuous".to_string()),
         }]),
+        certification_profile: None,
     };
     let omc = SimTrace {
         model_name: Some("M".to_string()),
@@ -476,6 +522,7 @@ fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
         names: vec!["y".to_string()],
         data: vec![vec![Some(0.0), Some(0.0), Some(1.0)]],
         variable_meta: None,
+        certification_profile: None,
     };
 
     let metric = compare_model_traces("M", &rumoca, &omc)
@@ -500,6 +547,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
             variability: Some("discrete".to_string()),
             time_domain: Some("event-discrete".to_string()),
         }]),
+        certification_profile: None,
     };
     let omc = SimTrace {
         model_name: Some("M".to_string()),
@@ -513,6 +561,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
             variability: Some("discrete".to_string()),
             time_domain: Some("event-discrete".to_string()),
         }]),
+        certification_profile: None,
     };
 
     let metric = compare_model_traces("M", &rumoca, &omc)
@@ -1274,6 +1323,7 @@ fn discrete_array_elements_ignore_the_group_floor() {
             vec![Some(0.0); len],
         ],
         variable_meta: Some(vec![meta("q[1]"), meta("q[2]")]),
+        certification_profile: None,
     };
     let rumoca = SimTrace {
         model_name: Some("M".to_string()),
@@ -1284,6 +1334,7 @@ fn discrete_array_elements_ignore_the_group_floor() {
             vec![Some(0.5); len],
         ],
         variable_meta: Some(vec![meta("q[1]"), meta("q[2]")]),
+        certification_profile: None,
     };
 
     let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");

@@ -96,7 +96,8 @@ use instance_sections::{
     algorithms_to_instance, equations_to_instance_cloned, equations_to_instance_without_connections,
 };
 use mod_env::{
-    PopulateModEnvInput, populate_modification_environment, propagate_record_binding_to_fields,
+    PopulateModEnvInput, RecordBindingProjection, populate_modification_environment,
+    propagate_record_binding_to_fields,
 };
 use nested_scope::{
     collect_referenced_mod_roots, collect_shifted_parent_mod_keys, collect_targeted_mod_keys,
@@ -119,7 +120,7 @@ use type_lookup::{
 use type_overrides::{
     SelectedComponentTypes, TypeOverrideMap, apply_type_override, build_type_override_map,
     resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
-    resolve_dynamic_statement_targets,
+    resolve_dynamic_statement_targets, resolve_post_materialization_component_targets,
 };
 
 pub use connections::{ConnectionParams, extract_connections, filter_out_connections};
@@ -940,7 +941,7 @@ pub fn instantiate_model_with_outcome_options(
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect();
-                InstantiationOutcome::Success(retry_overlay)
+                successful_instantiation_outcome(tree, retry_overlay)
             }
             Err(SyntheticInnerError::StillMissing { names }) => {
                 let span_by_name: std::collections::HashMap<_, _> = missing
@@ -968,7 +969,17 @@ pub fn instantiate_model_with_outcome_options(
             Err(SyntheticInnerError::SourceContext(error)) => InstantiationOutcome::Error(error),
         }
     } else {
-        InstantiationOutcome::Success(overlay)
+        successful_instantiation_outcome(tree, overlay)
+    }
+}
+
+fn successful_instantiation_outcome(
+    tree: &ast::ClassTree,
+    mut overlay: ast::InstanceOverlay,
+) -> InstantiationOutcome {
+    match resolve_post_materialization_component_targets(tree, &mut overlay) {
+        Ok(()) => InstantiationOutcome::Success(overlay),
+        Err(error) => InstantiationOutcome::Error(error),
     }
 }
 
@@ -1311,8 +1322,13 @@ fn declaration_carries_redeclare_modifier(comp: &ast::Component) -> bool {
 
 fn build_instance_data(
     args: InstanceDataBuild<'_>,
-) -> InstantiateResult<(ast::InstanceData, Option<ast::Expression>)> {
+) -> InstantiateResult<(
+    ast::InstanceData,
+    Option<ast::Expression>,
+    Option<ast::Expression>,
+)> {
     let binding_for_record_expansion = args.binding.clone();
+    let binding_source_for_record_expansion = args.binding_source.clone();
     let component_span = location_to_span(
         &args.comp.location,
         args.source_map,
@@ -1396,7 +1412,11 @@ fn build_instance_data(
         oc_eq_constraint_size: args.ctx.overconstrained_eq_size(),
     };
 
-    Ok((instance_data, binding_for_record_expansion))
+    Ok((
+        instance_data,
+        binding_for_record_expansion,
+        binding_source_for_record_expansion,
+    ))
 }
 
 fn require_component_ref_provenance(
@@ -1555,39 +1575,40 @@ fn instantiate_component(
             scope.type_overrides,
         )?;
 
-    let (instance_data, binding_for_record_expansion) = build_instance_data(InstanceDataBuild {
-        instance_id,
-        owner_class_id: scope.owner_class_id,
-        qualified_name,
-        dims,
-        dims_expr,
-        type_name: type_name.clone(),
-        type_def_id: comp.type_def_id,
-        type_reference_root_def_id: (comp.type_name.name.len() > 1)
-            .then_some(comp.type_name.def_id)
-            .flatten()
-            .filter(|root_def_id| Some(*root_def_id) != comp.type_def_id),
-        declaration_source_scope: declaration_source_scope.clone(),
-        class_overrides: class_overrides.clone(),
-        has_forwarding_class_redeclare,
-        effective_variability: effective_variability.clone(),
-        causality: causality.clone(),
-        flow,
-        stream,
-        attrs,
-        binding,
-        binding_source,
-        binding_source_scope: binding_source_scope.clone(),
-        binding_from_modification,
-        type_id,
-        is_primitive,
-        is_discrete_type,
-        evaluate,
-        source_map: &tree.source_map,
-        ctx,
-        comp,
-        class_def,
-    })?;
+    let (instance_data, binding_for_record_expansion, binding_source_for_record_expansion) =
+        build_instance_data(InstanceDataBuild {
+            instance_id,
+            owner_class_id: scope.owner_class_id,
+            qualified_name,
+            dims,
+            dims_expr,
+            type_name: type_name.clone(),
+            type_def_id: comp.type_def_id,
+            type_reference_root_def_id: (comp.type_name.name.len() > 1)
+                .then_some(comp.type_name.def_id)
+                .flatten()
+                .filter(|root_def_id| Some(*root_def_id) != comp.type_def_id),
+            declaration_source_scope: declaration_source_scope.clone(),
+            class_overrides: class_overrides.clone(),
+            has_forwarding_class_redeclare,
+            effective_variability: effective_variability.clone(),
+            causality: causality.clone(),
+            flow,
+            stream,
+            attrs,
+            binding,
+            binding_source,
+            binding_source_scope: binding_source_scope.clone(),
+            binding_from_modification,
+            type_id,
+            is_primitive,
+            is_discrete_type,
+            evaluate,
+            source_map: &tree.source_map,
+            ctx,
+            comp,
+            class_def,
+        })?;
 
     if binding_is_each {
         overlay
@@ -1611,6 +1632,7 @@ fn instantiate_component(
             flow,
             stream,
             binding_for_record_expansion: binding_for_record_expansion.as_ref(),
+            binding_source_for_record_expansion: binding_source_for_record_expansion.as_ref(),
             binding_scope_for_record_expansion: binding_scope_for_record_expansion.as_ref(),
             binding_is_each,
             effective_components: scope.effective_components,
@@ -1764,6 +1786,7 @@ struct NestedComponentRequest<'a> {
     flow: bool,
     stream: bool,
     binding_for_record_expansion: Option<&'a ast::Expression>,
+    binding_source_for_record_expansion: Option<&'a ast::Expression>,
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
     binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
@@ -1798,6 +1821,7 @@ fn instantiate_nested_component_if_needed(
             flow: request.flow,
             stream: request.stream,
             binding_for_record_expansion: request.binding_for_record_expansion,
+            binding_source_for_record_expansion: request.binding_source_for_record_expansion,
             binding_scope_for_record_expansion: request.binding_scope_for_record_expansion,
             binding_is_each: request.binding_is_each,
             effective_components: request.effective_components,
@@ -1840,6 +1864,7 @@ struct NestedInstantiationInput<'a> {
     flow: bool,
     stream: bool,
     binding_for_record_expansion: Option<&'a ast::Expression>,
+    binding_source_for_record_expansion: Option<&'a ast::Expression>,
     binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
     binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
@@ -1863,6 +1888,7 @@ fn instantiate_nested_class(
         flow,
         stream,
         binding_for_record_expansion,
+        binding_source_for_record_expansion,
         binding_scope_for_record_expansion,
         binding_is_each,
         effective_components,
@@ -1906,9 +1932,12 @@ fn instantiate_nested_class(
         propagate_record_binding_to_fields(
             tree,
             ctx,
-            binding_expr,
-            binding_scope_for_record_expansion.cloned(),
-            binding_is_each,
+            RecordBindingProjection {
+                value: binding_expr,
+                source: binding_source_for_record_expansion,
+                source_scope: binding_scope_for_record_expansion.cloned(),
+                each: binding_is_each,
+            },
             nested_class,
             &targeted_keys,
         )?

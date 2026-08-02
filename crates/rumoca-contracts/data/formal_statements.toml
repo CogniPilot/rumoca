@@ -413,11 +413,11 @@ quote = 'The initialization uses all equations and algorithms that are utilized 
 quote_source = 'crates/rumoca-phase-solve/src/lower/initial_projection.rs'
 pin_kind = 'Test'
 pin_file = 'crates/rumoca-sim/src/solve_lowering/tests.rs'
-pin_anchor = 'an_algebraic_reading_initialization_row_is_checked_against_a_stale_seed'
+pin_anchor = 'an_algebraic_reading_initialization_row_cannot_certify_against_a_stale_seed'
 pin_polarity = 'PinsDivergence'
 status = 'RecordedDivergence'
 related_sections = ['§8.6']
-note = 'This is a §8.6 violation, not a latitude: der(...) and the pre-variables are interpreted as unknown algebraic variables and the whole equation set is solved at once, so x(0) = 5 is required rather than chosen. rumoca evaluates initialization residuals before settling the algebraics, so an algebraic still holds the number its start seeded; here the seeds cancel, the check passes, and the stated initial condition vanishes silently at x(0) = 0. A typed refusal was implemented and measured on the 19 MSL models that both compile through Solve and carry an initial section; it fires on 5, two of which simulate today, so it was not landed. The owner that makes the shape right is the algebraic refresh joining the initialization solve.'
+note = 'This is a §8.6 requirement, not a latitude: der(...) and the pre-variables are interpreted as unknown algebraic variables and the whole equation set is solved at once, so x(0) = 5 is required rather than chosen. Initialization residual evaluation now reconstructs algebraic/output coordinates before certifying the complete residual, preventing declaration seeds from silently certifying x(0) = 0. Rows requiring the not-yet-proved coupled algebraic/initial projection fail closed with a typed unowned-coordinate diagnostic. That is sound for a small verified profile but is still a Modelica completeness gap; enforcing this statement requires a checked simultaneous reduction with total derivatives.'
 
 [[statements]]
 id = 'FS-SIM-008'
@@ -512,6 +512,34 @@ pin_anchor = 'diffsol event-boundary defect'
 pin_polarity = 'PinsDivergence'
 status = 'RecordedDivergence'
 note = 'NEEDS A TEST. No test pins either half of this row: the rk-like agreement is covered incidentally by an_activation_at_the_start_instant_fires_exactly_once (FS-SIM-013), but the Bdf gap is recorded only in prose. A wave that touches the diffsol event boundary should convert this Record pin into a Test pin and flip its polarity.'
+
+[[statements]]
+id = 'FS-SIM-015'
+statement = 'A model entering simulation through build_simulation or check_initialization is integrated only as a reduced state-only ODE, and one whose state derivatives read a solver coordinate that no algebraic projection block produces is rejected by name rather than re-expressed as a general implicit DAE.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.6 scopes what a tool must establish before and during a simulation run — the initialization system, the event iteration, and the values every variable holds at each instant — and it states those as properties of the solution, never of the system form or integrator used to reach them. The silence is therefore established by what §8.6 does state: it fixes the answer and leaves the machinery free, so a tool carrying a general implicit DAE beside the reduced ODE conforms exactly as well as one carrying only the reduced form. Nothing in §8.6, or in the §8.5 event semantics it leans on, distinguishes them.'
+alternatives_considered = 'Keeping both systems was the status quo and was refused on evidence rather than on conformance: a census of the 566-model MSL cohort found zero models constructing the general one, so it was carried, untested by any cohort model, purely as a fallback — and as a fallback it could only ever have absorbed a rumoca-phase-solve regression by switching integrators with no diagnostic. Keeping it behind a flag was refused: pre-1.0 the tree deletes a superseded path rather than gating it. Rejecting unprojectable models *silently* (returning the old boolean false) was refused because an unprojectable coordinate is a lowering defect, and answering a defect with a different integrator hides it. FMI 3.0 Model Exchange was considered as an oracle and rejected as one: ME constrains what a component exports, not what a tool integrates internally, and a mass-matrix system M·x@ = f with invertible M is presentable as x@ = M**-1 f anyway — this crate already does exactly that in OdeModel::solve_state_mass — so ME implies nothing about the general path.'
+oracle_consulted = 'None. OpenModelica settles trajectory values, not which internal system form a tool reduces to, so it cannot separate the two candidates: both produce the same trajectories, which is why the 566-model freeze comparison was byte-identical on both sides.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-solver-diffsol/src/tests/state_path_integration.rs'
+pin_anchor = 'simulate_rejects_an_unprojectable_derivative_dependency_by_name'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Scoped deliberately to build_simulation / check_initialization, which is the whole of where it is enforced. SimulationSession takes neither entry point: it constructs the general implicit problem directly for its own stepping loop (crates/rumoca-solver-diffsol/src/session.rs), so a model this row rejects can still be stepped through a session — crates/rumoca/tests/index_reduction_manifold.rs runs one model through both routes and is the in-tree counterexample. Consolidating the session onto the same reduction is follow-on work. The ESDIRK34 / TR-BDF2 tableaus removed alongside the general path are not abandoned: they are to be re-homed onto the FMI ME kernel as host integrators (board #134), which is why no surface offers their names in the meantime rather than offering a name that silently runs BDF.'
+
+[[statements]]
+id = 'FS-SIM-018'
+statement = 'At a scheduled time-event instant the two solver hosts record different observation sets: the diffsol path emits both the left limit at the instant and the right limit at the next representable time, while the FMI 3 ME kernel host emits a single observation already carrying the right limit.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.5 fixes what happens *to the solution* at an event instant — the integration halts, the discrete equations are re-evaluated until the event iteration settles, and every variable has a left and a right limit there — and MLS §8.6 fixes what must hold before integration starts. Neither states which of those two limits a tool must deposit in its result at the instant, nor whether it must deposit both. That is a result-file convention, not a solution property: a tool that reports only the right limit and one that reports both agree on every value MLS constrains. The silence is established by what §8.5 does state, exactly as for FS-SIM-015: it fixes the answer and leaves the reporting free.'
+alternatives_considered = 'Calling this an integration difference was refused on measurement: crates/rumoca/tests/fmi_me_host_divergence.rs::away_from_the_event_instant_the_two_hosts_agree_to_integrator_truncation shows the two hosts agree to better than 1e-5 relative on every shared output point away from the instant, so the trajectory is not what differs. Treating it as cosmetic was refused because the extra row shifts the index of the entire remaining trace, so any row-indexed comparison of the two hosts is misaligned from the event onward — and because the reported value at the instant itself differs by the full size of the step (0 versus 24 on the probe model), which is O(1), not rounding. Silently adopting the kernel convention as part of the SPEC_0038 phase-2 migration was refused: the MSL band harness is measured on the diffsol path, so that change would move every event-carrying model in the cohort with no record of which convention was chosen or why.'
+oracle_consulted = 'OpenModelica (omc a96aa1a-cmake). On the pinned ScheduledStep probe with a 0.01 output grid, its CSV records the ordinary aligned sample at t = 0.5 with Vs = 0, then an event pair at t = 0.5000000000000306 with Vs = 0 and Vs = 24. The few-ULP displacement and total row count are tool artifacts, but the same-time left/right pair decisively selects two-sided boundary observability over the kernel host current right-only convention.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/fmi_me_host_divergence.rs'
+pin_anchor = 'the_two_hosts_disagree_on_the_observations_at_a_scheduled_event_instant'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+note = 'Measured during SPEC_0038 phase-2 scoping and the reason the state-path migration is not behaviour-freezing. The subsequent omc adjudication selects the diffsol-style left/right contract; the migration must make that behavior shared rather than inheriting the kernel host right-only behavior. State events are not affected: a root crossing is applied by both hosts without an extra observation row, and the same probe file records that agreement. This row is the one to flip — to Enforced / Asserts, restating the chosen convention — when the two hosts are put on one event loop; FS-SIM-014 records a second, independent diffsol event-boundary divergence that the same wave should discharge.'
 
 # ---------------------------------------------------------------------------
 # EXPR — event-generating operators (MLS §3.7.5) and semiLinear (§3.7.4.5)
@@ -942,6 +970,60 @@ pin_polarity = 'PinsDivergence'
 status = 'Unimplemented'
 note = 'The abstention is by name rather than by minting a shape the compiler cannot realize; the test pins the abstention, not the meaning.'
 
+[[statements]]
+id = 'FS-ARR-007'
+statement = 'The subscripts a component reference may carry are budgeted against the dimensions the declaration gives the component, so the reference is measured against the declared array and never against the scalar element a subscript selects.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = 'the array dimensions belong to the declaration, so `c[1]` in an equation is a subscript on the declared array, not on the element instance that the subscript selects'
+quote_source = 'crates/rumoca-phase-typecheck/src/semantic_scope.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_element_expanded_array_reports_its_declared_rank_when_over_subscripted'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-026']
+related_sections = ['§10.1', '§10.4.1', '§10.5']
+note = 'The declared extents are read from the record instantiation writes for every array it expands, not from the descriptor it writes only for the ones it compacted: SPEC_0032 §1 makes compaction an optimization, and a diagnostic that changed with it was reporting the compiler rather than the model. 56 MSL models (57 by diagnostic text; one carries it under the ET000 summary) were rejected as `has 0 dimension(s)` on legal subscripts because of it. The section follows the contract it cites: SPEC_0022 stamps ARR-026 = §10.6.9 for the subscript-count rule, and §10.5.1 for ARR-025, which is about index type.'
+
+[[statements]]
+id = 'FS-ARR-008'
+statement = 'A component reference is measured against the dimensions of every part of its path, so a part whose declared extents the compiler cannot determine leaves the whole reference unmeasurable and the subscript budget unenforced, rather than measurable against zero dimensions.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = '§10.4.1 composes the reference shape from every part, so a part with unknown extents makes the composition unknown'
+quote_source = 'crates/rumoca-phase-typecheck/src/typechecker/equation_compat.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_record_array_member_of_a_scalar_owner_is_subscriptable'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-026']
+related_sections = ['§10.4.1', '§10.5.1']
+note = 'The subscript walk accumulates the extents of each part and spends that part of the subscripts against them. An absent part used to contribute nothing, which left the already-spent vector of the enclosing prefix standing and reported its leftover length as the rank of the absent declaration — `has 0 dimension(s)` for a member the model gave three. Absence is unknown, not scalar; a known scalar is recorded as an explicit empty extent list and still rejects. This rule governs absence only, and does NOT close the `has 0 dimension(s)` class: the same text still reaches a model when the shape lookup answers a positive wrong shape rather than absence, which `arr_026_redeclared_record_member_array_still_reports_zero_dimensions` pins on a redeclared record member array (omc accepts it). That is wrong-instance resolution, a separate defect tracked on its own. Counting convention for the MSL cohort, which differs by one between the two ways of counting: 22 models carried the ET009 *code* before this change and 2 carry it after, while 23 carried the diagnostic *text* and 3 carry it after — the extra model, `CCCV_StackRC`, reports the same text under an ET000 summary and is unchanged either way. Both conventions agree that 20 models were fixed. Of the 3 that remain, 2 are the `kDegraded[:,2]` unspecified-extent defect and 1 is the redeclared shape above; none is an absence. The section follows the contract it cites: SPEC_0022 stamps ARR-026 = §10.6.9 for the subscript-count rule.'
+
+[[statements]]
+id = 'FS-ARR-009'
+statement = 'A component reference may carry no more subscripts than the declaration it names has dimensions, and exceeding that count is an error of the model.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = 'a literal subscript that selects no expanded element'
+quote_source = 'crates/rumoca-phase-typecheck/src/semantic_scope.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_over_subscripted_record_member_loses_its_equation_instead_of_being_named'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+contracts = ['ARR-026']
+related_sections = ['§10.5.1']
+note = 'The count rule is enforced wherever the shape lookup answers, which `arr_026_a_member_array_is_still_rejected_when_over_subscripted` holds it to. It is not enforced when the reference reaches the member through a prefix the instance-shape index cannot resolve, because the identity walk filters candidate instances by the very subscripts being validated: an over-long subscript list selects no expanded element, the walk reports absence, and FS-ARR-008 then abstains. The pin records what happens instead, and it is worse than an unnamed rejection: the binding equation is dropped from the DAE entirely, so `Cx yy = c.i[1, 2]` surfaces as `unbalanced model: 3 equations, 4 unknowns` spanned on the enclosing model rather than on the subscript. omc names it (`Wrong number of subscripts in c.i[1, 2] (2 subscripts for 1 dimensions)`). The model is still rejected, so this is a diagnostic and blame-target gap rather than an admissibility one. The fix is to stop filtering the final prefix part by its own subscripts in the shape query; that is a change to identity resolution, not to the abstention, and is deliberately not folded into it. Index-bounds checking (§10.5.1) is a separate statement and is not covered by this row or its pin.'
+
 # ---------------------------------------------------------------------------
 # INST / PKG — scoping and class occurrences (MLS §5.3.1, §7.1, §13.2)
 # ---------------------------------------------------------------------------
@@ -1110,3 +1192,92 @@ status = 'Enforced'
 contracts = ['STRM-004', 'STRM-005']
 related_sections = ['§15.2']
 note = 'Per §15.2 the right-hand side is the mixing enthalpy of the connection set declared inside the connector own model with the connector excluded, not inStream() of the connector, which by definition looks in the opposite direction.'
+
+# ---------------------------------------------------------------------------
+# Rows added by the executable-reference track (crates/rumoca-reference).
+#
+# Appended at the end rather than filed into the category blocks above so the
+# addition cannot collide textually with concurrent edits to those blocks. Note
+# that appending does not protect the *identifiers*: these were allocated
+# against the branch head, after a concurrently landed row had already taken
+# FS-SIM-015. Check the highest id in each category before adding a row, not
+# just the end of this file.
+#
+# Two of the three rows (FS-EQN-019, FS-SIM-016) pin the differential harness,
+# which runs one model through the compiler and through an independently
+# written reference semantics and requires them to agree. That makes those pins
+# two-sided: they fail when the compiler changes AND when the reference does.
+# Two-sided is what a differential pin is, and it is weaker than a one-sided pin
+# on exactly one axis — a reader who sees one red must check which side moved
+# before concluding the compiler regressed.
+#
+# FS-SIM-017 is the exception and says so in its own note: it pins a
+# reference-only test, because its statement is about how a §8.6 sentence should
+# be read rather than about what this compiler does. Its compiler-facing
+# consequences are FS-EQN-001 through FS-EQN-004, which carry their own pins in
+# the compiler's own tests. No other row here may follow that pattern without
+# the same justification: a reference-only pin is evidence about the reference,
+# and on its own it says nothing about this tree.
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-EQN-019'
+statement = 'An activation condition is re-evaluated live inside the event iteration while its pre value is seeded once from the instant left limit, so an activation whose operand another activation writes in the same instant still rises, and a guard whose body advances its own threshold still settles.'
+tier = 'SpecSilent'
+rationale = 'MLS Appendix B fixes the answer and leaves the machinery free. Its event iteration says "solve equations for unknowns, with pre(z) and pre(m) fixed", and a condition variable c := f(relation(v)) is among the unknowns it solves — so conditions are live within the instant, and §8.5 freezing relations *between* events says nothing about *within* one. The silence is in the word "solve": for a self-rescheduling guard `when time >= nextTime` whose body advances nextTime, the inner system has no solution at all with pre held fixed, because the condition is true exactly when the body has not run and false once it has. A tool must therefore choose what "solve" means for an inner system that has no solution, and Appendix B does not choose for it. This tree performs one ordered pass per outer iteration and lets the outer loop, which does advance pre, carry the propagation. That reaches the state Appendix B is defined to stop at without searching for a fixed point that does not exist.'
+alternatives_considered = 'An inner fixed point was the first implementation and spins forever on the self-rescheduling shape. Latching every condition at the instant two limits and freezing it for the whole iteration was the second, and it terminates, but it is broader than any section supports and it breaks a cascade: `when time >= 0.5 then x = 3` beside `when x > 2 then y = 1` samples `x > 2` before `x` is written, so the second clause never fires, and never fires afterwards either because by then the condition holds on both limits. Both sessions of this compiler give y = 1, which is what Appendix B gives. Narrowing the latch to only those conditions whose own body writes their operands was considered and refused as unprincipled: it is a syntactic test standing in for a semantic one, and it would have no answer for a condition two activations downstream.'
+oracle_consulted = 'None. OpenModelica settles the values a model takes, and on the cascade above it would agree with the answer this row already reaches, so it cannot separate the candidates on the case that matters. What distinguishes them is the self-rescheduling shape, where the disagreement is not about a value but about whether an inner solve terminates — which is a property of a tool, not of a trajectory, and therefore not something an oracle run can settle.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/differential.rs'
+pin_anchor = 'hand_written_models_agree_between_reference_and_pipeline'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Found by the reference failing twice, not by reasoning, which is why this row is SpecSilent rather than SpecSourced: the first version of the statement asserted the latching rule as though §8.5 required it, and the cascade counterexample above refuted it. The StateConditionCascade and SelfReschedulingCounter cases in the pinned file are the two shapes that pull in opposite directions; a change satisfying only one of them fails the other.'
+
+[[statements]]
+id = 'FS-SIM-016'
+statement = 'A self-rescheduling time-event guard whose first threshold is not met at the start instant fires on its own grid for the whole run.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Paraphrase'
+quote = 'A guard whose instant its own body advances re-arms at every crossing.'
+quote_source = 'crates/rumoca-reference/tests/semantics.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/differential.rs'
+pin_anchor = 'the_diffsol_session_never_fires_a_self_rescheduling_time_event'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+related_sections = ['§8.5']
+note = 'The rk-like session and the reference both count 1, 2, 3, 4 on a 0.2 s grid; the diffsol session never fires the guard at all and leaves the accumulator and the threshold at their start values for the whole run. This is not FS-SIM-009, whose subject is a guard already met at the start and whose own note says a guard not met at the start counts normally, and it is not FS-SIM-011, which is about the accuracy of a located state crossing rather than about a dynamic time event failing to occur. The row is filed against §8.3.5.1 because the reference reaches the firing grid from the edge expansion alone; it is deliberately not filed as OracleImplied, because no omc measurement was taken for it and naming an oracle that was never run would be worse than naming none.'
+
+[[statements]]
+id = 'FS-SIM-017'
+statement = 'The §8.6 requirement that every variable satisfies v = pre(v) before integration constrains the values pre is seeded from and not the meaning of the operator, so an activation buffer enters the initial instant holding its condition on the start values while initial() is false in that seed.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.6 says "before the start of the integration, it must be guaranteed that for all variables v, v = pre(v)", and it also says the equations of a when-clause are active during initialization if and only if they are explicitly enabled with initial(). Read as an instruction to make pre the identity operator during initialization, the first sentence contradicts the second: edge(b) becomes b and not b, which is false for every buffer, and `when initial() then ...` can never run. §8.6 does not say which reading it means, and the two are not distinguishable from its text — that is the silence. This tree reads the requirement as a constraint on the values pre starts from: committed is seeded from the start environment, so v = pre(v) holds on entry for every declared variable, while a buffer gated on initial() still sees a rising edge because its own seed is evaluated with initial() false.'
+alternatives_considered = 'Making pre the identity during initialization was implemented first and refused when it silently disabled every initial()-gated when-clause — a failure that no start-value test detects, because it changes nothing about start values. Seeding buffers to false unconditionally was refused because it manufactures a rising edge at the initial instant for every already-true condition, which is precisely the defect FS-EQN-001 records having fixed. Evaluating the seed with initial() true was refused because it removes the only edge an initial()-gated clause can have, arriving back at the first alternative by a different route.'
+oracle_consulted = 'None was run for this row. The observable consequences are already settled by omc through FS-EQN-001 to FS-EQN-004, which this reading reproduces; what is unsettled is the interpretation those rows leave implicit, and an oracle returns trajectories rather than interpretations. The row exists so the choice is written down where the next reader of §8.6 will look, rather than being rediscovered from a failing test.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/semantics.rs'
+pin_anchor = 'an_initial_gated_activation_runs_at_initialization'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Unlike the two rows above, this pin exercises the reference alone. It is admissible here because the statement is about an interpretation of §8.6 rather than about compiler behavior — the compiler-facing consequences are FS-EQN-001 through FS-EQN-004, which carry their own pins in crates/rumoca/tests/time_event_when_activation.rs. A reader wanting evidence about this tree should follow those.'
+
+[[statements]]
+id = 'FS-EQN-020'
+statement = 'The pre values used by event iteration at the initial instant are seeded from the values the initialization system settled, not from the declared start values that seeded that solve.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'Before the start of the integration, it must be guaranteed that for all variables `v`, `v = pre(v)`. If this is not the case for some variables `vi`, `pre(vi) := vi` must be set and an event iteration at the initial time must follow, so the model is re-evaluated, until this condition is fulfilled.'
+quote_source = 'crates/rumoca/tests/initialization_ordering.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/initialization_ordering.rs'
+pin_anchor = 'both_hosts_seed_initial_event_pre_from_the_settled_state'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['EQN-035']
+note = 'The BDF path already took this snapshot after initialization. The FMI 3 ME kernel took it before settle_initialization_system, so a state moved from start = 0 to x = 5 still exposed pre(x) = 0 to when initial(); this row pins both hosts to the same section 8.6 ordering.'

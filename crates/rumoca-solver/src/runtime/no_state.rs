@@ -5,6 +5,11 @@ use crate::timeline::sample_time_match_with_tol;
 
 const ROOT_BISECTION_ITERS: usize = 64;
 
+/// Zero-state event continuation is a semantic time boundary, not a numerical
+/// integration step. Use the adjacent representable instant so a value-space
+/// absolute tolerance can never skip a later scheduler or output boundary.
+pub const NO_STATE_EVENT_TIME_TOLERANCE: f64 = 0.0;
+
 #[derive(Debug, Default)]
 pub struct NoStateRootSearchScratch {
     start: Vec<f64>,
@@ -151,7 +156,7 @@ impl NoStateEventStep {
                 continuation_time: runtime_root_event_application_time(
                     event_time,
                     self.target,
-                    self.tol,
+                    NO_STATE_EVENT_TIME_TOLERANCE,
                 ),
             }
         })
@@ -477,9 +482,16 @@ mod tests {
         assert_eq!(boundary.evaluation_time(), 0.05_f64.next_up());
         assert_eq!(
             boundary.continuation_time(),
-            crate::timeline::event_right_limit_time(0.05, step.tol)
+            crate::timeline::event_right_limit_time(0.05, NO_STATE_EVENT_TIME_TOLERANCE)
         );
         assert_ne!(boundary.observation_time(), boundary.continuation_time());
+        let tight_value_tolerance = NoStateEventStep {
+            tol: 1.0e-12,
+            ..step
+        }
+        .root_boundary()
+        .unwrap();
+        assert_eq!(boundary, tight_value_tolerance);
     }
 
     struct OscillatoryBackend {

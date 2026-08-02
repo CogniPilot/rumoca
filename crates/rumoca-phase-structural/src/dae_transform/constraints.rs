@@ -19,7 +19,7 @@ use rumoca_ir_dae as dae;
 
 use super::equalities::{EqualityAnchor, EqualitySign, SystemEqualities};
 use super::initial_pins::represented_initial_values;
-use super::{DirectStateConstraint, HolonomicConstraint};
+use super::{DirectStateConstraint, HolonomicConstraint, HolonomicDifferentiationProof};
 use crate::StructuralError;
 
 /// The exact indirections reconstruction is allowed to follow while
@@ -39,11 +39,75 @@ impl DifferentiationFacts {
 }
 
 /// Where one expression stands in a differentiability walk.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Visit {
     Pending,
     InProgress,
     Differentiable,
+}
+
+/// Reusable visitation state for all holonomic roots in one finalized DAE.
+///
+/// Each expression packs the six `(order, context)` states into the low twelve
+/// bits of one word and the root epoch into the rest. Advancing the epoch makes
+/// every slot logically pending in O(1), while keeping storage to one word per
+/// expression. The backing table is cleared only after the practically
+/// unreachable epoch wraparound.
+struct HolonomicProofScratch {
+    epoch: u64,
+    visited: Vec<u64>,
+}
+
+impl HolonomicProofScratch {
+    const STATE_BITS: u32 = 2;
+    const STATE_SLOT_COUNT: u32 = 6;
+    const MAX_EPOCH: u64 = u64::MAX >> (Self::STATE_BITS * Self::STATE_SLOT_COUNT);
+
+    fn new(expression_count: usize) -> Self {
+        Self {
+            epoch: 0,
+            visited: vec![0; expression_count],
+        }
+    }
+
+    fn begin_root(&mut self) {
+        if self.epoch == Self::MAX_EPOCH {
+            self.visited.fill(0);
+            self.epoch = 1;
+        } else {
+            self.epoch += 1;
+        }
+    }
+
+    fn state(&self, expression: usize, order: usize, context: usize) -> Visit {
+        let packed = self.visited[expression];
+        if packed >> (Self::STATE_BITS * Self::STATE_SLOT_COUNT) != self.epoch {
+            return Visit::Pending;
+        }
+        match (packed >> Self::slot_shift(order, context)) & 0b11 {
+            1 => Visit::InProgress,
+            2 => Visit::Differentiable,
+            _ => Visit::Pending,
+        }
+    }
+
+    fn set_state(&mut self, expression: usize, order: usize, context: usize, state: Visit) {
+        let shift = Self::slot_shift(order, context);
+        let state = match state {
+            Visit::Pending => 0,
+            Visit::InProgress => 1,
+            Visit::Differentiable => 2,
+        };
+        let packed = &mut self.visited[expression];
+        if *packed >> (Self::STATE_BITS * Self::STATE_SLOT_COUNT) != self.epoch {
+            *packed = self.epoch << (Self::STATE_BITS * Self::STATE_SLOT_COUNT);
+        }
+        *packed = (*packed & !(0b11 << shift)) | (state << shift);
+    }
+
+    const fn slot_shift(order: usize, context: usize) -> u32 {
+        ((order * 2 + context) as u32) * Self::STATE_BITS
+    }
 }
 
 /// Every state demotion one system offers, split by what taking it costs the
@@ -200,9 +264,8 @@ fn renumbered(variable: u32) -> StructuralError {
 ///   * a time-invariant displacement between the state and `rhs` vanishes under
 ///     `d/dt`, so only the *value* readers of [`SystemEqualities`] need the
 ///     offset-free layer;
-///   * a sign does **not** vanish under `d/dt`, so an opposite-signed class
-///     member would need a negated `rhs` and is not a candidate at all — see
-///     [`SystemEqualities::redundant_states`].
+///   * a sign does **not** vanish under `d/dt`, so the equality proof carries
+///     it on the candidate and reconstruction applies it to `differentiate(rhs)`.
 ///
 /// What must hold at runtime is that differentiation can reach `rhs` and that
 /// the substitution does not re-enter itself: `rhs` is a whole-model expression
@@ -250,7 +313,7 @@ fn redundant_state_constraints(
 ) -> Vec<DirectStateConstraint> {
     equalities
         .redundant_states()
-        .filter_map(|(state, anchor)| {
+        .filter_map(|(state, anchor, rhs_sign)| {
             let variable = view.variable(view.variable_id(state as usize)?)?;
             if variable.state_select() == StateSelect::Always {
                 return None;
@@ -258,6 +321,7 @@ fn redundant_state_constraints(
             Some(DirectStateConstraint {
                 state,
                 rhs: equalities.anchor_expression(anchor)?,
+                rhs_sign,
                 owner: equalities.witness(state)?,
             })
         })
@@ -452,6 +516,7 @@ fn direct_state_constraint<'dae>(
     Some(DirectStateConstraint {
         state: state.index(),
         rhs: rhs.index(),
+        rhs_sign: EqualitySign::Same,
         owner: equation.provenance(),
     })
 }
@@ -504,78 +569,160 @@ fn reaches_demoted_derivative<'dae>(
 }
 
 pub(super) fn holonomic_constraints(view: dae::DaeView<'_>) -> Vec<HolonomicConstraint> {
-    let definitions = explicit_derivative_definitions(view);
+    let facts = DifferentiationFacts::collect(view);
+    let mut scratch = HolonomicProofScratch::new(view.expression_count());
     view.continuous_owners()
         .filter_map(|owner| {
             let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
                 return None;
             };
             let residual = equation.residual();
-            let mut has_state = false;
-            let mut forbidden = false;
-            dae::for_each_expression(view, residual, |_, expression| {
-                let dae::ExpressionOperation::Coordinate(coordinate) = expression.operation()
-                else {
-                    return;
-                };
-                match coordinate {
-                    dae::CoordinateView::State(_) => has_state = true,
-                    dae::CoordinateView::Derivative(_) | dae::CoordinateView::Algebraic(_) => {
-                        forbidden = true;
-                    }
-                    _ => {}
-                }
-            });
-            (has_state && !forbidden && can_differentiate_order(view, residual, 2, &definitions))
-                .then_some(HolonomicConstraint {
+            prove_holonomic_differentiation(view, &facts, &mut scratch, residual).map(|proof| {
+                HolonomicConstraint {
                     residual: residual.index(),
                     owner: equation.provenance(),
-                })
+                    proof,
+                }
+            })
         })
         .collect()
 }
 
-fn can_differentiate_order<'dae>(
+/// Prove that one unstructured residual is a position-level constraint whose
+/// first two derivatives reconstruction can form exactly.
+///
+/// Algebraic coordinates are admitted only through the signed equality class
+/// already asserted by the source system. A pinned class differentiates to
+/// zero; a state-anchored class differentiates as that state. Requiring two
+/// distinct state anchors whenever an algebraic is involved excludes ordinary
+/// component aliases such as `state - connector = 0`: differentiating those
+/// would only replace a defining equation with a tautology. The older direct
+/// state-only form remains admissible with one state.
+fn prove_holonomic_differentiation<'dae>(
     view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-    order: u8,
-    definitions: &[Option<u32>],
-) -> bool {
-    let expression = view
-        .expression(expression)
-        .expect("checked differentiability expression resolves");
-    match expression.operation() {
-        dae::ExpressionOperation::Literal(_) => true,
-        dae::ExpressionOperation::Coordinate(coordinate) => match coordinate {
-            dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time => true,
-            dae::CoordinateView::State(state) => {
-                definitions[state.index() as usize].is_some_and(|definition| {
-                    order == 1
-                        || can_differentiate_order(
-                            view,
-                            view.expression_id(definition as usize)
-                                .expect("derivative definition resolves"),
-                            order - 1,
-                            definitions,
-                        )
-                })
+    facts: &DifferentiationFacts,
+    scratch: &mut HolonomicProofScratch,
+    residual: dae::ExprId<'dae>,
+) -> Option<HolonomicDifferentiationProof> {
+    scratch.begin_root();
+    let mut walk = HolonomicProofWalk {
+        view,
+        facts,
+        anchored_states: Vec::new(),
+        saw_algebraic: false,
+        scratch,
+    };
+    if !walk.can_differentiate_order(residual, 2, true) {
+        return None;
+    }
+    walk.anchored_states.sort_unstable();
+    walk.anchored_states.dedup();
+    if walk.anchored_states.is_empty() || (walk.saw_algebraic && walk.anchored_states.len() < 2) {
+        return None;
+    }
+    Some(HolonomicDifferentiationProof {
+        residual: residual.index(),
+        maximum_order: 2,
+        anchored_states: walk.anchored_states.into_boxed_slice(),
+    })
+}
+
+struct HolonomicProofWalk<'facts, 'dae> {
+    view: dae::DaeView<'dae>,
+    facts: &'facts DifferentiationFacts,
+    anchored_states: Vec<u32>,
+    saw_algebraic: bool,
+    scratch: &'facts mut HolonomicProofScratch,
+}
+
+impl<'facts, 'dae> HolonomicProofWalk<'facts, 'dae> {
+    fn can_differentiate_order(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        order: u8,
+        on_residual: bool,
+    ) -> bool {
+        let index = expression.index() as usize;
+        let context = usize::from(on_residual);
+        match self.scratch.state(index, order as usize, context) {
+            Visit::Differentiable => return true,
+            Visit::InProgress => return false,
+            Visit::Pending => {
+                self.scratch
+                    .set_state(index, order as usize, context, Visit::InProgress);
+            }
+        }
+        let expression = self
+            .view
+            .expression(expression)
+            .expect("checked differentiability expression resolves");
+        let differentiable = match expression.operation() {
+            dae::ExpressionOperation::Literal(_) => true,
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                self.can_differentiate_coordinate(coordinate, order, on_residual)
+            }
+            dae::ExpressionOperation::Unary {
+                operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
+                operand,
+            } => self.can_differentiate_order(operand, order, on_residual),
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                matches!(
+                    operator,
+                    dae::BinaryOperator::Add
+                        | dae::BinaryOperator::Subtract
+                        | dae::BinaryOperator::Multiply
+                ) && self.can_differentiate_order(lhs, order, on_residual)
+                    && self.can_differentiate_order(rhs, order, on_residual)
             }
             _ => false,
-        },
-        dae::ExpressionOperation::Unary {
-            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
-            operand,
-        } => can_differentiate_order(view, operand, order, definitions),
-        dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-            matches!(
-                operator,
-                dae::BinaryOperator::Add
-                    | dae::BinaryOperator::Subtract
-                    | dae::BinaryOperator::Multiply
-            ) && can_differentiate_order(view, lhs, order, definitions)
-                && can_differentiate_order(view, rhs, order, definitions)
+        };
+        let state = if differentiable {
+            Visit::Differentiable
+        } else {
+            Visit::Pending
+        };
+        self.scratch
+            .set_state(index, order as usize, context, state);
+        differentiable
+    }
+
+    fn can_differentiate_coordinate(
+        &mut self,
+        coordinate: dae::CoordinateView<'dae>,
+        order: u8,
+        on_residual: bool,
+    ) -> bool {
+        match coordinate {
+            dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time => true,
+            dae::CoordinateView::State(state) => {
+                self.can_differentiate_state(state.index(), order, on_residual)
+            }
+            dae::CoordinateView::Algebraic(algebraic) => {
+                self.saw_algebraic |= on_residual;
+                match self.facts.equalities.anchor_of(algebraic.index()) {
+                    Some((EqualityAnchor::Invariant { .. }, _)) => true,
+                    Some((EqualityAnchor::State(state), _)) => {
+                        self.can_differentiate_state(state, order, on_residual)
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
         }
-        _ => false,
+    }
+
+    fn can_differentiate_state(&mut self, state: u32, order: u8, on_residual: bool) -> bool {
+        if on_residual {
+            self.anchored_states.push(state);
+        }
+        order == 1
+            || self.facts.derivative_definitions[state as usize].is_some_and(|definition| {
+                self.view
+                    .expression_id(definition as usize)
+                    .is_some_and(|definition| {
+                        self.can_differentiate_order(definition, order - 1, false)
+                    })
+            })
     }
 }
 
@@ -725,5 +872,31 @@ fn derivative_definition<'dae>(
         (Some(state), None) => Some((state, rhs.index())),
         (None, Some(state)) => Some((state, lhs.index())),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod proof_scratch_tests {
+    use super::*;
+
+    #[test]
+    fn proof_scratch_reuses_one_expression_sized_table_across_many_roots() {
+        const EXPRESSION_COUNT: usize = 16_384;
+        const ROOT_COUNT: usize = 4_096;
+        let mut scratch = HolonomicProofScratch::new(EXPRESSION_COUNT);
+        let storage = scratch.visited.as_ptr();
+
+        for root in 0..ROOT_COUNT {
+            scratch.begin_root();
+            let expression = root % EXPRESSION_COUNT;
+            scratch.set_state(expression, 2, 1, Visit::Differentiable);
+            assert_eq!(scratch.state(expression, 2, 1), Visit::Differentiable);
+            if expression > 0 {
+                assert_eq!(scratch.state(expression - 1, 2, 1), Visit::Pending);
+            }
+        }
+
+        assert_eq!(scratch.visited.len(), EXPRESSION_COUNT);
+        assert_eq!(scratch.visited.as_ptr(), storage);
     }
 }

@@ -1,4 +1,7 @@
-use rumoca_solver::RuntimeSolveError;
+use rumoca_solver::{
+    RuntimeSolveError,
+    fmi_me::{MeError, MeStage},
+};
 
 /// The simulation sub-stage that raised a failure.
 ///
@@ -46,10 +49,112 @@ impl std::fmt::Display for SimFailureStage {
     }
 }
 
+impl From<MeStage> for SimFailureStage {
+    fn from(value: MeStage) -> Self {
+        match value {
+            MeStage::Instantiate => Self::BackendBuild,
+            MeStage::Initialization => Self::Initialization,
+            MeStage::EventIteration => Self::EventIteration,
+            MeStage::ManifoldProjection => Self::ManifoldProjection,
+            MeStage::Integration => Self::Integration,
+        }
+    }
+}
+
+/// Why a state-carrying model has no reduced state-only system to integrate.
+///
+/// SPEC 0008 acceptance contract, stated positively first: the reduced
+/// state-only path *accepts* a model whose state-derivative rows read only
+/// continuous states, or whose non-state reads are — transitively — all
+/// produced by the algebraic projection plan. Every other shape is rejected
+/// here, naming both the construct that failed and the solver coordinate that
+/// failed it.
+///
+/// The rejection is terminal by design. Until SPEC 0038 this predicate returned
+/// a plain `false` and the backend quietly built a second, general/implicit DAE
+/// system instead. That fallback made an unprojectable
+/// coordinate — which is a `rumoca-phase-solve` defect — look like a solver
+/// preference, and it would have absorbed a lowering regression by switching
+/// integrators with no diagnostic at all.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StateOnlyRejection {
+    /// The continuous system does not present one derivative row per state, so
+    /// there is no `y' = f(y, t)` to reduce to in the first place.
+    #[error(
+        "the model declares {state_count} continuous state(s) but lowers to {derivative_rows} \
+         state-derivative row(s), so no reduced state-only ODE exists"
+    )]
+    DerivativeRowCount {
+        derivative_rows: usize,
+        state_count: usize,
+    },
+
+    /// A state derivative reads a non-state solver coordinate that no algebraic
+    /// projection block produces, so a reduced step cannot recover its value.
+    #[error(
+        "der({state_name}) reads solver coordinate '{name}' (y[{y_index}]), which no algebraic \
+         projection block produces, so a reduced state-only step cannot recover it"
+    )]
+    UnproducedDerivativeDependency {
+        y_index: usize,
+        name: String,
+        state_name: String,
+    },
+
+    /// The projection plan names a producing residual row that carries no
+    /// evaluable scalar program.
+    #[error(
+        "solver coordinate '{name}' (y[{y_index}]) is projected from implicit residual output \
+         {output_index}, which carries no evaluable scalar program"
+    )]
+    ProducerWithoutScalarProgram {
+        y_index: usize,
+        name: String,
+        output_index: usize,
+    },
+
+    /// The projection plan indexes a residual row the implicit residual does
+    /// not have.
+    #[error(
+        "the algebraic projection plan references implicit residual row {row}, but the implicit \
+         residual emits only {implicit_output_count} output(s)"
+    )]
+    ProjectionRowOutOfRange {
+        row: usize,
+        implicit_output_count: usize,
+    },
+
+    /// Two projection rows claim the same coordinate, so its producer — and
+    /// therefore the reduced system — is not well defined.
+    #[error(
+        "solver coordinate '{name}' (y[{y_index}]) is claimed by two algebraic projection rows \
+         ({first_row} and {second_row}), so its producer is ambiguous"
+    )]
+    ConflictingProjectionProducers {
+        y_index: usize,
+        name: String,
+        first_row: usize,
+        second_row: usize,
+    },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
     #[error("empty system: no equations to simulate")]
     EmptySystem,
+
+    /// The model does not satisfy the state-only integration contract.
+    ///
+    /// This is the one place the retirement is user-visible: the general /
+    /// implicit DAE path that used to absorb these models is gone, so the
+    /// backend reports which coordinate has no projection producer instead of
+    /// silently integrating a different system.
+    #[error(
+        "{0}; the general/implicit DAE fallback that used to absorb this was retired \
+         (SPEC 0038), so this is a hard error rather than a silent switch \
+         to a different integrator"
+    )]
+    StateOnlyPathUnavailable(StateOnlyRejection),
 
     #[error("solver error: {0}")]
     SolverError(String),
@@ -149,6 +254,33 @@ impl From<RuntimeSolveError> for SimError {
             non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
                 Self::SolveIr(non_finite.to_string())
             }
+        }
+    }
+}
+
+impl From<MeError> for SimError {
+    fn from(value: MeError) -> Self {
+        let stage = value.stage().map(SimFailureStage::from);
+        let error = match value.into_kind() {
+            MeError::NoContinuousStates => Self::EmptySystem,
+            MeError::UnsupportedModel { reason } | MeError::Evaluation { message: reason } => {
+                Self::SolveIr(reason)
+            }
+            MeError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
+                "non-finite derivative evaluation for state '{state_name}'"
+            )),
+            MeError::Contract { reason } => Self::RuntimeContract { reason },
+            MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
+            MeError::Allocation { context, entries } => Self::RuntimeContract {
+                reason: format!("{context} allocation failed for {entries} entries"),
+            },
+            staged @ MeError::Staged { .. } => Self::RuntimeContract {
+                reason: format!("stage annotation survived peeling: {staged}"),
+            },
+        };
+        match stage {
+            Some(stage) => error.at_stage(stage),
+            None => error,
         }
     }
 }

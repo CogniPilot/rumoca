@@ -349,6 +349,11 @@ fn resolve_config_bench_input(args: &SimBenchArgs, config_path: &str) -> Result<
         .map(|solver| SimulateSolverMode::from(solver).as_label().to_string())
         .or_else(|| config.sim.solver.clone())
         .unwrap_or_else(|| "auto".to_string());
+    // The report prints this label as the solver that ran. A label from the
+    // scenario config is free text, so it is checked against the valid set here
+    // — otherwise an unrunnable name would be printed as "Solver:" while BDF
+    // actually did the work.
+    rumoca_core::canonical_solver_name(&solver_label)?;
 
     Ok(BenchInput {
         input: ModelInputArgs {

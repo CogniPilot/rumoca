@@ -4,7 +4,7 @@ use rumoca_sim::sim_trace_compare::{
     MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE, MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
     ModelDeviationMetric, classify_trace_metric_channel_distribution,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 // =============================================================================
 // Result JSON write + balance summary printing
@@ -100,7 +100,6 @@ struct MslPackagePassRateCounts {
 #[derive(Default)]
 struct MslPackagePassRateParity {
     models: BTreeMap<String, MslPackagePassRateParityModel>,
-    accepted_sim_ok_without_trace: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -621,33 +620,7 @@ fn pass_rate_parity_from_trace_payload(
             },
         );
     }
-    parity.accepted_sim_ok_without_trace = accepted_sim_ok_without_trace(payload);
     Ok(parity)
-}
-
-fn accepted_sim_ok_without_trace(payload: &serde_json::Value) -> BTreeSet<String> {
-    payload
-        .get("skipped")
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|skipped| skipped.iter())
-        .filter(|(_, entry)| trace_skip_accepts_sim_ok(entry))
-        .map(|(model_name, _)| model_name.clone())
-        .collect()
-}
-
-/// Whether a recorded skip is the one that still lets a `sim_ok` model count as
-/// passing: the two traces shared nothing comparable, so there was no band to
-/// contradict the simulation.
-///
-/// The comparator decides this and records it as a [`TraceExitKind`]. Matching
-/// on the kind rather than on the wording of the reason string is what keeps the
-/// acceptance from widening the day someone rephrases a comparator error — the
-/// message text is operator prose, not an interface.
-fn trace_skip_accepts_sim_ok(entry: &serde_json::Value) -> bool {
-    use rumoca_test_msl::msl_tools::band_table::{TraceExitKind, trace_exit_kind};
-
-    trace_exit_kind(entry) == Some(TraceExitKind::NoComparableSamples)
 }
 
 fn trace_metric_matches_omc(metric: &ModelDeviationMetric) -> bool {
@@ -659,7 +632,7 @@ fn trace_metric_matches_omc(metric: &ModelDeviationMetric) -> bool {
             MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
             MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE,
         ),
-        AgreementBand::HighAgreement | AgreementBand::MinorAgreement
+        AgreementBand::HighAgreement
     )
 }
 
@@ -752,13 +725,10 @@ fn sim_passed_with_trace_parity(
     if let Some(sim_matches) = parity_model.and_then(|model| model.sim_matches) {
         return sim_matches;
     }
-    let Some(parity) = parity else {
+    let Some(_parity) = parity else {
         return result_simulated_successfully(result);
     };
-    parity
-        .accepted_sim_ok_without_trace
-        .contains(&result.model_name)
-        && result_simulated_successfully(result)
+    false
 }
 
 fn stage_time_or_timeout(
@@ -1842,16 +1812,15 @@ mod tests {
     }
 
     #[test]
-    fn package_pass_rate_report_accepts_sim_ok_for_non_comparable_omc_trace() {
+    fn package_pass_rate_report_rejects_sim_ok_without_a_comparable_trace() {
         let mut summary = empty_summary(0, 0);
         summary.model_results = vec![model_result(
             "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine",
             "Success",
             Some("sim_ok"),
         )];
-        // The comparator records the boundary it hit as a typed kind. This one —
-        // the two traces shared nothing comparable — is the only skip that still
-        // lets `sim_ok` count as passing, because no band contradicts it.
+        // A solver return without comparable evidence is raw execution only. It
+        // must fail closed instead of being counted as supported simulation.
         let payload = serde_json::json!({
             "models": {},
             "skipped": {
@@ -1863,11 +1832,33 @@ mod tests {
         });
 
         let report = build_msl_package_pass_rate_report_with_trace_payload(&summary, &payload)
-            .expect("pass report with accepted trace skip");
+            .expect("pass report with trace skip");
 
         assert_eq!(report.overall.n, 1);
-        assert_eq!(report.overall.sim_passed, 1);
-        assert_eq!(report.overall.sim_percent, 100.0);
+        assert_eq!(report.overall.sim_passed, 0);
+        assert_eq!(report.overall.sim_percent, 0.0);
+    }
+
+    #[test]
+    fn package_pass_rate_report_requires_strict_high_not_near() {
+        let mut summary = empty_summary(0, 0);
+        summary.model_results = vec![model_result(
+            "Modelica.Blocks.Examples.NearTrace",
+            "Success",
+            Some("sim_ok"),
+        )];
+        let payload = serde_json::json!({
+            "models": {
+                "Modelica.Blocks.Examples.NearTrace":
+                    trace_metric_json("Modelica.Blocks.Examples.NearTrace", 0, 3, 0, 0)
+            }
+        });
+
+        let report = build_msl_package_pass_rate_report_with_trace_payload(&summary, &payload)
+            .expect("pass report with near trace");
+
+        assert_eq!(report.overall.sim_passed, 0);
+        assert_eq!(report.overall.sim_percent, 0.0);
     }
 
     /// Every other recorded skip is a comparator defect or a policy decision, and

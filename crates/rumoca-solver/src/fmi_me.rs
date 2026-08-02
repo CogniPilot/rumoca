@@ -7,12 +7,13 @@
 //! through [`ModelExchangeKernel`]. They MUST NOT inspect Solve rows,
 //! layouts, opcodes, events, or private runtime objects.
 //!
-//! # Operation map
+//! # Transitional operation map
 //!
-//! Every operation on [`ModelExchangeKernel`] mirrors one FMI 3.0 ME entry
-//! point. Where rumoca needs something FMI 3.0 does not name, the doc comment
-//! says so explicitly and the report calls it an extension; there is no silent
-//! second interface.
+//! The standard operations below map to FMI 3.0 ME entry points. The trait also
+//! still carries phase-2 migration debt listed under "Non-standard operations"
+//! below. SPEC_0038 requires those conveniences to move to the importer/host
+//! layer so the final component-facing surface is an exact semantic projection
+//! of FMI 3.0.2 rather than an extended private protocol.
 //!
 //! | Kernel operation | FMI 3.0 ME |
 //! |---|---|
@@ -28,13 +29,14 @@
 //! | [`ModelExchangeKernel::get_continuous_states`] | `fmi3GetContinuousStates` |
 //! | [`ModelExchangeKernel::get_nominals_of_continuous_states`] | `fmi3GetNominalsOfContinuousStates` |
 //! | [`ModelExchangeKernel::get_continuous_state_derivatives`] | `fmi3GetContinuousStateDerivatives` |
+//! | [`ModelExchangeKernel::get_directional_derivative`] | `fmi3GetDirectionalDerivative` |
 //! | [`ModelExchangeKernel::get_event_indicators`] | `fmi3GetEventIndicators` |
 //! | [`ModelExchangeKernel::record_outputs`] / [`ModelExchangeKernel::get_outputs`] | batched `fmi3GetFloat64` |
 //! | [`ModelExchangeKernel::value_reference`] / [`ModelExchangeKernel::set_float64`] | model description + batched `fmi3SetFloat64` |
 //! | [`ModelExchangeKernel::fmu_state`] / [`ModelExchangeKernel::reset_to_fmu_state`] | `fmi3GetFMUState` / `fmi3Reset` + `fmi3SetFMUState` |
 //! | [`ModelExchangeKernel::terminate`] | `fmi3Terminate` |
 //!
-//! ## Extensions beyond FMI 3.0 ME, and why
+//! ## Non-standard operations scheduled for removal from this surface
 //!
 //! - [`ModelExchangeKernel::project_continuous_states`]: FMI 3.0 forbids the
 //!   FMU from changing continuous states in Continuous-Time Mode. Rumoca's
@@ -54,22 +56,6 @@
 //!   integrator not to step across a known event instant; rumoca additionally
 //!   needs the FMU to evaluate the *left limit* of that instant, so the
 //!   boundary travels with `fmi3SetTime`.
-//! - [`ModelExchangeKernel::completed_integrator_step`]: occupies the
-//!   lifecycle position of `fmi3CompletedIntegratorStep` but is **not** that
-//!   call. It omits the `noSetFMUStatePriorToCurrentPoint` in-param (rumoca
-//!   never rolls a component back to an earlier point) and both mandated
-//!   out-params: `enterEventMode` (this host detects events from the event
-//!   indicators it already reads, so the component never requests event mode
-//!   here) and `terminateSimulation` (termination is reported by
-//!   [`ModelExchangeKernel::update_discrete_states`] instead). They are absent
-//!   rather than hardcoded so no host can mistake an unimplemented answer for
-//!   a measured one; add them when a host needs them.
-//! - [`MeStepCompletion::accepted_derivatives`]: the FSAL stage an explicit
-//!   Runge-Kutta method already computed at the accepted point, handed back so
-//!   the FMU does not recompute it.
-//! - [`MeStepCompletion::AtStateEvent`]: FMI has no way for a host to say that
-//!   the step it just completed lands *on* a located state event. Rumoca needs
-//!   it because the component drops different caches in that case.
 //! - [`MeEventEntry`]: `fmi3EnterEventMode` takes no arguments in FMI 3.0.
 //!   Rumoca's component needs the event `cause` (state event versus its own
 //!   scheduled instant), the `event_time` the host located, and the `horizon`
@@ -90,12 +76,24 @@
 //! - [`ModelExchangeKernel::max_step_size`]: rumoca's delay channels bound the
 //!   next step. FMI 3.0 ME has no counterpart at all — a host that ignores it
 //!   would step over delay history.
+//! - [`MeStage`]: FMI 3.0 reports one undifferentiated `fmi3Error`. rumoca's
+//!   MSL harness buckets every failure by the sub-stage that raised it, so the
+//!   component mints that stage where the failure happens rather than letting a
+//!   host re-derive it from rendered text.
 
+mod host;
 mod kernel;
+pub(crate) mod lifecycle;
 mod no_state;
+#[cfg(test)]
+mod tests;
+mod validation;
 
+pub use host::{MeRuntimeHost, MeRuntimeInitialState, MeRuntimeOutput, MeRuntimePostEventState};
 pub use kernel::SolveMeKernel;
 pub use no_state::MeNoStateSession;
+
+use std::rc::Rc;
 
 use crate::solver::{SimTermination, SimVariableMeta};
 
@@ -122,6 +120,87 @@ impl<'a> MeModelSource<'a> {
 impl<'a> From<&'a rumoca_ir_solve::SolveModel> for MeModelSource<'a> {
     fn from(model: &'a rumoca_ir_solve::SolveModel) -> Self {
         Self::new(model)
+    }
+}
+
+/// Owned checked model artifact that numerical solver plugins can retain
+/// without gaining access to Solve IR.
+///
+/// The generic ME runtime is the only layer that can project this artifact
+/// into a component. Concrete solver crates may store it and request an opaque
+/// [`MeModelSource`], but cannot inspect rows, layouts, opcodes, or events.
+#[derive(Clone)]
+pub struct MeModelArtifact(rumoca_ir_solve::SolveModel);
+
+impl MeModelArtifact {
+    #[must_use]
+    pub fn new(model: rumoca_ir_solve::SolveModel) -> Self {
+        Self(model)
+    }
+
+    #[must_use]
+    pub fn source(&self) -> MeModelSource<'_> {
+        MeModelSource::new(&self.0)
+    }
+
+    #[must_use]
+    pub fn continuous_state_count(&self) -> usize {
+        self.0.state_scalar_count()
+    }
+}
+
+impl From<rumoca_ir_solve::SolveModel> for MeModelArtifact {
+    fn from(model: rumoca_ir_solve::SolveModel) -> Self {
+        Self::new(model)
+    }
+}
+
+impl From<&rumoca_ir_solve::SolveModel> for MeModelArtifact {
+    fn from(model: &rumoca_ir_solve::SolveModel) -> Self {
+        Self::new(model.clone())
+    }
+}
+
+/// The ME lifecycle stage a component failure was raised in.
+///
+/// Extension beyond FMI 3.0: see the module docs. This is *producer knowledge*
+/// — the operation that fails attaches the stage it was running, so a host
+/// never has to recognise a sub-stage by pattern-matching a rendered message.
+/// Hosts map it onto their own failure buckets; the map is total in both
+/// directions for the stages a component can be in, which is what keeps a
+/// failure histogram stable across the SPEC_0038 migration.
+///
+/// Stages a *host* owns — isolating an output stop, interpolating, timing out —
+/// are deliberately absent: the component is never running when they happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MeStage {
+    /// `fmi3InstantiateModelExchange`: projecting the checked kernel, before
+    /// any model evaluation.
+    Instantiate,
+    /// Initialization Mode, plus the initial event iteration MLS 3.6 §8.6
+    /// requires before integration starts.
+    Initialization,
+    /// Event Mode: `fmi3UpdateDiscreteStates` and the boundary it runs.
+    EventIteration,
+    /// Projecting a point back onto the model's constraint manifold.
+    ManifoldProjection,
+    /// Continuous-Time Mode evaluation on behalf of the host's integrator.
+    Integration,
+}
+
+/// Which stage an annotation resolves to when one is already recorded.
+///
+/// The innermost annotation wins: an outer lifecycle boundary sees failures
+/// from every stage nested under it, and relabelling them with its own coarser
+/// stage would destroy the precision the stage exists to carry.
+///
+/// Pure predicate over `Copy` value types so it can be proved rather than
+/// exercised: `resolve` is idempotent and never invents a stage.
+#[must_use]
+pub fn resolve_me_stage(recorded: Option<MeStage>, incoming: MeStage) -> MeStage {
+    match recorded {
+        Some(stage) => stage,
+        None => incoming,
     }
 }
 
@@ -165,6 +244,62 @@ pub enum MeError {
         context: &'static str,
         entries: usize,
     },
+
+    /// A failure annotated with the ME stage that raised it.
+    ///
+    /// The rendered form is exactly the inner failure's, so annotating a path
+    /// never changes a user-visible message; the stage travels alongside for
+    /// machine consumers. Hosts that switch on the failure *variant* go through
+    /// [`MeError::kind`] / [`MeError::into_kind`], so an annotated path behaves
+    /// exactly like the unannotated one.
+    #[error("{inner}")]
+    Staged { stage: MeStage, inner: Box<MeError> },
+}
+
+impl MeError {
+    /// The stage the raising operation recorded, if any.
+    #[must_use]
+    pub fn stage(&self) -> Option<MeStage> {
+        match self {
+            Self::Staged { stage, .. } => Some(*stage),
+            _ => None,
+        }
+    }
+
+    /// The failure itself, with every stage annotation peeled off.
+    #[must_use]
+    pub fn kind(&self) -> &MeError {
+        match self {
+            Self::Staged { inner, .. } => inner.kind(),
+            other => other,
+        }
+    }
+
+    /// [`MeError::kind`] by value, for a host converting into its own error.
+    #[must_use]
+    pub fn into_kind(self) -> MeError {
+        match self {
+            Self::Staged { inner, .. } => inner.into_kind(),
+            other => other,
+        }
+    }
+
+    /// Annotate with the stage that raised this failure, innermost winning
+    /// (see [`resolve_me_stage`]).
+    #[must_use]
+    pub fn at_stage(self, stage: MeStage) -> Self {
+        let resolved = resolve_me_stage(self.stage(), stage);
+        match self {
+            Self::Staged { inner, .. } => Self::Staged {
+                stage: resolved,
+                inner,
+            },
+            other => Self::Staged {
+                stage: resolved,
+                inner: Box::new(other),
+            },
+        }
+    }
 }
 
 impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
@@ -209,13 +344,71 @@ pub struct MeInstanceConfig {
     pub start_time: f64,
     /// FMI `stopTime` (`stopTimeDefined = true`).
     pub stop_time: f64,
+    /// Temporary phase-2 compatibility profile for the host's root inventory
+    /// and initial-event trigger. This is not an FMI capability: it freezes the
+    /// two pre-migration Diffsol choices while that host moves onto the shared
+    /// component, and is deleted as those divergences are adjudicated.
+    pub root_profile: MeRootProfile,
+    /// Temporary phase-2 compatibility profile for component lifecycle and
+    /// algebraic numerics. In addition to callback tolerance, iteration, and
+    /// warm-start policy, this freezes Diffsol's initialization sequencing,
+    /// accepted-step/event projection, delay-history commits, and full-state
+    /// dual-run checks. It remains independent of the root inventory selected
+    /// by [`Self::root_profile`].
+    pub numerics_profile: MeNumericsProfile,
 }
 
-/// The subset of the FMI model description an ME host needs.
+/// Temporary SPEC_0038 phase-2 compatibility profile.
+///
+/// The ordinary component profile exposes the checked event indicators and
+/// runs an initial event only when initialization produced one. The legacy
+/// Diffsol path instead exposed the runtime's root-search inventory (including
+/// planned time roots) and always performed the post-initialization refresh.
+/// Keeping that choice explicit makes the migration behaviour-freezing and
+/// prevents an adapter from silently choosing whichever inventory is easiest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeRootProfile {
+    /// The FMI-style component inventory used by the rk-like host.
+    Component,
+    /// The pre-migration Diffsol/BDF inventory and initial-event policy.
+    DiffsolFrozen,
+}
+
+impl MeRootProfile {
+    #[must_use]
+    pub(crate) fn apply_without_initial_event(self) -> bool {
+        matches!(self, Self::DiffsolFrozen)
+    }
+}
+
+/// Temporary SPEC_0038 phase-2 lifecycle-and-numerics compatibility profile.
+///
+/// This is not an FMI capability. It exists only while the Diffsol state-only
+/// path moves onto the shared ME component without changing its observable
+/// lifecycle or numerical behavior, and is deleted once those divergences are
+/// adjudicated independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeNumericsProfile {
+    /// The FMI-style component lifecycle, projection, delay-history, and
+    /// persistent callback warm-start policies.
+    Component,
+    /// The pre-migration Diffsol initialization/event sequencing, full-state
+    /// compatibility guards, algebraic settle, accepted-point seed handling,
+    /// delay-history commits, and speculative numerical callbacks.
+    DiffsolFrozen,
+}
+
+/// Transitional subset of the FMI model description used by the linked host.
+///
+/// SPEC_0038 requires this to become the checked metadata artifact used to emit
+/// the complete FMI 3.0.2 `modelDescription.xml`; this subset must not be
+/// mistaken for that final component contract.
 #[derive(Debug, Clone, Copy)]
 pub struct MeModelDescription<'a> {
     pub continuous_state_count: usize,
     pub event_indicator_count: usize,
+    /// FMI `<ModelExchange needsCompletedIntegratorStep="...">`.
+    pub needs_completed_integrator_step: bool,
     /// Names of every variable the component exposes through
     /// [`ModelExchangeKernel::get_outputs`], in value-reference order.
     pub output_names: &'a [String],
@@ -226,8 +419,11 @@ pub struct MeModelDescription<'a> {
 }
 
 /// A resolved FMI value reference. Opaque: only the component interprets it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MeValueRef(pub(crate) usize);
+#[derive(Debug, Clone)]
+pub struct MeValueRef {
+    pub(crate) index: usize,
+    pub(crate) instance_brand: Rc<()>,
+}
 
 /// `fmi3SetTime`, carrying the event instant the integrator is stepping
 /// toward so the component can evaluate that instant's left limit.
@@ -324,21 +520,13 @@ pub struct MeEventStop {
     pub is_event: bool,
 }
 
-/// [`ModelExchangeKernel::completed_integrator_step`] arguments.
-///
-/// Extension: see the module docs for how this differs from
-/// `fmi3CompletedIntegratorStep`.
-#[derive(Debug, Clone, Copy)]
-pub enum MeStepCompletion<'a> {
-    /// A plain accepted continuous step.
-    Continuous {
-        /// The FSAL stage derivative at the accepted point, if the method
-        /// produced one; the component may reuse it instead of recomputing.
-        accepted_derivatives: Option<&'a [f64]>,
-    },
-    /// The accepted step ends on a located state event. The component drops
-    /// every cached evaluation because Event Mode will change discrete state.
-    AtStateEvent,
+/// `fmi3CompletedIntegratorStep` outputs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MeCompletedIntegratorStep {
+    /// FMI `enterEventMode`: the component requests a step event.
+    pub enter_event_mode: bool,
+    /// FMI `terminateSimulation`: the component requests termination.
+    pub terminate_simulation: bool,
 }
 
 /// An observation point: the component's refreshed observable state.
@@ -351,6 +539,7 @@ pub struct MeObservation {
     pub(crate) time: f64,
     pub(crate) solver_y: Vec<f64>,
     pub(crate) parameters: Vec<f64>,
+    pub(crate) instance_brand: Rc<()>,
 }
 
 impl MeObservation {
@@ -361,9 +550,16 @@ impl MeObservation {
 }
 
 /// An opaque saved component state (`fmi3GetFMUState`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MeFmuState {
-    pub(crate) parameters: Vec<f64>,
+    pub(crate) component: kernel::MeKernelSnapshot,
+    pub(crate) instance_brand: Rc<()>,
+}
+
+impl std::fmt::Debug for MeFmuState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("MeFmuState").finish_non_exhaustive()
+    }
 }
 
 /// Column-major output buffer a host accumulates batched reads into.
@@ -448,7 +644,7 @@ pub trait ModelExchangeKernel {
     // -- time and continuous state ---------------------------------------
 
     /// `fmi3SetTime`.
-    fn set_time(&mut self, time: MeTime);
+    fn set_time(&mut self, time: MeTime) -> Result<(), MeError>;
 
     /// `fmi3SetContinuousStates`.
     fn set_continuous_states(&mut self, states: &[f64]) -> Result<(), MeError>;
@@ -459,6 +655,26 @@ pub trait ModelExchangeKernel {
     /// `fmi3GetContinuousStateDerivatives`.
     fn get_continuous_state_derivatives(&self, derivatives: &mut Vec<f64>) -> Result<(), MeError>;
 
+    /// `fmi3GetDirectionalDerivative`.
+    ///
+    /// The Model Exchange profile fixes the two variable lists FMI 3.0 passes
+    /// explicitly: `unknowns` is the continuous-state-derivative vector and
+    /// `knowns` is the continuous-state vector, both whole and both in value-
+    /// reference order. Only the seed and sensitivity vectors therefore travel,
+    /// and both have `continuous_state_count` entries. The component returns
+    /// the exact directional derivative
+    /// `sensitivity = ∂(der(x))/∂x · seed` at the currently set time and
+    /// continuous states — including the path through any algebraic coordinate
+    /// the state derivatives read, which the component recovers itself.
+    ///
+    /// A host that needs a Jacobian column seeds a unit vector; an implicit
+    /// integrator hands its Newton direction straight through.
+    fn get_directional_derivative(
+        &self,
+        seed: &[f64],
+        sensitivity: &mut [f64],
+    ) -> Result<(), MeError>;
+
     /// `fmi3GetEventIndicators`.
     fn get_event_indicators(&self, indicators: &mut Vec<f64>) -> Result<(), MeError>;
 
@@ -468,10 +684,15 @@ pub trait ModelExchangeKernel {
     /// Extension: see the module docs.
     fn project_continuous_states(&mut self, states: &mut [f64]) -> Result<bool, MeError>;
 
-    /// Accept the step the host just took. Extension: see the module docs —
-    /// this occupies the lifecycle position of `fmi3CompletedIntegratorStep`
-    /// but omits its in-param and both of its out-params.
-    fn completed_integrator_step(&mut self, step: MeStepCompletion<'_>) -> Result<(), MeError>;
+    /// `fmi3CompletedIntegratorStep`.
+    ///
+    /// `no_set_fmu_state_prior_to_current_point` is FMI's rollback promise.
+    /// The two booleans in [`MeCompletedIntegratorStep`] are the standard
+    /// `enterEventMode` and `terminateSimulation` out-parameters.
+    fn completed_integrator_step(
+        &mut self,
+        no_set_fmu_state_prior_to_current_point: bool,
+    ) -> Result<MeCompletedIntegratorStep, MeError>;
 
     /// The largest step the component's internal history allows next, if any.
     ///
@@ -535,14 +756,22 @@ pub trait ModelExchangeKernel {
     /// `fmi3GetFMUState`.
     fn fmu_state(&self) -> MeFmuState;
 
-    /// `fmi3Reset` + `fmi3SetFMUState` + `fmi3SetTime` +
-    /// `fmi3SetContinuousStates`, composed because rumoca's reset also
-    /// rewinds the component's delay history to `start_time`.
-    fn reset_to_fmu_state(
+    /// `fmi3SetFMUState`. Restores the exact component time, continuous and
+    /// discrete state, lifecycle, event schedule, caches, and delay history
+    /// captured by [`Self::fmu_state`].
+    fn reset_to_fmu_state(&mut self, saved: &MeFmuState) -> Result<(), MeError>;
+
+    /// Restart the session-owned component from `saved` at a new start time.
+    ///
+    /// This is the explicit host composition `fmi3Reset` +
+    /// `fmi3SetFMUState` + `fmi3SetTime`. Unlike [`Self::reset_to_fmu_state`],
+    /// it intentionally starts a new schedule and delay timeline. The
+    /// continuous and discrete values still come only from the opaque saved
+    /// state; a caller cannot substitute them during restore.
+    fn restart_from_fmu_state(
         &mut self,
         saved: &MeFmuState,
         start_time: f64,
-        states: &[f64],
     ) -> Result<(), MeError>;
 
     /// Extend the component's horizon and reschedule its event set from
@@ -550,7 +779,7 @@ pub trait ModelExchangeKernel {
     ///
     /// Extension: FMI 3.0 fixes `stopTime` at
     /// `fmi3EnterInitializationMode`; a live rumoca session may run past it.
-    fn extend_stop_time(&mut self, from_time: f64, stop_time: f64);
+    fn extend_stop_time(&mut self, from_time: f64, stop_time: f64) -> Result<(), MeError>;
 }
 
 /// Whether two consecutive event-indicator values bracket a crossing.

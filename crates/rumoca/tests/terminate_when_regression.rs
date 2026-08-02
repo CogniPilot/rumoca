@@ -31,6 +31,17 @@ equation
 end BallReinit;
 "#;
 
+const TIMED_TERMINATE: &str = r#"
+model TimedTerminate
+  Real x(start=0, fixed=true);
+equation
+  der(x) = 1;
+  when time >= 0.5 then
+    terminate("Scheduled stop");
+  end when;
+end TimedTerminate;
+"#;
+
 #[test]
 fn terminate_inside_when_stops_at_root_event() {
     let compiled = Compiler::new()
@@ -62,6 +73,68 @@ fn terminate_inside_when_stops_at_root_event() {
     assert!(
         last_time < 2.0,
         "simulation should stop at terminate event, not continue to t_end; last time was {last_time}"
+    );
+}
+
+#[test]
+fn bdf_terminate_inside_when_stops_at_root_event() {
+    let compiled = Compiler::new()
+        .model("BallTerminate")
+        .compile_str(BALL_WITH_TERMINATE, "ball_terminate_bdf.mo")
+        .expect("compile BallTerminate for BDF");
+    let sim = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::Bdf,
+            t_end: 10.0,
+            dt: Some(0.02),
+            ..Default::default()
+        },
+    )
+    .expect("simulate BallTerminate with BDF");
+
+    let termination = sim
+        .termination
+        .as_ref()
+        .expect("BDF must propagate terminate() from a located state event");
+    assert_eq!(termination.message, "Ball has hit the ground");
+    assert!(
+        termination.time > 1.0 && termination.time < 2.0,
+        "expected first ground hit near 1.54s, got {}",
+        termination.time
+    );
+    assert!(
+        sim.times.last().is_some_and(|time| *time < 2.0),
+        "BDF must stop recording samples after the terminating state event"
+    );
+}
+
+#[test]
+fn bdf_terminate_at_scheduled_time_preserves_time_and_message() {
+    let compiled = Compiler::new()
+        .model("TimedTerminate")
+        .compile_str(TIMED_TERMINATE, "timed_terminate_bdf.mo")
+        .expect("compile TimedTerminate for BDF");
+    let sim = simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::Bdf,
+            t_end: 1.0,
+            dt: Some(0.2),
+            ..Default::default()
+        },
+    )
+    .expect("simulate TimedTerminate with BDF");
+
+    let termination = sim
+        .termination
+        .as_ref()
+        .expect("BDF must propagate terminate() from a scheduled time event");
+    assert_eq!(termination.message, "Scheduled stop");
+    assert_eq!(termination.time, 0.5);
+    assert!(
+        sim.times.last().is_some_and(|time| *time <= 0.5),
+        "BDF must not record samples after the scheduled termination instant"
     );
 }
 

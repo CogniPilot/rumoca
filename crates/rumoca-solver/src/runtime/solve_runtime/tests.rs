@@ -210,6 +210,92 @@ fn runtime_new_reports_invalid_native_stride_metadata() {
 }
 
 #[test]
+fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 2,
+            step: 1,
+        }],
+    };
+    let span = test_span("structured_discrete_runtime.mo");
+    let mut model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 2),
+            solve_layout: solve::SolveLayout {
+                parameter_count: 2,
+                compiled_parameter_len: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        parameters: vec![0.0; 2],
+        ..Default::default()
+    };
+    model.problem.discrete.structured_rhs = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::Map {
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("two-point output map is valid"),
+            domain: domain.clone(),
+            base_ops: vec![
+                solve::LinearOp::Const { dst: 0, value: 7.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span,
+        }],
+    };
+    model
+        .problem
+        .discrete
+        .structured_updates
+        .push(solve::StructuredDiscreteUpdate {
+            node_index: 0,
+            target: solve::StructuredDiscreteTargetMap {
+                base: solve::scalar_slot_p(0),
+                map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                    .expect("two-point target map is valid"),
+            },
+            role: solve::DiscreteRowRole::Equation,
+            pre_mode: solve::DiscreteEventPreMode::FollowCurrent,
+            observation_refresh: false,
+            clock_owner: None,
+        });
+    model
+        .problem
+        .validate_shape_contract()
+        .expect("compact structured update satisfies the Solve contract");
+    let runtime = SolveRuntime::new(&model).expect("structured runtime should prepare");
+    let mut y = Vec::new();
+    let mut p = vec![0.0; 2];
+    let event_pre_p = p.clone();
+
+    runtime
+        .apply_projected_event_update(
+            ProjectedEventUpdateInput {
+                y: &mut y,
+                p: &mut p,
+                t: 1.0,
+                tol: 1.0e-12,
+                event_pre_y: &[],
+                event_pre_p: &event_pre_p,
+                max_iters: 4,
+                row_filter: EventUpdateRowFilter::All,
+                root_relation_overrides: &[],
+            },
+            |_, _| Ok(false),
+        )
+        .expect("structured discrete fixed point should settle");
+
+    assert_eq!(p, vec![7.0, 7.0]);
+    assert!(model.problem.discrete.rhs.is_empty());
+}
+
+#[test]
 fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {

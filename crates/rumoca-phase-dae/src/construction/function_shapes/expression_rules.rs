@@ -38,7 +38,7 @@ pub(in crate::construction) fn call_free_target_shape(
     apply_subscripts(declared, &target.subs, values).ok()
 }
 
-pub(super) type FunctionResultShape<'scope> = dyn FnMut(&rumoca_core::Reference, &[Expression], Span) -> Result<ValueShape, ToDaeError>
+pub(super) type FunctionResultShape<'scope> = dyn FnMut(&rumoca_core::Reference, &[Expression], bool, Span) -> Result<ValueShape, ToDaeError>
     + 'scope;
 
 pub(super) fn expression_shape(
@@ -91,7 +91,12 @@ pub(super) fn expression_shape(
             };
             expression_shape(value, values, function_result)
         }
-        Expression::FunctionCall { name, args, .. } => function_result(name, args, span),
+        Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } => function_result(name, args, *is_constructor, span),
         Expression::If {
             branches,
             else_branch,
@@ -131,10 +136,83 @@ pub(super) fn expression_shape(
             function_result,
             span,
         ),
-        Expression::Tuple { .. } | Expression::FieldAccess { .. } | Expression::Empty { .. } => {
+        Expression::FieldAccess { .. } => {
+            field_access_shape(expression, values, function_result, span)
+        }
+        Expression::Tuple { .. } | Expression::Empty { .. } => {
             Err(unshaped_expression_form(expression, span))
         }
     }
+}
+
+/// Exact shape of a structural record field access.
+///
+/// A symbolically indexed record-array projection consumes the occurrence plan
+/// selected by scope, declaration chain, `DefId`, and `InstanceId`. Every other
+/// structural access combines the recursively proven base shape with the exact
+/// trailing dimensions retained for its field `DefId`. Neither route recovers
+/// a field from spelling or from scalarized variable rows.
+fn field_access_shape(
+    expression: &Expression,
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let plans = values
+        .record_array_fields()
+        .ok_or_else(|| unshaped_expression_form(expression, span))?;
+    if let Some(plan) = plans.get(expression) {
+        return match plan {
+            RecordArrayFieldPlan::MaterializedCoordinate { shape, .. } => {
+                concrete_dimensions(shape, span, "record field coordinate")
+            }
+            RecordArrayFieldPlan::Projection {
+                coordinates,
+                shape,
+                subscripts,
+                ..
+            } => {
+                let extent = u32::try_from(coordinates.len()).map_err(|_| {
+                    ToDaeError::unsupported_flat(
+                        "function shape proof",
+                        "record-array projection extent exceeds the DAE shape domain",
+                        span,
+                    )
+                })?;
+                let mut projected = Vec::with_capacity(shape.len() + 1);
+                projected.push(extent);
+                projected.extend(concrete_dimensions(
+                    shape,
+                    span,
+                    "record field projection element",
+                )?);
+                apply_subscripts(projected, subscripts, values)
+            }
+        };
+    }
+
+    let Expression::FieldAccess {
+        base, field_def_id, ..
+    } = expression
+    else {
+        unreachable!("field access shape is called only for field access")
+    };
+    let mut shape = expression_shape(base, values, function_result)?;
+    let field_shape =
+        plans
+            .field_shape(*field_def_id)
+            .ok_or_else(|| ToDaeError::MissingSemanticIdentity {
+                identity: format!(
+                    "MLS §12.2 record-field projection requires retained shape metadata for record field declaration {}",
+                    field_def_id.index()
+                ),
+            })?;
+    shape.extend(concrete_dimensions(
+        field_shape,
+        span,
+        "record field declaration",
+    )?);
+    Ok(shape)
 }
 
 /// Name the construct behind an expression form that owns no checked shape.
@@ -143,11 +221,7 @@ pub(super) fn expression_shape(
 /// a contract (SPEC_0008 acceptance-contract-before-rejection), so each form
 /// reports itself rather than sharing one message.
 ///
-/// Reachability differs per arm. `FieldAccess` is reached by real models —
-/// `Modelica.Electrical.Batteries.Examples.ShowImpedance` and
-/// `Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.
-/// SinglePhaseInductance` both land here through a symbolically indexed record
-/// array element. `Tuple` and `Empty` are defensive: flatten lowers an
+/// `Tuple` and `Empty` are defensive: flatten lowers an
 /// MLS §11.2.1.1 receiving list into `Statement::FunctionCall::outputs` and an
 /// absent expression into no expression at all, so neither reaches a shape
 /// query in the MSL cohort. They are still named rather than shared, because a
@@ -158,9 +232,7 @@ fn unshaped_expression_form(expression: &Expression, span: Span) -> ToDaeError {
             "an MLS §11.2.1.1 result tuple has no shape of its own; only its individual results do"
         }
         Expression::FieldAccess { .. } => {
-            "MLS §12.2 record-field projection has an exact shape only through a flattened field \
-             name; a structural field access of a symbolically indexed record array element keeps \
-             no such name"
+            "MLS §12.2 record-field projection has no typed occurrence plan"
         }
         Expression::Empty { .. } => "an absent expression has no shape",
         _ => unreachable!("only the unshaped expression forms reach this rule"),
@@ -264,8 +336,12 @@ fn matrix_expression_shape(
         )
     };
     if elements.iter().all(is_row_element) {
-        // `[A; B; …]`: concatenate the 1 x n rows along dimension 1.
-        let mut columns = None;
+        // `[A; B; …]`: each source row first performs its own promoted
+        // dimension-2 concatenation, then the rows concatenate along
+        // dimension 1. This is the unambiguous parse shape for the `;`
+        // spelling, so vectors and matrices retain the exact promotion MLS
+        // gives them instead of being guessed from element nesting.
+        let mut rows = Vec::with_capacity(elements.len());
         for row in elements {
             let Expression::Array {
                 elements: operands, ..
@@ -273,22 +349,15 @@ fn matrix_expression_shape(
             else {
                 unreachable!("every element was proven to be a matrix constructor")
             };
-            let column_count = matrix_row_columns(operands, values, function_result, span)?;
-            match columns {
-                Some(expected) if expected != column_count => return shape_mismatch(span),
-                None => columns = Some(column_count),
-                _ => {}
-            }
-        }
-        let rows = u32::try_from(elements.len()).map_err(|_| {
-            ToDaeError::unsupported_flat(
-                "function shape proof",
-                "matrix row count exceeds the DAE shape domain",
+            rows.push(promoted_concatenation_shape(
+                1,
+                operands,
+                values,
+                function_result,
                 span,
-            )
-        })?;
-        let columns = columns.expect("a matrix construction owns at least one row");
-        return Ok(vec![rows, columns]);
+            )?);
+        }
+        return concatenate_proven_shapes(0, &rows, span);
     }
     // `[A, B, …]`: one row, concatenated along dimension 2.
     let columns = matrix_row_columns(elements, values, function_result, span)?;
@@ -301,14 +370,12 @@ fn matrix_expression_shape(
 /// dimensions of size 1 from the right" — so a scalar becomes 1x1 and the row
 /// is 1 x (operand count).
 ///
-/// ACCEPTANCE CONTRACT (SPEC_0008): this rule proves a `[ ]` row of *scalar*
-/// operands and nothing else. A non-scalar operand needs the real `cat`
-/// promotion — a vector operand becomes an n x 1 column, so MLS §10.4.2.1's own
-/// example states "`[v1; v2]` is a `(n1+n2) x 1` matrix", and a row of vectors
-/// transposes into the result — and the canonical DAE has no concatenation
-/// owner to build that with. Proving a shape the lowering cannot construct
-/// would only move the rejection to `ED020`, so the shape rule and
-/// [`lower_matrix_expression`] refuse exactly the same operands.
+/// ACCEPTANCE CONTRACT (SPEC_0008): this rule is only for the ambiguous
+/// top-level horizontal row and proves scalar operands. The unambiguous nested
+/// shape Parse gives the `;` spelling is handled by
+/// [`promoted_concatenation_shape`] and the checked DAE promoted-concatenation
+/// owner. Keeping this narrower rule preserves the rejection for a horizontal
+/// vector row that aliases the comprehension frontend shape described above.
 fn matrix_row_columns(
     operands: &[Expression],
     values: &ShapeEnvironment,
@@ -328,9 +395,9 @@ fn matrix_row_columns(
             return Err(ToDaeError::unsupported_flat(
                 "function shape proof",
                 format!(
-                    "MLS §10.4.2.1 `[ ]` concatenation of a rank-{} operand needs a `cat` \
-                     promotion owner the canonical DAE does not have; only scalar operands \
-                     have an exact checked shape rule",
+                    "MLS §10.4.2.1 ambiguous horizontal `[ ]` row has a rank-{} operand; only \
+                     the structurally unambiguous `;` form has a checked promoted-concatenation \
+                     owner",
                     shape.len()
                 ),
                 span,
@@ -344,6 +411,63 @@ fn matrix_row_columns(
             span,
         )
     })
+}
+
+/// Exact promoted-concatenation shape for one unambiguous `;` matrix row.
+fn promoted_concatenation_shape(
+    axis: usize,
+    operands: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let shapes = operands
+        .iter()
+        .map(|operand| expression_shape(operand, values, function_result))
+        .collect::<Result<Vec<_>, _>>()?;
+    let rank = shapes.iter().map(Vec::len).max().unwrap_or(0).max(2);
+    let promoted = shapes
+        .into_iter()
+        .map(|mut shape| {
+            shape.resize(rank, 1);
+            shape
+        })
+        .collect::<Vec<_>>();
+    concatenate_proven_shapes(axis, &promoted, span)
+}
+
+fn concatenate_proven_shapes(
+    axis: usize,
+    shapes: &[ValueShape],
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let Some((first, rest)) = shapes.split_first() else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "MLS §10.4.2.1 leaves an empty concatenation undefined",
+            span,
+        ));
+    };
+    let mut result = first.clone();
+    for shape in rest {
+        if shape.len() != result.len()
+            || shape
+                .iter()
+                .zip(&result)
+                .enumerate()
+                .any(|(dimension, (found, expected))| dimension != axis && found != expected)
+        {
+            return shape_mismatch(span);
+        }
+        result[axis] = result[axis].checked_add(shape[axis]).ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function shape proof",
+                "concatenation extent exceeds the DAE shape domain",
+                span,
+            )
+        })?;
+    }
+    Ok(result)
 }
 
 /// The shape MLS §10.4.1 gives an array constructor with iterators.
@@ -408,6 +532,7 @@ fn range_expression_shape(
 pub(super) fn reject_shape_call(
     name: &rumoca_core::Reference,
     _arguments: &[Expression],
+    _is_constructor: bool,
     span: Span,
 ) -> Result<ValueShape, ToDaeError> {
     Err(ToDaeError::unsupported_flat(
@@ -452,6 +577,15 @@ fn builtin_shape(
                 })
             })
             .collect(),
+        BuiltinFunction::Vector => vector_shape(arguments, values, function_result, span),
+        BuiltinFunction::Transpose => transpose_shape(arguments, values, function_result, span),
+        BuiltinFunction::Diagonal => diagonal_shape(arguments, values, function_result, span),
+        BuiltinFunction::OuterProduct => {
+            outer_product_shape(arguments, values, function_result, span)
+        }
+        BuiltinFunction::Identity => identity_shape(arguments, values, function_result, span),
+        BuiltinFunction::Cross => cross_shape(arguments, values, function_result, span),
+        BuiltinFunction::Skew => skew_shape(arguments, values, function_result, span),
         BuiltinFunction::Smooth => arguments
             .get(1)
             .ok_or_else(|| {
@@ -517,6 +651,194 @@ fn builtin_shape(
             format!("{} has no exact checked shape rule", function.name()),
             span,
         )),
+    }
+}
+
+/// MLS §10.3.2: one scalar or array with at most one non-unit dimension
+/// reshapes to a vector whose extent is the checked product of all dimensions.
+fn vector_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [argument] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            format!("vector requires one argument, found {}", arguments.len()),
+            span,
+        ));
+    };
+    let dimensions = expression_shape(argument, values, function_result)?;
+    if dimensions.iter().filter(|&&extent| extent > 1).count() > 1 {
+        return shape_mismatch(span);
+    }
+    let extent = dimensions.iter().try_fold(1_u32, |product, extent| {
+        product.checked_mul(*extent).ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function shape proof",
+                "vector extent exceeds the DAE shape domain",
+                span,
+            )
+        })
+    })?;
+    Ok(vec![extent])
+}
+
+/// MLS §10.3.5 / ARR-038: transpose requires rank two or greater and exchanges
+/// only the first two extents of the compact operand shape.
+fn transpose_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [argument] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            format!("transpose requires one argument, found {}", arguments.len()),
+            span,
+        ));
+    };
+    let mut dimensions = expression_shape(argument, values, function_result)?;
+    if dimensions.len() < 2 {
+        return shape_mismatch(span);
+    }
+    dimensions.swap(0, 1);
+    Ok(dimensions)
+}
+
+/// MLS §10.3.5 / ARR-041: a vector's one compact extent owns both axes of
+/// the square diagonal matrix. The constructor retains the domain; it never
+/// materializes the off-diagonal zeros as scalar expressions.
+fn diagonal_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [argument] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            format!(
+                "diagonal requires one vector, found {} arguments",
+                arguments.len()
+            ),
+            span,
+        ));
+    };
+    let dimensions = expression_shape(argument, values, function_result)?;
+    let [extent] = dimensions.as_slice() else {
+        return shape_mismatch(span);
+    };
+    Ok(vec![*extent, *extent])
+}
+
+/// MLS §10.3.5 / ARR-042: the two vector domains become the two matrix axes
+/// in source order. Unequal vector lengths are valid and remain compact.
+fn outer_product_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [lhs, rhs] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            format!(
+                "outerProduct requires two vectors, found {} arguments",
+                arguments.len()
+            ),
+            span,
+        ));
+    };
+    let lhs_dimensions = expression_shape(lhs, values, function_result)?;
+    let [lhs_extent] = lhs_dimensions.as_slice() else {
+        return shape_mismatch(span);
+    };
+    let rhs_dimensions = expression_shape(rhs, values, function_result)?;
+    let [rhs_extent] = rhs_dimensions.as_slice() else {
+        return shape_mismatch(span);
+    };
+    Ok(vec![*lhs_extent, *rhs_extent])
+}
+
+/// MLS §10.3.3: one proven scalar Integer `n` owns an exact `n x n` result.
+fn identity_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [extent] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "identity requires one scalar Integer extent",
+            span,
+        ));
+    };
+    if !expression_shape(extent, values, function_result)?.is_empty() {
+        return shape_mismatch(span);
+    }
+    let extent = evaluate_shape_integer(extent, values)?;
+    let extent = u32::try_from(extent).map_err(|_| {
+        ToDaeError::unsupported_flat(
+            "function shape proof",
+            format!("identity extent `{extent}` is invalid"),
+            span,
+        )
+    })?;
+    Ok(vec![extent, extent])
+}
+
+/// MLS §10.3.5: `cross` is closed over two common numeric 3-vectors.
+///
+/// Scalar type compatibility is owned by typecheck and rechecked by the DAE
+/// constructor. This scope proves only the exact rank/extents used to mint a
+/// function specialization.
+fn cross_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [lhs, rhs] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "cross requires two 3-vector arguments",
+            span,
+        ));
+    };
+    let lhs = expression_shape(lhs, values, function_result)?;
+    let rhs = expression_shape(rhs, values, function_result)?;
+    if lhs == [3] && rhs == lhs {
+        Ok(lhs)
+    } else {
+        shape_mismatch(span)
+    }
+}
+
+/// MLS §10.3.5: `skew` maps exactly one Real 3-vector to a 3x3 matrix.
+///
+/// Scalar type is owned by typecheck and rechecked by the DAE constructor.
+/// This scope proves the exact rank/extents used for function specialization.
+fn skew_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [argument] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "skew requires one 3-vector argument",
+            span,
+        ));
+    };
+    if expression_shape(argument, values, function_result)? == [3] {
+        Ok(vec![3, 3])
+    } else {
+        shape_mismatch(span)
     }
 }
 

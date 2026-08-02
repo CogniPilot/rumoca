@@ -53,6 +53,35 @@ fn empty_compilation_result() -> CompilationResult {
 }
 
 #[test]
+fn phase_timing_totals_fold_process_isolated_worker_results() {
+    let mut first = WorkerModelResult::phase_failure("A".to_string(), "ToDae", "", None);
+    first.instantiate_seconds = Some(0.25);
+    first.typecheck_seconds = Some(0.50);
+    first.flatten_seconds = Some(1.00);
+    first.dae_seconds = Some(0.125);
+    let mut second = WorkerModelResult::phase_failure("B".to_string(), "Flatten", "", None);
+    second.instantiate_seconds = Some(0.125);
+    second.typecheck_seconds = Some(0.25);
+    second.flatten_seconds = Some(0.50);
+
+    let results = [
+        worker_model_result_to_msl(first),
+        worker_model_result_to_msl(second),
+    ];
+    let mut timings = MslPhaseTimings::default();
+    update_phase_timing_totals(&mut timings, &results);
+
+    assert_eq!(timings.compile_instantiate_seconds, 0.375);
+    assert_eq!(timings.compile_instantiate_calls, 2);
+    assert_eq!(timings.compile_typecheck_seconds, 0.75);
+    assert_eq!(timings.compile_typecheck_calls, 2);
+    assert_eq!(timings.compile_flatten_seconds, 1.5);
+    assert_eq!(timings.compile_flatten_calls, 2);
+    assert_eq!(timings.compile_todae_seconds, 0.125);
+    assert_eq!(timings.compile_todae_calls, 1);
+}
+
+#[test]
 fn compile_chunk_progress_loop_exits_promptly_after_flag_clears() {
     let compile_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let compile_in_flight_flag = std::sync::Arc::clone(&compile_in_flight);

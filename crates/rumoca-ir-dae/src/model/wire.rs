@@ -111,7 +111,7 @@ impl Serialize for FrozenStorage {
     }
 }
 
-/// Private schema-v13 input records.
+/// Private current-schema input records.
 ///
 /// These mirror the serialized column names, but they are deliberately
 /// distinct from every invariant-bearing arena entry. Deserialization can
@@ -333,8 +333,16 @@ enum EquationOperationInput {
 struct DiscreteValueOwnerWire<Targets = Vec<u32>> {
     targets: Targets,
     branches: Vec<DiscreteValueBranchWire>,
+    structure: Option<StructuredDiscreteValueWire>,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+struct StructuredDiscreteValueWire {
+    domain: u32,
+    scalar_view: rumoca_core::ComprehensionScalarView,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -396,6 +404,12 @@ fn discrete_value_owner_output(storage: &FrozenStorage) -> Vec<DiscreteValueOwne
             DiscreteValueOwnerWire {
                 targets,
                 branches,
+                structure: owner
+                    .structure
+                    .map(|structure| StructuredDiscreteValueWire {
+                        domain: structure.domain,
+                        scalar_view: structure.scalar_view,
+                    }),
                 provenance: owner.provenance,
             }
         })
@@ -470,7 +484,7 @@ struct EventActionEntryWire {
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ClockKindWire {
-    Periodic(ClockLatticeWire),
+    Periodic(PeriodicClockScheduleWire),
     Triggered(u32),
 }
 
@@ -502,6 +516,39 @@ struct ClockLatticeWire {
     phase: ClockRationalWire,
 }
 
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum ClockPhaseAnchorWire {
+    Absolute,
+    SimulationStart,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+struct PeriodicClockScheduleWire {
+    lattice: ClockLatticeWire,
+    anchor: ClockPhaseAnchorWire,
+}
+
+impl PeriodicClockScheduleWire {
+    fn checked(
+        self,
+        at: DaeProvenance,
+    ) -> Result<rumoca_core::PeriodicClockSchedule, DaeConstructionError> {
+        let lattice = self.lattice.checked(at)?;
+        let result = match self.anchor {
+            ClockPhaseAnchorWire::Absolute => rumoca_core::PeriodicClockSchedule::absolute(lattice),
+            ClockPhaseAnchorWire::SimulationStart => {
+                rumoca_core::PeriodicClockSchedule::simulation_start_relative(lattice)
+            }
+        };
+        result.map_err(|source| DaeConstructionError::InvalidClockLattice {
+            source,
+            span: at.span(),
+        })
+    }
+}
+
 impl ClockLatticeWire {
     fn checked(self, at: DaeProvenance) -> Result<rumoca_core::ClockLattice, DaeConstructionError> {
         rumoca_core::ClockLattice::new(self.period.checked(at)?, self.phase.checked(at)?).map_err(
@@ -526,6 +573,7 @@ struct ClockEntryWire {
 struct ClockOwnershipEntryWire {
     variable: u32,
     clock: u32,
+    sampled: bool,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -1664,12 +1712,22 @@ fn replay_discrete_value_owner<'dae>(
             Ok(DiscreteValueId::from_raw(variable.index()))
         })
         .collect::<Result<Vec<_>, DaeConstructionError>>()?;
-    topology.owner(owner.provenance, targets, |staged| {
+    let replay = |staged: &mut crate::DiscreteValueOwner<'_, 'dae>| {
         for branch in &owner.branches {
             replay_discrete_value_branch(branch, staged, ids)?;
         }
         Ok(())
-    })
+    };
+    match owner.structure {
+        Some(structure) => topology.structured_owner(
+            owner.provenance,
+            mapped(&ids.domains, structure.domain, "domain", owner.provenance)?,
+            structure.scalar_view,
+            targets,
+            replay,
+        ),
+        None => topology.owner(owner.provenance, targets, replay),
+    }
 }
 
 fn replay_discrete_value_branch<'dae>(
@@ -1710,8 +1768,8 @@ fn reconstruct_clocks<'dae>(
 ) -> Result<(), DaeConstructionError> {
     for (index, clock) in wire.clocks.iter().enumerate() {
         let id = dae.clocks(|clocks| match clock.kind {
-            ClockKindWire::Periodic(lattice) => clocks
-                .periodic(lattice.checked(clock.provenance)?, clock.provenance)
+            ClockKindWire::Periodic(schedule) => clocks
+                .scheduled(schedule.checked(clock.provenance)?, clock.provenance)
                 .map(WireClockId::Periodic),
             ClockKindWire::Triggered(condition) => clocks
                 .triggered(
@@ -1732,13 +1790,23 @@ fn reconstruct_clocks<'dae>(
             ownership.provenance,
         )?;
         let role = dae.storage.variables[variable.index() as usize].role;
-        let id = dae.clocks(|clocks| match role {
-            VariableRole::DiscreteReal => clocks.own_discrete_real(
+        let id = dae.clocks(|clocks| match (role, ownership.sampled) {
+            (VariableRole::DiscreteReal, false) => clocks.own_discrete_real(
                 clock,
                 DiscreteRealId::from_raw(variable.index()),
                 ownership.provenance,
             ),
-            VariableRole::DiscreteValue => clocks.own_discrete_value(
+            (VariableRole::DiscreteValue, false) => clocks.own_discrete_value(
+                clock,
+                DiscreteValueId::from_raw(variable.index()),
+                ownership.provenance,
+            ),
+            (VariableRole::DiscreteReal, true) => clocks.own_sampled_discrete_real(
+                clock,
+                DiscreteRealId::from_raw(variable.index()),
+                ownership.provenance,
+            ),
+            (VariableRole::DiscreteValue, true) => clocks.own_sampled_discrete_value(
                 clock,
                 DiscreteValueId::from_raw(variable.index()),
                 ownership.provenance,

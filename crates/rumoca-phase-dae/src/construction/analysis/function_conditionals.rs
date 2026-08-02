@@ -175,39 +175,101 @@ pub(super) fn resolve_function_conditional(
     definitions.join_branches(&branch_states, exhaustive, &ordered, context, span)
 }
 
-/// A branch value has no owner outside the conditional expression that selects
-/// it, so a branch may only contain direct assignments: a nested loop or
-/// conditional would need its own unconditional owner in the function body.
+/// Prove that every statement in a runtime branch has an expression owner.
+///
+/// A nested conditional has exactly such an owner: its own checked conditional
+/// expressions, derived from the branch-local definition state.  A loop still
+/// needs a compact transition owner, which cannot be embedded in an expression
+/// branch, so it remains rejected here.
 fn resolve_conditional_branch(
     statements: &[rumoca_core::Statement],
     plans: &mut [FunctionStatementPlan],
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
-    for (statement, plan) in statements.iter().zip(plans.iter()) {
-        if matches!(plan, FunctionStatementPlan::Assignment(_)) {
-            continue;
+    validate_conditional_branch_shape(statements, plans, context)?;
+    resolve_function_definitions(statements, plans, context, definitions)
+}
+
+fn validate_conditional_branch_shape(
+    statements: &[rumoca_core::Statement],
+    plans: &[FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+) -> Result<(), ToDaeError> {
+    for (statement, plan) in statements.iter().zip(plans) {
+        match (statement, plan) {
+            (_, FunctionStatementPlan::ProvenAssertion) => continue,
+            (_, FunctionStatementPlan::Assignment(_)) => continue,
+            (
+                rumoca_core::Statement::If {
+                    cond_blocks,
+                    else_block,
+                    ..
+                },
+                FunctionStatementPlan::If {
+                    branches, fallback, ..
+                },
+            ) => {
+                for (block, branch) in cond_blocks.iter().zip(branches) {
+                    validate_conditional_branch_shape(&block.stmts, branch, context)?;
+                }
+                if let (Some(source), Some(branch)) = (else_block.as_deref(), fallback.as_deref()) {
+                    validate_conditional_branch_shape(source, branch, context)?;
+                }
+                continue;
+            }
+            (
+                rumoca_core::Statement::If {
+                    cond_blocks,
+                    else_block,
+                    ..
+                },
+                FunctionStatementPlan::ProvenBranch {
+                    selected,
+                    statements,
+                },
+            ) => {
+                let source =
+                    selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+                validate_conditional_branch_shape(source, statements, context)?;
+                continue;
+            }
+            _ => {}
         }
         let span = required_statement_span(statement, "function conditional branch statement")?;
         return Err(ToDaeError::unsupported_flat(
             "function conditional",
             format!(
-                "`{}` requires direct value assignments in every checked branch",
+                "`{}` requires assignments or nested conditionals in every checked branch",
                 context.function.name
             ),
             span,
         ));
     }
-    resolve_function_definitions(statements, plans, context, definitions)
+    Ok(())
 }
 
 fn collect_branch_targets(plans: &[FunctionStatementPlan], ordered: &mut Vec<VarName>) {
     for plan in plans {
-        let FunctionStatementPlan::Assignment(assignment) = plan else {
-            continue;
-        };
-        if !ordered.contains(assignment.target()) {
-            ordered.push(assignment.target().clone());
+        match plan {
+            FunctionStatementPlan::Assignment(assignment) => {
+                collect_branch_target(assignment.target(), ordered);
+            }
+            FunctionStatementPlan::If { targets, .. } => {
+                for target in targets {
+                    collect_branch_target(target, ordered);
+                }
+            }
+            FunctionStatementPlan::ProvenBranch { statements, .. } => {
+                collect_branch_targets(statements, ordered);
+            }
+            _ => {}
         }
+    }
+}
+
+fn collect_branch_target(target: &VarName, ordered: &mut Vec<VarName>) {
+    if !ordered.contains(target) {
+        ordered.push(target.clone());
     }
 }

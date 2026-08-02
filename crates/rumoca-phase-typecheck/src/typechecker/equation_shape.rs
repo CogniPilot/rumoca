@@ -147,6 +147,7 @@ impl TypeChecker {
             "der" | "pre" | "noEvent" | "actualStream" if args.len() == 1 => {
                 self.infer_expression_shape(&args[0], type_table)
             }
+            "cross" if args.len() == 2 => Some(vec![3]),
             "fill" if args.len() >= 2 => {
                 let mut shape = rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
                     expression,
@@ -207,8 +208,14 @@ impl TypeChecker {
         cr: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
     ) -> Option<Vec<usize>> {
+        // A reference with no parts names nothing, so it has no shape. Every
+        // part below either contributes its extents or abstains, which is what
+        // makes the accumulated `declared` a complete answer rather than a
+        // partial one.
+        if cr.parts.is_empty() {
+            return None;
+        }
         let mut declared = Vec::new();
-        let mut found_shape = false;
         let mut subscripts = 0usize;
         for (part_index, part) in cr.parts.iter().enumerate() {
             match self.lookup_component_reference_prefix_shape(cr, part_index + 1) {
@@ -219,14 +226,19 @@ impl TypeChecker {
                 // extents; a member whose extents happen to repeat the owner's
                 // must not be mistaken for an owner-inclusive row.
                 SemanticLookup::Found(Some(local_shape)) => {
-                    found_shape = true;
                     declared.extend_from_slice(&local_shape);
                 }
                 // A declared but unevaluated extent makes the complete
                 // reference shape unknown. A later scalar member cannot
-                // recover the missing owner domain.
-                SemanticLookup::Found(None) | SemanticLookup::Ambiguous => return None,
-                SemanticLookup::Missing => {}
+                // recover the missing owner domain. A part the instance-shape
+                // index has no row for (`Missing`) is unknown for the same
+                // reason: §10.4.1 composes the shape from every part, so the
+                // composition cannot be completed without this one. Skipping
+                // it would answer with the shape of the *other* parts and
+                // present that as the shape of the whole reference.
+                SemanticLookup::Found(None)
+                | SemanticLookup::Ambiguous
+                | SemanticLookup::Missing => return None,
             }
             let Some(part_subscripts) = part.subs.as_ref() else {
                 continue;
@@ -240,9 +252,6 @@ impl TypeChecker {
                 return None;
             }
             subscripts += part_subscripts.len();
-        }
-        if !found_shape {
-            return None;
         }
         let domain = &self.current_instance_domain_shape;
         if !domain.is_empty() && declared.starts_with(domain) {

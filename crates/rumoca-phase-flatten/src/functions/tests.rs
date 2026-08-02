@@ -67,6 +67,71 @@ fn test_span() -> Span {
     )
 }
 
+#[test]
+fn vectorization_certificate_rejects_replaceable_exposure_parent() {
+    let package_id = rumoca_core::DefId::new(80_001);
+    let function_id = rumoca_core::DefId::new(80_002);
+    let mut package = class("P", rumoca_core::ClassType::Package, package_id);
+    package.is_replaceable = true;
+    package.classes.insert(
+        "f".to_string(),
+        class("f", rumoca_core::ClassType::Function, function_id),
+    );
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("P".to_string(), package);
+    let index = ast::ClassDefIndex::from_tree(&tree);
+    let reference = core_structured_comp_ref(&[("P", package_id), ("f", function_id)]);
+    let request = FunctionRequest::from_component_reference(&reference);
+
+    assert!(!request_proves_transitive_non_replaceability(
+        &index, &request
+    ));
+}
+
+#[test]
+fn vectorization_certificate_ignores_replaceable_nested_sibling() {
+    let package_id = rumoca_core::DefId::new(80_011);
+    let function_id = rumoca_core::DefId::new(80_012);
+    let sibling_id = rumoca_core::DefId::new(80_013);
+    let mut package = class("P", rumoca_core::ClassType::Package, package_id);
+    package.classes.insert(
+        "f".to_string(),
+        class("f", rumoca_core::ClassType::Function, function_id),
+    );
+    let mut sibling = class("Choice", rumoca_core::ClassType::Model, sibling_id);
+    sibling.is_replaceable = true;
+    package.classes.insert("Choice".to_string(), sibling);
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("P".to_string(), package);
+    let index = ast::ClassDefIndex::from_tree(&tree);
+    let reference = core_structured_comp_ref(&[("P", package_id), ("f", function_id)]);
+    let request = FunctionRequest::from_component_reference(&reference);
+
+    assert!(request_proves_transitive_non_replaceability(
+        &index, &request
+    ));
+}
+
+#[test]
+fn vectorization_certificate_rejects_unresolved_short_alias() {
+    let function_id = rumoca_core::DefId::new(80_021);
+    let mut function = class("f", rumoca_core::ClassType::Function, function_id);
+    function.extends.push(ast::Extend {
+        base_name: ast::Name::from_string("Missing"),
+        base_def_id: None,
+        ..ast::Extend::default()
+    });
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("f".to_string(), function);
+    let index = ast::ClassDefIndex::from_tree(&tree);
+    let reference = core_structured_comp_ref(&[("f", function_id)]);
+    let request = FunctionRequest::from_component_reference(&reference);
+
+    assert!(!request_proves_transitive_non_replaceability(
+        &index, &request
+    ));
+}
+
 fn core_comp_ref(parts: &[&str], def_id: rumoca_core::DefId) -> rumoca_core::ComponentReference {
     let display = parts.join(".");
     rumoca_core::ComponentReference::construct(
@@ -218,6 +283,277 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
         }),
         "canonicalized constructor calls must retain their function by instance identity"
     );
+}
+
+#[test]
+fn exact_instance_completes_valid_nested_constructor_field_projection() {
+    let mut flat = flat::Model::new();
+    let field_def_id = rumoca_core::DefId::new(45);
+    let mut constructor = rumoca_core::Function::new("Pkg.SyntheticRecord", test_span());
+    constructor.def_id = Some(rumoca_core::DefId::new(44));
+    constructor.is_constructor = true;
+    constructor.add_input(
+        crate::test_support::real_param("field", Vec::new(), test_span()).with_def_id(field_def_id),
+    );
+    flat.add_function(constructor);
+    let constructor_instance = flat.functions[&rumoca_core::VarName::new("Pkg.SyntheticRecord")]
+        .instance_id
+        .expect("Flat assigns the canonical constructor instance");
+
+    let mut read = rumoca_core::Function::new("Pkg.read", test_span());
+    read.add_input(crate::test_support::real_param(
+        "value",
+        Vec::new(),
+        test_span(),
+    ));
+    read.body
+        .push(rumoca_core::Statement::Return { span: test_span() });
+    flat.add_function(read);
+    let read_instance = flat.functions[&rumoca_core::VarName::new("Pkg.read")]
+        .instance_id
+        .expect("Flat assigns the canonical regular-function instance");
+
+    let constructor_call = rumoca_core::Expression::FunctionCall {
+        // Deliberately use a different display spelling: only the exact
+        // resolved instance is allowed to complete callable kind.
+        name: rumoca_core::Reference::new("sourceConstructorExposure").with_resolved_function(
+            rumoca_core::ResolvedFunctionReference {
+                instance_id: constructor_instance,
+                base_part_count: 0,
+                transitively_non_replaceable: false,
+            },
+        ),
+        args: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span: test_span(),
+        }],
+        is_constructor: false,
+        span: test_span(),
+    };
+    flat.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("sourceReadExposure").with_resolved_function(
+                rumoca_core::ResolvedFunctionReference {
+                    instance_id: read_instance,
+                    base_part_count: 0,
+                    transitively_non_replaceable: false,
+                },
+            ),
+            args: vec![rumoca_core::Expression::FieldAccess {
+                base: Box::new(constructor_call),
+                field: "field".to_string(),
+                field_def_id,
+                span: test_span(),
+            }],
+            is_constructor: false,
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("exact constructor metadata completes the occurrence role");
+
+    let rumoca_core::Expression::FunctionCall {
+        args,
+        is_constructor: outer_is_constructor,
+        ..
+    } = &flat.equations[0].residual
+    else {
+        panic!("expected outer function call residual");
+    };
+    assert!(!outer_is_constructor);
+    let [rumoca_core::Expression::FieldAccess { base, .. }] = args.as_slice() else {
+        panic!("expected one record-field projection argument");
+    };
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        args,
+        is_constructor,
+        ..
+    } = base.as_ref()
+    else {
+        panic!("expected constructor beneath the field projection");
+    };
+    assert_eq!(args.len(), 1, "the constructor call keeps valid arity");
+    assert_eq!(name.as_str(), "Pkg.SyntheticRecord");
+    assert_eq!(
+        name.resolved_function()
+            .map(|resolved| resolved.instance_id),
+        Some(constructor_instance)
+    );
+    assert!(*is_constructor);
+}
+
+#[test]
+fn exact_instance_separates_constructor_and_regular_shared_def_exposures() {
+    let mut flat = flat::Model::new();
+    let shared_def_id = rumoca_core::DefId::new(46);
+    let mut constructor = rumoca_core::Function::new("Pkg.Shared.constructor", test_span());
+    constructor.def_id = Some(shared_def_id);
+    constructor.is_constructor = true;
+    flat.add_function(constructor);
+    let constructor_instance = flat.functions[&rumoca_core::VarName::new("Pkg.Shared.constructor")]
+        .instance_id
+        .expect("Flat assigns the constructor exposure identity");
+
+    let mut regular = rumoca_core::Function::new("Pkg.Shared.regular", test_span());
+    regular.def_id = Some(shared_def_id);
+    regular
+        .body
+        .push(rumoca_core::Statement::Return { span: test_span() });
+    flat.add_function(regular);
+    let regular_instance = flat.functions[&rumoca_core::VarName::new("Pkg.Shared.regular")]
+        .instance_id
+        .expect("Flat assigns the regular exposure identity");
+    for instance_id in [constructor_instance, regular_instance] {
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                // Both occurrences deliberately render alike and originate
+                // from one declaration. Only their exact exposure differs.
+                name: rumoca_core::Reference::new("Pkg.Shared.exposure").with_resolved_function(
+                    rumoca_core::ResolvedFunctionReference {
+                        instance_id,
+                        base_part_count: 0,
+                        transitively_non_replaceable: false,
+                    },
+                ),
+                args: vec![],
+                is_constructor: false,
+                span: test_span(),
+            },
+            test_span(),
+            flat::EquationOrigin::ComponentEquation {
+                component: "test".to_string(),
+            },
+        ));
+    }
+
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("exact exposure identity decides callable kind");
+
+    let kinds = flat
+        .equations
+        .iter()
+        .map(|equation| {
+            let rumoca_core::Expression::FunctionCall {
+                name,
+                is_constructor,
+                ..
+            } = &equation.residual
+            else {
+                panic!("expected function call residual");
+            };
+            (
+                name.resolved_function()
+                    .expect("canonical call keeps exact exposure")
+                    .instance_id,
+                *is_constructor,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![(constructor_instance, true), (regular_instance, false)]
+    );
+}
+
+#[test]
+fn unresolved_name_and_def_matches_do_not_acquire_constructor_kind() {
+    let mut flat = flat::Model::new();
+    let constructor_def_id = rumoca_core::DefId::new(47);
+    let mut constructor = rumoca_core::Function::new("Pkg.UnresolvedConstructor", test_span());
+    constructor.def_id = Some(constructor_def_id);
+    constructor.is_constructor = true;
+    flat.add_function(constructor);
+    let unresolved_names = [
+        rumoca_core::Reference::new("Pkg.UnresolvedConstructor"),
+        rumoca_core::Reference::with_component_reference(
+            "SourceOnlyConstructorExposure",
+            core_comp_ref(&["SourceOnlyConstructorExposure"], constructor_def_id),
+        ),
+    ];
+    for name in unresolved_names {
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args: vec![],
+                is_constructor: false,
+                span: test_span(),
+            },
+            test_span(),
+            flat::EquationOrigin::ComponentEquation {
+                component: "test".to_string(),
+            },
+        ));
+    }
+
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("name-only lookup cannot establish structural constructor kind");
+
+    for equation in &flat.equations {
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            is_constructor,
+            ..
+        } = &equation.residual
+        else {
+            panic!("expected function call residual");
+        };
+        assert!(!is_constructor);
+        assert_eq!(
+            name.resolved_function(),
+            None,
+            "a later pass must not launder a fallback match into exact provenance"
+        );
+    }
+}
+
+#[test]
+fn canonicalize_collected_function_calls_rejects_constructor_marker_on_regular_instance() {
+    let mut flat = flat::Model::new();
+    let mut function = rumoca_core::Function::new("Pkg.regular", test_span());
+    function
+        .body
+        .push(rumoca_core::Statement::Return { span: test_span() });
+    flat.add_function(function);
+    let instance_id = flat.functions[&rumoca_core::VarName::new("Pkg.regular")]
+        .instance_id
+        .expect("Flat assigns the canonical regular-function instance");
+    flat.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Pkg.regular").with_resolved_function(
+                rumoca_core::ResolvedFunctionReference {
+                    instance_id,
+                    base_part_count: 0,
+                    transitively_non_replaceable: false,
+                },
+            ),
+            args: vec![],
+            is_constructor: true,
+            span: test_span(),
+        },
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    let error = canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect_err("a constructor marker cannot override exact regular-function identity");
+    assert!(matches!(
+        error,
+        FlattenError::InconsistentFunctionCallKind {
+            function,
+            instance,
+            span,
+        } if function == "Pkg.regular"
+            && instance == instance_id.index()
+            && span == test_span()
+    ));
 }
 
 #[test]
@@ -538,6 +874,7 @@ fn canonicalize_collected_function_calls_distinguishes_duplicate_inherited_def_i
         Some(rumoca_core::ResolvedFunctionReference {
             instance_id: expected_instance,
             base_part_count: 3,
+            transitively_non_replaceable: true,
         })
     );
 }
@@ -780,10 +1117,10 @@ fn target_def_id_request_keeps_concrete_exposed_package() {
         name: "ReferenceMoistAir.specificEnthalpy_pTX".to_string(),
         target_def_id: Some(inherited_fn_def),
         target_instance_id: None,
-        component_ref: Some(core_comp_ref(
-            &["ReferenceMoistAir", "specificEnthalpy_pTX"],
-            inherited_fn_def,
-        )),
+        component_ref: Some(core_structured_comp_ref(&[
+            ("ReferenceMoistAir", concrete_pkg_def),
+            ("specificEnthalpy_pTX", inherited_fn_def),
+        ])),
     };
 
     let type_overlay = crate::test_support::type_overlay(&tree);
@@ -802,6 +1139,7 @@ fn target_def_id_request_keeps_concrete_exposed_package() {
         "ReferenceMoistAir.specificEnthalpy_pTX"
     );
     assert_eq!(function.def_id, Some(inherited_fn_def));
+    assert!(function.transitively_non_replaceable);
 }
 
 #[test]

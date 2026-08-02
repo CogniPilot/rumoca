@@ -425,8 +425,7 @@ pub struct SimCommandArgs {
     #[command(flatten)]
     pub model_options: ModelOptions,
 
-    /// Solver: auto (recommended), bdf (stiff/implicit, diffsol), esdirk34 or
-    /// trbdf2 (implicit SDIRK tableaus for stiff DAEs, diffsol), or rk-like
+    /// Solver: auto (recommended), bdf (stiff/implicit, diffsol), or rk-like
     /// (explicit Runge-Kutta-style, non-stiff)
     #[arg(long, value_enum)]
     pub solver: Option<SimulateSolverMode>,
@@ -568,15 +567,18 @@ impl SimCommandArgs {
     }
 }
 
+/// Solvers `--solver` accepts.
+///
+/// This list mirrors [`rumoca_core::SOLVER_NAMES`], the whole set of solvers the
+/// tree runs, so clap rejects anything else against exactly the names the rest of
+/// the pipeline accepts. Labels that arrive as free text instead — a scenario
+/// config's `sim.solver`, a model's `experiment(Solver=...)` — go through
+/// [`rumoca_core::canonical_solver_name`], which reports an unrunnable name
+/// against the same set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SimulateSolverMode {
     Auto,
     Bdf,
-    /// ESDIRK34 — implicit SDIRK tableau on the diffsol path (stiff).
-    Esdirk34,
-    /// TR-BDF2 — implicit SDIRK tableau on the diffsol path (stiff).
-    #[value(name = "trbdf2")]
-    TrBdf2,
     #[value(name = "rk-like")]
     RkLike,
 }
@@ -585,12 +587,7 @@ impl From<SimulateSolverMode> for SimSolverMode {
     fn from(value: SimulateSolverMode) -> Self {
         match value {
             SimulateSolverMode::Auto => SimSolverMode::Auto,
-            // ESDIRK34 / TR-BDF2 are implicit tableaus served by the diffsol
-            // (BDF-family) path; the specific tableau is carried by the solver
-            // label into `SimOptions::diffsol_method`.
-            SimulateSolverMode::Bdf | SimulateSolverMode::Esdirk34 | SimulateSolverMode::TrBdf2 => {
-                SimSolverMode::Bdf
-            }
+            SimulateSolverMode::Bdf => SimSolverMode::Bdf,
             SimulateSolverMode::RkLike => SimSolverMode::RkLike,
         }
     }
@@ -601,8 +598,6 @@ impl SimulateSolverMode {
         match self {
             SimulateSolverMode::Auto => "auto",
             SimulateSolverMode::Bdf => "bdf",
-            SimulateSolverMode::Esdirk34 => "esdirk34",
-            SimulateSolverMode::TrBdf2 => "trbdf2",
             SimulateSolverMode::RkLike => "rk-like",
         }
     }
@@ -1284,7 +1279,7 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
     init_debug_tracing(&args.diagnostics)?;
     let (result, model) = compile_dae_with_inferred_model(&input, args.diagnostics.verbose)?;
     if let Some(kind) = args.inspect {
-        let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+        let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
         let dae = result.dae.as_ref();
         let at = inspect_at_spec(args.at.as_deref());
         if matches!(args.format, InspectFormat::Json)
@@ -1315,7 +1310,7 @@ fn run_direct_simulation(args: SimCommandArgs) -> Result<()> {
         };
     }
     let workspace_root = discover_workspace_root_for_model_file(&input.model_file);
-    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref());
+    let solver = simulate_solver_or_auto(args.solver, result.experiment_solver.as_deref())?;
     run_simulation(SimulationRun {
         dae: result.dae.as_ref(),
         model: &model,
@@ -1334,27 +1329,32 @@ fn inspect_at_spec(at: Option<&str>) -> &str {
     at.unwrap_or_default()
 }
 
+/// Resolve the solver for a direct run: `--solver` if given, else the model's
+/// `experiment(Solver = "...")` annotation, else `auto`.
+///
+/// The annotation is free text, so it is resolved through the same authority
+/// every other surface uses and an unrunnable name is reported here. Honoring
+/// only the names this tree runs is what makes the annotation meaningful: the
+/// PDE method-of-lines examples annotate `Solver = "rk-like"` because they are
+/// explicit / artificial-compressibility schemes the implicit auto path cannot
+/// step, and silently ignoring a misspelling of that would run them on the
+/// solver they specifically asked not to use.
 fn simulate_solver_or_auto(
     solver: Option<SimulateSolverMode>,
     experiment_solver: Option<&str>,
-) -> SimulateSolverMode {
-    // An explicit `--solver` always wins.
+) -> Result<SimulateSolverMode> {
+    // An explicit `--solver` always wins, and clap has already validated it.
     if let Some(solver) = solver {
-        return solver;
+        return Ok(solver);
     }
-    // No `--solver`: honor the model's `experiment(Solver = "...")` annotation when it
-    // names an explicit Runge-Kutta-family solver -- e.g. the PDE method-of-lines
-    // examples annotated `Solver = "rk-like"`, which are artificial-compressibility /
-    // explicit schemes the implicit BDF auto path cannot step. Non-RK annotations
-    // (`dassl`, `cvode`, ...) already resolve to the implicit family and so match the
-    // `Auto` fallback, leaving their behavior unchanged. This mirrors the WASM/docs
-    // scheduled simulation loop, which already resolves the annotated solver.
-    match experiment_solver {
-        Some(name) if SimSolverMode::from_external_name(name) == SimSolverMode::RkLike => {
-            SimulateSolverMode::RkLike
-        }
+    let Some(name) = experiment_solver else {
+        return Ok(SimulateSolverMode::Auto);
+    };
+    Ok(match rumoca_core::canonical_solver_name(name)? {
+        "rk-like" => SimulateSolverMode::RkLike,
+        "bdf" => SimulateSolverMode::Bdf,
         _ => SimulateSolverMode::Auto,
-    }
+    })
 }
 
 fn direct_sim_t_end(t_end: Option<f64>) -> f64 {
@@ -1777,13 +1777,14 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
         );
     }
 
+    // Scenario configs carry the solver as free text, so this is where a name
+    // this tree cannot run is reported rather than quietly replaced.
+    validate_solver_label(run.solver_label)?;
     let mut opts = SimOptions {
         t_end: run.t_end,
         dt: run.dt,
         solver_mode: run.solver_mode,
-        // `--solver esdirk34` / `trbdf2` selects an implicit SDIRK tableau on
-        // the diffsol path; other names leave the BDF default.
-        diffsol_method: diffsol_method_for_solver_label(run.solver_label),
+        diffsol_method: DiffsolMethod::Bdf,
         ..SimOptions::default()
     };
     // Explicit --atol/--rtol override the backend default so a host's tolerance
@@ -1856,8 +1857,17 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     Ok(())
 }
 
-fn diffsol_method_for_solver_label(solver_label: &str) -> DiffsolMethod {
-    DiffsolMethod::from_external_name(solver_label).unwrap_or_default()
+/// Check that a solver label names a solver this tree runs.
+///
+/// `--solver` is validated by clap against its value enum, but a label can also
+/// arrive as free text from a scenario config's `sim.solver`, and neither route
+/// is checked anywhere else. An unrecognized name is reported with the valid set
+/// rather than dropped — dropping it would leave whichever solver was already in
+/// effect running under a name the user did not ask for.
+pub(crate) fn validate_solver_label(solver_label: &str) -> Result<()> {
+    rumoca_core::canonical_solver_name(solver_label)
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
 }
 
 // Structured, value-returning entrypoints (`compile_to_value`,

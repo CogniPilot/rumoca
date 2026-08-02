@@ -301,6 +301,29 @@ pub(super) fn lower_builtin_arguments(
     arguments: Vec<TypedExpression>,
     span: Span,
 ) -> Result<gast::Expression, GalecTargetError> {
+    if builtin == dae::PureBuiltin::Integer {
+        let [argument]: [TypedExpression; 1] =
+            arguments.try_into().map_err(|arguments: Vec<_>| {
+                unsupported(
+                    "builtin:integer",
+                    format!(
+                        "checked integer conversion has {} arguments instead of one",
+                        arguments.len()
+                    ),
+                    span,
+                )
+            })?;
+        // MLS integer rounds down, while GALEC Beta-1 integer truncates toward
+        // zero. Rounding in Real first makes the target conversion exact.
+        let rounded = gast::Expression::Call(gast::FunctionCall {
+            function: with_span(gast::Name::ident("roundDown"), span),
+            arguments: vec![argument.expression],
+        });
+        return Ok(gast::Expression::Call(gast::FunctionCall {
+            function: with_span(gast::Name::ident("integer"), span),
+            arguments: vec![rounded],
+        }));
+    }
     let name = match builtin {
         dae::PureBuiltin::Abs => "absolute",
         dae::PureBuiltin::Sign => "sign",
@@ -314,7 +337,7 @@ pub(super) fn lower_builtin_arguments(
         }
         dae::PureBuiltin::Floor => "roundDown",
         dae::PureBuiltin::Ceil => "roundUp",
-        dae::PureBuiltin::Integer => "integer",
+        dae::PureBuiltin::Integer => unreachable!("integer returns after semantic adaptation"),
         dae::PureBuiltin::Sin => "sin",
         dae::PureBuiltin::Cos => "cos",
         dae::PureBuiltin::Tan => "tan",
@@ -340,7 +363,15 @@ pub(super) fn lower_builtin_arguments(
         | dae::PureBuiltin::Ones
         | dae::PureBuiltin::Fill
         | dae::PureBuiltin::Linspace
-        | dae::PureBuiltin::Cross => {
+        | dae::PureBuiltin::Cross
+        | dae::PureBuiltin::PromotedCat1
+        | dae::PureBuiltin::PromotedCat2
+        | dae::PureBuiltin::Identity
+        | dae::PureBuiltin::Vector
+        | dae::PureBuiltin::Transpose
+        | dae::PureBuiltin::Diagonal
+        | dae::PureBuiltin::OuterProduct
+        | dae::PureBuiltin::Skew => {
             return Err(unsupported(
                 "builtin",
                 format!("builtin `{builtin:?}` has no scalar GALEC mapping"),

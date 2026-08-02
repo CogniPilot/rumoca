@@ -11,7 +11,7 @@ in the shared runtime layer, and solver backends are thin adapters.
 | `rumoca-sim` | Simulation orchestration over the compiled model |
 | `rumoca-solver` | Shared solver API, result types, report payloads |
 | `rumoca-solver-rk45` | Explicit Runge–Kutta-style backend (`rk-like`) |
-| `rumoca-solver-diffsol` | Implicit backends via diffsol (`bdf`, `esdirk34`, `trbdf2`) |
+| `rumoca-solver-diffsol` | Implicit backend via diffsol (`bdf`) |
 | `rumoca-input`, `rumoca-input-keyboard`, `rumoca-input-gamepad` | Interactive input devices |
 | `rumoca-signal-frame` | Signal payload types |
 | `rumoca-transport-udp`, `rumoca-transport-websocket` | External coupling and viewer transport |

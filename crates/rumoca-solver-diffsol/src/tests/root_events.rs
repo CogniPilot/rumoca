@@ -49,6 +49,128 @@ fn root_reinit_does_not_interpolate_from_mutated_diffsol_state() {
     assert!(no_event.data[0].last().copied().unwrap() < 0.25);
 }
 
+/// Diffsol reports a located root while retaining the accepted step endpoint
+/// as its internal state.  If those times are within the schedule tolerance,
+/// the component must still receive the exact dense-output root state rather
+/// than the nearby endpoint state that the frozen driver has not accepted.
+#[test]
+fn state_event_component_uses_the_exact_located_root_state() {
+    const ENDPOINT: f64 = 1.0e-4;
+    const ROOT: f64 = ENDPOINT - 5.0e-13;
+
+    assert_ne!(ENDPOINT.to_bits(), ROOT.to_bits());
+    assert!(rumoca_solver::timeline::sample_time_match_with_tol(
+        ENDPOINT, ROOT
+    ));
+
+    let mut model = unit_integrator_model();
+    model.problem.events.root_conditions = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: ROOT,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: ENDPOINT,
+            dt: Some(ENDPOINT),
+            ..Default::default()
+        },
+    )
+    .expect("the component and frozen driver must share the located root state");
+
+    assert_eq!(result.times.last().copied(), Some(ENDPOINT));
+}
+
+#[test]
+fn me_callbacks_observe_a_discrete_parameter_changed_by_a_root_event() {
+    let mut model = unit_integrator_model();
+    model.problem.solve_layout.parameter_count = 0;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.parameters = vec![1.0];
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
+            vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ));
+    model.problem.events.root_conditions = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.discrete.rhs = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 2.0 },
+            solve::LinearOp::LoadP { dst: 4, index: 0 },
+            solve::LinearOp::Select {
+                dst: 5,
+                cond: 2,
+                if_true: 3,
+                if_false: 4,
+            },
+            solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        fixture_span!(),
+    );
+    ordinary_equation_row_metadata(&mut model);
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.2),
+            ..Default::default()
+        },
+    )
+    .expect("the ME callback path must retain a root event's discrete parameter update");
+
+    let final_x = result.data[0].last().copied().expect("final x sample");
+    assert!(
+        final_x > 0.3,
+        "der(x) must switch from 1 to 2 after the root event; x(0.2)={final_x}"
+    );
+}
+
 #[test]
 fn state_only_root_event_is_independent_of_output_grid() {
     let model = rising_state_with_root_reinit();
@@ -248,6 +370,350 @@ fn scheduled_sample_still_fires_when_a_root_lands_on_its_instant() {
     );
 }
 
+/// Dense output may locate a root just beyond one output point and defer it to
+/// the next. If that root lies immediately before a typed clock tick, resolving
+/// it must not advance across the tick and then let the schedule cursor discard
+/// the clock owner without executing it.
+#[test]
+fn deferred_root_right_limit_does_not_skip_the_next_typed_tick() {
+    const ROOT: f64 = 0.05 - 1.0e-9;
+    let mut model = clock_owned_sample_with_coincident_root();
+    model.problem.events.root_conditions = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: ROOT,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.1,
+            // t=0.049 is recorded before the root and t=0.056 after it, so the
+            // backend discovers the root by dense-output overshoot and defers
+            // it before the driver reaches the t=0.05 clock stop.
+            dt: Some(0.007),
+            ..Default::default()
+        },
+    )
+    .expect("a deferred root must preserve the typed tick immediately after it");
+
+    let y_last = result.data[1]
+        .last()
+        .copied()
+        .expect("the clock-owned sample should be recorded");
+    assert!(
+        (y_last - 5.0).abs() <= 1.0e-3,
+        "the t=0.05 clock tick was skipped after the deferred root: y_last={y_last}"
+    );
+}
+
+/// A clock leaf inside a mixed activation DAG has no row-wide clock owner.
+/// Its hidden P lane is derived from the same typed periodic schedule instead.
+/// A coincident root must therefore replay the lane at the semantic tick in
+/// both the ME component and the frozen driver, or their discrete P state
+/// diverges at the post-event compatibility seam.
+#[test]
+fn mixed_clock_activation_lane_still_fires_at_a_coincident_root() {
+    let result = simulate(
+        &sampled_mean_with_mixed_clock_activation(),
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.003),
+            ..Default::default()
+        },
+    )
+    .expect("a mixed clock leaf must agree across the ME/frozen event seam");
+
+    let y_last = result.data[1]
+        .last()
+        .copied()
+        .expect("the mixed-clock sampled mean should be recorded");
+    assert!(
+        (y_last - 5.0).abs() <= 1.0e-3,
+        "mixed-clock sample should be 100*pre(x)=5, got {y_last}"
+    );
+}
+
+/// A typed clock row executes once at a coincident clock/root instant. The
+/// root's right-limit pass still settles unowned rows, but must not replay the
+/// clock owner after a same-event reinit changed the sampled source.
+///
+/// This is the compact form of `Blocks.Math.Mean` in the PowerConverter
+/// cohort: the first pass stores `100*pre(x) = 5`; a duplicate clock pass would
+/// sample the reinitialized `x = 0` and overwrite that authoritative value.
+#[test]
+fn clock_owned_sample_is_not_replayed_at_coincident_root_right_limit() {
+    let result = simulate(
+        &clock_owned_sample_with_coincident_root(),
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.003),
+            ..Default::default()
+        },
+    )
+    .expect("the ME component and frozen driver must keep one clock-owned sample");
+
+    let y_last = result.data[1]
+        .last()
+        .copied()
+        .expect("the clock-owned sample should be recorded");
+    assert!(
+        (y_last - 5.0).abs() <= 1.0e-3,
+        "clock-owned sample should remain 100*pre(x)=5, got {y_last}"
+    );
+}
+
+/// A periodic owner is authoritative on every tick, not only the first event
+/// the scheduler exposes. This is the compact execution shape of the three
+/// sampled `Blocks.Math.Mean` instances in the center-tap rectifier examples:
+/// every tick stores the just-finished integral and reinitializes that integral
+/// before continuous integration resumes.
+#[test]
+fn clock_owned_sample_and_reinit_execute_on_every_periodic_tick() {
+    let result = simulate(
+        &clock_owned_sample_with_repeated_ticks(),
+        &SimOptions {
+            t_end: 0.16,
+            // Keep all three ticks off the output grid so output stops cannot
+            // accidentally provide the event boundary.
+            dt: Some(0.007),
+            ..Default::default()
+        },
+    )
+    .expect("a periodic clock owner must execute at every typed tick");
+
+    let x = result.data[0]
+        .last()
+        .copied()
+        .expect("the accumulator state should be recorded");
+    let y_last = result.data[1]
+        .last()
+        .copied()
+        .expect("the sampled mean should be recorded");
+    assert!(
+        (y_last - 5.0).abs() <= 1.0e-3,
+        "each tick must sample one 0.05 s interval, got y_last={y_last}; times={:?}",
+        result.times
+    );
+    assert!(
+        (x - 0.01).abs() <= 1.0e-3,
+        "the third tick must reinitialize x before the last 0.01 s interval, got x={x}"
+    );
+}
+
+#[test]
+fn clock_owned_counter_executes_once_at_every_coincident_root_tick() {
+    let mut model = clock_owned_sample_with_repeated_ticks();
+    model.problem.events.root_conditions = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.solve_layout.compiled_parameter_len = 3;
+    model
+        .problem
+        .solve_layout
+        .pre_param_bindings
+        .push(solve::PreParamBinding {
+            dest_p_index: 2,
+            source: solve::PreParamSource::P { index: 0 },
+            clock_schedule: None,
+        });
+    model.parameters.push(0.0);
+    model.problem.discrete.rhs = repeated_clock_counter_rhs();
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.16,
+            dt: Some(0.007),
+            ..Default::default()
+        },
+    )
+    .expect("clock-owner execution count must agree across the root seam");
+
+    let tick_count = result.data[1]
+        .last()
+        .copied()
+        .expect("the clock-owned counter should be recorded");
+    assert_eq!(
+        tick_count, 3.0,
+        "one execution is required for each typed tick"
+    );
+}
+
+fn clock_owned_sample_with_repeated_ticks() -> solve::SolveModel {
+    let mut model = sampled_mean_with_coincident_root();
+    model.problem.events.root_conditions = solve::ScalarProgramBlock::default();
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.05, 0.05)];
+    let owner = model
+        .problem
+        .clocks
+        .periodic_clock_id(0)
+        .expect("fixture has one typed periodic clock");
+    model.problem.discrete.clock_owners = vec![Some(owner), Some(owner)];
+    model.problem.discrete.pre_modes = vec![
+        solve::DiscreteEventPreMode::FollowCurrent,
+        solve::DiscreteEventPreMode::EventEntry,
+    ];
+    model.problem.discrete.row_roles[0] = solve::DiscreteRowRole::EventAction;
+    model.problem.discrete.rhs = repeated_clock_sampled_mean_rhs();
+    model
+}
+
+fn repeated_clock_sampled_mean_rhs() -> solve::ScalarProgramBlock {
+    scalar_program_block!(
+        vec![
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 1 },
+                solve::LinearOp::Const {
+                    dst: 1,
+                    value: 100.0,
+                },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 1,
+                    rhs: 0,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ],
+        fixture_span!(),
+    )
+}
+
+fn repeated_clock_counter_rhs() -> solve::ScalarProgramBlock {
+    scalar_program_block!(
+        vec![
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::Const { dst: 1, value: 1.0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ],
+        fixture_span!(),
+    )
+}
+
+pub(super) fn clock_owned_sample_with_coincident_root() -> solve::SolveModel {
+    let mut model = sampled_mean_with_coincident_root();
+    let owner = model
+        .problem
+        .clocks
+        .periodic_clock_id(0)
+        .expect("fixture has one typed periodic clock");
+    model.problem.discrete.clock_owners = vec![Some(owner), Some(owner)];
+    model.problem.discrete.pre_modes = vec![
+        solve::DiscreteEventPreMode::FollowCurrent,
+        solve::DiscreteEventPreMode::EventEntry,
+    ];
+    model
+}
+
+fn sampled_mean_with_mixed_clock_activation() -> solve::SolveModel {
+    let mut model = sampled_mean_with_coincident_root();
+    model.problem.clocks.activation_parameter_indices = vec![2];
+    model.problem.solve_layout.compiled_parameter_len = 3;
+    model.problem.discrete.clock_owners.fill(None);
+    model.problem.discrete.rhs = mixed_clock_sampled_mean_rhs();
+    model.parameters.push(0.0);
+    model
+}
+
+fn mixed_clock_sampled_mean_rhs() -> solve::ScalarProgramBlock {
+    // p[2] is the schedule-derived clock activation lane. The p[0] guard
+    // stands in for the AnyRise condition memory and keeps the update
+    // single-shot within one event iteration.
+    let sampled = vec![
+        solve::LinearOp::LoadP { dst: 0, index: 2 },
+        solve::LinearOp::LoadP { dst: 1, index: 0 },
+        solve::LinearOp::Const { dst: 2, value: 0.0 },
+        solve::LinearOp::Compare {
+            dst: 3,
+            op: solve::CompareOp::Eq,
+            lhs: 1,
+            rhs: 2,
+        },
+        solve::LinearOp::Binary {
+            dst: 4,
+            op: solve::BinaryOp::And,
+            lhs: 0,
+            rhs: 3,
+        },
+    ];
+    let mut reinit_row = sampled.clone();
+    reinit_row.extend([
+        solve::LinearOp::LoadY { dst: 5, index: 0 },
+        solve::LinearOp::Select {
+            dst: 6,
+            cond: 4,
+            if_true: 2,
+            if_false: 5,
+        },
+        solve::LinearOp::StoreOutput { src: 6 },
+    ]);
+    let mut mean_row = sampled;
+    mean_row.extend([
+        solve::LinearOp::LoadP { dst: 5, index: 1 },
+        solve::LinearOp::Const {
+            dst: 6,
+            value: 100.0,
+        },
+        solve::LinearOp::Binary {
+            dst: 7,
+            op: solve::BinaryOp::Mul,
+            lhs: 6,
+            rhs: 5,
+        },
+        solve::LinearOp::Select {
+            dst: 8,
+            cond: 4,
+            if_true: 7,
+            if_false: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 8 },
+    ]);
+    scalar_program_block!(vec![reinit_row, mean_row], fixture_span!())
+}
+
 /// `der(x) = 1`, a zero-crossing of `x - 0.05` (so the root instant is exactly
 /// `t = 0.05`), and a single scheduled tick at `t = 0.05` whose `when` body sets
 /// `y_last = 100*pre(x)` and reinitialises `x` to 0.
@@ -367,12 +833,20 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
     );
 
     let mut model = solve::SolveModel::default();
+    // `der(x) = 1`. The mass matrix is the identity, so the explicit derivative
+    // program and the implicit residual carry the same row; Solve emits both,
+    // and the reduced state-only system integrates the derivative program.
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
     model.artifacts.continuous.mass_matrix = solve::MassMatrix::Identity;
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(zero.clone());
+    // d(der(x))/dx = 0 — `der(x) = 1` is constant, so the state Jacobian the
+    // reduced system linearises against is exactly zero.
+    model.artifacts.continuous.full_jacobian_v = zero.clone();
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.solver_maps.names = vec!["x".to_string()];
     model.problem.solve_layout.solver_maps.name_to_idx = IndexMap::from([("x".to_string(), 0)]);
@@ -430,6 +904,11 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
     let (rhs, zero) = falling_ball_continuous_blocks();
 
     let mut model = solve::SolveModel::default();
+    // `der(x) = v`, `der(v) = -9.81`. Identity mass matrix, so the derivative
+    // program and the implicit residual carry the same two rows, and both rows
+    // read only states — the reduced state-only system integrates directly.
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_row_targets =
@@ -437,6 +916,21 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
     model.artifacts.continuous.mass_matrix = solve::MassMatrix::Identity;
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(zero.clone());
+    // Exact state Jacobian-vector product for `der(x) = v`, `der(v) = -9.81`:
+    // row 0 is `v`'s seed component, row 1 is zero.
+    model.artifacts.continuous.full_jacobian_v = scalar_program_block!(
+        vec![
+            vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_span!(),
+    );
     model.problem.solve_layout.state_scalar_count = 2;
     model.problem.solve_layout.solver_maps.names = vec!["x".to_string(), "v".to_string()];
     model.problem.solve_layout.solver_maps.name_to_idx =
@@ -444,6 +938,10 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
     model.problem.solve_layout.solver_maps.base_to_indices =
         IndexMap::from([("x".to_string(), vec![0]), ("v".to_string(), vec![1])]);
     model.problem.solve_layout.compiled_parameter_len = 2;
+    // The full-Jacobian seed spans `y ++ p`, so the variable layout has to
+    // declare both states and both parameter slots for the JVP above to be
+    // in bounds.
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 2);
     model.problem.solve_layout.pre_param_bindings = vec![
         solve::PreParamBinding {
             dest_p_index: 0,

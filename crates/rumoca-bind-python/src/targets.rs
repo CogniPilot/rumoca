@@ -128,7 +128,5 @@ pub(crate) fn list_solvers() -> Vec<SolverInfo> {
             available: true,
         },
         implicit("bdf"),
-        implicit("esdirk34"),
-        implicit("trbdf2"),
     ]
 }

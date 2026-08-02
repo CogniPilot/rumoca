@@ -39,6 +39,10 @@ accesses fail the build.
   an environment variable. Examples: `cargo xtask verify msl-parity` writes
   `target/msl/parity-config.json` for libtest; VS Code smoke jobs write
   `.code-workspace` settings that the extension forwards to `rumoca-lsp` flags.
+- A fixed-path per-invocation file MUST have one workspace-scoped exclusive
+  ownership lock held from before the parent writes the file until every child
+  consumer and evidence check has finished. Concurrent invocations wait for
+  that lock; they MUST NOT overwrite another live invocation's configuration.
 - Standard, non-Rumoca environment variables a tool merely passes through
   (`MODELICAPATH`, `GITHUB_ACTIONS`, `ELECTRON_DISABLE_SANDBOX`, …) are not
   configuration knobs and are out of scope for this rule.

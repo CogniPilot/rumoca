@@ -79,10 +79,18 @@ fn require_target_occurrence(
 pub(super) fn analyze_discrete_value_topology(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    connection_ranks: &HashMap<VarName, usize>,
+    aggregate_connections: &AggregateDiscreteConnections,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
     let mut owners = Vec::new();
     collect_binding_owners(flat, roles, &mut owners)?;
-    collect_equation_owners(flat, roles, &mut owners)?;
+    collect_equation_owners(
+        flat,
+        roles,
+        connection_ranks,
+        aggregate_connections,
+        &mut owners,
+    )?;
     collect_algorithm_owners(flat, roles, &mut owners)?;
     collect_when_owners(flat, roles, &mut owners)?;
     let held_targets = add_held_owners(flat, roles, &mut owners);
@@ -116,10 +124,19 @@ fn collect_binding_owners(
 fn collect_equation_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    connection_ranks: &HashMap<VarName, usize>,
+    aggregate_connections: &AggregateDiscreteConnections,
     owners: &mut Vec<SourceOwner>,
 ) -> Result<(), ToDaeError> {
-    for equation in &flat.equations {
-        let EquationPartition::DiscreteValue(plan) = equation_partition(flat, equation, roles)?
+    for (row, equation) in flat.equations.iter().enumerate() {
+        let EquationPartition::DiscreteValue(plan) = equation_partition(
+            flat,
+            row,
+            equation,
+            roles,
+            connection_ranks,
+            aggregate_connections,
+        )?
         else {
             continue;
         };

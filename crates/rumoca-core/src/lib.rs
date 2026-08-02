@@ -48,7 +48,10 @@ mod statement_rewriter;
 mod structured_domain;
 mod subscript;
 pub mod text_position;
-pub use clock_lattice::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational};
+pub use clock_lattice::{
+    ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockPhaseAnchor, ClockRational,
+    PeriodicClockSchedule,
+};
 pub use dependency_graph::{DependencyGraphError, DependencyScc, dependency_first_sccs};
 pub use effective_type::{EffectiveType, EffectiveTypeError};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
@@ -185,6 +188,101 @@ pub fn workspace_root_from_manifest_dir(manifest_dir: &str) -> PathBuf {
 /// Resolve the MSL cache directory: `<workspace>/target/msl`.
 pub fn msl_cache_dir_from_manifest(manifest_dir: &str) -> PathBuf {
     workspace_root_from_manifest_dir(manifest_dir).join("target/msl")
+}
+
+// =============================================================================
+// Solver names (the single authority every entry point resolves through)
+// =============================================================================
+
+/// Every solver a user may name, in the spelling reports and errors use.
+///
+/// This is the whole set. A solver that cannot run today carries no name here:
+/// a surface that still offered one would be advertising a method the tree
+/// cannot deliver, and the caller would have no way to tell the difference
+/// until the run silently used another one.
+pub const SOLVER_NAMES: [&str; 3] = ["auto", "bdf", "rk-like"];
+
+/// A solver name that is not one this tree can run.
+///
+/// Reported rather than absorbed. The alternative — dropping an unrecognized
+/// name and keeping whatever solver was already in effect — is a silent
+/// downgrade: the caller asked for one integrator and a different one ran, with
+/// nothing in the output saying so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSolverName {
+    pub requested: String,
+}
+
+impl std::fmt::Display for UnknownSolverName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown solver '{}'; valid solvers are: {}",
+            self.requested,
+            SOLVER_NAMES.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownSolverName {}
+
+/// Canonicalize a user-supplied solver name, or say it is not one we run.
+///
+/// Matching ignores case and `-` / `_` / space, so `RK_Like` and `rk-like` are
+/// the same request; the returned spelling is always the canonical one from
+/// [`SOLVER_NAMES`], so a name recorded downstream is comparable by equality.
+///
+/// Every surface that accepts a solver as free text — scenario configs, the
+/// editor preset, `experiment(Solver=...)` — resolves through this, so an
+/// unrunnable name is reported the same way everywhere instead of being
+/// rejected on one route and quietly ignored on another.
+pub fn canonical_solver_name(raw: &str) -> Result<&'static str, UnknownSolverName> {
+    let trimmed = raw.trim();
+    let normalized = trimmed.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    SOLVER_NAMES
+        .into_iter()
+        .find(|name| name.replace(['-', '_', ' '], "") == normalized)
+        .ok_or_else(|| UnknownSolverName {
+            requested: trimmed.to_string(),
+        })
+}
+
+#[cfg(test)]
+mod solver_name_tests {
+    use super::{SOLVER_NAMES, canonical_solver_name};
+
+    #[test]
+    fn spelling_variants_resolve_to_the_canonical_name() {
+        for (raw, canonical) in [
+            ("auto", "auto"),
+            ("  AUTO ", "auto"),
+            ("bdf", "bdf"),
+            ("BDF", "bdf"),
+            ("rk-like", "rk-like"),
+            ("RK_Like", "rk-like"),
+            ("rk like", "rk-like"),
+        ] {
+            assert_eq!(canonical_solver_name(raw), Ok(canonical));
+        }
+    }
+
+    /// A name we cannot run is reported, never silently replaced by whichever
+    /// solver happened to be in effect.
+    #[test]
+    fn an_unrunnable_name_is_reported_with_the_valid_set() {
+        for raw in ["esdirk34", "trbdf2", "dassl", "cvode", ""] {
+            let error = canonical_solver_name(raw)
+                .expect_err("only the names this tree can run may resolve");
+            let rendered = error.to_string();
+            assert!(rendered.contains("unknown solver"), "{rendered}");
+            for name in SOLVER_NAMES {
+                assert!(
+                    rendered.contains(name),
+                    "the report must list every valid solver; missing {name}: {rendered}"
+                );
+            }
+        }
+    }
 }
 
 // =============================================================================

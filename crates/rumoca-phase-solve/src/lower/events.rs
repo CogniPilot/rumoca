@@ -15,7 +15,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
 ) -> Result<(solve::DiscreteSolveSystem, solve::SolveEventPartition), LowerError> {
-    let mut discrete = DiscreteRows::default();
+    let mut discrete = DiscreteRows::new(view);
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
     lower_discrete_value_owners(view, layout, clocks, &mut discrete)?;
     let mut event_actions = Vec::new();
@@ -29,19 +29,19 @@ pub(super) fn lower_discrete_and_events<'dae>(
         &mut action_conditions,
     )?;
     lower_condition_memory(view, layout, clocks, &mut discrete)?;
-    let roots = lower_roots(view, layout, clocks)?;
+    let roots = lower_roots(view, layout, clocks, &discrete.relation_memory_owners)?;
     let scheduled_time_events = lower_time_events(view);
     let delays = lower_delays(view, layout)?;
     let discrete = discrete.finish()?;
     let events = solve::SolveEventPartition {
         root_conditions: roots.programs,
-        root_relation_memory_targets: vec![None; roots.count],
+        root_relation_memory_targets: roots.relation_memory_targets,
         root_zero_domains: roots.zero_domains,
         condition_memory_parameter_indices: layout.condition_memory.clone(),
         scheduled_time_events,
         action_conditions: action_conditions.into_scalar_block()?,
         actions: event_actions,
-        has_terminal_event: false,
+        has_terminal_event: view.terminal_count() != 0,
         delays,
         ..solve::SolveEventPartition::default()
     };
@@ -109,15 +109,26 @@ fn lower_delays<'dae>(
 }
 
 #[derive(Default)]
-struct DiscreteRows {
+struct DiscreteRows<'dae> {
     rows: ScalarRows,
     targets: Vec<solve::ScalarSlot>,
     roles: Vec<solve::DiscreteRowRole>,
     pre_modes: Vec<solve::DiscreteEventPreMode>,
     clock_owners: Vec<Option<solve::PeriodicClockId>>,
+    structured_rhs: solve::ComputeBlock,
+    structured_updates: Vec<solve::StructuredDiscreteUpdate>,
+    structured_output_cursor: usize,
+    relation_memory_owners: RelationMemoryOwners<'dae>,
 }
 
-impl DiscreteRows {
+impl<'dae> DiscreteRows<'dae> {
+    fn new(view: dae::DaeView<'dae>) -> Self {
+        Self {
+            relation_memory_owners: RelationMemoryOwners::new(view),
+            ..Self::default()
+        }
+    }
+
     fn push(
         &mut self,
         program: Vec<solve::LinearOp>,
@@ -143,9 +154,74 @@ impl DiscreteRows {
             pre_modes: self.pre_modes,
             observation_refresh: vec![false; rhs.programs().len()],
             clock_owners: self.clock_owners,
+            structured_rhs: self.structured_rhs,
+            structured_updates: self.structured_updates,
             rhs,
             ..solve::DiscreteSolveSystem::default()
         })
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum RelationMemoryOwner {
+    #[default]
+    Unclaimed,
+    Unique(solve::ScalarSlot),
+    Ambiguous,
+}
+
+#[derive(Default)]
+struct RelationMemoryOwners<'dae> {
+    relation_by_expression: Vec<Option<dae::RelationId<'dae>>>,
+    owners: Vec<RelationMemoryOwner>,
+}
+
+impl<'dae> RelationMemoryOwners<'dae> {
+    fn new(view: dae::DaeView<'dae>) -> Self {
+        let mut relation_by_expression = vec![None; view.expression_count()];
+        for index in 0..view.relation_count() {
+            let relation = view
+                .relation_id(index)
+                .expect("dense checked relation identity resolves");
+            let expression = view
+                .relation(relation)
+                .expect("checked relation resolves")
+                .expression();
+            relation_by_expression[expression.index() as usize] = Some(relation);
+        }
+        Self {
+            relation_by_expression,
+            owners: vec![RelationMemoryOwner::Unclaimed; view.relation_count()],
+        }
+    }
+
+    fn claim_exact_expression(&mut self, expression: dae::ExprId<'dae>, target: solve::ScalarSlot) {
+        let solve::ScalarSlot::P { .. } = target else {
+            return;
+        };
+        let Some(relation) = self
+            .relation_by_expression
+            .get(expression.index() as usize)
+            .copied()
+            .flatten()
+        else {
+            return;
+        };
+        let owner = &mut self.owners[relation.index() as usize];
+        *owner = match *owner {
+            RelationMemoryOwner::Unclaimed => RelationMemoryOwner::Unique(target),
+            RelationMemoryOwner::Unique(existing) if existing == target => *owner,
+            RelationMemoryOwner::Unique(_) | RelationMemoryOwner::Ambiguous => {
+                RelationMemoryOwner::Ambiguous
+            }
+        };
+    }
+
+    fn target(&self, relation: dae::RelationId<'dae>) -> Option<solve::ScalarSlot> {
+        match self.owners.get(relation.index() as usize).copied() {
+            Some(RelationMemoryOwner::Unique(target)) => Some(target),
+            Some(RelationMemoryOwner::Unclaimed | RelationMemoryOwner::Ambiguous) | None => None,
+        }
     }
 }
 
@@ -153,7 +229,7 @@ fn lower_discrete_real_equations<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows,
+    rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
     let definitions = resolve_discrete_real_definitions(view)?;
     let mut conditional = Vec::new();
@@ -224,7 +300,7 @@ fn lower_unconditional_discrete_real<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows,
+    rows: &mut DiscreteRows<'dae>,
     variable: dae::VariableId<'dae>,
     value: dae::ExprId<'dae>,
     span: Span,
@@ -234,11 +310,15 @@ fn lower_unconditional_discrete_real<'dae>(
         .expect("checked discrete definition value resolves")
         .value_type();
     let clock = clocks.variable_owner(variable);
+    let sampled = clocks.variable_is_sampled(variable);
     for scalar in 0..value_type
         .scalar_count()
         .expect("checked expression scalar capacity")
     {
         let program = match clock {
+            Some((clock, _)) if sampled => {
+                ScalarCompiler::new(view, layout, None).sampled_program(clock, value, scalar)?
+            }
             Some((clock, _)) => {
                 ScalarCompiler::new(view, layout, None).clocked_program(clock, value, scalar)?
             }
@@ -250,7 +330,7 @@ fn lower_unconditional_discrete_real<'dae>(
             span,
             target,
             solve::DiscreteRowRole::Equation,
-            expression_pre_mode(view, value),
+            expression_pre_mode(view, value, sampled),
             clock.map(|(_, solve)| solve),
         );
     }
@@ -432,7 +512,7 @@ fn lower_discrete_value_owners<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows,
+    rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
     for index in 0..view.discrete_value_owner_count() {
         let id = view
@@ -445,6 +525,10 @@ fn lower_discrete_value_owners<'dae>(
             .branches()
             .get(0)
             .expect("checked B.1c owner has a nonempty branch set");
+        if owner.structure().is_some() {
+            lower_structured_discrete_value_owner(view, layout, clocks, rows, owner)?;
+            continue;
+        }
         match first.activation() {
             dae::DiscreteBranchActivation::Always => {
                 lower_unconditional_discrete_value_owner(view, layout, clocks, rows, owner)?;
@@ -470,7 +554,7 @@ fn lower_unconditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows,
+    rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<(), LowerError> {
     let branch = owner
@@ -483,25 +567,31 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             .expression(value)
             .expect("checked B.1c value expression resolves");
         let span = provenance.span();
-        let clock = clocks.variable_owner(dae::VariableId::from(target));
+        let variable = dae::VariableId::from(target);
+        let clock = clocks.variable_owner(variable);
+        let sampled = clocks.variable_is_sampled(variable);
         for scalar in 0..expression
             .value_type()
             .scalar_count()
             .expect("checked B.1c value scalar capacity")
         {
-            let program = match clock {
-                Some((clock, _)) => {
-                    ScalarCompiler::new(view, layout, None).clocked_program(clock, value, scalar)?
-                }
-                None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
-            };
+            let program =
+                match clock {
+                    Some((clock, _)) if sampled => ScalarCompiler::new(view, layout, None)
+                        .sampled_program(clock, value, scalar)?,
+                    Some((clock, _)) => ScalarCompiler::new(view, layout, None)
+                        .clocked_program(clock, value, scalar)?,
+                    None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
+                };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
+            rows.relation_memory_owners
+                .claim_exact_expression(value, target);
             rows.push(
                 program,
                 span,
                 target,
                 solve::DiscreteRowRole::Equation,
-                expression_pre_mode(view, value),
+                expression_pre_mode(view, value, sampled),
                 clock.map(|(_, solve)| solve),
             );
         }
@@ -509,11 +599,401 @@ fn lower_unconditional_discrete_value_owner<'dae>(
     Ok(())
 }
 
+fn lower_structured_discrete_value_owner<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    rows: &mut DiscreteRows<'dae>,
+    owner: dae::DiscreteValueOwnerView<'dae>,
+) -> Result<(), LowerError> {
+    let structure = owner
+        .structure()
+        .expect("caller selects one checked structured B.1c owner");
+    let branch = owner
+        .branches()
+        .get(0)
+        .expect("checked structured B.1c owner has a branch");
+    if owner.branches().len() != 1
+        || !matches!(branch.activation(), dae::DiscreteBranchActivation::Always)
+    {
+        return Err(LowerError::non_computable(
+            "conditional structured B.1c maps are not yet representable",
+            owner.provenance().span(),
+        ));
+    }
+    let domain = view
+        .domain(structure.domain())
+        .expect("checked structured B.1c domain resolves")
+        .structured()
+        .clone();
+    let point_count = domain.scalar_count().map_err(|error| {
+        LowerError::contract(
+            format!("structured B.1c domain is invalid: {error}"),
+            owner.provenance().span(),
+        )
+    })?;
+    for (target, (value, provenance)) in owner.targets().iter().zip(branch.values().iter()) {
+        let span = provenance.span();
+        let variable = dae::VariableId::from(target);
+        let clock = clocks.variable_owner(variable);
+        let sampled = clocks.variable_is_sampled(variable);
+        let (base_ops, load_strides, const_strides) =
+            structured_map_program(StructuredMapProgramInput {
+                view,
+                layout,
+                domain_id: structure.domain(),
+                domain: &domain,
+                scalar_view: structure.scalar_view(),
+                value,
+                clock,
+                sampled,
+                span,
+            })?;
+        let output_map =
+            solve::TensorOutputMap::dense_contiguous(rows.structured_output_cursor, &domain)
+                .map_err(|_| LowerError::contract("structured B.1c output map overflow", span))?;
+        let node_index = rows.structured_rhs.nodes.len();
+        rows.structured_rhs.nodes.push(solve::ComputeNode::Map {
+            domain: domain.clone(),
+            output_map,
+            base_ops,
+            load_strides,
+            const_strides,
+            metadata: solve::TensorNodeMetadata::default(),
+            span,
+        });
+        let base = variable_scalar_slot(layout, target.index(), 0, span)?;
+        prove_contiguous_structured_target(layout, target.index(), base, point_count, span)?;
+        let target_map = solve::TensorOutputMap::dense_contiguous(0, &domain)
+            .map_err(|_| LowerError::contract("structured B.1c target map overflow", span))?;
+        rows.structured_updates
+            .push(solve::StructuredDiscreteUpdate {
+                node_index,
+                target: solve::StructuredDiscreteTargetMap {
+                    base,
+                    map: target_map,
+                },
+                role: solve::DiscreteRowRole::Equation,
+                pre_mode: expression_pre_mode(view, value, sampled),
+                observation_refresh: false,
+                clock_owner: clock.map(|(_, solve)| solve),
+            });
+        rows.structured_output_cursor = rows
+            .structured_output_cursor
+            .checked_add(point_count)
+            .ok_or_else(|| LowerError::contract("structured B.1c row count overflow", span))?;
+    }
+    Ok(())
+}
+
+struct StructuredMapProgramInput<'scope, 'dae> {
+    view: dae::DaeView<'dae>,
+    layout: &'scope LoweredLayout<'dae>,
+    domain_id: dae::DomainId<'dae>,
+    domain: &'scope rumoca_core::StructuredIndexDomain,
+    scalar_view: rumoca_core::ComprehensionScalarView,
+    value: dae::ExprId<'dae>,
+    clock: Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>,
+    sampled: bool,
+    span: Span,
+}
+
+type AffineProgramCertificate = (
+    Vec<solve::LinearOp>,
+    Vec<solve::AffineStencilLoadStride>,
+    Vec<solve::AffineStencilConstStride>,
+);
+
+fn structured_map_program(
+    input: StructuredMapProgramInput<'_, '_>,
+) -> Result<AffineProgramCertificate, LowerError> {
+    let points = input.domain.index_tuples().map_err(|error| {
+        LowerError::contract(
+            format!("structured B.1c domain is invalid: {error}"),
+            input.span,
+        )
+    })?;
+    let Some(base_point) = points.first() else {
+        return Err(LowerError::non_computable(
+            "empty structured B.1c domain has no compact base program",
+            input.span,
+        ));
+    };
+    let extents = input
+        .domain
+        .extents()
+        .map_err(|error| {
+            LowerError::contract(
+                format!("structured B.1c domain is invalid: {error}"),
+                input.span,
+            )
+        })?
+        .into_iter()
+        .map(|extent| {
+            u32::try_from(extent)
+                .map_err(|_| LowerError::contract("structured B.1c extent overflow", input.span))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut programs = Vec::with_capacity(points.len());
+    for (point, values) in points.iter().enumerate() {
+        let scalar = input
+            .scalar_view
+            .body_scalar(point, &extents)
+            .ok_or_else(|| {
+                LowerError::contract("structured B.1c scalar view overflow", input.span)
+            })?;
+        let compiler =
+            ScalarCompiler::new(input.view, input.layout, Some((input.domain_id, values)));
+        programs.push(match input.clock {
+            Some((clock, _)) if input.sampled => {
+                compiler.sampled_program(clock, input.value, scalar)?
+            }
+            Some((clock, _)) => compiler.clocked_program(clock, input.value, scalar)?,
+            None => compiler.program(input.value, scalar)?,
+        });
+    }
+    derive_affine_program_certificate(input.domain, base_point, &points, &programs, input.span)
+}
+
+fn derive_affine_program_certificate(
+    domain: &rumoca_core::StructuredIndexDomain,
+    base_point: &[i64],
+    points: &[Vec<i64>],
+    programs: &[Vec<solve::LinearOp>],
+    span: Span,
+) -> Result<AffineProgramCertificate, LowerError> {
+    let base = &programs[0];
+    if programs.iter().any(|program| program.len() != base.len()) {
+        return Err(non_affine_structured_program(span));
+    }
+    let offsets = points
+        .iter()
+        .map(|point| domain_point_offsets(domain, base_point, point, span))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut load_strides = Vec::new();
+    let mut const_strides = Vec::new();
+    let evidence = AffineProgramEvidence {
+        programs,
+        offsets: &offsets,
+        rank: domain.binders.len(),
+        span,
+    };
+    for (op_position, base_op) in base.iter().enumerate() {
+        if let Some((kind, dst, base_index)) = affine_load(base_op) {
+            let terms = infer_load_terms(kind, dst, base_index, op_position, evidence)?;
+            if !terms.is_empty() {
+                load_strides.push(solve::AffineStencilLoadStride { op_position, terms });
+            }
+        } else if let solve::LinearOp::Const { dst, value } = base_op {
+            let terms = infer_const_terms(*dst, *value, op_position, evidence)?;
+            if !terms.is_empty() {
+                const_strides.push(solve::AffineStencilConstStride { op_position, terms });
+            }
+        } else if programs
+            .iter()
+            .any(|program| program[op_position] != *base_op)
+        {
+            return Err(non_affine_structured_program(span));
+        }
+    }
+    Ok((base.clone(), load_strides, const_strides))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AffineLoadKind {
+    Y,
+    P,
+    Seed,
+}
+
+#[derive(Clone, Copy)]
+struct AffineProgramEvidence<'scope> {
+    programs: &'scope [Vec<solve::LinearOp>],
+    offsets: &'scope [Vec<isize>],
+    rank: usize,
+    span: Span,
+}
+
+fn affine_load(op: &solve::LinearOp) -> Option<(AffineLoadKind, solve::Reg, usize)> {
+    match *op {
+        solve::LinearOp::LoadY { dst, index } => Some((AffineLoadKind::Y, dst, index)),
+        solve::LinearOp::LoadP { dst, index } => Some((AffineLoadKind::P, dst, index)),
+        solve::LinearOp::LoadSeed { dst, index } => Some((AffineLoadKind::Seed, dst, index)),
+        _ => None,
+    }
+}
+
+fn domain_point_offsets(
+    domain: &rumoca_core::StructuredIndexDomain,
+    base: &[i64],
+    point: &[i64],
+    span: Span,
+) -> Result<Vec<isize>, LowerError> {
+    domain
+        .binders
+        .iter()
+        .enumerate()
+        .map(|(dimension, binder)| {
+            isize::try_from((point[dimension] - base[dimension]) / binder.step)
+                .map_err(|_| LowerError::contract("structured B.1c domain offset overflow", span))
+        })
+        .collect()
+}
+
+fn prove_contiguous_structured_target(
+    layout: &LoweredLayout<'_>,
+    variable: u32,
+    base: solve::ScalarSlot,
+    scalar_count: usize,
+    span: Span,
+) -> Result<(), LowerError> {
+    for scalar in 0..scalar_count {
+        let actual = variable_scalar_slot(layout, variable, scalar, span)?;
+        let expected = match base {
+            solve::ScalarSlot::Y { index, .. } => {
+                index.checked_add(scalar).map(solve::scalar_slot_y)
+            }
+            solve::ScalarSlot::P { index, .. } => {
+                index.checked_add(scalar).map(solve::scalar_slot_p)
+            }
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
+        }
+        .ok_or_else(|| LowerError::contract("structured B.1c target map overflow", span))?;
+        if actual != expected {
+            return Err(LowerError::contract(
+                "structured B.1c target does not own contiguous Solve storage",
+                span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn dimension_probe(offsets: &[Vec<isize>], dimension: usize) -> Option<usize> {
+    offsets.iter().position(|offset| {
+        offset[dimension] == 1
+            && offset
+                .iter()
+                .enumerate()
+                .all(|(other, value)| other == dimension || *value == 0)
+    })
+}
+
+fn infer_load_terms(
+    kind: AffineLoadKind,
+    dst: solve::Reg,
+    base_index: usize,
+    op_position: usize,
+    evidence: AffineProgramEvidence<'_>,
+) -> Result<Vec<solve::AffineStencilIndexStrideTerm>, LowerError> {
+    let mut coefficients = vec![0_isize; evidence.rank];
+    for (dimension, coefficient) in coefficients.iter_mut().enumerate() {
+        let Some(probe) = dimension_probe(evidence.offsets, dimension) else {
+            continue;
+        };
+        let Some((probe_kind, probe_dst, probe_index)) =
+            affine_load(&evidence.programs[probe][op_position])
+        else {
+            return Err(non_affine_structured_program(evidence.span));
+        };
+        if probe_kind != kind || probe_dst != dst {
+            return Err(non_affine_structured_program(evidence.span));
+        }
+        *coefficient = isize::try_from(probe_index)
+            .ok()
+            .and_then(|value| value.checked_sub(isize::try_from(base_index).ok()?))
+            .ok_or_else(|| non_affine_structured_program(evidence.span))?;
+    }
+    for (program, offset) in evidence.programs.iter().zip(evidence.offsets) {
+        let Some((actual_kind, actual_dst, actual_index)) = affine_load(&program[op_position])
+        else {
+            return Err(non_affine_structured_program(evidence.span));
+        };
+        let expected = affine_index(base_index, &coefficients, offset)
+            .ok_or_else(|| non_affine_structured_program(evidence.span))?;
+        if actual_kind != kind || actual_dst != dst || actual_index != expected {
+            return Err(non_affine_structured_program(evidence.span));
+        }
+    }
+    Ok(coefficients
+        .into_iter()
+        .enumerate()
+        .filter_map(|(dimension, stride)| {
+            (stride != 0).then_some(solve::AffineStencilIndexStrideTerm { dimension, stride })
+        })
+        .collect())
+}
+
+fn affine_index(base: usize, coefficients: &[isize], offsets: &[isize]) -> Option<usize> {
+    let mut value = isize::try_from(base).ok()?;
+    for (&coefficient, &offset) in coefficients.iter().zip(offsets) {
+        value = value.checked_add(coefficient.checked_mul(offset)?)?;
+    }
+    usize::try_from(value).ok()
+}
+
+fn infer_const_terms(
+    dst: solve::Reg,
+    base_value: f64,
+    op_position: usize,
+    evidence: AffineProgramEvidence<'_>,
+) -> Result<Vec<solve::AffineStencilConstStrideTerm>, LowerError> {
+    let mut coefficients = vec![0.0; evidence.rank];
+    for (dimension, coefficient) in coefficients.iter_mut().enumerate() {
+        let Some(probe) = dimension_probe(evidence.offsets, dimension) else {
+            continue;
+        };
+        let solve::LinearOp::Const {
+            dst: probe_dst,
+            value,
+        } = evidence.programs[probe][op_position]
+        else {
+            return Err(non_affine_structured_program(evidence.span));
+        };
+        if probe_dst != dst {
+            return Err(non_affine_structured_program(evidence.span));
+        }
+        *coefficient = value - base_value;
+    }
+    for (program, offset) in evidence.programs.iter().zip(evidence.offsets) {
+        let solve::LinearOp::Const {
+            dst: actual_dst,
+            value,
+        } = program[op_position]
+        else {
+            return Err(non_affine_structured_program(evidence.span));
+        };
+        let expected = coefficients
+            .iter()
+            .zip(offset)
+            .fold(base_value, |value, (coefficient, offset)| {
+                value + coefficient * (*offset as f64)
+            });
+        if actual_dst != dst || value != expected {
+            return Err(non_affine_structured_program(evidence.span));
+        }
+    }
+    Ok(coefficients
+        .into_iter()
+        .enumerate()
+        .filter_map(|(dimension, stride)| {
+            (stride != 0.0).then_some(solve::AffineStencilConstStrideTerm { dimension, stride })
+        })
+        .collect())
+}
+
+fn non_affine_structured_program(span: Span) -> LowerError {
+    LowerError::non_computable(
+        "structured B.1c body does not have one proven affine scalar program",
+        span,
+    )
+}
+
 fn lower_conditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows,
+    rows: &mut DiscreteRows<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<(), LowerError> {
     for (target_ordinal, target) in owner.targets().iter().enumerate() {
@@ -617,7 +1097,7 @@ fn lower_event_actions<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    discrete: &mut DiscreteRows,
+    discrete: &mut DiscreteRows<'dae>,
     actions: &mut Vec<solve::SolveEventAction>,
     action_conditions: &mut ScalarRows,
 ) -> Result<(), LowerError> {
@@ -851,7 +1331,7 @@ fn lower_guarded_updates<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows,
+    rows: &mut DiscreteRows<'dae>,
     updates: &[EventUpdate<'dae>],
     role: solve::DiscreteRowRole,
 ) -> Result<(), LowerError> {
@@ -956,7 +1436,7 @@ fn lower_condition_memory<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    rows: &mut DiscreteRows,
+    rows: &mut DiscreteRows<'dae>,
 ) -> Result<(), LowerError> {
     for index in 0..view.condition_count() {
         let condition = view
@@ -1142,17 +1622,18 @@ fn same_target(lhs: solve::ScalarSlot, rhs: solve::ScalarSlot) -> bool {
 struct LoweredRoots {
     programs: solve::ScalarProgramBlock,
     zero_domains: Vec<solve::RootZeroDomain>,
-    count: usize,
+    relation_memory_targets: Vec<Option<solve::ScalarSlot>>,
 }
 
 fn lower_roots<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
+    relation_memory_owners: &RelationMemoryOwners<'dae>,
 ) -> Result<LoweredRoots, LowerError> {
     let mut rows = ScalarRows::default();
     let mut zero_domains = Vec::with_capacity(view.root_count());
-    let mut count = 0;
+    let mut relation_memory_targets = Vec::with_capacity(view.root_count());
     for index in 0..view.root_count() {
         let id = view.root_id(index).expect("dense root identity resolves");
         let root = view.root(id).expect("checked root identity resolves");
@@ -1165,15 +1646,15 @@ fn lower_roots<'dae>(
         rows.push(
             ScalarCompiler::new(view, layout, None).root_program(root.relation())?,
             root.provenance().span(),
-            count,
+            zero_domains.len(),
         );
         zero_domains.push(root_zero_domain(view, relation.expression()));
-        count += 1;
+        relation_memory_targets.push(relation_memory_owners.target(root.relation()));
     }
     Ok(LoweredRoots {
         programs: rows.into_scalar_block()?,
         zero_domains,
-        count,
+        relation_memory_targets,
     })
 }
 
@@ -1257,8 +1738,9 @@ fn lower_time_events(view: dae::DaeView<'_>) -> Vec<f64> {
 fn expression_pre_mode<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
+    sampled: bool,
 ) -> solve::DiscreteEventPreMode {
-    if expression_contains_pre(view, expression) {
+    if sampled || expression_contains_pre(view, expression) {
         solve::DiscreteEventPreMode::EventEntry
     } else {
         solve::DiscreteEventPreMode::FollowCurrent

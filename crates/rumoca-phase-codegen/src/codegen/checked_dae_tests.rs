@@ -41,6 +41,58 @@ fn dae_render_context_accepts_only_a_finalized_checked_root() {
 }
 
 #[test]
+fn dae_template_preserves_rank_three_transpose_axis_semantics() {
+    let text = "input Real x[2,3,4]; transpose(x)";
+    let mut source_map = SourceMap::new();
+    let source = source_map.add("transpose.mo", text);
+    let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let tensor = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [2, 3, 4]),
+                at,
+            )
+        })?;
+        let input = dae.variables(|variables| {
+            variables.input(
+                VarName::new("x"),
+                tensor,
+                dae::InputVariability::Continuous,
+                at,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        dae.expressions(|expressions| {
+            let input = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Input(input))?;
+            expressions
+                .at(at)
+                .builtin(dae::PureBuiltin::Transpose, [input])?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let projected = dae_template_json(&dae).unwrap();
+    let expressions = projected["expressions"].as_array().unwrap();
+    assert_eq!(
+        expressions[0]["value_type"]["dimensions"],
+        serde_json::json!([2, 3, 4])
+    );
+    assert_eq!(
+        expressions[1]["value_type"]["dimensions"],
+        serde_json::json!([3, 2, 4])
+    );
+    assert_eq!(expressions[1]["operation"]["builtin"], "transpose");
+    assert_eq!(
+        expressions[1]["operation"]["arguments"],
+        serde_json::json!([0])
+    );
+}
+
+#[test]
 fn checked_modelica_distinguishes_omitted_and_explicit_unit_range_steps() {
     let source = "parameter Integer a[3] = 1:3; parameter Integer b[3] = 4:1:6;";
     let mut source_map = SourceMap::new();

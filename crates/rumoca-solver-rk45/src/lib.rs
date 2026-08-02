@@ -19,8 +19,8 @@ use rumoca_solver::{
     StepUntilOutcome, TimeoutBudget, TimeoutExceeded,
     fmi_me::{
         MeError, MeEventCause, MeEventEntry, MeEventStop, MeIndicatorCrossing, MeInstanceConfig,
-        MeModelSource, MeObservation, MeOutputSeries, MeStepCompletion, MeTime,
-        ModelExchangeKernel, SolveMeKernel, event_indicator_crossed,
+        MeModelSource, MeObservation, MeOutputSeries, MeRootProfile, MeTime, ModelExchangeKernel,
+        SolveMeKernel, event_indicator_crossed,
     },
     timeline,
 };
@@ -90,7 +90,11 @@ impl From<TimeoutExceeded> for SimError {
 
 impl From<MeError> for SimError {
     fn from(value: MeError) -> Self {
-        match value {
+        // The component's stage annotation is machine metadata for a host that
+        // buckets failures; this host reports failures by variant, so peeling it
+        // keeps every mapping — and every rendered message — exactly what it was
+        // before the component started minting stages.
+        match value.into_kind() {
             MeError::NoContinuousStates => Self::EmptySystem,
             MeError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
             MeError::Evaluation { message } => Self::SolveIr(message),
@@ -98,6 +102,12 @@ impl From<MeError> for SimError {
             MeError::Contract { reason } => Self::RuntimeContract { reason },
             MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
             MeError::Allocation { context, entries } => Self::Allocation { context, entries },
+            // `into_kind` peels every annotation, so the annotated variant
+            // cannot reach here; naming it keeps the match exhaustive without a
+            // catch-all that would silently absorb a future variant.
+            staged @ MeError::Staged { .. } => Self::RuntimeContract {
+                reason: format!("stage annotation survived peeling: {staged}"),
+            },
         }
     }
 }
@@ -130,6 +140,8 @@ fn instance_config(opts: &SimOptions) -> MeInstanceConfig {
         tolerance: opts.atol.max(1.0e-12),
         start_time: opts.t_start,
         stop_time: opts.t_end,
+        root_profile: MeRootProfile::Component,
+        numerics_profile: rumoca_solver::fmi_me::MeNumericsProfile::Component,
     }
 }
 
@@ -283,10 +295,17 @@ impl StateSession {
             return;
         }
         let t_end = target_time + (target_time - self.backend.time).max(1.0);
-        self.backend.t_end = t_end;
-        self.backend
+        if !t_end.is_finite() {
+            return;
+        }
+        if self
+            .backend
             .kernel
-            .extend_stop_time(self.backend.time, t_end);
+            .extend_stop_time(self.backend.time, t_end)
+            .is_ok()
+        {
+            self.backend.t_end = t_end;
+        }
     }
 
     fn step(&mut self, dt: f64) -> Result<(), SimError> {
@@ -398,6 +417,18 @@ fn record_rk_initial_samples(
     for index in 0..backend.kernel.initial_observations().len() {
         let observation: &MeObservation = &backend.kernel.initial_observations()[index];
         let sample_t = observation.time();
+        if backend
+            .kernel
+            .initial_observations()
+            .get(index + 1)
+            .is_some_and(|next| time_match_with_tol(sample_t, next.time()))
+        {
+            // Initial event iteration may expose several superdense values at
+            // one semantic start time. Batch traces own one column per time;
+            // retain the settled (last) value for that instant, matching the
+            // ordinary output-time replacement policy.
+            continue;
+        }
         backend
             .kernel
             .record_outputs(observation, sample_t, series)?;
@@ -654,13 +685,13 @@ impl Rk45Backend {
     /// `fmi3SetTime` + `fmi3SetContinuousStates`: the ordinary FMI discipline
     /// before reading variables or asking for the next event.
     pub(crate) fn sync_kernel_to_current_point(&mut self) -> Result<(), SimError> {
-        self.kernel.set_time(MeTime::at(self.time));
+        self.kernel.set_time(MeTime::at(self.time))?;
         self.kernel.set_continuous_states(&self.state)?;
         Ok(())
     }
 
     fn project_accepted_state(&mut self, time: f64, state: &mut [f64]) -> Result<bool, SimError> {
-        self.kernel.set_time(MeTime::at(time));
+        self.kernel.set_time(MeTime::at(time))?;
         Ok(self.kernel.project_continuous_states(state)?)
     }
 
@@ -680,7 +711,7 @@ impl Rk45Backend {
         state: &[f64],
         event_boundary: Option<f64>,
     ) -> Result<Vec<f64>, SimError> {
-        self.kernel.set_time(MeTime::new(time, event_boundary));
+        self.kernel.set_time(MeTime::new(time, event_boundary))?;
         self.kernel.set_continuous_states(state)?;
         let start = rk_eval_trace_enabled().then(Instant::now);
         let mut derivatives = Vec::new();
@@ -699,7 +730,7 @@ impl Rk45Backend {
         state: &[f64],
         event_boundary: Option<f64>,
     ) -> Result<Vec<f64>, SimError> {
-        self.kernel.set_time(MeTime::new(time, event_boundary));
+        self.kernel.set_time(MeTime::new(time, event_boundary))?;
         self.kernel.set_continuous_states(state)?;
         let start = rk_eval_trace_enabled().then(Instant::now);
         let mut indicators = Vec::new();
@@ -916,27 +947,44 @@ impl Rk45Backend {
             }
             // Latch `pre(v)` from the located left limit, then hand the
             // component the crossings its relation buffers must record.
-            self.kernel.set_time(MeTime::at(root.time));
+            self.kernel.set_time(MeTime::at(root.time))?;
             self.kernel.set_continuous_states(&root.pre_state)?;
             self.kernel.capture_pre_event_state()?;
             self.kernel.arm_state_event(&simultaneous_crossings)?;
             self.time = root.time;
             self.state = root.state;
-            self.kernel.set_time(MeTime::at(self.time));
+            self.kernel.set_time(MeTime::at(self.time))?;
             self.kernel.set_continuous_states(&self.state)?;
-            self.kernel
-                .completed_integrator_step(MeStepCompletion::AtStateEvent)?;
+            self.complete_integrator_step()?;
             return Ok(Some(StepUntilOutcome::RootFound { t_root: root.time }));
         }
         self.time = new_t;
         self.state = projected_next;
-        self.kernel.set_time(MeTime::at(self.time));
+        self.kernel.set_time(MeTime::at(self.time))?;
         self.kernel.set_continuous_states(&self.state)?;
-        self.kernel
-            .completed_integrator_step(MeStepCompletion::Continuous {
-                accepted_derivatives: Some(&trial.stages[6]),
-            })?;
+        self.complete_integrator_step()?;
         Ok(None)
+    }
+
+    fn complete_integrator_step(&mut self) -> Result<(), SimError> {
+        if !self
+            .kernel
+            .model_description()
+            .needs_completed_integrator_step
+        {
+            return Ok(());
+        }
+        let completed = self.kernel.completed_integrator_step(true)?;
+        if completed.enter_event_mode || completed.terminate_simulation {
+            return Err(SimError::RuntimeContract {
+                reason: format!(
+                    "RK45 host cannot yet consume completed-integrator-step outputs: \
+                     enter_event_mode={} terminate_simulation={}",
+                    completed.enter_event_mode, completed.terminate_simulation
+                ),
+            });
+        }
+        Ok(())
     }
 
     fn locate_step_roots(
@@ -1061,6 +1109,9 @@ impl Rk45Backend {
             if !discrete.discrete_states_need_update {
                 break;
             }
+        }
+        if self.termination.is_none() {
+            self.kernel.enter_continuous_time_mode()?;
         }
         Ok(Some(
             self.termination

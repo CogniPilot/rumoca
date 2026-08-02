@@ -4,9 +4,10 @@
 //! structured components and derives every other point from it with the helpers
 //! below, so the per-element cost is a structural rewrite of the family
 //! subscript rather than a full re-resolution of the element's type, modifiers
-//! and attributes. The derived entries are ordinary instances: the recorded
-//! `ast::InstanceComponentFamily` describes how they were produced, it does not
-//! own them.
+//! and attributes. The derived entries are ordinary instances: nothing in
+//! Instance IR records that they were produced this way, because SPEC_0032 §1
+//! requires the result to be indistinguishable from element-by-element
+//! expansion.
 //!
 //! Every rewrite here is deliberately guarded: a path is only reindexed when its
 //! segment at `depth` matches the template domain point by name *and*

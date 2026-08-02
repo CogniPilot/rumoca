@@ -1345,33 +1345,29 @@ fn sanitize_identifier(input: &str) -> String {
     }
 }
 
-fn normalize_solver(raw: Option<&str>) -> Option<&'static str> {
-    let lowered = raw?.trim().to_ascii_lowercase();
-    let normalized = lowered.replace(['-', '_', ' '], "");
-    match normalized.as_str() {
-        "auto" => Some("auto"),
-        "bdf" => Some("bdf"),
-        "esdirk34" => Some("esdirk34"),
-        "trbdf2" => Some("trbdf2"),
-        "rklike" => Some("rk-like"),
-        _ => None,
+/// Canonicalize a configured solver name, keeping an unrunnable one verbatim.
+///
+/// The valid set lives in [`rumoca_core::canonical_solver_name`], the single
+/// authority every solver-accepting surface resolves through, so this file
+/// carries no second copy of the list.
+///
+/// A name that is not in that set is *preserved*, not dropped. Dropping it would
+/// leave the previously effective solver running under a name the scenario never
+/// asked for; preserving it carries the request to the run entry point, which
+/// reports it against the valid set. Silence is the one outcome this must not
+/// produce.
+fn normalize_solver(raw: Option<&str>) -> Option<String> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
     }
+    Some(rumoca_core::canonical_solver_name(raw).map_or_else(|_| raw.to_string(), str::to_string))
 }
 
-fn normalize_solver_opt(value: Option<String>) -> Option<String> {
-    let normalized = value
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-        .map(|value| value.replace(['-', '_', ' '], ""));
-    match normalized.as_deref() {
-        Some("auto") => Some("auto".to_string()),
-        Some("bdf") => Some("bdf".to_string()),
-        Some("esdirk34") => Some("esdirk34".to_string()),
-        Some("trbdf2") => Some("trbdf2".to_string()),
-        Some("rklike") => Some("rk-like".to_string()),
-        _ => None,
-    }
+/// Owned variant of [`normalize_solver`]; see it for why an unrunnable name is
+/// preserved rather than dropped.
+pub fn normalize_solver_opt(value: Option<String>) -> Option<String> {
+    normalize_solver(value.as_deref())
 }
 
 fn normalize_dt(raw: Option<f64>) -> Option<f64> {

@@ -150,6 +150,23 @@ impl<'dae> ScalarSelector<'dae> {
             dae::PureBuiltin::NoEvent => {
                 self.constant_real_inner(argument(0)?, scalar, reach, active)
             }
+            dae::PureBuiltin::Vector => {
+                self.constant_real_inner(argument(0)?, scalar, reach, active)
+            }
+            dae::PureBuiltin::Transpose => {
+                let operand = argument(0)?;
+                self.constant_real_inner(
+                    operand,
+                    self.transpose_scalar(operand, scalar),
+                    reach,
+                    active,
+                )
+            }
+            dae::PureBuiltin::Diagonal
+            | dae::PureBuiltin::OuterProduct
+            | dae::PureBuiltin::Skew => {
+                self.constant_matrix_builtin(builtin, arguments, scalar, reach, span, active)
+            }
             dae::PureBuiltin::Atan2 => {
                 let lhs = self.constant_real_inner(argument(0)?, scalar, reach, active)?;
                 let rhs = self.constant_real_inner(argument(1)?, scalar, reach, active)?;
@@ -164,10 +181,74 @@ impl<'dae> ScalarSelector<'dae> {
                     lhs.max(rhs)
                 })
             }
+            dae::PureBuiltin::Identity => {
+                let extent = usize::try_from(self.integer(argument(0)?, 0)?).map_err(|_| {
+                    LowerError::contract("checked identity extent is non-negative", span)
+                })?;
+                if extent == 0 {
+                    return Err(LowerError::contract(
+                        "a zero-size identity has no scalar projection",
+                        span,
+                    ));
+                }
+                Ok(f64::from(u8::from(scalar / extent == scalar % extent)))
+            }
             _ => Err(LowerError::non_computable(
                 "affine derivative coefficient is not compile-time numeric",
                 span,
             )),
+        }
+    }
+
+    fn constant_matrix_builtin(
+        &self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        reach: ConstantReach,
+        span: Span,
+        active: &mut Vec<dae::ExprId<'dae>>,
+    ) -> Result<f64, LowerError> {
+        let argument = |index| {
+            arguments
+                .get(index)
+                .ok_or_else(|| LowerError::contract("checked builtin argument is missing", span))
+        };
+        match builtin {
+            dae::PureBuiltin::Diagonal => {
+                let operand = argument(0)?;
+                let extent = scalar_count(self.view, operand);
+                let row = scalar / extent;
+                if row == scalar % extent {
+                    self.constant_real_inner(operand, row, reach, active)
+                } else {
+                    Ok(0.0)
+                }
+            }
+            dae::PureBuiltin::OuterProduct => {
+                let lhs = argument(0)?;
+                let rhs = argument(1)?;
+                let columns = scalar_count(self.view, rhs);
+                let lhs = self.constant_real_inner(lhs, scalar / columns, reach, active)?;
+                let rhs = self.constant_real_inner(rhs, scalar % columns, reach, active)?;
+                Ok(lhs * rhs)
+            }
+            dae::PureBuiltin::Skew => {
+                let (operand_scalar, negate) = match scalar {
+                    0 | 4 | 8 => return Ok(0.0),
+                    1 => (2, true),
+                    2 => (1, false),
+                    3 => (2, false),
+                    5 => (0, true),
+                    6 => (1, true),
+                    7 => (0, false),
+                    _ => unreachable!("checked skew scalar belongs to its 3x3 result"),
+                };
+                let value =
+                    self.constant_real_inner(argument(0)?, operand_scalar, reach, active)?;
+                Ok(if negate { -value } else { value })
+            }
+            _ => unreachable!("only compact matrix builtins use this constant evaluator"),
         }
     }
 

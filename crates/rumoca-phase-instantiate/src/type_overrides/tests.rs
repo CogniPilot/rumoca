@@ -361,6 +361,238 @@ end P;
     assert_reference_target(value, "Medium.k", expected);
 }
 
+#[test]
+fn enclosing_selected_component_reproves_nested_modifier_bindings() {
+    let source = r"
+record DriveData
+  parameter Real JL = 2;
+end DriveData;
+model LoadInertia
+  parameter Real J = 1;
+end LoadInertia;
+partial model PartialDrive
+  replaceable parameter DriveData driveData constrainedby DriveData;
+  LoadInertia loadInertia(J = driveData.JL);
+end PartialDrive;
+model Test
+  extends PartialDrive;
+end Test;
+";
+    let tree = resolved_tree(source);
+    let expected = tree
+        .get_class_by_qualified_name("DriveData")
+        .and_then(|class| class.components.get("JL"))
+        .and_then(|component| component.def_id)
+        .expect("DriveData.JL declaration identity");
+    let unresolved = tree
+        .get_class_by_qualified_name("PartialDrive")
+        .and_then(|class| class.components.get("loadInertia"))
+        .and_then(|component| component.modifications.get("J"))
+        .and_then(|value| {
+            ast::collect_component_refs(value)
+                .into_iter()
+                .find(|reference| reference.to_string() == "driveData.JL")
+        })
+        .expect("nested modifier source reference");
+    assert_eq!(
+        unresolved.target_def_id(),
+        None,
+        "Resolve must defer the member of a replaceable component occurrence"
+    );
+
+    let overlay = crate::instantiate_model(&tree, "Test").expect("drive fixture instantiates");
+    let inertia = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "loadInertia.J")
+        .expect("nested J occurrence");
+    if let Some(reference) = inertia.binding.as_ref().and_then(|binding| {
+        ast::collect_component_refs(binding)
+            .into_iter()
+            .find(|reference| reference.to_string() == "driveData.JL")
+    }) {
+        assert_eq!(reference.target_def_id(), Some(expected));
+    }
+    assert_reference_target(
+        inertia
+            .binding_source
+            .as_ref()
+            .expect("symbolic J binding source"),
+        "driveData.JL",
+        expected,
+    );
+    assert_eq!(
+        inertia.binding_source_scope,
+        Some(ast::QualifiedName::new()),
+        "the nested binding must retain the root writer occurrence"
+    );
+}
+
+#[test]
+fn selected_media_components_reprove_multihop_record_members() {
+    let source = r"
+record StateBase
+  Real p;
+  Real T;
+  Real X;
+  Real d;
+end StateBase;
+record StateConcrete
+  extends StateBase;
+end StateConcrete;
+model BaseProperties
+  replaceable StateBase state constrainedby StateBase;
+end BaseProperties;
+model ConcreteProperties
+  extends BaseProperties(redeclare StateConcrete state);
+  Real localPressure = state.p;
+end ConcreteProperties;
+model Test
+  replaceable ConcreteProperties medium constrainedby BaseProperties;
+  Real pressure = medium.state.p;
+  Real temperature = medium.state.T;
+  Real composition = medium.state.X;
+  Real density = medium.state.d;
+end Test;
+";
+    let tree = resolved_tree(source);
+    let state = tree
+        .get_class_by_qualified_name("StateBase")
+        .expect("state record");
+    let expected = ["p", "T", "X", "d"].map(|name| {
+        state
+            .components
+            .get(name)
+            .and_then(|component| component.def_id)
+            .unwrap_or_else(|| panic!("StateBase.{name} identity"))
+    });
+
+    let overlay = crate::instantiate_model(&tree, "Test").expect("media fixture instantiates");
+    for (component_name, reference_name, expected) in [
+        ("pressure", "medium.state.p", expected[0]),
+        ("temperature", "medium.state.T", expected[1]),
+        ("composition", "medium.state.X", expected[2]),
+        ("density", "medium.state.d", expected[3]),
+        ("medium.localPressure", "state.p", expected[0]),
+    ] {
+        let component = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == component_name)
+            .unwrap_or_else(|| panic!("component occurrence {component_name}"));
+        assert_reference_target(
+            component.binding.as_ref().expect("declaration binding"),
+            reference_name,
+            expected,
+        );
+    }
+}
+
+#[test]
+fn selected_component_members_are_reproved_on_attributes_and_dimensions() {
+    let source = r"
+record Data
+  parameter Integer n = 2;
+  parameter Real lo = 0;
+  parameter Real hi = 10;
+  parameter Real nom = 1;
+end Data;
+model Test
+  replaceable parameter Data data constrainedby Data;
+  Real x[data.n](start = data.lo, min = data.lo, max = data.hi,
+    nominal = data.nom);
+end Test;
+";
+    let tree = resolved_tree(source);
+    let data = tree
+        .get_class_by_qualified_name("Data")
+        .expect("Data record");
+    let member_id = |name: &str| {
+        data.components
+            .get(name)
+            .and_then(|component| component.def_id)
+            .unwrap_or_else(|| panic!("Data.{name} identity"))
+    };
+    let overlay = crate::instantiate_model(&tree, "Test").expect("surface fixture instantiates");
+    let x = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "x")
+        .expect("x occurrence");
+
+    let ast::Subscript::Expression(dimension) = &x.dims_expr[0] else {
+        panic!("symbolic dimension expression");
+    };
+    assert_reference_target(dimension, "data.n", member_id("n"));
+    for (name, expression, expected) in [
+        ("data.lo", x.start.as_ref(), member_id("lo")),
+        ("data.lo", x.min.as_ref(), member_id("lo")),
+        ("data.hi", x.max.as_ref(), member_id("hi")),
+        ("data.nom", x.nominal.as_ref(), member_id("nom")),
+    ] {
+        assert_reference_target(expression.expect("numeric attribute"), name, expected);
+    }
+}
+
+#[test]
+fn selected_component_missing_member_fails_post_materialization_without_name_fallback() {
+    let source = r"
+record DefaultData
+  Real JL;
+end DefaultData;
+record SelectedData
+  Real other;
+end SelectedData;
+record Unrelated
+  Real JL;
+end Unrelated;
+model Base
+  replaceable parameter DefaultData data constrainedby DefaultData;
+  Real copied = data.JL;
+  Unrelated unrelated;
+end Base;
+";
+    let tree = resolved_tree(source);
+    let selected_type = tree
+        .get_class_by_qualified_name("SelectedData")
+        .and_then(|class| class.def_id)
+        .expect("SelectedData identity");
+    let mut overlay = crate::instantiate_model(&tree, "Base").expect("base fixture instantiates");
+    overlay
+        .components
+        .values_mut()
+        .find(|component| component.qualified_name.to_flat_string() == "data")
+        .expect("selected data occurrence")
+        .type_def_id = Some(selected_type);
+    let copied = overlay
+        .components
+        .values_mut()
+        .find(|component| component.qualified_name.to_flat_string() == "copied")
+        .expect("copied occurrence");
+    let ast::Expression::ComponentReference(reference) =
+        copied.binding.as_mut().expect("copied declaration binding")
+    else {
+        panic!("copied binding must remain a component reference");
+    };
+    reference.set_target_def_id(None);
+
+    let error = super::post_materialization::resolve_post_materialization_component_targets(
+        &tree,
+        &mut overlay,
+    )
+    .expect_err("a selected type without JL must fail post-materialization");
+    assert_eq!(
+        diagnostic_code(&error),
+        Some("rumoca::instantiate::EI007".to_string())
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("selected redeclare class has no such member"),
+        "the selected class must be checked directly: {error}"
+    );
+}
+
 fn assert_reference_target(expression: &ast::Expression, name: &str, expected: DefId) {
     let reference = ast::collect_component_refs(expression)
         .into_iter()

@@ -190,6 +190,7 @@ fn process_class_instance_body(
             imports,
             &tree.source_map,
             instance_name.as_deref(),
+            ctx.predefined_string_declaration,
             ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
         algorithms::qualify_write_targets_with_owner_path(&mut flat_alg, &owner_instance_path)?;
@@ -229,6 +230,7 @@ fn process_class_instance_body(
             imports,
             &tree.source_map,
             instance_name.as_deref(),
+            ctx.predefined_string_declaration,
             ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
         algorithms::qualify_write_targets_with_owner_path(&mut flat_alg, &owner_instance_path)?;
@@ -283,6 +285,7 @@ pub(crate) fn flatten_algorithm_section(
     imports: &qualify::ImportMap,
     source_map: &rumoca_core::SourceMap,
     instance_name: Option<&str>,
+    predefined_string_declaration: Option<rumoca_core::DefId>,
     predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
 ) -> Result<Algorithm, FlattenError> {
     let span = statements
@@ -311,7 +314,7 @@ pub(crate) fn flatten_algorithm_section(
             initial_locals: &no_locals,
             source_map: Some(source_map),
             instance_name,
-            predefined_string_declaration: None,
+            predefined_string_declaration,
             predefined_intrinsics,
         },
         algorithms::AlgorithmSectionMetadata::new(span, origin),

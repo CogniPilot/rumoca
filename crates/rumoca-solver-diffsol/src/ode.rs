@@ -20,7 +20,8 @@ use rumoca_solver::{
 };
 
 use crate::{
-    AlgebraicWarmStart, EVENT_UPDATE_MAX_ITERS, Matrix, RuntimeParameters, Scalar, SimError, Vector,
+    AlgebraicWarmStart, EVENT_UPDATE_MAX_ITERS, Matrix, RuntimeParameters, Scalar, SimError,
+    Vector, me::DiffsolMeHost,
 };
 
 #[derive(Debug, Default)]
@@ -72,6 +73,7 @@ pub(crate) struct BdfEvalCounterSnapshot {
     pub(crate) root_nanos: u64,
 }
 
+#[allow(dead_code)] // Frozen state-only builder retained until session cutover.
 pub(crate) struct StateOdeProblemInput {
     pub(crate) runtime_params: RuntimeParameters,
     pub(crate) algebraic_warm_start: AlgebraicWarmStart,
@@ -82,6 +84,7 @@ pub(crate) struct StateOdeProblemInput {
 }
 
 impl StateOdeProblemInput {
+    #[allow(dead_code)]
     pub(crate) fn new(
         runtime_params: RuntimeParameters,
         algebraic_warm_start: AlgebraicWarmStart,
@@ -105,6 +108,7 @@ fn new_bdf_eval_counters() -> Option<Arc<BdfEvalCounters>> {
     trace_bdf_eval_counts().then(|| Arc::new(BdfEvalCounters::default()))
 }
 
+#[allow(dead_code)]
 pub(crate) fn state_ode_problem_input(
     runtime_params: &RuntimeParameters,
     algebraic_warm_start: &AlgebraicWarmStart,
@@ -172,6 +176,8 @@ pub(crate) struct OdeModel {
     pub(crate) initial_targets: Vec<Option<solve::ScalarSlot>>,
     implicit_jacobian_v: PreparedComputeBlock,
     implicit_scalar_jacobian_v: PreparedScalarProgramBlock,
+    #[cfg(test)]
+    #[allow(dead_code)] // Used only by the frozen-driver comparison scaffold.
     pub(crate) root_conditions: PreparedScalarProgramBlock,
     pub(crate) implicit_targets: Vec<Option<solve::ScalarSlot>>,
     algebraic_projection_plan: solve::AlgebraicProjectionPlan,
@@ -217,6 +223,7 @@ impl OdeModel {
                     &model.artifacts.continuous.implicit_jacobian_v,
                 )?,
             )?,
+            #[cfg(test)]
             root_conditions: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
             )?,
@@ -297,6 +304,8 @@ impl OdeModel {
             .map_err(|err| SimError::SolveIr(err.to_string()))
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn eval_roots(
         &self,
         y: &[f64],
@@ -527,6 +536,7 @@ impl AlgebraicProjectionModel for OdeModel {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn validate_model(model: &solve::SolveModel) -> Result<(), SimError> {
     if model.state_scalar_count() > 0
         && model.problem.continuous.implicit_rhs.is_empty()
@@ -588,6 +598,7 @@ pub(crate) fn build_ode_problem_with_runtime_params_and_initial(
     )
 }
 
+#[allow(dead_code)]
 pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     model: &solve::SolveModel,
     opts: &SimOptions,
@@ -677,6 +688,132 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     problem
 }
 
+/// Build the state-only Diffsol problem over the FMI 3 ME adapter.
+///
+/// The model is still consulted for the solver-owned tolerance vector and
+/// structural sparsity pattern during the migration. Every migrated numerical
+/// callback crosses `DiffsolMeHost`. The retired-runtime RHS oracle was removed
+/// after the full migration cohort passed its bit-exact dual-run guard.
+fn finish_me_ode_problem<Eqn, Error>(
+    problem: Result<OdeSolverProblem<Eqn>, Error>,
+    host: &DiffsolMeHost,
+    eval_counters: Option<Arc<BdfEvalCounters>>,
+) -> Result<MeOdeProblemBuild<Eqn>, SimError>
+where
+    Eqn: StateOdeEquations,
+    Error: std::fmt::Display,
+{
+    if let Some(error) = host.take_callback_error() {
+        return Err(error.into());
+    }
+    let problem = problem.map_err(|error| {
+        SimError::SolverError(format!("ME ODE problem builder failed: {error}"))
+    })?;
+    Ok(MeOdeProblemBuild {
+        problem,
+        eval_counters,
+    })
+}
+
+pub(crate) fn build_me_state_ode_problem(
+    opts: &SimOptions,
+    host: DiffsolMeHost,
+    t_start: f64,
+    initial_state: Vec<f64>,
+) -> Result<MeOdeProblemBuild<impl StateOdeEquations + use<>>, SimError> {
+    let state_count = host.state_count();
+    let root_count = host.event_indicator_count().max(1);
+    let base_tolerance = opts.atol.abs().max(f64::MIN_POSITIVE);
+    let mut atol = host
+        .continuous_state_nominals()?
+        .into_iter()
+        .map(|nominal| (base_tolerance * nominal).clamp(f64::MIN_POSITIVE, f64::MAX))
+        .collect::<Vec<_>>();
+    if atol.is_empty() {
+        atol.push(base_tolerance);
+    }
+    let eval_counters = new_bdf_eval_counters();
+    let rhs_counters = eval_counters.clone();
+    let jacobian_counters = eval_counters.clone();
+    let root_counters = eval_counters.clone();
+    let rhs_host = host.clone();
+    let jacobian_host = host.clone();
+    let build_error_host = host.clone();
+    let root_host = host;
+    let sparsity_probe = Arc::new(AtomicBool::new(true));
+    let jacobian_probe = sparsity_probe.clone();
+
+    let rhs = move |y: &Vector, _p: &Vector, t: Scalar, out: &mut Vector| {
+        let start = rhs_counters.as_ref().map(|_| Instant::now());
+        rhs_host.derivatives_into(t, y.as_slice(), out.as_mut_slice());
+        if let (Some(counters), Some(start)) = (rhs_counters.as_ref(), start) {
+            counters.rhs(elapsed_nanos_u64(start));
+        }
+    };
+    let jacobian = move |y: &Vector, _p: &Vector, t: Scalar, seed: &Vector, out: &mut Vector| {
+        if jacobian_probe.load(Ordering::Relaxed) {
+            apply_dense_jacobian_probe(seed.as_slice(), out.as_mut_slice());
+            return;
+        }
+        let start = jacobian_counters.as_ref().map(|_| Instant::now());
+        jacobian_host.directional_derivative_into(
+            t,
+            y.as_slice(),
+            seed.as_slice(),
+            out.as_mut_slice(),
+        );
+        if let (Some(counters), Some(start)) = (jacobian_counters.as_ref(), start) {
+            counters.jacobian_vector(elapsed_nanos_u64(start));
+        }
+    };
+    let roots = move |y: &Vector, _p: &Vector, t: Scalar, out: &mut Vector| {
+        let start = root_counters.as_ref().map(|_| Instant::now());
+        root_host.event_indicators_into(t, y.as_slice(), out.as_mut_slice());
+        if let (Some(counters), Some(start)) = (root_counters.as_ref(), start) {
+            counters.root(elapsed_nanos_u64(start));
+        }
+    };
+
+    let problem = OdeBuilder::<Matrix>::new()
+        .t0(t_start)
+        .h0(opts.dt.unwrap_or(1.0e-3).abs().max(1.0e-9))
+        .rtol(opts.rtol)
+        .atol(atol)
+        .p(Vec::new())
+        .rhs_implicit(rhs, jacobian)
+        .init(
+            move |_p: &Vector, _t: Scalar, y: &mut Vector| {
+                y.as_mut_slice().copy_from_slice(&initial_state);
+            },
+            state_count.max(1),
+        )
+        .root(roots, root_count)
+        .build();
+    sparsity_probe.store(false, Ordering::Relaxed);
+    finish_me_ode_problem(problem, &build_error_host, eval_counters)
+}
+
+fn apply_dense_jacobian_probe(seed: &[f64], output: &mut [f64]) {
+    let magnitude = seed.iter().copied().map(f64::abs).sum::<f64>();
+    output.fill(magnitude);
+}
+
+pub(crate) trait StateOdeEquations:
+    OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>
+{
+}
+
+impl<T> StateOdeEquations for T where
+    T: OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>
+{
+}
+
+pub(crate) struct MeOdeProblemBuild<Eqn: StateOdeEquations> {
+    pub(crate) problem: OdeSolverProblem<Eqn>,
+    pub(crate) eval_counters: Option<Arc<BdfEvalCounters>>,
+}
+
+#[allow(dead_code)]
 struct StateJacobianEvaluatorInput {
     runtime: Arc<SolveRuntime>,
     runtime_params: Option<RuntimeParameters>,
@@ -691,6 +828,7 @@ struct StructuralJacobianEvaluator<F> {
     probe: Arc<AtomicBool>,
 }
 
+#[allow(dead_code)]
 fn state_jacobian_evaluator(
     input: StateJacobianEvaluatorInput,
 ) -> StructuralJacobianEvaluator<impl Fn(&Vector, &Vector, Scalar, &Vector, &mut Vector)> {
@@ -741,6 +879,7 @@ fn state_jacobian_evaluator(
     }
 }
 
+#[allow(dead_code)]
 fn state_root_evaluator(
     runtime: Arc<SolveRuntime>,
     runtime_params: Option<RuntimeParameters>,
@@ -781,6 +920,7 @@ fn state_root_evaluator(
     }
 }
 
+#[allow(dead_code)]
 fn bdf_algebraic_settle(tol: f64) -> rumoca_solver::AlgebraicSettle {
     rumoca_solver::AlgebraicSettle {
         tol,
@@ -951,6 +1091,7 @@ fn implicit_jacobian_evaluator(
     }
 }
 
+#[allow(dead_code)]
 fn derivative_jacobian_pattern(
     model: &solve::SolveModel,
 ) -> Result<solve::StructuralPattern, SimError> {
@@ -1054,6 +1195,7 @@ fn with_delay_adjusted_params<R>(
     Ok(f(&adjusted))
 }
 
+#[allow(dead_code)]
 fn with_delay_adjusted_params_mut<R>(
     runtime: &SolveRuntime,
     solver_y: &mut [f64],

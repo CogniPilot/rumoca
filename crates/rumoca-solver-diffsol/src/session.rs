@@ -7,21 +7,17 @@ use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    DiffsolMethod, RuntimeEventStop, SimOptions, SolveRuntime, SolveStopSchedule,
-    event_solver_step_cap, runtime_root_event_application_time, time_match_with_tol,
+    RuntimeEventStop, SimOptions, SolveRuntime, SolveStopSchedule, event_solver_step_cap,
+    runtime_root_event_application_time, time_match_with_tol,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::runtime::{
-    NoStateRuntime, advance_no_state_runtime_to, apply_no_state_deadline_tick,
-    initialize_no_state_runtime,
-};
 use crate::{
     LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
     build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
-    settle_algebraics_and_relation_memory, solver_call, validate_model, write_state_to_solver,
+    settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
 };
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
@@ -96,10 +92,7 @@ impl EventIterationStreak {
 }
 
 struct RuntimeOnlyDriver {
-    _runtime_context: solve_eval::SimulationContext,
-    model: solve::SolveModel,
-    opts: SimOptions,
-    runtime: NoStateRuntime,
+    session: rumoca_solver::fmi_me::MeNoStateSession,
     input_values: IndexMap<String, f64>,
 }
 
@@ -216,42 +209,21 @@ impl RuntimeOnlyDriver {
                 "no-state session requires a model with zero continuous states".to_string(),
             ));
         }
-        let runtime_context = solve_eval::SimulationContext::new();
-        runtime_context.hydrate_solve_model(model);
-        validate_model(model)?;
-        let runtime = initialize_no_state_runtime(model, &opts, 1, false)?;
-        Ok(Self {
-            _runtime_context: runtime_context,
-            model: model.clone(),
+        let session = rumoca_solver::fmi_me::MeNoStateSession::instantiate(
+            rumoca_solver::fmi_me::MeModelSource::new(model),
             opts,
-            runtime,
+        )?;
+        Ok(Self {
+            session,
             input_values: IndexMap::new(),
         })
     }
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
-        let Some(param_idx) = self.model.problem.solve_layout.input_parameter_index(name) else {
+        if !self.session.set_input(name, value)? {
             return Err(SimError::SolverError(format!("unknown input '{name}'")));
-        };
-        self.input_values.insert(name.to_string(), value);
-        if let Some(slot) = self.runtime.params.get_mut(param_idx) {
-            *slot = value;
         }
-        let tol = self.opts.atol.max(1.0e-10);
-        settle_algebraics_and_relation_memory(
-            &self.runtime.runtime,
-            &self.runtime.equilibrium_model,
-            &mut self.runtime.current_y,
-            &mut self.runtime.params,
-            self.runtime.current_t,
-            0,
-            tol,
-        )?;
-        self.runtime.runtime.commit_delay_history(
-            self.runtime.current_t,
-            &self.runtime.current_y,
-            &self.runtime.params,
-        )?;
+        self.input_values.insert(name.to_string(), value);
         Ok(())
     }
 
@@ -263,70 +235,27 @@ impl RuntimeOnlyDriver {
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
-        if target_time <= self.runtime.current_t {
-            return Ok(());
-        }
-        let tol = self.opts.atol.max(1.0e-10);
-        advance_no_state_runtime_to(&self.model, &self.opts, &mut self.runtime, target_time, tol)?;
-        let can_tick_at_target = self.runtime.current_t < target_time
-            || time_match_with_tol(self.runtime.current_t, target_time);
-        let event_at_target = self
-            .runtime
-            .last_event_t
-            .is_some_and(|event_t| time_match_with_tol(event_t, target_time));
-        if can_tick_at_target && !event_at_target {
-            apply_no_state_deadline_tick(&self.model, &mut self.runtime, target_time, tol)?;
-        }
-        Ok(())
+        self.session.advance_to(target_time).map_err(Into::into)
     }
 
     fn set_end_time(&mut self, t_end: f64) {
-        if !t_end.is_finite() || t_end <= self.opts.t_end {
-            return;
-        }
-        self.opts.t_end = t_end;
-        self.runtime.stop_schedule =
-            SolveStopSchedule::new(&self.model.problem, self.runtime.current_t, t_end);
+        self.session.extend_stop_time(t_end);
     }
 
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
-        let mut opts = self.opts.clone();
-        opts.t_start = t_start;
-        self.runtime = initialize_no_state_runtime(&self.model, &opts, 1, false)?;
-        self.opts = opts;
-        Ok(())
+        self.session.reset(t_start).map_err(Into::into)
     }
 
     fn time(&self) -> f64 {
-        self.runtime.current_t
+        self.session.time()
     }
 
     fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         if let Some(value) = self.input_values.get(name).copied() {
             return Ok(Some(value));
         }
-        let Some(idx) = self
-            .model
-            .visible_names
-            .iter()
-            .position(|visible| visible == name)
-        else {
-            return Ok(None);
-        };
-        let values = self.runtime.runtime.visible_values(
-            &self.runtime.current_y,
-            &self.runtime.params,
-            self.runtime.current_t,
-        )?;
-        values.get(idx).copied().map(Some).ok_or_else(|| {
-            SimError::RuntimeContract {
-                reason: format!(
-                    "visible value '{name}' resolved to index {idx}, but runtime returned {} values",
-                    values.len()
-                ),
-            }
-        })
+        Ok(self.session.output_values()?.get(name).copied())
     }
 
     fn state(&self) -> Result<SessionState, SimError> {
@@ -348,20 +277,15 @@ impl RuntimeOnlyDriver {
     }
 
     fn input_names(&self) -> &[String] {
-        self.model.problem.solve_layout.input_scalar_names()
+        self.session.input_names()
     }
 
     fn variable_names(&self) -> &[String] {
-        &self.model.visible_names
+        self.session.output_names()
     }
 
     fn session_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
-        let visible_values = self.runtime.runtime.visible_values(
-            &self.runtime.current_y,
-            &self.runtime.params,
-            self.runtime.current_t,
-        )?;
-        let mut values = collect_visible_values(&self.model.visible_names, visible_values)?;
+        let mut values = self.session.output_values()?;
         values.extend(
             self.input_values
                 .iter()
@@ -379,15 +303,6 @@ impl BdfSession {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
         let runtime = SolveRuntime::new(model)?;
-        if !model.problem.continuous.manifold_projection_plan.is_empty()
-            && opts.diffsol_method != DiffsolMethod::Bdf
-        {
-            return Err(SimError::SolverError(format!(
-                "index-reduction manifold projection is not supported by {:?}; use BDF or the \
-                 RK-like solver",
-                opts.diffsol_method
-            )));
-        }
         let root_runtime = Arc::new(runtime.clone());
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));

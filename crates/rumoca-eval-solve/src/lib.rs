@@ -482,6 +482,15 @@ pub struct SimulationRuntimeState {
     impure_random: Arc<Mutex<ImpureRandomState>>,
 }
 
+/// Opaque continuation state for one solve evaluator instance.
+///
+/// The contents deliberately remain evaluator-owned: callers can only apply
+/// them through [`SimulationRuntimeState::restore`].
+#[derive(Clone)]
+pub struct SimulationRuntimeStateSnapshot {
+    impure_random: ImpureRandomState,
+}
+
 impl SimulationRuntimeState {
     pub fn new() -> Self {
         Self::default()
@@ -493,6 +502,30 @@ impl SimulationRuntimeState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.clear();
+    }
+
+    pub fn snapshot(&self) -> SimulationRuntimeStateSnapshot {
+        let impure_random = self
+            .impure_random
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        SimulationRuntimeStateSnapshot { impure_random }
+    }
+
+    pub fn restore(&self, snapshot: &SimulationRuntimeStateSnapshot) {
+        let mut state = self
+            .impure_random
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.clone_from(&snapshot.impure_random);
+    }
+
+    pub fn matches_snapshot(&self, snapshot: &SimulationRuntimeStateSnapshot) -> bool {
+        self.impure_random
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .bit_eq(&snapshot.impure_random)
     }
 }
 

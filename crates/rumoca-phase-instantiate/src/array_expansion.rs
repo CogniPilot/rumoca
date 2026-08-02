@@ -48,6 +48,15 @@ struct ArrayElementPlan<'a> {
     mod_env_binding: Option<ast::ModificationValue>,
     binding_source_scope: Option<ast::QualifiedName>,
     scalar_comp: ast::Component,
+    source_scoped_modifiers: Vec<SourceScopedModifierProjection>,
+}
+
+struct SourceScopedModifierProjection {
+    key: ast::QualifiedName,
+    original: ast::ModificationValue,
+    value: ast::Expression,
+    source: Option<ast::Expression>,
+    source_components: IndexMap<String, ast::Component>,
 }
 
 /// A homogeneous array cleared for template-and-replicate instantiation.
@@ -76,7 +85,7 @@ pub(super) fn expand_array_component(
         .insert(parent_path.to_string(), dims.to_vec());
     let root = parent_path.to_component_path();
 
-    let mut plan = build_element_plan(scope, name, comp, ctx);
+    let mut plan = build_element_plan(scope, name, comp, dims, ctx)?;
     let mut indices = super::array_index_tuples(dims);
     let Some(first) = indices.next() else {
         return Ok(());
@@ -95,9 +104,7 @@ pub(super) fn expand_array_component(
             template_tuple: &first,
             span: attempt.span,
         };
-        let family =
-            family_replication::replicate_template(ctx, overlay, &attempt.watermarks, &request)?;
-        overlay.add_component_family(family);
+        family_replication::replicate_template(ctx, overlay, &attempt.watermarks, &request)?;
         return Ok(());
     }
 
@@ -113,8 +120,9 @@ fn build_element_plan<'a>(
     scope: &ArrayExpansionScope<'_>,
     name: &'a str,
     comp: &'a ast::Component,
+    dims: &[i64],
     ctx: &mut InstantiateContext,
-) -> ArrayElementPlan<'a> {
+) -> InstantiateResult<ArrayElementPlan<'a>> {
     // Extract the original binding for indexing: the active component modifier
     // wins over the declaration binding (MLS §7.2).
     //
@@ -158,8 +166,9 @@ fn build_element_plan<'a>(
     let mut scalar_comp = comp.clone();
     scalar_comp.shape = vec![];
     scalar_comp.shape_expr = vec![];
+    let source_scoped_modifiers = source_scoped_modifier_projections(scope, name, dims.len(), ctx)?;
 
-    ArrayElementPlan {
+    Ok(ArrayElementPlan {
         name,
         comp,
         resolved_mods,
@@ -169,7 +178,8 @@ fn build_element_plan<'a>(
         mod_env_binding,
         binding_source_scope,
         scalar_comp,
-    }
+        source_scoped_modifiers,
+    })
 }
 
 /// Rewrite the scalar element declaration for one domain point (MLS §7.2.5).
@@ -214,21 +224,30 @@ fn instantiate_array_element(
     overlay: &mut rumoca_ir_ast::InstanceOverlay,
 ) -> InstantiateResult<()> {
     prepare_element_declaration(scope, plan, idx)?;
+    let projected_modifiers =
+        projected_source_scoped_modifiers(scope, &plan.source_scoped_modifiers, idx)?;
 
     // Ensure scalar element instantiation sees the indexed binding (MLS §10.1).
     // Without this scoped override, a parent unindexed modifier entry for this
     // component name would overwrite the per-element indexed binding.
     let previous_binding = ctx.mod_env().active.get(&plan.binding_qn).cloned();
-    if let Some(binding_expr) = &plan.scalar_comp.binding
-        && plan.mod_env_binding.is_some()
-    {
-        let modification = array_element_binding_modification(
-            scope,
-            binding_expr,
-            idx,
-            plan.mod_env_binding.as_ref(),
-            plan.binding_source_scope.clone(),
-        )?;
+    let binding_modification = plan
+        .scalar_comp
+        .binding
+        .as_ref()
+        .filter(|_| plan.mod_env_binding.is_some())
+        .map(|binding| {
+            array_element_binding_modification(
+                scope,
+                binding,
+                idx,
+                plan.mod_env_binding.as_ref(),
+                plan.binding_source_scope.clone(),
+            )
+        })
+        .transpose()?;
+    apply_projected_modifiers(ctx, &projected_modifiers);
+    if let Some(modification) = binding_modification {
         ctx.mod_env_mut()
             .active
             .insert(plan.binding_qn.clone(), modification);
@@ -260,8 +279,173 @@ fn instantiate_array_element(
             ctx.mod_env_mut().active.shift_remove(&plan.binding_qn);
         }
     }
+    restore_projected_modifiers(ctx, &plan.source_scoped_modifiers);
 
     inst_result
+}
+
+fn projected_source_scoped_modifiers(
+    scope: &ArrayExpansionScope<'_>,
+    projections: &[SourceScopedModifierProjection],
+    indices: &[i64],
+) -> InstantiateResult<Vec<(ast::QualifiedName, ast::ModificationValue)>> {
+    let mut projected = Vec::with_capacity(projections.len());
+    for projection in projections {
+        let projected_value = index_array_expression_for_element(
+            scope.tree,
+            &projection.source_components,
+            &projection.value,
+            indices,
+        )?
+        .expect("the projection probe proves every planned modifier value");
+        let projected_source = projection
+            .source
+            .as_ref()
+            .map(|source| {
+                index_array_expression_for_element(
+                    scope.tree,
+                    &projection.source_components,
+                    source,
+                    indices,
+                )
+            })
+            .transpose()?
+            .flatten()
+            .or_else(|| projection.original.source.clone());
+        projected.push((
+            projection.key.clone(),
+            ast::ModificationValue::with_source_scope_and_prefixes(
+                projected_value,
+                projected_source,
+                projection.original.source_scope.clone(),
+                projection.original.each,
+                projection.original.final_,
+            ),
+        ));
+    }
+    Ok(projected)
+}
+
+fn apply_projected_modifiers(
+    ctx: &mut InstantiateContext,
+    projected: &[(ast::QualifiedName, ast::ModificationValue)],
+) {
+    for (key, value) in projected {
+        ctx.mod_env_mut().active.insert(key.clone(), value.clone());
+    }
+}
+
+fn restore_projected_modifiers(
+    ctx: &mut InstantiateContext,
+    projections: &[SourceScopedModifierProjection],
+) {
+    for projection in projections {
+        ctx.mod_env_mut()
+            .active
+            .insert(projection.key.clone(), projection.original.clone());
+    }
+}
+
+fn source_scoped_modifier_projections(
+    scope: &ArrayExpansionScope<'_>,
+    array_name: &str,
+    rank: usize,
+    ctx: &InstantiateContext,
+) -> InstantiateResult<Vec<SourceScopedModifierProjection>> {
+    let probe = vec![1; rank];
+    let candidates = ctx.mod_env().active.iter().filter(|(key, value)| {
+        !value.each
+            && key.parts.len() > 1
+            && key
+                .parts
+                .first()
+                .is_some_and(|(name, subscripts)| name == array_name && subscripts.is_empty())
+    });
+    let mut projections = Vec::new();
+    for (key, value) in candidates {
+        let Some(source_scope) = value.source_scope.as_ref() else {
+            continue;
+        };
+        let Some(source_components) = source_scope_components(scope.tree, ctx, source_scope)?
+        else {
+            continue;
+        };
+        let Some(projected_value) = projection_source_expression(
+            scope.tree,
+            ctx.mod_env(),
+            &source_components,
+            &value.value,
+            &probe,
+        )?
+        else {
+            continue;
+        };
+        let projected_source = value
+            .source
+            .as_ref()
+            .map(|source| {
+                projection_source_expression(
+                    scope.tree,
+                    ctx.mod_env(),
+                    &source_components,
+                    source,
+                    &probe,
+                )
+            })
+            .transpose()?
+            .flatten();
+        projections.push(SourceScopedModifierProjection {
+            key: key.clone(),
+            original: value.clone(),
+            value: projected_value,
+            source: projected_source,
+            source_components,
+        });
+    }
+    Ok(projections)
+}
+
+fn projection_source_expression(
+    tree: &ast::ClassTree,
+    mod_env: &ast::ModificationEnvironment,
+    source_components: &IndexMap<String, ast::Component>,
+    expression: &ast::Expression,
+    probe: &[i64],
+) -> InstantiateResult<Option<ast::Expression>> {
+    if index_array_expression_for_element(tree, source_components, expression, probe)?.is_some() {
+        return Ok(Some(expression.clone()));
+    }
+    let resolved = resolve_mod_to_array(expression, mod_env, source_components, tree);
+    Ok(
+        index_array_expression_for_element(tree, source_components, &resolved, probe)?
+            .map(|_| resolved),
+    )
+}
+
+fn source_scope_components(
+    tree: &ast::ClassTree,
+    ctx: &InstantiateContext,
+    source_scope: &ast::QualifiedName,
+) -> InstantiateResult<Option<IndexMap<String, ast::Component>>> {
+    let rendered = source_scope.to_flat_string();
+    let Some(frame) = ctx
+        .active_instantiations
+        .iter()
+        .rev()
+        .find(|frame| frame.instance_path == rendered)
+    else {
+        return Ok(None);
+    };
+    let super::InstantiationFrameKey::Def(def_id) = frame.key;
+    let Some(class) = tree.get_class_by_def_id(def_id) else {
+        return Ok(None);
+    };
+    let effective = get_effective_components(tree, class)?;
+    Ok(Some(if effective.is_empty() {
+        class.components.clone()
+    } else {
+        effective
+    }))
 }
 
 /// Row-major compact domain over an array component's own dimensions.
@@ -290,6 +474,13 @@ fn compaction_attempt(
     overlay: &rumoca_ir_ast::InstanceOverlay,
 ) -> InstantiateResult<Option<CompactionAttempt>> {
     if !ctx.options.compact_component_families {
+        return Ok(None);
+    }
+    // SPEC_0032 §1 requires scalar instantiation for non-`each`, per-element
+    // modifiers. The exact projection plans are the proof that this family is
+    // index-dependent; Instance IR still retains every authoritative element.
+    if !plan.source_scoped_modifiers.is_empty() {
+        log_scalar_expansion_fallback(plan.name, "source-scoped array modifier");
         return Ok(None);
     }
     let domain = component_family_domain(dims);

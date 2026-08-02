@@ -180,9 +180,11 @@ pub fn extract_binding(
     // Check mod_env for binding override (outer modification takes precedence)
     // The binding modification is stored under just the component name
     let binding_path = ast::QualifiedName::from_ident(&comp.name);
-    if let Some(mod_value) = mod_env.get(&binding_path) {
+    if let Some(mod_value) = mod_env.get(&binding_path)
+        && let Some(binding_value) = mod_value.value.component_modifier_binding_value()
+    {
         return (
-            Some(mod_value.value.clone()),
+            Some(binding_value.clone()),
             true,
             mod_value.source_scope.clone(),
         );

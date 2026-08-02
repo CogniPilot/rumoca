@@ -10,8 +10,9 @@
 //!   each other, and the fix is in the declarations.
 //! * a row over a coordinate the projection **never owned** — nothing solved that
 //!   coordinate, so the residual is not a check that failed but a check that was
-//!   never about the coordinate's value. For an algebraic it was read from a
-//!   seeded `start`, because the algebraic refresh runs after this solve.
+//!   able to determine the coordinate. Algebraic/output values are reconstructed
+//!   before certification, but the reduced initialization projection does not
+//!   yet own their simultaneous dependency or total derivative.
 //!
 //! The lowering decides which (`InitializationSolveSystem::row_roles`); this
 //! module only reports it, and never guesses the friendlier reading when the role
@@ -79,8 +80,8 @@ fn initial_row_owner<M: AlgebraicProjectionModel>(model: &M, row: usize) -> Stri
 const fn unowned_coordinate_kind(kind: solve::InitializationCoordinateKind) -> &'static str {
     match kind {
         solve::InitializationCoordinateKind::Algebraic => {
-            "a continuous algebraic/output, whose value the initialization residual reads from \
-             its seeded `start` because the algebraic refresh runs after this solve"
+            "a continuous algebraic/output reconstructed from the continuous equations but not \
+             owned by the reduced initialization projection or its total derivative"
         }
         solve::InitializationCoordinateKind::Discrete => "a discrete-time coordinate or its `pre`",
         solve::InitializationCoordinateKind::Unreadable => {

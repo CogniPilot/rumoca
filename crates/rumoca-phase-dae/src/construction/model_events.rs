@@ -30,7 +30,7 @@ pub(super) fn always_condition<'dae>(
 pub(super) struct WhenChainsRequest<'input, 'shape, 'dae> {
     coordinates: &'input HashMap<VarName, Coordinate<'dae>>,
     functions: &'input FunctionRegistry<'shape, 'dae>,
-    sample_lattices: &'input [(Span, ClockLattice)],
+    sample_lattices: &'input [(Span, PeriodicClockSchedule)],
     clocks: &'input LoweredClocks<'dae>,
     chains: &'input [flat::WhenChain],
     topology: &'input DiscreteValueTopologyPlan,
@@ -41,7 +41,7 @@ impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
     pub(super) const fn new(
         coordinates: &'input HashMap<VarName, Coordinate<'dae>>,
         functions: &'input FunctionRegistry<'shape, 'dae>,
-        sample_lattices: &'input [(Span, ClockLattice)],
+        sample_lattices: &'input [(Span, PeriodicClockSchedule)],
         clocks: &'input LoweredClocks<'dae>,
         chains: &'input [flat::WhenChain],
         topology: &'input DiscreteValueTopologyPlan,

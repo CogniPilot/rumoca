@@ -7,10 +7,12 @@
 //! clock. Analysis proves the owner of every such occurrence here so
 //! construction only has to build the checked DAE node for it.
 //!
-//! Scope is the residual of each `flat::Model::equations` row plus the
-//! activation condition of every `when`. Residuals are the only model
-//! expressions lowered exactly once, so one source relation always owns exactly
-//! one checked DAE relation, and both owner kinds are collected for them.
+//! Scope is every binding equation whose expression is runtime-varying, the residual of each
+//! `flat::Model::equations` row, and the activation condition of every `when`.
+//! Binding expressions and residuals are the model expressions lowered exactly once, so
+//! one source relation always owns exactly one checked DAE relation, and both
+//! owner kinds are collected for them. Occurrence identity deduplicates a
+//! binding that is also represented by an explicit residual.
 //!
 //! A `when` activation is different: `lower_condition_tree` already builds one
 //! checked relation per relational leaf of the activation and gives each of
@@ -48,7 +50,7 @@ pub(in crate::construction) enum ExpressionEventPlan {
     /// gives its instant exactly, so it is scheduled instead of searched for.
     TimeEvent(ClockRational),
     /// `sample(start, interval)`, the MLS §3.7.5 periodic Boolean operator.
-    SampleClock(ClockLattice),
+    SampleClock(rumoca_core::PeriodicClockSchedule),
 }
 
 /// One collected owner: the operands that name it, and the plan proved for them.
@@ -175,6 +177,11 @@ pub(super) fn analyze_expression_events(
         constants,
     };
     let mut plans = ExpressionEventPlans::default();
+    for variable in flat.variables.values() {
+        if let Some(binding) = &variable.binding {
+            collect_event_owners(binding, false, &scope, &mut plans)?;
+        }
+    }
     for equation in &flat.equations {
         collect_event_owners(&equation.residual, false, &scope, &mut plans)?;
     }
@@ -199,10 +206,10 @@ pub(super) fn analyze_expression_events(
 /// an activation relation, so claiming it here would schedule an instant nothing
 /// reads.
 ///
-/// Only [`ExpressionEventPlan::TimeEvent`] owners are recorded. A leaf that can
-/// change sign during integration already owns its zero crossing through the
-/// activation's own root, and recording a second owner for it would make
-/// `lower_expression_event` build that root a second time.
+/// Exact time-event and periodic-sample owners are recorded. A relational leaf
+/// that can change sign during integration already owns its zero crossing
+/// through the activation's own root, and recording a second owner for it would
+/// make `lower_expression_event` build that root a second time.
 fn collect_activation_time_events(
     expression: &Expression,
     constants: &EvalContext,
@@ -227,6 +234,15 @@ fn collect_activation_time_events(
             for element in elements {
                 collect_activation_time_events(element, constants, plans)?;
             }
+        }
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Sample,
+            args,
+            span,
+        } => {
+            let schedule = evaluate_sample_schedule(args, constants, *span)?;
+            let operands: Vec<&Expression> = args.iter().collect();
+            plans.insert(*span, &operands, ExpressionEventPlan::SampleClock(schedule))?;
         }
         Expression::Binary { op, lhs, rhs, span } if op.is_relational() => {
             if let Some(instant) = time_event_instant(op, lhs, rhs, constants) {
@@ -313,9 +329,9 @@ fn collect_event_owners(
             args,
             span,
         } if !is_clocked_value_sample(scope.flat, args) => {
-            let lattice = evaluate_sample_lattice(args, scope.constants, *span)?;
+            let schedule = evaluate_sample_schedule(args, scope.constants, *span)?;
             let operands: Vec<&Expression> = args.iter().collect();
-            plans.insert(*span, &operands, ExpressionEventPlan::SampleClock(lattice))?;
+            plans.insert(*span, &operands, ExpressionEventPlan::SampleClock(schedule))?;
             return Ok(());
         }
         Expression::Binary { op, lhs, rhs, span }

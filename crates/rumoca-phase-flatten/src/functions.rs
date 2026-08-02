@@ -164,8 +164,14 @@ pub(crate) fn collect_functions(
         }
         requested.push((request.clone(), caller_scope.clone()));
 
-        if let Some(existing) = existing_executable_flat_function(flat, &request.name) {
-            let qualified_name = existing.name.as_str().to_string();
+        if let Some(qualified_name) = existing_executable_flat_function(flat, &request.name)
+            .map(|existing| existing.name.as_str().to_string())
+        {
+            let existing = flat
+                .functions
+                .get_mut(&rumoca_core::VarName::new(&qualified_name))
+                .expect("the selected existing function remains in its table");
+            refine_existing_function_nonreplaceability(existing, class_index, &request);
             if !expanded.insert_function(existing) {
                 continue;
             }
@@ -237,6 +243,22 @@ pub(crate) fn collect_functions(
     }
 
     Ok(())
+}
+
+fn refine_existing_function_nonreplaceability(
+    existing: &mut rumoca_core::Function,
+    class_index: &ast::ClassDefIndex<'_>,
+    request: &FunctionRequest,
+) {
+    // Name-only requests are synthetic worklist entries used to expand an
+    // already-seeded body. They carry no exposure-path evidence and therefore
+    // cannot mint or revoke the constructor's certificate. A real structured
+    // occurrence remains proof-bearing in both directions, including a
+    // replaceable exposure path.
+    if request.component_ref.is_some() {
+        existing.transitively_non_replaceable &=
+            request_proves_transitive_non_replaceability(class_index, request);
+    }
 }
 
 fn existing_executable_flat_function<'model>(
@@ -379,6 +401,29 @@ fn lookup_function_request_with_scope<'tree>(
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
     type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
+    let mut resolved = lookup_function_request_with_scope_uncertified(
+        tree,
+        class_index,
+        request,
+        caller_scope,
+        member_cache,
+        type_catalog,
+    )?;
+    if let Some((_, function)) = &mut resolved {
+        function.transitively_non_replaceable =
+            request_proves_transitive_non_replaceability(class_index, request);
+    }
+    Ok(resolved)
+}
+
+fn lookup_function_request_with_scope_uncertified<'tree>(
+    tree: &'tree ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    request: &FunctionRequest,
+    caller_scope: Option<&str>,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
+) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
     if let Some(resolved) = lookup_exposed_function_request_by_name(
         tree,
         class_index,
@@ -420,6 +465,22 @@ fn lookup_function_request_with_scope<'tree>(
         member_cache,
         type_catalog,
     )
+}
+
+fn request_proves_transitive_non_replaceability(
+    class_index: &ast::ClassDefIndex<'_>,
+    request: &FunctionRequest,
+) -> bool {
+    request.component_ref.as_ref().is_some_and(|reference| {
+        !reference.parts().is_empty()
+            && reference
+                .parts()
+                .iter()
+                .all(|part| !part.ident.contains('.'))
+            && class_index.proves_transitively_non_replaceable_path(
+                reference.parts().iter().map(|part| part.def_id),
+            )
+    })
 }
 
 fn lookup_exposed_function_request_by_name<'tree>(

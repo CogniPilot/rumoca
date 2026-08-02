@@ -91,59 +91,42 @@ fn compact_component_families_is_on_by_default() {
 }
 
 #[test]
-fn homogeneous_component_array_records_compact_family() {
+fn homogeneous_component_array_expands_every_domain_point() {
+    // SPEC_0032 §1 requires compaction to be indistinguishable from
+    // element-by-element expansion, so the compact path is not observable in
+    // the overlay and must not be asserted on: the declared extents live in
+    // `array_parent_dims` (written for every expanded array, compacted or not)
+    // and the array's representation is its per-element entries.
     let overlay = instantiate(CELL_ARRAY, "Stack", true);
-    assert_eq!(
-        overlay.component_families.len(),
-        1,
-        "expected exactly one compact family, got {:?}",
-        overlay
-            .component_families
-            .iter()
-            .map(|family| family.root.to_flat_string())
-            .collect::<Vec<_>>()
-    );
-    let family = &overlay.component_families[0];
-    assert_eq!(family.root.to_flat_string(), "c");
-    assert_eq!(family.subscript_depth, 0);
-    assert_eq!(family.domain.binders.len(), 1);
-    assert_eq!(family.domain.binders[0].lower, 1);
-    assert_eq!(family.domain.binders[0].upper, 3);
-    assert_eq!(family.domain.binders[0].step, 1);
-    assert!(!family.template_components.is_empty());
-    assert!(!family.template_classes.is_empty());
-    // The template ids must actually resolve inside the overlay.
-    for id in &family.template_components {
-        assert!(
-            overlay.get_component(*id).is_some(),
-            "missing template {id:?}"
-        );
-    }
-    for id in &family.template_classes {
-        assert!(overlay.get_class(*id).is_some(), "missing template {id:?}");
-    }
+    assert_eq!(overlay.array_parent_dims.get("c"), Some(&vec![3]));
 
-    // Only one domain point went through `instantiate_component`, yet all three
-    // appear in the overlay: the other two are pure reindexed replications.
-    let members = component_paths(&overlay)
+    let members: Vec<String> = component_paths(&overlay)
         .into_iter()
         .filter(|path| path.starts_with("c["))
-        .count();
-    assert_eq!(members, family.template_components.len() * 3);
-    let member_classes = overlay
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            "c[1]", "c[1].R", "c[1].v", "c[1].i", "c[2]", "c[2].R", "c[2].v", "c[2].i", "c[3]",
+            "c[3].R", "c[3].v", "c[3].i",
+        ]
+    );
+    let member_classes: Vec<String> = overlay
         .classes
         .values()
-        .filter(|class| class.qualified_name.to_flat_string().starts_with("c["))
-        .count();
-    assert_eq!(member_classes, family.template_classes.len() * 3);
+        .map(|class| class.qualified_name.to_flat_string())
+        .filter(|path| path.starts_with("c["))
+        .collect();
+    assert_eq!(member_classes, vec!["c[1]", "c[2]", "c[3]"]);
 }
 
 #[test]
 fn family_replication_matches_scalar_expansion() {
+    // The differential assertion is what keeps the compact path honest: if the
+    // homogeneity gate ever compacted an array whose elements really do differ,
+    // the two overlays would stop agreeing here.
     let compact = instantiate(CELL_ARRAY, "Stack", true);
     let scalar = instantiate(CELL_ARRAY, "Stack", false);
-    assert!(!compact.component_families.is_empty());
-    assert!(scalar.component_families.is_empty());
     assert_overlays_equivalent(&compact, &scalar);
 }
 
@@ -215,31 +198,25 @@ fn nested_component_array_replication_matches_scalar_expansion() {
     ";
     let compact = instantiate(SOURCE, "Plant", true);
     let scalar = instantiate(SOURCE, "Plant", false);
-    assert!(!compact.component_families.is_empty());
     assert_overlays_equivalent(&compact, &scalar);
 
-    let roots: Vec<String> = compact
-        .component_families
-        .iter()
-        .map(|family| family.root.to_flat_string())
-        .collect();
-    // The outer array owns a family, and each replicated element keeps its own
-    // owner for the nested `Branch b[2]` / `Pin pins[2]` arrays.
-    assert!(roots.contains(&"banks".to_string()), "roots {roots:?}");
+    // Each replicated element re-roots the path-keyed extents of the arrays
+    // nested inside it, so every `banks[n]` carries its own `b`/`pins` rows
+    // rather than sharing the template's.
+    assert_eq!(compact.array_parent_dims.get("banks"), Some(&vec![3]));
     for index in 1..=3 {
-        assert!(
-            roots.contains(&format!("banks[{index}].b")),
-            "missing nested family for banks[{index}].b in {roots:?}"
+        assert_eq!(
+            compact.array_parent_dims.get(&format!("banks[{index}].b")),
+            Some(&vec![2]),
+            "missing nested extents for banks[{index}].b"
         );
-    }
-    for family in &compact.component_families {
-        for id in &family.template_components {
-            assert!(
-                compact.get_component(*id).is_some(),
-                "family {} references a missing template component",
-                family.root.to_flat_string()
-            );
-        }
+        assert_eq!(
+            compact
+                .array_parent_dims
+                .get(&format!("banks[{index}].pins")),
+            Some(&vec![2]),
+            "missing nested extents for banks[{index}].pins"
+        );
     }
 
     // The `for k in 1:2` connect inside `Bank` is stored as a compact
@@ -290,10 +267,6 @@ fn per_element_modifier_array_falls_back_to_scalar_expansion() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert!(
-        compact.component_families.is_empty(),
-        "per-element modifiers must keep scalar expansion"
-    );
     let scalar = instantiate(SOURCE, "Stack", false);
     assert_overlays_equivalent(&compact, &scalar);
     // The distributed per-element values must survive.
@@ -324,7 +297,7 @@ fn each_modifier_array_stays_compact() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert_eq!(compact.component_families.len(), 1);
+    assert_eq!(compact.array_parent_dims.get("c"), Some(&vec![3]));
     for index in 1..=3 {
         let path = format!("c[{index}].R");
         let data = compact
@@ -357,14 +330,23 @@ fn indexed_binding_array_falls_back_to_scalar_expansion() {
     ";
     let compact = instantiate(SOURCE, "Wrap", true);
     let scalar = instantiate(SOURCE, "Wrap", false);
-    assert!(
-        compact
-            .component_families
-            .iter()
-            .all(|family| family.root.to_flat_string() != "v"),
-        "an array with a per-element binding must not be compacted"
-    );
     assert_overlays_equivalent(&compact, &scalar);
+    // `v[k] = s.y[k]` is a genuine per-element binding: the differential
+    // assertion above is what proves the compact path did not flatten the three
+    // elements onto the template's `s.y[1]`.
+    for index in 1..=3 {
+        let path = format!("v[{index}].re");
+        let data = compact
+            .components
+            .values()
+            .find(|data| data.qualified_name.to_flat_string() == path)
+            .unwrap_or_else(|| panic!("missing {path}"));
+        let rendered = format!("{:?}", data.binding);
+        assert!(
+            rendered.contains(&format!("y[{index}]")),
+            "expected {path} to bind s.y[{index}], got {rendered}"
+        );
+    }
 }
 
 #[test]
@@ -384,10 +366,6 @@ fn inner_declaration_inside_array_element_falls_back() {
         end World;
     ";
     let compact = instantiate(SOURCE, "World", true);
-    assert!(
-        compact.component_families.is_empty(),
-        "inner/outer registration must block replication"
-    );
     let paths = component_paths(&compact);
     for index in 1..=3 {
         let path = format!("n[{index}].root.g");
@@ -397,7 +375,7 @@ fn inner_declaration_inside_array_element_falls_back() {
 }
 
 #[test]
-fn zero_sized_array_records_no_family() {
+fn zero_sized_array_records_its_extents_and_no_members() {
     const SOURCE: &str = r"
         model Cell
             Real v;
@@ -407,8 +385,13 @@ fn zero_sized_array_records_no_family() {
         end Stack;
     ";
     let compact = instantiate(SOURCE, "Stack", true);
-    assert!(compact.component_families.is_empty());
     assert_eq!(compact.array_parent_dims.get("c"), Some(&vec![0]));
+    assert!(
+        component_paths(&compact)
+            .iter()
+            .all(|path| !path.starts_with("c[")),
+        "an empty domain must produce no member instances"
+    );
     assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
 }
 
@@ -445,7 +428,10 @@ fn zero_sized_primitive_arrays_retain_their_typed_instance_headers() {
 }
 
 /// Assert that two overlays are equivalent, including `InstanceId` numbering.
-fn assert_overlays_equivalent(compact: &ast::InstanceOverlay, scalar: &ast::InstanceOverlay) {
+pub(super) fn assert_overlays_equivalent(
+    compact: &ast::InstanceOverlay,
+    scalar: &ast::InstanceOverlay,
+) {
     assert_eq!(
         instance_allocation_order(compact),
         instance_allocation_order(scalar),

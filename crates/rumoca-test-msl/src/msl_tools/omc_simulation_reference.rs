@@ -152,6 +152,7 @@ struct TraceQuantification {
     models: BTreeMap<String, TraceModelMetric>,
     missing_trace: BTreeMap<String, TraceExitRecord>,
     skipped: BTreeMap<String, TraceExitRecord>,
+    trace_nonidentifiable: BTreeMap<String, TraceExitRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -250,6 +251,7 @@ struct TraceOutputSummary {
     models_compared: usize,
     missing_trace_models: usize,
     skipped_models: usize,
+    trace_nonidentifiable_models: usize,
     agreement_high: usize,
     agreement_minor: usize,
     agreement_deviation: usize,
@@ -1186,6 +1188,7 @@ fn load_omc_csv_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> {
         names,
         data,
         variable_meta: None,
+        certification_profile: None,
     })
 }
 
@@ -1332,6 +1335,7 @@ fn quantify_trace_differences(
                     TraceExitKind::PolicyExcluded
                     | TraceExitKind::ComparatorFailed
                     | TraceExitKind::NoComparableSamples => &mut report.skipped,
+                    TraceExitKind::TraceNonidentifiable => &mut report.trace_nonidentifiable,
                     TraceExitKind::RumocaTraceMissing | TraceExitKind::OmcTraceMissing => {
                         &mut report.missing_trace
                     }
@@ -1378,6 +1382,15 @@ fn compare_one_candidate(
                 "successful Rumoca attempt did not declare a trace file",
             )
         })?;
+    let rumoca_trace = load_trace_json(&rumoca_trace_path).map_err(|error| {
+        TraceExitRecord::new(
+            TraceExitKind::RumocaTraceMissing,
+            format!("failed to load rumoca trace: {error}"),
+        )
+    })?;
+    if let Some(exit) = pointwise_nonidentifiability_exit(&rumoca_trace)? {
+        return Err(exit);
+    }
     let omc_trace_path = resolve_omc_trace_path(paths, model_name, omc_model).ok_or_else(|| {
         TraceExitRecord::new(
             TraceExitKind::OmcTraceMissing,
@@ -1386,12 +1399,6 @@ fn compare_one_candidate(
             } else {
                 "successful OMC attempt did not declare a trace file"
             },
-        )
-    })?;
-    let rumoca_trace = load_trace_json(&rumoca_trace_path).map_err(|error| {
-        TraceExitRecord::new(
-            TraceExitKind::RumocaTraceMissing,
-            format!("failed to load rumoca trace: {error}"),
         )
     })?;
     let omc_trace = load_trace_json(&omc_trace_path).map_err(|error| {
@@ -1426,6 +1433,21 @@ fn compare_one_candidate(
         omc_total_system_seconds: omc_model.total_system_seconds,
         omc_wall_seconds: omc_model.omc_wall_seconds,
     })
+}
+
+fn pointwise_nonidentifiability_exit(
+    rumoca_trace: &SimTrace,
+) -> std::result::Result<Option<TraceExitRecord>, TraceExitRecord> {
+    let Some(profile) = rumoca_trace.certification_profile.clone() else {
+        return Ok(None);
+    };
+    profile.validate().map_err(|error| {
+        TraceExitRecord::new(
+            TraceExitKind::ComparatorFailed,
+            format!("invalid trace certification profile: {error}"),
+        )
+    })?;
+    Ok(Some(TraceExitRecord::trace_nonidentifiable(profile)))
 }
 
 fn resolve_rumoca_trace_path(

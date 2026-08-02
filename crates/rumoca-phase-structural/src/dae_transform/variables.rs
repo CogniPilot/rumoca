@@ -124,32 +124,75 @@ pub(super) fn define_variables<'target>(
 ) -> Result<(), dae::DaeConstructionError> {
     target.variables(|target| {
         for ((_, source), reserved) in source.variables().zip(variables) {
-            let expression = |id: dae::ExprId<'_>| expressions[id.index() as usize];
-            let attributes = dae::VariableAttributes {
-                component_ref: source.component_reference().cloned(),
-                binding: source.binding().map(expression),
-                start: source.start().map(expression),
-                fixed: source.fixed(),
-                min: source.minimum().map(expression),
-                max: source.maximum().map(expression),
-                nominal: source.nominal().map(expression),
-                unit: source.unit().map(str::to_owned),
-                state_select: source.state_select(),
-                description: source.description().map(str::to_owned),
-                causality: source.causality(),
-                is_tunable: source.is_tunable(),
-                is_held: source.is_held(),
-                origin: source.origin(),
+            let Some(reservation) = reserved.reservation.take() else {
+                continue;
             };
-            target.define(
-                reserved
-                    .reservation
-                    .take()
-                    .expect("each variable reservation is consumed exactly once"),
-                attributes,
-                source.declaration(),
-            )?;
+            define_variable(target, source, reservation, |id| {
+                expressions[id.index() as usize]
+            })?;
         }
         Ok(())
     })
+}
+
+/// Define static variables as soon as every expression backing their
+/// attributes has been replayed.
+///
+/// Compact shaped builtins derive their extents by following parameter
+/// bindings. Replaying the expression arena behind a wall of still-reserved
+/// variables would therefore discard a fact the source construction already
+/// established. Structural reconstruction calls this at the same expression
+/// milestones encoded by the source arena, so the ordinary checked builtin
+/// constructor can derive the fact again.
+pub(super) fn define_static_variables_at<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    rebuilt: &[Option<dae::ExprId<'target>>],
+    variables: &mut [ReservedVariable<'target>],
+    indices: &[usize],
+) -> Result<(), dae::DaeConstructionError> {
+    target.variables(|target| {
+        for &index in indices {
+            let source_id = source
+                .variable_id(index)
+                .expect("finalized static-variable ordinal resolves");
+            let source = source
+                .variable(source_id)
+                .expect("finalized static-variable identity resolves");
+            let reservation = variables[index]
+                .reservation
+                .take()
+                .expect("static variable is defined at exactly one replay milestone");
+            define_variable(target, source, reservation, |id| {
+                rebuilt[id.index() as usize]
+                    .expect("static-variable attribute expression was replayed at its milestone")
+            })?;
+        }
+        Ok(())
+    })
+}
+
+fn define_variable<'target>(
+    target: &mut dae::Variables<'_, 'target>,
+    source: dae::VariableView<'_>,
+    reservation: dae::VariableReservation<'target>,
+    expression: impl Fn(dae::ExprId<'_>) -> dae::ExprId<'target>,
+) -> Result<(), dae::DaeConstructionError> {
+    let attributes = dae::VariableAttributes {
+        component_ref: source.component_reference().cloned(),
+        binding: source.binding().map(&expression),
+        start: source.start().map(&expression),
+        fixed: source.fixed(),
+        min: source.minimum().map(&expression),
+        max: source.maximum().map(&expression),
+        nominal: source.nominal().map(expression),
+        unit: source.unit().map(str::to_owned),
+        state_select: source.state_select(),
+        description: source.description().map(str::to_owned),
+        causality: source.causality(),
+        is_tunable: source.is_tunable(),
+        is_held: source.is_held(),
+        origin: source.origin(),
+    };
+    target.define(reservation, attributes, source.declaration())
 }

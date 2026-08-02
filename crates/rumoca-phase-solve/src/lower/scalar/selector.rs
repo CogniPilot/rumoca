@@ -80,6 +80,13 @@ impl<'dae> ScalarSelector<'dae> {
                 )?;
                 self.coordinate(base, selected)
             }
+            dae::ExpressionOperation::Builtin {
+                builtin: dae::PureBuiltin::Transpose,
+                arguments,
+            } => {
+                let operand = arguments.get(0).expect("checked transpose operand");
+                self.coordinate(operand, self.transpose_scalar(operand, scalar))
+            }
             _ => Ok(None),
         }
     }
@@ -206,6 +213,58 @@ impl<'dae> ScalarSelector<'dae> {
                     base_node.provenance().span(),
                 )
             })
+    }
+
+    /// Select the operand scalar owned by one checked promoted concatenation.
+    ///
+    /// The DAE constructor has already proved common promoted rank, agreement
+    /// of every non-concatenated extent, and the summed result extent. This is
+    /// therefore projection, not a second validator: it maps the row-major
+    /// result coordinate back through the unique operand interval on `axis`.
+    pub(super) fn promoted_concatenation_scalar(
+        &self,
+        arguments: dae::ExpressionOperands<'dae>,
+        axis: usize,
+        result_dimensions: &[u32],
+        result_scalar: usize,
+    ) -> Result<(dae::ExprId<'dae>, usize), LowerError> {
+        let mut coordinates = row_major_coordinates(result_dimensions, result_scalar)
+            .expect("checked result scalar belongs to its concatenation shape");
+        let selected = coordinates[axis];
+        let mut offset = 0_u32;
+        for argument in arguments.iter() {
+            let dimensions = self.node(argument).value_type().dimensions();
+            let extent = dimensions.get(axis).copied().unwrap_or(1);
+            let end = offset
+                .checked_add(extent)
+                .expect("checked concatenation extent remains in the u32 domain");
+            if selected < end {
+                coordinates[axis] = selected - offset;
+                let scalar = flatten_coordinates(dimensions, &coordinates[..dimensions.len()])
+                    .expect("checked promoted coordinate belongs to its operand shape");
+                return Ok((argument, scalar));
+            }
+            offset = end;
+        }
+        unreachable!("checked concatenation result is covered by its operands")
+    }
+
+    /// Map one row-major transpose result scalar to its compact operand scalar.
+    /// The checked constructor proves rank at least two and swaps no axes after
+    /// the first pair.
+    pub(super) fn transpose_scalar(
+        &self,
+        operand: dae::ExprId<'dae>,
+        result_scalar: usize,
+    ) -> usize {
+        let operand_dimensions = self.node(operand).value_type().dimensions();
+        let mut result_dimensions = operand_dimensions.to_vec();
+        result_dimensions.swap(0, 1);
+        let mut coordinates = row_major_coordinates(&result_dimensions, result_scalar)
+            .expect("checked transpose scalar belongs to its result shape");
+        coordinates.swap(0, 1);
+        flatten_coordinates(operand_dimensions, &coordinates)
+            .expect("transposed coordinate belongs to its checked operand shape")
     }
 
     fn array_update_axis_coordinates(

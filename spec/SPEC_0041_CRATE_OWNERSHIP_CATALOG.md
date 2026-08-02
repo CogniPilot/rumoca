@@ -76,6 +76,7 @@ import that path.
 | GALEC `.alg` → checked GALEC parsing | `rumoca-phase-parse-galec` | Recoverable syntax state stays out of checked IR |
 | DAE/Solve → checked GALEC lowering | `rumoca-phase-galec` | Semantic export lowering and admissibility only; no text, templates, packaging, or target-language helpers |
 | Checked GALEC executable semantics | `rumoca-eval-galec` | Small explicit interpreter over `rumoca-ir-galec`; no DAE/Solve, lowering, rendering, target, or runtime-host dependencies |
+| Executable reference semantics for differential validation | `rumoca-reference` | Independent definitional interpreter of the Modelica event core; MUST carry no production dependency on any `rumoca-*` crate, because a reference that imported the compiler would agree with it by construction. Compiler deps are dev-only, for the differential harness. Optimizing it is a defect (SPEC_0037 verification track) |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
 | GALEC `.alg` text | `rumoca-phase-codegen` | MiniJinja renders a checked GALEC semantic view; the language IR owns no text emitter (SPEC_0034 GAL-009) |
 | eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0042 D3 amended) |

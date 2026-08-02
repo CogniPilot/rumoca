@@ -83,6 +83,154 @@ struct ContinuousCausalAssignmentModel {
     plan: solve::AlgebraicProjectionPlan,
 }
 
+struct ScaledContinuousAssignmentModel {
+    coefficient: f64,
+    rhs: f64,
+    target_value: f64,
+    variable_scale: f64,
+    plan: solve::AlgebraicProjectionPlan,
+}
+
+struct ReverseOrderedResistorModel {
+    voltage: f64,
+    resistance: f64,
+    plan: solve::AlgebraicProjectionPlan,
+}
+
+impl ImplicitProjectionModel for ReverseOrderedResistorModel {
+    fn eval_residual(
+        &self,
+        y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        out[0] = y[1] - self.resistance * y[0];
+        out[1] = y[1] - self.voltage;
+        Ok(())
+    }
+
+    fn eval_jacobian_v(
+        &self,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        out[0] = v[1] - self.resistance * v[0];
+        out[1] = v[1];
+        Ok(())
+    }
+
+    fn eval_implicit_residual_row(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        _p: &[f64],
+        _t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        Ok(match row_idx {
+            0 => Some(y[1] - self.resistance * y[0]),
+            1 => Some(y[1] - self.voltage),
+            _ => None,
+        })
+    }
+
+    fn eval_implicit_target_value(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+        y: &[f64],
+        _p: &[f64],
+        _t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        Ok(match (row_idx, target_y_index) {
+            (0, 0) => Some(y[1] / self.resistance),
+            (1, 1) => Some(self.voltage),
+            _ => None,
+        })
+    }
+
+    fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+        Some(solve::scalar_slot_y(row_idx))
+    }
+
+    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+        &self.plan
+    }
+
+    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
+        match row_idx {
+            0 => Some("current"),
+            1 => Some("voltage"),
+            _ => None,
+        }
+    }
+}
+
+impl ImplicitProjectionModel for ScaledContinuousAssignmentModel {
+    fn eval_residual(
+        &self,
+        y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        out[0] = self.coefficient * y[0] - self.rhs;
+        Ok(())
+    }
+
+    fn eval_jacobian_v(
+        &self,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        out[0] = self.coefficient * v[0];
+        Ok(())
+    }
+
+    fn eval_implicit_residual_row(
+        &self,
+        _row_idx: usize,
+        y: &[f64],
+        _p: &[f64],
+        _t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        Ok(Some(self.coefficient * y[0] - self.rhs))
+    }
+
+    fn eval_implicit_target_value(
+        &self,
+        _row_idx: usize,
+        _target_y_index: usize,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        Ok(Some(self.target_value))
+    }
+
+    fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+        Some(solve::scalar_slot_y(row_idx))
+    }
+
+    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+        &self.plan
+    }
+
+    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
+        Some("current")
+    }
+
+    fn variable_scale_for_y_index(&self, _y_index: usize) -> f64 {
+        self.variable_scale
+    }
+}
+
 impl ImplicitProjectionModel for ContinuousCausalAssignmentModel {
     fn eval_residual(
         &self,
@@ -927,9 +1075,114 @@ fn continuous_singleton_assignment_avoids_jacobian_projection() {
     assert_eq!(y, vec![5.0]);
     assert_eq!(model.residual_calls.get(), 0);
     // One residual checks the current value and one certifies the assigned
-    // value. The block-local settled result avoids duplicate whole-plan sweeps.
+    // value. A one-block plan has no later producer that can invalidate it.
     assert_eq!(model.residual_row_calls.get(), 2);
     assert_eq!(model.jacobian_calls.get(), 0);
+}
+
+#[test]
+fn resistor_assignment_reports_sub_tolerance_current_as_semantic_progress() {
+    let voltage = 9.332_043_908_269_583e-3;
+    let resistance = 10_000.0;
+    let model = ScaledContinuousAssignmentModel {
+        coefficient: resistance,
+        rhs: voltage,
+        target_value: voltage / resistance,
+        variable_scale: 1.0,
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![0],
+            }],
+        },
+    };
+    let mut current = vec![0.0];
+    let update = project_algebraic_singleton_assignment(
+        &model,
+        &mut current,
+        &[],
+        0.0,
+        &model.plan.blocks[0],
+        1.0e-6,
+    )
+    .expect("resistor assignment should evaluate")
+    .expect("resistor row has an isolated current assignment");
+
+    assert_eq!(current[0], voltage / resistance);
+    assert!(
+        update.changed,
+        "an exact write must drive a dependent sweep even below variable tolerance"
+    );
+    assert!(update.settled);
+}
+
+#[test]
+fn reverse_ordered_resistor_blocks_revisit_a_locally_settled_current() {
+    let voltage = 9.332_043_908_269_583e-3;
+    let resistance = 10_000.0;
+    let model = ReverseOrderedResistorModel {
+        voltage,
+        resistance,
+        plan: solve::AlgebraicProjectionPlan {
+            // The current row is intentionally visited before its voltage
+            // producer, matching a valid non-causal BLT fallback order.
+            blocks: vec![
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                },
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![1],
+                    y_indices: vec![1],
+                },
+            ],
+        },
+    };
+    let mut y = vec![0.0, 0.0];
+
+    project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-6)
+        .expect("the complete reverse-ordered plan should reach a fixed point");
+
+    assert_eq!(y[1], voltage);
+    assert_eq!(y[0], voltage / resistance);
+    assert!((y[1] - resistance * y[0]).abs() <= f64::EPSILON);
+}
+
+#[test]
+fn algebraic_seed_certifies_residual_in_row_units() {
+    let model = ScaledContinuousAssignmentModel {
+        coefficient: 1.0e-3,
+        rhs: 1.0e-3,
+        target_value: 1.0 + 1.0e-5,
+        variable_scale: 1.0,
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![0],
+            }],
+        },
+    };
+    let mut y = vec![0.0];
+    let context = AlgebraicSeedContext {
+        model: &model,
+        parameters: &[],
+        time: 0.0,
+        y_indices: &[0],
+        tolerance: 1.0e-6,
+    };
+
+    let seeded =
+        try_seed_algebraic_target(&context, &mut y, 0, 0).expect("seed candidate should evaluate");
+
+    assert_eq!(
+        seeded, None,
+        "an inexact row must not be certified in target units"
+    );
+    assert_eq!(
+        y,
+        vec![0.0],
+        "a rejected seed restores its input coordinate"
+    );
 }
 
 #[test]

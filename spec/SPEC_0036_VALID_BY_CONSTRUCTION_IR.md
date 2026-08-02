@@ -56,9 +56,9 @@ For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 rules are
 [SPEC_0043 §7](SPEC_0043_CONSTRUCTION_CATALOG.md#7-flat-aggregate-construction-catalog-spec_0036-flat-aggregate).
 
-Declarations retain exact spans. Per SPEC_0032,
-`InstanceOverlay::component_families` remains a non-authoritative descriptor;
-per-element instance entries own Instance semantics. `flat::Model` owns only
+Declarations retain exact spans. Per SPEC_0032 §1, Instance IR keeps no record
+of array compaction at all; per-element instance entries own Instance
+semantics. `flat::Model` owns only
 the flattened structured families, whose scalar views/counts derive.
 Drafts, public invariant fields, repair, compatibility, unchecked insertion,
 finalized mutation, and alternate constructors are prohibited.
@@ -129,6 +129,14 @@ Partition ordinals are layout, never semantic identity.
 Per-system equation contracts are
 [SPEC_0043 §4](SPEC_0043_CONSTRUCTION_CATALOG.md#4-equation-contract-catalog-spec_0036-expressions-and-equations).
 
+A scalar discrete coordinate determined by an initial algorithm assignment or
+by an explicit initial equation `m = value` / `pre(m) = value` has one typed
+initial-value owner. Recognition only selects this owner; construction derives
+the target role and scalar type, proves that the value reads only
+initialization-settled coordinates, and rejects a second owner for the same
+target. The claimed Flat row therefore cannot also enter the numeric
+initialization residual system.
+
 Each non-input `m` has exactly one B.1c definition owner. A source
 `when`/`elsewhen` chain becomes one atomic, source-priority-ordered conditional
 definition of the branch target set; independent `when` owners cannot define
@@ -146,6 +154,12 @@ iteration, or final graph scan repairs an invalid order.
 
 Structured families own compact domains, checked bodies, typed scalar views,
 and constructor-derived row counts; `rumoca-eval-dae` owns evaluation/lazy projection.
+Structured B.1c families additionally own checked target projections and typed
+value bodies. Their constructor proves that every target is a non-input `m`,
+that target/value scalar types and domain/view shapes agree, and that the
+compact projection covers each owned target exactly once. Their topology and
+clock obligations use the existing B.1c and clock capabilities; no parallel
+domain, clock, scalar-row, or policy table exists.
 
 ### Conditions, Events, Clocks, and Temporal State
 

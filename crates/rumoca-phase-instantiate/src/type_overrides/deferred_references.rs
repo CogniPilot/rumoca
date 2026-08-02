@@ -31,10 +31,9 @@ pub(crate) fn resolve_dynamic_expression_targets(
     selected_component_types: &SelectedComponentTypes,
     expression: ast::Expression,
 ) -> InstantiateResult<ast::Expression> {
-    let mut resolver =
-        DynamicExpressionTargetResolver::new(tree, overrides, selected_component_types);
-    let expression = resolver.transform_expression(expression);
-    resolver.finish(expression)
+    let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
+    let expression = batch.transform_expression(expression);
+    batch.finish(expression)
 }
 
 pub(crate) fn resolve_dynamic_equation_targets(
@@ -43,10 +42,9 @@ pub(crate) fn resolve_dynamic_equation_targets(
     selected_component_types: &SelectedComponentTypes,
     equation: ast::Equation,
 ) -> InstantiateResult<ast::Equation> {
-    let mut resolver =
-        DynamicExpressionTargetResolver::new(tree, overrides, selected_component_types);
-    let equation = resolver.transform_equation(equation);
-    resolver.finish(equation)
+    let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
+    let equation = batch.transform_equation(equation);
+    batch.finish(equation)
 }
 
 pub(crate) fn resolve_dynamic_statement_targets(
@@ -55,10 +53,68 @@ pub(crate) fn resolve_dynamic_statement_targets(
     selected_component_types: &SelectedComponentTypes,
     statement: ast::Statement,
 ) -> InstantiateResult<ast::Statement> {
-    let mut resolver =
-        DynamicExpressionTargetResolver::new(tree, overrides, selected_component_types);
-    let statement = resolver.transform_statement(statement);
-    resolver.finish(statement)
+    let mut batch = DynamicExpressionTargetBatch::new(tree, overrides, selected_component_types);
+    let statement = batch.transform_statement(statement);
+    batch.finish(statement)
+}
+
+/// One exact-selection resolver shared by all expression surfaces that belong
+/// to the same source occurrence.
+///
+/// Post-materialization repair groups component bindings, attributes, and
+/// dimensions by their structured source scope. Reusing the resolver avoids a
+/// fresh traversal owner for every optional field while preserving the first
+/// exact member-proof error.
+pub(crate) struct DynamicExpressionTargetBatch<'a> {
+    resolver: DynamicExpressionTargetResolver<'a>,
+}
+
+impl<'a> DynamicExpressionTargetBatch<'a> {
+    pub(crate) fn new(
+        tree: &'a ast::ClassTree,
+        overrides: &'a TypeOverrideMap,
+        selected_component_types: &'a SelectedComponentTypes,
+    ) -> Self {
+        Self {
+            resolver: DynamicExpressionTargetResolver::new(
+                tree,
+                overrides,
+                selected_component_types,
+            ),
+        }
+    }
+
+    pub(crate) fn transform_expression(&mut self, expression: ast::Expression) -> ast::Expression {
+        self.resolver.transform_expression(expression)
+    }
+
+    pub(crate) fn transform_optional_expression(
+        &mut self,
+        expression: &mut Option<ast::Expression>,
+    ) {
+        if let Some(value) = expression.take() {
+            *expression = Some(self.resolver.transform_expression(value));
+        }
+    }
+
+    pub(crate) fn transform_subscripts(&mut self, subscripts: &mut Vec<ast::Subscript>) {
+        *subscripts = subscripts
+            .drain(..)
+            .map(|subscript| self.resolver.transform_subscript(subscript))
+            .collect();
+    }
+
+    pub(crate) fn transform_equation(&mut self, equation: ast::Equation) -> ast::Equation {
+        self.resolver.transform_equation(equation)
+    }
+
+    pub(crate) fn transform_statement(&mut self, statement: ast::Statement) -> ast::Statement {
+        self.resolver.transform_statement(statement)
+    }
+
+    pub(crate) fn finish<T>(self, value: T) -> InstantiateResult<T> {
+        self.resolver.finish(value)
+    }
 }
 
 struct DynamicExpressionTargetResolver<'a> {

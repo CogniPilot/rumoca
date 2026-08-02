@@ -55,6 +55,112 @@ fn value_shaped_function(span: Span) -> rumoca_core::Function {
     function
 }
 
+fn identity_body_function(span: Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("identity_body", span);
+    function.add_input(param("n", "Integer", integer_type(), Vec::new(), span));
+    function.add_output(
+        param("y", "Integer", integer_type(), vec![0, 0], span).with_shape_expr(vec![
+            Subscript::expr(Box::new(var_ref("n", span)), span),
+            Subscript::expr(Box::new(var_ref("n", span)), span),
+        ]),
+    );
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: simple_target("y", span),
+        value: Expression::BuiltinCall {
+            function: BuiltinFunction::Identity,
+            args: vec![var_ref("n", span)],
+            span,
+        },
+        span,
+    });
+    function
+}
+
+fn cross_body_function(span: Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("cross_body", span);
+    function.add_input(param("x", "Real", real_type(), vec![3], span));
+    function.add_input(param("y", "Real", real_type(), vec![3], span));
+    function.add_output(param("z", "Real", real_type(), vec![3], span));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: simple_target("z", span),
+        value: Expression::BuiltinCall {
+            function: BuiltinFunction::Cross,
+            args: vec![var_ref("x", span), var_ref("y", span)],
+            span,
+        },
+        span,
+    });
+    function
+}
+
+fn skew_body_function(span: Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("skew_body", span);
+    function.add_input(param("x", "Real", real_type(), vec![3], span));
+    function.add_output(param("S", "Real", real_type(), vec![3, 3], span));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: simple_target("S", span),
+        value: Expression::BuiltinCall {
+            function: BuiltinFunction::Skew,
+            args: vec![var_ref("x", span)],
+            span,
+        },
+        span,
+    });
+    function
+}
+
+fn vector_body_function(span: Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("vector_body", span);
+    function.add_input(param("x", "Real", real_type(), vec![1, 3, 1], span));
+    function.add_output(param("y", "Real", real_type(), vec![3], span));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: simple_target("y", span),
+        value: Expression::BuiltinCall {
+            function: BuiltinFunction::Vector,
+            args: vec![var_ref("x", span)],
+            span,
+        },
+        span,
+    });
+    function
+}
+
+/// MSL `Frames.TransformationMatrices.planarRotation` assigns a 3x3 result
+/// from `outerProduct(e, e)` where `e` is a 3-vector.
+fn planar_rotation_outer_product_function(span: Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("planarRotation", span);
+    function.add_input(param("e", "Real", real_type(), vec![3], span));
+    function.add_output(param("T", "Real", real_type(), vec![3, 3], span));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: simple_target("T", span),
+        value: Expression::BuiltinCall {
+            function: BuiltinFunction::OuterProduct,
+            args: vec![var_ref("e", span), var_ref("e", span)],
+            span,
+        },
+        span,
+    });
+    function
+}
+
+/// MSL rigid-body inertia construction assigns a 3x3 matrix from a three-axis
+/// vector through `diagonal(axisInertia)`.
+fn inertia_diagonal_function(span: Span) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new("inertiaTensor", span);
+    function.add_input(param("axisInertia", "Real", real_type(), vec![3], span));
+    function.add_output(param("I", "Real", real_type(), vec![3, 3], span));
+    function.body.push(rumoca_core::Statement::Assignment {
+        comp: simple_target("I", span),
+        value: Expression::BuiltinCall {
+            function: BuiltinFunction::Diagonal,
+            args: vec![var_ref("axisInertia", span)],
+            span,
+        },
+        span,
+    });
+    function
+}
+
 fn model_with_predefined_types() -> flat::Model {
     let mut model = flat::Model::new();
     model.predefined_types.real = real_type();
@@ -107,6 +213,294 @@ fn integer_literal_argument_proves_a_value_dependent_result_extent() {
         certificate.key.input_values,
         vec![Some(ProvenValue::Integer(3))]
     );
+}
+
+#[test]
+fn identity_body_proves_the_exact_square_result_shape() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("identity_body.mo", "identity_body(3);");
+    let span = Span::from_offsets(source, 0, 17);
+    let mut model = model_with_predefined_types();
+    model.add_function(identity_body_function(span));
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("identity_body"),
+            args: vec![integer_literal(3, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let analysis = analyze(&model).expect("identity(n) proves Integer[n,n]");
+    let [certificate] = analysis.certificates() else {
+        panic!("one call has one specialization")
+    };
+    assert_eq!(certificate.results, vec![vec![3, 3]]);
+}
+
+#[test]
+fn cross_body_proves_one_common_three_vector_shape() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("cross_body.mo", "cross_body({1,2,3},{4,5,6});");
+    let span = Span::from_offsets(source, 0, 31);
+    let mut model = model_with_predefined_types();
+    model.add_function(cross_body_function(span));
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("cross_body"),
+            args: vec![array_argument(3, span), array_argument(3, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let analysis = analyze(&model).expect("cross(x,y) proves one common [3] shape");
+    let [certificate] = analysis.certificates() else {
+        panic!("one call has one specialization")
+    };
+    assert_eq!(certificate.results, vec![vec![3]]);
+}
+
+#[test]
+fn skew_body_proves_one_compact_three_by_three_matrix_shape() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("skew_body.mo", "skew_body({1,2,3});");
+    let span = Span::from_offsets(source, 0, 21);
+    let mut model = model_with_predefined_types();
+    model.add_function(skew_body_function(span));
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("skew_body"),
+            args: vec![array_argument(3, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let analysis = analyze(&model).expect("skew(x) proves one compact [3,3] shape");
+    let [certificate] = analysis.certificates() else {
+        panic!("one call has one specialization")
+    };
+    assert_eq!(certificate.results, vec![vec![3, 3]]);
+}
+
+#[test]
+fn vector_body_proves_the_checked_product_as_one_extent() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("vector_body.mo", "vector_body([{{1.0},{2.0},{3.0}}]);");
+    let span = Span::from_offsets(source, 0, 35);
+    let mut model = model_with_predefined_types();
+    model.add_function(vector_body_function(span));
+    let columns = [1, 2, 3]
+        .into_iter()
+        .map(|_| array_argument(1, span))
+        .collect();
+    let row = Expression::Array {
+        elements: columns,
+        is_matrix: false,
+        span,
+    };
+    let tensor = Expression::Array {
+        elements: vec![row],
+        is_matrix: false,
+        span,
+    };
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("vector_body"),
+            args: vec![tensor],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let analysis = analyze(&model).expect("ARR-015 vector input proves one rank-one result");
+    let [certificate] = analysis.certificates() else {
+        panic!("one call has one specialization")
+    };
+    assert_eq!(certificate.parameters, vec![vec![1, 3, 1]]);
+    assert_eq!(certificate.results, vec![vec![3]]);
+}
+
+#[test]
+fn msl_planar_rotation_outer_product_proves_a_compact_matrix_shape() {
+    let mut sources = SourceMap::new();
+    let source = sources.add(
+        "planar_rotation_outer_product.mo",
+        "planarRotation({1.0,2.0,3.0});",
+    );
+    let span = Span::from_offsets(source, 0, 33);
+    let mut model = model_with_predefined_types();
+    model.add_function(planar_rotation_outer_product_function(span));
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("planarRotation"),
+            args: vec![array_argument(3, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let analysis = analyze(&model).expect("ARR-042 retains the two vector domains compactly");
+    let [certificate] = analysis.certificates() else {
+        panic!("one call has one specialization")
+    };
+    assert_eq!(certificate.parameters, vec![vec![3]]);
+    assert_eq!(certificate.results, vec![vec![3, 3]]);
+}
+
+#[test]
+fn msl_inertia_diagonal_proves_a_compact_square_shape() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("inertia_diagonal.mo", "inertiaTensor({1.0,2.0,3.0});");
+    let span = Span::from_offsets(source, 0, 32);
+    let mut model = model_with_predefined_types();
+    model.add_function(inertia_diagonal_function(span));
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("inertiaTensor"),
+            args: vec![array_argument(3, span)],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let analysis = analyze(&model).expect("ARR-041 reuses one vector domain for both axes");
+    let [certificate] = analysis.certificates() else {
+        panic!("one call has one specialization")
+    };
+    assert_eq!(certificate.parameters, vec![vec![3]]);
+    assert_eq!(certificate.results, vec![vec![3, 3]]);
+}
+
+#[test]
+fn outer_product_preserves_unequal_vector_extents_in_source_order() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("outer_product_shape.mo", "outerProduct(x,y)");
+    let span = Span::from_offsets(source, 0, 17);
+    let mut values = ShapeEnvironment::with_capacity(2);
+    values.insert(VarName::new("x"), vec![2]);
+    values.insert(VarName::new("y"), vec![5]);
+    let expression = Expression::BuiltinCall {
+        function: BuiltinFunction::OuterProduct,
+        args: vec![var_ref("x", span), var_ref("y", span)],
+        span,
+    };
+
+    let shape = expression_shape(&expression, &values, &mut reject_shape_call)
+        .expect("two vector domains own the result axes in source order");
+    assert_eq!(shape, vec![2, 5]);
+}
+
+#[test]
+fn matrix_builtins_reject_invalid_vector_operands() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("matrix_operand.mo", "diagonal(A); outerProduct(A,v)");
+    let span = Span::from_offsets(source, 0, 32);
+    let mut values = ShapeEnvironment::with_capacity(2);
+    values.insert(VarName::new("A"), vec![2, 2]);
+    values.insert(VarName::new("v"), vec![3]);
+    for expression in [
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Diagonal,
+            args: vec![var_ref("A", span)],
+            span,
+        },
+        Expression::BuiltinCall {
+            function: BuiltinFunction::OuterProduct,
+            args: vec![var_ref("A", span), var_ref("v", span)],
+            span,
+        },
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Skew,
+            args: vec![var_ref("A", span)],
+            span,
+        },
+    ] {
+        let error = expression_shape(&expression, &values, &mut reject_shape_call)
+            .expect_err("matrix operands must not be accepted as vectors");
+        assert!(matches!(
+            error,
+            ToDaeError::UnsupportedFlatSemantics { feature, detail, .. }
+                if feature == "function shape proof"
+                    && detail == "expression shapes are inconsistent"
+        ));
+    }
+
+    values.insert(VarName::new("short"), vec![2]);
+    let skew = Expression::BuiltinCall {
+        function: BuiltinFunction::Skew,
+        args: vec![var_ref("short", span)],
+        span,
+    };
+    assert!(expression_shape(&skew, &values, &mut reject_shape_call).is_err());
+}
+
+#[test]
+fn matrix_builtins_reject_wrong_arity() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("builtin_arity.mo", "diagonal(); outerProduct(v)");
+    let span = Span::from_offsets(source, 0, 27);
+    let values = ShapeEnvironment::with_capacity(0);
+    let cases = [
+        (
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Diagonal,
+                args: Vec::new(),
+                span,
+            },
+            "diagonal requires one vector, found 0 arguments",
+        ),
+        (
+            Expression::BuiltinCall {
+                function: BuiltinFunction::OuterProduct,
+                args: vec![var_ref("v", span)],
+                span,
+            },
+            "outerProduct requires two vectors, found 1 arguments",
+        ),
+        (
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Skew,
+                args: Vec::new(),
+                span,
+            },
+            "skew requires one 3-vector argument",
+        ),
+    ];
+    for (expression, expected) in cases {
+        let error = expression_shape(&expression, &values, &mut reject_shape_call)
+            .expect_err("wrong builtin arity must remain a typed rejection");
+        assert!(matches!(
+            error,
+            ToDaeError::UnsupportedFlatSemantics { feature, detail, .. }
+                if feature == "function shape proof" && detail == expected
+        ));
+    }
 }
 
 /// ACCEPTED: two distinct proven values own two distinct specializations, so

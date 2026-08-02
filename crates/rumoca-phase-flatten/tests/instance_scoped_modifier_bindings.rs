@@ -64,6 +64,27 @@ model TwoRacks
     Rack left;
     Rack right;
 end TwoRacks;
+
+model AttributeLeaf
+    Boolean off(start = false, fixed = false);
+end AttributeLeaf;
+
+model AttributeBank
+    parameter Integer m = 3;
+    AttributeLeaf leaf[m];
+end AttributeBank;
+
+model AttributePlant
+    parameter Integer m = 3;
+    parameter Boolean starts[m] = {true, false, true};
+    parameter Boolean shared = true;
+    AttributeBank distributed(
+        m = m,
+        leaf(off(start = starts, fixed = fill(true, m))));
+    AttributeBank repeated(
+        m = m,
+        leaf(off(each start = shared, each fixed = true)));
+end AttributePlant;
 "#;
 
 fn flatten_model(model_name: &str) -> rumoca_ir_flat::Model {
@@ -90,6 +111,43 @@ fn binding_of(model: &rumoca_ir_flat::Model, name: &str) -> rumoca_core::Express
         .binding
         .clone()
         .unwrap_or_else(|| panic!("{name} keeps its modifier binding"))
+}
+
+fn start_of(model: &rumoca_ir_flat::Model, name: &str) -> rumoca_core::Expression {
+    model
+        .variables
+        .get(&rumoca_core::VarName::new(name))
+        .unwrap_or_else(|| panic!("flat model owns {name}"))
+        .start
+        .clone()
+        .unwrap_or_else(|| panic!("{name} keeps its start attribute"))
+}
+
+#[test]
+fn source_scoped_array_attribute_modifiers_project_per_element() {
+    let model = flatten_model("AttributePlant");
+
+    for index in 1..=3 {
+        let distributed = start_of(&model, &format!("distributed.leaf[{index}].off"));
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = distributed
+        else {
+            panic!("distributed start must remain an indexed source reference");
+        };
+        assert_eq!(name.as_str(), "starts");
+        assert_eq!(subscripts.len(), 1);
+
+        let repeated = start_of(&model, &format!("repeated.leaf[{index}].off"));
+        let rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } = repeated
+        else {
+            panic!("each start must remain its scalar source reference");
+        };
+        assert_eq!(name.as_str(), "shared");
+        assert!(subscripts.is_empty(), "`each` must not synthesize an index");
+    }
 }
 
 #[test]

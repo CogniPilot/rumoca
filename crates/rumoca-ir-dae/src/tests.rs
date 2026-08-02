@@ -10,6 +10,7 @@ mod string_conversion;
 mod temporal_wire;
 mod type_arena;
 mod wire_buffers;
+mod wire_roundtrip_verification;
 
 use rumoca_core::{
     ClockLattice, ClockRational, SourceId, SourceMap, Span, StructuredIndexBinder,
@@ -343,6 +344,47 @@ fn no_event_preserves_a_boolean_operand_and_exact_provenance() {
 }
 
 #[test]
+fn promoted_concatenation_derives_exact_shapes_during_construction() {
+    let source = TestSource::new("[a, b]; [a; short]");
+    let horizontal = source.source("[a, b]", 0);
+    let invalid = source.source("[a; short]", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let one = expressions.at(horizontal).literal(DaeLiteral::Real(1.0))?;
+            let two = expressions.at(horizontal).literal(DaeLiteral::Real(2.0))?;
+            let three = expressions.at(horizontal).literal(DaeLiteral::Real(3.0))?;
+            let four = expressions.at(horizontal).literal(DaeLiteral::Real(4.0))?;
+            let a = expressions.at(horizontal).array([one, two])?;
+            let b = expressions.at(horizontal).array([three, four])?;
+            expressions
+                .at(horizontal)
+                .builtin(PureBuiltin::PromotedCat2, [a, b])?;
+
+            let short = expressions.at(invalid).array([one])?;
+            let error = expressions
+                .at(invalid)
+                .builtin(PureBuiltin::PromotedCat2, [a, short])
+                .expect_err("dimension 1 must agree when concatenating dimension 2");
+            assert!(matches!(error, DaeConstructionError::ShapeMismatch { .. }));
+            Ok(())
+        })
+    })
+    .expect("the valid promoted concatenation constructs");
+
+    dae.inspect(|view| {
+        let expression = view.expression(view.expression_id(6).unwrap()).unwrap();
+        assert_eq!(expression.value_type().dimensions(), &[2, 2]);
+        assert!(matches!(
+            expression.operation(),
+            ExpressionOperation::Builtin {
+                builtin: PureBuiltin::PromotedCat2,
+                ..
+            }
+        ));
+    });
+}
+
+#[test]
 fn numeric_promotion_is_derived_during_construction() {
     let source = TestSource::new("Real x; equation der(x) = 1; x + 2; if true then 3 else x;");
     let declaration = source.source("Real x", 0);
@@ -407,6 +449,37 @@ fn numeric_promotion_is_derived_during_construction() {
             let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
             assert_eq!(expression.value_type().scalar_type(), ScalarType::Real);
         }
+    });
+}
+
+#[test]
+fn multi_argument_extrema_use_checked_numeric_common_types() {
+    let source = TestSource::new("max(1.0, 2); max(2, true)");
+    let valid = source.source("max(1.0, 2)", 0);
+    let invalid = source.source("max(2, true)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let real = expressions.at(valid).literal(DaeLiteral::Real(1.0))?;
+            let integer = expressions.at(valid).literal(DaeLiteral::Integer(2))?;
+            expressions
+                .at(valid)
+                .builtin(PureBuiltin::Max, [real, integer])?;
+
+            let boolean = expressions.at(invalid).literal(DaeLiteral::Boolean(true))?;
+            let error = expressions
+                .at(invalid)
+                .builtin(PureBuiltin::Max, [integer, boolean])
+                .expect_err("numeric extrema reject Boolean operands");
+            assert!(matches!(error, DaeConstructionError::TypeMismatch { .. }));
+            Ok(())
+        })
+    })
+    .expect("Real and Integer extrema promote to Real");
+
+    dae.inspect(|view| {
+        let maximum = view.expression(view.expression_id(2).unwrap()).unwrap();
+        assert_eq!(maximum.value_type().scalar_type(), ScalarType::Real);
+        assert!(maximum.value_type().dimensions().is_empty());
     });
 }
 
@@ -1730,6 +1803,113 @@ fn b1c_when_owner_preserves_source_priority_and_action_provenance() {
             false_at
         );
     });
+}
+
+fn construct_structured_b1c_dae() -> (Dae, DaeProvenance) {
+    let source = TestSource::new("discrete Boolean m[2]; equation m = {true, false};");
+    let declaration = source.source("discrete Boolean m[2]", 0);
+    let assignment = source.source("m = {true, false}", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let boolean_array = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::array(ScalarType::Boolean, [2]),
+                declaration,
+            )
+        })?;
+        let target = dae.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("m"),
+                boolean_array,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let domain = dae.domains(|domains| {
+            domains.structured(
+                StructuredIndexDomain {
+                    binders: vec![StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                assignment,
+            )
+        })?;
+        let value = dae.expressions(|expressions| {
+            let yes = expressions
+                .at(assignment)
+                .literal(DaeLiteral::Boolean(true))?;
+            let no = expressions
+                .at(assignment)
+                .literal(DaeLiteral::Boolean(false))?;
+            expressions.at(assignment).array([yes, no])
+        })?;
+        dae.b1c([target], |topology| {
+            let rejected = topology.structured_owner(
+                assignment,
+                domain,
+                rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                [target],
+                |owner| owner.always(assignment, [(value, assignment)]),
+            );
+            assert!(matches!(
+                rejected,
+                Err(DaeConstructionError::ShapeMismatch { .. })
+            ));
+            topology.structured_owner(
+                assignment,
+                domain,
+                rumoca_core::ComprehensionScalarView::RowMajorProjection,
+                [target],
+                |owner| owner.always(assignment, [(value, assignment)]),
+            )?;
+            Ok(())
+        })
+    })
+    .expect("the checked structured B.1c owner constructs after an atomic rejection");
+    (dae, assignment)
+}
+
+#[test]
+fn structured_b1c_owner_derives_domain_view_rows_and_rejects_forged_wire() {
+    let (dae, assignment) = construct_structured_b1c_dae();
+    let assert_owner = |dae: &Dae| {
+        dae.inspect(|view| {
+            let owner = view
+                .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+                .unwrap();
+            let structure = owner.structure().expect("the B.1c family stays structured");
+            assert_eq!(structure.domain().index(), 0);
+            assert_eq!(
+                structure.scalar_view(),
+                rumoca_core::ComprehensionScalarView::RowMajorProjection
+            );
+            assert_eq!(structure.scalar_rows(), 2);
+            assert_eq!(owner.targets().len(), 1);
+            assert_eq!(owner.branches().get(0).unwrap().provenance(), assignment);
+        });
+    };
+    assert_owner(&dae);
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    assert_owner(&decoded);
+
+    let forged_domain = encoded.replacen("\"upper\":2", "\"upper\":3", 1);
+    assert_ne!(forged_domain, encoded);
+    assert!(serde_json::from_str::<Dae>(&forged_domain).is_err());
+
+    let forged_view = encoded.replacen(
+        "\"scalar_view\":\"RowMajorProjection\"",
+        "\"scalar_view\":\"BinderSubstitution\"",
+        1,
+    );
+    assert_ne!(forged_view, encoded);
+    assert!(serde_json::from_str::<Dae>(&forged_view).is_err());
 }
 
 #[test]

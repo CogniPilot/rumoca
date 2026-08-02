@@ -314,6 +314,7 @@ fn trace_from_sim_result(model_name: &str, sim: &SimResult) -> SimTrace {
         names: sim.names.clone(),
         data,
         variable_meta,
+        certification_profile: None,
     }
 }
 
@@ -456,6 +457,7 @@ fn load_omc_csv_as_trace(model_name: &str, csv_path: &Path) -> Result<SimTrace> 
         names,
         data,
         variable_meta: None,
+        certification_profile: None,
     })
 }
 
@@ -911,6 +913,7 @@ mod tests {
                 .map(|column| column.into_iter().map(Some).collect())
                 .collect(),
             variable_meta: None,
+            certification_profile: None,
         }
     }
 

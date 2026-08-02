@@ -127,12 +127,21 @@ Failure classifications:
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
 | A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
 | The comparator's candidate set MUST be every `sim_ok` trace | `rumoca_model_is_trace_candidate` | Completion picks candidates; comparison decides parity |
-| Every candidate MUST be compared or recorded under `skipped`/`missing_trace` with a reason | `sim_trace_comparison.json` | An uncompared trace must name why |
+| Every candidate MUST be compared or recorded under `skipped`, `missing_trace`, or `trace_nonidentifiable` with a typed reason | `sim_trace_comparison.json` | An uncompared trace must name the exact proof boundary |
+| `trace_nonidentifiable` MUST be reported separately, excluded from the pointwise-comparison denominator, and MUST NOT count as strict-high, passing, supported, or certified | comparator and all consumers | Inapplicable pointwise evidence cannot become affirmative evidence |
+| Stochastic non-identifiability MUST be derived from typed random operations in compiler IR; deterministic-chaotic non-identifiability MUST carry a positive finite Lyapunov lower bound plus the sample count and digest of its analysis artifact | trace producer | Classification is machine-readable evidence, not a model-name exception |
+| A non-identifiability profile MUST record its outstanding replacement proof obligations; malformed or incomplete evidence MUST fail closed as a comparator failure | trace producer/comparator | Classification narrows the proof method but never discharges the proof |
+| Trace classification MUST NOT branch on model name, OMC output, or an observed comparison band | trace producer/comparator | Corpus-specific exceptions cannot establish correctness |
 | A run whose comparator stage did not execute, or compared zero models, reports "parity unmeasured", not a number | harness gate, `verify msl-parity` | Missing comparison must be visible, not defaulted |
 | A quoted number MUST state `models_compared` and the skipped/missing counts beside it | reports, dev/ ledger | Partial coverage is part of the claim |
 | Comparator exclusions MUST stay a tracked list, and each excluded model MUST record its reason | `msl_trace_compare_exclusions.json` | Silencing a model must be reviewable |
 | An unmeasured cohort run MUST fail its quality gate, not pass with `sim_ok` | harness gate, `verify msl-parity` | A run nobody could check must not read as a green run |
-| The cohort ratchet MUST be the strict-high agreement band; `sim_ok` is reported and never gated on | harness gate | Gating completion rewards traces nobody compared |
+| The cohort ratchet MUST be the strict-high agreement band | harness gate | Only strict-high is parity |
+| `sim_ok` MUST remain a raw execution count and MUST NOT be called supported, certified, or passing | reports, PRs, specs | Solver completion does not prove semantics |
+| A package or stage simulation pass MUST require a comparable strict-high OMC trace | package pass-rate report | Near, deviation, and absent bands are unsupported |
+| A full Tier 2 quality gate MUST require `sim_ok == agreement_high` | harness gate | Every claimed execution must be certified |
+| Every compiled non-high model MUST be triaged as a counterexample to simulation refinement | dev/ ledger, issue/PR | Wrong traces falsify the candidate claim |
+| A counterexample MUST yield a general semantic fix or typed profile rejection | compiler/runtime owners | Model exceptions cannot establish correctness |
 | No validity check that reads simulation outcomes may run before the comparator stage | harness gate flow | A gate that aborts first destroys the measurement it judges |
 | Every quoted parity number MUST name the Tier 2 run and commit it came from | reports, PRs, specs | An unsourced number cannot be rechecked |
 | Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
@@ -159,7 +168,7 @@ quality gate fails rather than falling back to `sim_ok`.
 | `omc_simulation_reference.json` exists in the results directory and carries `omc_version` | `MslParityMeasurement::measured`, `check_comparator_evidence` |
 | `sim_trace_comparison.json` exists and is non-empty | `check_comparator_evidence` |
 | `trace_comparison.models_compared > 0` | `MslParityMeasurement::measured`, `check_comparator_evidence`, nightly `Verify the merged sweep measured parity` |
-| Every `sim_ok` candidate is compared or carries a recorded skip reason | `quantify_trace_differences` (`skipped`, `missing_trace`) |
+| Every `sim_ok` candidate is compared or carries a recorded typed boundary | `quantify_trace_differences` (`skipped`, `missing_trace`, `trace_nonidentifiable`) |
 | The run persisted a per-model band table with one row per cohort target, bound to its own comparator output | `read_cohort` / `measure_msl_parity` (`BandTableAbsent`), `band_table::ensure_comparable` |
 | That table declares counts and a row digest matching its own rows | `band_table::ensure_comparable` |
 | That table's compared, strict-high, near, and deviation counts equal the reference's | `band_table_disagreement` (`BandTableInconsistent`), nightly `Verify the merged sweep pinned its cohort` (compared count) |
@@ -168,20 +177,13 @@ quality gate fails rather than falling back to `sim_ok`.
 | The reference's `total_models` equals the run's `sim_target_models` (not stale) | `load_current_msl_parity_gate_input_required` |
 | The reference records no OMC Modelica assertion failures | `load_current_msl_parity_gate_input_required` |
 
-The quoted number is the **strict-high agreement band** over the cohort target
-count. `agreement_minor` and `agreement_deviation` are reported alongside it and
-are not part of the number. `sim_ok` is printed in every summary, labelled as
-completion, and is gated on nowhere: the cohort ratchet reads
-`agreement_high`, and the structural floor reads `agreement_high` as well,
-because `agreement_high <= models_compared <= sim_ok` makes a band floor
-strictly tighter than the `sim_ok` floor it replaced.
+Only the **strict-high agreement band** is parity. Near and deviation bands are
+diagnostic; `sim_ok` is raw completion. Full Tier 2 fails unless
+`sim_ok == agreement_high`, and the package `Sim` column counts strict-high only.
 
-A recorded skip cannot inflate the number. `models_candidate` counts every
-`sim_ok` model and equals `models_compared + skipped_models +
-missing_trace_models`, the cohort ratchet compares absolute `agreement_high`
-counts, and `models_compared` carries its own non-regression check
-(`TRACE_MODELS_COMPARED_ALLOWED_DROP`), so moving a model out of the comparison
-lowers both sides of the claim instead of raising the percentage.
+A skip cannot inflate parity: every `sim_ok` is compared, skipped, or missing;
+the ratchet counts absolute strict-high models and separately guards comparison
+coverage (`TRACE_MODELS_COMPARED_ALLOWED_DROP`).
 
 Cohort movement is part of a certification, not a bonus reading. A full-scope
 run whose results directory carries no predecessor band table cannot report which

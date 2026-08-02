@@ -201,10 +201,13 @@ grows the list; never lower it to make a red gate green.
 - Baseline JSON also captures OMC parity distributions for this set (runtime
   speedup ratio + trace-accuracy min/median/mean/max), populated from
   `omc_simulation_reference.json`.
-- Trace parity excludes known stochastic random-input examples listed in:
-  - `tests/msl_tests/msl_trace_compare_exclusions.json`
-  - these models remain in compile/balance/sim stats, but are skipped from
-    OMC-vs-Rumoca trace deviation metrics unless deterministic parity support is added.
+- Pointwise trace certification records stochastic models structurally from
+  typed random operations in Solve IR. Such models are reported separately as
+  `trace_nonidentifiable`, remain uncertified until generator/seed and
+  statistical proof obligations are discharged, and never count as strict-high.
+  `tests/msl_tests/msl_trace_compare_exclusions.json` remains available only
+  for independently reviewed non-classification policy exclusions; it must not
+  classify stochastic or chaotic behavior by model name.
 - Successful baseline `test_msl_all` runs write current quality snapshot:
   - `target/msl/results/msl_quality_current.json`
 - Checked-in fallback baseline updates are explicit/manual:

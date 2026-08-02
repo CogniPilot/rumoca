@@ -63,6 +63,58 @@ interface, use borrowed slices, and batch variable access. Those optimizations
 MUST preserve the FMI 3 ME state machine and observable results; "in process"
 does not define a second interface.
 
+#### Strict FMI 3 ME surface
+
+The component-facing interface MUST be a semantic projection of the normative
+FMI 3.0.2 Model Exchange functions and `modelDescription.xml`. A Rust method
+MUST NOT be named or documented as an FMI operation while omitting a standard
+argument, return value, capability flag, lifecycle effect, or XML-declared
+ordering rule. Native batching and static dispatch may change representation,
+but not the information available to either side of the boundary.
+
+Importer orchestration and numerical policy live in a separate ME-host layer.
+That layer may provide conveniences such as "next integration stop", root
+localization, trace recording, timeout enforcement, and solver reset, but each
+convenience MUST be derived only from standard FMI calls, their returned
+values, and `modelDescription.xml`. It MUST NOT call a private component
+operation to reveal Modelica relations, `pre()` state, event ownership, delay
+storage, Solve rows, or a constraint projection.
+
+The current linked-kernel extensions are disposed as follows during phase 2:
+
+| Current surface | Required disposition |
+|---|---|
+| `MeTime::event_boundary` | Remove; `fmi3SetTime` carries only `time`. Continuous-Time Mode keeps relations frozen until the importer enters Event Mode. |
+| `MeEventEntry` arguments to `enter_event_mode` | Remove; `fmi3EnterEventMode` has no arguments. Event cause is importer state, not component input. |
+| `MeStepCompletion` | Replace with the complete `fmi3CompletedIntegratorStep` contract: `noSetFMUStatePriorToCurrentPoint`, `enterEventMode`, and `terminateSimulation`, gated by `needsCompletedIntegratorStep`. |
+| `project_continuous_states` | Remove from Continuous-Time Mode. A DAE projection may change states only through Event Mode / `fmi3UpdateDiscreteStates`, reported by `valuesOfContinuousStatesChanged`. |
+| `next_event_stop` | Make host-only derivation of `nextEventTimeDefined` / `nextEventTime` returned by `fmi3UpdateDiscreteStates`; the component does not expose a second scheduling query. |
+| `event_indicator_crossings` | Make importer-owned classification over `fmi3GetEventIndicators` results. |
+| `capture_pre_event_state` / `arm_state_event` | Remove from the host boundary. The component updates its own discrete/relation state when standard Event Mode is entered. |
+| `max_step_size` | Remove as a component capability. Delay history is updated through `fmi3CompletedIntegratorStep`; any accuracy step cap is importer numerical policy. |
+| `observe`, output recorders, and initial-observation queues | Keep only as host conveniences composed from legal `fmi3Get{VariableType}` calls at the current FMI state; they are not component operations. |
+| `restart_from_fmu_state` | Keep only as explicit host composition of standard reset/state operations, subject to advertised FMU-state capabilities. |
+| `extend_stop_time` | Remove. An extendable live session instantiates without a defined stop time or resets and re-enters Initialization Mode with a new experiment. |
+| fixed-list directional derivative helper | Make host-only preparation of the standard value-reference lists passed to `fmi3GetDirectionalDerivative`. |
+
+The linked model description is the same checked artifact used to emit a
+packaged FMU's `modelDescription.xml`. It MUST include the FMI version,
+instantiation token, `<ModelExchange>` capabilities (including
+`needsCompletedIntegratorStep`), typed model variables and value references,
+continuous-state derivative ordering, event-indicator ordering, clocks,
+dependencies, units, dimensions, causality, variability, initial/start data,
+and `ModelStructure` required by the implemented model. Packaged XML MUST
+validate against the official FMI 3 schema, and linked-versus-packaged tests
+MUST prove that the importer sees the same metadata and call results.
+
+Ratifying this boundary requires a coordinated amendment to SPEC_0029 §12 and
+the concrete-solver row in SPEC_0041 §4. Their current accepted wording says a
+concrete solver consumes Solve IR; the replacement wording must say that a
+concrete numerical solver consumes only `rumoca-solver`'s generic FMI ME
+importer/host contract. Until that accepted-spec amendment lands, this draft is
+the migration proposal and MUST NOT be used to silently weaken either accepted
+crate-boundary rule.
+
 `rumoca-input` retains physical-device adapters, local input state, debounce,
 preconditions, derived controls, and signal mapping. Its model-facing product
 is a typed batch of FMI value references and values, not `(name, f64)` calls
@@ -105,6 +157,16 @@ that decision in the trace. A transport implementation may not swallow a send
 error, convert a receive error to "no input", or allow a failed lockstep
 exchange to advance as a successful model step.
 
+### Bounded ME Verification Profile
+
+The linked FMI 3 ME component exposes a checked lifecycle aggregate and pure
+property functions shared by production code, property tests, and bounded Kani
+harnesses. The normative transition table, proof obligations, exact bounded
+domains, and claim limits are cataloged in
+[SPEC_0044 §1](SPEC_0044_FMI_EXECUTION_CATALOG.md#1-bounded-me-verification-profile).
+That bounded evidence does not claim arbitrary-model trajectory correctness,
+floating-point accuracy, solver convergence, or end-to-end Modelica refinement.
+
 ### Phasing
 
 The cutover lands in four phases. Each phase is behaviour-freezing unless its
@@ -121,6 +183,49 @@ relocating semantics cannot be told apart from the divergence being fixed.
 
 Phase 1 does not fix event-semantics divergences; it removes the reason they
 have to be fixed twice. Fixing them is phase 2 work, on the one event loop.
+
+#### Acceptance Contract: the reduced state-only system
+
+Phase 2 deletes the Diffsol backend's general/implicit DAE construction, so the
+reduced state-only ODE becomes the only system a state-carrying model is
+integrated as. Per SPEC_0008 *Acceptance Contract Before Rejection*, the new
+rejection path ships with the shapes that stay legal:
+
+- [ ] `EX002` (`SimError::StateOnlyPathUnavailable`) rejects a state-carrying
+      model whose state-derivative rows read a solver coordinate that the
+      algebraic projection plan cannot produce, or that does not present one
+      derivative row per continuous state;
+      accepts (a) models with zero continuous states, which keep the no-state
+      runtime path, (b) models whose derivative rows read only continuous
+      states, and (c) models whose non-state reads are transitively produced by
+      the algebraic projection plan — including chains through several producer
+      rows, and including algebraic counts far above any MSL model's;
+      owned by `rumoca-solver-diffsol::bdf::require_state_only_bdf`, with the
+      rejection minted in `rumoca-solver-diffsol::error::StateOnlyRejection`
+      and bucketed by `rumoca-worker::failure_classification` at
+      `SimFailureStage::BackendBuild`;
+      evidence `rumoca-solver-diffsol/src/tests/state_path_integration.rs::state_only_bdf_accepts_projection_backed_derivative_dependencies`
+      (acceptance plus its ablation),
+      `::state_only_bdf_accepts_transitive_projection_dependencies` (chained
+      producers), and
+      `::simulate_rejects_an_unprojectable_derivative_dependency_by_name`
+      (the rejection reaches the caller by name).
+
+The rejection is deliberately *not* reachable from `SimulationSession`, which
+constructs its own problem and so bypasses the check; consolidating the session
+onto the same reduction is follow-on work, recorded on `FS-SIM-015`.
+
+**Fixture note.** Ten Diffsol unit tests previously exercised the
+general/implicit construction only because their `SolveModel` fixtures were
+under-specified: they set `implicit_rhs` but left `derivative_rhs` empty, so the
+eligibility walk saw zero derivative rows and routed them to the general path.
+Their edits add the `derivative_rhs` and `full_jacobian_v` rows Solve actually
+emits for those systems — the mass matrix is the identity in every one, so the
+derivative program is the same rows as the residual, and the added Jacobians are
+the exact JVPs (`der(x)=1` -> `0`; `der(x)=v, der(v)=-9.81` -> `[seed[1], 0]`;
+`der(x)=0` -> `0`). No assertion was weakened: the edits complete the fixtures
+towards the shape Solve emits, so each test now pins its original semantics on
+the path the model would really take.
 
 Composing work: the target/backend registry (#121) supplies the capability
 discovery the profile table above assumes, and declarative buffer starts (#119)

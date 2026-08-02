@@ -112,17 +112,15 @@ pub(super) fn print_trace_gate_status(
             trace_models_with_any_channel_deviation_percent(current_trace).unwrap_or(0.0);
         let baseline_any =
             trace_models_with_any_channel_deviation_percent(baseline_trace).unwrap_or(0.0);
-        let current_acceptable = trace_acceptable_agreement_models(current_trace);
-        let baseline_acceptable = trace_acceptable_agreement_models(baseline_trace);
         let current_no_severe = trace_no_severe_models(current_trace).unwrap_or(0);
         let baseline_no_severe = trace_no_severe_models(baseline_trace).unwrap_or(0);
         println!("MSL trace gate: PASS with baseline:");
         println!(
-            "  trace={:.2}% ({}/{}; baseline={}/{}), no_severe={:.2}% ({}/{}; baseline={}/{})",
-            stage_percent(current_acceptable, baseline.sim_target_models),
-            current_acceptable,
+            "  strict_high={:.2}% ({}/{}; baseline={}/{}), no_severe={:.2}% ({}/{}; baseline={}/{})",
+            stage_percent(current_trace.agreement_high, baseline.sim_target_models),
+            current_trace.agreement_high,
             baseline.sim_target_models,
-            baseline_acceptable,
+            baseline_trace.agreement_high,
             baseline.sim_target_models,
             stage_percent(current_no_severe, baseline.sim_target_models),
             current_no_severe,

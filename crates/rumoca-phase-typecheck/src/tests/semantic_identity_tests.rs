@@ -67,6 +67,25 @@ fn resolved_reference(name: &str, def_id: DefId) -> ComponentReference {
     reference
 }
 
+#[test]
+fn partially_evaluated_declaration_shape_remains_unknown() {
+    let source = r#"
+        model Test
+            input Real lines[:, 2, 2];
+        end Test;
+    "#;
+    let tree = resolve(parse(source))
+        .expect("resolve should succeed")
+        .into_inner();
+    let lines = &tree.definitions.classes["Test"].components["lines"];
+    let semantics = ComponentSemantics::from_declaration_with_type(lines, TypeId::new(91));
+
+    assert_eq!(
+        semantics.shape, None,
+        "the literal suffix cannot masquerade as the complete declared rank"
+    );
+}
+
 fn indexed_reference(name: &str, index: i64, def_id: DefId) -> ComponentReference {
     let mut reference = resolved_reference(name, def_id);
     reference.parts[0].subs = Some(vec![Subscript::Expression(Expression::Terminal {

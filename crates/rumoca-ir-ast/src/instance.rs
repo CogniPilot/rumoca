@@ -880,34 +880,6 @@ pub struct InstanceConnectionFamily {
     pub b: InstanceConnectionEndpoint,
 }
 
-/// Descriptor for an array of structured components that instantiation derived
-/// from a single template (SPEC_0032 §1).
-///
-/// An array component such as `Cell c[3]` whose elements differ only by their
-/// own subscripts is instantiated once, and this records how the remaining
-/// domain points were derived from that template. It is a record of what
-/// happened, not an owner: the per-element `components`/`classes` entries are
-/// the array's representation and are what every later phase reads. The
-/// descriptor is kept so a future phase can consume the compact domain without
-/// re-deriving it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct InstanceComponentFamily {
-    /// Row-major domain over the array component's own dimensions.
-    pub domain: rumoca_core::StructuredIndexDomain,
-    /// Path of the array component itself, without the family subscripts
-    /// (`plug_p.pin` for `plug_p.pin[3]`).
-    pub root: ComponentPath,
-    /// Zero-based position of the family-subscripted part inside member
-    /// qualified names (equal to `root.parts().len() - 1`).
-    pub subscript_depth: usize,
-    /// Component instances of the first domain point, in overlay order.
-    pub template_components: Vec<InstanceId>,
-    /// Class instances of the first domain point, in overlay order.
-    pub template_classes: Vec<InstanceId>,
-    /// Declaration span of the array component.
-    pub span: Span,
-}
-
 // =============================================================================
 // Instance Overlay
 // =============================================================================
@@ -941,17 +913,8 @@ pub struct InstanceOverlay {
     /// Component bindings introduced by an `each` modifier (MLS §7.2.5).
     ///
     /// This remains structured instantiation metadata so flattening can preserve
-    /// element-wise modifier semantics when an array component stays compact
-    /// (see `component_families` for the compact owners themselves).
+    /// element-wise modifier semantics when an array component stays compact.
     pub each_modifier_bindings: IndexSet<ComponentPath>,
-    /// Descriptors for arrays of structured components that instantiation
-    /// derived from a single template (SPEC_0032 §1). Each entry describes a
-    /// domain whose members were derived by reindexing rather than resolved
-    /// element by element. The per-element entries in `components`/`classes`
-    /// remain the array's representation; these descriptors currently have no
-    /// readers.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub component_families: Vec<InstanceComponentFamily>,
     /// Array parent dimensions for expanded array components.
     /// When an array component like `plug_p.pin[3]` is expanded to indexed instances
     /// (`plug_p.pin[1]`, `plug_p.pin[2]`, `plug_p.pin[3]`), this map stores the parent
@@ -1045,11 +1008,6 @@ impl InstanceOverlay {
     pub fn add_class(&mut self, data: ClassInstanceData) {
         let key = data.instance_id;
         self.classes.insert(key, data);
-    }
-
-    /// Record a compact owner for a homogeneous component array (SPEC_0032 §1).
-    pub fn add_component_family(&mut self, family: InstanceComponentFamily) {
-        self.component_families.push(family);
     }
 
     /// Get instance data for a component by InstanceId.

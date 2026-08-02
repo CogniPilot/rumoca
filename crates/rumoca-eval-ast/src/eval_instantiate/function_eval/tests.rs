@@ -156,6 +156,14 @@ fn int_expr(value: i64) -> ast::Expression {
     }
 }
 
+fn real_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedReal,
+        token: token(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn bool_expr(value: bool) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::Bool,
@@ -387,6 +395,24 @@ fn integer_div_builtin_remains_truncating() {
     };
 
     assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(3));
+}
+
+#[test]
+fn integer_builtin_floors_negative_real_during_instantiation() {
+    let negative_fraction = ast::Expression::Unary {
+        op: rumoca_core::OpUnary::Minus,
+        rhs: Arc::new(real_expr("0.5")),
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = func_call("integer", vec![negative_fraction]);
+    let ctx = InstantiateEvalCtx {
+        tree: &ast::ClassTree::new(),
+        mod_env: &ast::ModificationEnvironment::new(),
+        effective_components: &IndexMap::default(),
+        resolve_class_components: no_op_resolve_class_components,
+    };
+
+    assert_eq!(try_eval_integer_expr(&ctx, &expr), Some(-1));
 }
 
 #[test]

@@ -17,7 +17,7 @@
 //!   number is that guess.
 
 use rumoca::Compiler;
-use rumoca_sim::{SimOptions, simulate_dae};
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnostics};
 
 fn simulate(source: &str, model: &str, t_end: f64) -> rumoca_sim::SimResult {
     simulate_over(source, model, 0.0, t_end)
@@ -37,6 +37,23 @@ fn simulate_over(source: &str, model: &str, t_start: f64, t_end: f64) -> rumoca_
         },
     )
     .unwrap_or_else(|error| panic!("{model} should simulate: {error:?}"))
+}
+
+fn simulate_on(source: &str, model: &str, solver_mode: SimSolverMode) -> rumoca_sim::SimResult {
+    let compiled = Compiler::new()
+        .model(model)
+        .compile_str(source, "initialization_ordering.mo")
+        .unwrap_or_else(|error| panic!("{model} should compile: {error:?}"));
+    simulate_dae_with_diagnostics(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.05,
+            dt: Some(0.01),
+            solver_mode,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("{model} should simulate on {solver_mode:?}: {error:?}"))
 }
 
 fn channel_at_start(result: &rumoca_sim::SimResult, name: &str) -> f64 {
@@ -107,6 +124,51 @@ fn an_initial_event_reads_pre_from_the_settled_initialization_result() {
         0.0,
         "T_start settles to startTime + count*period = 0"
     );
+}
+
+/// MLS §8.6: "Before the start of the integration, it must be guaranteed
+/// that for all variables `v`, `v = pre(v)`. If this is not the case for some
+/// variables `vi`, `pre(vi) := vi` must be set and an event iteration at the
+/// initial time must follow, so the model is re-evaluated, until this condition
+/// is fulfilled."
+///
+/// This state starts at zero, but the initialization system settles it to five.
+/// Both hosts must therefore expose five through `pre(x)` to the initial event;
+/// reading zero would silently substitute the declared start for the settled
+/// initialization result.
+const SETTLED_STATE_PRE: &str = r#"
+model SettledStatePreAtInitialEvent
+  Real x(start = 0, fixed = false);
+  discrete Real seenPre(start = -1, fixed = true);
+initial equation
+  x = 5;
+equation
+  der(x) = 0;
+  when initial() then
+    seenPre = pre(x);
+  end when;
+end SettledStatePreAtInitialEvent;
+"#;
+
+#[test]
+fn both_hosts_seed_initial_event_pre_from_the_settled_state() {
+    for solver_mode in [SimSolverMode::Bdf, SimSolverMode::RkLike] {
+        let result = simulate_on(
+            SETTLED_STATE_PRE,
+            "SettledStatePreAtInitialEvent",
+            solver_mode,
+        );
+        assert_eq!(
+            channel_at_start(&result, "x"),
+            5.0,
+            "the initialization system must settle x on {solver_mode:?}"
+        );
+        assert_eq!(
+            channel_at_start(&result, "seenPre"),
+            5.0,
+            "the initial event must read pre(x) from the settled value on {solver_mode:?}"
+        );
+    }
 }
 
 /// MLS §8.6: a `parameter` declared `fixed = false` has no value of its own;

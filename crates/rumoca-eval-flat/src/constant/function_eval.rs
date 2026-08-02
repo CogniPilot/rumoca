@@ -1006,8 +1006,16 @@ fn eval_expr_in_function(
             ..
         } => eval_array_comprehension(expr, indices, filter, env, eval),
         Expression::Tuple { elements, .. } => eval_array_expr(elements, env, eval),
-        Expression::FieldAccess { base, field, .. } => {
+        Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            ..
+        } => {
             let base_val = eval_expr_in_function(base, env, eval)?;
+            if is_exact_single_record_output(base, *field_def_id, eval.ctx) {
+                return Ok(base_val);
+            }
             let record = base_val.as_record().ok_or_else(|| {
                 EvalError::type_mismatch("Record", base_val.type_name(), eval.span)
             })?;
@@ -1017,6 +1025,35 @@ fn eval_expr_in_function(
                 .ok_or_else(|| EvalError::unknown_variable(field, eval.span))
         }
     }
+}
+
+/// Whether one Flat field node is the exact output selector around a call that
+/// returns one record value.
+///
+/// Flat keeps function results as output-owned values for DAE lowering, so a
+/// source `f(...).member` may arrive as `f(...).result.member`. The constant
+/// evaluator returns a single output directly. The selector may therefore be
+/// erased only when the resolved call target and the selected output's `DefId`
+/// agree and that output is declared as a record; rendered names prove none of
+/// those facts.
+pub(super) fn is_exact_single_record_output(
+    base: &Expression,
+    field: rumoca_core::DefId,
+    ctx: &EvalContext,
+) -> bool {
+    let Expression::FunctionCall { name, .. } = base else {
+        return false;
+    };
+    let Some(target) = name.target_def_id() else {
+        return false;
+    };
+    let Some(function) = ctx.functions.get(name.as_str()) else {
+        return false;
+    };
+    function.def_id == Some(target)
+        && matches!(function.outputs.as_slice(), [output]
+            if output.def_id == Some(field)
+                && output.type_class == Some(rumoca_core::ClassType::Record))
 }
 
 /// Evaluate a literal expression.

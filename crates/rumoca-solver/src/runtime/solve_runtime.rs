@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeSet, HashMap},
 };
 
-use crate::runtime::delay::DelayRuntime;
+use crate::runtime::delay::{DelayRuntime, DelayRuntimeSnapshot};
 use crate::runtime::solve_events::{
     apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
     next_runtime_event_stop, visible_values_with_context,
@@ -38,7 +38,12 @@ mod plans;
 mod refresh_batch;
 mod sensitivity;
 mod support;
+use discrete_rows::PreparedStructuredDiscreteRows;
 pub use discrete_rows::SeededConditionMemory;
+#[cfg(any(test, kani))]
+pub(crate) use discrete_rows::{
+    ConditionMemorySeedInput, seed_condition_memory_for_initialization_core,
+};
 use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput};
 pub use event_update::{EventUpdateRowFilter, ProjectedEventUpdateInput};
 use initial_continuation::InitialContinuationCoverage;
@@ -64,6 +69,37 @@ impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
     fn from(value: solve_eval::EvalSolveError) -> Self {
         Self::solve_ir_with_span(value.to_string(), value.source_span())
     }
+}
+
+fn set_initial_event_flag(model: &solve::SolveModel, p: &mut [f64], value: bool) {
+    let Some(index) = model.problem.solve_layout.initial_event_parameter_index else {
+        return;
+    };
+    if let Some(slot) = p.get_mut(index) {
+        *slot = f64::from(value);
+    }
+}
+
+fn validate_discrete_event_rows(model: &solve::SolveModel) -> Result<(), RuntimeSolveError> {
+    let rows = model.problem.discrete.rhs.len();
+    let targets = model.problem.discrete.update_targets.len();
+    let roles = model.problem.discrete.row_roles.len();
+    let pre_modes = model.problem.discrete.pre_modes.len();
+    let observation = model.problem.discrete.observation_refresh.len();
+    let clock_owners = model.problem.discrete.clock_owners.len();
+    if rows == targets
+        && rows == roles
+        && rows == pre_modes
+        && rows == observation
+        && rows == clock_owners
+    {
+        return Ok(());
+    }
+    Err(RuntimeSolveError::solve_ir(format!(
+        "discrete row columns differ: rhs={rows}, targets={targets}, roles={roles}, \
+         pre_modes={pre_modes}, observation_refresh={observation}, \
+         clock_owners={clock_owners}"
+    )))
 }
 
 struct RuntimeAssignmentSettleInput<'a> {
@@ -113,6 +149,7 @@ pub struct SolveRuntime {
     root_condition_rows: PreparedScalarProgramBlock,
     root_condition_plan: Option<RootConditionPlan>,
     discrete_rhs: PreparedScalarProgramBlock,
+    structured_discrete_rows: PreparedStructuredDiscreteRows,
     visible_name_index: HashMap<String, usize>,
     visible_value_rows: PreparedScalarProgramBlock,
     visible_value_plan: Option<VisibleValuePlan>,
@@ -128,6 +165,14 @@ pub struct SolveRuntime {
     /// Reusable register tape / adjoint buffers for the reverse-mode VJP sweep,
     /// kept across calls so a hot reverse loop stays allocation-free.
     reverse_scratch: RefCell<solve_eval::reverse::ReverseScratch>,
+}
+
+/// Opaque mutable state shared by the evaluators behind one ME component.
+#[derive(Clone)]
+pub(crate) struct SolveRuntimeSnapshot {
+    static_refresh_cache: StaticRefreshCache,
+    evaluator: solve_eval::SimulationRuntimeStateSnapshot,
+    delay: DelayRuntimeSnapshot,
 }
 
 impl SolveRuntime {
@@ -208,6 +253,7 @@ impl SolveRuntime {
             )?,
             root_condition_plan,
             discrete_rhs: PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())?,
+            structured_discrete_rows: PreparedStructuredDiscreteRows::new(model)?,
             visible_name_index: model
                 .visible_names
                 .iter()
@@ -243,6 +289,31 @@ impl SolveRuntime {
 
     pub fn reset_delay_history(&self) {
         self.delay_runtime.reset();
+    }
+
+    pub(crate) fn snapshot(&self) -> SolveRuntimeSnapshot {
+        SolveRuntimeSnapshot {
+            static_refresh_cache: self.static_refresh_cache.borrow().clone(),
+            evaluator: self.runtime_state.snapshot(),
+            delay: self.delay_runtime.snapshot(),
+        }
+    }
+
+    pub(crate) fn restore(&self, snapshot: &SolveRuntimeSnapshot) {
+        self.static_refresh_cache
+            .borrow_mut()
+            .clone_from(&snapshot.static_refresh_cache);
+        self.runtime_state.restore(&snapshot.evaluator);
+        self.delay_runtime.restore(&snapshot.delay);
+    }
+
+    #[cfg(any(test, kani))]
+    pub(crate) fn matches_snapshot(&self, snapshot: &SolveRuntimeSnapshot) -> bool {
+        self.static_refresh_cache
+            .borrow()
+            .bit_eq(&snapshot.static_refresh_cache)
+            && self.runtime_state.matches_snapshot(&snapshot.evaluator)
+            && self.delay_runtime.matches_snapshot(&snapshot.delay)
     }
 
     pub fn initialize_delay_history(
@@ -1341,7 +1412,7 @@ impl SolveRuntime {
         max_iters: usize,
     ) -> Result<(), RuntimeSolveError> {
         self.validate_discrete_event_rows()?;
-        if self.model.problem.discrete.rhs.is_empty() {
+        if self.discrete_rhs.is_empty() && self.structured_discrete_rows.is_empty() {
             return Ok(());
         }
         let event_pre_y = copy_runtime_values(y, "event pre y snapshot")?;
@@ -1389,7 +1460,7 @@ impl SolveRuntime {
             row_filter,
             root_relation_overrides,
         } = input;
-        if self.model.problem.discrete.rhs.is_empty() {
+        if self.discrete_rhs.is_empty() && self.structured_discrete_rows.is_empty() {
             self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             return self.settle_runtime_assignments_and_projection(
                 RuntimeAssignmentSettleInput {
@@ -1452,25 +1523,7 @@ impl SolveRuntime {
     }
 
     fn validate_discrete_event_rows(&self) -> Result<(), RuntimeSolveError> {
-        let rows = self.model.problem.discrete.rhs.len();
-        let targets = self.model.problem.discrete.update_targets.len();
-        let roles = self.model.problem.discrete.row_roles.len();
-        let pre_modes = self.model.problem.discrete.pre_modes.len();
-        let observation = self.model.problem.discrete.observation_refresh.len();
-        let clock_owners = self.model.problem.discrete.clock_owners.len();
-        if rows == targets
-            && rows == roles
-            && rows == pre_modes
-            && rows == observation
-            && rows == clock_owners
-        {
-            return Ok(());
-        }
-        Err(RuntimeSolveError::solve_ir(format!(
-            "discrete row columns differ: rhs={rows}, targets={targets}, roles={roles}, \
-             pre_modes={pre_modes}, observation_refresh={observation}, \
-             clock_owners={clock_owners}"
-        )))
+        validate_discrete_event_rows(&self.model)
     }
 
     fn settle_runtime_assignments_and_projection<P>(
@@ -1611,14 +1664,7 @@ impl SolveRuntime {
         event_pre_p: &[f64],
         t: f64,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
-        eval_event_actions_with_context(
-            &self.model.problem.events,
-            y,
-            p,
-            event_pre_p,
-            t,
-            self.row_eval_context(),
-        )
+        eval_event_actions_with_context(&self.model, y, p, event_pre_p, t, self.row_eval_context())
     }
 
     pub fn record_visible_sample(

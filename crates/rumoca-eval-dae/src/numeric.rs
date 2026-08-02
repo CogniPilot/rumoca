@@ -130,7 +130,7 @@ where
                 subscripts,
             } => self.array_update(base, value, subscripts, span)?,
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
-                self.builtin(builtin, arguments, span)?
+                self.builtin(builtin, arguments, node.value_type().dimensions(), span)?
             }
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 self.comprehension(domain, body, span)?
@@ -821,8 +821,19 @@ where
         &mut self,
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
+        result_dimensions: &[u32],
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
+        if matches!(
+            builtin,
+            dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2
+        ) {
+            let axis = usize::from(builtin == dae::PureBuiltin::PromotedCat2);
+            return self.promoted_concatenation(arguments, axis, result_dimensions, span);
+        }
+        if builtin == dae::PureBuiltin::Identity {
+            return Ok(identity_values(result_dimensions));
+        }
         if matches!(builtin, dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones) {
             let value = if builtin == dae::PureBuiltin::Ones {
                 1.0
@@ -849,6 +860,7 @@ where
             .get(0)
             .expect("checked builtin has its required operand");
         let mut values = self.expression(first)?;
+        use dae::PureBuiltin as B;
         match builtin {
             dae::PureBuiltin::Abs => values.iter_mut().for_each(|value| *value = value.abs()),
             dae::PureBuiltin::Sign => values.iter_mut().for_each(|value| *value = value.signum()),
@@ -863,7 +875,9 @@ where
             }
             dae::PureBuiltin::Floor => values.iter_mut().for_each(|value| *value = value.floor()),
             dae::PureBuiltin::Ceil => values.iter_mut().for_each(|value| *value = value.ceil()),
-            dae::PureBuiltin::Integer => values.iter_mut().for_each(|value| *value = value.trunc()),
+            dae::PureBuiltin::Integer => values
+                .iter_mut()
+                .for_each(|value| *value = rumoca_core::modelica_integer_value(*value)),
             dae::PureBuiltin::Sin => values.iter_mut().for_each(|value| *value = value.sin()),
             dae::PureBuiltin::Cos => values.iter_mut().for_each(|value| *value = value.cos()),
             dae::PureBuiltin::Tan => values.iter_mut().for_each(|value| *value = value.tan()),
@@ -889,6 +903,11 @@ where
             }
             dae::PureBuiltin::NoEvent => {}
             dae::PureBuiltin::Homotopy => {}
+            dae::PureBuiltin::Vector => {}
+            dae::PureBuiltin::Transpose => values = transpose_values(&values, result_dimensions),
+            B::Diagonal | B::OuterProduct | B::Skew => {
+                values = self.matrix_product(builtin, arguments, values)?;
+            }
             dae::PureBuiltin::Sum => values = vec![values.iter().sum()],
             dae::PureBuiltin::Product => values = vec![values.iter().product()],
             dae::PureBuiltin::Min | dae::PureBuiltin::Max => {
@@ -899,11 +918,70 @@ where
             | dae::PureBuiltin::Ones
             | dae::PureBuiltin::Fill
             | dae::PureBuiltin::Linspace
-            | dae::PureBuiltin::Cross => {
+            | dae::PureBuiltin::Cross
+            | dae::PureBuiltin::PromotedCat1
+            | dae::PureBuiltin::PromotedCat2
+            | dae::PureBuiltin::Identity => {
                 unreachable!("array constructors return before operand evaluation")
             }
         }
         Ok(values)
+    }
+
+    fn matrix_product(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        lhs: Vec<f64>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        match builtin {
+            dae::PureBuiltin::Diagonal => Ok(diagonal_values(&lhs)),
+            dae::PureBuiltin::OuterProduct => {
+                let rhs = self.expression(
+                    arguments
+                        .get(1)
+                        .expect("checked outerProduct has two arguments"),
+                )?;
+                Ok(outer_product_values(&lhs, &rhs))
+            }
+            dae::PureBuiltin::Skew => Ok(skew_values(&lhs)),
+            _ => unreachable!("only compact matrix products use this evaluator"),
+        }
+    }
+
+    fn promoted_concatenation(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        axis: usize,
+        result_dimensions: &[u32],
+        span: Span,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        let operands = arguments
+            .iter()
+            .map(|argument| {
+                let dimensions = self
+                    .view
+                    .expression(argument)
+                    .expect("checked concatenation operand resolves")
+                    .value_type()
+                    .dimensions()
+                    .to_vec();
+                self.expression(argument).map(|values| (dimensions, values))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let count = result_dimensions
+            .iter()
+            .try_fold(1_usize, |count, extent| count.checked_mul(*extent as usize))
+            .ok_or_else(|| {
+                failure(
+                    NumericEvaluationErrorKind::Overflow,
+                    "checked concatenation scalar count overflowed",
+                    span,
+                )
+            })?;
+        Ok((0..count)
+            .map(|scalar| promoted_concatenation_value(&operands, axis, result_dimensions, scalar))
+            .collect())
     }
 
     fn filled_array(
@@ -1049,6 +1127,93 @@ where
             .provenance()
             .span()
     }
+}
+
+/// Reorder one checked transpose result in row-major order. The result shape
+/// already owns the exchanged first two extents, so swapping its first two
+/// coordinates maps each result scalar back to the unique operand scalar.
+fn transpose_values(values: &[f64], result_dimensions: &[u32]) -> Vec<f64> {
+    let mut operand_dimensions = result_dimensions.to_vec();
+    operand_dimensions.swap(0, 1);
+    (0..values.len())
+        .map(|scalar| {
+            let mut coordinates = row_major_coordinates(result_dimensions, scalar)
+                .expect("checked transpose scalar belongs to its result shape");
+            coordinates.swap(0, 1);
+            let operand_scalar = flatten_coordinates(&operand_dimensions, &coordinates)
+                .expect("transposed coordinate belongs to its checked operand shape");
+            values[operand_scalar]
+        })
+        .collect()
+}
+
+fn identity_values(dimensions: &[u32]) -> Vec<f64> {
+    let [rows, columns] = dimensions else {
+        unreachable!("checked identity result has rank two")
+    };
+    let count = (*rows as usize)
+        .checked_mul(*columns as usize)
+        .expect("checked identity scalar count fits usize");
+    (0..count)
+        .map(|scalar| {
+            f64::from(u8::from(
+                scalar / *columns as usize == scalar % *columns as usize,
+            ))
+        })
+        .collect()
+}
+
+fn diagonal_values(values: &[f64]) -> Vec<f64> {
+    let count = values
+        .len()
+        .checked_mul(values.len())
+        .expect("checked diagonal scalar count fits usize");
+    (0..count)
+        .map(|scalar| {
+            let row = scalar / values.len();
+            let column = scalar % values.len();
+            if row == column { values[row] } else { 0.0 }
+        })
+        .collect()
+}
+
+fn outer_product_values(lhs: &[f64], rhs: &[f64]) -> Vec<f64> {
+    lhs.iter()
+        .flat_map(|lhs| rhs.iter().map(move |rhs| lhs * rhs))
+        .collect()
+}
+
+fn skew_values(values: &[f64]) -> Vec<f64> {
+    let [x, y, z] = values else {
+        unreachable!("checked skew operand has exactly three scalars")
+    };
+    vec![0.0, -*z, *y, *z, 0.0, -*x, -*y, *x, 0.0]
+}
+
+fn promoted_concatenation_value(
+    operands: &[(Vec<u32>, Vec<f64>)],
+    axis: usize,
+    result_dimensions: &[u32],
+    scalar: usize,
+) -> f64 {
+    let mut coordinates = row_major_coordinates(result_dimensions, scalar)
+        .expect("checked result scalar belongs to its concatenation shape");
+    let selected = coordinates[axis];
+    let mut offset = 0_u32;
+    for (dimensions, values) in operands {
+        let extent = dimensions.get(axis).copied().unwrap_or(1);
+        let end = offset
+            .checked_add(extent)
+            .expect("checked concatenation extent remains in the u32 domain");
+        if selected < end {
+            coordinates[axis] = selected - offset;
+            let operand_scalar = flatten_coordinates(dimensions, &coordinates[..dimensions.len()])
+                .expect("checked promoted coordinate belongs to its operand shape");
+            return values[operand_scalar];
+        }
+        offset = end;
+    }
+    unreachable!("checked concatenation operands cover the result")
 }
 
 fn value_type_scalar_count<'dae>(
@@ -1331,6 +1496,41 @@ fn range_values(
         .collect()
 }
 
+fn row_major_coordinates(extents: &[u32], index: usize) -> Option<Vec<u32>> {
+    let count = extents
+        .iter()
+        .try_fold(1_usize, |count, extent| count.checked_mul(*extent as usize))?;
+    if index >= count {
+        return None;
+    }
+    let mut remainder = index;
+    let mut coordinates = vec![0_u32; extents.len()];
+    for (axis, extent) in extents.iter().enumerate().rev() {
+        if *extent == 0 {
+            return None;
+        }
+        coordinates[axis] = u32::try_from(remainder % *extent as usize).ok()?;
+        remainder /= *extent as usize;
+    }
+    Some(coordinates)
+}
+
+fn flatten_coordinates(extents: &[u32], coordinates: &[u32]) -> Option<usize> {
+    if extents.len() != coordinates.len() {
+        return None;
+    }
+    extents
+        .iter()
+        .zip(coordinates)
+        .try_fold(0_usize, |flat, (extent, coordinate)| {
+            if coordinate >= extent {
+                return None;
+            }
+            flat.checked_mul(*extent as usize)?
+                .checked_add(*coordinate as usize)
+        })
+}
+
 fn require_finite(values: &[f64], span: Span) -> Result<(), NumericEvaluationError> {
     if values.iter().all(|value| value.is_finite()) {
         Ok(())
@@ -1375,11 +1575,51 @@ mod tests {
         VarName,
     };
     use rumoca_ir_dae::{
-        BinaryOperator, CoordinateInput, Dae, DaeLiteral, DaeProvenance, ExpressionOperation,
-        PureBuiltin, ScalarType, ValueType,
+        BinaryOperator, CoordinateInput, Dae, DaeConstructionError, DaeLiteral, DaeProvenance,
+        ExprId, ExpressionOperation, Expressions, PureBuiltin, ScalarType, ValueType,
     };
 
     use super::NumericEvaluator;
+
+    #[test]
+    fn integer_builtin_floors_negative_fractional_dae_values() {
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("integer.mo", "integer(-1.8)");
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, 13)).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let argument = expressions.at(at).literal(DaeLiteral::Real(-1.8))?;
+                expressions
+                    .at(at)
+                    .builtin(PureBuiltin::Integer, [argument])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let integer = view.expression_id(1).unwrap();
+            assert_eq!(
+                NumericEvaluator::new(view).expression(integer).unwrap(),
+                [-2.0]
+            );
+        });
+    }
+
+    fn real_literals<'dae>(
+        expressions: &mut Expressions<'_, 'dae>,
+        at: DaeProvenance,
+        values: impl IntoIterator<Item = i32>,
+    ) -> Result<Vec<ExprId<'dae>>, DaeConstructionError> {
+        values
+            .into_iter()
+            .map(|value| {
+                expressions
+                    .at(at)
+                    .literal(DaeLiteral::Real(f64::from(value)))
+            })
+            .collect()
+    }
 
     #[test]
     fn periodic_clock_interval_evaluates_to_its_exact_period() {
@@ -1503,6 +1743,250 @@ mod tests {
             assert_eq!(
                 NumericEvaluator::new(view).expression(zeros).unwrap(),
                 vec![0.0; 6]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_identity_derives_only_its_requested_scalar_view() {
+        let text = "identity(3)";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("identity.mo", text);
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            let extent =
+                dae.expressions(|expressions| expressions.at(at).literal(DaeLiteral::Integer(3)))?;
+            dae.expressions(|expressions| {
+                expressions.at(at).builtin(PureBuiltin::Identity, [extent])
+            })?;
+            Ok(())
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let identity = view.expression_id(1).unwrap();
+            assert_eq!(
+                NumericEvaluator::new(view).expression(identity).unwrap(),
+                vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_vector_reuses_the_compact_operand_row_major_values() {
+        let text = "vector([{{1.0},{2.0},{3.0}}])";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("vector.mo", text);
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let values = [1.0, 2.0, 3.0]
+                    .into_iter()
+                    .map(|value| expressions.at(at).literal(DaeLiteral::Real(value)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let columns = values
+                    .into_iter()
+                    .map(|value| expressions.at(at).array([value]))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let row = expressions.at(at).array(columns)?;
+                let tensor = expressions.at(at).array([row])?;
+                expressions.at(at).builtin(PureBuiltin::Vector, [tensor])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let vector = view.expression_id(8).unwrap();
+            let node = view.expression(vector).unwrap();
+            assert_eq!(node.value_type().dimensions(), &[3]);
+            assert_eq!(
+                NumericEvaluator::new(view).expression(vector).unwrap(),
+                [1.0, 2.0, 3.0]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_transpose_permutes_nonsquare_and_rank_three_row_major_values() {
+        let text = "transpose([1,2,3;4,5,6]); transpose(tensor)";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("transpose.mo", text);
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let matrix_values = real_literals(expressions, at, 1..=6)?;
+                let matrix_rows = matrix_values
+                    .chunks_exact(3)
+                    .map(|row| expressions.at(at).array(row.iter().copied()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let matrix = expressions.at(at).array(matrix_rows)?;
+                expressions
+                    .at(at)
+                    .builtin(PureBuiltin::Transpose, [matrix])?;
+
+                let tensor_values = real_literals(expressions, at, 1..=12)?;
+                let vectors = tensor_values
+                    .chunks_exact(2)
+                    .map(|values| expressions.at(at).array(values.iter().copied()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let matrices = vectors
+                    .chunks_exact(3)
+                    .map(|rows| expressions.at(at).array(rows.iter().copied()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let tensor = expressions.at(at).array(matrices)?;
+                expressions
+                    .at(at)
+                    .builtin(PureBuiltin::Transpose, [tensor])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let transposes = (0..view.expression_count())
+                .filter_map(|index| {
+                    let id = view.expression_id(index).unwrap();
+                    matches!(
+                        view.expression(id).unwrap().operation(),
+                        ExpressionOperation::Builtin {
+                            builtin: PureBuiltin::Transpose,
+                            ..
+                        }
+                    )
+                    .then_some(id)
+                })
+                .collect::<Vec<_>>();
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(
+                evaluator.expression(transposes[0]).unwrap(),
+                [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+            );
+            assert_eq!(
+                evaluator.expression(transposes[1]).unwrap(),
+                [
+                    1.0, 2.0, 7.0, 8.0, 3.0, 4.0, 9.0, 10.0, 5.0, 6.0, 11.0, 12.0
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_diagonal_and_outer_product_evaluate_compact_operands_row_major() {
+        let text = "diagonal({2.0,3.0}); outerProduct({1.0,2.0},{4.0,5.0})";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("matrix_products.mo", text);
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let diagonal_values = [2.0, 3.0]
+                    .into_iter()
+                    .map(|value| expressions.at(at).literal(DaeLiteral::Real(value)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let diagonal_values = expressions.at(at).array(diagonal_values)?;
+                expressions
+                    .at(at)
+                    .builtin(PureBuiltin::Diagonal, [diagonal_values])?;
+                let lhs = [1.0, 2.0]
+                    .into_iter()
+                    .map(|value| expressions.at(at).literal(DaeLiteral::Real(value)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let lhs = expressions.at(at).array(lhs)?;
+                let rhs = [4.0, 5.0]
+                    .into_iter()
+                    .map(|value| expressions.at(at).literal(DaeLiteral::Real(value)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let rhs = expressions.at(at).array(rhs)?;
+                expressions
+                    .at(at)
+                    .builtin(PureBuiltin::OuterProduct, [lhs, rhs])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let builtins = (0..view.expression_count())
+                .filter_map(|index| view.expression_id(index))
+                .filter(|id| {
+                    matches!(
+                        view.expression(*id).unwrap().operation(),
+                        ExpressionOperation::Builtin {
+                            builtin: PureBuiltin::Diagonal | PureBuiltin::OuterProduct,
+                            ..
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(
+                evaluator.expression(builtins[0]).unwrap(),
+                [2.0, 0.0, 0.0, 3.0]
+            );
+            assert_eq!(
+                evaluator.expression(builtins[1]).unwrap(),
+                [4.0, 5.0, 8.0, 10.0]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_skew_evaluates_one_compact_real_three_vector_row_major() {
+        let text = "skew({1.0,2.0,3.0})";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("skew.mo", text);
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let values = [1.0, 2.0, 3.0]
+                    .into_iter()
+                    .map(|value| expressions.at(at).literal(DaeLiteral::Real(value)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let vector = expressions.at(at).array(values)?;
+                expressions.at(at).builtin(PureBuiltin::Skew, [vector])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let skew = view.expression_id(4).unwrap();
+            assert_eq!(
+                NumericEvaluator::new(view).expression(skew).unwrap(),
+                [0.0, -3.0, 2.0, 3.0, 0.0, -1.0, -2.0, 1.0, 0.0]
+            );
+        });
+    }
+
+    #[test]
+    fn promoted_concatenation_evaluates_in_result_row_major_order() {
+        let text = "[a, b]";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("cat.mo", text);
+        let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let one = expressions.at(at).literal(DaeLiteral::Real(1.0))?;
+                let two = expressions.at(at).literal(DaeLiteral::Real(2.0))?;
+                let three = expressions.at(at).literal(DaeLiteral::Real(3.0))?;
+                let four = expressions.at(at).literal(DaeLiteral::Real(4.0))?;
+                let a = expressions.at(at).array([one, two])?;
+                let b = expressions.at(at).array([three, four])?;
+                expressions
+                    .at(at)
+                    .builtin(PureBuiltin::PromotedCat2, [a, b])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let concatenation = view.expression_id(6).unwrap();
+            assert_eq!(
+                NumericEvaluator::new(view)
+                    .expression(concatenation)
+                    .unwrap(),
+                vec![1.0, 3.0, 2.0, 4.0]
             );
         });
     }

@@ -4,11 +4,11 @@ use rumoca_compile::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapsho
 // Scenario (`rumoca-scenario.toml`) config command JSON shaping is owned by `rumoca-compile`
 // so the LSP server and the browser editor bindings share one implementation.
 pub(super) use rumoca_compile::scenario::{
-    codegen_config_from_json, codegen_config_to_json, parse_fallback_simulation,
-    parse_views_payload, scenario_config_full_to_json, scenario_config_response,
-    scenario_config_text_from_json, simulation_override_from_json, simulation_preset_to_json,
-    simulation_settings_to_json, source_roots_from_json, source_roots_to_json,
-    visualization_views_to_json,
+    codegen_config_from_json, codegen_config_to_json, normalize_solver_opt,
+    parse_fallback_simulation, parse_views_payload, scenario_config_full_to_json,
+    scenario_config_response, scenario_config_text_from_json, simulation_override_from_json,
+    simulation_preset_to_json, simulation_settings_to_json, source_roots_from_json,
+    source_roots_to_json, visualization_views_to_json,
 };
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -464,20 +464,6 @@ pub(super) fn find_open_workspace_document_for_model(
         }
     }
     None
-}
-
-pub(super) fn normalize_solver_opt(value: Option<String>) -> Option<String> {
-    match value
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("auto") => Some("auto".to_string()),
-        Some("bdf") => Some("bdf".to_string()),
-        Some("rk-like") => Some("rk-like".to_string()),
-        _ => None,
-    }
 }
 
 pub(super) fn normalize_dt_opt(value: Option<f64>) -> Option<f64> {

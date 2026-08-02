@@ -61,6 +61,46 @@ fn when_activation_model(
     model
 }
 
+/// MLS §8.6 gives `terminal()` one driver-owned final-event value.
+///
+/// Construction interns that value as a typed temporal coordinate and the
+/// `when` activation reads it as an ordinary discrete condition. No generated
+/// Modelica parameter or source-level runtime call survives into DAE-IR.
+#[test]
+fn terminal_activation_owns_one_typed_terminal_coordinate() {
+    let text = "model M discrete Real y; equation when terminal() then y = 1.0; end when; end M;";
+    let source = TestSource::new(text);
+    let terminal_span = source.span("terminal()", 0);
+    let model = when_activation_model(
+        &source,
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Terminal,
+            args: Vec::new(),
+            span: terminal_span,
+        },
+        terminal_span,
+    );
+
+    let dae = construct(&model, source.map).expect("terminal has a checked DAE owner");
+    dae.inspect(|view| {
+        assert_eq!(view.terminal_count(), 1);
+        assert!((0..view.condition_count()).any(|index| {
+            let condition = view
+                .condition(view.condition_id(index).expect("dense condition identity"))
+                .expect("checked condition resolves");
+            let dae::ConditionOperation::Discrete(expression) = condition.operation() else {
+                return false;
+            };
+            view.expression(expression).is_some_and(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Terminal(_))
+                )
+            })
+        }));
+    });
+}
+
 /// `time <op> <threshold>`, with the threshold's span taken from `literal` so
 /// the caller's own source text carries it.
 fn time_relation(
@@ -83,6 +123,44 @@ fn time_relation(
         }),
         span: source.span(text, 0),
     }
+}
+
+/// A runtime binding equation has the same event surface as an equivalent
+/// equation-section equality.
+#[test]
+fn time_relation_in_discrete_binding_owns_its_scheduled_instant() {
+    let text = "model M output Boolean y = time >= 0.5; end M;";
+    let source = TestSource::new(text);
+    let mut model = test_model();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "y",
+        "output Boolean y = time >= 0.5",
+        8,
+        Vec::new(),
+        true,
+    );
+    let variable = model.variables.get_mut(&VarName::new("y")).unwrap();
+    variable.binding = Some(time_relation(
+        &source,
+        "time >= 0.5",
+        OpBinary::Ge,
+        0.5,
+        "0.5",
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.time_event_count(), 1);
+        assert_eq!(view.root_count(), 0);
+        let instant = view
+            .time_event(view.time_event_id(0).unwrap())
+            .unwrap()
+            .instant()
+            .to_f64();
+        assert!((instant - 0.5).abs() < 1.0e-12);
+    });
 }
 
 /// Every ordering of a `time` relation is an instant, not a search.
@@ -447,6 +525,83 @@ fn each_instance_of_a_replicated_activation_owns_its_own_instant() {
     });
 }
 
+/// Replicated `sample` activations consume the schedule proved for their exact
+/// occurrence, even though flattening gives both occurrences one source span.
+#[test]
+fn each_instance_of_a_replicated_sample_owns_its_own_schedule() {
+    let text = "model M discrete Real y; discrete Real z; equation \
+                when sample(0.0, 0.1) then y = 1.0; end when; \
+                when sample(0.0, 0.2) then z = 1.0; end when; end M;";
+    let source = TestSource::new(text);
+    let mut model = test_model();
+    for (name, declaration, type_id) in
+        [("y", "discrete Real y", 8u32), ("z", "discrete Real z", 9)]
+    {
+        add_primitive_variable(
+            &mut model,
+            &source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            false,
+        );
+        model
+            .variables
+            .get_mut(&VarName::new(name))
+            .unwrap()
+            .variability = Variability::Discrete(Default::default());
+    }
+
+    let shared_span = source.span("sample(0.0, 0.1)", 0);
+    for (target, period, period_text, zero_occurrence) in
+        [("y", 0.1, "0.1", 0usize), ("z", 0.2, "0.2", 1)]
+    {
+        let condition = Expression::BuiltinCall {
+            function: BuiltinFunction::Sample,
+            args: vec![
+                Expression::Literal {
+                    value: Literal::Real(0.0),
+                    span: source.span("0.0", zero_occurrence),
+                },
+                Expression::Literal {
+                    value: Literal::Real(period),
+                    span: source.span(period_text, 0),
+                },
+            ],
+            span: shared_span,
+        };
+        let mut branch = flat::WhenBranch::new(condition, shared_span);
+        branch.add_equation(flat::WhenEquation::assign(
+            VarName::new(target),
+            Expression::Literal {
+                value: Literal::Real(1.0),
+                span: source.span("1.0", zero_occurrence),
+            },
+            source.span(&format!("{target} = 1.0"), 0),
+            "when assignment",
+        ));
+        model
+            .when_chains
+            .push(flat::WhenChain::new(branch, shared_span));
+    }
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let mut periods = (0..view.clock_count())
+            .map(|index| {
+                let clock = view.clock(view.clock_id(index).unwrap()).unwrap();
+                let dae::ClockOperation::Periodic(schedule) = clock.operation() else {
+                    panic!("sample activation must own a periodic schedule");
+                };
+                schedule.period_seconds()
+            })
+            .collect::<Vec<_>>();
+        periods.sort_by(f64::total_cmp);
+        assert_eq!(periods, vec![0.1, 0.2]);
+    });
+}
+
 /// An instant at the start of the interval is not a schedulable stop.
 ///
 /// `when time > 0` has nothing to schedule: the only instant the relation could
@@ -568,19 +723,18 @@ fn deferred_start_sample_model(
     model
 }
 
-/// A `sample` start settled by the start instant is refused by that name.
+/// A `sample` start settled by the start instant keeps that anchor typed.
 ///
 /// MLS §3.7.5 requires `start` to be a parameter expression, and a `fixed =
 /// false` parameter *is* one — so the model is legal and the refusal is
 /// rumoca's, not the language's. What makes it unrepresentable here is which
 /// number settles it: MLS §8.6 evaluates the initial section at the
 /// initialization instant, so `t0 = time` is the simulation start instant,
-/// while a [`rumoca_core::ClockLattice`] phase is an absolute translation-time
-/// rational. Naming that is the whole point of this test: the refusal used to
-/// read `unknown variable: t0`, which describes a name-resolution defect that
-/// does not exist and sends a reader hunting for one.
+/// while an ordinary [`rumoca_core::ClockLattice`] phase is an absolute
+/// translation-time rational. The checked schedule therefore carries a
+/// `SimulationStart` anchor instead of inventing a translation-time number.
 #[test]
-fn a_sample_start_settled_by_the_start_instant_is_refused_by_that_name() {
+fn a_sample_start_settled_by_the_start_instant_keeps_its_runtime_anchor() {
     let text = "model M discrete Real y; parameter Real t0(fixed = false); \
                 initial equation t0 = time; equation when sample(t0, 0.25) then y = 1.0; \
                 end when; end M;";
@@ -592,18 +746,21 @@ fn a_sample_start_settled_by_the_start_instant_is_refused_by_that_name() {
     };
     let model = deferred_start_sample_model(&source, settling, "sample(t0, 0.25)");
 
-    let error = construct(&model, source.map).expect_err("a start with no translation-time value");
-    let message = error.to_string();
-    assert!(
-        message.contains(
-            "`t0` is a `fixed = false` parameter determined by the simulation start instant"
-        ),
-        "the refusal must name the deferred parameter and what settles it, got: {message}"
-    );
-    assert!(
-        !message.contains("unknown variable"),
-        "a declared parameter must never be reported as an unresolved name, got: {message}"
-    );
+    let dae = construct(&model, source.map).expect("start-relative schedules are representable");
+    dae.inspect(|view| {
+        let clock = view
+            .clock(view.clock_id(0).expect("one periodic clock"))
+            .expect("clock identity resolves");
+        let dae::ClockOperation::Periodic(schedule) = clock.operation() else {
+            panic!("sample must own a periodic clock");
+        };
+        assert_eq!(
+            schedule.anchor(),
+            rumoca_core::ClockPhaseAnchor::SimulationStart
+        );
+        assert_eq!(schedule.phase_seconds(), 0.0);
+        assert_eq!(schedule.period_seconds(), 0.25);
+    });
 }
 
 /// The same declaration settled without a syntactic `time` read falls to the

@@ -4,7 +4,7 @@ pub(super) fn lower_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
+    sample_lattices: &[(Span, PeriodicClockSchedule)],
     expression: &Expression,
 ) -> Result<(dae::ConditionId<'dae>, Option<dae::PeriodicClockId<'dae>>), dae::DaeConstructionError>
 {
@@ -42,7 +42,7 @@ fn lower_condition_tree<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
+    sample_lattices: &[(Span, PeriodicClockSchedule)],
     expression: &Expression,
 ) -> Result<LoweredCondition<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(
@@ -102,8 +102,9 @@ fn lower_condition_tree<'dae>(
         }
         Expression::BuiltinCall {
             function: BuiltinFunction::Sample,
+            args,
             ..
-        } => lower_sample_condition(construction, sample_lattices, provenance)?,
+        } => lower_sample_condition(construction, functions, args, provenance)?,
         Expression::BuiltinCall {
             function: BuiltinFunction::Change,
             args,
@@ -174,14 +175,25 @@ fn activation_relation_roots<'dae>(
 
 fn lower_sample_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
+    functions: &FunctionRegistry<'_, 'dae>,
+    arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
-    let lattice = *sample_lattices
-        .iter()
-        .find_map(|(span, lattice)| (*span == provenance.span()).then_some(lattice))
-        .expect("analysis proves every sample condition has an exact clock lattice");
-    let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
+    // Flattening replicates one source span across every component instance.
+    // The evaluated operands are therefore part of a sample occurrence's
+    // identity: two instances may share the source span while owning different
+    // periods or phases. Analysis proved this exact occurrence and lowering
+    // must consume that proof instead of selecting the first lattice by span.
+    let operands: Vec<&Expression> = arguments.iter().collect();
+    let Some(ExpressionEventPlan::SampleClock(schedule)) = functions
+        .expression_events
+        .plan(provenance.span(), &operands)
+    else {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: provenance.span(),
+        });
+    };
+    let clock = construction.clocks(|clocks| clocks.scheduled(schedule, provenance))?;
     Ok((
         dae::ConditionInput::Clock(clock.into()),
         Vec::new(),
@@ -193,7 +205,7 @@ fn lower_binary_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
+    sample_lattices: &[(Span, PeriodicClockSchedule)],
     operands: (&Expression, &Expression),
     disjunction: bool,
     provenance: dae::DaeProvenance,
@@ -248,7 +260,7 @@ fn lower_vector_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
+    sample_lattices: &[(Span, PeriodicClockSchedule)],
     elements: &[Expression],
     span: Span,
 ) -> Result<

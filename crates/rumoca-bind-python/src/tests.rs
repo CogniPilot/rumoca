@@ -98,6 +98,27 @@ fn solver_listing_has_known_families() {
     );
 }
 
+/// The listing advertises what a caller can actually select. The SDIRK tableaus
+/// were reachable only through the general/implicit DAE construction SPEC 0038
+/// removed, so listing them would offer a choice no run can honor.
+#[test]
+fn solver_listing_omits_solvers_that_cannot_run() {
+    let ids: Vec<String> = targets::list_solvers()
+        .into_iter()
+        .map(|solver| solver.id)
+        .collect();
+    for removed in ["esdirk34", "trbdf2"] {
+        assert!(!ids.iter().any(|id| id == removed), "{removed}: {ids:?}");
+    }
+    // Every advertised solver resolves through the one authority on names.
+    for id in &ids {
+        assert!(
+            rumoca_core::canonical_solver_name(id).is_ok(),
+            "listed solver '{id}' is not a name this tree runs"
+        );
+    }
+}
+
 fn compile_fixed_wing_outer_loop() -> HighLevelCompilationResult {
     let mut session = Session::new(SessionConfig::default());
     let (result, model_name) = compile_source_in_session(

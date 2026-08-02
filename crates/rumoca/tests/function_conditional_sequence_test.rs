@@ -83,6 +83,40 @@ equation
 end SliceElements;
 "#;
 
+/// A runtime branch whose nested conditional reads a value established by the
+/// enclosing branch.  Both nested paths define `y`, so the inner join is a
+/// total branch-local value and the outer join can own it without scalarizing
+/// the control flow.
+const NESTED_CONDITIONAL_MODEL: &str = r#"
+within;
+function nestedPick
+  input Real u;
+  output Real y;
+protected
+  Real x;
+algorithm
+  if u > 0 then
+    x := u + 1;
+    if x > 2 then
+      y := 10 * x;
+    else
+      y := 20 * x;
+    end if;
+  else
+    y := -u;
+  end if;
+end nestedPick;
+model NestedConditional
+  Real high;
+  Real low;
+  Real negative;
+equation
+  high = nestedPick(2);
+  low = nestedPick(0.5);
+  negative = nestedPick(-3);
+end NestedConditional;
+"#;
+
 fn algebraic(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
     report
         .solver_y
@@ -155,6 +189,18 @@ fn slice_writes_define_a_whole_vector() {
     assert_eq!(algebraic(&report, "s[2]"), 2.0);
     assert_eq!(algebraic(&report, "s[3]"), 3.0);
     assert_eq!(algebraic(&report, "s[4]"), 4.0);
+}
+
+#[test]
+fn nested_conditional_joins_branch_local_definitions() {
+    let report = evaluate(
+        NESTED_CONDITIONAL_MODEL,
+        "NestedConditional",
+        "NestedConditional.mo",
+    );
+    assert_eq!(algebraic(&report, "high"), 30.0);
+    assert_eq!(algebraic(&report, "low"), 30.0);
+    assert_eq!(algebraic(&report, "negative"), 3.0);
 }
 
 #[test]

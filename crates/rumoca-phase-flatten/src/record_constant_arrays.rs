@@ -4,11 +4,19 @@ use rumoca_ir_ast as ast;
 
 use crate::Context;
 
-pub(crate) fn is_record_like_type(type_name: &str) -> bool {
-    !matches!(
-        type_name,
-        "Real" | "Integer" | "Boolean" | "String" | "Enumeration"
-    )
+/// Whether the component's resolved type declaration is a record.
+///
+/// Derived predefined types are classes too, but their modifiers are scalar
+/// attributes (for example `Frequency(start=50)`), not record field values.
+/// The distinction is semantic and must follow the resolved declaration
+/// identity rather than the rendered type name.
+pub(crate) fn component_type_is_record(
+    comp: &ast::Component,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> bool {
+    comp.type_def_id
+        .and_then(|type_def_id| class_index.get(type_def_id))
+        .is_some_and(|class_def| class_def.class_type == rumoca_core::ClassType::Record)
 }
 
 pub(crate) fn try_extract_record_array_constructor_constant(
@@ -48,8 +56,9 @@ pub(crate) fn try_extract_record_array_constructor_constant(
 
 pub(crate) fn synthesize_component_modification_binding(
     comp: &ast::Component,
+    class_index: &ast::ClassDefIndex<'_>,
 ) -> Option<ast::Expression> {
-    if comp.modifications.is_empty() {
+    if comp.modifications.is_empty() || !component_type_is_record(comp, class_index) {
         return None;
     }
     if let Some(array_binding) = synthesize_each_array_component_modification_binding(comp) {
@@ -112,14 +121,17 @@ fn synthesize_scalar_component_modification_binding(
     let modifications: Vec<ast::Expression> = comp
         .modifications
         .iter()
-        .map(|(field, value)| ast::Expression::NamedArgument {
-            name: rumoca_core::Token {
-                text: Arc::from(field.as_str()),
-                location: value.get_location().cloned().unwrap_or_default(),
-                ..Default::default()
-            },
-            value: Arc::new(value.clone()),
-            span: value.span(),
+        .filter_map(|(field, modifier)| {
+            let value = modifier.component_modifier_binding_value()?;
+            Some(ast::Expression::NamedArgument {
+                name: rumoca_core::Token {
+                    text: Arc::from(field.as_str()),
+                    location: modifier.get_location().cloned().unwrap_or_default(),
+                    ..Default::default()
+                },
+                value: Arc::new(value.clone()),
+                span: value.span(),
+            })
         })
         .collect();
     let modification_count = modifications.len();

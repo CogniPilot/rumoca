@@ -10,6 +10,7 @@ pub(in crate::construction) struct ClockPlan {
 pub(in crate::construction) struct ClockedValuePlan {
     pub(in crate::construction) clock: ClockPlan,
     pub(in crate::construction) ownership_span: Span,
+    pub(in crate::construction) sampled: bool,
 }
 
 /// One `sample(u)` / `sample(u, c)` coordinate definition.
@@ -1187,6 +1188,7 @@ fn assign_value_owners(
             ClockedValuePlan {
                 clock,
                 ownership_span,
+                sampled: sampled_targets.contains_key(&instance),
             },
         );
     }

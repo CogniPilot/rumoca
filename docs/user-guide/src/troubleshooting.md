@@ -35,8 +35,7 @@ looks wrong.
 **"Step size is too small at time = ..."** — The implicit solver stalled,
 most often near a dense cascade of state events (rapid relay switching).
 Use the explicit solver: `--solver rk-like` or
-`annotation(experiment(Solver = "rk-like"))`. For genuinely stiff smooth
-systems, try `esdirk34` or `trbdf2` instead.
+`annotation(experiment(Solver = "rk-like"))`.
 
 **NaN/Inf failures** — `rumoca sim` automatically re-runs with NaN tracing
 and names the offending variables. To investigate further, evaluate the

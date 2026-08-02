@@ -80,10 +80,10 @@ pub use semantic_identity::{
 
 // Re-export key types from submodules
 pub use instance::{
-    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceComponentFamily,
-    InstanceConnection, InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData,
-    InstanceEquation, InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment,
-    ModificationValue, QualifiedName,
+    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceConnection,
+    InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData, InstanceEquation,
+    InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment, ModificationValue,
+    QualifiedName,
 };
 pub use scope::{Import as ScopeImport, InheritedMember, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};
@@ -325,6 +325,26 @@ impl<'tree> ClassDefIndex<'tree> {
         chain
     }
 
+    /// Prove MLS §6.3.1 transitive non-replaceability for an exact class-name
+    /// exposure path.
+    ///
+    /// Every written/restated path segment and every declaration in that
+    /// segment's owning ancestry must be non-replaceable. A long class proves
+    /// that fact directly; only a short class definition additionally depends
+    /// on the class reference on the right-hand side of its alias. Missing
+    /// identities, unresolved short aliases, and alias cycles cannot mint the
+    /// proof.
+    pub fn proves_transitively_non_replaceable_path(
+        &self,
+        path: impl IntoIterator<Item = DefId>,
+    ) -> bool {
+        let mut proven = FxHashMap::default();
+        let mut active = FxHashSet::default();
+        path.into_iter().all(|def_id| {
+            prove_transitively_non_replaceable_reference(self, def_id, &mut proven, &mut active)
+        })
+    }
+
     fn insert_class_tree(
         &mut self,
         class_def: &'tree ClassDef,
@@ -373,6 +393,190 @@ impl<'tree> ClassDefIndex<'tree> {
         for nested in class_def.classes.values() {
             self.insert_class_tree(nested, child_parent_def_id, child_parent_qualified_name);
         }
+    }
+}
+
+fn prove_transitively_non_replaceable_reference(
+    index: &ClassDefIndex<'_>,
+    def_id: DefId,
+    proven: &mut FxHashMap<DefId, bool>,
+    active: &mut FxHashSet<DefId>,
+) -> bool {
+    index
+        .def_ancestry(def_id)
+        .into_iter()
+        .all(|part| prove_transitively_non_replaceable_definition(index, part, proven, active))
+}
+
+fn prove_transitively_non_replaceable_definition(
+    index: &ClassDefIndex<'_>,
+    def_id: DefId,
+    proven: &mut FxHashMap<DefId, bool>,
+    active: &mut FxHashSet<DefId>,
+) -> bool {
+    if let Some(result) = proven.get(&def_id) {
+        return *result;
+    }
+    let Some(class) = index.get(def_id) else {
+        proven.insert(def_id, false);
+        return false;
+    };
+    if class.is_replaceable {
+        proven.insert(def_id, false);
+        return false;
+    }
+
+    // `end_name_token` is the AST's source-form discriminator: long classes
+    // have an `end Name`, while short definitions do not. MLS §6.3.1 makes
+    // ordinary `extends` irrelevant to a long class's own non-replaceability;
+    // recursively proving the base is required only for `class A = P.B` and
+    // the other short alias forms represented by their single extends edge.
+    let result = if class.end_name_token.is_some() || class.extends.is_empty() {
+        true
+    } else if class.extends.len() != 1 || !active.insert(def_id) {
+        false
+    } else {
+        let result = class.extends[0].base_def_id.is_some_and(|base| {
+            prove_transitively_non_replaceable_reference(index, base, proven, active)
+        });
+        active.remove(&def_id);
+        result
+    };
+    proven.insert(def_id, result);
+    result
+}
+
+#[cfg(test)]
+mod transitive_nonreplaceability_tests {
+    use super::*;
+
+    fn token(text: &str) -> Token {
+        Token {
+            text: Arc::from(text),
+            ..Token::default()
+        }
+    }
+
+    fn long_class(name: &str, def_id: DefId) -> ClassDef {
+        let name = token(name);
+        ClassDef {
+            def_id: Some(def_id),
+            name: name.clone(),
+            end_name_token: Some(name),
+            ..ClassDef::default()
+        }
+    }
+
+    fn short_alias(name: &str, def_id: DefId, base_def_id: Option<DefId>) -> ClassDef {
+        ClassDef {
+            def_id: Some(def_id),
+            name: token(name),
+            extends: vec![Extend {
+                base_name: Name::from_string("Base"),
+                base_def_id,
+                ..Extend::default()
+            }],
+            ..ClassDef::default()
+        }
+    }
+
+    fn index(classes: impl IntoIterator<Item = (String, ClassDef)>) -> ClassTree {
+        let mut tree = ClassTree::new();
+        tree.definitions.classes.extend(classes);
+        tree
+    }
+
+    #[test]
+    fn long_class_extending_a_lexical_descendant_is_nonreplaceable() {
+        let modelica_id = DefId::new(91_001);
+        let icons_id = DefId::new(91_002);
+        let package_id = DefId::new(91_003);
+        let package = long_class("Package", package_id);
+        let mut icons = long_class("Icons", icons_id);
+        icons.classes.insert("Package".to_string(), package);
+        let mut modelica = long_class("Modelica", modelica_id);
+        modelica.extends.push(Extend {
+            base_name: Name::from_string("Modelica.Icons.Package"),
+            base_def_id: Some(package_id),
+            ..Extend::default()
+        });
+        modelica.classes.insert("Icons".to_string(), icons);
+        let tree = index([("Modelica".to_string(), modelica)]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(index.proves_transitively_non_replaceable_path([modelica_id]));
+        assert!(index.proves_transitively_non_replaceable_path([package_id]));
+    }
+
+    #[test]
+    fn short_alias_to_a_nonreplaceable_reference_is_nonreplaceable() {
+        let base_id = DefId::new(91_011);
+        let alias_id = DefId::new(91_012);
+        let tree = index([
+            ("Base".to_string(), long_class("Base", base_id)),
+            (
+                "Alias".to_string(),
+                short_alias("Alias", alias_id, Some(base_id)),
+            ),
+        ]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(index.proves_transitively_non_replaceable_path([alias_id]));
+    }
+
+    #[test]
+    fn short_alias_to_a_replaceable_reference_is_not_nonreplaceable() {
+        let base_id = DefId::new(91_021);
+        let alias_id = DefId::new(91_022);
+        let mut base = long_class("Base", base_id);
+        base.is_replaceable = true;
+        let tree = index([
+            ("Base".to_string(), base),
+            (
+                "Alias".to_string(),
+                short_alias("Alias", alias_id, Some(base_id)),
+            ),
+        ]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([alias_id]));
+    }
+
+    #[test]
+    fn unresolved_short_alias_is_not_nonreplaceable() {
+        let alias_id = DefId::new(91_031);
+        let tree = index([("Alias".to_string(), short_alias("Alias", alias_id, None))]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([alias_id]));
+    }
+
+    #[test]
+    fn short_alias_cycle_is_not_nonreplaceable() {
+        let a_id = DefId::new(91_041);
+        let b_id = DefId::new(91_042);
+        let tree = index([
+            ("A".to_string(), short_alias("A", a_id, Some(b_id))),
+            ("B".to_string(), short_alias("B", b_id, Some(a_id))),
+        ]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([a_id]));
+        assert!(!index.proves_transitively_non_replaceable_path([b_id]));
+    }
+
+    #[test]
+    fn replaceable_exposure_parent_is_not_nonreplaceable() {
+        let package_id = DefId::new(91_051);
+        let function_id = DefId::new(91_052);
+        let function = long_class("f", function_id);
+        let mut package = long_class("P", package_id);
+        package.is_replaceable = true;
+        package.classes.insert("f".to_string(), function);
+        let tree = index([("P".to_string(), package)]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([function_id]));
     }
 }
 

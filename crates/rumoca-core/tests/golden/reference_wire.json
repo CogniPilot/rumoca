@@ -51,7 +51,8 @@
     },
     "resolved_function": {
       "instance_id": 3,
-      "base_part_count": 2
+      "base_part_count": 2,
+      "transitively_non_replaceable": true
     },
     "instance_id": 9,
     "generated": true

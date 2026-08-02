@@ -249,9 +249,13 @@ impl ModelFailureBucket {
             SimError::Terminated { .. } => Self::ModelTermination,
             SimError::EmptySystem => Self::EmptySystem,
             SimError::RuntimeContract { .. } => Self::RuntimeContract,
-            SimError::SolveIr(_) | SimError::SolverError(_) => {
-                Self::from_sim_stage(error.stage().unwrap_or(fallback))
-            }
+            // The model has no reduced state-only system. The backend pins this
+            // at `BackendBuild`, so it buckets there like any other
+            // construction-time rejection; routing it through the stage keeps
+            // the bucket producer knowledge rather than a second mapping.
+            SimError::StateOnlyPathUnavailable(_)
+            | SimError::SolveIr(_)
+            | SimError::SolverError(_) => Self::from_sim_stage(error.stage().unwrap_or(fallback)),
             // `kind()` peels every annotation, so a `Staged` cannot reach here.
             SimError::Staged { .. } => Self::Unclassified,
         }

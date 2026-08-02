@@ -38,6 +38,9 @@ pub(super) fn validate_structured_families(
                 family.span,
             ));
         }
+        if let Some(template) = &family.template {
+            structured_discrete_assignments(&template.body, roles, family.span)?;
+        }
         let represented_rows = match &family.template {
             Some(template) => represented_template_rows(
                 template,

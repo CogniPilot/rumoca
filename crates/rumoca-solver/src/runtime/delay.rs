@@ -40,6 +40,10 @@ struct DelayState {
     channels: Vec<DelayChannelHistory>,
 }
 
+/// Opaque accepted delay timeline captured with an ME component state.
+#[derive(Clone)]
+pub(crate) struct DelayRuntimeSnapshot(DelayState);
+
 #[derive(Clone, Debug, Default)]
 struct DelayRowScratch {
     sources: Vec<f64>,
@@ -103,6 +107,19 @@ impl DelayRuntime {
 
     pub(crate) fn reset(&self) {
         *self.state.borrow_mut() = DelayState::default();
+    }
+
+    pub(crate) fn snapshot(&self) -> DelayRuntimeSnapshot {
+        DelayRuntimeSnapshot(self.state.borrow().clone())
+    }
+
+    pub(crate) fn restore(&self, snapshot: &DelayRuntimeSnapshot) {
+        self.state.borrow_mut().clone_from(&snapshot.0);
+    }
+
+    #[cfg(any(test, kani))]
+    pub(crate) fn matches_snapshot(&self, snapshot: &DelayRuntimeSnapshot) -> bool {
+        self.state.borrow().bit_eq(&snapshot.0)
     }
 
     pub(crate) fn initialize(
@@ -368,6 +385,74 @@ impl DelayRuntime {
             &mut rows.delay_maxima,
         )?;
         Ok(())
+    }
+}
+
+#[cfg(any(test, kani))]
+impl DelayState {
+    fn bit_eq(&self, other: &Self) -> bool {
+        self.initialized == other.initialized
+            && self.history_committed == other.history_committed
+            && self.channels.len() == other.channels.len()
+            && self
+                .channels
+                .iter()
+                .zip(&other.channels)
+                .all(|(left, right)| left.bit_eq(right))
+    }
+}
+
+#[cfg(any(test, kani))]
+impl DelayChannelHistory {
+    fn bit_eq(&self, other: &Self) -> bool {
+        self.points_head == other.points_head
+            && self.points.len() == other.points.len()
+            && self
+                .points
+                .iter()
+                .zip(&other.points)
+                .all(|(left, right)| left.bit_eq(*right))
+            && self.delay_time.to_bits() == other.delay_time.to_bits()
+            && self.delay_max.to_bits() == other.delay_max.to_bits()
+            && self.accepted_query_time.to_bits() == other.accepted_query_time.to_bits()
+            && self.discontinuity_head == other.discontinuity_head
+            && float_slice_bit_eq(&self.discontinuity_times, &other.discontinuity_times)
+            && self.pruned_discontinuity_parity == other.pruned_discontinuity_parity
+            && suppressed_discontinuity_bit_eq(
+                self.suppressed_discontinuity,
+                other.suppressed_discontinuity,
+            )
+    }
+}
+
+#[cfg(any(test, kani))]
+impl DelayPoint {
+    fn bit_eq(self, other: Self) -> bool {
+        self.time.to_bits() == other.time.to_bits() && self.value.to_bits() == other.value.to_bits()
+    }
+}
+
+#[cfg(any(test, kani))]
+fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
+#[cfg(any(test, kani))]
+fn suppressed_discontinuity_bit_eq(
+    left: Option<SuppressedDiscontinuity>,
+    right: Option<SuppressedDiscontinuity>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.source_time.to_bits() == right.source_time.to_bits()
+                && left.right_side == right.right_side
+        }
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -849,6 +934,52 @@ mod tests {
             .evaluate_event_roots(1.2, &[], &params, RowEvalContext::default(), &mut roots)
             .expect("consumed delay root should evaluate");
         assert_eq!(roots[0].abs(), 1.0);
+    }
+
+    #[test]
+    fn snapshot_restore_rewinds_consumed_delay_discontinuity() {
+        let delay = scalar_row(vec![
+            solve::LinearOp::Const { dst: 0, value: 0.2 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]);
+        let runtime = DelayRuntime::new(&solve::SolveDelayPartition {
+            source_rhs: scalar_row(vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            delay_time_rhs: delay.clone(),
+            delay_max_rhs: delay,
+            value_parameter_indices: vec![1],
+            source_is_discrete: vec![true],
+        })
+        .expect("valid delay partition should prepare");
+        let mut params = vec![0.0, 0.0];
+        runtime
+            .initialize(0.0, &[], &mut params, RowEvalContext::default())
+            .expect("history should initialize");
+        runtime
+            .commit(0.0, &[], &params, RowEvalContext::default())
+            .expect("initial history should commit");
+        params[0] = 1.0;
+        runtime
+            .commit(1.0, &[], &params, RowEvalContext::default())
+            .expect("source discontinuity should commit");
+        let saved = runtime.snapshot();
+
+        runtime
+            .commit(1.2, &[], &params, RowEvalContext::default())
+            .expect("delayed crossing should be consumed");
+        let mut roots = [0.0];
+        runtime
+            .evaluate_event_roots(1.2, &[], &params, RowEvalContext::default(), &mut roots)
+            .expect("consumed root should evaluate");
+        assert_eq!(roots[0].abs(), 1.0);
+
+        runtime.restore(&saved);
+        runtime
+            .evaluate_event_roots(1.2, &[], &params, RowEvalContext::default(), &mut roots)
+            .expect("restored root should evaluate");
+        assert!(roots[0].abs() <= 1.0e-12);
     }
 
     #[test]

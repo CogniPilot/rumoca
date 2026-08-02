@@ -958,7 +958,9 @@ pub(crate) fn finalize_flat_model(
     rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
     functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
     mark_record_constructor_calls(flat, tree);
-    functions::lower_record_function_params(flat)?;
+    // Attach callable identity before the rewrite fixed point so rewritten
+    // calls retain the exact collected target.
+    functions::canonicalize_collected_function_calls(flat, class_index)?;
     functions::specialize_static_function_params(flat);
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
@@ -1007,6 +1009,11 @@ pub(crate) fn finalize_flat_model(
         collapse_index_refs_to_known_varrefs(flat);
     }
     functions::canonicalize_collected_function_calls(flat, class_index)?;
+    // Record parameter signatures and every call site must change together.
+    // Run this only after the rewrite fixed point: earlier lowering allowed a
+    // later rewrite to reintroduce source-shaped record arguments against an
+    // already decomposed signature.
+    functions::lower_record_function_params(flat)?;
     functions::materialize_flat_function_call_args(flat)?;
     // Late collection and default-argument materialization can each make a
     // qualified constant newly reachable.

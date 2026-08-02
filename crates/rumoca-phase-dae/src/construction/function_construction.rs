@@ -1,3 +1,4 @@
+use super::function_shapes::FunctionCallShapeCertificate;
 use super::*;
 
 pub(super) struct FunctionRegistry<'shape, 'dae> {
@@ -39,6 +40,21 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
             .expect("analysis supplies a concrete specialization for every accepted call");
         let id = self.ids[&key];
         (key, id)
+    }
+
+    pub(super) fn select_with_call_certificate(
+        &self,
+        name: &rumoca_core::Reference,
+        arguments: &[Expression],
+        values: &ShapeEnvironment,
+        span: Span,
+    ) -> (&FunctionCallShapeCertificate, dae::FunctionId<'dae>) {
+        let call = self
+            .shapes
+            .call_certificate(name, arguments, values, span)
+            .expect("analysis supplies a checked call-shape certificate");
+        let id = self.ids[&call.specialization];
+        (call, id)
     }
 
     pub(super) fn primitive_parameter_scalar(

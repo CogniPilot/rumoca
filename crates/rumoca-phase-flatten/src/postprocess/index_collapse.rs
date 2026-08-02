@@ -497,11 +497,26 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
             subscripts,
             span,
         } = expr
-            && let Some(expanded) = self
+        {
+            if let Some(expanded) = self
                 .known_flat_vars
                 .component_array_projection_expression(name, subscripts, *span)
-        {
-            return expanded;
+            {
+                return expanded;
+            }
+            // A source-scoped attribute can retain the class body's rendered
+            // name even though its exact occurrence identity selects a member
+            // of the concrete instance. Canonicalize that direct selection to
+            // the coordinate the Flat model owns. `path_cursor` rejects
+            // already-canonical and unresolved references, so this never
+            // guesses from spelling.
+            if let Some(collapsed) = self
+                .known_flat_vars
+                .path_cursor(expr)
+                .and_then(|cursor| self.known_flat_vars.cursor_expression(cursor, *span))
+            {
+                return collapsed;
+            }
         }
         if let rumoca_core::Expression::FieldAccess {
             base,

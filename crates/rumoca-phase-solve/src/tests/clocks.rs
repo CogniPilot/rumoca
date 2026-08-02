@@ -259,3 +259,90 @@ fn clocked_relation_leaves_the_continuous_root_set() {
         "the condition-memory row of a clocked relation runs on its clock's ticks"
     );
 }
+
+/// MLS §8.5 permits `initial()` as one element of a vector when-activation.
+/// Combining it with `sample(start, interval)` produces one `AnyRise` DAG with
+/// no unique target clock owner: initialization and the periodic schedule are
+/// independent event sources. The clock leaf must therefore read the hidden
+/// schedule-derived lane rather than requiring the target row to claim a clock.
+#[test]
+fn mixed_initial_and_clock_activation_needs_no_target_clock_owner() {
+    let source =
+        TestSource::new("discrete Real y; when {sample(0,0.1),initial()} then y=1; end when;");
+    let declaration = source.at(0, 15);
+    let clock_at = source.at(23, 36);
+    let initial_at = source.at(38, 47);
+    let owner = source.at(54, 57);
+    let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap();
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("y"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
+        let clock_condition = model.conditions(|conditions| conditions.reserve(clock_at))?;
+        model.conditions(|conditions| {
+            conditions.define(
+                clock_condition,
+                dae::ConditionInput::Clock(clock.into()),
+                clock_at,
+            )
+        })?;
+        let initial = model.conditions(|conditions| conditions.reserve(initial_at))?;
+        model.conditions(|conditions| {
+            conditions.define(initial, dae::ConditionInput::Initial, initial_at)
+        })?;
+        let trigger = model.conditions(|conditions| conditions.reserve(owner))?;
+        model.conditions(|conditions| {
+            conditions.define(
+                trigger,
+                dae::ConditionInput::AnyRise(clock_condition, initial),
+                owner,
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let target = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::DiscreteReal(variable))?;
+            let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, target, one)
+        })?;
+        model.discrete(|discrete| {
+            discrete.when_real_equation(trigger, trigger, owner, |equation| {
+                equation.residual(residual)
+            })
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).expect("the mixed event DAG has a checked schedule");
+    solve.validate().expect("the activation lane is in bounds");
+    let equation = solve
+        .discrete
+        .row_roles
+        .iter()
+        .position(|role| *role == rumoca_ir_solve::DiscreteRowRole::Equation)
+        .expect("one event equation row");
+    assert_eq!(solve.discrete.clock_owners[equation], None);
+    let activation = solve.clocks.activation_parameter_indices[0];
+    assert!(
+        solve.discrete.rhs.programs()[equation]
+            .iter()
+            .any(|op| matches!(op, LinearOp::LoadP { index, .. } if *index == activation)),
+        "the clock leaf reads its schedule-derived lane"
+    );
+}

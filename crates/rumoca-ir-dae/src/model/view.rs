@@ -447,6 +447,13 @@ impl<'dae> DaeView<'dae> {
                 value_provenance: &self.dae.storage.discrete_value_branch_value_provenance,
                 marker: PhantomData,
             },
+            structure: entry
+                .structure
+                .map(|structure| crate::StructuredDiscreteValueView {
+                    domain: DomainId::from_raw(structure.domain),
+                    scalar_view: structure.scalar_view,
+                    scalar_rows: structure.scalar_rows,
+                }),
             provenance: entry.provenance,
         })
     }
@@ -563,7 +570,7 @@ impl<'dae> DaeView<'dae> {
     pub fn periodic_clock(
         self,
         id: crate::PeriodicClockId<'dae>,
-    ) -> &'dae rumoca_core::ClockLattice {
+    ) -> &'dae rumoca_core::PeriodicClockSchedule {
         let entry = &self.dae.storage.clocks[id.index() as usize];
         let crate::clocks::ClockKind::Periodic(lattice) = &entry.kind else {
             unreachable!("PeriodicClockId is minted only for periodic clocks");
@@ -587,6 +594,7 @@ impl<'dae> DaeView<'dae> {
                 _ => unreachable!("clock ownership accepts only checked clocked variable roles"),
             },
             clock: ClockId::from_raw(entry.clock),
+            sampled: entry.sampled,
             provenance: entry.provenance,
         })
     }

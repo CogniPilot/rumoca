@@ -75,8 +75,16 @@ pub(super) fn lower_clocked_value_owners<'dae>(
             }
         })?;
         construction.clocks(|clocks| match coordinate {
+            Coordinate::DiscreteReal(variable) if plan.sampled => {
+                clocks.own_sampled_discrete_real(clock.into(), variable, ownership)?;
+                Ok(())
+            }
             Coordinate::DiscreteReal(variable) => {
                 clocks.own_discrete_real(clock.into(), variable, ownership)?;
+                Ok(())
+            }
+            Coordinate::DiscreteValue(variable) if plan.sampled => {
+                clocks.own_sampled_discrete_value(clock.into(), variable, ownership)?;
                 Ok(())
             }
             Coordinate::DiscreteValue(variable) => {

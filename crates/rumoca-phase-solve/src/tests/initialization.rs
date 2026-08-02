@@ -88,6 +88,71 @@ fn initial_condition_owns_a_dedicated_runtime_flag() {
     assert_grouped_initial_b1b(&solve);
 }
 
+#[test]
+fn scalar_initial_coordinate_reads_the_existing_runtime_flag() {
+    let source = TestSource::new("Real x; x = if initial() then 1 else 2;");
+    let declaration = source.at(0, 6);
+    let initial_at = source.at(15, 24);
+    let owner = source.at(8, 39);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let algebraic = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let condition = model.conditions(|conditions| conditions.reserve(initial_at))?;
+        model.conditions(|conditions| {
+            conditions.define(condition, dae::ConditionInput::Initial, initial_at)
+        })?;
+        let residual = model.expressions(|expressions| {
+            let guard = expressions
+                .at(initial_at)
+                .coordinate(dae::CoordinateInput::Condition(condition))?;
+            let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            let two = expressions.at(owner).literal(dae::DaeLiteral::Real(2.0))?;
+            let selected = expressions.at(owner).conditional([(guard, one)], two)?;
+            let lhs = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, lhs, selected)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let flag = solve
+        .solve_layout
+        .initial_event_parameter_index
+        .expect("the initial condition reserves its established runtime flag");
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected");
+    };
+    let program = &rows.programs()[0];
+    assert!(
+        program
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == flag))
+    );
+    assert!(
+        program
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::Select { .. }))
+    );
+}
+
 fn assert_grouped_initial_b1b(solve: &rumoca_ir_solve::SolveProblem) {
     let flag = solve
         .solve_layout

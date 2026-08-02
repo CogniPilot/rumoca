@@ -15,7 +15,7 @@ scalar rows are derived views, not recovered structure.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Structured equation families stay authoritative | Flat/DAE IR | Prevents parallel scalar owners |
-| Compacted component arrays record a family descriptor | Instance IR | Preserves the compact domain |
+| Compacted component arrays leave no descriptor | Instance IR | Compaction is not an ownership change |
 | Domains use `rumoca-core::StructuredIndexDomain` | Flat/DAE/Solve IR | One compact domain shape |
 | Domain payloads are compact | IR serialization | Avoids O(N) metadata |
 | Binder ids are stable and explicit | `StructuredIndexBinder` / phase maps | Names can shadow |
@@ -35,15 +35,31 @@ optimization, not an ownership change — Instance IR's authoritative
 representation of the array is still the per-element `components`/`classes`
 entries, and every later phase reads those.
 
-`InstanceOverlay::component_families` records the descriptor
-(`InstanceComponentFamily`: domain, root path, subscript depth, template
-instance ids) for each array that was compacted. Today it has no readers; it is
-recorded so a future phase can consume the compact domain without re-deriving
-it. **REQUIRED:** a compacted array must produce byte-identical per-element
+**REQUIRED:** a compacted array must produce byte-identical per-element
 entries — including `InstanceId` allocation order, on which flat variable
-identity depends (SPEC_0001) — to element-by-element expansion.
-**PROHIBITED:** treating the descriptor as the array's owner while per-element
-entries remain the consumed representation.
+identity depends (SPEC_0001) — to element-by-element expansion. The declared
+extents of every expanded array, compacted or not, are recorded once in
+`InstanceOverlay::array_parent_dims`; that is the only array-level record
+Instance IR keeps, and the per-element entries remain the array's
+representation.
+
+**PROHIBITED:** recording *in Instance IR* that an array was compacted.
+Instantiation kept a `component_families` descriptor for a possible future
+reader and acquired none; while it existed a diagnostic read it and reported
+whether the compiler had compacted the array rather than what the model
+declared. A compaction record in the IR is by construction a second owner for
+state the per-element entries already own, and it makes the two paths
+distinguishable to consumers, which this section forbids. A future phase that
+wants the compact domain re-derives it from the declared extents.
+
+This prohibition is on IR content, not on observability as such: a counter or
+other out-of-band signal that no consumer can read is still permitted, and one
+is needed. Compaction currently has no liveness witness — the differential
+tests prove only that the compact and scalar overlays agree, which stays
+trivially true if the homogeneity gate silently stops compacting anything, so
+the optimization could regress to element-by-element expansion undetected. The
+follow-up is a non-IR compaction counter that the instantiate tests can assert
+on.
 
 Compaction is refused whenever any per-element rewrite in
 `prepare_element_declaration` would fire: a non-`each` `start`, an array-level
@@ -60,6 +76,7 @@ compacting a genuinely per-element array would produce a wrong model.
 | View ordering is deterministic | Domain enumeration | Backend agreement |
 | Views carry provenance | Structured equation/tensor scalar views | Diagnostics and fallback |
 | No scalar-row reassembly | Solve lowering | Prevents fragile recovery |
+| Structured B.1c views retain assignment identity | DAE/Solve scalar views | Preserve target and update policy |
 
 Domains enumerate in binder declaration order, lexicographic with the innermost
 binder varying fastest, respecting explicit step direction. For each index
@@ -70,10 +87,16 @@ lhs/rhs or output expression.
 This section governs views derived from a structured *equation* or tensor owner.
 It does not apply to the per-element instance entries of a compacted component
 array (§1): those are ordinary instances carrying ordinary instance provenance
-(qualified name, span, source scopes) and no parent-family metadata, because the
-family descriptor is not their owner. It does apply to the scalar view of a
-compact `InstanceConnectionFamily` (`rumoca-eval-ast::connection`), which is a
-derived view of a structured owner.
+(qualified name, span, source scopes) and no parent-family metadata, because
+compaction leaves no owner for them to point at. It does apply to the scalar
+view of a compact `InstanceConnectionFamily` (`rumoca-eval-ast::connection`),
+which is a derived view of a structured owner.
+
+A scalar view of a structured B.1c owner additionally retains its parent B.1c
+owner id, domain index tuple, body ordinal, derived target scalar, value
+expression, and exact provenance. Ordering is domain lexicographic order and
+then source body order. These are derived view values; no per-scalar target or
+row list is stored in DAE or canonical Solve IR.
 
 ### 3. DAE Canonical Form
 
@@ -82,11 +105,19 @@ derived view of a structured owner.
 | Structured DAE contains no source `der(...)` | DAE lowering | MLS Appendix B form |
 | Derivative families map to canonical slots | DAE structured family | Explicit state identity |
 | No parallel scalarized owner | DAE IR | Avoids drift |
+| Structured B.1c target coverage is constructor-derived | DAE discrete system | No holes, overlaps, or caller counts |
 
 A source family such as `der(u[i, j]) = w[i, j]` is represented as residuals
 over canonical derivative slots/state metadata. The structured node owns the
 compact index domain and maps each tuple to the corresponding derivative/output
 slot.
+
+A structured discrete-valued family remains one B.1c owner. It carries the
+existing `StructuredIndexDomain` and `ComprehensionScalarView`; its checked
+target projection and value bodies determine the scalar view. Construction
+derives the scalar count and proves that the target projection is injective and
+exhaustive for every owned target. A partial, overlapping, shape-incompatible,
+or scalar-type-incompatible projection is rejected at this owner.
 
 ### 4. Solve Tensor Nodes
 
@@ -96,6 +127,7 @@ slot.
 | `ComputeNode::AffineStencil` is neighborhood access | Solve IR | Affine offset semantics |
 | Solve grouping is semantic | `rumoca-phase-solve` | Backends do not redefine IR |
 | Scalar fallback uses shared scalarization | `rumoca-eval-solve` | One ordering implementation |
+| Structured B.1c uses compact map and target map | Solve IR | Preserve the authoritative discrete family |
 
 `Map` represents canonical DAE residual families that are elementwise over a
 compact domain, including `der(u) = w` after DAE canonicalization. `AffineStencil`
@@ -103,6 +135,12 @@ comes from structured DAE domains plus affine operand proofs; Solve lowering
 must not rediscover stencils by scanning anonymous scalar rows. Backends may
 fuse or split generated kernels as target-local codegen, but the reported
 kernel inventory must match the generated work.
+
+Structured B.1c lowering uses `ComputeNode::Map` (or a stronger proven tensor
+node) together with a compact affine target map. Discrete row role, pre mode,
+observation policy, and clock owner derive from the structured owner. A runtime
+that needs scalar programs requests the shared scalar view from
+`rumoca-eval-solve`; `rumoca-phase-solve` does not scalarize the owner.
 
 ### 5. Ownership Boundaries
 

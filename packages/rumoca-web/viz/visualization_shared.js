@@ -1351,8 +1351,6 @@ ctx.onFrame = (api) => {
     const SCENARIO_SOLVER_OPTIONS = [
         ['auto', 'Auto'],
         ['bdf', 'BDF (stiff systems)'],
-        ['esdirk34', 'ESDIRK34 (implicit)'],
-        ['trbdf2', 'TR-BDF2 (implicit)'],
         ['rk-like', 'RK-like (explicit)'],
     ];
     const SCENARIO_SIM_MODE_OPTIONS = [

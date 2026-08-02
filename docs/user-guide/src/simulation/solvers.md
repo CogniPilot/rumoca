@@ -3,14 +3,17 @@
 Rumoca ships several integration methods behind one `--solver` flag (CLI),
 `solver` key (`[sim]` in scenarios), or `Solver` experiment annotation.
 
+The table below is the whole set. A name that is not in it is an error naming
+the valid ones — rumoca never falls back to a different solver than the one you
+asked for, because a run that quietly changed integrator would report timings
+and trajectories for a method you did not select.
+
 ## Choosing a Solver
 
 | Solver | Kind | Use for |
 |---|---|---|
 | `auto` | — | Default; picks a method from the model's structure |
 | `bdf` | Implicit multistep (diffsol) | Stiff systems, smooth DAEs |
-| `esdirk34` | Implicit SDIRK tableau (diffsol) | Stiff DAEs, one-step alternative to BDF |
-| `trbdf2` | Implicit SDIRK tableau (diffsol) | Stiff DAEs |
 | `rk-like` | Explicit Runge–Kutta-style | Non-stiff systems, event-heavy models |
 
 Rules of thumb:

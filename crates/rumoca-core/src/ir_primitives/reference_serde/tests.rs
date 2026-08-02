@@ -54,6 +54,7 @@ fn decorated_reference() -> Reference {
         .with_resolved_function(ResolvedFunctionReference {
             instance_id: FunctionInstanceId::new(3),
             base_part_count: 2,
+            transitively_non_replaceable: true,
         })
 }
 

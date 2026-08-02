@@ -70,6 +70,34 @@ Cargo builds must remain Rust-only. If a selected package/web command reports a
 missing `node` or `npm`, install Node 20 using your platform package manager,
 Volta, nvm, or the official Node installer, then retry that command.
 
+### Kani bounded verification
+
+The SPEC_0037 verification track carries bounded-verification harnesses in
+`rumoca-ir-dae` and `rumoca-solver`. Each property is written once as a plain
+function with two drivers: `#[cfg(kani)]` proof harnesses and, under
+`#[cfg(not(kani))]`, a `proptest` fallback stating the identical property.
+
+The official Linux flake pins Kani 0.67.0 and its matching Rust nightly in a
+dedicated shell, leaving the ordinary development toolchain unchanged. Run the
+required proof set with:
+
+```bash
+nix develop .#kani --command cargo xtask verify kani
+```
+
+The command rejects any other Kani version and drives the solver harnesses from
+the checked-in `verification/kani-proofs.json` manifest. Add a harness to that
+manifest in the same change that makes it required. GitHub CI runs this exact
+gate with a bounded Linux job and uploads the versioned, per-harness result at
+`target/verification/kani-summary.json`.
+
+The gate verifies one Kani harness at a time as required by SPEC_0037. Cargo's
+build jobs still use the repository's normal host-aware resource budget.
+
+Ordinary `cargo test -p rumoca-solver` still runs the `proptest` fallbacks. A
+green fallback is validation evidence, never proof evidence; only a successful
+`cargo xtask verify kani` run under the pinned verifier is Kani proof evidence.
+
 ## Common Commands
 
 Typical local verification:
