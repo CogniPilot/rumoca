@@ -173,6 +173,18 @@ impl MeRuntimeHost {
         })
     }
 
+    /// Read outputs at an interpolated continuous point without accepting it.
+    pub fn observe_continuous_point(
+        &self,
+        time: f64,
+        states: &[f64],
+    ) -> Result<MeRuntimeOutput, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(time))?;
+        kernel.set_continuous_states(states)?;
+        runtime_output(&mut *kernel)
+    }
+
     pub fn outputs_for_observation(
         &self,
         observation: &MeObservation,

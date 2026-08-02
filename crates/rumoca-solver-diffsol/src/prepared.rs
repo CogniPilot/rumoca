@@ -1,10 +1,9 @@
-use rumoca_ir_solve as solve;
-use rumoca_solver::{SimBackend, SimOptions, SimResult};
+use rumoca_solver::{SimBackend, SimOptions, SimResult, fmi_me::MeModelArtifact};
 
 use crate::{SimError, check_initialization, run_prepared_simulation};
 
 pub struct PreparedSimulation {
-    pub(crate) model: solve::SolveModel,
+    pub(crate) model: MeModelArtifact,
     pub(crate) opts: SimOptions,
     pub(crate) state: PreparedSimulationState,
 }
@@ -33,10 +32,6 @@ impl PreparedSimulation {
     }
 
     pub fn check_initialization(&self) -> Result<(), SimError> {
-        check_initialization(&self.model, &self.opts)
-    }
-
-    pub fn model(&self) -> &solve::SolveModel {
-        &self.model
+        check_initialization(self.model.clone(), &self.opts)
     }
 }

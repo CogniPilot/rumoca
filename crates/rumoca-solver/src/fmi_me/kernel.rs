@@ -2311,34 +2311,5 @@ pub(super) fn frozen_projection_changed(
 
 /// SPEC_0038 "Unsupported lifecycle capability fails before execution".
 fn validate_explicit_solve_model(model: &rumoca_ir_solve::SolveModel) -> Result<(), MeError> {
-    let layout = &model.problem.solve_layout;
-    if layout.state_scalar_count == 0 {
-        return Err(MeError::NoContinuousStates);
-    }
-    if model.initial_y.len() != model.solver_scalar_count() {
-        return Err(MeError::Evaluation {
-            message: format!(
-                "initial vector length {} does not match solver layout {}",
-                model.initial_y.len(),
-                model.solver_scalar_count()
-            ),
-        });
-    }
-    let derivative_rhs_len = model
-        .problem
-        .continuous
-        .derivative_rhs
-        .len()
-        .map_err(|err| MeError::Evaluation {
-            message: err.to_string(),
-        })?;
-    if derivative_rhs_len != layout.state_scalar_count {
-        return Err(MeError::Evaluation {
-            message: format!(
-                "derivative RHS has {} rows for {} states",
-                derivative_rhs_len, layout.state_scalar_count
-            ),
-        });
-    }
-    Ok(())
+    super::validation::validate_explicit_solve_model(model)
 }

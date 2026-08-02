@@ -18,6 +18,7 @@ pub use rumoca_solver_diffsol::{SimError, SimFailureStage};
 
 pub struct PreparedSimulation {
     inner: rumoca_solver_diffsol::PreparedSimulation,
+    model: solve::SolveModel,
 }
 
 impl PreparedSimulation {
@@ -34,7 +35,7 @@ impl PreparedSimulation {
     }
 
     pub fn model(&self) -> &solve::SolveModel {
-        self.inner.model()
+        &self.model
     }
 
     pub fn set_parameter_value(&mut self, _name: &str, _value: f64) -> Result<(), SimError> {
@@ -93,7 +94,10 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     let inner = rumoca_solver_diffsol::build_simulation(&solve_model, opts)?;
     let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
     Ok((
-        PreparedSimulation { inner },
+        PreparedSimulation {
+            inner,
+            model: solve_model,
+        },
         BuildSimulationTimings {
             ir_solve_structural_dae_seconds: solve_timings.ir_solve_structural_dae_seconds,
             ir_solve_lower_seconds: solve_timings.ir_solve_lower_seconds,

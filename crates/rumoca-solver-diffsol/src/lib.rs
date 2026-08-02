@@ -10,6 +10,7 @@
 
 mod bdf;
 mod error;
+#[cfg(test)]
 mod init_projection;
 mod me;
 mod me_bdf;
@@ -20,42 +21,49 @@ pub mod session;
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+#[cfg(test)]
+use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc};
 
+#[cfg(test)]
 use bdf::require_state_only_bdf;
 pub(crate) use bdf::{
     bdf_derivative_guess, initial_bdf_state, reset_solver_state, solver_call, write_state_to_solver,
 };
 #[cfg(test)]
 use diffsol::{BacktrackingLineSearch, NewtonNonlinearSolver, OdeSolverStopReason, Vector as _};
-use diffsol::{
-    BdfState, FaerSparseLU, FaerSparseMat, MatrixCommon, OdeEquations, OdeSolverMethod,
-    OdeSolverState, VectorHost,
-};
-use init_projection::initialize_state_runtime_values;
-use me::{DiffsolMeHost, instantiate as instantiate_me_host};
 #[cfg(test)]
-use me::{MeInitialState, MePostEventState};
-use rumoca_eval_solve as solve_eval;
+use diffsol::{BdfState, OdeSolverState};
+use diffsol::{
+    FaerSparseLU, FaerSparseMat, MatrixCommon, OdeEquations, OdeSolverMethod, VectorHost,
+};
+#[cfg(test)]
+use init_projection::initialize_state_runtime_values;
+use me::instantiate as instantiate_me_host;
+#[cfg(test)]
+use me::{DiffsolMeHost, MeInitialState, MePostEventState};
 #[cfg(test)]
 use rumoca_eval_solve::RowEvalContext;
+#[cfg(test)]
 use rumoca_ir_solve as solve;
+use rumoca_solver::SolveRuntime;
+#[cfg(test)]
+use rumoca_solver::current_dynamic_time_event_stop;
 #[cfg(test)]
 use rumoca_solver::runtime::driver::{
     SimDriverError, SolverAdvanceBackend, StateTrajectory, StepOutcome, simulate_state_targets,
 };
-use rumoca_solver::{SimOptions, SimResult, SolveRuntime};
+use rumoca_solver::runtime_values_changed;
+use rumoca_solver::{SimOptions, SimResult, fmi_me::MeModelArtifact};
 #[cfg(test)]
 use rumoca_solver::{
     SimTermination, TimeoutExceeded, build_sim_result_from_solve_model, push_visible_values,
     replace_last_visible_values, runtime_root_event_application_time, stop_time_reached_with_tol,
     timeline::sample_time_match_with_tol, visible_values_with_context,
 };
-use rumoca_solver::{current_dynamic_time_event_stop, runtime_values_changed};
-pub(crate) use runtime::{
-    apply_event_updates, refresh_algebraics_and_detect_changes, seed_initial_discrete_values,
-    settle_algebraics_and_relation_memory,
-};
+pub(crate) use runtime::{apply_event_updates, settle_algebraics_and_relation_memory};
+#[cfg(test)]
+pub(crate) use runtime::{refresh_algebraics_and_detect_changes, seed_initial_discrete_values};
 
 type Matrix = FaerSparseMat<f64>;
 type Vector = <Matrix as MatrixCommon>::V;
@@ -92,8 +100,10 @@ fn stage_driver_failure(recorder: &StageRecorder, error: SimDriverError) -> SimE
 }
 
 #[derive(Clone)]
+#[allow(dead_code)] // Frozen state-only builder retained until session cutover.
 pub(crate) struct AlgebraicWarmStart(Rc<RefCell<Vec<f64>>>);
 
+#[allow(dead_code)]
 impl AlgebraicWarmStart {
     fn new(solver_y: Vec<f64>) -> Self {
         Self(Rc::new(RefCell::new(solver_y)))
@@ -108,13 +118,12 @@ impl AlgebraicWarmStart {
     }
 }
 pub use error::{SimError, SimFailureStage, StateOnlyRejection};
-pub(crate) use ode::{
-    OdeModel, build_ode_problem_with_runtime_params_and_initial,
-    build_state_ode_problem_with_runtime_params_and_initial, state_ode_problem_input,
-    validate_model,
-};
+pub(crate) use ode::{OdeModel, build_ode_problem_with_runtime_params_and_initial};
 #[cfg(test)]
-use ode::{build_me_state_ode_problem, trace_bdf_eval_counter_snapshot};
+use ode::{
+    build_me_state_ode_problem, build_state_ode_problem_with_runtime_params_and_initial,
+    state_ode_problem_input, trace_bdf_eval_counter_snapshot, validate_model,
+};
 pub use prepared::PreparedSimulation;
 use prepared::PreparedSimulationState;
 #[cfg(test)]
@@ -123,10 +132,10 @@ use rumoca_solver::RuntimeSolveError;
 const EVENT_UPDATE_MAX_ITERS: usize = 256;
 
 pub fn build_simulation(
-    model: &solve::SolveModel,
+    model: impl Into<MeModelArtifact>,
     opts: &SimOptions,
 ) -> Result<PreparedSimulation, SimError> {
-    build_simulation_inner(model, opts)
+    build_simulation_inner(model.into(), opts)
         .map_err(|error| error.at_stage(SimFailureStage::BackendBuild))
 }
 
@@ -134,24 +143,18 @@ pub fn build_simulation(
 /// [`SimFailureStage::BackendBuild`] by the wrapper above: nothing has been
 /// integrated yet, so these are never numeric-solver failures.
 fn build_simulation_inner(
-    model: &solve::SolveModel,
+    model: MeModelArtifact,
     opts: &SimOptions,
 ) -> Result<PreparedSimulation, SimError> {
-    let runtime_context = solve_eval::SimulationContext::new();
-    runtime_context.hydrate_solve_model(model);
-    validate_model(model)?;
-    let state = if model.state_scalar_count() == 0 {
+    let state = if model.continuous_state_count() == 0 {
         tracing::debug!(target: "rumoca_solver_diffsol::bdf_path", "no-state path");
         PreparedSimulationState::NoState
     } else {
-        // The reduced state-only ODE is the only system a state-carrying model
-        // is integrated as. A model that fails the contract is rejected by
-        // name here; it is not re-expressed as a general implicit DAE.
-        require_state_only_bdf(model)?;
+        instantiate_me_host(model.source(), opts)?;
         tracing::debug!(
             target: "rumoca_solver_diffsol::bdf_path",
-            states = model.state_scalar_count(),
-            "state-only BDF path (pure ODE, AD state Jacobian)"
+            states = model.continuous_state_count(),
+            "FMI ME BDF path"
         );
         PreparedSimulationState::StateOnly
     };
@@ -170,33 +173,26 @@ pub fn check_prepared_initialization(prepared: &PreparedSimulation) -> Result<()
     prepared.check_initialization()
 }
 
-pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Result<(), SimError> {
-    check_initialization_inner(model, opts)
+pub fn check_initialization(
+    model: impl Into<MeModelArtifact>,
+    opts: &SimOptions,
+) -> Result<(), SimError> {
+    check_initialization_inner(model.into(), opts)
         .map_err(|error| error.at_stage(SimFailureStage::Initialization))
 }
 
 /// Settle initial conditions without integrating. Failures are annotated as
 /// [`SimFailureStage::Initialization`] by the wrapper above; paths that already
 /// recorded a more precise stage keep it.
-fn check_initialization_inner(
-    model: &solve::SolveModel,
-    opts: &SimOptions,
-) -> Result<(), SimError> {
-    let runtime_context = solve_eval::SimulationContext::new();
-    runtime_context.hydrate_solve_model(model);
-    validate_model(model)?;
-    if model.state_scalar_count() == 0 {
+fn check_initialization_inner(model: MeModelArtifact, opts: &SimOptions) -> Result<(), SimError> {
+    if model.continuous_state_count() == 0 {
         return rumoca_solver::fmi_me::MeNoStateSession::check_initialization(
-            rumoca_solver::fmi_me::MeModelSource::new(model),
+            model.source(),
             opts.clone(),
         )
         .map_err(Into::into);
     }
-    // Same contract, same rejection, as [`build_simulation_inner`]: a model
-    // that cannot be built cannot be initialization-checked either, and both
-    // must agree on the system so a checked start point is the one the run uses.
-    require_state_only_bdf(model)?;
-    check_state_only_initialization(model, opts)
+    me_bdf::check_initialization(model.source(), opts)
 }
 
 /// Settle initial conditions for a model that integrates on the reduced
@@ -217,6 +213,8 @@ fn check_initialization_inner(
 /// is rejected there as `RuntimeSolveError::NonFiniteDerivative` and propagates
 /// out of this function. No separate finiteness check is added here: it would be
 /// unreachable.
+#[cfg(test)]
+#[allow(dead_code)]
 fn check_state_only_initialization(
     model: &solve::SolveModel,
     opts: &SimOptions,
@@ -259,7 +257,10 @@ fn check_state_only_initialization(
     .map(|_| ())
 }
 
-pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResult, SimError> {
+pub fn simulate(
+    model: impl Into<MeModelArtifact>,
+    opts: &SimOptions,
+) -> Result<SimResult, SimError> {
     let prepared = build_simulation(model, opts)?;
     run_prepared_simulation(&prepared)
 }
@@ -267,18 +268,13 @@ pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResul
 fn simulate_prepared(prepared: &PreparedSimulation) -> Result<SimResult, SimError> {
     let model = &prepared.model;
     let opts = &prepared.opts;
-    solve_eval::reset_solve_row_eval_trace();
     let result = match &prepared.state {
-        PreparedSimulationState::NoState => rumoca_solver::fmi_me::MeNoStateSession::simulate(
-            rumoca_solver::fmi_me::MeModelSource::new(model),
-            opts.clone(),
-        )
-        .map_err(Into::into),
-        PreparedSimulationState::StateOnly => {
-            me_bdf::simulate(rumoca_solver::fmi_me::MeModelSource::new(model), opts)
+        PreparedSimulationState::NoState => {
+            rumoca_solver::fmi_me::MeNoStateSession::simulate(model.source(), opts.clone())
+                .map_err(Into::into)
         }
+        PreparedSimulationState::StateOnly => me_bdf::simulate(model.source(), opts),
     };
-    solve_eval::trace_solve_row_eval_snapshot("bdf");
     result
 }
 
@@ -548,6 +544,7 @@ fn verify_me_initial_state(
     .at_stage(SimFailureStage::Initialization))
 }
 
+#[cfg(test)]
 fn initial_state_only_bdf_state<Eqn>(
     runtime: &SolveRuntime,
     problem: &diffsol::OdeSolverProblem<Eqn>,

@@ -103,6 +103,7 @@ pub(crate) mod lifecycle;
 mod no_state;
 #[cfg(test)]
 mod tests;
+mod validation;
 
 pub use host::{MeRuntimeHost, MeRuntimeInitialState, MeRuntimeOutput, MeRuntimePostEventState};
 pub use kernel::SolveMeKernel;
@@ -135,6 +136,44 @@ impl<'a> MeModelSource<'a> {
 impl<'a> From<&'a rumoca_ir_solve::SolveModel> for MeModelSource<'a> {
     fn from(model: &'a rumoca_ir_solve::SolveModel) -> Self {
         Self::new(model)
+    }
+}
+
+/// Owned checked model artifact that numerical solver plugins can retain
+/// without gaining access to Solve IR.
+///
+/// The generic ME runtime is the only layer that can project this artifact
+/// into a component. Concrete solver crates may store it and request an opaque
+/// [`MeModelSource`], but cannot inspect rows, layouts, opcodes, or events.
+#[derive(Clone)]
+pub struct MeModelArtifact(rumoca_ir_solve::SolveModel);
+
+impl MeModelArtifact {
+    #[must_use]
+    pub fn new(model: rumoca_ir_solve::SolveModel) -> Self {
+        Self(model)
+    }
+
+    #[must_use]
+    pub fn source(&self) -> MeModelSource<'_> {
+        MeModelSource::new(&self.0)
+    }
+
+    #[must_use]
+    pub fn continuous_state_count(&self) -> usize {
+        self.0.state_scalar_count()
+    }
+}
+
+impl From<rumoca_ir_solve::SolveModel> for MeModelArtifact {
+    fn from(model: rumoca_ir_solve::SolveModel) -> Self {
+        Self::new(model)
+    }
+}
+
+impl From<&rumoca_ir_solve::SolveModel> for MeModelArtifact {
+    fn from(model: &rumoca_ir_solve::SolveModel) -> Self {
+        Self::new(model.clone())
     }
 }
 

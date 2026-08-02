@@ -1,21 +1,18 @@
-use std::{
-    any::Any,
-    collections::{BTreeMap, BTreeSet},
-    fmt::Display,
-    sync::Mutex,
-};
+#[cfg(test)]
+use std::collections::{BTreeMap, BTreeSet};
+use std::{any::Any, fmt::Display, sync::Mutex};
 
 use diffsol::{
     BdfState, DiffsolError, MatrixCommon, OdeEquations, OdeEquationsImplicit, OdeSolverMethod,
     OdeSolverProblem, OdeSolverState, VectorHost, error::OdeSolverError,
 };
+#[cfg(test)]
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
-use crate::{
-    LinearSolver, Matrix, OdeModel, RuntimeParameters, Scalar, SimError, SimFailureStage,
-    StateOnlyRejection, Vector,
-};
+use crate::{LinearSolver, Matrix, OdeModel, RuntimeParameters, Scalar, SimError, Vector};
+#[cfg(test)]
+use crate::{SimFailureStage, StateOnlyRejection};
 
 static SOLVER_PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
@@ -337,6 +334,7 @@ where
 /// retired (SPEC 0038): a coordinate with no projection
 /// producer is a lowering defect, and answering it with a different integrator
 /// hid the defect instead of reporting it.
+#[cfg(test)]
 pub(crate) fn require_state_only_bdf(model: &solve::SolveModel) -> Result<(), SimError> {
     let state_count = model.state_scalar_count();
     let derivative_rhs_len = model
@@ -366,10 +364,12 @@ pub(crate) fn require_state_only_bdf(model: &solve::SolveModel) -> Result<(), Si
 /// through the same check, so the stage is pinned here rather than inherited
 /// from whichever boundary happened to call first — otherwise the identical
 /// defect would be recorded under two different stages.
+#[cfg(test)]
 fn reject(rejection: StateOnlyRejection) -> SimError {
     SimError::StateOnlyPathUnavailable(rejection).at_stage(SimFailureStage::BackendBuild)
 }
 
+#[cfg(test)]
 fn coordinate_name(model: &solve::SolveModel, y_index: usize) -> String {
     model
         .problem
@@ -384,6 +384,7 @@ fn coordinate_name(model: &solve::SolveModel, y_index: usize) -> String {
 /// Non-state solver coordinates each state-derivative row reads, keyed by
 /// coordinate and carrying the state whose derivative first read it — so a
 /// rejection can name `der(<state>)`, not just the dangling coordinate.
+#[cfg(test)]
 fn derivative_non_state_loads(
     model: &solve::SolveModel,
     derivative_rows: &solve::ScalarProgramBlock,
@@ -404,6 +405,7 @@ fn derivative_non_state_loads(
     deps
 }
 
+#[cfg(test)]
 fn require_projection_plan_covers_non_state_loads(
     model: &solve::SolveModel,
     direct_deps: BTreeMap<usize, usize>,
@@ -453,6 +455,7 @@ fn require_projection_plan_covers_non_state_loads(
     Ok(())
 }
 
+#[cfg(test)]
 fn projection_producer_rows(
     model: &solve::SolveModel,
     implicit_output_count: usize,
@@ -486,6 +489,7 @@ fn projection_producer_rows(
     Ok(producer_rows)
 }
 
+#[cfg(test)]
 fn non_state_y_loads(
     row: &[solve::LinearOp],
     state_count: usize,

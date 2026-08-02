@@ -73,6 +73,7 @@ pub(crate) struct BdfEvalCounterSnapshot {
     pub(crate) root_nanos: u64,
 }
 
+#[allow(dead_code)] // Frozen state-only builder retained until session cutover.
 pub(crate) struct StateOdeProblemInput {
     pub(crate) runtime_params: RuntimeParameters,
     pub(crate) algebraic_warm_start: AlgebraicWarmStart,
@@ -83,6 +84,7 @@ pub(crate) struct StateOdeProblemInput {
 }
 
 impl StateOdeProblemInput {
+    #[allow(dead_code)]
     pub(crate) fn new(
         runtime_params: RuntimeParameters,
         algebraic_warm_start: AlgebraicWarmStart,
@@ -106,6 +108,7 @@ fn new_bdf_eval_counters() -> Option<Arc<BdfEvalCounters>> {
     trace_bdf_eval_counts().then(|| Arc::new(BdfEvalCounters::default()))
 }
 
+#[allow(dead_code)]
 pub(crate) fn state_ode_problem_input(
     runtime_params: &RuntimeParameters,
     algebraic_warm_start: &AlgebraicWarmStart,
@@ -533,6 +536,7 @@ impl AlgebraicProjectionModel for OdeModel {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn validate_model(model: &solve::SolveModel) -> Result<(), SimError> {
     if model.state_scalar_count() > 0
         && model.problem.continuous.implicit_rhs.is_empty()
@@ -594,6 +598,7 @@ pub(crate) fn build_ode_problem_with_runtime_params_and_initial(
     )
 }
 
+#[allow(dead_code)]
 pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     model: &solve::SolveModel,
     opts: &SimOptions,
@@ -808,6 +813,7 @@ pub(crate) struct MeOdeProblemBuild<Eqn: StateOdeEquations> {
     pub(crate) eval_counters: Option<Arc<BdfEvalCounters>>,
 }
 
+#[allow(dead_code)]
 struct StateJacobianEvaluatorInput {
     runtime: Arc<SolveRuntime>,
     runtime_params: Option<RuntimeParameters>,
@@ -822,6 +828,7 @@ struct StructuralJacobianEvaluator<F> {
     probe: Arc<AtomicBool>,
 }
 
+#[allow(dead_code)]
 fn state_jacobian_evaluator(
     input: StateJacobianEvaluatorInput,
 ) -> StructuralJacobianEvaluator<impl Fn(&Vector, &Vector, Scalar, &Vector, &mut Vector)> {
@@ -872,6 +879,7 @@ fn state_jacobian_evaluator(
     }
 }
 
+#[allow(dead_code)]
 fn state_root_evaluator(
     runtime: Arc<SolveRuntime>,
     runtime_params: Option<RuntimeParameters>,
@@ -912,6 +920,7 @@ fn state_root_evaluator(
     }
 }
 
+#[allow(dead_code)]
 fn bdf_algebraic_settle(tol: f64) -> rumoca_solver::AlgebraicSettle {
     rumoca_solver::AlgebraicSettle {
         tol,
@@ -1082,6 +1091,7 @@ fn implicit_jacobian_evaluator(
     }
 }
 
+#[allow(dead_code)]
 fn derivative_jacobian_pattern(
     model: &solve::SolveModel,
 ) -> Result<solve::StructuralPattern, SimError> {
@@ -1185,6 +1195,7 @@ fn with_delay_adjusted_params<R>(
     Ok(f(&adjusted))
 }
 
+#[allow(dead_code)]
 fn with_delay_adjusted_params_mut<R>(
     runtime: &SolveRuntime,
     solver_y: &mut [f64],

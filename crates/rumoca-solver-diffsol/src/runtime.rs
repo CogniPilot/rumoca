@@ -102,6 +102,7 @@ fn apply_event_updates_with_filter(
     event_action_outcome_to_result(outcome, t)
 }
 
+#[cfg(test)]
 pub(crate) fn seed_initial_discrete_values(
     runtime: &SolveRuntime,
     _ode_model: &OdeModel,

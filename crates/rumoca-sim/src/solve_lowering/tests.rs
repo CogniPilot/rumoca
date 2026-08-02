@@ -690,10 +690,11 @@ fn string_declaration_does_not_block_numeric_runtime_vectors() {
         .iter()
         .position(|name| name == "x")
         .expect("state result column");
+    let final_x = result.data[x].last().copied();
     assert!(
-        result.data[x]
-            .last()
-            .is_some_and(|value| (value - (-1.0_f64).exp()).abs() <= 1.0e-6)
+        final_x.is_some_and(|value| (value - (-1.0_f64).exp()).abs() <= 1.0e-6),
+        "expected x(1)≈exp(-1), found {final_x:?} at {:?}",
+        result.times.last()
     );
 }
 

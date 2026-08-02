@@ -1333,7 +1333,8 @@ fn simulate_rejects_nonempty_solver_layout_without_residual_rows() {
     let err = simulate(&model, &SimOptions::default()).unwrap_err();
     // The rejection happens while building the backend problem, so the failure
     // is stage-annotated; `kind()` is how a consumer sees the variant.
-    assert!(matches!(err.kind(), SimError::EmptySystem));
+    assert!(matches!(err.kind(), SimError::SolveIr(_)));
+    assert!(err.to_string().contains("no reduced state-only ODE exists"));
     assert_eq!(err.stage(), Some(crate::SimFailureStage::BackendBuild));
 }
 

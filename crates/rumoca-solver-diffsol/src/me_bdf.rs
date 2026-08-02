@@ -23,6 +23,21 @@ use crate::{
 
 const MAX_STEPS_PER_OUTPUT: usize = 100_000;
 
+pub(crate) fn check_initialization(
+    source: MeModelSource<'_>,
+    opts: &SimOptions,
+) -> Result<(), SimError> {
+    let host = instantiate_me_host(source, opts)?;
+    let initial = host.initialize_component()?;
+    if initial.termination.is_some() {
+        return Ok(());
+    }
+    let ode_build =
+        build_me_state_ode_problem(opts, host.clone(), initial.time, initial.states.clone())?;
+    let derivative = host.derivatives(initial.time, &initial.states)?;
+    initial_bdf_state(&ode_build.problem, &initial.states, &derivative).map(|_| ())
+}
+
 pub(crate) fn simulate(
     source: MeModelSource<'_>,
     opts: &SimOptions,
@@ -38,6 +53,7 @@ pub(crate) fn simulate(
     let mut trace = TraceRecorder::new(&host, output_times.len());
     let budget = TimeoutBudget::new(opts.max_wall_seconds);
     let mut pending_root = None;
+    let mut pending_time_event = None;
     for observation in &initial.observations {
         trace.record(host.outputs_for_observation(observation)?)?;
     }
@@ -61,19 +77,37 @@ pub(crate) fn simulate(
                 seconds: timeout.seconds,
             })
             .map_err(|error| error.at_stage(SimFailureStage::Integration))?;
-        advance_to(
+        let advance = advance_to(
             &host,
             &mut solver,
             &mut trace,
             &mut pending_root,
+            &mut pending_time_event,
             target,
             opts,
             &budget,
-        )?;
-        trace.record(host.observe()?)?;
+        );
+        match advance {
+            Ok(()) => {}
+            Err(SimError::Terminated { time, message }) => {
+                return Ok(trace.finish(
+                    host.state_count(),
+                    Some(rumoca_solver::SimTermination { time, message }),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+        let states = if sample_time_match_with_tol(solver.state().t, target) {
+            solver.state().y.as_slice().to_vec()
+        } else {
+            solver_call("BDF output interpolation", || solver.interpolate(target))?
+                .as_slice()
+                .to_vec()
+        };
+        trace.record(host.observe_continuous_point(target, &states)?)?;
     }
     trace_bdf_eval_counter_snapshot("me-bdf", &counters);
-    Ok(trace.finish(host.state_count()))
+    Ok(trace.finish(host.state_count(), None))
 }
 
 fn advance_to<'a, Eqn, S>(
@@ -81,6 +115,7 @@ fn advance_to<'a, Eqn, S>(
     solver: &mut S,
     trace: &mut TraceRecorder,
     pending_root: &mut Option<PendingRoot>,
+    pending_time_event: &mut Option<f64>,
     target: f64,
     opts: &SimOptions,
     budget: &TimeoutBudget,
@@ -97,27 +132,41 @@ where
                 seconds: timeout.seconds,
             })
             .map_err(|error| error.at_stage(SimFailureStage::Integration))?;
+        if let Some(event_time) = *pending_time_event {
+            if event_time > target && !time_reached_with_tolerance(event_time, target, tolerance) {
+                return Ok(());
+            }
+            let states = solver.state().y.as_slice().to_vec();
+            let event = host.process_time_event(event_time, &states, target)?;
+            *pending_time_event = None;
+            if let Some(termination) = event.termination {
+                return Err(SimError::Terminated {
+                    time: termination.time,
+                    message: termination.message,
+                });
+            }
+            if let Some(observation) = event.observation {
+                trace.record(observation)?;
+            }
+            reset_after_event(host, solver, event.time, &event.states)?;
+            continue;
+        }
         if let Some(root) = pending_root.take() {
             if root.time > target && !time_reached_with_tolerance(root.time, target, tolerance) {
-                let states = solver_call("BDF deferred-root interpolation", || {
-                    solver.interpolate(target)
-                })?
-                .as_slice()
-                .to_vec();
-                host.sync_continuous_point(target, &states)?;
                 *pending_root = Some(root);
                 return Ok(());
             }
             process_root_event(host, solver, trace, root, target, tolerance)?;
             continue;
         }
+        let requested = host.next_event_stop(opts.t_end)?;
         let current = solver.state().t;
-        if current >= target || time_reached_with_tolerance(current, target, tolerance) {
-            finish_output_stop(solver, current, tolerance)?;
-            return Ok(());
-        }
-        let requested = host.next_event_stop(target)?;
         if requested.is_event && time_reached_with_tolerance(current, requested.time, tolerance) {
+            if requested.time > target
+                && !time_reached_with_tolerance(requested.time, target, tolerance)
+            {
+                return Ok(());
+            }
             let states = solver.state().y.as_slice().to_vec();
             let event = host.process_time_event(requested.time, &states, target)?;
             if let Some(termination) = event.termination {
@@ -132,30 +181,19 @@ where
             reset_after_event(host, solver, event.time, &event.states)?;
             continue;
         }
-        let stop_time = requested.time.min(target);
+        if current >= target || time_reached_with_tolerance(current, target, tolerance) {
+            return Ok(());
+        }
+        let stop_time = requested.time.min(opts.t_end);
         set_stop_time(solver, stop_time)?;
         match solver_call("BDF step", || solver.step())? {
             OdeSolverStopReason::InternalTimestep => accept_step(host, solver, tolerance)?,
             OdeSolverStopReason::TstopReached => {
                 accept_step(host, solver, tolerance)?;
-                if requested.is_event
-                    && sample_time_match_with_tol(solver.state().t, requested.time)
-                {
-                    let states = solver.state().y.as_slice().to_vec();
-                    let event = host.process_time_event(requested.time, &states, target)?;
-                    if let Some(termination) = event.termination {
-                        return Err(SimError::Terminated {
-                            time: termination.time,
-                            message: termination.message,
-                        });
-                    }
-                    if let Some(observation) = event.observation {
-                        trace.record(observation)?;
-                    }
-                    reset_after_event(host, solver, event.time, &event.states)?;
+                if requested.is_event {
+                    *pending_time_event = Some(requested.time);
                     continue;
                 }
-                finish_output_stop(solver, solver.state().t, tolerance)?;
                 return Ok(());
             }
             OdeSolverStopReason::RootFound(root_time, root_index) => {
@@ -170,12 +208,6 @@ where
                 };
                 if root_time > target && !time_reached_with_tolerance(root_time, target, tolerance)
                 {
-                    let states = solver_call("BDF pre-root output interpolation", || {
-                        solver.interpolate(target)
-                    })?
-                    .as_slice()
-                    .to_vec();
-                    host.sync_continuous_point(target, &states)?;
                     *pending_root = Some(root);
                     return Ok(());
                 }
@@ -230,19 +262,6 @@ where
 
 fn time_reached_with_tolerance(current: f64, target: f64, tolerance: f64) -> bool {
     (current - target).abs() <= tolerance * (1.0 + current.abs().max(target.abs()))
-}
-
-fn finish_output_stop<'a, Eqn, S>(solver: &mut S, time: f64, tolerance: f64) -> Result<(), SimError>
-where
-    Eqn: StateOdeEquations + 'a,
-    S: OdeSolverMethod<'a, Eqn>,
-{
-    clear_stop_time_after_reset(solver, time)?;
-    let h_floor = solver.problem().h0.abs().max(tolerance);
-    if solver.state().h.abs() < h_floor {
-        *solver.state_mut().h = h_floor;
-    }
-    Ok(())
 }
 
 fn accept_step<'a, Eqn, S>(
@@ -398,14 +417,18 @@ impl TraceRecorder {
         Ok(())
     }
 
-    fn finish(self, state_count: usize) -> SimResult {
+    fn finish(
+        self,
+        state_count: usize,
+        termination: Option<rumoca_solver::SimTermination>,
+    ) -> SimResult {
         SimResult {
             times: self.times,
             names: self.names,
             data: self.data,
             n_states: state_count,
             variable_meta: self.meta,
-            termination: None,
+            termination,
         }
     }
 }
