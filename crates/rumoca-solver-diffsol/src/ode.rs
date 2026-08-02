@@ -706,15 +706,23 @@ where
 }
 
 pub(crate) fn build_me_state_ode_problem(
-    model: &solve::SolveModel,
     opts: &SimOptions,
     host: DiffsolMeHost,
-    input: StateOdeProblemInput,
+    t_start: f64,
+    initial_state: Vec<f64>,
 ) -> Result<MeOdeProblemBuild<impl StateOdeEquations + use<>>, SimError> {
     let state_count = host.state_count();
     let root_count = host.event_indicator_count().max(1);
-    let atol = solver_absolute_tolerances(model, opts.atol, state_count.max(1));
-    let eval_counters = input.eval_counters.clone();
+    let base_tolerance = opts.atol.abs().max(f64::MIN_POSITIVE);
+    let mut atol = host
+        .continuous_state_nominals()?
+        .into_iter()
+        .map(|nominal| (base_tolerance * nominal).clamp(f64::MIN_POSITIVE, f64::MAX))
+        .collect::<Vec<_>>();
+    if atol.is_empty() {
+        atol.push(base_tolerance);
+    }
+    let eval_counters = new_bdf_eval_counters();
     let rhs_counters = eval_counters.clone();
     let jacobian_counters = eval_counters.clone();
     let root_counters = eval_counters.clone();
@@ -722,7 +730,6 @@ pub(crate) fn build_me_state_ode_problem(
     let jacobian_host = host.clone();
     let build_error_host = host.clone();
     let root_host = host;
-    let pattern = derivative_jacobian_pattern(model)?;
     let sparsity_probe = Arc::new(AtomicBool::new(true));
     let jacobian_probe = sparsity_probe.clone();
 
@@ -735,7 +742,7 @@ pub(crate) fn build_me_state_ode_problem(
     };
     let jacobian = move |y: &Vector, _p: &Vector, t: Scalar, seed: &Vector, out: &mut Vector| {
         if jacobian_probe.load(Ordering::Relaxed) {
-            apply_structural_jacobian_probe(&pattern, seed.as_slice(), out.as_mut_slice());
+            apply_dense_jacobian_probe(seed.as_slice(), out.as_mut_slice());
             return;
         }
         let start = jacobian_counters.as_ref().map(|_| Instant::now());
@@ -758,15 +765,15 @@ pub(crate) fn build_me_state_ode_problem(
     };
 
     let problem = OdeBuilder::<Matrix>::new()
-        .t0(input.t_start)
+        .t0(t_start)
         .h0(opts.dt.unwrap_or(1.0e-3).abs().max(1.0e-9))
         .rtol(opts.rtol)
         .atol(atol)
-        .p(model.parameters.clone())
+        .p(Vec::new())
         .rhs_implicit(rhs, jacobian)
         .init(
             move |_p: &Vector, _t: Scalar, y: &mut Vector| {
-                y.as_mut_slice().copy_from_slice(&input.initial_state);
+                y.as_mut_slice().copy_from_slice(&initial_state);
             },
             state_count.max(1),
         )
@@ -774,6 +781,11 @@ pub(crate) fn build_me_state_ode_problem(
         .build();
     sparsity_probe.store(false, Ordering::Relaxed);
     finish_me_ode_problem(problem, &build_error_host, eval_counters)
+}
+
+fn apply_dense_jacobian_probe(seed: &[f64], output: &mut [f64]) {
+    let magnitude = seed.iter().copied().map(f64::abs).sum::<f64>();
+    output.fill(magnitude);
 }
 
 pub(crate) trait StateOdeEquations:

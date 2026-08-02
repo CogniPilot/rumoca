@@ -103,7 +103,7 @@ mod no_state;
 #[cfg(test)]
 mod tests;
 
-pub use host::{MeRuntimeHost, MeRuntimeInitialState, MeRuntimePostEventState};
+pub use host::{MeRuntimeHost, MeRuntimeInitialState, MeRuntimeOutput, MeRuntimePostEventState};
 pub use kernel::SolveMeKernel;
 pub use no_state::MeNoStateSession;
 

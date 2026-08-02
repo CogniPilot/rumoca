@@ -354,16 +354,10 @@ fn simulate_state_only_bdf(
     let current_state = current_y[..model.state_scalar_count()].to_vec();
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
     let algebraic_warm_start = AlgebraicWarmStart::new(current_y.clone());
-    let (problem_input, eval_counters) = state_ode_problem_input(
-        &runtime_params,
-        &algebraic_warm_start,
-        current_t,
-        &current_state,
-        runtime,
-    );
-    let ode_build = build_me_state_ode_problem(model, opts, me_host.clone(), problem_input)?;
+    let ode_build =
+        build_me_state_ode_problem(opts, me_host.clone(), current_t, current_state.clone())?;
+    let eval_counters = ode_build.eval_counters.clone();
     let problem = ode_build.problem;
-    debug_assert!(ode_build.eval_counters.is_some() == eval_counters.is_some());
     // `OdeBuilder` probes RHS while constructing the problem, before the BDF
     // host has performed its one-time accepted-seed preparation.
     if let Some(error) = me_host.take_callback_error() {

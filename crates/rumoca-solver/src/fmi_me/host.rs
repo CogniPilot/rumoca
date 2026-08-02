@@ -8,9 +8,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use super::{
-    MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig,
-    MeModelSource, MeObservation, MeStage, MeStepCompletion, MeTime, ModelExchangeKernel,
-    SolveMeKernel,
+    MeDiscreteStates, MeError, MeEventCause, MeEventEntry, MeEventStop, MeIndicatorCrossing,
+    MeInstanceConfig, MeModelSource, MeObservation, MeStage, MeStepCompletion, MeTime,
+    ModelExchangeKernel, SolveMeKernel,
 };
 use crate::{SimTermination, time_match_with_tol, timeline::sample_time_match_with_tol};
 
@@ -31,6 +31,12 @@ pub struct MeRuntimePostEventState {
     pub states: Vec<f64>,
     pub entry: MeEventEntry,
     pub termination: Option<SimTermination>,
+}
+
+/// One backend-neutral output observation returned by the ME runtime.
+pub struct MeRuntimeOutput {
+    pub time: f64,
+    pub values: Vec<f64>,
 }
 
 /// Linked FMI 3 ME host shared by every numerical integrator plugin.
@@ -78,6 +84,24 @@ impl MeRuntimeHost {
         })
     }
 
+    /// Initialize through the ordinary ME lifecycle without a migration
+    /// compatibility oracle.
+    pub fn initialize_component(&self) -> Result<MeRuntimeInitialState, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.enter_initialization_mode()?;
+        kernel.exit_initialization_mode()?;
+        let discrete = update_discrete_states_to_completion(&mut *kernel)?;
+        kernel.enter_continuous_time_mode()?;
+        let mut states = vec![0.0; kernel.model_description().continuous_state_count];
+        kernel.get_continuous_states(&mut states)?;
+        Ok(MeRuntimeInitialState {
+            time: discrete.time,
+            states,
+            observations: kernel.initial_observations().to_vec(),
+            termination: discrete.terminate_simulation,
+        })
+    }
+
     #[must_use]
     pub fn state_count(&self) -> usize {
         self.kernel
@@ -107,6 +131,72 @@ impl MeRuntimeHost {
             .borrow()
             .model_description()
             .event_indicator_count
+    }
+
+    pub fn continuous_state_nominals(&self) -> Result<Vec<f64>, MeError> {
+        let mut nominals = vec![0.0; self.state_count()];
+        self.kernel
+            .borrow()
+            .get_nominals_of_continuous_states(&mut nominals)?;
+        Ok(nominals)
+    }
+
+    pub fn next_event_stop(&self, horizon: f64) -> Result<MeEventStop, MeError> {
+        self.kernel.borrow_mut().next_event_stop(horizon)
+    }
+
+    #[must_use]
+    pub fn max_step_size(&self) -> Option<f64> {
+        self.kernel.borrow().max_step_size()
+    }
+
+    pub fn observe(&self) -> Result<MeRuntimeOutput, MeError> {
+        let kernel = self.kernel.borrow_mut();
+        let observation = kernel.observe()?;
+        let mut values = vec![0.0; kernel.model_description().output_names.len()];
+        kernel.get_outputs(&observation, observation.time(), &mut values)?;
+        Ok(MeRuntimeOutput {
+            time: observation.time(),
+            values,
+        })
+    }
+
+    pub fn output_names(&self) -> Vec<String> {
+        self.kernel
+            .borrow()
+            .model_description()
+            .output_names
+            .to_vec()
+    }
+
+    pub fn output_meta(&self) -> Vec<crate::SimVariableMeta> {
+        self.kernel
+            .borrow()
+            .model_description()
+            .output_meta
+            .to_vec()
+    }
+
+    pub fn derivatives(&self, time: f64, states: &[f64]) -> Result<Vec<f64>, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(time))?;
+        kernel.set_continuous_states(states)?;
+        let mut values = Vec::new();
+        kernel.get_continuous_state_derivatives(&mut values)?;
+        Ok(values)
+    }
+
+    pub fn accept_integrator_step(&self, time: f64, states: &[f64]) -> Result<Vec<f64>, MeError> {
+        let mut kernel = self.kernel.borrow_mut();
+        kernel.set_time(MeTime::at(time))?;
+        kernel.set_continuous_states(states)?;
+        let mut projected = states.to_vec();
+        kernel.project_continuous_states(&mut projected)?;
+        kernel.set_continuous_states(&projected)?;
+        kernel.completed_integrator_step(MeStepCompletion::Continuous {
+            accepted_derivatives: None,
+        })?;
+        Ok(projected)
     }
 
     pub fn take_callback_error(&self) -> Option<MeError> {
