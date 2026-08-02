@@ -15,7 +15,8 @@
 use std::collections::HashMap;
 
 use rumoca_core::{
-    BuiltinFunction, Expression, Literal, OpBinary, OpUnary, Reference, Span, Subscript, VarName,
+    BuiltinFunction, ComponentReference, Expression, Literal, OpBinary, OpUnary, Reference, Span,
+    Statement as CoreStatement, StatementBlock, Subscript, VarName,
 };
 use rumoca_galec_codegen::input::ScalarTypeMap;
 use rumoca_galec_codegen::manifest_context::algorithm_code_manifest::{
@@ -120,6 +121,33 @@ fn sample_call() -> Expression {
         is_constructor: false,
         span: span(),
     }
+}
+
+fn sample_builtin() -> Expression {
+    Expression::BuiltinCall {
+        function: BuiltinFunction::Sample,
+        args: vec![real(0.0), var("samplePeriod")],
+        span: span(),
+    }
+}
+
+fn assignment(target: &str, value: Expression) -> CoreStatement {
+    CoreStatement::Assignment {
+        comp: ComponentReference::from_flat_segments(target, span(), None),
+        value,
+        span: span(),
+    }
+}
+
+fn sampled_algorithm(blocks: Vec<StatementBlock>) -> dae::Algorithm {
+    dae::Algorithm::new(
+        vec![CoreStatement::When {
+            blocks,
+            span: span(),
+        }],
+        span(),
+        "algorithm section",
+    )
 }
 
 /// The when-edge of condition `i`: `c[i] and not __pre__.c[i]`.
@@ -735,7 +763,7 @@ fn c_template_context_serializes_the_c_export_shape() {
             .expect("variables array")
             .iter()
             .any(|variable| variable["name"] == "vMotor"
-                && variable["c_type"] == "double"
+                && variable["scalar_type"] == "real"
                 && variable["c_name"] == "vMotor")
     );
     let do_step = context["methods"]["do_step"]
@@ -743,25 +771,21 @@ fn c_template_context_serializes_the_c_export_shape() {
         .expect("do_step statements");
     assert!(!do_step.is_empty());
     for statement in do_step {
-        assert_eq!(statement["kind"], "assignment");
-        let lines = statement["c_lines"].as_array().expect("c_lines array");
         assert!(
-            lines
-                .iter()
-                .all(|line| line.as_str().is_some_and(|text| text.ends_with(';'))),
-            "every C line is a terminated statement: {statement}"
+            matches!(statement["kind"].as_str(), Some("assign" | "copy")),
+            "every item is structured C codegen IR: {statement}"
         );
+        assert!(statement["target"]["name"].is_string(), "{statement}");
+        assert!(statement.get("c_lines").is_none(), "{statement}");
     }
-    // The end-of-DoStep pre-commit surfaces with the mangled C field name.
+    // The end-of-DoStep pre-commit surfaces as a structured mangled target.
     assert!(
         do_step.iter().any(|statement| {
-            statement["c_lines"]
-                .as_array()
-                .expect("c_lines array")
-                .iter()
-                .any(|line| line.as_str().is_some_and(|text| text.contains("previous_")))
+            statement["target"]["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("previous_"))
         }),
-        "expected a 'previous(x)' commit in C form: {do_step:#?}"
+        "expected a 'previous(x)' commit in structured C IR: {do_step:#?}"
     );
 }
 
@@ -810,6 +834,84 @@ fn unguarded_update_row_is_rejected_never_silently_lowered() {
                 .contains("unsupported-feature:when-update-form")
         }),
         "{errors:#?}"
+    );
+}
+
+#[test]
+fn structured_algorithm_keeps_independent_equation_updates() {
+    let mut model = pid_dae();
+    model
+        .algorithms
+        .model
+        .push(sampled_algorithm(vec![StatementBlock {
+            cond: sample_builtin(),
+            stmts: vec![assignment("gainY", var("wLoadRef"))],
+        }]));
+    let types = pid_types();
+    let input = GalecInput::new(&model, "EfmiDiscretePid").with_scalar_types(&types);
+    let package = lower_to_algorithm_code(&input, &GalecOptions::default())
+        .expect("mixed algorithm and equation updates lower");
+    let alg = render_algorithm_code(&package).expect("renders");
+    let do_step = alg
+        .split("method DoStep")
+        .nth(1)
+        .expect("DoStep section exists");
+
+    assert_eq!(
+        do_step.matches("self.gainY :=").count(),
+        1,
+        "the algorithm-derived DAE row must not duplicate its structured statement:\n{alg}"
+    );
+    assert!(
+        do_step.contains("self.pidY :=") && do_step.contains("self.vMotor :="),
+        "equation-section updates must survive alongside a structured algorithm:\n{alg}"
+    );
+    assert!(
+        do_step_position(&alg, "self.gainY :=") < do_step_position(&alg, "self.feedbackY :="),
+        "an equation update must run after the structured algorithm assignment it reads:\n{alg}"
+    );
+}
+
+#[test]
+fn sampled_algorithm_retains_residual_guard_and_elsewhen_priority() {
+    let mut model = pid_dae();
+    model.algorithms.model.push(sampled_algorithm(vec![
+        StatementBlock {
+            cond: binary(OpBinary::And, sample_builtin(), var("firstTick")),
+            stmts: vec![assignment("gainY", var("wLoadRef"))],
+        },
+        StatementBlock {
+            cond: sample_builtin(),
+            stmts: vec![assignment("gainY", var("wMotor"))],
+        },
+    ]));
+    let types = pid_types();
+    let input = GalecInput::new(&model, "EfmiDiscretePid").with_scalar_types(&types);
+    let package = lower_to_algorithm_code(&input, &GalecOptions::default())
+        .expect("guarded sampled algorithm lowers");
+    let alg = render_algorithm_code(&package).expect("renders");
+    let do_step = alg
+        .split("method DoStep")
+        .nth(1)
+        .expect("DoStep section exists");
+
+    let guard = do_step
+        .find("if true and self.firstTick then")
+        .expect("the non-sample predicate remains in the branch condition");
+    let first_assignment = do_step[guard..]
+        .find("self.gainY := self.wLoadRef;")
+        .expect("first branch assignment")
+        + guard;
+    let fallback = do_step[first_assignment..]
+        .find("elseif true then")
+        .expect("sampled elsewhen remains an ordered fallback")
+        + first_assignment;
+    let second_assignment = do_step[fallback..]
+        .find("self.gainY := self.wMotor;")
+        .expect("fallback branch assignment")
+        + fallback;
+    assert!(
+        guard < first_assignment && first_assignment < fallback && fallback < second_assignment
     );
 }
 

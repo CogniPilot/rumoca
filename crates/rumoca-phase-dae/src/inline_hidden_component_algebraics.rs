@@ -12,7 +12,8 @@
 use std::collections::{HashMap, HashSet};
 
 use rumoca_core::{
-    Expression, ExpressionRewriter, Literal, OpBinary, OpUnary, Reference, Span, Subscript, VarName,
+    Expression, ExpressionRewriter, Literal, OpBinary, OpUnary, Reference, Span, Statement,
+    StatementRewriter, Subscript, VarName,
 };
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::DaeExpressionRewriter;
@@ -309,6 +310,15 @@ fn rewrite_non_continuous_contexts(dae: &mut dae::Dae, definitions: &HashMap<Str
     rewriter.rewrite_equations(&mut dae.discrete.valued_updates);
     rewriter.rewrite_equations(&mut dae.conditions.equations);
     rewriter.rewrite_expression_slots(&mut dae.conditions.relations);
+    for algorithm in dae
+        .algorithms
+        .model
+        .iter_mut()
+        .chain(dae.algorithms.initial.iter_mut())
+    {
+        let statements = rewriter.rewrite_statements(&algorithm.statements);
+        *algorithm = dae::Algorithm::new(statements, algorithm.span, algorithm.origin.clone());
+    }
 }
 
 fn declared_runtime_names(dae: &dae::Dae) -> HashSet<String> {
@@ -372,6 +382,17 @@ impl ExpressionRewriter for HiddenAlgebraicSubstituter<'_> {
             return replacement.clone();
         }
         self.walk_var_ref_expression(name, subscripts, span)
+    }
+}
+
+impl StatementRewriter for HiddenAlgebraicSubstituter<'_> {
+    fn rewrite_statement(&mut self, statement: &Statement) -> Statement {
+        if let Statement::Assignment { comp, span, .. } = statement
+            && self.definitions.contains_key(comp.to_var_name().as_str())
+        {
+            return Statement::Empty { span: *span };
+        }
+        self.walk_statement(statement)
     }
 }
 
@@ -652,6 +673,22 @@ mod tests {
             Span::DUMMY,
             "algorithm assignment (algorithm from alg)",
         ));
+        dae.algorithms.model.push(dae::Algorithm::new(
+            vec![
+                Statement::Assignment {
+                    comp: component_ref("alg.y"),
+                    value: var_ref("alg.u"),
+                    span: Span::DUMMY,
+                },
+                Statement::Assignment {
+                    comp: component_ref("out"),
+                    value: var_ref("alg.y"),
+                    span: Span::DUMMY,
+                },
+            ],
+            Span::DUMMY,
+            "structured algorithm",
+        ));
 
         inline_hidden_component_algebraics(&mut dae);
 
@@ -661,6 +698,14 @@ mod tests {
             &dae.discrete.real_updates[0].rhs,
             "alg.y"
         ));
+        assert!(matches!(
+            dae.algorithms.model[0].statements[0],
+            Statement::Empty { .. }
+        ));
+        let Statement::Assignment { value, .. } = &dae.algorithms.model[0].statements[1] else {
+            panic!("sampled assignment should remain structured");
+        };
+        assert!(!references_target(value, "alg.y"));
     }
 
     #[test]
@@ -746,6 +791,11 @@ mod tests {
             subscripts: Vec::new(),
             span: Span::DUMMY,
         }
+    }
+
+    fn component_ref(name: &str) -> rumoca_core::ComponentReference {
+        rumoca_core::component_reference_from_flat_name(&VarName::new(name), Span::DUMMY)
+            .expect("valid flat component reference")
     }
 
     fn indexed_var_ref(name: &str, index: i64) -> Expression {

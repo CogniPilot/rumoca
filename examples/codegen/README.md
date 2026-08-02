@@ -25,7 +25,7 @@ cargo run -p rumoca -- \
 cargo run -p rumoca -- \
   compile examples/models/GalecCounter.mo \
   --model GalecCounter \
-  --target galec-production \
+  --target efmi \
   --output examples/codegen/gen/galec_counter_production
 ```
 

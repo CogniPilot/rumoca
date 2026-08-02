@@ -48,6 +48,7 @@ use crate::input::{GalecInput, GalecOptions};
 use crate::manifest_vars::build_manifest_variables;
 use crate::package::{AlgorithmCodePackage, ManifestFragment};
 
+pub(crate) mod algorithms;
 pub(crate) mod clock;
 pub(crate) mod conditions;
 pub(crate) mod expr;
@@ -80,14 +81,20 @@ pub fn lower_to_algorithm_code(
 
     // 3. DoStep rows: unwrap guards, lower bodies, record read pre slots.
     let mut lowerer = ExprLowerer::new(&classification, &conditions, &input.dae.symbols);
-    let mut do_step = Vec::new();
+    let mut equation_statements = Vec::new();
     let mut errors = Vec::new();
+    let algorithm_update_keys = algorithms::derived_update_keys(&input.dae.algorithms.model);
     let updates = input
         .dae
         .discrete
         .real_updates
         .iter()
-        .chain(input.dae.discrete.valued_updates.iter());
+        .chain(input.dae.discrete.valued_updates.iter())
+        .filter(|equation| {
+            !algorithm_update_keys
+                .iter()
+                .any(|key| key.matches(equation))
+        });
     for equation in updates {
         match lower_update_row(
             equation,
@@ -96,17 +103,24 @@ pub fn lower_to_algorithm_code(
             &sample_indices,
             &mut lowerer,
         ) {
-            Ok(statement) => do_step.push(statement),
+            Ok(statement) => equation_statements.push(statement),
             Err(error) => errors.push(error),
         }
     }
     if !errors.is_empty() {
         return Err(errors);
     }
-    // MLS B.1b rows are simultaneous; order the sequential DoStep by
-    // current-tick reads (discrete algebraic loops are rejected).
-    let mut do_step = schedule::order_by_dependencies(do_step).map_err(|error| vec![error])?;
-
+    let algorithm_statements = algorithms::lower_model_algorithms(
+        &input.dae.algorithms.model,
+        &classification,
+        &mut lowerer,
+    )
+    .map_err(|error| vec![error])?;
+    // Equation rows are simultaneous, while each algorithm section is
+    // sequential. Schedule both sources together so cross-source reads see
+    // current-tick writers without changing source order inside an algorithm.
+    let mut do_step = schedule::order_mixed_updates(equation_statements, algorithm_statements)
+        .map_err(|error| vec![error])?;
     // 4. Keep only the pre slots the emitted code reads; unread slots
     // existed solely for the dropped keep-previous hold branches.
     let referenced = lowerer.into_referenced_pre();
@@ -269,16 +283,18 @@ fn validate_package(package: &AlgorithmCodePackage) -> Result<(), Vec<GalecTarge
             }
         }));
     }
-    match crate::emit::render_block(&package.block) {
-        Ok(alg_text) => {
-            if let Err(error) = crate::emit::assemble_manifest(package, alg_text.as_bytes()) {
+    match crate::emit::algorithm_template_context(package) {
+        Ok(_) => {
+            if let Err(error) =
+                crate::emit::assemble_manifest(package, b"validated-codegen-context")
+            {
                 errors.push(GalecTargetError::LoweringInternal {
                     detail: format!("lowering produced an invalid manifest fragment: {error}"),
                 });
             }
         }
         Err(error) => errors.push(GalecTargetError::LoweringInternal {
-            detail: format!("lowering produced an unprintable GALEC block: {error}"),
+            detail: format!("lowering produced an invalid GALEC template context: {error}"),
         }),
     }
     if errors.is_empty() {

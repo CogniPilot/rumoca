@@ -1,6 +1,6 @@
 //! Shared CLI-driving helpers for the GALEC-family end-to-end suites
-//! (`cli_target_galec.rs`, `cli_target_embedded_c_galec.rs`,
-//! `cli_target_galec_production.rs`).
+//! (`cli_target_galec.rs`, `cli_target_galec_c.rs`,
+//! `cli_target_efmi.rs`).
 //!
 //! Each suite includes the helper files it needs via
 //! `#[path = "galec_cli_support/<file>.rs"]` (the `examples_smoke.rs`

@@ -13,8 +13,8 @@ import {
 test("isGalecTarget recognizes exactly the three GALEC targets", () => {
   assert.deepEqual([...GALEC_TARGETS], [
     "galec",
-    "galec-production",
-    "embedded-c-galec",
+    "efmi",
+    "galec-c",
   ]);
   for (const target of GALEC_TARGETS) {
     assert.equal(isGalecTarget(target), true, target);
@@ -35,7 +35,7 @@ test("galec target yields only the .alg (Algorithm Code), C fields ignored", () 
 });
 
 test("C targets add .h and .c named by the model identifier (matches the #include)", () => {
-  for (const target of ["galec-production", "embedded-c-galec"]) {
+  for (const target of ["efmi", "galec-c"]) {
     const files = galecResultToFiles(target, {
       model_identifier: "a_b_Demo",
       alg: "ALG",
@@ -53,7 +53,7 @@ test("C targets add .h and .c named by the model identifier (matches the #includ
 });
 
 test("galecResultToFiles tolerates missing fields and identifier", () => {
-  const files = galecResultToFiles("galec-production", {});
+  const files = galecResultToFiles("efmi", {});
   assert.deepEqual(files, [
     { path: "model.alg", content: "" },
     { path: "model.h", content: "" },

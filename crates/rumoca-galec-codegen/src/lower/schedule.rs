@@ -6,8 +6,8 @@
 //! method, so emitting the rows in raw DAE order would silently compute
 //! stale values whenever a row reads a variable assigned by a later row.
 //!
-//! [`order_by_dependencies`] therefore topologically orders the lowered
-//! flat assignments by their **current-tick** reads:
+//! [`order_mixed_updates`] therefore topologically orders equation assignments
+//! and structured algorithm statements by their **current-tick** reads:
 //!
 //! - a read of `self.x` creates an edge from the statement assigning `x`
 //!   (must run first) to the reader;
@@ -65,38 +65,101 @@ impl AccessKey {
 ///
 /// # Errors
 ///
-/// `unsupported-feature:discrete-algebraic-loop` (ET017) when rows read
+/// `unsupported-feature:discrete-algebraic-loop` (ET017) when updates read
 /// each other's current-tick values cyclically; `ET018` when a statement is
-/// not the single-part flat assignment lowering produces.
-pub(crate) fn order_by_dependencies(
-    statements: Vec<Spanned<Statement>>,
+/// outside the structured assignment/if subset produced by lowering.
+struct ScheduleNode {
+    statement: Spanned<Statement>,
+    targets: Vec<AccessKey>,
+    reads: Vec<AccessKey>,
+    algorithm: Option<usize>,
+}
+
+/// Order declarative equation updates together with sequential algorithm
+/// statements. Data dependencies cross source kinds, while statements within
+/// one algorithm retain their normative source order.
+pub(crate) fn order_mixed_updates(
+    equations: Vec<Spanned<Statement>>,
+    algorithms: Vec<Vec<Spanned<Statement>>>,
 ) -> Result<Vec<Spanned<Statement>>, GalecTargetError> {
-    let targets = statements
-        .iter()
-        .map(|statement| target_key(&statement.node))
+    let mut nodes = equations
+        .into_iter()
+        .map(|statement| schedule_node(statement, None))
         .collect::<Result<Vec<_>, _>>()?;
-    let reads: Vec<Vec<AccessKey>> = statements
-        .iter()
-        .map(|statement| read_keys(&statement.node))
-        .collect();
-    let mut indegree = vec![0_usize; statements.len()];
-    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); statements.len()];
-    for (reader, reader_reads) in reads.iter().enumerate() {
-        for (writer, target) in targets.iter().enumerate() {
-            if reader_reads.iter().any(|read| read.overlaps(target)) {
-                dependents[writer].push(reader);
-                indegree[reader] += 1;
+    let mut algorithm_ranges = Vec::with_capacity(algorithms.len());
+    for (algorithm, statements) in algorithms.into_iter().enumerate() {
+        let start = nodes.len();
+        nodes.extend(
+            statements
+                .into_iter()
+                .map(|statement| schedule_node(statement, Some(algorithm)))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        algorithm_ranges.push(start..nodes.len());
+    }
+
+    let mut indegree = vec![0_usize; nodes.len()];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    add_data_dependencies(&nodes, &mut indegree, &mut dependents);
+    for range in algorithm_ranges {
+        for predecessor in range.start..range.end.saturating_sub(1) {
+            add_edge(predecessor, predecessor + 1, &mut indegree, &mut dependents);
+        }
+    }
+
+    let (statements, targets): (Vec<Spanned<Statement>>, Vec<Vec<AccessKey>>) = nodes
+        .into_iter()
+        .map(|node| (node.statement, node.targets))
+        .unzip();
+    stable_kahn(statements, &targets, indegree, &dependents)
+}
+
+fn schedule_node(
+    statement: Spanned<Statement>,
+    algorithm: Option<usize>,
+) -> Result<ScheduleNode, GalecTargetError> {
+    Ok(ScheduleNode {
+        targets: target_keys(&statement.node)?,
+        reads: read_keys(&statement.node),
+        statement,
+        algorithm,
+    })
+}
+
+fn add_data_dependencies(
+    nodes: &[ScheduleNode],
+    indegree: &mut [usize],
+    dependents: &mut [Vec<usize>],
+) {
+    for (reader, reader_node) in nodes.iter().enumerate() {
+        for (writer, writer_node) in nodes.iter().enumerate() {
+            if reader_node.algorithm == writer_node.algorithm && reader_node.algorithm.is_some() {
+                continue;
+            }
+            if reader_node.reads.iter().any(|read| {
+                writer_node
+                    .targets
+                    .iter()
+                    .any(|target| read.overlaps(target))
+            }) {
+                add_edge(writer, reader, indegree, dependents);
             }
         }
     }
-    stable_kahn(statements, &targets, indegree, &dependents)
+}
+
+fn add_edge(writer: usize, reader: usize, indegree: &mut [usize], dependents: &mut [Vec<usize>]) {
+    if !dependents[writer].contains(&reader) {
+        dependents[writer].push(reader);
+        indegree[reader] += 1;
+    }
 }
 
 /// Kahn's algorithm picking the smallest ready index each round, so rows
 /// without ordering constraints keep their DAE order.
 fn stable_kahn(
     statements: Vec<Spanned<Statement>>,
-    targets: &[AccessKey],
+    targets: &[Vec<AccessKey>],
     mut indegree: Vec<usize>,
     dependents: &[Vec<usize>],
 ) -> Result<Vec<Spanned<Statement>>, GalecTargetError> {
@@ -107,7 +170,11 @@ fn stable_kahn(
         let Some(next) = (0..count).find(|&index| !emitted[index] && indegree[index] == 0) else {
             let cycle: Vec<String> = (0..count)
                 .filter(|&index| !emitted[index])
-                .map(|index| format!("`{}`", manifest_name(&targets[index].name)))
+                .flat_map(|index| {
+                    targets[index]
+                        .iter()
+                        .map(|target| format!("`{}`", manifest_name(&target.name)))
+                })
                 .collect();
             return Err(GalecTargetError::UnsupportedFeature {
                 feature: "discrete-algebraic-loop".to_owned(),
@@ -137,15 +204,40 @@ fn stable_kahn(
 /// The access key of a lowered flat assignment's target. Lowering only
 /// produces single-part `self.<name>[literal…]` targets; anything else is a
 /// projection bug.
-fn target_key(statement: &Statement) -> Result<AccessKey, GalecTargetError> {
-    let Statement::Assignment { target, .. } = statement else {
-        return Err(GalecTargetError::LoweringInternal {
-            detail: "DoStep ordering saw a non-assignment update statement".to_owned(),
-        });
-    };
-    reference_key(target).ok_or_else(|| GalecTargetError::LoweringInternal {
-        detail: "DoStep ordering saw a multi-part or local assignment target".to_owned(),
-    })
+fn target_keys(statement: &Statement) -> Result<Vec<AccessKey>, GalecTargetError> {
+    match statement {
+        Statement::Assignment { target, .. } => {
+            Ok(vec![reference_key(target).ok_or_else(|| {
+                GalecTargetError::LoweringInternal {
+                    detail: "DoStep ordering saw a multi-part or local assignment target"
+                        .to_owned(),
+                }
+            })?])
+        }
+        Statement::If(statement) => {
+            let mut targets = Vec::new();
+            for branch in &statement.branches {
+                collect_statement_targets(&branch.body, &mut targets)?;
+            }
+            if let Some(body) = &statement.else_body {
+                collect_statement_targets(body, &mut targets)?;
+            }
+            Ok(targets)
+        }
+        _ => Err(GalecTargetError::LoweringInternal {
+            detail: "DoStep ordering saw an unsupported structured update statement".to_owned(),
+        }),
+    }
+}
+
+fn collect_statement_targets(
+    statements: &[Spanned<Statement>],
+    targets: &mut Vec<AccessKey>,
+) -> Result<(), GalecTargetError> {
+    for statement in statements {
+        targets.extend(target_keys(&statement.node)?);
+    }
+    Ok(())
 }
 
 /// Key of a single-part state reference; `None` for local or multi-part
@@ -184,10 +276,28 @@ fn reference_key(reference: &Reference) -> Option<AccessKey> {
 /// (including reads inside subscripts).
 fn read_keys(statement: &Statement) -> Vec<AccessKey> {
     let mut reads = Vec::new();
-    if let Statement::Assignment { value, .. } = statement {
-        collect_reads(value, &mut reads);
+    match statement {
+        Statement::Assignment { value, .. } => collect_reads(value, &mut reads),
+        Statement::If(statement) => {
+            for branch in &statement.branches {
+                if let rumoca_ir_galec::ast::Condition::Expression(condition) = &branch.condition {
+                    collect_reads(condition, &mut reads);
+                }
+                collect_statement_reads(&branch.body, &mut reads);
+            }
+            if let Some(body) = &statement.else_body {
+                collect_statement_reads(body, &mut reads);
+            }
+        }
+        _ => {}
     }
     reads
+}
+
+fn collect_statement_reads(statements: &[Spanned<Statement>], reads: &mut Vec<AccessKey>) {
+    for statement in statements {
+        reads.extend(read_keys(&statement.node));
+    }
 }
 
 fn collect_reference_reads(reference: &Reference, reads: &mut Vec<AccessKey>) {
@@ -242,7 +352,7 @@ fn collect_reads(expression: &Expression, reads: &mut Vec<AccessKey>) {
 
 #[cfg(test)]
 mod tests {
-    use super::order_by_dependencies;
+    use super::order_mixed_updates;
     use rumoca_core::Span;
     use rumoca_ir_galec::ast::{Expression, Name, RefPart, Reference, Spanned, Statement};
 
@@ -305,7 +415,7 @@ mod tests {
             assign("x", Some(2), Expression::Integer(5)),
             assign("x", Some(3), Expression::Integer(9)),
         ];
-        let ordered = order_by_dependencies(input).expect("acyclic");
+        let ordered = order_mixed_updates(input, Vec::new()).expect("acyclic");
         let targets = targets(&ordered);
         let writer = targets.iter().position(|t| *t == ("x".to_owned(), Some(2)));
         let reader = targets.iter().position(|t| *t == ("x".to_owned(), Some(1)));
@@ -325,12 +435,55 @@ mod tests {
             assign("a", None, read("x", None)),
             assign("x", Some(1), Expression::Integer(5)),
         ];
-        let ordered = order_by_dependencies(input).expect("acyclic");
+        let ordered = order_mixed_updates(input, Vec::new()).expect("acyclic");
         assert_eq!(
             targets(&ordered),
             vec![("x".to_owned(), Some(1)), ("a".to_owned(), None)],
             "the x[1] writer must precede the whole-array reader `a := x`"
         );
+    }
+
+    #[test]
+    fn equation_reader_runs_after_algorithm_writer() {
+        let equations = vec![assign("b", None, read("a", None))];
+        let algorithms = vec![vec![
+            assign("a", None, Expression::Real(1.0)),
+            assign("c", None, read("b", None)),
+        ]];
+
+        let ordered = order_mixed_updates(equations, algorithms).expect("acyclic mixed updates");
+        assert_eq!(
+            targets(&ordered),
+            vec![
+                ("a".to_owned(), None),
+                ("b".to_owned(), None),
+                ("c".to_owned(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn algorithm_source_order_overrides_internal_data_order() {
+        let algorithms = vec![vec![
+            assign("b", None, read("a", None)),
+            assign("a", None, Expression::Real(1.0)),
+        ]];
+
+        let ordered =
+            order_mixed_updates(Vec::new(), algorithms).expect("sequential algorithm is valid");
+        assert_eq!(
+            targets(&ordered),
+            vec![("b".to_owned(), None), ("a".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn algorithm_assignment_may_read_its_current_value() {
+        let algorithms = vec![vec![assign("a", None, read("a", None))]];
+
+        let ordered =
+            order_mixed_updates(Vec::new(), algorithms).expect("sequential self-read is valid");
+        assert_eq!(targets(&ordered), vec![("a".to_owned(), None)]);
     }
 
     #[test]
@@ -341,7 +494,8 @@ mod tests {
             assign("x", Some(1), read("x", Some(2))),
             assign("x", Some(2), read("x", Some(1))),
         ];
-        let error = order_by_dependencies(input).expect_err("cyclic reads must be rejected");
+        let error =
+            order_mixed_updates(input, Vec::new()).expect_err("cyclic reads must be rejected");
         assert!(
             error.to_string().contains("discrete-algebraic-loop")
                 || error.to_string().contains("discrete algebraic loop"),

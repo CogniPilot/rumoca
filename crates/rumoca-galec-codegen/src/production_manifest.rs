@@ -1,9 +1,9 @@
-//! Production Code manifest assembly for the `galec-production` eFMU export
+//! Production Code manifest assembly for the `efmi` eFMU export
 //! (SPEC_0034 GAL-024 conformant track).
 //!
 //! [`assemble_production_manifest`] builds the typed
 //! [`ProductionCodeManifest`] describing the generated C99 files of the
-//! shared `embedded-c-galec` layout, from **typed inputs only** — the
+//! shared `galec-c` layout, from **typed inputs only** — the
 //! Algorithm Code manifest UUID and ids come from the typed
 //! [`AlgorithmCodeManifest`], checksums arrive as [`Sha1Hex`] values computed
 //! by the caller over the exact rendered bytes (GAL-021: no placeholder

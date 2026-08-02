@@ -170,8 +170,8 @@ export async function diffsolAvailable(pkgBase) {
   return diffsolAddonAvailable(pkgBase);
 }
 
-// Render a GALEC codegen target (`galec` / `galec-production` /
-// `embedded-c-galec`) via the separate GALEC addon and return the
+// Render a GALEC codegen target (`galec` / `efmi` /
+// `galec-c`) via the separate GALEC addon and return the
 // presentation-ready `{ path, content }[]` file list. Mirrors
 // `renderDaeTextWithRuntime`, but the GALEC projection needs the flat model —
 // so it drives the addon's in-memory compile (which owns the projection)
@@ -190,7 +190,7 @@ export async function renderGalecCFromAlgWithRuntime({
   algSource,
   fileName = 'generated.alg',
   modelName = 'model',
-  target = 'embedded-c-galec',
+  target = 'galec-c',
 }) {
   return renderGalecCFromAlg(pkgBase, algSource, fileName, modelName, target);
 }

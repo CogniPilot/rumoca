@@ -1,11 +1,12 @@
-//! GALEC language module: array-native AST, conformant printer, builtin
-//! catalog, and diagnostics for the eFMI Algorithm Code language
+//! GALEC target-branch IR and language module: array-native AST, conformant
+//! printer, builtin catalog, and diagnostics for the eFMI Algorithm Code language
 //! (eFMI Standard 1.0.0 Beta 1, §3.2). See `spec/SPEC_0034_GALEC_EFMI_EXPORT.md`.
 //!
-//! This crate is a pure language module (SPEC_0034 GAL-010): it has no
-//! Rumoca IR, eFMI packaging, phase, or CLI dependencies. The projection
-//! from canonical DAE lives in `rumoca-galec-codegen`; container packaging
-//! lives in `rumoca-galec-codegen`'s `manifest_context`.
+//! This crate owns the GALEC IR but remains a pure language module
+//! (SPEC_0034 GAL-010): it has no dependencies on the shared Rumoca IR,
+//! eFMI packaging, phase, or CLI crates. The projection from finalized DAE
+//! lives in `rumoca-galec-codegen`; container packaging lives in
+//! `rumoca-galec-codegen`'s `manifest_context`.
 //!
 //! Module map:
 //!

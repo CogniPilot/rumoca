@@ -20,8 +20,8 @@
 /** The three GALEC codegen targets served by the addon (all ir = "dae"). */
 export const GALEC_TARGETS = Object.freeze([
   "galec",
-  "galec-production",
-  "embedded-c-galec",
+  "efmi",
+  "galec-c",
 ]);
 
 /** True iff `target` is one of the GALEC codegen targets. */
@@ -179,7 +179,7 @@ export async function renderGalecCFromAlg(
   algSource,
   fileName,
   modelName,
-  target = "embedded-c-galec",
+  target = "galec-c",
 ) {
   const addon = await requireGalecAddon(pkgBase);
   if (typeof addon.render_galec_c_from_alg !== "function") {
@@ -192,7 +192,7 @@ export async function renderGalecCFromAlg(
       String(algSource ?? ""),
       String(fileName || "generated.alg"),
       String(modelName || "model"),
-      String(target || "embedded-c-galec"),
+      String(target || "galec-c"),
     ),
     "render_galec_c_from_alg",
   );
@@ -221,7 +221,7 @@ export function galecResultToFiles(target, result) {
   // `model_identifier`.
   const base = String(result?.model_identifier || "model");
   const files = [{ path: `${base}.alg`, content: String(result?.alg ?? "") }];
-  if (target === "galec-production" || target === "embedded-c-galec") {
+  if (target === "efmi" || target === "galec-c") {
     files.push({ path: `${base}.h`, content: String(result?.c_header ?? "") });
     files.push({ path: `${base}.c`, content: String(result?.c_source ?? "") });
   }

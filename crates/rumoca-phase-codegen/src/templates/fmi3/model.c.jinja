@@ -1549,6 +1549,10 @@ FMI3_Export fmi3Status fmi3ExitInitializationMode(fmi3Instance instance) {
         m->state = modelError;
         return fmi3Error;
     }
+    /* Initialization converged: pre(v) must equal the accepted discrete state. */
+    memcpy(m->pre_z, m->z, sizeof(m->z));
+    memcpy(m->pre_m, m->m, sizeof(m->m));
+    snapshot_pre_parameters(m);
 
     /* Compute initial derivatives and outputs */
     compute_derivatives(m);
@@ -2490,7 +2494,7 @@ static fmi3Status iterate_event_discrete_update(ModelInstance* m) {
         compute_derivatives(m);
         if (m->evaluation_error) return fmi3Error;
         compute_event_indicators(m);
-        refresh_event_indicator_domains(m);
+        refresh_root_relation_memory(m);
 
         if (real_values_equal(old_z, m->z, N_DISCRETE_REAL) &&
             real_values_equal(old_m, m->m, N_DISCRETE_VAL) &&

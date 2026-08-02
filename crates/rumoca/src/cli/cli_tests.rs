@@ -477,6 +477,25 @@ fn compile_flag_separation_is_enforced() {
         ])
         .is_ok()
     );
+    let cli = Cli::try_parse_from([
+        "rumoca",
+        "compile",
+        "m.mo",
+        "--target",
+        "efmi",
+        "--template",
+        "alg=custom.alg.jinja",
+        "--template",
+        "c_source=custom.c.jinja",
+    ])
+    .expect("GALEC template overrides should parse");
+    let Commands::Compile(args) = cli.command else {
+        panic!("expected compile command");
+    };
+    assert_eq!(
+        args.templates,
+        ["alg=custom.alg.jinja", "c_source=custom.c.jinja"]
+    );
     // every <stage>-<format> dump value is accepted.
     for value in [
         "ast-mo",
@@ -663,6 +682,7 @@ fn compile_target_flat_modelica_uses_flat_template_context() {
         "flat-modelica",
         Some(output.path().to_path_buf()),
         None,
+        &[],
     )
     .expect("flat-modelica target should render");
 

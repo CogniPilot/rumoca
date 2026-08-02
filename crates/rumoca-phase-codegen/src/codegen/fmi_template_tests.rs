@@ -141,18 +141,26 @@ fn assert_snapshot_before_discrete_rows(target: &str, rendered: &str) {
 
 fn assert_fmi3_event_iteration_refreshes_relation_memory(rendered: &str) {
     let event_iteration = rendered
-        .rsplit("static fmi3Status iterate_event_discrete_update(ModelInstance* m) {")
-        .next()
+        .split("static fmi3Status iterate_event_discrete_update(ModelInstance* m) {")
+        .nth(1)
         .expect("FMI3 template should define event iteration");
-    let relation_memory_pos = event_iteration
+    let event_iteration = event_iteration
+        .split("static fmi3Status process_internal_root")
+        .next()
+        .expect("event iteration should end before internal-root processing");
+    let first_refresh_pos = event_iteration
         .find("refresh_root_relation_memory(m);")
-        .expect("FMI3 event iteration should refresh relation memory");
+        .expect("FMI3 event iteration should seed relation memory");
     let discrete_update_pos = event_iteration
         .find("compute_discrete_updates(m);")
         .expect("FMI3 event iteration should evaluate discrete rows");
+    let iteration_refresh_pos = event_iteration[discrete_update_pos..]
+        .find("refresh_root_relation_memory(m);")
+        .map(|position| discrete_update_pos + position)
+        .expect("FMI3 event iteration should refresh solver relation-memory slots");
     assert!(
-        relation_memory_pos < discrete_update_pos,
-        "FMI3 should refresh relation memory before evaluating discrete rows"
+        first_refresh_pos < discrete_update_pos && discrete_update_pos < iteration_refresh_pos,
+        "FMI3 should refresh relation memory before and during discrete iteration"
     );
 }
 
@@ -178,18 +186,28 @@ fn assert_fmi3_initial_updates_refresh_pre_params(rendered: &str) {
         .split("FMI3_Export fmi3Status fmi3ExitInitializationMode")
         .nth(1)
         .expect("FMI3 template should have an initialization exit");
+    let init = init
+        .split("FMI3_Export fmi3Status fmi3EnterConfigurationMode")
+        .next()
+        .expect("initialization exit should end before the next FMI entry point");
     let first_snapshot_pos = init
         .find("snapshot_pre_parameters(m);")
         .expect("FMI3 init should seed lowered pre parameters");
-    let compute_pos = init
-        .find("compute_discrete_updates(m);")
-        .expect("FMI3 init should evaluate initial discrete updates");
-    let second_snapshot_pos = init[compute_pos..]
+    let iterate_pos = init
+        .find("iterate_event_discrete_update(m)")
+        .expect("FMI3 init should iterate initial discrete updates");
+    let second_snapshot_pos = init[iterate_pos..]
         .find("snapshot_pre_parameters(m);")
-        .map(|pos| compute_pos + pos)
+        .map(|pos| iterate_pos + pos)
         .expect("FMI3 init should commit lowered pre parameters after updates");
     assert!(
-        first_snapshot_pos < compute_pos && compute_pos < second_snapshot_pos,
+        first_snapshot_pos < iterate_pos && iterate_pos < second_snapshot_pos,
         "FMI3 init should snapshot before and after initial discrete updates"
+    );
+    let converged_commit = &init[iterate_pos..second_snapshot_pos];
+    assert!(
+        converged_commit.contains("memcpy(m->pre_z, m->z, sizeof(m->z));")
+            && converged_commit.contains("memcpy(m->pre_m, m->m, sizeof(m->m));"),
+        "FMI3 init should commit converged z and m pre-values"
     );
 }

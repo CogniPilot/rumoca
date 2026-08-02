@@ -4,7 +4,7 @@
 //! Each target's `[[files]]` render through [`rumoca::render_target_files`] —
 //! the in-memory twin of `compile --target` — so CI exercises the exact CLI
 //! path: capability validation plus the name-dispatched renderers
-//! (`wgsl-solve`, `galec`, `embedded-c-galec`) that the generic DAE-JSON
+//! (`wgsl-solve`, `galec`, `galec-c`) that the generic DAE-JSON
 //! template context cannot reach. Targets that declare
 //! `continuous_states = false` (the GALEC-derived targets) render against a
 //! dedicated fixed-sample discrete fixture; every other target keeps the
@@ -130,12 +130,13 @@ equation
 end DiscreteSmoke;
 "#;
 
-fn template_ir(ir: TargetTemplateIr) -> TemplateIr {
+fn template_ir(ir: TargetTemplateIr) -> Option<TemplateIr> {
     match ir {
-        TargetTemplateIr::Dae => TemplateIr::Dae,
-        TargetTemplateIr::Solve => TemplateIr::Solve,
-        TargetTemplateIr::Flat => TemplateIr::Flat,
-        TargetTemplateIr::Ast => TemplateIr::Ast,
+        TargetTemplateIr::Dae => Some(TemplateIr::Dae),
+        TargetTemplateIr::Solve => Some(TemplateIr::Solve),
+        TargetTemplateIr::Flat => Some(TemplateIr::Flat),
+        TargetTemplateIr::Ast => Some(TemplateIr::Ast),
+        TargetTemplateIr::Galec => None,
     }
 }
 
@@ -650,7 +651,9 @@ fn render_support_templates(
     manifest: &TargetManifest,
     support_templates: &mut Vec<String>,
 ) {
-    let ir = template_ir(manifest.ir);
+    let Some(ir) = template_ir(manifest.ir) else {
+        return;
+    };
     let manifest_templates = manifest
         .files
         .iter()

@@ -1,6 +1,7 @@
 version = 1
-ir = "dae"
-name = "embedded-c-galec"
+ir = "galec"
+name = "galec-c"
+# Custom template quick reference: ../GALEC_CUSTOM_TEMPLATES.md
 # Conformance (SPEC_0034 GAL-024, two-track rule): this target is the
 # non-eFMI track — a GALEC-derived embedded C export that may exist
 # independently of any container. It is NOT an eFMI Production Code
@@ -18,7 +19,7 @@ This is a GALEC-derived embedded C export, NOT an eFMI Production Code
 container (SPEC_0034 GAL-024): no eFMU manifest mapping is emitted.
 Compile: cc -Wall -Werror -c {{ out_dir }}/{{ model_name }}.c"""
 
-# Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
+# Generic capability gates (SPEC_0034 GAL-006), copied verbatim from
 # the galec target: both consume the same DAE → GALEC projection, so
 # admissibility is identical. The gates run before any rendering; the
 # projection re-checks admissibility on the untouched DAE afterwards
@@ -40,16 +41,17 @@ reverse_ad = false
 dynamic_control_flow = false
 host_callbacks = false
 
-# D2/GAL-008 split: these templates own the C FILE LAYOUT only (includes,
-# guards, struct/function skeletons, the fixed builtin-helper prelude);
-# every C expression/statement and identifier is printed by the typed Rust
-# printer in rumoca-galec-codegen (c_mangle/c_print) and arrives pre-printed
-# in the template context (`variables[*].c_name`, `methods.*.c_lines`).
-# Templates stay thin — iteration and interpolation, no C syntax logic.
+# D2/GAL-008 split: Rust lowers to structured C codegen IR (collision-checked
+# names, typed variables, normalized scalar assignments); these templates own
+# every C token, expression, statement, declaration, and file-layout choice.
 [[files]]
+id = "c_header"
 path = "{{ model_name }}.h"
 template = "model.h.jinja"
+render_context = "galec-c"
 
 [[files]]
+id = "c_source"
 path = "{{ model_name }}.c"
 template = "model.c.jinja"
+render_context = "galec-c"

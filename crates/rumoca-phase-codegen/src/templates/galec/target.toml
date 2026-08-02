@@ -1,6 +1,7 @@
 version = 1
-ir = "dae"
+ir = "galec"
 name = "galec"
+# Custom template quick reference: ../GALEC_CUSTOM_TEMPLATES.md
 # Conformance ladder (SPEC_0034 GAL-021): this target earns rung 2, the
 # "eFMI Algorithm Code export" claim — a schema-valid eFMU container
 # (__content.xml + schemas/ + one Algorithm Code representation, SHA-1
@@ -10,7 +11,7 @@ name = "galec"
 # cli_target_galec.rs). The emitted GALEC also meets "GALEC language
 # conformance": it round-trip parses (print∘parse∘print idempotence,
 # rumoca-ir-galec tests/roundtrip.rs). "eFMI Production Code export" is the
-# galec-production target's claim, not this one's.
+# efmi target's claim, not this one's.
 description = "eFMI Algorithm Code export: eFMU container (__content.xml + schemas/ + Algorithm Code representation with Model.alg + manifest.xml) for fixed-sample discrete models, in directory and .efmu zip forms"
 execution_mode = "packaged"
 # deployment_class is the deployment FAMILY axis of `rumoca targets` (like
@@ -28,9 +29,9 @@ completion_message = """eFMI Algorithm Code eFMU written to: {{ out_dir }}
 Conformance: "eFMI Algorithm Code export" (SPEC_0034 GAL-021 rung 2) — schema-valid
 eFMU with SHA-1 checksums computed from the written bytes; the emitted GALEC also
 round-trip parses ("GALEC language conformance"). Not claimed by this target:
-eFMI Production Code export (see --target galec-production)."""
+eFMI Production Code export (see --target efmi)."""
 
-# Generic DAE capability gates (SPEC_0034 GAL-006). These run before any
+# Generic capability gates (SPEC_0034 GAL-006). These run before any
 # rendering; the GALEC projection re-checks admissibility on the untouched
 # DAE afterwards (GAL-004, additive) and owns the projection-scope wording
 # (GAL-025). Clocked when-edge updates are the target's core, so `events`
@@ -58,13 +59,13 @@ host_callbacks = false
 # declaration is the SOLE mechanism that installs the schemas: the generic
 # declarative build step (contract §4b) copies this bundle, and there is no
 # separate typed schema-install path — removing this bundle ships a schema-less
-# eFMU. (Matches galec-production/target.toml.)
+# eFMU. (Matches efmi/target.toml.)
 [[assets]]
 bundle = "efmi-schemas"
 dest = "schemas/"
 
-# `model.alg.jinja` is a passthrough of the typed GALEC printer output
-# (GAL-009 / D3); `manifest.xml.jinja` and `__content.xml.jinja` are the real
+# `model.alg.jinja` renders typed GALEC codegen context (GAL-009 / D3);
+# `manifest.xml.jinja` and `__content.xml.jinja` are the eFMI
 # eFMI manifest templates (contract §3, WI-2) that author every XML element
 # from the product-agnostic context — the typed serializers no longer emit
 # packaging XML (SPEC_0034 D3 amended). All three files render through the
@@ -82,11 +83,13 @@ dest = "schemas/"
 id = "alg"
 path = "AlgorithmCode/{{ model_name }}.alg"
 template = "model.alg.jinja"
+render_context = "galec-algorithm"
 
 [[files]]
 id = "ac_manifest"
 path = "AlgorithmCode/manifest.xml"
 template = "manifest.xml.jinja"
+render_context = "efmi-algorithm-manifest"
   # File/@checksum edge: the manifest embeds the SHA-1 of the `.alg` bytes.
   [[files.checksums]]
   of = "alg"
@@ -96,6 +99,7 @@ template = "manifest.xml.jinja"
 id = "content"
 path = "__content.xml"
 template = "__content.xml.jinja"
+render_context = "efmi-content"
   # ModelRepresentation/@checksum edge: __content.xml embeds the SHA-1 of the
   # Algorithm Code manifest bytes for the one registered representation.
   [[files.checksums]]

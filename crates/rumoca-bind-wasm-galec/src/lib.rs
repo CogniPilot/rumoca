@@ -41,8 +41,8 @@ pub fn init() {
 /// Modelica text (`{ "<path>": "<content>", … }`) — the SAME map the core
 /// binding compiles with, so a model spanning several files (imports, a
 /// library, a non-active file) projects to GALEC exactly as it compiles for
-/// every other target. `target` is one of `galec`, `galec-production`,
-/// `embedded-c-galec`.
+/// every other target. `target` is one of `galec`, `efmi`,
+/// `galec-c`.
 ///
 /// Success shape:
 /// ```json
@@ -194,8 +194,8 @@ fn render_galec_impl(
 mod tests {
     use super::*;
     use rumoca_compile::galec::{
-        EMBEDDED_C_GALEC_CONFORMANCE_LINES, EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET,
-        GALEC_TARGET, PRODUCTION_CONFORMANCE_LINES, PRODUCTION_CONFORMANCE_SUMMARY,
+        EFMI_TARGET, EMBEDDED_C_GALEC_CONFORMANCE_LINES, GALEC_C_TARGET, GALEC_TARGET,
+        PRODUCTION_CONFORMANCE_LINES, PRODUCTION_CONFORMANCE_SUMMARY,
     };
 
     /// Fixed-sample discrete model admissible for GALEC projection (mirrors
@@ -258,7 +258,7 @@ end GalecWasmDemo;
         let value = parse(&render_galec(
             &workspace("input.mo", DISCRETE_SOURCE),
             "GalecWasmDemo",
-            EMBEDDED_C_GALEC_TARGET,
+            GALEC_C_TARGET,
         ));
         assert_eq!(value["ok"], true, "{value}");
         let header = value["c_header"].as_str().expect("c_header string");
@@ -276,7 +276,7 @@ end GalecWasmDemo;
         let value = parse(&render_galec(
             &workspace("input.mo", DISCRETE_SOURCE),
             "GalecWasmDemo",
-            GALEC_PRODUCTION_TARGET,
+            EFMI_TARGET,
         ));
         assert_eq!(value["ok"], true, "{value}");
         let header = value["c_header"].as_str().expect("c_header string");
@@ -372,7 +372,7 @@ end GalecWasmDemo;
             alg,
             "GalecWasmDemo.alg",
             "GalecWasmDemo",
-            EMBEDDED_C_GALEC_TARGET,
+            GALEC_C_TARGET,
         ));
         assert_eq!(c["ok"], true, "{c}");
         assert!(

@@ -19,10 +19,9 @@
 //!    is proven assemblable before the package is returned.
 //!
 //! The fields are public so the eFMU emission layer can read them, and the
-//! rendering facades re-run the GALEC validator on the block
-//! ([`crate::emit::render_algorithm_code`] /
-//! `render_algorithm_code`): a package assembled or mutated
-//! outside the lowering entry point cannot print un-validated GALEC.
+//! template-context facades re-run the GALEC validator on the block: a
+//! package assembled or mutated outside the lowering entry point cannot
+//! reach a code-generation template unvalidated.
 //!
 //! The package never aliases or mutates the input DAE; it owns its data.
 //!

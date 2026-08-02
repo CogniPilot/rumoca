@@ -1,4 +1,4 @@
-//! End-to-end CLI coverage for `rumoca compile --target galec-production`
+//! End-to-end CLI coverage for `rumoca compile --target efmi`
 //! (SPEC_0034 GAL-021/GAL-024 conformant track, contract rows E1-E8).
 //!
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
@@ -244,8 +244,8 @@ int main(void) {
 }
 ";
 
-fn run_compile_galec_production(file: &Path, out_dir: &Path) -> Output {
-    run_compile_target(file, "galec-production", out_dir)
+fn run_compile_efmi(file: &Path, out_dir: &Path) -> Output {
+    run_compile_target(file, "efmi", out_dir)
 }
 
 /// One packaged two-representation eFMU produced by a real CLI run.
@@ -336,10 +336,10 @@ fn corrupted_production_code_manifest_is_rejected_by_the_xsd() {
 /// paths, failing loudly on any CLI error.
 fn build_container(work_dir: &Path, out_dir: &Path) -> BuiltContainer {
     let file = write_fixture(work_dir, MODEL, DISCRETE_FIXTURE);
-    let output = run_compile_galec_production(&file, out_dir);
+    let output = run_compile_efmi(&file, out_dir);
     assert!(
         output.status.success(),
-        "`compile --target galec-production` failed (status {:?}).\nstdout:\n{}\nstderr:\n{}",
+        "`compile --target efmi` failed (status {:?}).\nstdout:\n{}\nstderr:\n{}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -357,7 +357,7 @@ fn algebraic_component_output_read_by_sampled_parent_compiles() {
     let out_dir = dir.path().join("out");
     let model = "GalecProdAlgebraicComponent";
     let file = write_fixture(dir.path(), model, ALGEBRAIC_COMPONENT_FIXTURE);
-    let output = run_compile_galec_production(&file, &out_dir);
+    let output = run_compile_efmi(&file, &out_dir);
     assert!(
         output.status.success(),
         "algebraic component output should not leave residual continuous equations.\nstdout:\n{}\nstderr:\n{}",
@@ -374,7 +374,7 @@ fn inline_helpers_vector_return_and_row_slice_compile() {
     let out_dir = dir.path().join("out");
     let model = "GalecProdHelperIdioms";
     let file = write_fixture(dir.path(), model, HELPER_IDIOMS_FIXTURE);
-    let output = run_compile_galec_production(&file, &out_dir);
+    let output = run_compile_efmi(&file, &out_dir);
     assert!(
         output.status.success(),
         "GALEC production target should compile inline scalar helpers, \
@@ -406,7 +406,7 @@ fn unsupported_galec_projection_diagnostic_points_at_source_expression() {
     let out_dir = dir.path().join("out");
     let model = "GalecProdUnsupportedBuiltin";
     let file = write_fixture(dir.path(), model, UNSUPPORTED_GALEC_BUILTIN_FIXTURE);
-    let output = run_compile_galec_production(&file, &out_dir);
+    let output = run_compile_efmi(&file, &out_dir);
     assert!(
         !output.status.success(),
         "unsupported GALEC builtin should be rejected"
@@ -547,7 +547,7 @@ fn mask_element_scoped_attribute(text: &str, element: &str, attribute: &str) -> 
 /// directory form and all three XML documents validate against the
 /// vendored XSDs.
 #[test]
-fn compile_target_galec_production_emits_schema_valid_two_representation_efmu() {
+fn compile_target_efmi_emits_schema_valid_two_representation_efmu() {
     let dir = tempdir().expect("tempdir");
     let out_dir = dir.path().join("out");
     let container = build_container(dir.path(), &out_dir);
@@ -1054,7 +1054,7 @@ fn foreign_directory_at_container_path_is_refused_with_remedy() {
     fs::write(&keep, b"user data").expect("write foreign file");
 
     let file = write_fixture(dir.path(), MODEL, DISCRETE_FIXTURE);
-    let output = run_compile_galec_production(&file, &out_dir);
+    let output = run_compile_efmi(&file, &out_dir);
     assert!(
         !output.status.success(),
         "packaging over a foreign directory must fail.\nstdout:\n{}",
@@ -1164,15 +1164,15 @@ fn export_claims_the_production_code_rung_and_names_the_conformance_surface() {
 /// Row E7: the continuous fixture is rejected by the generic capability
 /// gate (GAL-006) before any output exists.
 #[test]
-fn compile_target_galec_production_rejects_continuous_model_before_any_output() {
+fn compile_target_efmi_rejects_continuous_model_before_any_output() {
     let dir = tempdir().expect("tempdir");
     let file = write_fixture(dir.path(), "GalecProdCliContinuous", CONTINUOUS_FIXTURE);
     let out_dir = dir.path().join("out");
 
-    let output = run_compile_galec_production(&file, &out_dir);
+    let output = run_compile_efmi(&file, &out_dir);
     assert!(
         !output.status.success(),
-        "`compile --target galec-production` must fail for a continuous model.\nstdout:\n{}",
+        "`compile --target efmi` must fail for a continuous model.\nstdout:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -1189,7 +1189,7 @@ fn compile_target_galec_production_rejects_continuous_model_before_any_output() 
 
 /// Row E8: `rumoca targets` lists the target.
 #[test]
-fn targets_listing_includes_galec_production() {
+fn targets_listing_includes_efmi() {
     let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
         .arg("targets")
         .output()
@@ -1201,7 +1201,7 @@ fn targets_listing_includes_galec_production() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        stdout.contains("galec-production"),
-        "`rumoca targets` must list the galec-production target:\n{stdout}"
+        stdout.contains("efmi"),
+        "`rumoca targets` must list the efmi target:\n{stdout}"
     );
 }

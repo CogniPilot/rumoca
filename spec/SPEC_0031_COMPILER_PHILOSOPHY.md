@@ -31,7 +31,9 @@ crate layout.
 ### Pipeline
 
 ```
-Modelica → parse → resolve → flatten → DAE → (optional) solve → execution / animation
+Modelica → parse → resolve → flatten → DAE
+                                      ├→ Solve IR → execution / animation
+                                      └→ GALEC IR → eFMI code generation
 ```
 
 The **core compiler scope ends at DAE generation.** Everything downstream is

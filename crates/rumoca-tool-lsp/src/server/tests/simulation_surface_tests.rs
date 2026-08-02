@@ -722,7 +722,7 @@ fn render_target_command_renders_galec_embedded_c_from_compiled_model() {
                 arguments: vec![serde_json::json!({
                     "uri": Url::from_file_path(&focus).expect("file uri").to_string(),
                     "model": "Sampler",
-                    "target": "embedded-c-galec",
+                    "target": "galec-c",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })

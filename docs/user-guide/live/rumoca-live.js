@@ -35,7 +35,7 @@
     const SERIES_COLORS = [
         '#2470c2', '#d94f30', '#2c9462', '#9356c8', '#c8842c', '#3aa0ab',
     ];
-    const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+    const GALEC_CODEGEN_TARGETS = new Set(['galec', 'efmi', 'galec-c']);
     const MAX_PLOT_SERIES = 6;
     const MAX_EDITOR_LINES = 28;
     const DIAGNOSTIC_DEBOUNCE_MS = 400;
@@ -486,7 +486,7 @@ import {
     renderGalecFilesWithRuntime,
     simulateModelWithRuntime,
 } from '${pkgBase}rumoca_runtime.js';
-const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+const GALEC_CODEGEN_TARGETS = new Set(['galec', 'efmi', 'galec-c']);
 const ready = init();
 self.onmessage = async (event) => {
     const { id, action, args } = event.data;
@@ -2326,9 +2326,9 @@ self.onmessage = async (event) => {
         }
 
         function galecCGenerationTarget(target) {
-            return target === 'galec-production' || target === 'embedded-c-galec'
+            return target === 'efmi' || target === 'galec-c'
                 ? target
-                : 'embedded-c-galec';
+                : 'galec-c';
         }
 
         async function generateCFromAlg(generatedEditor, algPath, configuredTarget, button) {
@@ -3553,9 +3553,9 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         }
 
         function galecCGenerationTarget(target) {
-            return target === 'galec-production' || target === 'embedded-c-galec'
+            return target === 'efmi' || target === 'galec-c'
                 ? target
-                : 'embedded-c-galec';
+                : 'galec-c';
         }
 
         async function generateCFromAlg(generatedEditor, algPath, configuredTarget, button) {

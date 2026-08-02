@@ -5,7 +5,14 @@ use rumoca_ir_dae::Dae;
 
 pub(crate) fn structural_scalar_bindings(dae: &Dae) -> HashMap<String, f64> {
     let mut bindings = HashMap::new();
-    for _ in 0..dae.variables.parameters.len().max(1) {
+    let candidate_count = dae.variables.constants.len()
+        + dae
+            .variables
+            .parameters
+            .values()
+            .filter(|variable| !variable.is_tunable)
+            .count();
+    for _ in 0..candidate_count.max(1) {
         let before = bindings.len();
         for (name, var) in dae.variables.constants.iter().chain(
             dae.variables
@@ -138,5 +145,38 @@ mod tests {
 
         assert_eq!(bindings.get("p"), Some(&3.0));
         assert_eq!(eval_static_number(&reference, &bindings), Some(3.0));
+    }
+
+    #[test]
+    fn forward_constant_chain_reaches_closure_without_parameters() {
+        let mut dae = Dae::new();
+        for (name, start) in [
+            ("c", reference("b")),
+            ("b", reference("a")),
+            (
+                "a",
+                Expression::Literal {
+                    value: Literal::Real(1.0),
+                    span: Span::DUMMY,
+                },
+            ),
+        ] {
+            let mut constant = Variable::new(VarName::new(name), Span::DUMMY);
+            constant.start = Some(start);
+            dae.variables.constants.insert(VarName::new(name), constant);
+        }
+
+        let bindings = structural_scalar_bindings(&dae);
+        assert_eq!(bindings.get("a"), Some(&1.0));
+        assert_eq!(bindings.get("b"), Some(&1.0));
+        assert_eq!(bindings.get("c"), Some(&1.0));
+    }
+
+    fn reference(name: &str) -> Expression {
+        Expression::VarRef {
+            name: Reference::new(name),
+            subscripts: Vec::new(),
+            span: Span::DUMMY,
+        }
     }
 }

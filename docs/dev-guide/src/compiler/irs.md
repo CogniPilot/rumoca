@@ -1,9 +1,15 @@
-# The Four IRs
+# The IR Graph
 
-Each IR is a serializable data structure crate (`rumoca-ir-*`) with a
-schema version. This chapter says what each one *is for*; the binding
-contracts live in
+Rumoca first lowers Modelica through AST, Flat, and DAE. Finalized DAE then
+branches into consumer-specific IRs: Solve for numerical execution and GALEC
+for eFMI Algorithm Code and derived Production Code. This chapter says what
+each IR is for; the binding contracts live in
 [SPEC_0007](https://github.com/CogniPilot/rumoca/blob/main/spec/SPEC_0007_IR_PIPELINE.md).
+
+```text
+AST → Flat → DAE ─┬→ Solve
+                  └→ GALEC
+```
 
 ## AST (`rumoca-ir-ast`)
 
@@ -72,8 +78,25 @@ directly, choosing scalar expansion or native tensor kernels.
 
 Dump it: `--emit solve-json` (there is no Modelica rendering of Solve).
 
+## GALEC (`rumoca-ir-galec`)
+
+The target-independent eFMI Algorithm Code IR: a validated sampled block with
+declarations, functions, error signals, and the mandatory `Startup`,
+`Recalibrate`, and `DoStep` methods. `rumoca-galec-codegen` projects it directly
+from finalized DAE as an `AlgorithmCodePackage`.
+
+The GALEC Block has two sibling consumers:
+
+- MiniJinja renders it as the `.alg` Algorithm Code representation.
+- C lowering derives a structured template context from the same Block and
+  renders the `.h`/`.c` Production Code representation.
+
+GALEC is also a language AST for parsing, validation, formatting, and LSP
+tooling. It is selected through the GALEC/eFMI targets rather than `--emit`.
+
 ## Schema Versions
 
-Serialized DAE and Solve payloads carry a mandatory root `schema_version`;
-deserializers reject unsupported versions. The policy is in
+Serialized DAE and Solve payloads carry a mandatory root `schema_version`.
+GALEC source has its own language grammar and validator. The shared IR schema
+policy is in
 [IR Schema Versioning](../schema-versioning.md).

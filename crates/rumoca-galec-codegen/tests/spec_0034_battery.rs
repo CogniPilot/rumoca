@@ -986,15 +986,20 @@ mod array_vector_regressions {
         let whole = render_algorithm_code(&whole_package).expect("whole vector render");
         assert!(whole.contains("self.y := self.a - self.b;"), "{whole}");
 
-        let c_lines = production_c_lines(&whole_package);
-        assert!(
-            c_lines.contains("self->y[0]") && c_lines.contains("(self->a[0] - self->b[0])"),
-            "{c_lines}"
-        );
-        assert!(
-            !c_lines.contains("self->y ="),
-            "C arrays must be assigned element-wise:\n{c_lines}"
-        );
+        let context = c_template_context(&whole_package, "Battery").expect("C context");
+        let assignments = context["methods"]["do_step"]
+            .as_array()
+            .expect("structured assignments");
+        assert_eq!(assignments.len(), 3, "{assignments:#?}");
+        for (index, assignment) in assignments.iter().enumerate() {
+            assert_eq!(assignment["kind"], "assign");
+            assert_eq!(assignment["target"]["name"], "y");
+            assert_eq!(assignment["target"]["indices"][0]["value"], index);
+            assert_eq!(assignment["value"]["kind"], "binary");
+            assert_eq!(assignment["value"]["operator"], "sub");
+            assert_eq!(assignment["value"]["lhs"]["reference"]["name"], "a");
+            assert_eq!(assignment["value"]["rhs"]["reference"]["name"], "b");
+        }
 
         let scalarized = render_algorithm_code(&lower(
             &vector_model(index(
@@ -1320,25 +1325,6 @@ mod array_vector_regressions {
             span: Span::DUMMY,
         });
         model.symbols.functions.insert(split.name.clone(), split);
-    }
-
-    fn production_c_lines(package: &AlgorithmCodePackage) -> String {
-        let context = c_template_context(package, "Battery").expect("C context");
-        ["startup", "recalibrate", "do_step"]
-            .into_iter()
-            .flat_map(|method| {
-                context["methods"][method]
-                    .as_array()
-                    .expect("method statements are an array")
-            })
-            .flat_map(|statement| {
-                statement["c_lines"]
-                    .as_array()
-                    .expect("statement c_lines are an array")
-            })
-            .map(|line| line.as_str().expect("C line is a string").to_owned())
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
 

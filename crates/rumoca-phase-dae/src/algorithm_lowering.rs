@@ -11,6 +11,7 @@ mod guarded_expr;
 mod overlapping_array_assignments;
 mod rewrite_discrete;
 mod slice_lowering;
+mod structured;
 mod substitution;
 mod target_names;
 use alias_canonicalization::{
@@ -1953,6 +1954,9 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
     for algorithm in &flat.algorithms {
         match lower_algorithm_to_equations(dae, flat, algorithm, false) {
             Ok(lowered) => {
+                dae.algorithms
+                    .model
+                    .push(structured::structured_dae_algorithm(algorithm, flat)?);
                 dae.continuous.equations.extend(lowered.main);
                 dae.discrete.real_updates.extend(lowered.f_z);
                 dae.discrete.valued_updates.extend(lowered.f_m);
@@ -1970,12 +1974,12 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
     for algorithm in &flat.initial_algorithms {
         match lower_algorithm_to_equations(dae, flat, algorithm, true) {
             Ok(lowered) => {
+                dae.algorithms
+                    .initial
+                    .push(structured::structured_dae_algorithm(algorithm, flat)?);
                 dae.initialization.equations.extend(lowered.main);
-                // MLS §8.6 and §11.1: initial algorithms contribute equations
-                // to the initialization problem. Discrete targets still use
-                // the same Appendix B solved forms as model algorithms, but
-                // they must initialize here rather than populate runtime event
-                // update partitions.
+                // MLS §8.6/§11.1: initialize the Appendix B solved forms here,
+                // rather than populating the runtime event-update partitions.
                 dae.initialization.equations.extend(lowered.f_z);
                 dae.initialization.equations.extend(lowered.f_m);
             }

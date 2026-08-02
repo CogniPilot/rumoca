@@ -1,7 +1,7 @@
 //! GALEC embedded-C vs Rumoca-evaluation equivalence harness (roadmap
 //! Phase 7 — Runtime and Conformance).
 //!
-//! Each fixture is compiled with `--target embedded-c-galec`; the generated
+//! Each fixture is compiled with `--target galec-c`; the generated
 //! C is compiled (`cc -Wall -Werror`), linked (`-lm`), and run through a
 //! per-fixture driver that prints every compared block output as one CSV
 //! line per `dostep` tick. The same fixture is evaluated in-process by
@@ -80,14 +80,14 @@ fn value_at(sim: &SimResult, name: &str, t: f64) -> f64 {
     held
 }
 
-/// Compile a fixture with `--target embedded-c-galec` into `out_dir`, failing
+/// Compile a fixture with `--target galec-c` into `out_dir`, failing
 /// loudly on any CLI error. Asserts the `<Model>.h` / `<Model>.c` pair exists.
 fn compile_embedded_c(work_dir: &Path, out_dir: &Path, model: &str, source: &str) {
     let file = cli_support::write_fixture(work_dir, model, source);
-    let output = cli_support::run_compile_target(&file, "embedded-c-galec", out_dir);
+    let output = cli_support::run_compile_target(&file, "galec-c", out_dir);
     assert!(
         output.status.success(),
-        "`compile --target embedded-c-galec` failed for {model} (status {:?}).\nstderr:\n{}",
+        "`compile --target galec-c` failed for {model} (status {:?}).\nstderr:\n{}",
         output.status.code(),
         cli_support::strip_ansi(&String::from_utf8_lossy(&output.stderr))
     );

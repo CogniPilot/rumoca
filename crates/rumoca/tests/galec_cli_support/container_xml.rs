@@ -1,5 +1,5 @@
 //! Shared eFMU-container XML inspection helpers for the packaging suites
-//! (`cli_target_galec.rs`, `cli_target_galec_production.rs`).
+//! (`cli_target_galec.rs`, `cli_target_efmi.rs`).
 //!
 //! Included per suite via `#[path = "galec_cli_support/container_xml.rs"]`
 //! — see `galec_cli_support/cli.rs` for the include-pattern rationale.

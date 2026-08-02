@@ -142,8 +142,8 @@ required-features = ["fmu-packaging"]
 # Same FMU packaging surface as cli_target_galec, for the
 # two-representation (AlgorithmCode + ProductionCode) container.
 [[test]]
-name = "cli_target_galec_production"
-path = "tests/cli_target_galec_production.rs"
+name = "cli_target_efmi"
+path = "tests/cli_target_efmi.rs"
 required-features = ["fmu-packaging"]
 
 [dev-dependencies]

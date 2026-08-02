@@ -293,6 +293,17 @@ pub struct CompileArgs {
     #[arg(long, value_name = "TARGET")]
     pub target: Option<String>,
 
+    /// Override one template in a manifest target as FILE_ID=PATH. Repeat to
+    /// override multiple files. With no override, the target's built-in
+    /// templates are used.
+    #[arg(
+        long = "template",
+        value_name = "FILE_ID=PATH",
+        action = ArgAction::Append,
+        requires = "target"
+    )]
+    pub templates: Vec<String>,
+
     /// Pick which IR a raw template `--target` receives (default dae). Only
     /// meaningful when --target is a `.jinja` file, e.g. `--target my.jinja
     /// --phase flat`.
@@ -1033,6 +1044,7 @@ fn run_compile(args: CompileArgs) -> Result<()> {
             &target,
             args.output,
             args.phase.map(TemplateIr::from),
+            &args.templates,
         ),
         // Neither: just report the compilation summary. There is no artifact to
         // write here, so `--output` would be a silent no-op — reject it instead

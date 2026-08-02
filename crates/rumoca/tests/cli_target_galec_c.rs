@@ -1,4 +1,4 @@
-//! End-to-end CLI coverage for `rumoca compile --target embedded-c-galec`
+//! End-to-end CLI coverage for `rumoca compile --target galec-c`
 //! (SPEC_0034 GAL-011/GAL-012/GAL-024).
 //!
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
@@ -76,18 +76,18 @@ int main(void) {
 }
 ";
 
-fn run_compile_embedded_c_galec(file: &Path, out_dir: &Path) -> Output {
-    run_compile_target(file, "embedded-c-galec", out_dir)
+fn run_compile_galec_c(file: &Path, out_dir: &Path) -> Output {
+    run_compile_target(file, "galec-c", out_dir)
 }
 
 /// Compile the discrete fixture into `out_dir`, failing loudly on any CLI
 /// error, and return the CLI stderr for message assertions.
 fn build_sources(work_dir: &Path, out_dir: &Path) -> String {
     let file = write_fixture(work_dir, MODEL, DISCRETE_FIXTURE);
-    let output = run_compile_embedded_c_galec(&file, out_dir);
+    let output = run_compile_galec_c(&file, out_dir);
     assert!(
         output.status.success(),
-        "`compile --target embedded-c-galec` failed (status {:?}).\nstdout:\n{}\nstderr:\n{}",
+        "`compile --target galec-c` failed (status {:?}).\nstdout:\n{}\nstderr:\n{}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -182,10 +182,10 @@ fn continuous_model_is_rejected_by_the_capability_gate() {
     let file = write_fixture(dir.path(), "EmbeddedGalecContinuous", CONTINUOUS_FIXTURE);
     let out_dir = dir.path().join("out");
 
-    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    let output = run_compile_galec_c(&file, &out_dir);
     assert!(
         !output.status.success(),
-        "`compile --target embedded-c-galec` must fail for a continuous model.\nstdout:\n{}",
+        "`compile --target galec-c` must fail for a continuous model.\nstdout:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -201,7 +201,7 @@ fn continuous_model_is_rejected_by_the_capability_gate() {
 }
 
 #[test]
-fn targets_listing_includes_embedded_c_galec() {
+fn targets_listing_includes_galec_c() {
     let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
         .arg("targets")
         .output()
@@ -213,7 +213,7 @@ fn targets_listing_includes_embedded_c_galec() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        stdout.contains("embedded-c-galec"),
-        "`rumoca targets` must list the embedded-c-galec target:\n{stdout}"
+        stdout.contains("galec-c"),
+        "`rumoca targets` must list the galec-c target:\n{stdout}"
     );
 }

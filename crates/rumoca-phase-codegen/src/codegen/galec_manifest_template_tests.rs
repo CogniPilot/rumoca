@@ -1,8 +1,8 @@
 //! Render tests for the real eFMI manifest jinja templates (WI-2).
 //!
-//! These are the shipping `galec-production` manifest templates
-//! (`src/templates/galec-production/`), which the switch-dispatch build step
-//! renders for the `galec`/`galec-production` targets (contract §9 WI-5; the
+//! These are the shipping `efmi` manifest templates
+//! (`src/templates/efmi/`), which the switch-dispatch build step
+//! renders for the `galec`/`efmi` targets (contract §9 WI-5; the
 //! AC-only `galec` target ships a byte-identical copy as `manifest.xml.jinja`).
 //! They are loaded here with `include_str!` and rendered through the shared
 //! [`create_environment`] (which registers the `xml_escape` / `xs_double`
@@ -18,13 +18,15 @@
 use super::*;
 use serde_json::json;
 
-const AC_TEMPLATE: &str = include_str!("../templates/galec-production/ac_manifest.xml.jinja");
-const PC_TEMPLATE: &str = include_str!("../templates/galec-production/pc_manifest.xml.jinja");
-const CONTENT_TEMPLATE: &str = include_str!("../templates/galec-production/__content.xml.jinja");
+const AC_TEMPLATE: &str = include_str!("../templates/efmi/ac_manifest.xml.jinja");
+const PC_TEMPLATE: &str = include_str!("../templates/efmi/pc_manifest.xml.jinja");
+const CONTENT_TEMPLATE: &str = include_str!("../templates/efmi/__content.xml.jinja");
+const GALEC_C_MODEL_TEMPLATE: &str = include_str!("../templates/galec-c/model.c.jinja");
+const GALEC_MODEL_TEMPLATE: &str = include_str!("../templates/galec/model.alg.jinja");
 
 /// The AC-only `galec` target ships its own copy of the Algorithm Code
 /// manifest template (each `target.toml` bundle is self-contained). It must
-/// stay byte-identical to the `galec-production` copy this file validates, so
+/// stay byte-identical to the `efmi` copy this file validates, so
 /// the equivalence proof here covers both — a divergence is a drift bug.
 const GALEC_AC_TEMPLATE: &str = include_str!("../templates/galec/manifest.xml.jinja");
 const GALEC_CONTENT_TEMPLATE: &str = include_str!("../templates/galec/__content.xml.jinja");
@@ -34,13 +36,117 @@ fn galec_and_galec_production_share_identical_manifest_templates() {
     assert_eq!(
         GALEC_AC_TEMPLATE, AC_TEMPLATE,
         "galec/manifest.xml.jinja must stay byte-identical to \
-         galec-production/ac_manifest.xml.jinja"
+         efmi/ac_manifest.xml.jinja"
     );
     assert_eq!(
         GALEC_CONTENT_TEMPLATE, CONTENT_TEMPLATE,
         "galec/__content.xml.jinja must stay byte-identical to \
-         galec-production/__content.xml.jinja"
+         efmi/__content.xml.jinja"
     );
+}
+
+#[test]
+fn galec_c_template_renders_statement_if_as_blocks_and_expression_if_as_ternary() {
+    let reference = |name: &str| json!({"name": name, "indices": []});
+    let context = json!({
+        "model_name": "StructuredIf",
+        "block_name": "StructuredIf",
+        "struct_name": "StructuredIfState",
+        "function_prefix": "StructuredIf",
+        "include_guard": "STRUCTUREDIF_GALEC_C_H",
+        "conformance_header": {"summary": "Conformance test."},
+        "variables": [],
+        "methods": {
+            "startup": [],
+            "recalibrate": [],
+            "do_step": [{
+                "kind": "if",
+                "branches": [{
+                    "condition": {"kind": "ref", "reference": reference("reset")},
+                    "body": [{
+                        "kind": "assign",
+                        "target": reference("x"),
+                        "value": {
+                            "kind": "if",
+                            "branches": [{
+                                "condition": {"kind": "ref", "reference": reference("positive")},
+                                "value": {"kind": "real", "literal": "2.0", "negative": false}
+                            }],
+                            "else_value": {"kind": "real", "literal": "3.0", "negative": false}
+                        }
+                    }]
+                }],
+                "else_body": [{
+                    "kind": "assign",
+                    "target": reference("x"),
+                    "value": {"kind": "real", "literal": "0.0", "negative": false}
+                }]
+            }]
+        }
+    });
+    let environment = create_environment();
+    let rendered = environment
+        .render_str(
+            GALEC_C_MODEL_TEMPLATE,
+            minijinja::Value::from_serialize(&context),
+        )
+        .expect("render GALEC C template");
+
+    assert!(rendered.contains("if (self->reset) {"), "{rendered}");
+    assert!(
+        rendered.contains("self->x = (self->positive ? 2.0 : 3.0);"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("else {"), "{rendered}");
+}
+
+#[test]
+fn galec_template_renders_statement_if_as_block_and_expression_if_inline() {
+    let reference = |name: &str| {
+        json!({
+            "scope": "state",
+            "parts": [{"name": {"kind": "ident", "value": name}, "subscripts": []}]
+        })
+    };
+    let context = json!({
+        "name": {"kind": "ident", "value": "StructuredIf"},
+        "interface": [],
+        "protected": [],
+        "methods": [{
+            "name": "DoStep",
+            "statements": [{
+                "kind": "if",
+                "branches": [{
+                    "condition": {"kind": "ref", "reference": reference("reset")},
+                    "body": [{
+                        "kind": "assignment",
+                        "target": reference("x"),
+                        "value": {
+                            "kind": "if",
+                            "branches": [{
+                                "condition": {"kind": "ref", "reference": reference("positive")},
+                                "value": {"kind": "real", "literal": "2.0"}
+                            }],
+                            "else_value": {"kind": "real", "literal": "3.0"}
+                        }
+                    }]
+                }],
+                "else_body": [{
+                    "kind": "assignment",
+                    "target": reference("x"),
+                    "value": {"kind": "real", "literal": "0.0"}
+                }]
+            }]
+        }]
+    });
+    let rendered = render(GALEC_MODEL_TEMPLATE, context);
+
+    assert!(rendered.contains("if self.reset then"), "{rendered}");
+    assert!(
+        rendered.contains("self.x := (if self.positive then 2.0 else 3.0);"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("end if;"), "{rendered}");
 }
 
 fn render(template: &str, ctx: serde_json::Value) -> String {
