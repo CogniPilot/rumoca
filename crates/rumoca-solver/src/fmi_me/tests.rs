@@ -347,6 +347,32 @@ fn rejected_lifecycle_transitions_leave_the_legal_path_available() {
 }
 
 #[test]
+fn discrete_update_reports_the_complete_fmi_output_set() {
+    let mut model = harmonic_oscillator();
+    model.problem.events.scheduled_time_events = vec![0.5];
+    let mut kernel = instantiate(&model);
+
+    kernel
+        .enter_initialization_mode()
+        .expect("enter initialization");
+    kernel
+        .exit_initialization_mode()
+        .expect("exit initialization");
+    let discrete = kernel
+        .update_discrete_states()
+        .expect("initial discrete update");
+
+    assert!(!discrete.discrete_states_need_update);
+    assert!(discrete.terminate_simulation.is_none());
+    assert!(discrete.values_of_continuous_states_changed);
+    assert!(!discrete.nominals_of_continuous_states_changed);
+    assert_eq!(
+        discrete.next_event_time.map(f64::to_bits),
+        Some(0.5f64.to_bits())
+    );
+}
+
+#[test]
 fn terminated_is_fail_closed_until_snapshot_restore() {
     let model = harmonic_oscillator();
     let mut kernel = instantiate(&model);

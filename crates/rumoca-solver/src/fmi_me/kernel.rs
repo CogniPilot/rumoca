@@ -1152,6 +1152,7 @@ impl SolveMeKernel {
     }
 
     fn run_initial_event_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
+        let event_time = self.time;
         let mut solver_y = self
             .settled_initialization_y
             .take()
@@ -1203,14 +1204,12 @@ impl SolveMeKernel {
             .iter()
             .map(|observation| observation_from_initial_event(observation, &self.instance_brand))
             .collect();
-        self.record_event_action_outcome(outcome.action, outcome.final_t)?;
+        self.record_event_action_outcome(outcome.action, event_time)?;
         self.initial_event_pending = false;
-        Ok(MeDiscreteStates {
-            discrete_states_need_update: false,
-            terminate_simulation: self.termination.clone(),
-            values_of_continuous_states_changed: true,
-            time: self.time,
-        })
+        let right_limit = (outcome.final_t > event_time).then_some(outcome.final_t);
+        self.time = event_time;
+        self.set_post_event_eval_time(right_limit);
+        self.discrete_states_after_update(true)
     }
 
     fn run_runtime_event_boundary(
@@ -1278,12 +1277,7 @@ impl SolveMeKernel {
                     self.clear_runtime_caches();
                 }
                 self.coincident_state_time_event = false;
-                Ok(MeDiscreteStates {
-                    discrete_states_need_update: false,
-                    terminate_simulation: self.termination.clone(),
-                    values_of_continuous_states_changed: true,
-                    time: self.time,
-                })
+                self.discrete_states_after_update(true)
             }
             MeEventCause::TimeEvent => {
                 self.advance_state_to_event_right_limit = true;
@@ -1305,14 +1299,33 @@ impl SolveMeKernel {
                 self.set_post_event_eval_time(outcome.right_limit_t);
                 self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
                 self.clear_runtime_caches();
-                Ok(MeDiscreteStates {
-                    discrete_states_need_update: false,
-                    terminate_simulation: self.termination.clone(),
-                    values_of_continuous_states_changed: true,
-                    time: self.time,
-                })
+                self.discrete_states_after_update(true)
             }
         }
+    }
+
+    /// Build the exact `fmi3UpdateDiscreteStates` output set after the event
+    /// iteration has settled. Time remains importer-owned; the next scheduled
+    /// event is announced here rather than exposed through a second component
+    /// scheduling operation.
+    fn discrete_states_after_update(
+        &mut self,
+        values_of_continuous_states_changed: bool,
+    ) -> Result<MeDiscreteStates, MeError> {
+        let next_event_time = if self.termination.is_some() || self.time >= self.stop_time {
+            self.pending_event_stop = None;
+            None
+        } else {
+            let stop = self.next_event_stop_inner(self.stop_time)?;
+            stop.is_event.then_some(stop.time)
+        };
+        Ok(MeDiscreteStates {
+            discrete_states_need_update: false,
+            terminate_simulation: self.termination.clone(),
+            values_of_continuous_states_changed,
+            nominals_of_continuous_states_changed: false,
+            next_event_time,
+        })
     }
 }
 

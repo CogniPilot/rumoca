@@ -65,9 +65,6 @@
 //!   iteration can produce several observation points at and after
 //!   `startTime`. FMI exposes no such queue; a host reads them to emit the
 //!   same pre/post-event rows an FMI importer would have sampled itself.
-//! - [`MeDiscreteStates::time`]: FMI's `fmi3UpdateDiscreteStates` returns no
-//!   time. Rumoca's initial event boundary may advance the component's own
-//!   time, so the host must read back where it landed.
 //! - [`ModelExchangeKernel::observe`]: a refresh of the component's observable
 //!   (algebraic) vector at the current time, returning that observation point.
 //!   It is *not* `fmi3GetFMUState`: it snapshots no discrete state and cannot
@@ -425,8 +422,9 @@ pub struct MeValueRef {
     pub(crate) instance_brand: Rc<()>,
 }
 
-/// `fmi3SetTime`, carrying the event instant the integrator is stepping
-/// toward so the component can evaluate that instant's left limit.
+/// Transitional `fmi3SetTime` representation carrying the event instant the
+/// integrator is stepping toward. FMI itself carries only `time`; the boundary
+/// field remains phase-2 migration debt documented above.
 #[derive(Debug, Clone, Copy)]
 pub struct MeTime {
     pub time: f64,
@@ -500,16 +498,12 @@ pub struct MeDiscreteStates {
     /// A host that re-reads them unconditionally is therefore always correct,
     /// and one that trusts a `false` would never see one.
     pub values_of_continuous_states_changed: bool,
-    /// The component's time after the boundary. Extension: see the module
-    /// docs — FMI's `fmi3UpdateDiscreteStates` returns no time.
-    pub time: f64,
-    //
-    // FMI's `nominalsOfContinuousStatesChanged` is deliberately absent:
-    // rumoca's nominals are fixed at instantiation, so there is nothing for
-    // the component to report and nothing for a host to act on. FMI's
-    // `nextEventTime` is absent too — the component's scheduled-event set is
-    // state dependent, so a host asks `next_event_stop` each outer step
-    // instead of being told once here.
+    /// FMI `nominalsOfContinuousStatesChanged`. Rumoca's nominals are fixed
+    /// at instantiation, so this is currently always `false`.
+    pub nominals_of_continuous_states_changed: bool,
+    /// FMI `nextEventTimeDefined` / `nextEventTime`. `None` represents
+    /// `nextEventTimeDefined = false`.
+    pub next_event_time: Option<f64>,
 }
 
 /// The next instant the component wants the integrator to stop at.

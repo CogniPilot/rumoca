@@ -902,13 +902,12 @@ where
 
     fn arm_component_time_event(
         &mut self,
-        current_time: f64,
+        _current_time: f64,
         event_time: f64,
         horizon: f64,
     ) -> Result<(), SimDriverError> {
-        let states = self.native_at_time(current_time)?;
         self.me_host
-            .arm_time_event(current_time, &states, event_time, horizon)
+            .arm_time_event(event_time, horizon)
             .map_err(|error| self.me_to_driver(error))
     }
 
