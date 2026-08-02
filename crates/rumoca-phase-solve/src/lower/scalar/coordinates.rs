@@ -55,6 +55,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
             return self.function_parameter(parameter, scalar, span);
         }
+        if let dae::CoordinateView::Condition(condition) = coordinate {
+            return self.condition(condition);
+        }
         if let dae::CoordinateView::Binder(binder) = coordinate {
             let Some((_, values)) = self
                 .domain_points
@@ -91,7 +94,20 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         {
             return self.substituted_parameter_value(parameter.index(), binding, scalar, span);
         }
-        let slot = if let dae::CoordinateView::Delay(delay_id) = coordinate {
+        let slot = if self.sampled_source
+            && let Some(variable) = coordinate_variable(coordinate)
+            && let Some(base) = self
+                .layout
+                .pre_variables
+                .get(variable as usize)
+                .copied()
+                .flatten()
+        {
+            let index = base.checked_add(scalar).ok_or_else(|| {
+                LowerError::contract("sampled value scalar layout overflow", span)
+            })?;
+            solve::scalar_slot_p(index)
+        } else if let dae::CoordinateView::Delay(delay_id) = coordinate {
             delay_value_scalar_slot(self.layout, delay_id.index(), scalar, span)?
         } else if let dae::CoordinateView::Previous(previous_id) = coordinate {
             let previous = self
@@ -105,6 +121,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ));
             }
             previous_value_scalar_slot(self.layout, previous_id.index(), scalar, span)?
+        } else if let dae::CoordinateView::Terminal(_) = coordinate {
+            solve::scalar_slot_p(
+                self.layout
+                    .solve_layout
+                    .terminal_event_parameter_index
+                    .expect("terminal coordinate owns a checked Solve runtime slot"),
+            )
         } else if let Some(variable) = pre_coordinate_variable(coordinate) {
             pre_variable_scalar_slot(self.layout, variable, scalar, span)?
         } else {

@@ -35,6 +35,67 @@
           sha256 = "sha256-5twI9QsrPl0ryOZ4POGYAivSeI08jgmWnv0wVvzbjcE=";
         };
 
+        # Kani is deliberately isolated from the ordinary development
+        # toolchain.  Its compiler must exactly match the release bundle, while
+        # rumoca's default shell remains pinned by rust-toolchain.toml.
+        kaniVersion = "0.67.0";
+        kaniSupported = system == "x86_64-linux";
+        kaniRustToolchain = fenix.packages.${system}.fromToolchainFile {
+          file = ./rust-toolchain-kani.toml;
+          sha256 = "sha256-P39FCgpfDT04989+ZTNEdM/k/AE869JKSB4qjatYTSs=";
+        };
+        kaniCli = pkgs.rustPlatform.buildRustPackage {
+          pname = "kani-verifier";
+          version = kaniVersion;
+          src = pkgs.fetchCrate {
+            pname = "kani-verifier";
+            version = kaniVersion;
+            hash = "sha256-m0khwmHJAiEtICN/f2IE70A2/0JNKwaL3so429YtdOY=";
+          };
+          cargoHash = "sha256-KAFLA97yi74riDkBO3EJ9Uv6SdVQrJ1wLNJ68Jf9yWk=";
+        };
+        kaniHome = pkgs.stdenv.mkDerivation {
+          pname = "kani-home";
+          version = kaniVersion;
+          src = pkgs.fetchurl {
+            url = "https://github.com/model-checking/kani/releases/download/kani-${kaniVersion}/kani-${kaniVersion}-x86_64-unknown-linux-gnu.tar.gz";
+            hash = "sha256-O196/TtRYD7nINt7wbxP5GtaT1022q2ZOcS0xli1GsA=";
+          };
+          nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+          buildInputs = [
+            kaniRustToolchain
+            pkgs.stdenv.cc.cc.lib
+            pkgs.zlib
+          ];
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out/kani-${kaniVersion}"
+            cp -R . "$out/kani-${kaniVersion}/"
+            ln -s ${kaniRustToolchain} "$out/kani-${kaniVersion}/toolchain"
+            runHook postInstall
+          '';
+        };
+        kani = pkgs.symlinkJoin {
+          name = "kani-${kaniVersion}";
+          meta = {
+            mainProgram = "kani";
+            platforms = [ "x86_64-linux" ];
+          };
+          paths = [
+            kaniCli
+            kaniHome
+            kaniRustToolchain
+          ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postBuild = ''
+            for proxy in kani cargo-kani; do
+              wrapProgram "$out/bin/$proxy" \
+                --set KANI_HOME "$out" \
+                --prefix PATH : "${kaniRustToolchain}/bin"
+            done
+          '';
+        };
+
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
         ciJulia = pkgs.julia_111;
         ciPython = pkgs.python312.withPackages (ps: [
@@ -207,7 +268,7 @@
               cargo build --release \
                 -p rumoca-worker \
                 -p rumoca-test-msl \
-                --features rumoca-test-msl/msl-full-test \
+                --features rumoca-test-msl/msl-full-test,rumoca-test-msl/msl-profile-bin \
                 --bin rumoca-worker \
                 --bin rumoca-sim-worker \
                 --bin rumoca-msl-tools \
@@ -258,6 +319,11 @@
           rumoca-python = rumocaPython;
           rumoca-python-env = rumocaPythonEnv;
           msl-artifacts = msl-artifacts;
+        }
+        // pkgs.lib.optionalAttrs kaniSupported {
+          kani = kani;
+          kani-cli = kaniCli;
+          kani-home = kaniHome;
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           openmodelica-cli = openModelicaCli;
@@ -310,6 +376,19 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
             [
               pkgs.gfortran.cc.lib
+              pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
+          );
+        };
+        devShells.${if kaniSupported then "kani" else null} = pkgs.mkShell {
+          inputsFrom = [ rumoca ];
+          packages = [ kani ];
+          KANI_HOME = kaniHome;
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+            [
               pkgs.stdenv.cc.cc.lib
               pkgs.zlib
             ]

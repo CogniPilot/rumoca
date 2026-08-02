@@ -76,23 +76,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         }
     }
 
-    pub(super) fn rebuild_all(
-        &mut self,
-    ) -> Result<Vec<dae::ExprId<'target>>, dae::DaeConstructionError> {
-        for index in 0..self.source.expression_count() {
-            let source = self
-                .source
-                .expression_id(index)
-                .expect("finalized expression ordinal resolves");
-            self.rebuild(source)?;
-        }
-        Ok(self
-            .rebuilt
-            .iter()
-            .map(|expression| expression.expect("every expression was rebuilt"))
-            .collect())
-    }
-
     pub(super) fn rebuild(
         &mut self,
         source_id: dae::ExprId<'source>,
@@ -339,24 +322,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             (self.candidate, coordinate)
             && state.index() == candidate.state
         {
-            let generated = dae::DaeProvenance::generated(
-                dae::DaeGeneration::IndexReduction,
-                candidate.owner.span(),
-            )?;
-            return self
-                .differentiate(
-                    self.source
-                        .expression_id(candidate.rhs as usize)
-                        .expect("candidate RHS resolves"),
-                    generated,
-                )
-                .and_then(|derivative| match derivative {
-                    Derivative::Zero => self
-                        .target
-                        .at(generated)
-                        .literal(dae::DaeLiteral::Real(0.0)),
-                    Derivative::Expression(expression) => Ok(expression),
-                });
+            return self.rebuild_demoted_derivative(candidate);
         }
         let coordinate = match coordinate {
             dae::CoordinateView::Parameter(id) => {
@@ -445,6 +411,35 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
         };
         self.target.at(provenance).coordinate(coordinate)
+    }
+
+    fn rebuild_demoted_derivative(
+        &mut self,
+        candidate: DirectStateConstraint,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let generated = dae::DaeProvenance::generated(
+            dae::DaeGeneration::IndexReduction,
+            candidate.owner.span(),
+        )?;
+        let derivative = self.differentiate(
+            self.source
+                .expression_id(candidate.rhs as usize)
+                .expect("candidate RHS resolves"),
+            generated,
+        )?;
+        match (candidate.rhs_sign, derivative) {
+            (_, Derivative::Zero) => self
+                .target
+                .at(generated)
+                .literal(dae::DaeLiteral::Real(0.0)),
+            (super::equalities::EqualitySign::Same, Derivative::Expression(expression)) => {
+                Ok(expression)
+            }
+            (super::equalities::EqualitySign::Opposite, Derivative::Expression(expression)) => self
+                .target
+                .at(generated)
+                .unary(dae::UnaryOperator::Negate, expression),
+        }
     }
 
     fn rebuild_discrete_coordinate(

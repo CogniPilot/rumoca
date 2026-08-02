@@ -927,9 +927,10 @@ fn project_clocks(view: dae::DaeView<'_>) -> Value {
                     .expect("dense checked clock identity resolves");
                 let clock = view.clock(id).expect("checked clock resolves");
                 let operation = match clock.operation() {
-                    dae::ClockOperation::Periodic(lattice) => json!({
+                    dae::ClockOperation::Periodic(schedule) => json!({
                         "kind": "periodic",
-                        "lattice": lattice,
+                        "lattice": schedule.lattice(),
+                        "anchor": schedule.anchor(),
                     }),
                     dae::ClockOperation::Triggered(condition) => json!({
                         "kind": "triggered",
@@ -959,6 +960,7 @@ fn project_clocks(view: dae::DaeView<'_>) -> Value {
                         dae::ClockedVariableKind::DiscreteValue => "discrete_value",
                     },
                     "clock": ownership.clock().index(),
+                    "sampled": ownership.sampled(),
                     "provenance": ownership.provenance(),
                 })
             })

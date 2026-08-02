@@ -602,7 +602,7 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
         "Log" => format!("{}log({})", cfg.prefix, args),
         "Log10" => format!("{}log10({})", cfg.prefix, args),
         "Floor" => format!("{}floor({})", cfg.prefix, args),
-        "Integer" => format!("{}trunc({})", cfg.prefix, args),
+        "Integer" => format!("{}floor({})", cfg.prefix, args),
         "Ceil" => format!("{}ceil({})", cfg.prefix, args),
         "Min" => format!("{}fmin({})", cfg.prefix, args),
         "Max" => format!("{}fmax({})", cfg.prefix, args),
@@ -615,7 +615,10 @@ fn render_builtin_python(func_name: &str, args: &str, cfg: &ExprConfig) -> Strin
                 format!("{}({})", cfg.sum_fn, args)
             }
         }
-        "Transpose" => format!("({}).T", args),
+        // MLS transpose exchanges only axes zero and one. Python's `.T`
+        // reverses every axis for rank greater than two, so emit the exact
+        // permutation explicitly for tensor-capable targets.
+        "Transpose" => format!("{}swapaxes({}, 0, 1)", cfg.prefix, args),
         "Zeros" => format!("{}zeros({})", cfg.prefix, args),
         "Ones" => format!("{}ones({})", cfg.prefix, args),
         "Identity" => format!("{}eye({})", cfg.prefix, args),
@@ -1199,6 +1202,28 @@ mod tests {
             error
                 .to_string()
                 .contains("must be lowered with its clock schedule")
+        );
+    }
+
+    #[test]
+    fn test_render_python_transpose_swaps_only_the_first_two_axes() {
+        let expression = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Transpose,
+            args: vec![rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("tensor"),
+                subscripts: Vec::new(),
+                span: rumoca_core::Span::DUMMY,
+            }],
+            span: rumoca_core::Span::DUMMY,
+        };
+        let cfg = ExprConfig {
+            prefix: "jnp.".to_owned(),
+            ..ExprConfig::default()
+        };
+
+        assert_eq!(
+            render_expression(&Value::from_serialize(&expression), &cfg).unwrap(),
+            "jnp.swapaxes(tensor, 0, 1)"
         );
     }
 }

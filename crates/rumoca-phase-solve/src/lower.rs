@@ -34,9 +34,8 @@ pub(crate) fn lower_solve_problem(
             "the model has no variables or equations to simulate",
         ));
     }
-    reject_unimplemented_systems(view)?;
     let lowered = lower_layout(view)?;
-    let clocks = clocks::lower_clocks(view)?;
+    let clocks = clocks::lower_clocks(view, &lowered)?;
     clocks::reject_clocked_continuous_feedback(view, &clocks)?;
     let structural = structural_matching(view)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
@@ -53,17 +52,6 @@ pub(crate) fn lower_solve_problem(
         events,
         clocks: clocks.partition,
     })
-}
-
-fn reject_unimplemented_systems(view: dae::DaeView<'_>) -> Result<(), LowerError> {
-    let unsupported = [(view.terminal_count(), "terminal coordinates")];
-    if let Some((_, semantics)) = unsupported.into_iter().find(|(count, _)| *count != 0) {
-        return Err(LowerError::unsupported(
-            format!("{semantics} do not yet have checked Solve lowering"),
-            first_model_span(view),
-        ));
-    }
-    Ok(())
 }
 
 struct StructuralMatching<'dae> {
@@ -1820,7 +1808,7 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         dae::PureBuiltin::Sqrt => solve::UnaryOp::Sqrt,
         dae::PureBuiltin::Floor => solve::UnaryOp::Floor,
         dae::PureBuiltin::Ceil => solve::UnaryOp::Ceil,
-        dae::PureBuiltin::Integer => solve::UnaryOp::Trunc,
+        dae::PureBuiltin::Integer => solve::UnaryOp::Floor,
         dae::PureBuiltin::Sin => solve::UnaryOp::Sin,
         dae::PureBuiltin::Cos => solve::UnaryOp::Cos,
         dae::PureBuiltin::Tan => solve::UnaryOp::Tan,
@@ -1849,7 +1837,15 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         | dae::PureBuiltin::Ones
         | dae::PureBuiltin::Fill
         | dae::PureBuiltin::Linspace
-        | dae::PureBuiltin::Cross => unreachable!("non-unary builtin"),
+        | dae::PureBuiltin::Cross
+        | dae::PureBuiltin::PromotedCat1
+        | dae::PureBuiltin::PromotedCat2
+        | dae::PureBuiltin::Identity
+        | dae::PureBuiltin::Vector
+        | dae::PureBuiltin::Transpose
+        | dae::PureBuiltin::Diagonal
+        | dae::PureBuiltin::OuterProduct
+        | dae::PureBuiltin::Skew => unreachable!("non-unary builtin"),
     }
 }
 

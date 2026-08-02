@@ -64,7 +64,12 @@ pub fn eval_expr_with_span(
             base, subscripts, ..
         } => eval_flat_index(base, subscripts, ctx, span),
         Expression::Tuple { elements, .. } => eval_flat_array(elements, ctx, span),
-        Expression::FieldAccess { base, field, .. } => {
+        Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            ..
+        } => {
             if let Some(path) = rumoca_core::flat_expression_component_path(expr)
                 && let Some(value) = ctx.get(&path.to_flat_string())
             {
@@ -73,6 +78,9 @@ pub fn eval_expr_with_span(
             // Field access on complex expressions (e.g., func().field)
             // requires evaluating the base and then extracting the field
             let base_val = eval_expr_with_span(base, ctx, span)?;
+            if function_eval::is_exact_single_record_output(base, *field_def_id, ctx) {
+                return Ok(base_val);
+            }
             eval_field_access(&base_val, field, span)
         }
         Expression::Empty { .. } => Ok(Value::Integer(0)),

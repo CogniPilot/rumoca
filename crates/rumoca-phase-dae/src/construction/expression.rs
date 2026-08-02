@@ -353,6 +353,8 @@ fn lower_builtin_expression<'dae>(
         BuiltinFunction::Pre => {
             lower_pre(construction, symbols, binders, arguments, provenance, span)
         }
+        BuiltinFunction::Initial => lower_initial_expression(construction, arguments, provenance),
+        BuiltinFunction::Terminal => lower_terminal_expression(construction, arguments, provenance),
         BuiltinFunction::Sample => {
             let Some(value) = clocked_value_sample(symbols.functions.flat, arguments) else {
                 return lower_sample_event_operator(construction, symbols, arguments, provenance);
@@ -403,6 +405,57 @@ fn lower_builtin_expression<'dae>(
             provenance,
         ),
     }
+}
+
+/// Lower MLS §8.6 `terminal()` to the unique typed terminal coordinate.
+///
+/// The simulation driver, rather than a Modelica-visible generated parameter,
+/// owns the value of this coordinate. Every occurrence shares the same identity
+/// because there is one final event for a simulation interval.
+fn lower_terminal_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if !arguments.is_empty() {
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 0,
+            found: arguments.len(),
+            span: provenance.span(),
+        });
+    }
+    let terminal = construction.temporal(|temporal| temporal.terminal(provenance))?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .coordinate(dae::CoordinateInput::Terminal(terminal))
+    })
+}
+
+/// Lower scalar `initial()` through the same checked condition owner used by
+/// activation trees. The expression is a Boolean coordinate into that owner;
+/// it is not a pure builtin or a generic runtime load.
+fn lower_initial_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if !arguments.is_empty() {
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 0,
+            found: arguments.len(),
+            span: provenance.span(),
+        });
+    }
+    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
+    construction.conditions(|conditions| {
+        conditions.define(condition, dae::ConditionInput::Initial, provenance)
+    })?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .coordinate(dae::CoordinateInput::Condition(condition))
+    })
 }
 
 fn lower_index_expression<'dae>(
@@ -878,12 +931,12 @@ fn lower_sample_event_operator<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let span = provenance.span();
     let operands: Vec<&Expression> = arguments.iter().collect();
-    let Some(ExpressionEventPlan::SampleClock(lattice)) =
+    let Some(ExpressionEventPlan::SampleClock(schedule)) =
         symbols.functions.expression_events.plan(span, &operands)
     else {
         return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
     };
-    let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
+    let clock = construction.clocks(|clocks| clocks.scheduled(schedule, provenance))?;
     let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
     construction.conditions(|conditions| {
         conditions.define(
@@ -1268,7 +1321,8 @@ fn lower_builtin_call<'dae>(
     // Integer — the same one the shape proof already read through
     // `evaluate_shape_integer` — so folding it here is what keeps the two
     // agreeing instead of handing the constructor a coordinate it must refuse.
-    let extents_are_declared = matches!(function, BuiltinFunction::Zeros);
+    let extents_are_declared =
+        matches!(function, BuiltinFunction::Zeros | BuiltinFunction::Identity);
     let arguments = arguments
         .iter()
         .map(|argument| {
@@ -1345,6 +1399,13 @@ fn lower_function_call<'dae>(
 pub(super) struct LoweredCallOperands<'dae> {
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
+    vectorization: Option<VectorizedCallOperands<'dae>>,
+}
+
+struct VectorizedCallOperands<'dae> {
+    domain: dae::DomainId<'dae>,
+    indices: Vec<dae::Subscript<'dae>>,
+    inputs: Vec<bool>,
 }
 
 impl<'dae> LoweredCallOperands<'dae> {
@@ -1354,10 +1415,37 @@ impl<'dae> LoweredCallOperands<'dae> {
         ordinal: usize,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+        let arguments = self
+            .arguments
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(ordinal, argument)| {
+                let Some(vectorization) = &self.vectorization else {
+                    return Ok(argument);
+                };
+                if !vectorization.inputs[ordinal] {
+                    return Ok(argument);
+                }
+                construction.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .index(argument, vectorization.indices.iter().copied())
+                })
+            })
+            .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+        let body = construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .call(self.function, ordinal, arguments)
+        })?;
+        let Some(vectorization) = &self.vectorization else {
+            return Ok(body);
+        };
         construction.expressions(|expressions| {
             expressions
                 .at(provenance)
-                .call(self.function, ordinal, self.arguments.iter().copied())
+                .comprehension(vectorization.domain, body)
         })
     }
 }
@@ -1370,10 +1458,13 @@ pub(super) fn lower_call_operands<'dae>(
     arguments: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<LoweredCallOperands<'dae>, dae::DaeConstructionError> {
-    let (key, function) =
-        symbols
-            .functions
-            .select_with_key(name, arguments, symbols.shapes, provenance.span());
+    let (call, function) = symbols.functions.select_with_call_certificate(
+        name,
+        arguments,
+        symbols.shapes,
+        provenance.span(),
+    );
+    let key = &call.specialization;
     let arguments = arguments
         .iter()
         .enumerate()
@@ -1385,20 +1476,82 @@ pub(super) fn lower_call_operands<'dae>(
                     ..
                 } if elements.is_empty()
             ) {
+                let mut shape = Vec::new();
+                if call.vectorized_inputs[ordinal] {
+                    shape.extend_from_slice(&call.prefix);
+                }
+                shape.extend_from_slice(&key.inputs[ordinal]);
                 return lower_empty_function_argument(
                     construction,
                     symbols,
-                    &key,
+                    key,
                     ordinal,
+                    &shape,
                     argument,
                 );
             }
             lower_expression_scoped(construction, symbols, binders, argument, None)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let vectorization = if call.prefix.is_empty() {
+        None
+    } else {
+        Some(lower_vectorized_call_operands(
+            construction,
+            binders,
+            &call.prefix,
+            &call.vectorized_inputs,
+            provenance,
+        )?)
+    };
     Ok(LoweredCallOperands {
         function,
         arguments,
+        vectorization,
+    })
+}
+
+fn lower_vectorized_call_operands<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    enclosing_binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    prefix: &[u32],
+    inputs: &[bool],
+    provenance: dae::DaeProvenance,
+) -> Result<VectorizedCallOperands<'dae>, dae::DaeConstructionError> {
+    let domain_shape = prefix
+        .iter()
+        .enumerate()
+        .map(|(ordinal, extent)| StructuredIndexBinder {
+            id: ordinal,
+            display_name: format!("vectorized_call_{ordinal}"),
+            lower: 1,
+            upper: i64::from(*extent),
+            step: 1,
+        })
+        .collect();
+    let domain = construction.domains(|domains| {
+        domains.nested_in_scope(
+            enclosing_binders.values().copied(),
+            StructuredIndexDomain {
+                binders: domain_shape,
+            },
+            provenance,
+        )
+    })?;
+    let mut indices = Vec::with_capacity(prefix.len());
+    for ordinal in 0..prefix.len() {
+        let binder = construction.domains(|domains| domains.binder(domain, ordinal, provenance))?;
+        let expression =
+            construction.expressions(|expressions| expressions.at(provenance).binder(binder))?;
+        indices.push(dae::Subscript::Index {
+            expression,
+            provenance,
+        });
+    }
+    Ok(VectorizedCallOperands {
+        domain,
+        indices,
+        inputs: inputs.to_vec(),
     })
 }
 
@@ -1448,6 +1601,7 @@ fn lower_empty_function_argument<'dae>(
     symbols: LoweringSymbols<'_, 'dae>,
     key: &FunctionSpecializationKey,
     ordinal: usize,
+    shape: &[u32],
     argument: &Expression,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(
@@ -1456,12 +1610,8 @@ fn lower_empty_function_argument<'dae>(
             .expect("analysis proves empty argument provenance"),
     )?;
     let scalar = symbols.functions.primitive_parameter_scalar(key, ordinal);
-    let value_type = construction.types(|types| {
-        types.derived(
-            dae::ValueType::array(scalar, key.inputs[ordinal].clone()),
-            provenance,
-        )
-    })?;
+    let value_type = construction
+        .types(|types| types.derived(dae::ValueType::array(scalar, shape.to_vec()), provenance))?;
     construction.expressions(|expressions| expressions.at(provenance).empty_array(value_type))
 }
 
@@ -1509,11 +1659,12 @@ fn lower_array_expression<'dae>(
 /// used to be missing — `[0, 1, 1, 0, 0]` was built as a 5-vector rather than
 /// as the 1 x 5 matrix MLS gives it.
 ///
-/// ACCEPTANCE CONTRACT (SPEC_0008): only a row whose operands are *all
-/// syntactically non-array* changes here — `[s1, …, sn]` becomes the 1 x n
-/// matrix MLS gives it. Every other `[ ]` keeps the element nesting it already
-/// lowered to, because two different producers write `is_matrix: true` with two
-/// different row conventions and the node alone does not say which built it:
+/// ACCEPTANCE CONTRACT (SPEC_0008): two source shapes change here. A row whose
+/// operands are all syntactically non-array becomes the 1 x n matrix MLS gives
+/// it, and an all-matrix-child node is the parser's unambiguous `;` spelling,
+/// lowered through checked promoted concatenation. Every other `[ ]` keeps the
+/// element nesting it already lowered to, because two different producers
+/// write `is_matrix: true` with different row conventions:
 ///
 /// * Parse (`rumoca-phase-parse/src/expressions.rs::convert_range_primary`)
 ///   writes the `;` spelling as one `is_matrix: true` row node per row.
@@ -1543,13 +1694,53 @@ fn lower_matrix_expression<'dae>(
     elements: &[Expression],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if elements.iter().all(|element| {
+        matches!(
+            element,
+            Expression::Array {
+                is_matrix: true,
+                ..
+            }
+        )
+    }) {
+        // The parser reserves this nesting for the `;` spelling. Each child
+        // row is the MLS §10.4.2.1 promoted dimension-2 concatenation of its
+        // operands; the outer expression concatenates those checked rows along
+        // dimension 1. The DAE constructor derives both result shapes from the
+        // operand types, so lowering supplies no parallel extent metadata.
+        let rows = elements
+            .iter()
+            .map(|row| {
+                let Expression::Array {
+                    elements: operands, ..
+                } = row
+                else {
+                    unreachable!("the semicolon-row predicate proves every row shape")
+                };
+                lower_promoted_matrix_concatenation(
+                    construction,
+                    symbols,
+                    binders,
+                    operands,
+                    dae::PureBuiltin::PromotedCat2,
+                    provenance,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .builtin(dae::PureBuiltin::PromotedCat1, rows)
+        });
+    }
     if is_non_array_operand_row(elements) {
         // `[s1, …, sn]`: one row of scalars, so the matrix is that row wrapped
-        // once. This is the only shape whose lowering changes.
+        // once. The unambiguous semicolon form above is the other changed
+        // shape.
         let row = lower_array_expression(construction, symbols, binders, elements, provenance)?;
         return construction.expressions(|expressions| expressions.at(provenance).array([row]));
     }
-    // Every other shape keeps the nesting it already lowered to. A child that is
+    // Every remaining shape keeps the nesting it already lowered to. A child that is
     // itself a scalar-operand row is lowered as its own operand list rather than
     // through the dispatch above, which would otherwise wrap that row a second
     // time and turn `[1, 2; 3, 4]` into rank 3.
@@ -1567,6 +1758,21 @@ fn lower_matrix_expression<'dae>(
         })
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| expressions.at(provenance).array(lowered))
+}
+
+fn lower_promoted_matrix_concatenation<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    operands: &[Expression],
+    builtin: dae::PureBuiltin,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let operands = operands
+        .iter()
+        .map(|operand| lower_expression_scoped(construction, symbols, binders, operand, None))
+        .collect::<Result<Vec<_>, _>>()?;
+    construction.expressions(|expressions| expressions.at(provenance).builtin(builtin, operands))
 }
 
 /// Whether `elements` is a non-empty `[ ]` row in which no operand is an array
@@ -1868,6 +2074,15 @@ fn pure_builtin(function: BuiltinFunction) -> dae::PureBuiltin {
         BuiltinFunction::Fill => dae::PureBuiltin::Fill,
         BuiltinFunction::Linspace => dae::PureBuiltin::Linspace,
         BuiltinFunction::Cross => dae::PureBuiltin::Cross,
+        BuiltinFunction::Identity => dae::PureBuiltin::Identity,
+        BuiltinFunction::Vector => dae::PureBuiltin::Vector,
+        BuiltinFunction::Transpose => dae::PureBuiltin::Transpose,
+        BuiltinFunction::Diagonal => dae::PureBuiltin::Diagonal,
+        BuiltinFunction::OuterProduct => dae::PureBuiltin::OuterProduct,
+        BuiltinFunction::Skew => dae::PureBuiltin::Skew,
+        BuiltinFunction::Cat => unreachable!(
+            "explicit cat remains outside the accepted DAE builtin grammar; matrix syntax uses checked promoted concatenation"
+        ),
         _ => unreachable!("analysis restricts pure builtins"),
     }
 }

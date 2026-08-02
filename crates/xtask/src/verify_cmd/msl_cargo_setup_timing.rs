@@ -73,9 +73,19 @@ pub(super) fn run_msl_cargo_setup_step(
     metadata: MslCargoSetupStepMetadata,
     command: Command,
 ) -> Result<()> {
+    run_msl_cargo_setup_step_with(steps, metadata, command, run_status)
+}
+
+pub(super) fn run_msl_cargo_setup_step_with<T>(
+    steps: &mut Vec<MslCargoSetupTimingStep>,
+    metadata: MslCargoSetupStepMetadata,
+    command: Command,
+    run: impl FnOnce(Command) -> Result<T>,
+) -> Result<T> {
     let command_display = format!("{command:?}");
+    println!("Running command: {command_display}");
     let started = Instant::now();
-    let result = run_status_logged(command);
+    let result = run(command);
     steps.push(MslCargoSetupTimingStep {
         label: metadata.label,
         cargo_action: metadata.cargo_action,
@@ -88,11 +98,6 @@ pub(super) fn run_msl_cargo_setup_step(
         elapsed_seconds: elapsed_seconds(started.elapsed()),
     });
     result
-}
-
-fn run_status_logged(command: Command) -> Result<()> {
-    println!("Running command: {command:?}");
-    run_status(command)
 }
 
 pub(super) fn write_msl_cargo_setup_timing_report(

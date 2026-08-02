@@ -760,6 +760,56 @@ fn fixed_false_parameter_is_solved_from_its_initial_equation() {
     );
 }
 
+/// The predefined Real `start = 0.0` is still the initialization guess when a
+/// `fixed = false` parameter does not spell a `start` modifier. It is not the
+/// parameter's value: the initialization row remains its sole value owner.
+#[test]
+fn fixed_false_parameter_without_explicit_start_uses_the_checked_default_guess() {
+    let dae = compile(
+        concat!(
+            "model DefaultParameterGuess\n",
+            "  parameter Real q(fixed=false);\n",
+            "  Real x(start=1);\n",
+            "initial equation\n",
+            "  q = 2;\n",
+            "equation\n",
+            "  der(x) = -q*x;\n",
+            "end DefaultParameterGuess;\n",
+        ),
+        "DefaultParameterGuess",
+    );
+
+    let solve = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("the default start is a guess for the initialization unknown");
+    assert!(matches!(
+        solve
+            .problem
+            .initialization
+            .projection_plan
+            .blocks
+            .as_slice(),
+        [block]
+            if matches!(
+                block.unknowns.as_slice(),
+                [rumoca_ir_solve::ScalarSlot::P { .. }]
+            )
+    ));
+
+    let options = SimOptions {
+        t_end: 0.5,
+        dt: Some(0.5),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options)
+        .expect("the initialization equation, not the default guess, determines q");
+    assert!(
+        column(&result, "x")
+            .last()
+            .is_some_and(|value| (value - (-1.0_f64).exp()).abs() <= 1.0e-5),
+        "q = 2 must determine the trajectory"
+    );
+}
+
 /// The column of a simulation result, by variable name.
 fn column<'result>(result: &'result crate::SimResult, name: &str) -> &'result [f64] {
     let index = result
@@ -1207,31 +1257,22 @@ fn an_unowned_initialization_row_is_not_reported_as_a_surplus_check() {
         "UnownedAlgebraic",
     );
     let error = simulate_dae(&algebraic_read, &SimOptions::default())
-        .expect_err("the row is checked against the algebraic's seeded start")
+        .expect_err("the reduced initialization solve does not own the algebraic dependency")
         .to_string();
     assert!(
-        error.contains("algebraic/output") && error.contains("seeded `start`"),
-        "an unowned algebraic read says the residual read a seed, got: {error}"
+        error.contains("algebraic/output") && error.contains("total derivative"),
+        "an unowned algebraic read names the missing reduced-solve capability, got: {error}"
     );
 }
 
-/// The measured cost of leaving algebraic-reading rows unplanned, pinned so it
-/// cannot drift silently.
-///
-/// The initialization residual is evaluated before the algebraic refresh, so such
-/// a row is checked against a `start` seed rather than the coordinate's value —
-/// vacuous in *both* directions, which is why the module header refuses to call it
-/// a consistency check:
-///
-/// * the steady-state form silently accepts a wrong initial state, where
-///   OpenModelica gives `x(0) = 5`;
-/// * the consistent form is refused on the same stale seed, where OpenModelica
-///   initializes.
-///
-/// Both assertions record today's behaviour. Whichever way the algebraic refresh
-/// eventually joins the §8.6 solve, this test must change with it.
+/// Initialization residual certification observes settled algebraic/output
+/// values, never their declaration seeds. This does not pretend that an
+/// algebraic-reading row is already part of the reduced projection unknown
+/// space: the unsupported steady-state shape fails closed with its typed owner,
+/// while a system the existing projection can solve is certified against the
+/// freshly reconstructed algebraic value.
 #[test]
-fn an_algebraic_reading_initialization_row_is_checked_against_a_stale_seed() {
+fn an_algebraic_reading_initialization_row_cannot_certify_against_a_stale_seed() {
     const SOURCE: &str = concat!(
         "model AlgebraicSeed\n",
         "  Real x(start=0, fixed=false);\n",
@@ -1251,21 +1292,19 @@ fn an_algebraic_reading_initialization_row_is_checked_against_a_stale_seed() {
         dt: Some(1.0),
         ..SimOptions::default()
     };
-    let result = simulate_dae(&steady, &options)
-        .expect("today the seeded residual cancels and the run is accepted");
+    let error = simulate_dae(&steady, &options)
+        .expect_err("the stale zero seeds must not certify x(0) = 0")
+        .to_string();
     assert!(
-        column(&result, "x")[0].abs() <= 1.0e-12,
-        "`der(x) = 0` is dropped against the seeded algebraic: rumoca gives x(0) = 0 where \
-         OpenModelica gives 5, got {}",
-        column(&result, "x")[0]
+        error.contains("algebraic/output") && error.contains("planned initialization unknown"),
+        "the unsupported coupled shape must fail with its typed capability owner, got: {error}"
     );
 
     let consistent = compile(
         &format!("{SOURCE}  x = 5;\n  x = a;\nend AlgebraicSeed;\n"),
         "AlgebraicSeed",
     );
-    simulate_dae(&consistent, &options).expect_err(
-        "x = 5 and x = a agree at a(0) = 5, but the row is checked at a's seed, so rumoca \
-         refuses what OpenModelica initializes",
-    );
+    let result = simulate_dae(&consistent, &options)
+        .expect("x = 5 and x = a agree after the algebraic is reconstructed at a(0) = 5");
+    assert!((column(&result, "x")[0] - 5.0).abs() <= 1.0e-12);
 }

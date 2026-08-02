@@ -1374,11 +1374,32 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
+        if builtin == dae::PureBuiltin::Transpose {
+            return Err(unsupported(
+                "transpose",
+                "GALEC has no checked first-two-axis tensor permutation mapping".to_owned(),
+                span,
+            ));
+        }
         if builtin == dae::PureBuiltin::Linspace {
             return self.lower_linspace_element(arguments, indices, span);
         }
         if builtin == dae::PureBuiltin::Cross {
             return self.lower_cross_element(arguments, indices, scalar_type, span);
+        }
+        if builtin == dae::PureBuiltin::Identity {
+            return Ok(lower_identity_element(indices));
+        }
+        if builtin == dae::PureBuiltin::Vector {
+            let operand = arguments.get(0).expect("checked vector operand");
+            let dimensions = self
+                .view
+                .expression(operand)
+                .expect("checked vector operand resolves")
+                .value_type()
+                .dimensions();
+            let projection = vector_operand_projection(dimensions, indices);
+            return self.lower_at(operand, &projection);
         }
         if builtin == dae::PureBuiltin::Zeros || builtin == dae::PureBuiltin::Ones {
             return Ok(TypedExpression {
@@ -1766,6 +1787,47 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     }
 }
 
+fn vector_operand_projection(
+    dimensions: &[u32],
+    result_indices: &[gast::Expression],
+) -> Vec<gast::Expression> {
+    let [index] = result_indices else {
+        unreachable!("checked vector result has rank one")
+    };
+    dimensions
+        .iter()
+        .map(|extent| {
+            if *extent > 1 {
+                index.clone()
+            } else {
+                gast::Expression::Integer(1)
+            }
+        })
+        .collect()
+}
+
+fn lower_identity_element(indices: &[gast::Expression]) -> TypedExpression {
+    let [row, column] = indices else {
+        unreachable!("checked identity result has rank two")
+    };
+    let expression = match (row, column) {
+        (gast::Expression::Integer(row), gast::Expression::Integer(column)) => {
+            gast::Expression::Integer(i64::from(row == column))
+        }
+        _ => gast::Expression::If(gast::IfExpression {
+            branches: vec![(
+                gast::Expression::binary(gast::BinaryOp::Eq, row.clone(), column.clone()),
+                gast::Expression::Integer(1),
+            )],
+            else_value: Box::new(gast::Expression::Integer(0)),
+        }),
+    };
+    TypedExpression {
+        expression,
+        scalar_type: gast::ScalarType::Integer,
+    }
+}
+
 const fn causality_name(causality: dae::VariableCausality) -> &'static str {
     match causality {
         dae::VariableCausality::Input => "input",
@@ -1802,5 +1864,36 @@ const fn event_name(operation: dae::EventActionOperation<'_>) -> &'static str {
         dae::EventActionOperation::Assert { .. } => "assert",
         dae::EventActionOperation::Terminate { .. } => "terminate",
         dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn identity_element_is_integer_and_diagonal_by_index_equality() {
+        let diagonal =
+            lower_identity_element(&[gast::Expression::Integer(2), gast::Expression::Integer(2)]);
+        assert_eq!(diagonal.scalar_type, gast::ScalarType::Integer);
+        assert_eq!(diagonal.expression, gast::Expression::Integer(1));
+
+        let off_diagonal =
+            lower_identity_element(&[gast::Expression::Integer(1), gast::Expression::Integer(2)]);
+        assert_eq!(off_diagonal.expression, gast::Expression::Integer(0));
+    }
+
+    #[test]
+    fn vector_projection_preserves_the_unique_non_unit_dimension() {
+        let index = gast::Expression::Integer(2);
+        assert_eq!(
+            vector_operand_projection(&[1, 3, 1], std::slice::from_ref(&index)),
+            [
+                gast::Expression::Integer(1),
+                index,
+                gast::Expression::Integer(1)
+            ]
+        );
+        assert!(vector_operand_projection(&[], &[gast::Expression::Integer(1)]).is_empty());
     }
 }

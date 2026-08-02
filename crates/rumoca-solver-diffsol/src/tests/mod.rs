@@ -18,6 +18,7 @@ macro_rules! scalar_program_block {
     }};
 }
 
+mod me_adapter;
 mod root_events;
 mod state_path_integration;
 mod tensor_runtime;
@@ -643,7 +644,13 @@ fn simulate_applies_start_time_clock_tick_after_initial_mode() {
         ]],
         fixture_span!(),
     );
-    ordinary_equation_row_metadata(&mut model);
+    set_equation_row_metadata(
+        &mut model,
+        vec![solve::DiscreteEventPreMode::EventEntry],
+        vec![false],
+    );
+    model.problem.discrete.clock_owners =
+        vec![Some(model.problem.clocks.periodic_clock_id(0).unwrap())];
     model.parameters = vec![2.0, 0.0, 0.0];
     model.visible_names = vec!["held".to_string()];
     model.visible_value_rows = scalar_program_block!(

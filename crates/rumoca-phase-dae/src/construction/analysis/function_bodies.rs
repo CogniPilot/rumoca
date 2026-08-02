@@ -1,4 +1,5 @@
 use super::*;
+use crate::construction::function_shapes::ProvenValue;
 
 pub(super) fn validate_functions(
     flat: &flat::Model,
@@ -187,6 +188,11 @@ pub(super) fn plan_function_statements(
     let mut plans = Vec::with_capacity(statements.len());
     let mut index = 0usize;
     while index < statements.len() {
+        if let Some(assertion) = function_assertion(&statements[index], context.flat)? {
+            plans.push(plan_proven_function_assertion(assertion, context)?);
+            index += 1;
+            continue;
+        }
         if let Some((assembly, count)) =
             validate_record_output_assembly(statements, index, context)?
         {
@@ -255,6 +261,124 @@ pub(super) fn plan_function_statements(
     }
     coalesce_function_array_assemblies(statements, &mut plans, context)?;
     Ok(plans)
+}
+
+#[derive(Clone, Copy)]
+struct FunctionAssertion<'statement> {
+    condition: &'statement Expression,
+    message: &'statement Expression,
+    level: Option<&'statement Expression>,
+    span: Span,
+}
+
+/// Recognize MLS §8.3.7 `assert` in both statement shapes Flat retains.
+///
+/// Algorithm syntax reaches Flat as a zero-output call to the predefined
+/// operator, while some producers use the dedicated statement. A declared
+/// function named `assert` remains an ordinary user call: exact Flat function
+/// identity wins over the predefined short name.
+fn function_assertion<'statement>(
+    statement: &'statement rumoca_core::Statement,
+    flat: &flat::Model,
+) -> Result<Option<FunctionAssertion<'statement>>, ToDaeError> {
+    match statement {
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            span,
+        } => Ok(Some(FunctionAssertion {
+            condition,
+            message,
+            level: level.as_deref(),
+            span: *span,
+        })),
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            span,
+        } if outputs.iter().all(Option::is_none) => {
+            let name = comp.to_var_name();
+            if flat.functions.contains_key(&name)
+                || rumoca_core::runtime_flow_action_function_short_name(name.as_str())
+                    != Some("assert")
+            {
+                return Ok(None);
+            }
+            let (condition, message, level) = match args.as_slice() {
+                [condition, message] => (condition, message, None),
+                [condition, message, level] => (condition, message, Some(level)),
+                _ => {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function assertion",
+                        "the predefined `assert` statement requires condition, message, and an optional level",
+                        *span,
+                    ));
+                }
+            };
+            Ok(Some(FunctionAssertion {
+                condition,
+                message,
+                level,
+                span: *span,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Prove that one function assertion has no executable failure path.
+///
+/// Function bodies lower to pure result DAGs, so an assertion that is not
+/// settled needs a call-scoped flow-action owner rather than a value-expression
+/// substitute. The specialization environment is exact for the Integer,
+/// enumeration, and Boolean inputs carried by its key; only an exact `true`
+/// proof permits semantic erasure.
+fn plan_proven_function_assertion(
+    assertion: FunctionAssertion<'_>,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionStatementPlan, ToDaeError> {
+    require_span(assertion.span, "function body assertion")?;
+    validate_function_expression_with_roles(
+        assertion.condition,
+        context.roles,
+        context.flat,
+        context.shapes,
+    )?;
+    validate_function_expression_with_roles(
+        assertion.message,
+        context.roles,
+        context.flat,
+        context.shapes,
+    )?;
+    if let Some(level) = assertion.level {
+        validate_function_expression_with_roles(
+            level,
+            context.roles,
+            context.flat,
+            context.shapes,
+        )?;
+    }
+    match context.shapes.proven_value(assertion.condition) {
+        Some(ProvenValue::Boolean(true)) => Ok(FunctionStatementPlan::ProvenAssertion),
+        Some(ProvenValue::Boolean(false)) => Err(ToDaeError::unsupported_flat(
+            "function assertion",
+            format!(
+                "`{}` contains an assertion this specialization proves false",
+                context.function.name
+            ),
+            assertion.span,
+        )),
+        Some(ProvenValue::Integer(_)) | None => Err(ToDaeError::unsupported_flat(
+            "function assertion",
+            format!(
+                "`{}` contains an assertion whose condition is not proven true; a runtime function assertion requires a call-scoped flow-action owner",
+                context.function.name
+            ),
+            assertion.span,
+        )),
+    }
 }
 
 fn validate_function_assignment_target(
@@ -500,6 +624,13 @@ pub(super) fn resolve_function_definitions(
     debug_assert_eq!(statements.len(), plans.len());
     for (statement, plan) in statements.iter().zip(plans.iter_mut()) {
         match (statement, plan) {
+            (statement, FunctionStatementPlan::ProvenAssertion) => {
+                let assertion = function_assertion(statement, context.flat)?
+                    .expect("a proven assertion plan owns an assertion statement");
+                // Only the condition is evaluated on the proven-success path;
+                // message and level are failure-path values.
+                definitions.require_readable(assertion.condition, context, assertion.span)?;
+            }
             (
                 rumoca_core::Statement::Assignment { value, span, .. },
                 FunctionStatementPlan::Assignment(assignment),

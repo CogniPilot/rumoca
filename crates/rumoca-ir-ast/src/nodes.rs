@@ -1174,6 +1174,27 @@ fn format_debug_if_branches(branches: &[(Expression, Expression)]) -> String {
 }
 
 impl Expression {
+    /// Return the semantic value of a nested component modifier with a binding.
+    ///
+    /// MLS §7.2 syntax such as `field(start = 1) = value` is represented as
+    /// `Assign(ClassModification(field, ...), value)`. The class-modification
+    /// side owns field attributes; consumers projecting a value binding must
+    /// carry only the right-hand side into executable IR.
+    pub fn component_modifier_binding_value(&self) -> Option<&Self> {
+        match self {
+            Self::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs,
+                rhs,
+                ..
+            } if matches!(lhs.as_ref(), Self::ClassModification { .. }) => Some(rhs),
+            // `field(attributes...)` has no value binding. Its attributes are
+            // projected independently during instantiation.
+            Self::ClassModification { .. } => None,
+            value => Some(value),
+        }
+    }
+
     pub fn span(&self) -> Span {
         match self {
             Expression::Empty { span }

@@ -79,6 +79,36 @@ impl SolveStopSchedule {
             }
         }
     }
+
+    #[cfg(any(test, kani))]
+    pub(crate) fn bit_eq(&self, other: &Self) -> bool {
+        self.next_idx == other.next_idx
+            && self.events.len() == other.events.len()
+            && self
+                .events
+                .iter()
+                .zip(&other.events)
+                .all(|(left, right)| left.bit_eq(right))
+            && self.periodic_schedules.len() == other.periodic_schedules.len()
+            && self
+                .periodic_schedules
+                .iter()
+                .zip(&other.periodic_schedules)
+                .all(|(left, right)| {
+                    left.period_seconds().to_bits() == right.period_seconds().to_bits()
+                        && left.phase_seconds().to_bits() == right.phase_seconds().to_bits()
+                        && left.anchor() == right.anchor()
+                })
+    }
+}
+
+impl StopEvent {
+    #[cfg(any(test, kani))]
+    fn bit_eq(&self, other: &Self) -> bool {
+        self.time.to_bits() == other.time.to_bits()
+            && self.pre_mode == other.pre_mode
+            && self.terminal == other.terminal
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

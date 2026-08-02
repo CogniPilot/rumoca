@@ -371,6 +371,29 @@ pub enum FlattenError {
         #[label("this connection member is neither a parameter nor a constant")]
         variable_span: Span,
     },
+
+    /// A call marked as a structural constructor resolves to a regular
+    /// function in the exact collected callable table.
+    ///
+    /// EF029 rejects only the contradictory `constructor -> regular` shape.
+    /// An unmarked call that resolves to a constructor remains legal and is
+    /// completed from the canonical callable metadata by call canonicalization;
+    /// an unmarked regular call remains regular.
+    #[error(
+        "inconsistent function call kind for `{function}`: occurrence is a constructor, but exact callable instance {instance} is a regular function"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF029),
+        help(
+            "flatten canonicalization derives callable kind from the exact collected FunctionInstanceId; earlier phases must not mark a regular function call as a constructor"
+        )
+    )]
+    InconsistentFunctionCallKind {
+        function: String,
+        instance: u32,
+        #[label("constructor marker conflicts with the resolved callable")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -462,6 +485,18 @@ impl FlattenError {
         Self::InconsistentFunctionReference {
             rendered: rendered.into(),
             structured: structured.into(),
+            span,
+        }
+    }
+
+    pub fn inconsistent_function_call_kind(
+        function: impl Into<String>,
+        instance: rumoca_core::FunctionInstanceId,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::InconsistentFunctionCallKind {
+            function: function.into(),
+            instance: instance.index(),
             span,
         }
     }
@@ -672,6 +707,7 @@ impl PhaseError for FlattenError {
             | Self::InvalidConnectionGraph { span, .. }
             | Self::UnresolvedFlatReference { span, .. }
             | Self::MissingFlatVariableIdentity { span, .. } => std::slice::from_ref(span),
+            Self::InconsistentFunctionCallKind { span, .. } => std::slice::from_ref(span),
             Self::MissingFlowVariable { .. }
             | Self::Internal(_)
             | Self::FunctionRewriteNoConverge { .. }

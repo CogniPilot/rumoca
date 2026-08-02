@@ -251,11 +251,30 @@ pub fn event_eval_params_for_pre_mode(
     base_p: &[f64],
     pre_y: &[f64],
     pre_p: &[f64],
+    t: f64,
     tol: f64,
 ) -> Vec<f64> {
     let mut eval_p = base_p.to_vec();
     write_pre_params_from_sources(model, pre_y, pre_p, &mut eval_p, tol);
+    write_clock_activation_params(model, &mut eval_p, t);
     eval_p
+}
+
+/// Derive mixed-condition clock leaves from their authoritative typed schedules.
+///
+/// The compiler reserves exactly one hidden lane per periodic clock and the
+/// Solve shape contract proves the two dense arrays agree. This function only
+/// projects the schedule at `t`; it does not create another timing owner.
+pub fn write_clock_activation_params(model: &solve::SolveModel, p: &mut [f64], t: f64) {
+    for (schedule, &index) in model
+        .problem
+        .clocks
+        .periodic_event_schedules
+        .iter()
+        .zip(&model.problem.clocks.activation_parameter_indices)
+    {
+        p[index] = f64::from(crate::timeline::periodic_schedule_matches_time(schedule, t));
+    }
 }
 
 /// Candidate pre snapshots available while evaluating one event-iteration row.
@@ -277,10 +296,11 @@ pub fn event_eval_params_for_row_pre_mode(
     base_p: &[f64],
     mode: EventPreMode,
     sources: &EventPreSources<'_>,
+    t: f64,
     tol: f64,
 ) -> Vec<f64> {
     let (pre_y, pre_p) = event_pre_sources_for_mode(mode, sources);
-    event_eval_params_for_pre_mode(model, base_p, pre_y, pre_p, tol)
+    event_eval_params_for_pre_mode(model, base_p, pre_y, pre_p, t, tol)
 }
 
 fn event_pre_sources_for_mode<'a>(
@@ -501,6 +521,7 @@ mod tests {
             solve::PeriodicEventSchedule::new(lattice).expect("periodic schedule is valid");
         let clocks = solve::SolveClockPartition {
             periodic_event_schedules: vec![schedule],
+            activation_parameter_indices: vec![0],
         };
         let owner = clocks
             .periodic_clock_id(0)
@@ -521,6 +542,43 @@ mod tests {
         assert!(discrete_row_active_at(&model, 0, 0.1).unwrap());
         assert!(!discrete_row_active_at(&model, 0, 0.15).unwrap());
         assert!(discrete_row_active_at(&model, 0, 0.2).unwrap());
+    }
+
+    #[test]
+    fn typed_clock_activation_lanes_are_exact_and_target_independent() {
+        let tenth = solve::PeriodicEventSchedule::new(
+            rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap(),
+        )
+        .unwrap();
+        let fifth = solve::PeriodicEventSchedule::new(
+            rumoca_core::ClockLattice::from_seconds(0.2, 0.0).unwrap(),
+        )
+        .unwrap();
+        let model = solve::SolveModel {
+            problem: solve::SolveProblem {
+                clocks: solve::SolveClockPartition {
+                    periodic_event_schedules: vec![tenth, fifth],
+                    // Deliberately not schedule order: typed identity owns the
+                    // mapping, not a row target or incidental P-slot ordinal.
+                    activation_parameter_indices: vec![2, 0],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut params = vec![-1.0; 3];
+
+        write_clock_activation_params(&model, &mut params, 0.1);
+        assert_eq!(params, [0.0, -1.0, 1.0]);
+
+        // A non-clock event between ticks clears both lanes.
+        write_clock_activation_params(&model, &mut params, 0.15);
+        assert_eq!(params, [0.0, -1.0, 0.0]);
+
+        // A root or other event coincident with both schedules observes both
+        // clock leaves as true in the one event iteration at that instant.
+        write_clock_activation_params(&model, &mut params, 0.2);
+        assert_eq!(params, [1.0, -1.0, 1.0]);
     }
 
     #[test]

@@ -17,6 +17,18 @@ use std::sync::Arc;
 /// so an address uniquely identifies a node for the cache's lifetime.
 type ProjectionBaseCache = HashMap<usize, Arc<ast::Expression>>;
 
+/// The resolved value and written source of a record modifier.
+///
+/// These expressions can differ when one record parameter forwards another:
+/// the value is resolved for instantiation, while the source remains relative
+/// to `source_scope` for exact occurrence resolution in Flat.
+pub(crate) struct RecordBindingProjection<'a> {
+    pub(crate) value: &'a ast::Expression,
+    pub(crate) source: Option<&'a ast::Expression>,
+    pub(crate) source_scope: Option<ast::QualifiedName>,
+    pub(crate) each: bool,
+}
+
 /// Propagate a record binding to scalar field bindings.
 ///
 /// MLS §7.2: a record binding like `Complex u = expr` projects bindings for fields
@@ -24,9 +36,7 @@ type ProjectionBaseCache = HashMap<usize, Arc<ast::Expression>>;
 pub(crate) fn propagate_record_binding_to_fields(
     tree: &ast::ClassTree,
     ctx: &mut InstantiateContext,
-    binding_expr: &ast::Expression,
-    binding_source_scope: Option<ast::QualifiedName>,
-    binding_is_each: bool,
+    binding: RecordBindingProjection<'_>,
     nested_class: &ast::ClassDef,
     targeted_keys: &IndexMap<ast::QualifiedName, ()>,
 ) -> InstantiateResult<IndexMap<ast::QualifiedName, ()>> {
@@ -46,7 +56,8 @@ pub(crate) fn propagate_record_binding_to_fields(
     } else {
         &effective
     };
-    let preserve_declared_defaults = is_default_record_constructor_call(binding_expr, nested_class);
+    let preserve_declared_defaults =
+        is_default_record_constructor_call(binding.value, nested_class);
     let mut projected_keys = IndexMap::default();
     let mut base_cache = ProjectionBaseCache::new();
 
@@ -70,7 +81,7 @@ pub(crate) fn propagate_record_binding_to_fields(
             continue;
         }
         let field_binding = same_type_alias_explicit_field_binding(
-            binding_expr,
+            binding.value,
             nested_class,
             components,
             ctx.mod_env(),
@@ -78,7 +89,7 @@ pub(crate) fn propagate_record_binding_to_fields(
         );
         if field_binding.is_none()
             && should_preserve_same_type_alias_field_default(
-                binding_expr,
+                binding.value,
                 nested_class,
                 components,
                 ctx.mod_env(),
@@ -94,22 +105,34 @@ pub(crate) fn propagate_record_binding_to_fields(
         } else {
             project_record_field_binding(
                 tree,
-                binding_expr,
-                binding_source_scope.as_ref(),
+                binding.value,
+                binding.source_scope.as_ref(),
                 nested_class,
                 field_name,
                 field_def_id,
                 &mut base_cache,
             )?
         };
+        let field_source = match binding.source {
+            Some(source_expr) if source_expr != binding.value => project_record_field_binding(
+                tree,
+                source_expr,
+                binding.source_scope.as_ref(),
+                nested_class,
+                field_name,
+                field_def_id,
+                &mut base_cache,
+            )?,
+            _ => field_access.clone(),
+        };
 
         ctx.mod_env_mut().active.insert(
             field_qn.clone(),
             ast::ModificationValue::with_source_scope_and_prefixes(
-                field_access.clone(),
-                Some(field_access),
-                binding_source_scope.clone(),
-                binding_is_each,
+                field_access,
+                Some(field_source),
+                binding.source_scope.clone(),
+                binding.each,
                 false,
             ),
         );
@@ -192,14 +215,18 @@ fn same_type_alias_explicit_field_binding(
     field_name: &str,
 ) -> Option<ast::Expression> {
     let source_name = simple_record_alias_source_name(binding_expr)?;
-    if let Some(source_component) =
-        same_type_record_alias_source(binding_expr, target_record, effective_components)
-        && let Some((_, value)) = source_component
-            .modifications
-            .iter()
-            .find(|(name, _)| name.as_str() == field_name)
+    if let Some(field_binding) =
+        same_type_record_alias_source(binding_expr, target_record, effective_components).and_then(
+            |source_component| {
+                source_component
+                    .modifications
+                    .iter()
+                    .find(|(name, _)| name.as_str() == field_name)
+                    .and_then(|(_, value)| value.component_modifier_binding_value())
+            },
+        )
     {
-        return Some(value.clone());
+        return Some(field_binding.clone());
     }
 
     let source_field = ast::QualifiedName::from_ident(source_name).child(field_name);
@@ -220,7 +247,9 @@ fn record_alias_source_explicitly_binds_field(
         source_component
             .modifications
             .iter()
-            .any(|(name, _)| name.as_str() == field_name)
+            .any(|(name, modifier)| {
+                name.as_str() == field_name && modifier.component_modifier_binding_value().is_some()
+            })
     }) {
         return true;
     }

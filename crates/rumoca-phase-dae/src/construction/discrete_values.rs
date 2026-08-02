@@ -22,9 +22,16 @@ struct StagedBranch<'dae> {
 struct StagedOwner<'dae> {
     targets: Vec<dae::DiscreteValueId<'dae>>,
     branches: Vec<StagedBranch<'dae>>,
+    structure: Option<StagedStructure<'dae>>,
     provenance: dae::DaeProvenance,
     rank: usize,
     parents: HashMap<BranchActivation<'dae>, Option<BranchActivation<'dae>>>,
+}
+
+#[derive(Clone, Copy)]
+struct StagedStructure<'dae> {
+    domain: dae::DomainId<'dae>,
+    scalar_view: rumoca_core::ComprehensionScalarView,
 }
 
 pub(super) struct DiscreteWhenAssignment<'dae> {
@@ -67,6 +74,38 @@ impl<'dae> DiscreteValueStaging<'dae> {
         target_names: impl IntoIterator<Item = VarName>,
         coordinates: &HashMap<VarName, Coordinate<'dae>>,
         plan: &DiscreteValueTopologyPlan,
+    ) -> Result<Option<DiscreteValueOwnerHandle>, dae::DaeConstructionError> {
+        self.build_owner(provenance, target_names, coordinates, plan, None)
+    }
+
+    pub(super) fn structured_owner(
+        &mut self,
+        provenance: dae::DaeProvenance,
+        domain: dae::DomainId<'dae>,
+        scalar_view: rumoca_core::ComprehensionScalarView,
+        target_names: impl IntoIterator<Item = VarName>,
+        coordinates: &HashMap<VarName, Coordinate<'dae>>,
+        plan: &DiscreteValueTopologyPlan,
+    ) -> Result<Option<DiscreteValueOwnerHandle>, dae::DaeConstructionError> {
+        self.build_owner(
+            provenance,
+            target_names,
+            coordinates,
+            plan,
+            Some(StagedStructure {
+                domain,
+                scalar_view,
+            }),
+        )
+    }
+
+    fn build_owner(
+        &mut self,
+        provenance: dae::DaeProvenance,
+        target_names: impl IntoIterator<Item = VarName>,
+        coordinates: &HashMap<VarName, Coordinate<'dae>>,
+        plan: &DiscreteValueTopologyPlan,
+        structure: Option<StagedStructure<'dae>>,
     ) -> Result<Option<DiscreteValueOwnerHandle>, dae::DaeConstructionError> {
         let mut targets = target_names
             .into_iter()
@@ -112,6 +151,7 @@ impl<'dae> DiscreteValueStaging<'dae> {
         self.owners.push(StagedOwner {
             targets: targets.into_iter().map(|(target, _)| target).collect(),
             branches: Vec::new(),
+            structure,
             provenance,
             rank,
             parents: HashMap::new(),
@@ -347,12 +387,29 @@ fn append_owner<'dae>(
     topology: &mut dae::DiscreteValueTopology<'_, 'dae>,
     owner: StagedOwner<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    topology.owner(owner.provenance, owner.targets, |definition| {
-        for branch in owner.branches {
+    let StagedOwner {
+        targets,
+        branches,
+        structure,
+        provenance,
+        ..
+    } = owner;
+    let append = |definition: &mut dae::DiscreteValueOwner<'_, 'dae>| {
+        for branch in branches {
             append_branch(definition, branch)?;
         }
         Ok(())
-    })?;
+    };
+    match structure {
+        Some(structure) => topology.structured_owner(
+            provenance,
+            structure.domain,
+            structure.scalar_view,
+            targets,
+            append,
+        )?,
+        None => topology.owner(provenance, targets, append)?,
+    };
     Ok(())
 }
 

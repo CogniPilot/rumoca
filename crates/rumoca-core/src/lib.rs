@@ -48,7 +48,10 @@ mod statement_rewriter;
 mod structured_domain;
 mod subscript;
 pub mod text_position;
-pub use clock_lattice::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational};
+pub use clock_lattice::{
+    ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockPhaseAnchor, ClockRational,
+    PeriodicClockSchedule,
+};
 pub use dependency_graph::{DependencyGraphError, DependencyScc, dependency_first_sccs};
 pub use effective_type::{EffectiveType, EffectiveTypeError};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};

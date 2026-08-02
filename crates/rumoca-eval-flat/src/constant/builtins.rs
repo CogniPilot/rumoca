@@ -476,7 +476,12 @@ fn eval_integer(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 1, span)?;
     match &args[0] {
         Value::Integer(x) => Ok(Value::Integer(*x)),
-        Value::Real(x) => checked_real_to_i64(x.floor(), span, "integer(...)").map(Value::Integer),
+        Value::Real(x) => checked_real_to_i64(
+            rumoca_core::modelica_integer_value(*x),
+            span,
+            "integer(...)",
+        )
+        .map(Value::Integer),
         other => Err(EvalError::type_mismatch(
             "Real or Integer",
             other.type_name(),

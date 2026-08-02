@@ -224,55 +224,129 @@ impl ModelCompileOutcome {
 }
 
 pub(super) struct StageAbortWatchdog {
-    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    signal: std::sync::Arc<StageWatchdogSignal>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+struct StageWatchdogSignal {
+    done: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicBool,
+}
+
+impl StageWatchdogSignal {
+    fn new() -> Self {
+        Self {
+            done: std::sync::Mutex::new(false),
+            changed: std::sync::Condvar::new(),
+            #[cfg(test)]
+            waiting: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn finish(&self) {
+        *self
+            .done
+            .lock()
+            .expect("stage watchdog mutex should not be poisoned") = true;
+        self.changed.notify_one();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageWatchdogOutcome {
+    Finished,
+    TimedOut,
+}
+
 fn run_stage_watchdog_loop(
-    done_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    signal: std::sync::Arc<StageWatchdogSignal>,
     stage_label: String,
-    timeout_secs: u64,
+    timeout: Duration,
+    log_interval: Duration,
 ) {
-    let timeout = Duration::from_secs(timeout_secs);
+    let started = Instant::now();
+    if wait_for_stage_watchdog(&signal, &stage_label, timeout, log_interval)
+        == StageWatchdogOutcome::Finished
+    {
+        return;
+    }
+    eprintln!(
+        "ERROR: stage timeout exceeded: '{}' ran for {:.1}s (limit={}s). Aborting to prevent a stuck test run.",
+        stage_label,
+        started.elapsed().as_secs_f64(),
+        timeout.as_secs()
+    );
+    std::process::abort();
+}
+
+fn wait_for_stage_watchdog(
+    signal: &StageWatchdogSignal,
+    stage_label: &str,
+    timeout: Duration,
+    log_interval: Duration,
+) -> StageWatchdogOutcome {
     let start = Instant::now();
-    let mut last_log = Instant::now();
+    let mut next_log = log_interval;
+    let mut done = signal
+        .done
+        .lock()
+        .expect("stage watchdog mutex should not be poisoned");
     loop {
-        if done_flag.load(Ordering::Relaxed) {
-            break;
+        if *done {
+            return StageWatchdogOutcome::Finished;
         }
         let elapsed = start.elapsed();
         if elapsed >= timeout {
-            eprintln!(
-                "ERROR: stage timeout exceeded: '{}' ran for {:.1}s (limit={}s). Aborting to prevent a stuck test run.",
-                stage_label,
-                elapsed.as_secs_f64(),
-                timeout_secs
-            );
-            std::process::abort();
+            return StageWatchdogOutcome::TimedOut;
         }
-        if last_log.elapsed().as_secs() >= STAGE_WATCHDOG_LOG_INTERVAL_SECS {
+        if elapsed >= next_log {
             eprintln!(
                 "  stage in-flight: '{}' elapsed {:.1}s / {}s",
                 stage_label,
                 elapsed.as_secs_f64(),
-                timeout_secs
+                timeout.as_secs()
             );
-            last_log = Instant::now();
+            next_log = next_log.saturating_add(log_interval);
+            continue;
         }
-        std::thread::sleep(Duration::from_secs(1));
+        let wake_at = timeout.min(next_log);
+        let wait = wake_at.saturating_sub(elapsed);
+        #[cfg(test)]
+        signal.waiting.store(true, Ordering::Release);
+        let (next_done, _) = signal
+            .changed
+            .wait_timeout(done, wait)
+            .expect("stage watchdog mutex should not be poisoned");
+        done = next_done;
+        #[cfg(test)]
+        signal.waiting.store(false, Ordering::Release);
     }
 }
 
 impl StageAbortWatchdog {
     pub(super) fn new(stage_name: impl Into<String>, timeout_secs: u64) -> Self {
+        Self::with_durations(
+            stage_name,
+            Duration::from_secs(timeout_secs),
+            Duration::from_secs(STAGE_WATCHDOG_LOG_INTERVAL_SECS),
+        )
+    }
+
+    fn with_durations(
+        stage_name: impl Into<String>,
+        timeout: Duration,
+        log_interval: Duration,
+    ) -> Self {
         let stage_name = stage_name.into();
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done_flag = std::sync::Arc::clone(&done);
+        let signal = std::sync::Arc::new(StageWatchdogSignal::new());
+        let worker_signal = std::sync::Arc::clone(&signal);
         let worker = std::thread::spawn(move || {
-            run_stage_watchdog_loop(done_flag, stage_name, timeout_secs);
+            run_stage_watchdog_loop(worker_signal, stage_name, timeout, log_interval);
         });
         Self {
-            done,
+            signal,
             worker: Some(worker),
         }
     }
@@ -280,10 +354,56 @@ impl StageAbortWatchdog {
 
 impl Drop for StageAbortWatchdog {
     fn drop(&mut self) {
-        self.done.store(true, Ordering::Relaxed);
+        self.signal.finish();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod stage_watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn stage_watchdog_drop_wakes_a_blocked_worker_immediately() {
+        let watchdog = StageAbortWatchdog::with_durations(
+            "quick drop",
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+        );
+        let ready_deadline = Instant::now() + Duration::from_secs(1);
+        while !watchdog.signal.waiting.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < ready_deadline,
+                "watchdog worker did not enter its blocking wait"
+            );
+            std::thread::yield_now();
+        }
+
+        let drop_started = Instant::now();
+        drop(watchdog);
+        assert!(
+            drop_started.elapsed() < Duration::from_millis(250),
+            "signaled watchdog Drop should not wait for the polling interval"
+        );
+    }
+
+    #[test]
+    fn stage_watchdog_wait_reports_timeout_at_its_deadline() {
+        let signal = StageWatchdogSignal::new();
+        let timeout = Duration::from_millis(25);
+        let started = Instant::now();
+        let outcome =
+            wait_for_stage_watchdog(&signal, "short timeout", timeout, Duration::from_secs(1));
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome, StageWatchdogOutcome::TimedOut);
+        assert!(elapsed >= timeout, "watchdog fired before its deadline");
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "watchdog timeout should not inherit a one-second polling delay"
+        );
     }
 }
 

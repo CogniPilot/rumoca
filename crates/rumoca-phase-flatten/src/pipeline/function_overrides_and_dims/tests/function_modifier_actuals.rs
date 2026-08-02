@@ -138,6 +138,97 @@ fn replaceable_function_alias_preserves_modifier_actuals() {
     assert_eq!(name.as_str(), "world.gravityType");
 }
 
+#[test]
+fn structured_template_and_scalar_row_keep_the_same_bound_function_inputs() {
+    let fixture = gravity_alias_fixture();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&fixture.tree);
+    let call = Expression::FunctionCall {
+        name: rumoca_core::Reference::with_component_reference(
+            "world.gravityAcceleration",
+            core_comp_ref(&[
+                ("world", fixture.world_occurrence),
+                ("gravityAcceleration", fixture.implementation),
+            ]),
+        ),
+        args: vec![core_var(&[("r", fixture.radius)])],
+        is_constructor: false,
+        span: test_span(),
+    };
+    let origin = rumoca_ir_flat::EquationOrigin::ComponentEquation {
+        component: "probe".to_string(),
+    };
+    let mut flat = rumoca_ir_flat::Model::new();
+    flat.add_equation(rumoca_ir_flat::Equation::new(
+        call.clone(),
+        test_span(),
+        origin.clone(),
+    ));
+    flat.add_initial_equation(rumoca_ir_flat::Equation::new(
+        call.clone(),
+        test_span(),
+        origin.clone(),
+    ));
+    let family = |body| rumoca_ir_flat::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 1,
+                step: 1,
+            }],
+        },
+        first_equation_index: 0,
+        equations_per_point: 1,
+        span: test_span(),
+        origin: origin.clone(),
+        regular: None,
+        template: Some(rumoca_core::ComprehensionTemplate {
+            body: vec![body],
+            scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+        }),
+        interiors_materialized: true,
+    };
+    flat.add_structured_equation(family(call.clone()));
+    flat.add_initial_structured_equation(family(call));
+    let mut component_overrides = ComponentOverrideMap::default();
+    component_overrides.insert(ComponentPath::root(), fixture.override_functions);
+
+    rewrite_function_overrides_in_flat_model(
+        &mut flat,
+        &fixture.tree,
+        &class_index,
+        &component_overrides,
+        &crate::pipeline::component_member_scope::ComponentMemberScopes::default(),
+    )
+    .expect("exact function modifier rewrite");
+
+    let argument_names = |expression: &Expression| {
+        let Expression::FunctionCall { args, .. } = expression else {
+            panic!("expected function call");
+        };
+        args.iter()
+            .filter_map(named_arg)
+            .map(|(name, _)| name.to_string())
+            .collect::<Vec<_>>()
+    };
+    let scalar_names = argument_names(&flat.equations[0].residual);
+    let initial_scalar_names = argument_names(&flat.initial_equations[0].residual);
+    let template_names =
+        argument_names(&flat.structured_equations[0].template.as_ref().unwrap().body[0]);
+    let initial_template_names = argument_names(
+        &flat.initial_structured_equations[0]
+            .template
+            .as_ref()
+            .unwrap()
+            .body[0],
+    );
+    assert_eq!(scalar_names, vec!["gravityType"]);
+    assert_eq!(template_names, scalar_names);
+    assert_eq!(initial_scalar_names, scalar_names);
+    assert_eq!(initial_template_names, scalar_names);
+}
+
 fn function_alias_with_real_default(
     name: &str,
     exposure: DefId,

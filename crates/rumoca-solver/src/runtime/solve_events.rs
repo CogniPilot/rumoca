@@ -1,6 +1,8 @@
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
+use super::solve_ops::write_clock_activation_params;
+
 use crate::{
     EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
     timeline::{event_time_in_window, runtime_parameter_index, sample_time_match_with_tol},
@@ -104,14 +106,16 @@ pub(crate) fn event_eval_params_with_relation_overrides(
 }
 
 pub fn eval_event_actions_with_context(
-    events: &solve::SolveEventPartition,
+    model: &solve::SolveModel,
     y: &[f64],
     p: &[f64],
     event_pre_p: &[f64],
     t: f64,
     context: RowEvalContext<'_>,
 ) -> Result<EventActionOutcome, RuntimeSolveError> {
-    let action_p = event_action_params(events, p, event_pre_p)?;
+    let events = &model.problem.events;
+    let mut action_p = event_action_params(events, p, event_pre_p)?;
+    write_clock_activation_params(model, &mut action_p, t);
     match solve_eval::eval_event_action_request(events, y, &action_p, t, context)? {
         solve_eval::EventActionRequest::Continue => Ok(EventActionOutcome::Continue),
         solve_eval::EventActionRequest::AssertionFailed { message } => {

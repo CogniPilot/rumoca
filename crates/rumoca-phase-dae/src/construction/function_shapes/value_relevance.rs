@@ -4,7 +4,9 @@
 //! inputs, and MLS §4.4.2 restricts a dimension to a scalar evaluable
 //! Integer/enumeration/Boolean expression. Only an input whose *value* one of
 //! those translation-time constructs actually reads can change a
-//! specialization's shapes, so only those inputs belong in
+//! specialization's shapes. A function assertion additionally needs an exact
+//! value key when proof of its success is what permits the pure DAE function to
+//! erase that flow action. Only those inputs belong in
 //! [`FunctionSpecializationKey::input_values`].
 //!
 //! Keying on any more than that is not merely wasteful. `g(1) … g(10)` would
@@ -34,7 +36,7 @@ impl ValueReadInputs {
         let mut reads: HashMap<VarName, HashSet<VarName>> = flat
             .functions
             .iter()
-            .map(|(name, function)| (name.clone(), declared_value_reads(function)))
+            .map(|(name, function)| (name.clone(), declared_value_reads(function, flat)))
             .collect();
         let mut masks = build_masks(flat, dimension_typed, &reads);
         // A call argument is a value read exactly when the callee keys on that
@@ -113,11 +115,13 @@ fn build_masks(
 
 /// Names whose value a translation-time construct of `function` reads.
 ///
-/// The three constructs are exactly the ones that reach
-/// `evaluate_shape_integer` or `ShapeEnvironment::proven_extent`: a declared
-/// dimension (MLS §12.2), a compact range bound (MLS §10.4.1, §11.2.2), and a
-/// `zeros`/`ones`/`fill` extent (MLS §10.3).
-fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
+/// The translation-time constructs are the ones that reach
+/// `evaluate_shape_integer` / `ShapeEnvironment::proven_extent`, plus a
+/// function assertion whose proven-success certificate permits semantic
+/// erasure: a declared dimension (MLS §12.2), a compact range bound (MLS
+/// §10.4.1, §11.2.2), a `zeros`/`ones`/`fill` extent (MLS §10.3), and an
+/// MLS §8.3.7 assertion condition.
+fn declared_value_reads(function: &rumoca_core::Function, flat: &flat::Model) -> HashSet<VarName> {
     let mut reads = HashSet::new();
     for value in function
         .inputs
@@ -152,6 +156,11 @@ fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
         }
         _ => {}
     });
+    for_each_statement(&function.body, &mut |statement| {
+        if let Some(condition) = assertion_condition(statement, flat) {
+            collect_read_names(condition, &mut reads);
+        }
+    });
     // MLS §12.4.4: a local's declaration equation settles the value a later
     // dimension reads, so a read of the local is a read of everything that
     // equation is written over.
@@ -175,6 +184,30 @@ fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
         }
     }
     reads
+}
+
+/// The condition of a predefined assertion statement, in either Flat shape.
+fn assertion_condition<'statement>(
+    statement: &'statement rumoca_core::Statement,
+    flat: &flat::Model,
+) -> Option<&'statement Expression> {
+    match statement {
+        rumoca_core::Statement::Assert { condition, .. } => Some(condition),
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            ..
+        } if outputs.iter().all(Option::is_none) => {
+            let name = comp.to_var_name();
+            (!flat.functions.contains_key(&name)
+                && rumoca_core::runtime_flow_action_function_short_name(name.as_str())
+                    == Some("assert"))
+            .then(|| args.first())
+            .flatten()
+        }
+        _ => None,
+    }
 }
 
 /// Every free reference name in `expression`.

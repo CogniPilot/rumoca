@@ -19,6 +19,7 @@ enum CoupledEventUnknown {
 enum CoupledEventResidual {
     Implicit { row: usize },
     Discrete { row: usize },
+    StructuredDiscrete { row: usize },
 }
 
 struct CoupledEventInventory {
@@ -137,7 +138,8 @@ impl SolveRuntime {
                 continue;
             }
             let mode = discrete_row_pre_mode(&self.model, row)?;
-            if !snapshot.row_filter.accepts(mode) {
+            let clock_owned = self.model.problem.discrete.clock_owners[row].is_some();
+            if !snapshot.row_filter.accepts(mode, clock_owned) {
                 continue;
             }
             let Some(unknown) = self.real_event_unknown(target) else {
@@ -147,6 +149,29 @@ impl SolveRuntime {
                 &mut inventory,
                 unknown,
                 CoupledEventResidual::Discrete { row },
+            )?;
+        }
+        for (row_index, row) in self
+            .structured_discrete_rows
+            .rows()
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            if !self.structured_discrete_row_active_at(row, t)? {
+                continue;
+            }
+            let mode = crate::EventPreMode::from(row.pre_mode);
+            if !snapshot.row_filter.accepts(mode, row.clock_owner.is_some()) {
+                continue;
+            }
+            let Some(unknown) = self.real_event_unknown(row.target) else {
+                continue;
+            };
+            push_coupled_inventory_entry(
+                &mut inventory,
+                unknown,
+                CoupledEventResidual::StructuredDiscrete { row: row_index },
             )?;
         }
         Ok(inventory)
@@ -237,6 +262,9 @@ impl CoupledEventSystem<'_> {
                 CoupledEventResidual::Discrete { row } => {
                     self.eval_discrete_residual(row, y, p, &mut eval_p_cache)?
                 }
+                CoupledEventResidual::StructuredDiscrete { row } => {
+                    self.eval_structured_discrete_residual(row, y, p, &mut eval_p_cache)?
+                }
             };
         }
         Ok(())
@@ -265,6 +293,35 @@ impl CoupledEventSystem<'_> {
             .ok_or_else(|| filtered_discrete_row_error(row))?;
         let target = self.runtime.model.problem.discrete.update_targets[row];
         Ok(scalar_slot_value(target, y, p)? - value)
+    }
+
+    fn eval_structured_discrete_residual(
+        &self,
+        row_index: usize,
+        y: &[f64],
+        p: &[f64],
+        eval_p_cache: &mut EventEvalParamCache,
+    ) -> Result<f64, RuntimeSolveError> {
+        let row = self
+            .runtime
+            .structured_discrete_rows
+            .rows()
+            .get(row_index)
+            .copied()
+            .ok_or_else(|| filtered_structured_discrete_row_error(row_index))?;
+        let value = self
+            .runtime
+            .eval_structured_discrete_row_for_pre_snapshot(
+                self.snapshot,
+                row,
+                y,
+                p,
+                self.t,
+                self.tol,
+                eval_p_cache,
+            )?
+            .ok_or_else(|| filtered_structured_discrete_row_error(row_index))?;
+        Ok(scalar_slot_value(row.target, y, p)? - value)
     }
 
     fn unknown_scale(&self, unknown: CoupledEventUnknown) -> f64 {
@@ -381,6 +438,12 @@ fn implicit_row_value(values: &[f64], row: usize) -> Result<f64, RuntimeSolveErr
 fn filtered_discrete_row_error(row: usize) -> RuntimeSolveError {
     RuntimeSolveError::solve_ir(format!(
         "coupled event inventory contains filtered discrete row {row}"
+    ))
+}
+
+fn filtered_structured_discrete_row_error(row: usize) -> RuntimeSolveError {
+    RuntimeSolveError::solve_ir(format!(
+        "coupled event inventory contains filtered structured discrete row {row}"
     ))
 }
 

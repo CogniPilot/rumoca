@@ -218,6 +218,7 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
     fn collect_component(&mut self, component: &ast::Component) -> ControlFlow<()> {
         if let Some(type_def_id) = component.type_def_id {
             self.add_class_dep_by_def_id(type_def_id);
+            self.collect_component_redeclare_slots(component, type_def_id);
         }
         self.visit_component(component)?;
         if let Some(binding) = &component.binding {
@@ -227,6 +228,42 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
             self.visit_subscript(shape)?;
         }
         Continue(())
+    }
+
+    /// Retain the exact declared member slot targeted by a component
+    /// redeclaration (MLS §7.3).
+    ///
+    /// Resolve intentionally leaves the outer modifier target instance-owned,
+    /// but an exact declared component type is enough for strict planning to
+    /// follow that target through the type's inheritance graph. Without this
+    /// edge, pruning can keep the type while dropping its inherited
+    /// replaceable nested class/function before Instantiate applies the
+    /// redeclaration.
+    fn collect_component_redeclare_slots(
+        &mut self,
+        component: &ast::Component,
+        type_def_id: DefId,
+    ) {
+        for (index, modification) in component.source_modifications.iter().enumerate() {
+            let is_redeclare = component
+                .source_modification_redeclare_flags
+                .get(index)
+                .copied()
+                .unwrap_or(false);
+            if !is_redeclare {
+                continue;
+            }
+            let Some(target) = component_modifier_target(modification) else {
+                continue;
+            };
+            let mut owners = vec![type_def_id];
+            for part in &target.parts {
+                owners = self.add_deferred_segment_deps(&owners, part.ident.text.as_ref());
+                if owners.is_empty() {
+                    break;
+                }
+            }
+        }
     }
 
     fn collect_external(&mut self, external: &ast::ExternalFunction) -> ControlFlow<()> {
@@ -430,6 +467,14 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
                 return;
             }
         }
+    }
+}
+
+fn component_modifier_target(modification: &ast::Expression) -> Option<&ast::ComponentReference> {
+    match modification {
+        ast::Expression::Modification { target, .. }
+        | ast::Expression::ClassModification { target, .. } => Some(target),
+        _ => None,
     }
 }
 

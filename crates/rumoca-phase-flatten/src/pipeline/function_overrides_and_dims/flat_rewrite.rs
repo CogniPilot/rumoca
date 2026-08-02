@@ -276,6 +276,13 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
     for equation in &mut flat.initial_equations {
         rewrite_function_overrides_in_expression_with_ctx(&mut equation.residual, &root_ctx)?;
     }
+    for family in &mut flat.initial_structured_equations {
+        if let Some(template) = family.template.as_mut() {
+            for expression in &mut template.body {
+                rewrite_function_overrides_in_expression_with_ctx(expression, &root_ctx)?;
+            }
+        }
+    }
     for assert_eq in &mut flat.assert_equations {
         rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.condition, &root_ctx)?;
         rewrite_function_overrides_in_expression_with_ctx(&mut assert_eq.message, &root_ctx)?;
@@ -376,6 +383,38 @@ fn rewrite_function_overrides_in_equations(
         .with_active_scope(cache_key)
         .with_component_member_scope(component_members);
         rewrite_function_overrides_in_expression_with_ctx(&mut equation.residual, &ctx)?;
+    }
+    // A structured family's template is the canonical peer of its materialized
+    // scalar rows. Apply the same exact, instance-scoped callable rewrite to
+    // both representations so a compact consumer cannot observe the
+    // pre-modification call signature after the scalar row has been rewritten.
+    for family in &mut flat.structured_equations {
+        let Some(template) = family.template.as_mut() else {
+            continue;
+        };
+        let scope = family
+            .origin
+            .binding_variable()
+            .or_else(|| family.origin.component_name())
+            .unwrap_or("");
+        let scope_path = ComponentPath::from_flat_path(scope);
+        let cache_key = override_context_cache_key(&scope_path, component_override_map);
+        let (override_packages, override_functions) = contexts
+            .entry(cache_key.clone())
+            .or_insert_with_key(|scope| {
+                override_context_for_component_path(scope, component_override_map)
+            });
+        let ctx = FunctionOverrideRewriteContext::new(
+            tree,
+            class_index,
+            override_packages,
+            override_functions,
+        )
+        .with_active_scope(cache_key)
+        .with_component_member_scope(component_members);
+        for expression in &mut template.body {
+            rewrite_function_overrides_in_expression_with_ctx(expression, &ctx)?;
+        }
     }
     Ok(())
 }

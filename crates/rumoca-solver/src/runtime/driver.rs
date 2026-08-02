@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use rumoca_ir_solve as solve;
 
+use crate::runtime::event::advance_state_across_event_right_limit;
 use crate::runtime::solve_events::next_runtime_event_stop;
 use crate::runtime::solve_runtime::{
     EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime,
@@ -42,13 +43,14 @@ pub enum StepOutcome {
     /// Took an internal adaptive step (did not reach a stop/root).
     Internal,
     /// A zero-crossing root was located at `t_root`.
-    Root { t_root: f64 },
+    Root { t_root: f64, root_index: usize },
 }
 
 /// Error surfaced by the driver. Backend (`SolverAdvanceBackend`) failures arrive as
 /// [`SimDriverError::Backend`]; runtime evaluation failures convert in via
-/// `From<RuntimeSolveError>`. `Terminated` is preserved so the backend's
-/// finalization can replay Modelica `terminate()` semantics.
+/// `From<RuntimeSolveError>`. Modelica assertions, runtime-contract failures,
+/// and `Terminated` remain typed so a concrete backend can preserve their
+/// caller-visible classification while crossing this neutral boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum SimDriverError {
     #[error("{0}")]
@@ -59,6 +61,10 @@ pub enum SimDriverError {
     SolveIr(String),
     #[error("{0}")]
     Timeout(#[from] TimeoutExceeded),
+    #[error("Modelica assert failed at t={time:.9}: {message}")]
+    AssertionFailed { time: f64, message: String },
+    #[error("runtime contract violation: {reason}")]
+    RuntimeContract { reason: String },
     #[error("terminated at t={time}: {message}")]
     Terminated { time: f64, message: String },
 }
@@ -82,6 +88,41 @@ pub trait SolverAdvanceBackend {
     }
     fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimDriverError>;
     fn state_mut_back(&mut self, t: f64) -> Result<(), SimDriverError>;
+
+    /// Temporary SPEC_0038 phase-2 bridge: ask an owned ME component for the
+    /// same time event the frozen driver is about to integrate toward.
+    fn arm_component_time_event(
+        &mut self,
+        current_time: f64,
+        event_time: f64,
+        horizon: f64,
+    ) -> Result<(), SimDriverError>;
+
+    /// Temporary phase-2 bridge: run the component's scheduled-event
+    /// lifecycle before the frozen driver replays that boundary for its parity
+    /// assertion.
+    fn process_component_time_event(
+        &mut self,
+        event_time: f64,
+        horizon: f64,
+    ) -> Result<(), SimDriverError>;
+
+    /// Temporary phase-2 bridge: run the component's state-event lifecycle at
+    /// the root Diffsol located.
+    fn process_component_state_event(
+        &mut self,
+        root_time: f64,
+        root_index: usize,
+        root_states: &[f64],
+        horizon: f64,
+    ) -> Result<(), SimDriverError>;
+
+    /// Temporary phase-2 bridge: compare a typed frozen event failure with the
+    /// component event retained by the backend. Backends without a shadow ME
+    /// component preserve the original failure unchanged.
+    fn validate_component_event_error(&mut self, error: SimDriverError) -> SimDriverError {
+        error
+    }
 
     // --- native-state <-> full-solver_y mapping (encapsulates the backend's
     //     integration mode: identity for a full system, projection for a
@@ -237,7 +278,7 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
     let runtime_state = state.runtime_state;
     let mut stop_schedule = SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end);
     let budget = TimeoutBudget::new(opts.max_wall_seconds);
-    let mut pending_root_t: Option<f64> = None;
+    let mut pending_root: Option<(f64, usize)> = None;
     let make_ctx = || AdvanceContext {
         model,
         opts,
@@ -259,7 +300,7 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
         while target > *state.current_t + tol {
             budget.check()?;
             match resolve_pending_root(
-                &mut pending_root_t,
+                &mut pending_root,
                 make_ctx(),
                 AdvanceState {
                     current_y: state.current_y,
@@ -269,6 +310,10 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
                 target,
                 backend,
                 &mut stop_schedule,
+                ObservationBuffers {
+                    recorded_times: state.recorded_times,
+                    data: state.data,
+                },
             )? {
                 PendingRootAction::Break => break,
                 PendingRootAction::Continue => continue,
@@ -292,6 +337,9 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
             );
             stop_time = bounded_stop;
             event_stop = bounded_event;
+            if event_stop.is_some() {
+                backend.arm_component_time_event(*state.current_t, stop_time, target)?;
+            }
             // Bounding the step by the delay history window only means anything
             // while the backend is still behind that bound. An output grid finer
             // than the solver's natural step leaves `backend.time()` already at or
@@ -303,7 +351,7 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
             {
                 backend.set_stop_time(stop_time)?;
             }
-            let mut deferred_root: Option<f64> = None;
+            let mut deferred_root: Option<(f64, usize)> = None;
             let hit_root = advance_to_target_once(
                 make_ctx(),
                 AdvanceState {
@@ -316,8 +364,8 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
                 backend,
                 &mut deferred_root,
             )?;
-            if let Some(prt) = deferred_root {
-                pending_root_t = Some(prt);
+            if let Some(root) = deferred_root {
+                pending_root = Some(root);
             }
             // `hit_root` with the clock still on `stop_time` means the located
             // root shared the scheduled instant: `handle_root_crossing` snapped
@@ -365,17 +413,18 @@ pub fn simulate_state_targets<St: SolverAdvanceBackend + ?Sized>(
 }
 
 fn resolve_pending_root<St: SolverAdvanceBackend + ?Sized>(
-    pending_root_t: &mut Option<f64>,
+    pending_root: &mut Option<(f64, usize)>,
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     target: f64,
     backend: &mut St,
     stop_schedule: &mut SolveStopSchedule,
+    observations: ObservationBuffers<'_>,
 ) -> Result<PendingRootAction, SimDriverError> {
-    let Some(prt) = *pending_root_t else {
+    let Some((root_time, root_index)) = *pending_root else {
         return Ok(PendingRootAction::None);
     };
-    if !sample_time_match_with_tol(target, prt) && target < prt {
+    if !sample_time_match_with_tol(target, root_time) && target < root_time {
         let y_at = backend.interpolate(target)?;
         *state.current_t = target;
         state
@@ -386,8 +435,47 @@ fn resolve_pending_root<St: SolverAdvanceBackend + ?Sized>(
         return Ok(PendingRootAction::Break);
     }
 
-    *pending_root_t = None;
-    handle_root_crossing(ctx, state, prt, target, backend)?;
+    let tol = ctx.opts.atol.max(1.0e-10);
+    let root_right_t = runtime_root_event_application_time(root_time, target, tol);
+    let (clock_t, clock_event) = stop_schedule.next_stop(*state.current_t, root_right_t);
+    let intervening_clock = clock_event.filter(|_| {
+        ctx.model
+            .problem
+            .clocks
+            .periodic_event_schedules
+            .iter()
+            .any(|schedule| crate::timeline::periodic_schedule_matches_time(schedule, clock_t))
+    });
+    if let Some(event) = intervening_clock
+        && clock_t < root_time
+        && !sample_time_match_with_tol(clock_t, root_time)
+    {
+        // The backend found `root_time` while overshooting an earlier output
+        // point. A typed tick between that point and the deferred root owns an
+        // earlier superdense instant, so process it first and invalidate the
+        // root from the pre-tick trajectory. The reset path will let the solver
+        // rediscover any crossing that still exists afterwards.
+        *pending_root = None;
+        backend.state_mut_back(clock_t)?;
+        *state.current_t = clock_t;
+        state
+            .params
+            .copy_from_slice(ctx.runtime_params.borrow().as_slice());
+        let native = backend.native_y();
+        write_full_y(backend, &native, clock_t, state.current_y, state.params)?;
+        apply_scheduled_time_event(ctx, state, event, target, backend, observations)?;
+        stop_schedule.advance_past(backend.time());
+        return Ok(PendingRootAction::Continue);
+    }
+
+    *pending_root = None;
+    // A deferred numerical root may lie just before a typed tick even when the
+    // root solver's time is outside the exact clock-recognition window. Bound
+    // its right-limit application by that authoritative stop; evaluating at
+    // the exact stop preserves the clock owner instead of stepping across it
+    // and letting the next schedule query discard it as already past.
+    let root_target = intervening_clock.map_or(target, |_| clock_t);
+    handle_root_crossing(ctx, state, root_time, root_index, root_target, backend)?;
     stop_schedule.advance_past(backend.time());
     Ok(PendingRootAction::Continue)
 }
@@ -396,9 +484,9 @@ fn resolve_pending_root<St: SolverAdvanceBackend + ?Sized>(
 fn event_action_to_result(outcome: EventActionOutcome, t: f64) -> Result<(), SimDriverError> {
     match outcome {
         EventActionOutcome::Continue => Ok(()),
-        EventActionOutcome::AssertionFailed { message, .. } => Err(SimDriverError::Backend(
-            format!("Modelica assert failed at t={t:.9}: {message}"),
-        )),
+        EventActionOutcome::AssertionFailed { message, .. } => {
+            Err(SimDriverError::AssertionFailed { time: t, message })
+        }
         EventActionOutcome::Terminated { message, .. } => {
             Err(SimDriverError::Terminated { time: t, message })
         }
@@ -420,6 +508,7 @@ fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
     p: &mut [f64],
     t: f64,
     tol: f64,
+    row_filter: EventUpdateRowFilter,
     pre: EventPre<'_>,
 ) -> Result<(), SimDriverError> {
     let outcome = runtime.apply_projected_event_update(
@@ -431,7 +520,7 @@ fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
             event_pre_y: pre.y,
             event_pre_p: pre.p,
             max_iters: EVENT_UPDATE_MAX_ITERS,
-            row_filter: EventUpdateRowFilter::All,
+            row_filter,
             root_relation_overrides: &[],
         },
         |y, p| backend.project_algebraics(y, p, t, tol),
@@ -478,9 +567,7 @@ fn bracket_event_limits_kernel<St: SolverAdvanceBackend + ?Sized>(
     for (slot, d) in event_pre_y.iter_mut().zip(dy.iter().copied()) {
         *slot -= dt * d;
     }
-    for (slot, d) in y.iter_mut().zip(dy) {
-        *slot += dt * d;
-    }
+    advance_state_across_event_right_limit(y, &dy, root_t, right_t);
     Ok(())
 }
 
@@ -516,9 +603,7 @@ fn advance_state_to_right_limit_kernel<St: SolverAdvanceBackend + ?Sized>(
         return Ok(());
     }
     let dy = backend.derivative_guess(y, p, event_t)?;
-    for (slot, d) in y.iter_mut().zip(dy) {
-        *slot += dt * d;
-    }
+    advance_state_across_event_right_limit(y, &dy, event_t, right_t);
     Ok(())
 }
 
@@ -597,6 +682,7 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
                 self.p,
                 event_t,
                 self.tol,
+                EventUpdateRowFilter::All,
                 EventPre {
                     y: &self.event_pre_y,
                     p: &self.event_pre_p,
@@ -641,6 +727,7 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
             self.p,
             right_t,
             self.tol,
+            EventUpdateRowFilter::All,
             EventPre {
                 y: &self.event_pre_y,
                 p: &self.event_pre_p,
@@ -694,6 +781,7 @@ fn apply_scheduled_time_event<St: SolverAdvanceBackend + ?Sized>(
     ctx.budget.check()?;
     let tol = ctx.opts.atol.max(1.0e-10);
     let event_t = *state.current_t;
+    backend.process_component_time_event(event_t, target)?;
     let event_pre_y = vec![0.0; state.current_y.len()];
     let event_pre_p = vec![0.0; state.params.len()];
     let outcome = {
@@ -723,8 +811,9 @@ fn apply_scheduled_time_event<St: SolverAdvanceBackend + ?Sized>(
                 event,
             },
             &mut handler,
-        )?
+        )
     };
+    let outcome = outcome.map_err(|error| backend.validate_component_event_error(error))?;
     *state.current_t = outcome.final_t;
     commit_pre_params_after_event_at(ctx.model, state.current_y, state.params, Some(event_t), tol);
     reinitialize_solver_after_time_event(ctx, state, backend, tol, event_t)?;
@@ -768,7 +857,7 @@ fn advance_to_target_once<St: SolverAdvanceBackend + ?Sized>(
     target: f64,
     event_stop: Option<RuntimeEventStop>,
     backend: &mut St,
-    deferred_root: &mut Option<f64>,
+    deferred_root: &mut Option<(f64, usize)>,
 ) -> Result<bool, SimDriverError> {
     if event_stop.is_some() {
         return advance_to_scheduled_stop(ctx, state, target, backend);
@@ -821,9 +910,9 @@ fn advance_to_scheduled_stop<St: SolverAdvanceBackend + ?Sized>(
                 return Ok(false);
             }
             StepOutcome::Internal => continue,
-            StepOutcome::Root { t_root } => {
+            StepOutcome::Root { t_root, root_index } => {
                 trace_step_event("scheduled-root", backend.time(), Some(t_root));
-                return handle_root_crossing(ctx, state, t_root, target, backend);
+                return handle_root_crossing(ctx, state, t_root, root_index, target, backend);
             }
         }
     }
@@ -834,7 +923,7 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
     state: AdvanceState<'_>,
     target: f64,
     backend: &mut St,
-    deferred_root: &mut Option<f64>,
+    deferred_root: &mut Option<(f64, usize)>,
 ) -> Result<bool, SimDriverError> {
     if backend.requires_exact_output_stop() {
         backend.set_stop_time(target)?;
@@ -869,12 +958,12 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
         };
         match outcome {
             StepOutcome::Stop | StepOutcome::Internal => {}
-            StepOutcome::Root { t_root } => {
+            StepOutcome::Root { t_root, root_index } => {
                 trace_step_event("output-root", backend.time(), Some(t_root));
                 let root_after_target =
                     t_root > target && !sample_time_match_with_tol(t_root, target);
                 if !root_after_target {
-                    return handle_root_crossing(ctx, state, t_root, target, backend);
+                    return handle_root_crossing(ctx, state, t_root, root_index, target, backend);
                 }
                 let y_at_target = backend.interpolate(target)?;
                 *state.current_t = target;
@@ -882,7 +971,7 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
                     .params
                     .copy_from_slice(ctx.runtime_params.borrow().as_slice());
                 write_full_y(backend, &y_at_target, target, state.current_y, state.params)?;
-                *deferred_root = Some(t_root);
+                *deferred_root = Some((t_root, root_index));
                 return Ok(false);
             }
         }
@@ -893,6 +982,7 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     ctx: AdvanceContext<'_>,
     state: AdvanceState<'_>,
     t_root: f64,
+    root_index: usize,
     target: f64,
     backend: &mut St,
 ) -> Result<bool, SimDriverError> {
@@ -905,6 +995,10 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     backend.state_mut_back(t_root)?;
     let root_t = backend.time();
     let native_at_root = backend.native_y();
+    // Diffsol reports a located root while its internal state may still be at
+    // the accepted step endpoint.  Pin once, then give both the component and
+    // frozen paths this one exact dense-output vector.
+    backend.process_component_state_event(root_t, root_index, &native_at_root, target)?;
     let right_t = runtime_root_event_application_time(root_t, target, tol);
     *state.current_t = right_t;
     state
@@ -942,7 +1036,8 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
     // bodies for this instant would never activate. Applying the update at the
     // instant itself first mirrors the scheduled path's left-limit application;
     // the right-limit application below then settles the crossing.
-    if let Some(scheduled) = coincident_scheduled_event(&ctx.model.problem, root_t) {
+    let coincident = coincident_scheduled_event(&ctx.model.problem, root_t);
+    if let Some(scheduled) = coincident {
         apply_event_update_kernel(
             ctx.runtime,
             backend,
@@ -950,17 +1045,19 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
             state.params,
             scheduled.time,
             tol,
+            EventUpdateRowFilter::All,
             EventPre {
                 y: &event_pre_y,
                 p: &event_pre_p,
             },
-        )?;
+        )
+        .map_err(|error| backend.validate_component_event_error(error))?;
         // The scheduled instant and the root are one event instant, so the
-        // right-limit application below continues the same event iteration:
-        // its `pre` snapshot is the state the time event left behind (MLS 3.7
-        // §8.5 advances `pre(v)` to `v` between event-iteration passes). Keeping
-        // the pre-time-event snapshot would make the now-inactive `when` bodies
-        // restore the values the time event just wrote.
+        // right-limit application below continues the same event iteration.
+        // Its `pre` snapshot is the state the clock pass left behind (MLS 3.7
+        // §8.5 advances `pre(v)` to `v` between event-iteration passes), while
+        // typed row ownership below prevents that clock pass from running a
+        // second time.
         event_pre_y.copy_from_slice(state.current_y);
         event_pre_p.copy_from_slice(state.params);
     }
@@ -979,11 +1076,21 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         state.params,
         right_t,
         tol,
+        if coincident.is_some() {
+            // Clock-owned rows already executed at the semantic tick above.
+            // The right-limit pass belongs to the coincident root only; running
+            // a clock row again after reinit would sample the post-event state
+            // and overwrite the tick's authoritative left-limit value.
+            EventUpdateRowFilter::UnownedOnly
+        } else {
+            EventUpdateRowFilter::All
+        },
         EventPre {
             y: &event_pre_y,
             p: &event_pre_p,
         },
-    )?;
+    )
+    .map_err(|error| backend.validate_component_event_error(error))?;
     settle_kernel(
         ctx.runtime,
         backend,

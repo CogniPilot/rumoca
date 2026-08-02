@@ -11,5 +11,7 @@ mod code_size_budget_test;
 mod dae_loc_trigger_test;
 #[path = "history_policy_test.rs"]
 mod history_policy_test;
+#[path = "mls_formalization_manifest_test.rs"]
+mod mls_formalization_manifest_test;
 #[path = "spec_budget_test.rs"]
 mod spec_budget_test;

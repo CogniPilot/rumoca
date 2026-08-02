@@ -5,6 +5,20 @@ use rumoca_ir_solve as solve;
 pub enum EventUpdateRowFilter {
     All,
     FollowCurrentOnly,
+    /// Settle rows without a typed clock owner.
+    ///
+    /// This separates two owners at coincident event boundaries. Initialization
+    /// uses it before the phase-zero clock tick; the runtime uses it at a
+    /// coincident root's right limit after clock-owned rows have already run at
+    /// the semantic tick. In both cases typed ownership, not row position,
+    /// decides which rows execute.
+    UnownedOnly,
+    /// Re-evaluate the rows whose meaning changes after `initial()` is cleared.
+    ///
+    /// A periodic clock that ticks at the simulation start owns rows at that
+    /// same instant. Unowned Fixed/EventEntry rows remain part of the completed
+    /// initialization event and must not execute a second time.
+    PostInitialClockTick,
     /// No discrete row is re-evaluated; only the continuous projection moves.
     ///
     /// MLS Appendix B changes discrete values, conditions, and relation memory
@@ -15,10 +29,12 @@ pub enum EventUpdateRowFilter {
 }
 
 impl EventUpdateRowFilter {
-    pub(super) fn accepts(self, mode: EventPreMode) -> bool {
+    pub(super) fn accepts(self, mode: EventPreMode, clock_owned: bool) -> bool {
         match self {
             Self::All => true,
             Self::FollowCurrentOnly => mode == EventPreMode::FollowCurrent,
+            Self::UnownedOnly => !clock_owned,
+            Self::PostInitialClockTick => clock_owned || mode == EventPreMode::FollowCurrent,
             Self::Hold => false,
         }
     }
@@ -89,6 +105,7 @@ impl EventEvalParamCache {
         base_p: &[f64],
         mode: EventPreMode,
         sources: &EventPreSources<'_>,
+        t: f64,
         tol: f64,
     ) -> &'a [f64] {
         let slot = match mode {
@@ -97,7 +114,40 @@ impl EventEvalParamCache {
             EventPreMode::FollowCurrent => &mut self.follow_current,
         };
         slot.get_or_insert_with(|| {
-            event_eval_params_for_row_pre_mode(model, base_p, mode, sources, tol)
+            event_eval_params_for_row_pre_mode(model, base_p, mode, sources, t, tol)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_clock_tick_filters_follow_typed_ownership() {
+        assert!(
+            EventUpdateRowFilter::UnownedOnly.accepts(EventPreMode::EventEntry, false),
+            "an unowned event-entry row remains part of initialization"
+        );
+        assert!(
+            !EventUpdateRowFilter::UnownedOnly.accepts(EventPreMode::EventEntry, true),
+            "the typed clock row waits for its first superdense tick"
+        );
+        assert!(
+            EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::EventEntry, true),
+            "the typed clock row executes after initial() clears"
+        );
+        assert!(
+            !EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::EventEntry, false),
+            "an unowned event-entry row cannot execute a second time"
+        );
+        assert!(
+            EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::FollowCurrent, false),
+            "the established post-initial refresh remains active"
+        );
+        assert!(
+            !EventUpdateRowFilter::PostInitialClockTick.accepts(EventPreMode::Fixed, false),
+            "fixed initialization rows remain settled"
+        );
     }
 }

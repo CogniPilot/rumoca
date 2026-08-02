@@ -204,6 +204,42 @@ jobs:
             .#checks.x86_64-linux.rumoca \
             .#checks.x86_64-linux.mlir-cpu
 
+  kani:
+    name: Kani bounded proofs (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
+          diagnostic-endpoint: ''
+
+      - name: Prove required solver harnesses with pinned Kani
+        run: nix develop .#kani --command cargo xtask verify kani
+
+      - name: Upload Kani proof summary
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kani-proof-summary
+          path: target/verification/kani-summary.json
+          if-no-files-found: warn
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -388,6 +424,10 @@ jobs:
       - name: Run tensor compile-scaling ratchet
         if: runner.os == 'Linux'
         run: |
+          cargo build \
+            --package rumoca-test-msl \
+            --bin rumoca-tensor-scaling \
+            --features rumoca-test-msl/tensor-scaling-bin
           target/debug/rumoca-tensor-scaling \
             --enforce \
             --output target/tensor-scaling/report.json

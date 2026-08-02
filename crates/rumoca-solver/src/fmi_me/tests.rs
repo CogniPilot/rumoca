@@ -7,10 +7,64 @@
 
 use rumoca_ir_solve as solve;
 
+use super::kernel::{event_update_application_time, frozen_projection_changed};
 use super::{
-    MeError, MeInstanceConfig, MeModelSource, MeStage, ModelExchangeKernel, SolveMeKernel,
+    MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig, MeModelSource,
+    MeNoStateSession, MeStage, MeStepCompletion, MeTime, ModelExchangeKernel, SolveMeKernel,
     resolve_me_stage,
 };
+
+#[test]
+fn zero_state_event_continuation_is_independent_of_value_tolerance() {
+    let mut model = solve::SolveModel::default();
+    model.problem.events.scheduled_time_events = vec![2.5e-9];
+    let run = |atol| {
+        let mut session = MeNoStateSession::instantiate(
+            MeModelSource::new(&model),
+            crate::SimOptions {
+                t_start: 0.0,
+                t_end: 2.0e-8,
+                dt: Some(1.0e-10),
+                atol,
+                rtol: atol,
+                ..Default::default()
+            },
+        )
+        .expect("zero-state session should initialize");
+        [2.4e-9, 2.5e-9, 2.6e-9, 5.0e-9]
+            .into_iter()
+            .map(|target| {
+                session
+                    .advance_to(target)
+                    .expect("zero-state session should reach every local boundary");
+                session.time().to_bits()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let loose = run(1.0e-6);
+    let tight = run(1.0e-12);
+    assert_eq!(loose, tight);
+    assert_eq!(loose[2], 2.6e-9_f64.to_bits());
+    assert_eq!(loose[3], 5.0e-9_f64.to_bits());
+}
+
+#[test]
+fn state_event_application_time_preserves_clock_and_numerical_owners() {
+    let semantic_root = 0.21500000000000002;
+    let snapped_horizon = 0.215;
+
+    assert_eq!(
+        event_update_application_time(semantic_root, snapped_horizon, false).to_bits(),
+        snapped_horizon.to_bits(),
+        "ordinary root rows execute at the host's numerical application point"
+    );
+    assert_eq!(
+        event_update_application_time(semantic_root, snapped_horizon, true).to_bits(),
+        semantic_root.to_bits(),
+        "a coincident clock pass retains the semantic tick"
+    );
+}
 
 // -- staging (B5) --------------------------------------------------------
 
@@ -162,6 +216,77 @@ fn harmonic_oscillator() -> solve::SolveModel {
     }
 }
 
+fn strict_root_relation_memory() -> solve::SolveModel {
+    let derivative = block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_strict_root_derivative.mo",
+    );
+    let root = block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_strict_root_indicator.mo",
+    );
+    let condition_memory = block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 0.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        "fmi_me_strict_root_memory.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                rhs: condition_memory,
+                update_targets: vec![solve::scalar_slot_p(0)],
+                row_roles: vec![solve::DiscreteRowRole::ConditionMemory],
+                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                observation_refresh: vec![false],
+                clock_owners: vec![None],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: root,
+                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                condition_memory_parameter_indices: vec![0],
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![-1.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![0.0],
+        visible_names: vec!["x".to_string()],
+        ..Default::default()
+    }
+}
+
 fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarProgramBlock {
     let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 1, 2);
     solve::ScalarProgramBlock::with_source_span(
@@ -173,6 +298,13 @@ fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarPr
 }
 
 fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
+    instantiate_with_numerics(model, super::MeNumericsProfile::Component)
+}
+
+fn instantiate_with_numerics(
+    model: &solve::SolveModel,
+    numerics_profile: super::MeNumericsProfile,
+) -> SolveMeKernel {
     SolveMeKernel::instantiate(
         MeModelSource::new(model),
         &MeInstanceConfig {
@@ -180,9 +312,299 @@ fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
             tolerance: 1.0e-10,
             start_time: 0.0,
             stop_time: 1.0,
+            root_profile: super::MeRootProfile::Component,
+            numerics_profile,
         },
     )
     .expect("fixture instantiates")
+}
+
+#[test]
+fn rejected_lifecycle_transitions_leave_the_legal_path_available() {
+    let model = harmonic_oscillator();
+    let mut kernel = instantiate(&model);
+
+    let error = kernel
+        .exit_initialization_mode()
+        .expect_err("initialization cannot be exited before it is entered");
+    assert_eq!(error.stage(), Some(MeStage::Initialization));
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+
+    kernel
+        .enter_initialization_mode()
+        .expect("the rejected transition must not consume Instantiated");
+    kernel
+        .exit_initialization_mode()
+        .expect("the legal transition remains available");
+    kernel
+        .enter_continuous_time_mode()
+        .expect_err("the initial event update must complete first");
+    kernel
+        .update_discrete_states()
+        .expect("the rejected continuous-mode entry must leave Event Mode intact");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("the canonical initialization path reaches Continuous-Time Mode");
+}
+
+#[test]
+fn terminated_is_fail_closed_until_snapshot_restore() {
+    let model = harmonic_oscillator();
+    let mut kernel = instantiate(&model);
+    let saved = kernel.fmu_state();
+    kernel.terminate().expect("termination is legal once");
+
+    assert!(kernel.set_time(super::MeTime::at(0.25)).is_err());
+    assert!(kernel.set_continuous_states(&[2.0, 3.0]).is_err());
+    assert!(kernel.terminate().is_err());
+
+    kernel
+        .reset_to_fmu_state(&saved)
+        .expect("snapshot restore is the one exit from Terminated");
+    kernel
+        .enter_initialization_mode()
+        .expect("the saved Instantiated lifecycle is restored exactly");
+}
+
+#[test]
+fn fmu_state_restore_replays_the_same_scheduled_event_continuation() {
+    let mut model = harmonic_oscillator();
+    model.problem.events.scheduled_time_events = vec![0.5];
+    let mut kernel = instantiate(&model);
+    kernel
+        .enter_initialization_mode()
+        .expect("enter initialization");
+    kernel
+        .exit_initialization_mode()
+        .expect("exit initialization");
+    kernel
+        .update_discrete_states()
+        .expect("initial event update");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("enter continuous time");
+    kernel
+        .set_time(MeTime::at(0.25))
+        .expect("set checkpoint time");
+    kernel
+        .set_continuous_states(&[2.0, 3.0])
+        .expect("set checkpoint state");
+    let mut cached_derivative = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut cached_derivative)
+        .expect("populate derivative cache");
+    let stop = kernel.next_event_stop(0.75).expect("schedule next event");
+    assert_eq!(stop.time.to_bits(), 0.5f64.to_bits());
+    assert!(stop.is_event);
+    let saved_observable = kernel.verification_observable_state();
+    let saved = kernel.fmu_state();
+
+    let first = continue_from_scheduled_event(&mut kernel);
+    kernel
+        .terminate()
+        .expect("terminate after first continuation");
+    assert!(!kernel.verification_matches_snapshot(&saved));
+    kernel
+        .reset_to_fmu_state(&saved)
+        .expect("same-instance exact restore");
+    assert_eq!(kernel.verification_observable_state(), saved_observable);
+    assert!(kernel.verification_matches_snapshot(&saved));
+    let second = continue_from_scheduled_event(&mut kernel);
+
+    assert_eq!(first, second);
+}
+
+fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u64>) {
+    kernel
+        .set_time(MeTime::at(0.5))
+        .expect("reach scheduled event");
+    kernel
+        .capture_pre_event_state()
+        .expect("capture event pre-state");
+    kernel
+        .enter_event_mode(MeEventEntry {
+            cause: MeEventCause::TimeEvent,
+            event_time: 0.5,
+            horizon: 0.75,
+        })
+        .expect("enter scheduled event");
+    kernel
+        .update_discrete_states()
+        .expect("apply scheduled event");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("resume continuous time");
+    let mut states = vec![0.0; 2];
+    kernel
+        .get_continuous_states(&mut states)
+        .expect("read continued state");
+    let mut derivatives = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut derivatives)
+        .expect("read continued derivative");
+    (
+        states.into_iter().map(f64::to_bits).collect(),
+        derivatives.into_iter().map(f64::to_bits).collect(),
+    )
+}
+
+#[test]
+fn instance_brands_reject_foreign_capabilities_without_mutation() {
+    let mut model = harmonic_oscillator();
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+    model.parameters = vec![1.0];
+    let mut first = instantiate(&model);
+    let mut second = instantiate(&model);
+    let first_ref = first
+        .value_reference("u")
+        .expect("input has a value reference");
+    let second_ref = second
+        .value_reference("u")
+        .expect("the other instance has its own reference");
+
+    let error = first
+        .set_float64(&[first_ref, second_ref], &[2.0, 3.0])
+        .expect_err("a foreign reference rejects the whole batch");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(
+        first.verification_observable_state().3,
+        vec![1.0f64.to_bits()]
+    );
+
+    let foreign_observation = first.observe().expect("first instance observes");
+    let mut values = Vec::new();
+    second
+        .get_outputs(&foreign_observation, 0.0, &mut values)
+        .expect_err("observations cannot cross component instances");
+
+    let foreign_state = first.fmu_state();
+    second
+        .reset_to_fmu_state(&foreign_state)
+        .expect_err("saved component state cannot cross instances");
+    assert_eq!(
+        second.verification_observable_state().3,
+        vec![1.0f64.to_bits()]
+    );
+}
+
+#[test]
+fn frozen_full_state_guard_is_not_part_of_the_component_profile() {
+    let model = harmonic_oscillator();
+    let kernel = instantiate(&model);
+
+    let error = kernel
+        .verify_frozen_compatibility_state(
+            &model.initial_y,
+            &model.parameters,
+            MeStage::Initialization,
+        )
+        .expect_err("the ordinary component profile must not expose a migration dual-run guard");
+
+    assert_eq!(error.stage(), Some(MeStage::Initialization));
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert!(error.to_string().contains("requires DiffsolFrozen"));
+}
+
+#[test]
+fn diffsol_profile_guards_the_settled_full_state_after_initialization() {
+    let model = harmonic_oscillator();
+    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    kernel
+        .enter_initialization_mode()
+        .expect("frozen initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("frozen initialization should settle");
+    let mut discrete = kernel
+        .update_discrete_states()
+        .expect("frozen initial event should run");
+    while discrete.discrete_states_need_update {
+        discrete = kernel
+            .update_discrete_states()
+            .expect("frozen initial event iteration should converge");
+    }
+    kernel
+        .enter_continuous_time_mode()
+        .expect("settled component should enter continuous-time mode");
+
+    kernel
+        .verify_frozen_compatibility_state(
+            &model.initial_y,
+            &model.parameters,
+            MeStage::Initialization,
+        )
+        .expect("the settled full state should match the frozen host vector bit-for-bit");
+
+    let mut mismatched = model.initial_y.clone();
+    mismatched.push(0.0);
+    let error = kernel
+        .verify_frozen_compatibility_state(&mismatched, &model.parameters, MeStage::Initialization)
+        .expect_err("a full-layout mismatch must fail the initialization guard");
+    assert_eq!(error.stage(), Some(MeStage::Initialization));
+    assert!(error.to_string().contains("solver_mismatch=Some"));
+}
+
+#[test]
+fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
+    let model = strict_root_relation_memory();
+    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    kernel
+        .enter_initialization_mode()
+        .expect("strict-root initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("strict-root initialization should settle");
+    kernel
+        .update_discrete_states()
+        .expect("strict-root initial event should run");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("strict-root model should enter continuous time");
+
+    kernel
+        .set_time(MeTime::at(1.0))
+        .expect("component should reach the root instant");
+    kernel
+        .set_continuous_states(&[0.0])
+        .expect("component should use the exact root state");
+    kernel
+        .capture_pre_event_state()
+        .expect("event iteration should retain its entry values");
+    kernel
+        .arm_state_event(&[MeIndicatorCrossing {
+            index: 0,
+            post_indicator_value: 1.0,
+        }])
+        .expect("the typed crossing should arm the post-root side");
+    kernel
+        .completed_integrator_step(MeStepCompletion::AtStateEvent)
+        .expect("the integrator should report the located root");
+    kernel
+        .enter_event_mode(MeEventEntry {
+            cause: MeEventCause::StateEvent,
+            event_time: 1.0,
+            horizon: 1.0,
+        })
+        .expect("the component should enter root event iteration");
+    kernel
+        .update_discrete_states()
+        .expect("the strict-root event should settle");
+
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![1.0f64.to_bits()],
+        "the exact-root comparison is false, but the typed crossing owns the post-root value"
+    );
+    kernel
+        .enter_continuous_time_mode()
+        .expect("the settled strict-root event should resume integration");
+    kernel
+        .prepare_frozen_bdf_initial_seed(&[0.0])
+        .expect("the frozen reset should accept its post-event seed");
+    kernel
+        .verify_frozen_compatibility_state(&[0.0], &[1.0], MeStage::EventIteration)
+        .expect("the reset seam should observe the same typed post-root relation memory");
 }
 
 #[test]
@@ -257,6 +679,16 @@ fn a_mismatched_sensitivity_length_is_rejected_before_evaluation() {
     assert!(matches!(error.kind(), MeError::Contract { .. }));
 }
 
+#[test]
+fn frozen_projection_keeps_small_bit_real_manifold_changes_active() {
+    let before = [293.15];
+    let after = [293.150_01];
+    let tolerance = 1.0e-6;
+
+    assert!(!crate::runtime_values_changed(&before, &after, tolerance));
+    assert!(frozen_projection_changed(true, &before, &after, tolerance));
+}
+
 // -- instantiation staging -----------------------------------------------
 
 /// `NoContinuousStates` routes a host to its zero-state path. Annotating it
@@ -272,6 +704,8 @@ fn the_zero_state_routing_answer_carries_no_stage() {
             tolerance: 1.0e-10,
             start_time: 0.0,
             stop_time: 1.0,
+            root_profile: super::MeRootProfile::Component,
+            numerics_profile: super::MeNumericsProfile::Component,
         },
     )
     .err()
@@ -292,6 +726,8 @@ fn a_rejected_model_is_staged_at_instantiation() {
             tolerance: 1.0e-10,
             start_time: 0.0,
             stop_time: 1.0,
+            root_profile: super::MeRootProfile::Component,
+            numerics_profile: super::MeNumericsProfile::Component,
         },
     )
     .err()

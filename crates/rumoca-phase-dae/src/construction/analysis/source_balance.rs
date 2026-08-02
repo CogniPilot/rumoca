@@ -6,6 +6,8 @@ pub(super) fn source_balance(
     assigned_targets: &HashSet<VarName>,
     clock_equation_rows: &HashSet<usize>,
     record_equations: &HashMap<usize, RecordEquationPlan>,
+    connection_ranks: &HashMap<VarName, usize>,
+    aggregate_connections: &AggregateDiscreteConnections,
 ) -> Result<BalanceDetail, ToDaeError> {
     let mut detail = BalanceDetail::default();
     for (name, role) in roles {
@@ -32,7 +34,14 @@ pub(super) fn source_balance(
         if clock_equation_rows.contains(&row) {
             continue;
         }
-        match equation_partition(flat, equation, roles)? {
+        match equation_partition(
+            flat,
+            row,
+            equation,
+            roles,
+            connection_ranks,
+            aggregate_connections,
+        )? {
             EquationPartition::Continuous => {
                 detail.continuous_equations += if let Some(plan) = record_equations.get(&row) {
                     record_equation_scalar_count(flat, equation, plan)?
@@ -43,9 +52,11 @@ pub(super) fn source_balance(
             EquationPartition::DiscreteReal { .. } => {
                 detail.discrete_real_equations += equation.scalar_count;
             }
-            EquationPartition::DiscreteValue(_) => {
-                detail.discrete_value_definitions += equation.scalar_count;
+            EquationPartition::DiscreteValue(plan) => {
+                detail.discrete_value_definitions +=
+                    plan.scalar_count.unwrap_or(equation.scalar_count);
             }
+            EquationPartition::ConsumedDiscreteValue => {}
         }
     }
     for (name, variable) in &flat.variables {

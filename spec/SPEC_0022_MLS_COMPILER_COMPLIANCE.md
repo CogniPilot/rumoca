@@ -471,7 +471,7 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-023 | String significantDigits | §3.7.1 | "Specifying significantDigits is error when first argument of String is Integer" |
 | EXPR-024 | div/mod/rem types | §3.7.2 | "Result and arguments shall have type Real or Integer" |
 | EXPR-025 | ceil/floor argument | §3.7.2 | "Result and argument shall have type Real" |
-| EXPR-026 | integer argument | §3.7.2 | "Argument shall have type Real, result has type Integer" |
+| EXPR-026 | integer conversion | §3.7.2 | "Argument shall have type Real; result is the largest Integer not greater than the argument" |
 | EXPR-027 | delay expr type | §3.7.2 | "Expression shall be subtype of Real, Integer, Boolean, or enumeration" |
 | EXPR-028 | delay time type | §3.7.2 | "Time arguments shall be subtypes of Real" |
 | EXPR-029 | delay delayTime param | §3.7.2 | "When delayMax not provided, delayTime > 0 shall be parameter expression" |
@@ -485,7 +485,7 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-037 | pre not in function | §3.7.5 | "pre operator is not allowed inside function classes" |
 | EXPR-038 | smooth differentiability | §3.7.5 | "smooth(p, expr) treats expression as p times continuously differentiable" |
 | EXPR-039 | noEvent event suppression | §3.3 | "noEvent suppresses event generation for relational operators within its scope" |
-| EXPR-040 | Event triggering operators | §3.7.2 | "div, ceil, floor, integer can only change values at events and will trigger events as needed"
+| EXPR-040 | Event triggering operators | §3.7.2 | "div, ceil, floor, integer can only change values at events and will trigger events as needed" |
 
 ### 4.5 Equation Contracts (EQN)
 
@@ -713,7 +713,9 @@ Defines state-to-state transitions with priority and timing control.
 | ARR-037 | cross/skew 3-vector | §10.3.5 | "cross(x,y) and skew(x) only defined for Real 3-vectors" |
 | ARR-038 | transpose 2D minimum | §10.3.5 | "transpose(A): error if A does not have at least 2 dimensions" |
 | ARR-039 | Reduction empty defaults | §10.3.4 | "Empty array: sum returns zeros, product returns 1, min/max return type extrema" |
-| ARR-040 | min/max type restriction | §10.3.4 | "min/max require scalar enumeration, Boolean, Integer, or Real types"
+| ARR-040 | min/max type restriction | §10.3.4 | "min/max require scalar enumeration, Boolean, Integer, or Real types" |
+| ARR-041 | diagonal vector shape | §10.3.5 | "diagonal(v) requires a vector and returns a square matrix with both extents equal to size(v, 1)" |
+| ARR-042 | outer product shape | §10.3.5 | "outerProduct(v1, v2) requires two vectors and returns a matrix with extents size(v1, 1) and size(v2, 1)" |
 
 ### 4.11 Package/Import Contracts (PKG)
 

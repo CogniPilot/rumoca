@@ -261,9 +261,10 @@ impl TypeChecker {
             | BuiltinFunction::Terminal
             | BuiltinFunction::Edge
             | BuiltinFunction::Change => Some(type_table.boolean()),
-            BuiltinFunction::Integer | BuiltinFunction::Ndims | BuiltinFunction::Size => {
-                Some(type_table.integer())
-            }
+            BuiltinFunction::Integer
+            | BuiltinFunction::Ndims
+            | BuiltinFunction::Size
+            | BuiltinFunction::Identity => Some(type_table.integer()),
             BuiltinFunction::Sqrt
             | BuiltinFunction::Floor
             | BuiltinFunction::Ceil
@@ -282,7 +283,6 @@ impl TypeChecker {
             | BuiltinFunction::Log10
             | BuiltinFunction::Zeros
             | BuiltinFunction::Ones
-            | BuiltinFunction::Identity
             | BuiltinFunction::Linspace
             | BuiltinFunction::Interval => Some(type_table.real()),
             BuiltinFunction::Clock => type_table.lookup("Clock"),
@@ -292,6 +292,16 @@ impl TypeChecker {
             BuiltinFunction::Fill => args
                 .first()
                 .and_then(|arg| self.infer_expression_type(arg, type_table)),
+            BuiltinFunction::Cross => {
+                let [lhs, rhs] = args else {
+                    return None;
+                };
+                let lhs = self.infer_expression_type(lhs, type_table)?;
+                let rhs = self.infer_expression_type(rhs, type_table)?;
+                let common = self.common_value_type(lhs, rhs, type_table)?;
+                let root = self.resolve_type_root(type_table, common);
+                Self::is_numeric_type(root, type_table).then_some(common)
+            }
             BuiltinFunction::Homotopy
             | BuiltinFunction::SemiLinear
             | BuiltinFunction::Der
@@ -314,7 +324,6 @@ impl TypeChecker {
             | BuiltinFunction::Transpose
             | BuiltinFunction::OuterProduct
             | BuiltinFunction::Symmetric
-            | BuiltinFunction::Cross
             | BuiltinFunction::Skew
             | BuiltinFunction::Cat
             | BuiltinFunction::Hold

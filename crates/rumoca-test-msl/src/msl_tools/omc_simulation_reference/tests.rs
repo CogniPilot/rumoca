@@ -1,5 +1,36 @@
 use super::retry_policy::{OMC_FAILURE_RETRY_ATTEMPTS, OMC_TRANSIENT_FAILURE_RETRY_ATTEMPTS};
 use super::*;
+use rumoca_sim::sim_trace_compare::{TraceCertificationProfile, TraceRandomOpKind};
+
+fn pointwise_candidate(profile: Option<TraceCertificationProfile>) -> SimTrace {
+    SimTrace {
+        model_name: Some("arbitrary.model.name".to_string()),
+        times: vec![0.0, 1.0],
+        names: vec!["y".to_string()],
+        data: vec![vec![Some(0.0), Some(1.0)]],
+        variable_meta: None,
+        certification_profile: profile,
+    }
+}
+
+#[test]
+fn typed_stochastic_profile_is_separate_and_never_compared() {
+    let profile = TraceCertificationProfile::stochastic(vec![TraceRandomOpKind::RandomResult]);
+    let exit = pointwise_nonidentifiability_exit(&pointwise_candidate(Some(profile.clone())))
+        .expect("valid profile")
+        .expect("non-identifiable exit");
+    assert_eq!(exit.kind, TraceExitKind::TraceNonidentifiable);
+    assert_eq!(exit.certification_profile, Some(profile));
+}
+
+#[test]
+fn malformed_profile_is_a_comparator_failure_not_an_exclusion() {
+    let invalid = TraceCertificationProfile::stochastic(Vec::new());
+    let exit = pointwise_nonidentifiability_exit(&pointwise_candidate(Some(invalid)))
+        .expect_err("empty evidence must fail closed");
+    assert_eq!(exit.kind, TraceExitKind::ComparatorFailed);
+    assert!(exit.certification_profile.is_none());
+}
 
 #[test]
 fn load_simulation_targets_filters_explicit_success_non_partial() {
@@ -355,6 +386,7 @@ fn cached_success_without_materialized_trace_source_is_not_reusable() {
             names: vec!["y".to_string()],
             data: vec![vec![Some(1.0)]],
             variable_meta: None,
+            certification_profile: None,
         },
     )
     .expect("write trace");
@@ -484,6 +516,7 @@ fn quantify_trace_differences_rejects_error_status_model_with_stale_traces() {
         names: vec!["y".to_string()],
         data: vec![vec![Some(0.0), Some(1.0), Some(0.0)]],
         variable_meta: None,
+        certification_profile: None,
     };
     write_pretty_json(&omc_trace_dir.join(format!("{model_name}.json")), &trace)
         .expect("write omc trace");
@@ -556,6 +589,7 @@ fn quantify_trace_differences_rejects_undeclared_omc_trace_file() {
         names: vec!["y".to_string()],
         data: vec![vec![Some(0.0), Some(1.0)]],
         variable_meta: None,
+        certification_profile: None,
     };
     write_pretty_json(&omc_trace_dir.join(format!("{model_name}.json")), &trace)
         .expect("write undeclared omc trace");
@@ -613,6 +647,7 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
             vec![Some(2.0), Some(2.0), Some(2.0)],
         ],
         variable_meta: None,
+        certification_profile: None,
     };
     let omc = SimTrace {
         model_name: Some("M".to_string()),
@@ -623,6 +658,7 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
             vec![Some(2.0), Some(2.0), Some(2.0)],
         ],
         variable_meta: None,
+        certification_profile: None,
     };
     let metric = compare_model_traces("M", &rumoca, &omc).expect("compare traces");
     let mut report = TraceQuantification::default();

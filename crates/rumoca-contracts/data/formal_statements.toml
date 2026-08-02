@@ -413,11 +413,11 @@ quote = 'The initialization uses all equations and algorithms that are utilized 
 quote_source = 'crates/rumoca-phase-solve/src/lower/initial_projection.rs'
 pin_kind = 'Test'
 pin_file = 'crates/rumoca-sim/src/solve_lowering/tests.rs'
-pin_anchor = 'an_algebraic_reading_initialization_row_is_checked_against_a_stale_seed'
+pin_anchor = 'an_algebraic_reading_initialization_row_cannot_certify_against_a_stale_seed'
 pin_polarity = 'PinsDivergence'
 status = 'RecordedDivergence'
 related_sections = ['§8.6']
-note = 'This is a §8.6 violation, not a latitude: der(...) and the pre-variables are interpreted as unknown algebraic variables and the whole equation set is solved at once, so x(0) = 5 is required rather than chosen. rumoca evaluates initialization residuals before settling the algebraics, so an algebraic still holds the number its start seeded; here the seeds cancel, the check passes, and the stated initial condition vanishes silently at x(0) = 0. A typed refusal was implemented and measured on the 19 MSL models that both compile through Solve and carry an initial section; it fires on 5, two of which simulate today, so it was not landed. The owner that makes the shape right is the algebraic refresh joining the initialization solve.'
+note = 'This is a §8.6 requirement, not a latitude: der(...) and the pre-variables are interpreted as unknown algebraic variables and the whole equation set is solved at once, so x(0) = 5 is required rather than chosen. Initialization residual evaluation now reconstructs algebraic/output coordinates before certifying the complete residual, preventing declaration seeds from silently certifying x(0) = 0. Rows requiring the not-yet-proved coupled algebraic/initial projection fail closed with a typed unowned-coordinate diagnostic. That is sound for a small verified profile but is still a Modelica completeness gap; enforcing this statement requires a checked simultaneous reduction with total derivatives.'
 
 [[statements]]
 id = 'FS-SIM-008'

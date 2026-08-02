@@ -714,6 +714,14 @@ pub struct Function {
     pub locals: Vec<FunctionParam>,
     pub body: Vec<Statement>,
     pub is_constructor: bool,
+    /// Constructor-proven MLS §6.4 fact required by automatic function
+    /// vectorization (MLS §12.4.6).
+    ///
+    /// `false` is the conservative wire/default value: an exact selected
+    /// function identity alone does not prove that its class and inherited
+    /// interface contain no replaceable element.
+    #[serde(default)]
+    pub transitively_non_replaceable: bool,
     /// MLS 3.7 §12.3 written purity prefix: `false` exactly when the
     /// declaration wrote `impure`.
     ///
@@ -745,6 +753,7 @@ impl Function {
             locals: Vec::new(),
             body: Vec::new(),
             is_constructor: false,
+            transitively_non_replaceable: false,
             pure: true,
             purity_declared: false,
             external: None,

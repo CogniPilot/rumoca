@@ -282,21 +282,11 @@ fn lower_variable_attributes<'dae>(
             variable,
             start,
         )?),
-        None if matches!(
-            variable.role,
-            PlannedRole::State
-                | PlannedRole::Algebraic
-                | PlannedRole::Output
-                | PlannedRole::DiscreteReal
-                | PlannedRole::DiscreteValue
-        ) =>
-        {
-            Some(default_start_expression(
-                construction,
-                variable.scalar_type,
-                variable.flat.source_span,
-            )?)
-        }
+        None if needs_default_start(variable) => Some(default_start_expression(
+            construction,
+            variable.scalar_type,
+            variable.flat.source_span,
+        )?),
         None => None,
     };
     let min = lower_optional_variable_attribute(
@@ -348,6 +338,25 @@ fn lower_variable_attributes<'dae>(
                 .contains(&variable.flat.name),
         origin: dae::VariableOrigin::Source,
     })
+}
+
+/// Whether DAE construction must materialize the predefined type's `start`.
+///
+/// Runtime variables always need their checked initialization guess. A
+/// `fixed = false` parameter needs the same guess because MLS §8.6 makes it an
+/// initialization unknown; the initialization projection remains the owner of
+/// its value. Parameters with the default `fixed = true` stay out of this arm:
+/// a default `start` is not a declaration binding and must not make an unbound
+/// fixed parameter look evaluable.
+fn needs_default_start(variable: VariableSpec<'_, '_>) -> bool {
+    matches!(
+        variable.role,
+        PlannedRole::State
+            | PlannedRole::Algebraic
+            | PlannedRole::Output
+            | PlannedRole::DiscreteReal
+            | PlannedRole::DiscreteValue
+    ) || (matches!(variable.role, PlannedRole::Parameter) && variable.flat.fixed == Some(false))
 }
 
 fn lower_variable_binding<'dae>(

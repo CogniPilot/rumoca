@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use rumoca_core::{
     BuiltinFunction, Causality, ClockLattice, ClockRational, Expression, InstanceId, Literal,
-    OpBinary, OpUnary, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, Subscript,
-    VarName, Variability,
+    OpBinary, OpUnary, PeriodicClockSchedule, SourceMap, Span, StructuredIndexBinder,
+    StructuredIndexDomain, Subscript, VarName, Variability,
 };
 use rumoca_eval_flat::constant::{EvalContext, Value as EvalValue, eval_expr};
 use rumoca_ir_dae as dae;
@@ -37,16 +38,18 @@ use algorithm::{
     lower_algorithm_function_call, own_clocked_algorithm_targets,
 };
 use analysis::{
-    Analysis, ClockPlan, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
-    DiscreteValueTopologyPlan, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
-    ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
+    AggregateDiscreteConnections, Analysis, ClockPlan, ComprehensionKey, ComprehensionPlan,
+    DelayPlan, DerivedParameterPlan, DiscreteValueAssignmentPlan, DiscreteValueTopologyPlan,
+    EquationPartition, ExpressionEventPlan, ExpressionEventPlans, ExternalArgumentPlan,
+    ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
     FunctionStatementPlan, FunctionValueSeed, ModelAlgorithmPlan, PlannedRole,
     RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, SemiLinearRules, analyze,
-    assigned_function_targets, effective_function_scalar_type, effective_variable_scalar_type,
-    empty_array_bound_to_declaration, equation_partition, is_inferred_clock_condition,
-    is_whole_clock_coordinate, model_algorithm_targets, record_field_projections,
-    selected_conditional_statements, specialized_comprehension_plan, structured_assignment_names,
+    assigned_function_targets, discrete_value_assignment, effective_function_scalar_type,
+    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
+    is_inferred_clock_condition, is_whole_clock_coordinate, model_algorithm_targets,
+    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
+    structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use conditions::{combine_conditions, lower_condition, negate_condition};
@@ -503,6 +506,7 @@ fn lower_function_statement<'dae>(
     plan: &FunctionStatementPlan,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match (statement, plan) {
+        (_, FunctionStatementPlan::ProvenAssertion) => Ok(body),
         (
             rumoca_core::Statement::Assignment { value, span, .. },
             FunctionStatementPlan::Assignment(plan),
@@ -1001,7 +1005,7 @@ fn lower_assertions<'dae, 'flat>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
+    sample_lattices: &[(Span, PeriodicClockSchedule)],
     assertions: impl IntoIterator<Item = &'flat flat::AssertEquation>,
 ) -> Result<(), dae::DaeConstructionError> {
     for assertion in assertions {
@@ -1049,7 +1053,7 @@ struct EventGuard<'dae> {
 struct AlgorithmEnvironment<'scope, 'shape, 'dae> {
     coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
     functions: &'scope FunctionRegistry<'shape, 'dae>,
-    sample_lattices: &'scope [(Span, ClockLattice)],
+    sample_lattices: &'scope [(Span, PeriodicClockSchedule)],
 }
 
 #[derive(Clone, Copy)]
@@ -1432,17 +1436,35 @@ fn lower_algorithm_when<'dae>(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct StructuredEquationEnvironment<'scope, 'dae> {
+    flat: &'scope flat::Model,
+    roles: &'scope HashMap<VarName, PlannedRole>,
+    topology: &'scope DiscreteValueTopologyPlan,
+    connection_ranks: &'scope HashMap<VarName, usize>,
+    aggregate_connections: &'scope AggregateDiscreteConnections,
+    clocked_owners: &'scope HashMap<usize, ClockPlan>,
+    clocks: &'scope LoweredClocks<'dae>,
+}
+
+#[derive(Clone, Copy)]
+struct StructuredEquationRows<'scope, 'dae> {
+    equations: &'scope [flat::Equation],
+    families: &'scope [flat::StructuredEquationFamily],
+    excluded_families: &'scope HashSet<usize>,
+    environment: Option<StructuredEquationEnvironment<'scope, 'dae>>,
+    initialization: bool,
+}
+
 fn lower_structured_equations<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    equations: &[flat::Equation],
-    families: &[flat::StructuredEquationFamily],
-    excluded_families: &HashSet<usize>,
-    initialization: bool,
+    rows: StructuredEquationRows<'_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    for (family_index, family) in families.iter().enumerate() {
-        if excluded_families.contains(&family_index) {
+    for (family_index, family) in rows.families.iter().enumerate() {
+        if rows.excluded_families.contains(&family_index) {
             continue;
         }
         let owner = equation_owner_provenance(&family.origin, family.span)?;
@@ -1454,6 +1476,22 @@ fn lower_structured_equations<'dae>(
             for (ordinal, binder) in family.domain.binders.iter().enumerate() {
                 let id = construction.domains(|domains| domains.binder(domain, ordinal, owner))?;
                 binders.insert(VarName::new(&binder.display_name), id);
+            }
+            if lower_partitioned_structured_template(
+                construction,
+                discrete_values,
+                StructuredTemplatePartitionInput {
+                    coordinates,
+                    functions,
+                    family,
+                    domain,
+                    scalar_view: template.scalar_view,
+                    binders: &binders,
+                    environment: rows.environment,
+                    owner,
+                },
+            )? {
+                continue;
             }
             template
                 .body
@@ -1482,7 +1520,7 @@ fn lower_structured_equations<'dae>(
                 construction,
                 coordinates,
                 functions,
-                equations,
+                rows.equations,
                 family,
                 owner,
             )?
@@ -1494,11 +1532,187 @@ fn lower_structured_equations<'dae>(
             .unwrap_or(rumoca_core::ComprehensionScalarView::RowMajorProjection);
         insert_structured_family(
             construction,
-            initialization,
+            rows.initialization,
             owner,
             domain,
             scalar_view,
             bodies,
+        )?;
+    }
+    Ok(())
+}
+
+enum StructuredFamilyPartition<'flat> {
+    Continuous,
+    DiscreteValue(Vec<DiscreteValueAssignmentPlan<'flat>>),
+    ConsumedDiscreteValue,
+}
+
+struct StructuredTemplatePartitionInput<'scope, 'flat, 'dae> {
+    coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
+    functions: &'scope FunctionRegistry<'flat, 'dae>,
+    family: &'scope flat::StructuredEquationFamily,
+    domain: dae::DomainId<'dae>,
+    scalar_view: rumoca_core::ComprehensionScalarView,
+    binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
+    environment: Option<StructuredEquationEnvironment<'scope, 'dae>>,
+    owner: dae::DaeProvenance,
+}
+
+fn lower_partitioned_structured_template<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    input: StructuredTemplatePartitionInput<'_, '_, 'dae>,
+) -> Result<bool, dae::DaeConstructionError> {
+    let Some(environment) = input.environment else {
+        return Ok(false);
+    };
+    let template = input
+        .family
+        .template
+        .as_ref()
+        .expect("partitioned structured lowering receives a template family");
+    let assignments = match structured_family_partition(input.family, template, environment) {
+        StructuredFamilyPartition::Continuous => return Ok(false),
+        StructuredFamilyPartition::ConsumedDiscreteValue => return Ok(true),
+        StructuredFamilyPartition::DiscreteValue(assignments) => assignments,
+    };
+    lower_structured_discrete_family(
+        construction,
+        discrete_values,
+        StructuredDiscreteFamilyInput {
+            coordinates: input.coordinates,
+            functions: input.functions,
+            family: input.family,
+            domain: input.domain,
+            scalar_view: input.scalar_view,
+            binders: input.binders,
+            assignments: &assignments,
+            environment,
+            owner: input.owner,
+        },
+    )?;
+    Ok(true)
+}
+
+fn structured_family_partition<'flat>(
+    family: &'flat flat::StructuredEquationFamily,
+    template: &'flat rumoca_core::ComprehensionTemplate,
+    environment: StructuredEquationEnvironment<'flat, '_>,
+) -> StructuredFamilyPartition<'flat> {
+    let assignments = template
+        .body
+        .iter()
+        .enumerate()
+        .map(|(ordinal, body)| {
+            if matches!(family.origin, flat::EquationOrigin::Connection { .. }) {
+                let row = family.first_equation_index + ordinal;
+                let equation = &environment.flat.equations[row];
+                return match equation_partition(
+                    environment.flat,
+                    row,
+                    equation,
+                    environment.roles,
+                    environment.connection_ranks,
+                    environment.aggregate_connections,
+                )
+                .expect("analysis validates structured connection ownership")
+                {
+                    EquationPartition::DiscreteValue(plan) => Some(Ok(plan)),
+                    EquationPartition::ConsumedDiscreteValue => Some(Err(())),
+                    EquationPartition::Continuous | EquationPartition::DiscreteReal { .. } => None,
+                };
+            }
+            discrete_value_assignment(body, environment.roles, family.span)
+                .expect("analysis validates structured equation partition ownership")
+                .map(Ok)
+        })
+        .collect::<Vec<_>>();
+    if assignments.iter().all(Option::is_none) {
+        return StructuredFamilyPartition::Continuous;
+    }
+    if assignments
+        .iter()
+        .all(|assignment| matches!(assignment, Some(Err(()))))
+    {
+        return StructuredFamilyPartition::ConsumedDiscreteValue;
+    }
+    StructuredFamilyPartition::DiscreteValue(
+        assignments
+            .into_iter()
+            .map(|assignment| {
+                assignment
+                    .expect("analysis prohibits a mixed structured equation partition")
+                    .expect("analysis prohibits mixed consumed and owning discrete families")
+            })
+            .collect(),
+    )
+}
+
+struct StructuredDiscreteFamilyInput<'scope, 'flat, 'dae> {
+    coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
+    functions: &'scope FunctionRegistry<'flat, 'dae>,
+    family: &'scope flat::StructuredEquationFamily,
+    domain: dae::DomainId<'dae>,
+    scalar_view: rumoca_core::ComprehensionScalarView,
+    binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
+    assignments: &'scope [DiscreteValueAssignmentPlan<'flat>],
+    environment: StructuredEquationEnvironment<'scope, 'dae>,
+    owner: dae::DaeProvenance,
+}
+
+fn lower_structured_discrete_family<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    input: StructuredDiscreteFamilyInput<'_, '_, 'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    let owner_clock = input
+        .environment
+        .clocked_owners
+        .get(&input.family.first_equation_index)
+        .map(|plan| input.environment.clocks.id(plan, input.family.span))
+        .transpose()?;
+    let semantic_owner = discrete_values
+        .structured_owner(
+            input.owner,
+            input.domain,
+            input.scalar_view,
+            input.assignments.iter().map(|plan| plan.target.clone()),
+            input.coordinates,
+            input.environment.topology,
+        )?
+        .expect("a structured discrete family has one planned B.1c owner");
+    for plan in input.assignments {
+        let symbols = LoweringSymbols {
+            coordinates: input.coordinates,
+            functions: input.functions,
+            shapes: input.functions.shapes.model_values(),
+            function_body: None,
+            values: None,
+            owner_clock,
+        };
+        let generation = plan
+            .generated
+            .then_some(dae::DaeGeneration::DiscreteUpdate)
+            .or_else(|| equation_generation(&input.family.origin));
+        let value = lower_structured_body(
+            construction,
+            symbols,
+            input.binders,
+            plan.value.as_ref(),
+            generation,
+            input.family.span,
+        )?;
+        let Coordinate::DiscreteValue(target) = input.coordinates[plan.target] else {
+            unreachable!("analysis classifies the family target as discrete-valued")
+        };
+        let action_span = plan.value.span().unwrap_or(input.family.span);
+        discrete_values.always(
+            semantic_owner,
+            target,
+            value,
+            input.owner,
+            dae::DaeProvenance::source(action_span)?,
         )?;
     }
     Ok(())
@@ -1626,6 +1840,8 @@ struct EquationRows<'scope, 'dae> {
     excluded: &'scope HashSet<usize>,
     records: &'scope HashMap<usize, RecordEquationPlan>,
     roles: &'scope HashMap<VarName, PlannedRole>,
+    connection_ranks: &'scope HashMap<VarName, usize>,
+    aggregate_connections: &'scope AggregateDiscreteConnections,
     topology: &'scope DiscreteValueTopologyPlan,
     clocked_owners: &'scope HashMap<usize, ClockPlan>,
     clocks: &'scope LoweredClocks<'dae>,
@@ -1635,6 +1851,24 @@ struct EquationRows<'scope, 'dae> {
     /// unchanged, which is why the rule needs no separate equation identity.
     semi_linear: &'scope SemiLinearRules,
     initialization: bool,
+}
+
+impl<'scope> EquationRows<'scope, '_> {
+    fn partition(
+        &'scope self,
+        row: usize,
+        equation: &'scope flat::Equation,
+    ) -> EquationPartition<'scope> {
+        equation_partition(
+            self.flat,
+            row,
+            equation,
+            self.roles,
+            self.connection_ranks,
+            self.aggregate_connections,
+        )
+        .expect("analysis already validates equation ownership")
+    }
 }
 
 fn lower_equations<'dae>(
@@ -1678,9 +1912,7 @@ fn lower_equations<'dae>(
             construction.initialization(|system| system.value_equation(owner, residual))?;
             continue;
         }
-        match equation_partition(input.flat, equation, input.roles)
-            .expect("analysis already validates equation ownership")
-        {
+        match input.partition(index, equation) {
             EquationPartition::Continuous => {
                 let (source, generation) = match input.semi_linear.residual(index) {
                     Some(replacement) => {
@@ -1739,6 +1971,7 @@ fn lower_equations<'dae>(
                     dae::DaeProvenance::source(equation.span)?,
                 )?;
             }
+            EquationPartition::ConsumedDiscreteValue => {}
         }
     }
     Ok(())

@@ -233,3 +233,78 @@ fn nonlinear_conditional_discrete_residual_fails_before_runtime() {
         LowerError::NonComputable { span, .. } if span == owner.span()
     ));
 }
+
+#[test]
+fn structured_b1c_owner_lowers_to_one_compact_map_without_scalar_rows() {
+    let source = TestSource::new("discrete Boolean m[2]; equation m={true,false};");
+    let declaration = source.at(0, 22);
+    let assignment = source.at(33, 47);
+    let model = dae::Dae::construct(source.map, |model| {
+        let boolean_array = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Boolean, [2]),
+                declaration,
+            )
+        })?;
+        let target = model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("m"),
+                boolean_array,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let domain = model.domains(|domains| {
+            domains.structured(
+                StructuredIndexDomain {
+                    binders: vec![StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                assignment,
+            )
+        })?;
+        let value = model.expressions(|expressions| {
+            let yes = expressions
+                .at(assignment)
+                .literal(dae::DaeLiteral::Boolean(true))?;
+            let no = expressions
+                .at(assignment)
+                .literal(dae::DaeLiteral::Boolean(false))?;
+            expressions.at(assignment).array([yes, no])
+        })?;
+        model.b1c([target], |topology| {
+            topology.structured_owner(
+                assignment,
+                domain,
+                rumoca_core::ComprehensionScalarView::RowMajorProjection,
+                [target],
+                |owner| owner.always(assignment, [(value, assignment)]),
+            )?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    assert!(solve.discrete.rhs.is_empty());
+    assert_eq!(solve.discrete.structured_rhs.nodes.len(), 1);
+    assert_eq!(solve.discrete.structured_updates.len(), 1);
+    assert!(matches!(
+        solve.discrete.structured_rhs.nodes.first(),
+        Some(ComputeNode::Map { .. })
+    ));
+    assert_eq!(
+        solve.discrete.structured_assignments(0).unwrap(),
+        vec![
+            (rumoca_ir_solve::scalar_slot_p(0), 0),
+            (rumoca_ir_solve::scalar_slot_p(1), 1),
+        ]
+    );
+    solve.validate_shape_contract().unwrap();
+}

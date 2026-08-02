@@ -32,7 +32,23 @@ compile(source) = Ok(target)
   implies behaviors(target) subseteq behaviors_modelica(source)
 ```
 
-This notation describes the future theorem, not a current Rust API.
+The independent language-completeness theorem is:
+
+```text
+frontend_accepts(mls_version, source) iff well_formed_mls(mls_version, source)
+```
+
+For a deterministic certified experiment, the required executable corollary is
+stronger:
+
+```text
+compile(profile, source, experiment) = Ok(target) and assumptions(profile)
+  implies simulate(target, experiment) = Ok(target_trace)
+      and distance(target_trace, modelica_trace(source, experiment)) <= tolerance(profile)
+```
+
+Certified compilation therefore proves total execution and bounded trace
+refinement; a normal wrong trace is a counterexample.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
@@ -44,11 +60,34 @@ This notation describes the future theorem, not a current Rust API.
 | Phase theorems compose into one compiler theorem | proof development | End-to-end claim follows locally |
 | Unsupported inputs return typed errors | production phases | Unverified fallback is prohibited |
 | Proven features and assumptions are machine-readable | verification manifest | Claims remain auditable |
+| Certified compilation implies accurate simulation | compiler theorem | Success is an end-to-end claim |
+| Normal-but-inaccurate execution is a proof counterexample | verification process | Completion cannot mask wrong semantics |
+| Frontend acceptance is equivalent to pinned-MLS compliance | language theorem | Soundness and completeness are required |
+| Formalization gaps are informational, not compile failures | assurance manifest | Proof progress cannot narrow behavior |
+| MLS ambiguities retain submission-ready issue records | verification gap tracker | Upstream clarification stays actionable |
 
 Behavior includes continuous trajectories, superdense events, clock ticks,
 discrete updates, assertions, termination, external observations, and permitted
 resource failures. Equality may replace subset refinement only where source and
 target semantics are deterministic and total.
+
+Pointwise comparison against one reference trajectory is an executable
+refinement check only when that trajectory is identifiable under the experiment.
+A typed `trace_nonidentifiable` profile records that this particular proof
+method is inapplicable; it is not a refinement certificate. Stochastic and
+deterministic-chaotic reasons are distinct. Stochastic evidence is the canonical
+set of typed random operations found by Solve-IR traversal. Deterministic-chaotic
+evidence requires a positive finite maximum-Lyapunov-exponent lower bound, the
+sample count, and a content digest binding the analysis artifact. Neither reason
+may be inferred from model identity, OMC output, or a failed comparison.
+
+Every such profile records outstanding replacement obligations. Stochastic
+traces require generator-and-seed parity and statistical refinement;
+deterministic-chaotic traces require invariant and statistical refinement. Until
+those obligations are discharged by accepted machine-checked evidence, the model
+remains uncertified: it is excluded from the pointwise denominator, reported
+separately, and never contributes to strict-high/pass counts. Missing or malformed
+evidence fails closed and does not remove a trace from certification scope.
 
 ### Phase Proof Obligations
 
@@ -108,6 +147,11 @@ These signatures are architectural notation, not current Rust APIs.
 | Translation validation | Optimization and code generation | Checks each produced artifact |
 | Conventional tests | Semantics/specification validation | Tests do not replace proofs |
 
+Every counterexample fix identifies a phase-local refinement obligation. Its
+regression asserts a model-independent transition, construction, or commutation
+property reusable by the formal checker or Kani harness. Compiler and runtime
+behavior must not branch on model identity, OMC output, or comparison bands.
+
 Certificates are phase results or ephemeral artifacts, not mutable IR fields.
 The checker is substantially smaller than the producing algorithm and has a
 machine-checked soundness theorem.
@@ -157,7 +201,8 @@ The future evidence bundle should include:
 | Artifact | Purpose |
 |---|---|
 | Source and requirements trace map | Connect requirements, model elements, IR, and code |
-| Verified-feature manifest | State exactly which semantics the theorem covers |
+| MLS formalization manifest | Map every SPEC_0022 contract to proof status |
+| Modelica Association gap tracker | Preserve clauses, counterexamples, and proposed wording |
 | Phase refinement report | Identify theorem or accepted certificate for every phase |
 | Deterministic build manifest | Pin sources, options, tools, templates, and dependency hashes |
 | Generated-source map | Map target statements to typed IR and source provenance |
@@ -205,6 +250,10 @@ tool versions, and remaining trusted assumptions.
 
 OMC/MSL parity, fuzzing, property tests, and differential traces remain
 validation evidence for the formal definitions. They are not proof evidence.
+Until the theorem is discharged, every compiled model outside the strict-high
+OMC band is a counterexample to the candidate simulation-refinement claim. It
+must produce a general semantic fix or a typed narrowing of the verified
+profile; a model-name exception is prohibited.
 
 ### Phasing
 
@@ -221,6 +270,25 @@ W1 harnesses are written so a Kani proof and a property-test fallback drive the
 same property function; the property text is the deliverable, and the driver is
 whichever the toolchain supports. A fallback run is validation evidence and
 MUST NOT be reported as a proof.
+
+Kani-backed W1 evidence is reproducible only when all of the following are
+present in the same revision:
+
+- the Kani release and its Rust toolchain are pinned by the repository;
+- `cargo xtask verify kani` is the canonical local and CI entry point;
+- CI runs every required harness named by a checked-in proof manifest;
+- the Kani 0.67 driver verifies one harness at a time, because its parallel
+  text stream does not bind each result block to its harness and therefore
+  cannot support fail-closed per-harness timing and cover attribution;
+- unwinding checks remain enabled and incomplete proofs fail the command;
+- the result records the Kani version, harness name, declared bound, elapsed
+  time, and success or failure; and
+- the ordinary development shell does not silently substitute a property-test
+  fallback when Kani is unavailable.
+
+A proof manifest entry identifies a bounded property, not a compiler-wide
+verification claim. Removing or renaming a required harness without updating
+its owning specification and manifest is a verification failure.
 
 `rumoca-reference` ([SPEC_0041 §4](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#4-layering-ownership-catalog-spec_0029-12))
 is the W1 executable definition. It is a candidate for the "One IR semantics

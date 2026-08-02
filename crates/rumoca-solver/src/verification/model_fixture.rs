@@ -15,6 +15,7 @@ use rumoca_ir_solve as solve;
 /// inside `kani::unwind(8)` while still admitting a model whose conditions are
 /// not all true at the initialization instant, and whose seed walks several
 /// threshold rows ahead of the `initial()` row instead of one special case.
+#[cfg(not(kani))]
 pub(super) const MAX_CONDITIONS: usize = 3;
 
 /// The constant every generated activation condition is compared against.
@@ -208,6 +209,41 @@ pub(super) fn single_state_model() -> solve::SolveModel {
     }
 }
 
+/// [`single_state_model`] plus one writable scalar input parameter.
+///
+/// The ME buffer and instance-brand proofs need the smallest model that can
+/// issue a real value reference and observe an accepted parameter value.
+pub(super) fn single_state_input_model() -> solve::SolveModel {
+    let mut model = single_state_model();
+    model.problem.solve_layout.parameter_count = 0;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+    model.parameters = vec![1.0];
+    model
+}
+
+/// [`single_state_model`] plus one static component-owned time event.
+pub(super) fn single_state_time_event_model() -> solve::SolveModel {
+    let mut model = single_state_model();
+    model.problem.events.scheduled_time_events = vec![0.5];
+    model
+}
+
+/// [`single_state_model`] plus one scalar event-indicator surface `x`.
+pub(super) fn single_state_indicator_model() -> solve::SolveModel {
+    let mut model = single_state_model();
+    model.problem.events.root_conditions = fixture_block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "single_state_indicator_verification.mo",
+    );
+    model.problem.events.root_relation_memory_targets = vec![None];
+    model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Previous];
+    model
+}
+
 /// [`single_state_model`] plus one initialization update row that can never
 /// settle: `q := q + increment` rewrites its own source every pass.
 ///
@@ -236,5 +272,49 @@ pub(super) fn divergent_initialization_model(increment: f64) -> solve::SolveMode
         "divergent_initialization_verification.mo",
     );
     model.problem.initialization.update_targets = vec![solve::scalar_slot_p(0)];
+    model
+}
+
+/// A one-state model whose discrete equation settles during `initial()` but
+/// diverges at an ordinary runtime event: `q := if initial() then q else
+/// q + increment`.
+pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel {
+    let mut model = single_state_model();
+    model.problem.solve_layout.parameter_count = 2;
+    model.problem.solve_layout.compiled_parameter_len = 2;
+    model.problem.solve_layout.initial_event_parameter_index = Some(1);
+    model.parameters = vec![0.0, 1.0];
+    model.problem.discrete = solve::DiscreteSolveSystem {
+        rhs: fixture_block(
+            vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::Const {
+                    dst: 1,
+                    value: increment,
+                },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::LoadP { dst: 3, index: 1 },
+                solve::LinearOp::Select {
+                    dst: 4,
+                    cond: 3,
+                    if_true: 0,
+                    if_false: 2,
+                },
+                solve::LinearOp::StoreOutput { src: 4 },
+            ]],
+            "divergent_runtime_event_verification.mo",
+        ),
+        update_targets: vec![solve::scalar_slot_p(0)],
+        row_roles: vec![solve::DiscreteRowRole::Equation],
+        pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+        observation_refresh: vec![false],
+        clock_owners: vec![None],
+        ..Default::default()
+    };
     model
 }

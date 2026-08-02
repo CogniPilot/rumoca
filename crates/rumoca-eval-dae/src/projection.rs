@@ -177,7 +177,7 @@ where
                 self.subscripts(subscripts)
             }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
-                self.builtin(builtin, arguments, scalar_index)
+                self.builtin(node, builtin, arguments, scalar_index)
             }
             dae::ExpressionOperation::Call {
                 function,
@@ -448,6 +448,7 @@ where
 
     fn builtin(
         &mut self,
+        node: dae::ExpressionView<'dae>,
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
         scalar_index: usize,
@@ -470,12 +471,19 @@ where
             | dae::PureBuiltin::Tanh
             | dae::PureBuiltin::Exp
             | dae::PureBuiltin::Log
-            | dae::PureBuiltin::Log10 => self.expression(
+            | dae::PureBuiltin::Log10
+            | dae::PureBuiltin::Vector => self.expression(
                 arguments
                     .get(0)
                     .expect("checked unary builtin has one argument"),
                 scalar_index,
             ),
+            dae::PureBuiltin::Transpose => {
+                self.transpose(arguments, node.value_type().dimensions(), scalar_index)
+            }
+            dae::PureBuiltin::Diagonal
+            | dae::PureBuiltin::OuterProduct
+            | dae::PureBuiltin::Skew => self.matrix_product(builtin, arguments, node, scalar_index),
             dae::PureBuiltin::Atan2
             | dae::PureBuiltin::Div
             | dae::PureBuiltin::Mod
@@ -517,24 +525,10 @@ where
                 }
                 Ok(())
             }
-            dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones => {
-                for dimension in arguments.iter() {
-                    self.expression(dimension, 0)?;
-                }
-                Ok(())
-            }
-            dae::PureBuiltin::Fill => {
-                for argument in arguments.iter() {
-                    self.expression(argument, 0)?;
-                }
-                Ok(())
-            }
-            dae::PureBuiltin::Linspace => {
-                for argument in arguments.iter() {
-                    self.expression(argument, 0)?;
-                }
-                Ok(())
-            }
+            dae::PureBuiltin::Zeros
+            | dae::PureBuiltin::Ones
+            | dae::PureBuiltin::Fill
+            | dae::PureBuiltin::Linspace => self.scalar_arguments(arguments),
             dae::PureBuiltin::Cross => {
                 let (first, second) = [(1, 2), (2, 0), (0, 1)][scalar_index];
                 for argument in arguments.iter() {
@@ -543,7 +537,156 @@ where
                 }
                 Ok(())
             }
+            dae::PureBuiltin::Identity => self.expression(
+                arguments
+                    .get(0)
+                    .expect("checked identity has one extent argument"),
+                0,
+            ),
+            dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2 => {
+                let axis = usize::from(builtin == dae::PureBuiltin::PromotedCat2);
+                self.promoted_concatenation(
+                    arguments,
+                    axis,
+                    node.value_type().dimensions(),
+                    scalar_index,
+                )
+            }
         }
+    }
+
+    fn transpose(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        result_dimensions: &[u32],
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let operand = arguments.get(0).expect("checked transpose has one operand");
+        let mut coordinates = row_major_coordinates(result_dimensions, scalar_index)
+            .expect("checked transpose scalar belongs to its result shape");
+        coordinates.swap(0, 1);
+        let operand_scalar =
+            flatten_coordinates(self.node(operand).value_type().dimensions(), &coordinates)
+                .expect("transposed coordinate belongs to its checked operand shape");
+        self.expression(operand, operand_scalar)
+    }
+
+    fn diagonal(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        result_dimensions: &[u32],
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let [_, columns] = result_dimensions else {
+            unreachable!("checked diagonal result has rank two")
+        };
+        let row = scalar_index / *columns as usize;
+        let column = scalar_index % *columns as usize;
+        if row != column {
+            return Ok(());
+        }
+        self.expression(
+            arguments.get(0).expect("checked diagonal has one operand"),
+            row,
+        )
+    }
+
+    fn matrix_product(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        node: dae::ExpressionView<'dae>,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let result_dimensions = node.value_type().dimensions();
+        match builtin {
+            dae::PureBuiltin::Diagonal => self.diagonal(arguments, result_dimensions, scalar_index),
+            dae::PureBuiltin::OuterProduct => {
+                self.outer_product(arguments, result_dimensions, scalar_index)
+            }
+            dae::PureBuiltin::Skew => self.skew(arguments, scalar_index),
+            _ => unreachable!("only compact matrix products use this projection"),
+        }
+    }
+
+    fn outer_product(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        result_dimensions: &[u32],
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let [_, columns] = result_dimensions else {
+            unreachable!("checked outerProduct result has rank two")
+        };
+        self.expression(
+            arguments
+                .get(0)
+                .expect("checked outerProduct has a left operand"),
+            scalar_index / *columns as usize,
+        )?;
+        self.expression(
+            arguments
+                .get(1)
+                .expect("checked outerProduct has a right operand"),
+            scalar_index % *columns as usize,
+        )
+    }
+
+    fn skew(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let operand_scalar = match scalar_index {
+            0 | 4 | 8 => return Ok(()),
+            1 | 3 => 2,
+            2 | 6 => 1,
+            5 | 7 => 0,
+            _ => unreachable!("checked skew scalar belongs to its 3x3 result"),
+        };
+        self.expression(
+            arguments.get(0).expect("checked skew has one operand"),
+            operand_scalar,
+        )
+    }
+
+    fn promoted_concatenation(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        axis: usize,
+        result_dimensions: &[u32],
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let mut coordinates = row_major_coordinates(result_dimensions, scalar_index)
+            .expect("checked concatenation scalar belongs to its result shape");
+        let selected = coordinates[axis];
+        let mut offset = 0_u32;
+        for argument in arguments.iter() {
+            let dimensions = self.node(argument).value_type().dimensions();
+            let extent = dimensions.get(axis).copied().unwrap_or(1);
+            let end = offset
+                .checked_add(extent)
+                .expect("checked concatenation extent remains in the u32 domain");
+            if selected < end {
+                coordinates[axis] = selected - offset;
+                let operand_scalar =
+                    flatten_coordinates(dimensions, &coordinates[..dimensions.len()])
+                        .expect("checked promoted coordinate belongs to its operand shape");
+                return self.expression(argument, operand_scalar);
+            }
+            offset = end;
+        }
+        unreachable!("checked concatenation operands cover the result")
+    }
+
+    fn scalar_arguments(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+    ) -> Result<(), ProjectionError> {
+        for argument in arguments.iter() {
+            self.expression(argument, 0)?;
+        }
+        Ok(())
     }
 
     fn all_scalars(&mut self, expression: dae::ExprId<'dae>) -> Result<(), ProjectionError> {
@@ -925,6 +1068,44 @@ mod tests {
     }
 
     #[test]
+    fn initial_condition_coordinate_projects_its_checked_runtime_owner() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("initial_projection.mo", "initial()");
+        let owner = provenance(source, 0, 9);
+        let model = dae::Dae::construct(sources, |model| {
+            let condition = model.conditions(|conditions| conditions.reserve(owner))?;
+            model.conditions(|conditions| {
+                conditions.define(condition, dae::ConditionInput::Initial, owner)
+            })?;
+            model.expressions(|expressions| {
+                expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::Condition(condition))?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        model.inspect(|view| {
+            let expression = view.expression_id(0).expect("the coordinate exists");
+            let condition = view.condition_id(0).expect("the condition exists");
+            assert!(matches!(
+                view.condition(condition).unwrap().operation(),
+                dae::ConditionOperation::Initial
+            ));
+            let mut dependencies = Vec::new();
+            for_each_scalar_coordinate(view, expression, 0, None, |coordinate, scalar| {
+                dependencies.push((coordinate, scalar));
+            })
+            .unwrap();
+            assert!(matches!(
+                dependencies.as_slice(),
+                [(dae::CoordinateView::Condition(found), 0)] if *found == condition
+            ));
+        });
+    }
+
+    #[test]
     fn literal_and_slice_indices_select_exact_coordinate_scalars() {
         let mut sources = SourceMap::new();
         let source = sources.add("projection.mo", "Real x[3]; x[2]; x[{3,1}];");
@@ -1090,13 +1271,216 @@ mod tests {
         expression: dae::ExprId<'dae>,
     ) -> Vec<usize> {
         let mut selected = Vec::new();
-        for scalar in 0..3 {
+        let scalar_count = view
+            .expression(expression)
+            .expect("checked projection expression resolves")
+            .value_type()
+            .scalar_count()
+            .expect("primitive projection has a scalar count");
+        for scalar in 0..scalar_count {
             for_each_scalar_coordinate(view, expression, scalar, None, |_, selected_scalar| {
                 selected.push(selected_scalar);
             })
             .unwrap();
         }
         selected
+    }
+
+    #[test]
+    fn vector_projects_each_result_scalar_to_the_same_compact_operand_scalar() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("vector_projection.mo", "Real x[1,3,1]; vector(x);");
+        let declaration = provenance(source, 0, 14);
+        let use_site = provenance(source, 16, 25);
+        let model = dae::Dae::construct(sources, |model| {
+            let tensor = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [1, 3, 1]),
+                    declaration,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    tensor,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            model.expressions(|expressions| {
+                let x = expressions
+                    .at(use_site)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                expressions
+                    .at(use_site)
+                    .builtin(dae::PureBuiltin::Vector, [x])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        model.inspect(|view| {
+            let vector = view.expression_id(1).unwrap();
+            assert_eq!(projected_scalars(view, vector), [0, 1, 2]);
+        });
+    }
+
+    #[test]
+    fn transpose_projects_rank_three_scalars_through_the_first_two_axes() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("transpose_projection.mo", "Real x[2,3,2]; transpose(x);");
+        let declaration = provenance(source, 0, 14);
+        let use_site = provenance(source, 16, 28);
+        let model = dae::Dae::construct(sources, |model| {
+            let tensor = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [2, 3, 2]),
+                    declaration,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    tensor,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            model.expressions(|expressions| {
+                let x = expressions
+                    .at(use_site)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                expressions
+                    .at(use_site)
+                    .builtin(dae::PureBuiltin::Transpose, [x])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        model.inspect(|view| {
+            let transpose = view.expression_id(1).unwrap();
+            assert_eq!(
+                projected_scalars(view, transpose),
+                [0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11]
+            );
+        });
+    }
+
+    #[test]
+    fn diagonal_and_outer_product_project_only_exact_operand_scalars() {
+        let mut sources = SourceMap::new();
+        let source = sources.add(
+            "matrix_products_projection.mo",
+            "Real d[2]; Real lhs[2]; Real rhs[3]; diagonal(d); outerProduct(lhs,rhs);",
+        );
+        let at = provenance(source, 0, 1);
+        let model = dae::Dae::construct(sources, |model| {
+            let (vector2, vector3) = model.types(|types| {
+                Ok((
+                    types.intern(
+                        TypeId::new(0),
+                        dae::ValueType::array(dae::ScalarType::Real, [2]),
+                        at,
+                    )?,
+                    types.intern(
+                        TypeId::new(1),
+                        dae::ValueType::array(dae::ScalarType::Real, [3]),
+                        at,
+                    )?,
+                ))
+            })?;
+            let (d, lhs, rhs) = model.variables(|variables| {
+                Ok((
+                    variables.algebraic(
+                        VarName::new("d"),
+                        vector2,
+                        at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.algebraic(
+                        VarName::new("lhs"),
+                        vector2,
+                        at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.algebraic(
+                        VarName::new("rhs"),
+                        vector3,
+                        at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+            model.expressions(|expressions| {
+                let d = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Algebraic(d))?;
+                expressions
+                    .at(at)
+                    .builtin(dae::PureBuiltin::Diagonal, [d])?;
+                let lhs = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Algebraic(lhs))?;
+                let rhs = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Algebraic(rhs))?;
+                expressions
+                    .at(at)
+                    .builtin(dae::PureBuiltin::OuterProduct, [lhs, rhs])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        model.inspect(|view| {
+            let diagonal = view.expression_id(1).unwrap();
+            assert_eq!(projected_scalars(view, diagonal), [0, 1]);
+            let outer = view.expression_id(4).unwrap();
+            assert_eq!(
+                projected_scalars(view, outer),
+                [0, 0, 0, 1, 0, 2, 1, 0, 1, 1, 1, 2]
+            );
+        });
+    }
+
+    #[test]
+    fn skew_projects_only_off_diagonal_operand_scalars() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("skew_projection.mo", "Real x[3]; skew(x);");
+        let at = provenance(source, 0, 1);
+        let model = dae::Dae::construct(sources, |model| {
+            let vector = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [3]),
+                    at,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    vector,
+                    at,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            model.expressions(|expressions| {
+                let x = expressions
+                    .at(at)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                expressions.at(at).builtin(dae::PureBuiltin::Skew, [x])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        model.inspect(|view| {
+            let skew = view.expression_id(1).unwrap();
+            assert_eq!(projected_scalars(view, skew), [2, 1, 2, 0, 1, 0]);
+        });
     }
 
     #[test]

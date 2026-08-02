@@ -18,6 +18,19 @@ fn lattice(period: ClockRational, phase: ClockRational) -> ClockLattice {
 }
 
 #[test]
+fn simulation_start_relative_schedule_resolves_once_at_the_runtime_boundary() {
+    let schedule =
+        PeriodicClockSchedule::simulation_start_relative(lattice(rational(1, 4), rational(1, 4)))
+            .expect("relative schedule is valid");
+    let resolved = schedule
+        .resolve_at(2.0)
+        .expect("finite start time is exactly representable");
+    assert_eq!(resolved.anchor(), ClockPhaseAnchor::Absolute);
+    assert_eq!(resolved.lattice().period(), rational(1, 4));
+    assert_eq!(resolved.lattice().phase(), rational(9, 4));
+}
+
+#[test]
 fn rationals_reduce_and_normalize_denominator_sign() {
     let value = rational(6, -8);
     assert_eq!(value.numerator(), -3);

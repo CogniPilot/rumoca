@@ -335,7 +335,14 @@ fn eval_builtin_integer_func_with_scope(
 ) -> Option<i64> {
     match func_name {
         "integer" if args.len() == 1 => eval_real_with_scope(&args[0], ctx, scope)
-            .and_then(|r| checked_real_to_i64(r.floor(), ctx, call_span, "integer(...)"))
+            .and_then(|r| {
+                checked_real_to_i64(
+                    rumoca_core::modelica_integer_value(r),
+                    ctx,
+                    call_span,
+                    "integer(...)",
+                )
+            })
             .or_else(|| eval_integer_with_scope(&args[0], ctx, scope)),
         "size" if args.len() == 2 => {
             let dim_idx = eval_integer_with_scope(&args[1], ctx, scope)? as usize;

@@ -190,7 +190,7 @@ console_error_panic_hook = "0.1"
 pyo3 = { version = "0.22", features = ["extension-module"] }
 
 [workspace.lints.rust]
-# `cfg(kani)` is set only by the Kani verifier, which is not in the dev shell
+# `cfg(kani)` is set only by the Kani verifier in the dedicated `.#kani` shell
 # (see CONTRIBUTING.md). Declaring it here keeps the bounded-verification
 # harnesses warning-free without a blanket `allow`, so a *typo* in any other
 # cfg name still warns.
@@ -254,6 +254,16 @@ opt-level = 3
 # default so CI can use parallel codegen.
 [profile.release]
 lto = "thin"
+
+# Fast edit/test profile for the local full-MSL campaign. Keep release-level
+# runtime optimization, but avoid ThinLTO and retain incremental artifacts so
+# compiler/runtime changes do not make every parity sweep pay a release link.
+# Official release builds continue to use `[profile.release]` above.
+[profile.msl-fast]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 16
 
 # Speed up parser-heavy runtime in normal debug builds.
 [profile.dev.package.rumoca-phase-parse]

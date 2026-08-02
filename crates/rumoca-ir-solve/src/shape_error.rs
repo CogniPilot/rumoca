@@ -61,6 +61,12 @@ pub enum SolveProblemShapeContractError {
         actual: usize,
         span: Option<Span>,
     },
+    StructuredDiscreteUpdate {
+        update_index: usize,
+        node_index: usize,
+        detail: &'static str,
+        span: Option<Span>,
+    },
     ZeroTensorDimension {
         context: String,
         node_index: usize,
@@ -193,6 +199,7 @@ impl SolveProblemShapeContractError {
             | Self::ScalarProgramMissingOutput { span, .. }
             | Self::ScalarProgramRegisterFlow { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
+            | Self::StructuredDiscreteUpdate { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
             | Self::VariableIndexOutOfBounds { span, .. }
@@ -278,6 +285,16 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 actual,
                 ..
             } => write!(f, "{context} expected {expected} rows, got {actual}"),
+            Self::StructuredDiscreteUpdate {
+                update_index,
+                node_index,
+                detail,
+                ..
+            } => write!(
+                f,
+                "structured discrete update {update_index} for compute node {node_index} is \
+                 invalid: {detail}"
+            ),
             error @ (Self::ZeroTensorDimension { .. }
             | Self::StructuredIndexDomain { .. }
             | Self::TensorOutputMapDimension { .. }

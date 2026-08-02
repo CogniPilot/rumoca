@@ -59,6 +59,9 @@ impl EqualitySign {
 struct SignedClasses {
     /// Union-find parent per variable ordinal.
     parent: Vec<u32>,
+    /// Union-by-rank bound on parent depth; ties keep the lower root. Variable
+    /// identities are `u32`, so the rank cannot exceed 32.
+    rank: Vec<u8>,
     /// Sign of each variable relative to its union-find parent.
     parity: Vec<bool>,
     /// Anchor of the class rooted at each variable ordinal.
@@ -71,6 +74,7 @@ impl SignedClasses {
     fn new(count: usize) -> Self {
         Self {
             parent: (0..count as u32).collect(),
+            rank: vec![0; count],
             parity: vec![false; count],
             anchor: vec![None; count],
             inconsistent: vec![false; count],
@@ -99,14 +103,20 @@ impl SignedClasses {
             }
             return;
         }
-        let (keep, merged) = if left < right {
-            (left, right)
-        } else {
-            (right, left)
+        let left_rank = self.rank[left as usize];
+        let right_rank = self.rank[right as usize];
+        let (keep, merged, raise_rank) = match left_rank.cmp(&right_rank) {
+            std::cmp::Ordering::Greater => (left, right, false),
+            std::cmp::Ordering::Less => (right, left, false),
+            std::cmp::Ordering::Equal if left < right => (left, right, true),
+            std::cmp::Ordering::Equal => (right, left, true),
         };
         self.parent[merged as usize] = keep;
         self.parity[merged as usize] = relative;
         self.inconsistent[keep as usize] |= self.inconsistent[merged as usize];
+        if raise_rank {
+            self.rank[keep as usize] = self.rank[keep as usize].saturating_add(1);
+        }
     }
 
     /// The class member whose derivative is known, and how `variable` signs
@@ -143,6 +153,22 @@ impl SignedClasses {
         if replace {
             self.anchor[root as usize] = Some(candidate);
         }
+    }
+
+    #[cfg(test)]
+    fn maximum_depth(&self) -> usize {
+        (0..self.parent.len() as u32)
+            .map(|variable| {
+                let mut current = variable;
+                let mut depth = 0;
+                while self.parent[current as usize] != current {
+                    current = self.parent[current as usize];
+                    depth += 1;
+                }
+                depth
+            })
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -247,21 +273,22 @@ impl SystemEqualities {
         self.witness[variable as usize]
     }
 
-    /// States that a class equality proves are the anchor itself.
+    /// States that a class equality proves are the anchor up to an exact sign.
     ///
     /// Only the offset-free layer is consulted: a demotion substitutes the
     /// anchor's value for the state, which a displaced equality does not prove.
-    /// A state anchor is only reported for same-sign members, because a
-    /// demotion hands reconstruction an existing coordinate expression as the
-    /// state's definition and the DAE need not contain a negated form of it.
-    pub(super) fn redundant_states(&self) -> impl Iterator<Item = (u32, EqualityAnchor)> + '_ {
+    /// The sign is part of the proof: reconstruction differentiates the anchor
+    /// and applies that sign, so `a + b = 0` substitutes `der(b) = -der(a)`
+    /// without synthesizing or recovering a source expression for `-a`.
+    pub(super) fn redundant_states(
+        &self,
+    ) -> impl Iterator<Item = (u32, EqualityAnchor, EqualitySign)> + '_ {
         (0..self.state.len() as u32).filter_map(move |variable| {
             if !self.state[variable as usize] {
                 return None;
             }
             let (anchor, sign) = self.exact.anchor_of(variable)?;
-            (sign == EqualitySign::Same && anchor != EqualityAnchor::State(variable))
-                .then_some((variable, anchor))
+            (anchor != EqualityAnchor::State(variable)).then_some((variable, anchor, sign))
         })
     }
 
@@ -618,4 +645,20 @@ fn coordinate_expressions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
         coordinates[state.index() as usize].get_or_insert(index as u32);
     }
     coordinates
+}
+
+#[cfg(test)]
+mod signed_class_scaling_tests {
+    use super::SignedClasses;
+
+    #[test]
+    fn reverse_order_alias_chain_keeps_logarithmic_parent_depth() {
+        const VARIABLE_COUNT: usize = 65_536;
+        let mut classes = SignedClasses::new(VARIABLE_COUNT);
+        for variable in (1..VARIABLE_COUNT as u32).rev() {
+            classes.union(variable, variable - 1, variable % 2 == 0);
+        }
+
+        assert!(classes.maximum_depth() <= u32::BITS as usize);
+    }
 }

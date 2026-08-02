@@ -1,14 +1,20 @@
 //! Harness A: MLS §8.3.5.1 activation buffers seeded at the initialization
 //! instant, over a model with 1..=3 generated conditions.
 //!
-//! `SolveRuntime::seed_condition_memory_for_initialization` is driven directly
-//! rather than through a compiled model, because both registry rows below are
-//! properties *of the seed* and are invisible at the trace level once an event
-//! has run over them.
+//! These properties drive the production seed implementation that
+//! `SolveRuntime::seed_condition_memory_for_initialization` delegates to. The
+//! implementation is factored from `SolveRuntime` so verification does not
+//! construct unrelated solver, projection, delay, and cache state.
 
-use super::model_fixture::{
-    CONDITION_THRESHOLD, ConditionLayout, MAX_CONDITIONS, condition_memory_model,
+use rumoca_eval_solve::{PreparedScalarProgramBlock, RowEvalContext};
+
+use crate::runtime::solve_runtime::{
+    ConditionMemorySeedInput, seed_condition_memory_for_initialization_core,
 };
+
+#[cfg(not(kani))]
+use super::model_fixture::MAX_CONDITIONS;
+use super::model_fixture::{CONDITION_THRESHOLD, ConditionLayout, condition_memory_model};
 
 /// The tolerance every slot write in these harnesses uses.
 const SEED_TOL: f64 = 1.0e-9;
@@ -24,16 +30,32 @@ struct SeedRun {
     reported: Vec<(usize, f64)>,
 }
 
+fn seed(
+    model: &rumoca_ir_solve::SolveModel,
+    discrete_rhs: &PreparedScalarProgramBlock,
+    params: &mut [f64],
+) -> Vec<(usize, f64)> {
+    seed_condition_memory_for_initialization_core(ConditionMemorySeedInput {
+        model,
+        discrete_rhs,
+        row_eval_context: RowEvalContext::default(),
+        y: &mut [],
+        p: params,
+        t: T_START,
+        tol: SEED_TOL,
+    })
+    .expect("condition memory should seed")
+    .iter()
+    .map(|entry| (entry.index, entry.value))
+    .collect()
+}
+
 fn seed_once(starts: &[f64]) -> SeedRun {
     let model = condition_memory_model(starts);
-    let runtime = crate::SolveRuntime::new(&model).expect("bounded fixture should prepare");
+    let discrete_rhs = PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())
+        .expect("bounded fixture should prepare discrete rows");
     let mut params = model.parameters.clone();
-    let reported = runtime
-        .seed_condition_memory_for_initialization(&mut [], &mut params, T_START, SEED_TOL)
-        .expect("condition memory should seed")
-        .iter()
-        .map(|entry| (entry.index, entry.value))
-        .collect();
+    let reported = seed(&model, &discrete_rhs, &mut params);
     SeedRun {
         layout: ConditionLayout::new(starts.len()),
         params,
@@ -129,15 +151,12 @@ fn property_no_seeded_activation_has_a_rising_edge(starts: &[f64]) {
 /// are not the fixed point §8.6 requires the pre-integration state to be at.
 fn property_seeding_is_idempotent(starts: &[f64]) {
     let model = condition_memory_model(starts);
-    let runtime = crate::SolveRuntime::new(&model).expect("bounded fixture should prepare");
+    let discrete_rhs = PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())
+        .expect("bounded fixture should prepare discrete rows");
     let mut params = model.parameters.clone();
-    runtime
-        .seed_condition_memory_for_initialization(&mut [], &mut params, T_START, SEED_TOL)
-        .expect("condition memory should seed");
+    seed(&model, &discrete_rhs, &mut params);
     let after_first = params.clone();
-    runtime
-        .seed_condition_memory_for_initialization(&mut [], &mut params, T_START, SEED_TOL)
-        .expect("condition memory should seed a second time");
+    seed(&model, &discrete_rhs, &mut params);
     assert!(
         params == after_first,
         "the seed is a fixed point: reapplying it must not move any parameter"
@@ -179,60 +198,104 @@ fn property_the_seed_preserves_the_initial_flag(starts: &[f64]) {
 
 #[cfg(kani)]
 mod proof {
-    use super::MAX_CONDITIONS;
-
-    /// A bounded start vector: 1..=3 finite condition sources.
-    fn any_starts() -> Vec<f64> {
-        let count: usize = kani::any();
-        kani::assume(count >= 1 && count <= MAX_CONDITIONS);
-        let mut starts = Vec::with_capacity(count);
-        for _ in 0..count {
-            let start: f64 = kani::any();
+    /// An exact fixed-count domain of arbitrary finite condition sources.
+    fn any_starts<const N: usize>() -> [f64; N] {
+        let starts: [f64; N] = kani::any();
+        for start in &starts {
             kani::assume(start.is_finite());
-            starts.push(start);
         }
         starts
     }
 
-    /// After seeding, every activation buffer holds the value its own condition
-    /// evaluates to at the initialization instant. (FS-EQN-001, MLS §8.3.5.1)
     #[kani::proof]
     #[kani::unwind(8)]
-    fn every_buffer_holds_its_condition_value_at_the_start() {
-        super::property_every_buffer_holds_its_condition_value_at_the_start(&any_starts());
+    fn every_buffer_holds_its_condition_value_at_the_start_n1() {
+        let starts = any_starts::<1>();
+        super::property_every_buffer_holds_its_condition_value_at_the_start(&starts);
     }
 
-    /// WEAKER RESTATEMENT of
-    /// `every_buffer_holds_its_condition_value_at_the_start`: no seeded
-    /// activation presents a rising edge at the initial event.
-    /// (FS-EQN-002, MLS §8.6)
     #[kani::proof]
     #[kani::unwind(8)]
-    fn no_seeded_activation_has_a_rising_edge() {
-        super::property_no_seeded_activation_has_a_rising_edge(&any_starts());
+    fn every_buffer_holds_its_condition_value_at_the_start_n2() {
+        let starts = any_starts::<2>();
+        super::property_every_buffer_holds_its_condition_value_at_the_start(&starts);
     }
 
-    /// Seeding is idempotent: a second seed writes the same buffer values and
-    /// leaves every other slot untouched. (FS-EQN-002, MLS §8.6)
     #[kani::proof]
     #[kani::unwind(8)]
-    fn seeding_is_idempotent() {
-        super::property_seeding_is_idempotent(&any_starts());
+    fn every_buffer_holds_its_condition_value_at_the_start_n3() {
+        let starts = any_starts::<3>();
+        super::property_every_buffer_holds_its_condition_value_at_the_start(&starts);
     }
 
-    /// The seed leaves the caller's `initial()` flag slot exactly as it found
-    /// it, and seeds the `initial()` buffer false. (FS-EQN-001, MLS §8.3.5.1)
     #[kani::proof]
     #[kani::unwind(8)]
-    fn the_seed_preserves_the_initial_flag() {
-        super::property_the_seed_preserves_the_initial_flag(&any_starts());
+    fn no_seeded_activation_has_a_rising_edge_n1() {
+        let starts = any_starts::<1>();
+        super::property_no_seeded_activation_has_a_rising_edge(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn no_seeded_activation_has_a_rising_edge_n2() {
+        let starts = any_starts::<2>();
+        super::property_no_seeded_activation_has_a_rising_edge(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn no_seeded_activation_has_a_rising_edge_n3() {
+        let starts = any_starts::<3>();
+        super::property_no_seeded_activation_has_a_rising_edge(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn seeding_is_idempotent_n1() {
+        let starts = any_starts::<1>();
+        super::property_seeding_is_idempotent(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn seeding_is_idempotent_n2() {
+        let starts = any_starts::<2>();
+        super::property_seeding_is_idempotent(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn seeding_is_idempotent_n3() {
+        let starts = any_starts::<3>();
+        super::property_seeding_is_idempotent(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn the_seed_preserves_the_initial_flag_n1() {
+        let starts = any_starts::<1>();
+        super::property_the_seed_preserves_the_initial_flag(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn the_seed_preserves_the_initial_flag_n2() {
+        let starts = any_starts::<2>();
+        super::property_the_seed_preserves_the_initial_flag(&starts);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn the_seed_preserves_the_initial_flag_n3() {
+        let starts = any_starts::<3>();
+        super::property_the_seed_preserves_the_initial_flag(&starts);
     }
 }
 
 #[cfg(all(test, not(kani)))]
 mod fallback {
-    // Fallback driver: identical property under proptest because Kani is not in
-    // the dev shell yet. Graduating means deleting this module.
+    // Conventional fallback driver: the same properties exercise the exact
+    // production core under proptest without launching the verifier.
     use proptest::prelude::*;
 
     use super::{CONDITION_THRESHOLD, MAX_CONDITIONS};

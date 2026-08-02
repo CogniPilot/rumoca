@@ -13,6 +13,185 @@ use super::event_update::{
 };
 use super::support::{copy_runtime_values, reserve_runtime_vec_capacity};
 
+#[derive(Clone)]
+pub(super) struct PreparedStructuredDiscreteRows {
+    rhs: solve_eval::PreparedScalarProgramBlock,
+    rows: Vec<PreparedStructuredDiscreteRow>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PreparedStructuredDiscreteRow {
+    pub(super) source_row: usize,
+    pub(super) target: solve::ScalarSlot,
+    pub(super) role: solve::DiscreteRowRole,
+    pub(super) pre_mode: solve::DiscreteEventPreMode,
+    pub(super) observation_refresh: bool,
+    pub(super) clock_owner: Option<solve::PeriodicClockId>,
+}
+
+impl PreparedStructuredDiscreteRows {
+    pub(super) fn new(model: &solve::SolveModel) -> Result<Self, solve_eval::EvalSolveError> {
+        let scalar = solve_eval::to_scalar_program_block(&model.problem.discrete.structured_rhs)?;
+        let rhs = solve_eval::PreparedScalarProgramBlock::new(scalar)?;
+        let mut rows = Vec::new();
+        for (update_index, update) in model.problem.discrete.structured_updates.iter().enumerate() {
+            for (target, source_lane) in model
+                .problem
+                .discrete
+                .structured_assignments(update_index)?
+            {
+                let source_row = rhs.single_output_row_for_output_index(source_lane).ok_or(
+                    solve_eval::EvalSolveError::ShapeContract {
+                        message: format!(
+                            "structured discrete update {update_index} output lane {source_lane} \
+                             does not have one scalar adapter row"
+                        ),
+                        span: None,
+                    },
+                )?;
+                rows.push(PreparedStructuredDiscreteRow {
+                    source_row,
+                    target,
+                    role: update.role,
+                    pre_mode: update.pre_mode,
+                    observation_refresh: update.observation_refresh,
+                    clock_owner: update.clock_owner,
+                });
+            }
+        }
+        Ok(Self { rhs, rows })
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub(super) fn rows(&self) -> &[PreparedStructuredDiscreteRow] {
+        &self.rows
+    }
+}
+
+impl SolveRuntime {
+    /// Evaluate and apply every scalar and structured discrete definition once.
+    ///
+    /// This is the scalar-view adapter used by deadline ticks that intentionally
+    /// do not perform event filtering. The Solve IR keeps structured maps
+    /// compact; expansion to `(ScalarSlot, value)` pairs exists only here.
+    pub fn apply_unfiltered_discrete_rows_once(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        tol: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        let eval_y = copy_runtime_values(y, "unfiltered discrete y snapshot")?;
+        let eval_p = copy_runtime_values(p, "unfiltered discrete p snapshot")?;
+        let mut values = vec![0.0; self.discrete_rhs.len()];
+        self.discrete_rhs.eval_with_context(
+            &eval_y,
+            &eval_p,
+            t,
+            self.row_eval_context(),
+            &mut values,
+        )?;
+        let mut assignments = self
+            .model
+            .problem
+            .discrete
+            .update_targets
+            .iter()
+            .copied()
+            .zip(values)
+            .collect::<Vec<_>>();
+        for row in self.structured_discrete_rows.rows().iter().copied() {
+            let value = self
+                .structured_discrete_rows
+                .rhs
+                .eval_row_unchecked_with_context(
+                    row.source_row,
+                    &eval_y,
+                    &eval_p,
+                    t,
+                    self.row_eval_context(),
+                )?;
+            assignments.push((row.target, value));
+        }
+        let mut changed = false;
+        for (target, value) in assignments {
+            changed |= solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn structured_discrete_row_active_at(
+        &self,
+        row: PreparedStructuredDiscreteRow,
+        t: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        let Some(owner) = row.clock_owner else {
+            return Ok(true);
+        };
+        let schedule = self
+            .model
+            .problem
+            .clocks
+            .periodic_schedule(owner)
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "structured discrete row refers to periodic clock {} outside the clock partition",
+                    owner.index()
+                ))
+            })?;
+        Ok(crate::timeline::periodic_schedule_matches_time(schedule, t))
+    }
+
+    pub(super) fn eval_structured_discrete_row_for_pre_snapshot(
+        &self,
+        snapshot: &DiscretePreSnapshot<'_>,
+        row: PreparedStructuredDiscreteRow,
+        eval_y: &[f64],
+        eval_p: &[f64],
+        t: f64,
+        tol: f64,
+        eval_p_cache: &mut EventEvalParamCache,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        if !self.structured_discrete_row_active_at(row, t)? {
+            return Ok(None);
+        }
+        let pre_mode = crate::EventPreMode::from(row.pre_mode);
+        if !snapshot
+            .row_filter
+            .accepts(pre_mode, row.clock_owner.is_some())
+        {
+            return Ok(None);
+        }
+        let sources = snapshot.event_pre_sources();
+        let row_p = eval_p_cache.params(&self.model, eval_p, pre_mode, &sources, t, tol);
+        let row_p_with_root_overrides;
+        let row_p = if snapshot.root_relation_overrides.is_empty() {
+            row_p
+        } else {
+            row_p_with_root_overrides = event_eval_params_with_relation_overrides(
+                &self.model.problem.events.root_relation_memory_targets,
+                snapshot.root_relation_overrides,
+                row_p,
+            )?;
+            &row_p_with_root_overrides
+        };
+        self.structured_discrete_rows
+            .rhs
+            .eval_row_unchecked_with_context(
+                row.source_row,
+                eval_y,
+                row_p,
+                t,
+                self.row_eval_context(),
+            )
+            .map(Some)
+            .map_err(Into::into)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DiscreteRowEvalScope {
     skip_solver_or_time_rows: bool,
@@ -27,6 +206,86 @@ pub struct SeededConditionMemory {
     pub index: usize,
     /// The condition's value at the initialization instant.
     pub value: f64,
+}
+
+/// The production inputs required to seed initialization condition memory.
+pub(crate) struct ConditionMemorySeedInput<'a> {
+    pub(crate) model: &'a solve::SolveModel,
+    pub(crate) discrete_rhs: &'a solve_eval::PreparedScalarProgramBlock,
+    pub(crate) row_eval_context: solve_eval::RowEvalContext<'a>,
+    pub(crate) y: &'a mut [f64],
+    pub(crate) p: &'a mut [f64],
+    pub(crate) t: f64,
+    pub(crate) tol: f64,
+}
+
+/// The single production implementation of initialization condition-memory
+/// seeding, factored from [`SolveRuntime`] so formal proofs need not construct
+/// unrelated runtime state.
+pub(crate) fn seed_condition_memory_for_initialization_core(
+    input: ConditionMemorySeedInput<'_>,
+) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
+    let ConditionMemorySeedInput {
+        model,
+        discrete_rhs,
+        row_eval_context,
+        y,
+        p,
+        t,
+        tol,
+    } = input;
+    if model
+        .problem
+        .events
+        .condition_memory_parameter_indices
+        .is_empty()
+        || model.problem.discrete.rhs.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    super::validate_discrete_event_rows(model)?;
+    // MLS §8.6: "Before the start of the integration, it must be guaranteed
+    // that for all variables `v`, `v = pre(v)`." A condition that reads
+    // `pre(s)` must therefore be seeded against `s` itself, not against
+    // whatever the `pre` slot happens to hold — the lowered `pre` slots are
+    // committed from the settled values only *after* the initial event
+    // (`commit_pre_params_after_event`), so reading them raw here gives a
+    // buffer seeded against `0.0` and `when pre(s) > 2` with `s.start = 5`
+    // finds a rising edge that §8.6 says is not there.
+    let mut seed_p = crate::event_eval_params_for_pre_mode(model, p, y, p, t, tol);
+    // `initial()` is true only at the initial event, so the buffered value
+    // it enters that event with is the value it has everywhere else.
+    super::set_initial_event_flag(model, &mut seed_p, false);
+    let mut seeded = Vec::new();
+    let mut writes = Vec::new();
+    for row_idx in 0..model.problem.discrete.rhs.len() {
+        if model.problem.discrete.row_roles[row_idx] != solve::DiscreteRowRole::ConditionMemory {
+            continue;
+        }
+        // A clocked buffer is only defined on its own ticks (MLS §16.5).
+        if !discrete_row_active_at(model, row_idx, t)? {
+            continue;
+        }
+        let value = discrete_rhs.eval_row_unchecked_with_context(
+            row_idx,
+            y,
+            &seed_p,
+            t,
+            row_eval_context,
+        )?;
+        let target = model.problem.discrete.update_targets[row_idx];
+        let solve::ScalarSlot::P { index, .. } = target else {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "condition-memory row {row_idx} does not target a parameter slot"
+            )));
+        };
+        seeded.push(SeededConditionMemory { index, value });
+        writes.push((target, value));
+    }
+    for (target, value) in writes {
+        solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
+    }
+    Ok(seeded)
 }
 
 impl SolveRuntime {
@@ -72,56 +331,44 @@ impl SolveRuntime {
         t: f64,
         tol: f64,
     ) -> Result<Vec<SeededConditionMemory>, RuntimeSolveError> {
-        if self
-            .model
-            .problem
-            .events
-            .condition_memory_parameter_indices
-            .is_empty()
-            || self.model.problem.discrete.rhs.is_empty()
-        {
-            return Ok(Vec::new());
+        let mut seeded = seed_condition_memory_for_initialization_core(ConditionMemorySeedInput {
+            model: &self.model,
+            discrete_rhs: &self.discrete_rhs,
+            row_eval_context: self.row_eval_context(),
+            y,
+            p,
+            t,
+            tol,
+        })?;
+        if self.structured_discrete_rows.is_empty() {
+            return Ok(seeded);
         }
-        self.validate_discrete_event_rows()?;
-        // MLS §8.6: "Before the start of the integration, it must be guaranteed
-        // that for all variables `v`, `v = pre(v)`." A condition that reads
-        // `pre(s)` must therefore be seeded against `s` itself, not against
-        // whatever the `pre` slot happens to hold — the lowered `pre` slots are
-        // committed from the settled values only *after* the initial event
-        // (`commit_pre_params_after_event`), so reading them raw here gives a
-        // buffer seeded against `0.0` and `when pre(s) > 2` with `s.start = 5`
-        // finds a rising edge that §8.6 says is not there.
-        let mut seed_p = crate::event_eval_params_for_pre_mode(&self.model, p, y, p, tol);
-        // `initial()` is true only at the initial event, so the buffered value
-        // it enters that event with is the value it has everywhere else.
-        self.set_initial_event_flag(&mut seed_p, false);
-        let mut seeded = Vec::new();
+        let mut seed_p = crate::event_eval_params_for_pre_mode(&self.model, p, y, p, t, tol);
+        super::set_initial_event_flag(&self.model, &mut seed_p, false);
         let mut writes = Vec::new();
-        for row_idx in 0..self.model.problem.discrete.rhs.len() {
-            if self.model.problem.discrete.row_roles[row_idx]
-                != solve::DiscreteRowRole::ConditionMemory
+        for row in self.structured_discrete_rows.rows().iter().copied() {
+            if row.role != solve::DiscreteRowRole::ConditionMemory
+                || !self.structured_discrete_row_active_at(row, t)?
             {
                 continue;
             }
-            // A clocked buffer is only defined on its own ticks (MLS §16.5).
-            if !discrete_row_active_at(&self.model, row_idx, t)? {
-                continue;
-            }
-            let value = self.discrete_rhs.eval_row_unchecked_with_context(
-                row_idx,
-                y,
-                &seed_p,
-                t,
-                self.row_eval_context(),
-            )?;
-            let target = self.model.problem.discrete.update_targets[row_idx];
-            let solve::ScalarSlot::P { index, .. } = target else {
-                return Err(RuntimeSolveError::solve_ir(format!(
-                    "condition-memory row {row_idx} does not target a parameter slot"
-                )));
+            let value = self
+                .structured_discrete_rows
+                .rhs
+                .eval_row_unchecked_with_context(
+                    row.source_row,
+                    y,
+                    &seed_p,
+                    t,
+                    self.row_eval_context(),
+                )?;
+            let solve::ScalarSlot::P { index, .. } = row.target else {
+                return Err(RuntimeSolveError::solve_ir(
+                    "structured condition-memory row does not target a parameter slot",
+                ));
             };
             seeded.push(SeededConditionMemory { index, value });
-            writes.push((target, value));
+            writes.push((row.target, value));
         }
         for (target, value) in writes {
             solve_eval::apply_scalar_slot_value(target, value, y, p, tol)?;
@@ -254,6 +501,32 @@ impl SolveRuntime {
             };
             row_values.push((self.model.problem.discrete.update_targets[row_idx], value));
         }
+        for row in self.structured_discrete_rows.rows().iter().copied() {
+            if scope.observation_only && !row.observation_refresh {
+                continue;
+            }
+            if scope.initialization_equations_only && row.role != solve::DiscreteRowRole::Equation {
+                continue;
+            }
+            let source_program =
+                &self.structured_discrete_rows.rhs.block().programs()[row.source_row];
+            if scope.skip_solver_or_time_rows && row_reads_solver_or_time(source_program) {
+                continue;
+            }
+            let Some(value) = self.eval_structured_discrete_row_for_pre_snapshot(
+                snapshot,
+                row,
+                &eval_y,
+                &eval_p,
+                t,
+                tol,
+                &mut eval_p_cache,
+            )?
+            else {
+                continue;
+            };
+            row_values.push((row.target, value));
+        }
         self.override_relation_memory_row_values(snapshot.root_relation_overrides, &mut row_values);
         let mut changed = false;
         for (target, value) in row_values {
@@ -279,11 +552,12 @@ impl SolveRuntime {
             return Ok(None);
         }
         let row_pre_mode = discrete_row_pre_mode(&self.model, row_idx)?;
-        if !snapshot.row_filter.accepts(row_pre_mode) {
+        let clock_owned = self.model.problem.discrete.clock_owners[row_idx].is_some();
+        if !snapshot.row_filter.accepts(row_pre_mode, clock_owned) {
             return Ok(None);
         }
         let sources = snapshot.event_pre_sources();
-        let row_p = eval_p_cache.params(&self.model, eval_p, row_pre_mode, &sources, tol);
+        let row_p = eval_p_cache.params(&self.model, eval_p, row_pre_mode, &sources, t, tol);
         let row_p_with_root_overrides;
         let row_p = if snapshot.root_relation_overrides.is_empty() {
             row_p
@@ -309,7 +583,13 @@ impl SolveRuntime {
         tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        if self.model.problem.discrete.observation_refresh.is_empty() {
+        if self.model.problem.discrete.observation_refresh.is_empty()
+            && !self
+                .structured_discrete_rows
+                .rows()
+                .iter()
+                .any(|row| row.observation_refresh)
+        {
             return Ok(false);
         }
         self.validate_observation_refresh_rows()?;

@@ -111,14 +111,17 @@ exists. Every other object inserts complete values in proven order.
 |---|---|---|
 | Continuous equations own checked residual IDs | Continuous system | B.1a has one form |
 | Initialization uses initialization-specific IDs | Initialization system | Runtime rules differ |
-| Discrete initial values own a typed scalar target and one settled value | Initialization system | MLS §8.6 assigns, never solves |
+| Discrete initial values from initial algorithms or explicit `m = value` / `pre(m) = value` equations own a typed scalar target and one settled value | Initialization system | MLS §8.6 assigns, never solves |
 | One discrete coordinate has at most one initial value | Initialization system | Duplicate is impossible |
 | A discrete initial value reads only `time`, parameters, and constants | Initialization system | Nothing else is settled there |
 | Discrete Real equations own activated Real residual IDs | Discrete system | B.1b may be coupled; trigger/guard ownership is explicit |
 | B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
+| Runtime binding equations contribute event owners by expression occurrence | Event analysis | MLS §4.4 binding syntax and equation-section syntax have the same MLS §8.5 event surface |
 | Every non-input B.1c target has one definition | Discrete system | Missing or duplicate is impossible |
 | Input `m` capabilities are read-only | Variable/discrete systems | Inputs cannot be assigned |
 | B.1c dependencies use issued-order capabilities | Discrete system | Topology is incremental |
+| A structured B.1c owner owns one checked domain/view and typed target/value bodies | Discrete system | Preserve the authoritative family |
+| Structured B.1c construction derives scalar count and proves exact target coverage | Discrete system | Partial, duplicate, overlapping, and caller-count definitions are impossible |
 | Reinitialization owns typed state/value updates | Event system | State resets are explicit |
 | Reinit branches preserve ordering and exclusivity | Event system | Multiple legal branches remain expressible |
 | Caller-supplied scalar counts are prohibited | Equation domains | Counts are derived |
@@ -154,6 +157,8 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | Wire decode replays the same owner operations | Solve serialization | Bytes cannot forge definitions |
 | Old schemas, raw insertion, validators, defaults, and adapters are absent | Solve boundary | No weaker path survives |
 | Tests use production construction and cannot bypass provenance or activation | Solve tests | Evidence exercises the boundary |
+| Structured B.1c owners derive compact compute and target maps plus row/pre/observation/clock policy | Solve construction | Per-scalar metadata cannot become a parallel owner |
+| Structured B.1c wire decode replays the same checked owner operation | DAE/Solve serialization | Bytes cannot forge a family or its target coverage |
 
 ### 7. Flat Aggregate Construction Catalog (SPEC_0036 §Flat Aggregate)
 

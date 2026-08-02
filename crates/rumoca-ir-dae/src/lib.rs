@@ -133,7 +133,7 @@ pub use conditions::{
 pub use discrete_values::{
     DiscreteBranchActivation, DiscreteValueBranchValues, DiscreteValueBranchView,
     DiscreteValueBranches, DiscreteValueOwner, DiscreteValueOwnerView, DiscreteValueTargets,
-    DiscreteValueTopology,
+    DiscreteValueTopology, StructuredDiscreteValueView,
 };
 pub use equations::{
     ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationView,

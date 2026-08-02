@@ -9,6 +9,9 @@ use super::*;
 
 struct InitialProjectionModel<'a> {
     runtime: &'a SolveRuntime,
+    tol: f64,
+    max_iters: usize,
+    refreshes_algebraic_reads: bool,
 }
 
 impl ImplicitProjectionModel for InitialProjectionModel<'_> {
@@ -117,9 +120,29 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        // An initialization row observes the simultaneous continuous system at
+        // the initial instant (MLS 3.6 §8.6), never the declaration seeds of
+        // algebraic/output coordinates.  Refresh those derived coordinates on
+        // an evaluation-local view: rows that the projection can solve remain
+        // the only writers of `y`, while the complete-residual certificate sees
+        // the values the continuous equations actually determine.
+        let mut settled_y = Vec::new();
+        let residual_y = if self.refreshes_algebraic_reads {
+            settled_y.extend_from_slice(y);
+            self.runtime.refresh_algebraic_and_output_slots(
+                t,
+                &mut settled_y,
+                p,
+                self.tol,
+                self.max_iters,
+            )?;
+            settled_y.as_slice()
+        } else {
+            y
+        };
         self.runtime
             .initial_residual
-            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
+            .eval_with_context(residual_y, p, t, self.runtime.row_eval_context(), out)
             .map_err(Into::into)
     }
 
@@ -261,7 +284,25 @@ impl SolveRuntime {
             .is_some_and(InitialContinuationCoverage::drives_algebraic_refresh);
         project_initial_variables_with_homotopy(
             InitialHomotopySystem {
-                model: &InitialProjectionModel { runtime: self },
+                model: &InitialProjectionModel {
+                    runtime: self,
+                    tol,
+                    max_iters,
+                    refreshes_algebraic_reads: self
+                        .model
+                        .problem
+                        .initialization
+                        .row_roles
+                        .iter()
+                        .any(|role| {
+                            matches!(
+                                role,
+                                solve::InitializationRowRole::UnownedCoordinate(
+                                    solve::InitializationCoordinateKind::Algebraic
+                                )
+                            )
+                        }),
+                },
                 t,
                 plan: &self.model.problem.initialization.projection_plan,
                 homotopy_parameter_index: self

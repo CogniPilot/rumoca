@@ -270,6 +270,7 @@ fn casadi_simulate(
         names,
         data,
         variable_meta: None,
+        certification_profile: None,
     })
 }
 
@@ -284,6 +285,7 @@ fn sim_result_to_trace(sim: &SimResult, model_name: &str) -> SimTrace {
             .map(|ch| ch.iter().map(|&v| Some(v)).collect())
             .collect(),
         variable_meta: None,
+        certification_profile: None,
     }
 }
 

@@ -4672,6 +4672,7 @@ dependencies = [
  "rumoca-eval-flat",
  "rumoca-ir-ast",
  "rumoca-ir-flat",
+ "rumoca-phase-dae",
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
@@ -4723,6 +4724,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-ir-ast",
  "scnr2",
+ "tempfile",
 ]
 
 [[package]]

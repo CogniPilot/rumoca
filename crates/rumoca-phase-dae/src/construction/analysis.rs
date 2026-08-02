@@ -47,10 +47,15 @@ pub(super) use derived_parameters::DerivedParameterPlan;
 use derived_parameters::analyze_derived_parameters;
 pub(super) use discrete_values::DiscreteValueTopologyPlan;
 use discrete_values::analyze_discrete_value_topology;
-use equation_partitions::defined_discrete_targets;
-pub(super) use equation_partitions::{EquationPartition, equation_partition};
+pub(super) use equation_partitions::{
+    AggregateDiscreteConnections, DiscreteValueAssignmentPlan, EquationPartition,
+    discrete_value_assignment, equation_partition, structured_discrete_assignments,
+};
+use equation_partitions::{
+    aggregate_discrete_connections, defined_discrete_targets, discrete_connection_ranks,
+};
 use event_conditions::{
-    evaluate_clock_seconds, evaluate_sample_lattice, validate_algorithm_condition,
+    evaluate_clock_seconds, evaluate_sample_schedule, validate_algorithm_condition,
     validate_condition_expression, validate_when_condition_expression,
 };
 pub(super) use expression_events::{ExpressionEventPlan, ExpressionEventPlans};
@@ -89,7 +94,7 @@ pub(super) use function_value_types::record_field_projections;
 use function_value_types::validate_function_value_type;
 pub(super) use initial_algorithms::InitialDiscreteValue;
 use initial_algorithms::{
-    InitialAlgorithmAnalysis, analyze_initial_algorithms,
+    InitialAlgorithmAnalysis, analyze_initial_algorithms, claim_initial_discrete_equations,
     reject_unsupported_initial_algorithm_statements,
 };
 use model_algorithm_statements::validate_model_algorithm;
@@ -101,8 +106,10 @@ pub(super) use model_algorithms::{
 use model_roles::{
     ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
 };
-use record_array_fields::analyze_record_array_fields;
 pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
+use record_array_fields::{
+    analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
+};
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
@@ -116,7 +123,10 @@ pub(super) struct Analysis {
     pub(super) balance: BalanceDetail,
     pub(super) continuous_family_rows: HashSet<usize>,
     pub(super) initialization_family_rows: HashSet<usize>,
-    pub(super) sample_lattices: Vec<(Span, ClockLattice)>,
+    /// Scalar initial-equation rows represented by typed initial discrete-value
+    /// definitions rather than numeric initialization residuals.
+    pub(super) initial_discrete_equation_rows: HashSet<usize>,
+    pub(super) sample_lattices: Vec<(Span, PeriodicClockSchedule)>,
     pub(super) expression_events: ExpressionEventPlans,
     pub(super) clock_plans: HashMap<InstanceId, ClockPlan>,
     pub(super) clock_equation_rows: HashSet<usize>,
@@ -137,13 +147,15 @@ pub(super) struct Analysis {
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
     pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
-    pub(super) record_array_fields: RecordArrayFieldPlans,
+    pub(super) record_array_fields: Arc<RecordArrayFieldPlans>,
     pub(super) derived_parameters: HashMap<VarName, DerivedParameterPlan>,
     pub(super) derived_parameter_families: HashSet<usize>,
     pub(super) derived_parameter_rows: HashSet<usize>,
     pub(super) record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) discrete_value_topology: DiscreteValueTopologyPlan,
+    pub(super) discrete_connection_ranks: HashMap<VarName, usize>,
+    pub(super) aggregate_discrete_connections: AggregateDiscreteConnections,
     pub(super) assigned_discrete_targets: HashSet<VarName>,
     /// MLS §3.7.4.5 Rule 1 / Rule 2 replacement residuals, keyed by the model
     /// equation row they replace. Empty until
@@ -181,6 +193,13 @@ pub(super) enum FunctionIntegerReduction {
 
 pub(super) enum FunctionStatementPlan {
     Assignment(FunctionAssignmentPlan),
+    /// An MLS §8.3.7 assertion whose condition this exact value-proven
+    /// specialization establishes as `true`.
+    ///
+    /// The plan is the proof that construction may erase the flow action. An
+    /// unsettled assertion is never represented by this variant: it needs a
+    /// call-scoped runtime owner and is rejected while that owner is absent.
+    ProvenAssertion,
     For {
         domain: StructuredIndexDomain,
         binder_spans: Vec<Span>,
@@ -336,19 +355,14 @@ pub(super) struct RecordEquationFieldPlan {
 }
 
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
-    validate_flat_shape(flat)?;
-    // The initial-algorithm statement grammar is proven before anything else
-    // analyzes those statements. Analyzing them first reports a consequence of
-    // an absent owner — a statement-form `assert` read as an unresolved callee,
-    // for one — instead of the capability that is missing.
-    reject_unsupported_initial_algorithm_statements(flat)?;
-    validate_impure_call_contexts(flat)?;
+    validate_source_model(flat)?;
     // The parameter fixed point is folded before any shape is proven: MLS §12.2
     // lets a function's array dimensions be parameter expressions, so the
     // settled values of the model's evaluable parameters (MLS §4.5) are part of
     // what proves a function's declared extents, not a later consequence of it.
     let constants = constant_context(flat)?;
     let function_shapes = FunctionShapeAnalysis::analyze(flat, &constants)?;
+    let record_array_fields = Arc::clone(function_shapes.record_array_fields());
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equations(flat, &flat.equations)?;
     let initial_record_equations = analyze_record_equations(flat, &flat.initial_equations)?;
@@ -361,7 +375,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         expressions: mut expression_roles,
     } = analyze_model_roles(flat, &clocks.sampled_targets)?;
     validate_runtime_coordinate_instances(flat, &roles)?;
-    let record_array_fields = analyze_record_array_field_plans(flat, &roles)?;
+    validate_record_array_field_runtime_coordinates(flat, &record_array_fields, &roles)?;
     let derived_parameters = analyze_derived_parameters(flat, &roles)?;
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
     let clock_domains =
@@ -381,31 +395,22 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &states,
         &record_array_fields,
     )?;
-    let mut sample_lattices = Vec::new();
-    validate_when_chains(
-        &flat.when_chains,
-        &roles,
-        &states,
-        &constants,
-        &mut sample_lattices,
-    )?;
-    let model_algorithm_plans = analyze_model_algorithms(
-        flat,
-        &roles,
-        &expression_roles,
-        &states,
-        &constants,
-        &mut sample_lattices,
-    )?;
-    let discrete_value_topology = analyze_discrete_value_topology(flat, &roles)?;
-    let initial_algorithms =
+    let (mut sample_lattices, model_algorithm_plans) =
+        analyze_event_algorithms(flat, &roles, &expression_roles, &states, &constants)?;
+    let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
+        analyze_discrete_connections(flat, &roles)?;
+    let mut initial_algorithms =
         analyze_initial_algorithm_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
+    let initial_discrete_equation_rows =
+        claim_initial_discrete_equations(flat, &roles, &mut initial_algorithms.discrete_values)?;
     let balance = analyze_source_balance(
         flat,
         &roles,
         &clocks.equation_rows,
         &derived_parameters.rows,
         &record_equations,
+        &discrete_connection_ranks,
+        &aggregate_discrete_connections,
     )?;
     let expression_events = analyze_expression_events(flat, &roles, &constants)?;
     Ok(Analysis {
@@ -415,6 +420,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         balance: balance.detail,
         continuous_family_rows,
         initialization_family_rows,
+        initial_discrete_equation_rows,
         sample_lattices,
         expression_events,
         clock_plans: clocks.plans,
@@ -437,9 +443,64 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         record_equations,
         initial_record_equations,
         discrete_value_topology,
+        discrete_connection_ranks,
+        aggregate_discrete_connections,
         assigned_discrete_targets: balance.assigned_discrete_targets,
         semi_linear_rules: SemiLinearRules::default(),
     })
+}
+
+type EventAlgorithmAnalysis = (Vec<(Span, PeriodicClockSchedule)>, Vec<ModelAlgorithmPlan>);
+
+fn analyze_event_algorithms(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    expression_roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    constants: &EvalContext,
+) -> Result<EventAlgorithmAnalysis, ToDaeError> {
+    let mut sample_lattices = Vec::new();
+    validate_when_chains(
+        &flat.when_chains,
+        roles,
+        states,
+        constants,
+        &mut sample_lattices,
+    )?;
+    let plans = analyze_model_algorithms(
+        flat,
+        roles,
+        expression_roles,
+        states,
+        constants,
+        &mut sample_lattices,
+    )?;
+    Ok((sample_lattices, plans))
+}
+
+fn validate_source_model(flat: &flat::Model) -> Result<(), ToDaeError> {
+    validate_flat_shape(flat)?;
+    // Prove the initial-algorithm grammar before another analysis reports a
+    // consequence of its missing owner, such as an `assert` read as a callee.
+    reject_unsupported_initial_algorithm_statements(flat)?;
+    validate_impure_call_contexts(flat)
+}
+
+fn analyze_discrete_connections(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<
+    (
+        HashMap<VarName, usize>,
+        AggregateDiscreteConnections,
+        DiscreteValueTopologyPlan,
+    ),
+    ToDaeError,
+> {
+    let ranks = discrete_connection_ranks(flat, roles);
+    let aggregates = aggregate_discrete_connections(flat, roles, &ranks)?;
+    let topology = analyze_discrete_value_topology(flat, roles, &ranks, &aggregates)?;
+    Ok((ranks, aggregates, topology))
 }
 
 impl Analysis {
@@ -457,6 +518,8 @@ impl Analysis {
         self.semi_linear_rules = analyze_semi_linear_rules(
             flat,
             &self.roles,
+            &self.discrete_connection_ranks,
+            &self.aggregate_discrete_connections,
             &SemiLinearRowFilter {
                 excluded: &claimed,
                 records: &self.record_equations,
@@ -507,7 +570,7 @@ fn analyze_model_algorithms(
     expression_roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<Vec<ModelAlgorithmPlan>, ToDaeError> {
     flat.algorithms
         .iter()
@@ -641,8 +704,11 @@ fn analyze_source_balance(
     clock_equation_rows: &HashSet<usize>,
     derived_parameter_rows: &HashSet<usize>,
     record_equations: &HashMap<usize, RecordEquationPlan>,
+    connection_ranks: &HashMap<VarName, usize>,
+    aggregate_connections: &AggregateDiscreteConnections,
 ) -> Result<SourceBalanceAnalysis, ToDaeError> {
-    let assigned_discrete_targets = defined_discrete_targets(flat, roles)?;
+    let assigned_discrete_targets =
+        defined_discrete_targets(flat, roles, connection_ranks, aggregate_connections)?;
     let mut non_runtime_rows = clock_equation_rows.clone();
     non_runtime_rows.extend(derived_parameter_rows);
     let detail = source_balance(
@@ -651,6 +717,8 @@ fn analyze_source_balance(
         &assigned_discrete_targets,
         &non_runtime_rows,
         record_equations,
+        connection_ranks,
+        aggregate_connections,
     )?;
     Ok(SourceBalanceAnalysis {
         detail,
@@ -666,7 +734,7 @@ fn analyze_initial_algorithm_owners(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<InitialAlgorithmAnalysis, ToDaeError> {
     let initial_algorithms = analyze_initial_algorithms(flat, roles, states, constants)?;
     validate_assertions(
@@ -687,7 +755,7 @@ fn validate_assertions<'flat>(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     for assertion in assertions {
         require_span(assertion.span, "assert equation")?;
@@ -706,9 +774,8 @@ fn validate_assertions<'flat>(
     Ok(())
 }
 
-fn analyze_record_array_field_plans(
+pub(super) fn analyze_record_array_field_plans(
     flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<RecordArrayFieldPlans, ToDaeError> {
     analyze_record_array_fields(
         flat,
@@ -717,7 +784,6 @@ fn analyze_record_array_field_plans(
             .chain(structured_template_expressions(
                 &flat.initial_structured_equations,
             )),
-        roles,
     )
 }
 

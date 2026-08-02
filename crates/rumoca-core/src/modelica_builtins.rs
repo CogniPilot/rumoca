@@ -211,6 +211,17 @@ pub fn modelica_sign(value: f64) -> f64 {
     }
 }
 
+/// Apply the MLS §3.7.2 `integer(x)` value rule in the compiler's numeric
+/// scalar domain.
+///
+/// The result type in Modelica is Integer, but evaluators and Solve programs
+/// carry numeric scalars as `f64`. Keeping the value rule here prevents those
+/// paths from confusing `integer` with `div`, whose quotient instead truncates
+/// toward zero.
+pub fn modelica_integer_value(value: f64) -> f64 {
+    value.floor()
+}
+
 /// Escape decoded string contents for a Modelica source string literal.
 pub fn escape_modelica_string(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
@@ -301,6 +312,13 @@ mod tests {
         assert_eq!(modelica_sign(-0.0), 0.0);
         assert_eq!(modelica_sign(2.0), 1.0);
         assert_eq!(modelica_sign(-2.0), -1.0);
+    }
+
+    #[test]
+    fn modelica_integer_floors_negative_fractions_and_preserves_boundaries() {
+        assert_eq!(modelica_integer_value(-1.8), -2.0);
+        assert_eq!(modelica_integer_value(-2.0), -2.0);
+        assert_eq!(modelica_integer_value(1.8), 1.0);
     }
 
     #[test]

@@ -180,6 +180,8 @@ impl SemiLinearRowFilter<'_> {
 pub(super) fn analyze_semi_linear_rules(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    connection_ranks: &HashMap<VarName, usize>,
+    aggregate_connections: &AggregateDiscreteConnections,
     filter: &SemiLinearRowFilter<'_>,
 ) -> SemiLinearRules {
     let facts: Vec<usize> = flat
@@ -198,7 +200,14 @@ pub(super) fn analyze_semi_linear_rules(
                 *index,
                 equation,
                 matches!(
-                    equation_partition(flat, equation, roles),
+                    equation_partition(
+                        flat,
+                        *index,
+                        equation,
+                        roles,
+                        connection_ranks,
+                        aggregate_connections,
+                    ),
                     Ok(EquationPartition::Continuous)
                 ),
             )

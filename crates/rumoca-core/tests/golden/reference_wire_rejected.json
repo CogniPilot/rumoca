@@ -94,6 +94,37 @@
     }
   },
   {
+    "case": "resolved function missing the occurrence non-replaceability proof",
+    "error_fragment": "missing field `transitively_non_replaceable`",
+    "payload": {
+      "name": "body.r",
+      "component_ref": {
+        "local": false,
+        "span": { "source": 1, "start": 1, "end": 2 },
+        "parts": [
+          {
+            "ident": "body",
+            "span": { "source": 1, "start": 1, "end": 2 },
+            "subs": [],
+            "def_id": 7
+          },
+          {
+            "ident": "r",
+            "span": { "source": 1, "start": 1, "end": 2 },
+            "subs": [],
+            "def_id": 8
+          }
+        ]
+      },
+      "resolved_function": {
+        "instance_id": 3,
+        "base_part_count": 2
+      },
+      "instance_id": null,
+      "generated": false
+    }
+  },
+  {
     "case": "structured record with an unresolved part identity",
     "error_fragment": "reserved unresolved DefId(0)",
     "payload": {

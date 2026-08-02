@@ -1,187 +1,34 @@
-//! Harness B: the FMI 3 ME component lifecycle, driven over bounded generated
-//! operation sequences against a one-state model (`dx/dt = x`).
+//! Bounded proofs that the dynamic FMI 3 ME facade preserves the verified
+//! lifecycle relation and rejects invalid scalar payloads without mutation.
 //!
-//! Three of the five properties below are invariants. The other two —
-//! [`property_set_time_is_not_monotonic`] and
-//! [`property_the_event_boundary_clamps_time_upwards`] — are *pins*: they
-//! record what the component does today, and their doc comments say plainly
-//! that this is current behaviour and not an enforced invariant. Between them
-//! they say why "the component's time is monotonic" is false: the only clamp
-//! anywhere is on the event-boundary path, and `set_time` has none.
+//! The pure transition table is proved in `me_lifecycle`; this module proves
+//! that the production `SolveMeKernel` facade actually consults that table.
+//! Each property makes one bounded facade call rather than asking a model
+//! checker to explore long, mostly-invalid command sequences.
 
-use super::model_fixture::{divergent_initialization_model, single_state_model};
+use super::model_fixture::{
+    divergent_initialization_model, divergent_runtime_event_model, single_state_indicator_model,
+    single_state_input_model, single_state_model, single_state_time_event_model,
+};
+use crate::fmi_me::lifecycle::{MeLifecycle, MeLifecycleCommand, MeState};
 use crate::fmi_me::{
-    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeStage,
-    MeStepCompletion, MeTime, ModelExchangeKernel, SolveMeKernel,
+    MeError, MeEventCause, MeEventEntry, MeFmuState, MeIndicatorCrossing, MeInstanceConfig,
+    MeModelSource, MeOutputSeries, MeRootProfile, MeStage, MeStepCompletion, MeTime,
+    ModelExchangeKernel, SolveMeKernel,
 };
 
 const START_TIME: f64 = 0.0;
 const STOP_TIME: f64 = 1.0;
 const TOLERANCE: f64 = 1.0e-8;
-
-/// The smallest gap the ordered-time generators leave between `earlier` and
-/// `later`.
-///
-/// Both time pins need a strictly ordered pair. The gap that produced it used to
-/// be one `f64::EPSILON`, which is an absolute constant and therefore not a gap
-/// at all: it is smaller than the ULP of any horizon past `2.0`, so raising
-/// `STOP_TIME` would silently start admitting `later == earlier` and fail the
-/// strict-ordering pins for a reason that has nothing to do with the component.
-/// At the other end it was too *large* to be safe — see the fallback driver's
-/// `any_ordered_times` for the range collapse it caused at the top of the
-/// horizon. An explicit gap, orders of magnitude above the ULP anywhere inside
-/// `[0, 1]` and orders of magnitude below the horizon itself, has neither
-/// problem. The proof assumes the same gap so that both drivers explore the same
-/// pairs.
 const MIN_TIME_GAP: f64 = 1.0e-9;
-
-/// The longest generated operation sequence the harnesses explore.
-const MAX_OPS: usize = 8;
-
-/// The number of `update_discrete_states` calls a conforming host loop is
-/// allowed before this harness calls the component non-terminating.
 const HOST_ITERATION_CEILING: usize = 4;
 
-/// Every `ModelExchangeKernel` entry point the harnesses drive.
-///
-/// `set_time`, `set_continuous_states`, `enter_event_mode` and
-/// `next_event_stop` each carry one generated `f64` so a sequence can put the
-/// component at an arbitrary time and state rather than only at the ones its
-/// own lifecycle would produce. The generated value ranges over small finite
-/// magnitudes *and* over NaN and both infinities, because nothing on the way in
-/// rejects them: `set_time` returns `()` and so cannot report a rejection at
-/// all, and `set_continuous_states` checks only the buffer length.
-///
-/// Admitted is not the same as pinned. The only property driven over non-finite
-/// payloads is [`property_no_operation_sequence_panics`], and all it asserts of
-/// them is that every call returns and the reported model description does not
-/// move. No property here asserts what the component *holds* after a NaN or
-/// infinite time: the two time pins below are driven over finite ordered pairs
-/// only.
-#[derive(Clone, Copy, Debug)]
-enum KernelOp {
-    SetTime(f64),
-    SetContinuousStates(f64),
-    GetContinuousStates,
-    GetDerivatives,
-    GetEventIndicators,
-    GetNominals,
-    Observe,
-    ProjectContinuousStates,
-    CompletedStep,
-    EnterInitializationMode,
-    ExitInitializationMode,
-    EnterEventMode(f64),
-    UpdateDiscreteStates,
-    EnterContinuousTimeMode,
-    NextEventStop(f64),
-    FmuStateRoundTrip,
-    Terminate,
-}
-
-/// The number of distinct operations [`KernelOp::from_index`] can produce.
-const OP_COUNT: u8 = 17;
-
-impl KernelOp {
-    /// Decode one generated `(index, value)` pair into an operation.
-    ///
-    /// Both drivers go through this so the proof and the proptest explore the
-    /// same operation alphabet.
-    fn from_index(index: u8, value: f64) -> Self {
-        match index % OP_COUNT {
-            0 => Self::SetTime(value),
-            1 => Self::SetContinuousStates(value),
-            2 => Self::GetContinuousStates,
-            3 => Self::GetDerivatives,
-            4 => Self::GetEventIndicators,
-            5 => Self::GetNominals,
-            6 => Self::Observe,
-            7 => Self::ProjectContinuousStates,
-            8 => Self::CompletedStep,
-            9 => Self::EnterInitializationMode,
-            10 => Self::ExitInitializationMode,
-            11 => Self::EnterEventMode(value),
-            12 => Self::UpdateDiscreteStates,
-            13 => Self::EnterContinuousTimeMode,
-            14 => Self::NextEventStop(value),
-            15 => Self::FmuStateRoundTrip,
-            16 => Self::Terminate,
-            // `index % OP_COUNT` is below `OP_COUNT`, and every value below it
-            // is named above; this arm exists only because the match is over
-            // `u8`. It panics rather than falling back to a real operation
-            // because a fallback is invisible: while the last arm was `_ =>
-            // Self::Terminate`, an alphabet raised past 17 would have folded
-            // every surplus index onto `Terminate` with every property still
-            // green.
-            _ => unreachable!("`index % OP_COUNT` names one of the operations above"),
-        }
-    }
-}
-
-/// Every operation [`KernelOp::from_index`] produces, at the index it produces
-/// it.
-///
-/// Declared with length `OP_COUNT` so that the count and the alphabet are
-/// checked against each other by the compiler: lowering `OP_COUNT` without
-/// deleting a row, or deleting a row without lowering `OP_COUNT`, does not
-/// build. That link is the point — `OP_COUNT` is the modulus every generated
-/// index passes through, so lowering it alone used to shrink the explored
-/// alphabet silently, dropping whole operations out of every generated sequence
-/// while all five properties stayed green.
-#[cfg(test)]
-const OP_ALPHABET: [KernelOp; OP_COUNT as usize] = [
-    KernelOp::SetTime(0.0),
-    KernelOp::SetContinuousStates(0.0),
-    KernelOp::GetContinuousStates,
-    KernelOp::GetDerivatives,
-    KernelOp::GetEventIndicators,
-    KernelOp::GetNominals,
-    KernelOp::Observe,
-    KernelOp::ProjectContinuousStates,
-    KernelOp::CompletedStep,
-    KernelOp::EnterInitializationMode,
-    KernelOp::ExitInitializationMode,
-    KernelOp::EnterEventMode(0.0),
-    KernelOp::UpdateDiscreteStates,
-    KernelOp::EnterContinuousTimeMode,
-    KernelOp::NextEventStop(0.0),
-    KernelOp::FmuStateRoundTrip,
-    KernelOp::Terminate,
-];
-
-/// Every index below `OP_COUNT` decodes to the operation [`OP_ALPHABET`] names
-/// at that position, no two indices decode to the same operation, and the
-/// decode wraps at `OP_COUNT`.
-///
-/// Operations are compared by discriminant rather than by value: `KernelOp`
-/// carries generated `f64` payloads — NaN included — and the alphabet is a claim
-/// about which operation an index names, not about the payload it carries.
-#[cfg(test)]
-#[test]
-fn every_generated_index_names_its_operation() {
-    for (position, expected) in OP_ALPHABET.iter().enumerate() {
-        let index = u8::try_from(position).expect("the alphabet is far shorter than u8::MAX");
-        let decoded = KernelOp::from_index(index, 1.0);
-        assert!(
-            std::mem::discriminant(&decoded) == std::mem::discriminant(expected),
-            "index {index} decoded to {decoded:?}, not the operation the \
-             alphabet names at that position ({expected:?})"
-        );
-        assert!(
-            !OP_ALPHABET[..position]
-                .iter()
-                .any(|earlier| std::mem::discriminant(earlier) == std::mem::discriminant(expected)),
-            "{expected:?} appears twice in the alphabet, so the generated index \
-             reaches fewer operations than its range suggests"
-        );
-    }
-    // The generated index ranges over the whole `u8`, so `OP_COUNT` is a
-    // modulus: index `OP_COUNT` has to be index 0 again.
-    assert!(
-        std::mem::discriminant(&KernelOp::from_index(OP_COUNT, 1.0))
-            == std::mem::discriminant(&OP_ALPHABET[0]),
-        "the alphabet has to wrap at OP_COUNT"
-    );
+#[derive(Debug, PartialEq, Eq)]
+struct ObservableKernelState {
+    lifecycle: MeState,
+    time: u64,
+    states: Vec<u64>,
+    parameters: Vec<u64>,
 }
 
 fn instantiate(model: &rumoca_ir_solve::SolveModel) -> SolveMeKernel {
@@ -192,456 +39,937 @@ fn instantiate(model: &rumoca_ir_solve::SolveModel) -> SolveMeKernel {
             tolerance: TOLERANCE,
             start_time: START_TIME,
             stop_time: STOP_TIME,
+            root_profile: MeRootProfile::Component,
+            numerics_profile: crate::fmi_me::MeNumericsProfile::Component,
         },
     )
     .expect("the bounded fixture is a well-formed ME model")
 }
 
-/// Apply one operation and hand back whatever the component answered.
-///
-/// Nothing here inspects the answer: an operation issued out of lifecycle
-/// order is expected to fail, and the properties are about *how* it fails.
-fn apply(kernel: &mut SolveMeKernel, op: KernelOp) -> Result<(), MeError> {
-    let mut values = Vec::new();
-    let mut states = [0.0_f64; 1];
-    match op {
-        KernelOp::SetTime(time) => {
-            kernel.set_time(MeTime::at(time));
-            Ok(())
-        }
-        KernelOp::SetContinuousStates(value) => kernel.set_continuous_states(&[value]),
-        KernelOp::GetContinuousStates => kernel.get_continuous_states(&mut states),
-        KernelOp::GetDerivatives => kernel.get_continuous_state_derivatives(&mut values),
-        KernelOp::GetEventIndicators => kernel.get_event_indicators(&mut values),
-        KernelOp::GetNominals => kernel.get_nominals_of_continuous_states(&mut states),
-        KernelOp::Observe => kernel.observe().map(|_| ()),
-        KernelOp::ProjectContinuousStates => {
-            kernel.project_continuous_states(&mut states).map(|_| ())
-        }
-        KernelOp::CompletedStep => kernel.completed_integrator_step(MeStepCompletion::Continuous {
-            accepted_derivatives: None,
-        }),
-        KernelOp::EnterInitializationMode => kernel.enter_initialization_mode(),
-        KernelOp::ExitInitializationMode => kernel.exit_initialization_mode(),
-        KernelOp::EnterEventMode(time) => kernel.enter_event_mode(MeEventEntry {
-            cause: MeEventCause::StateEvent,
-            event_time: time,
-            horizon: STOP_TIME,
-        }),
-        KernelOp::UpdateDiscreteStates => kernel.update_discrete_states().map(|_| ()),
-        KernelOp::EnterContinuousTimeMode => kernel.enter_continuous_time_mode(),
-        KernelOp::NextEventStop(horizon) => kernel.next_event_stop(horizon).map(|_| ()),
-        KernelOp::FmuStateRoundTrip => {
-            let saved = kernel.fmu_state();
-            kernel.reset_to_fmu_state(&saved, START_TIME, &[1.0])
-        }
-        KernelOp::Terminate => kernel.terminate(),
+fn run_to_event_mode(kernel: &mut SolveMeKernel) {
+    kernel
+        .enter_initialization_mode()
+        .expect("initialization mode is reachable from Instantiated");
+    kernel
+        .exit_initialization_mode()
+        .expect("the one-state fixture settles initialization");
+}
+
+fn run_to_continuous_time_mode(kernel: &mut SolveMeKernel) {
+    run_to_event_mode(kernel);
+    kernel
+        .update_discrete_states()
+        .expect("the initial event boundary completes");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("continuous-time mode follows the initial event");
+}
+
+fn drive_to_state(kernel: &mut SolveMeKernel, state: MeState) {
+    match state {
+        MeState::Instantiated => {}
+        MeState::InitializationMode => kernel
+            .enter_initialization_mode()
+            .expect("InitializationMode is reachable"),
+        MeState::EventMode => run_to_event_mode(kernel),
+        MeState::ContinuousTimeMode => run_to_continuous_time_mode(kernel),
+        MeState::Terminated => kernel.terminate().expect("Terminated is reachable"),
+    }
+    assert_eq!(kernel.verification_observable_state().0, state);
+}
+
+fn kernel_in_state(state: MeState) -> SolveMeKernel {
+    let model = single_state_model();
+    let mut kernel = instantiate(&model);
+    drive_to_state(&mut kernel, state);
+    kernel
+}
+
+fn observable_state(kernel: &SolveMeKernel) -> ObservableKernelState {
+    let (lifecycle, time, states, parameters) = kernel.verification_observable_state();
+    ObservableKernelState {
+        lifecycle,
+        time,
+        states,
+        parameters,
     }
 }
 
-/// Walk the component through initialization to Continuous-Time Mode.
-fn run_to_continuous_time_mode(kernel: &mut SolveMeKernel) {
-    kernel
-        .enter_initialization_mode()
-        .expect("initialization mode should be enterable from Instantiated");
-    kernel
-        .exit_initialization_mode()
-        .expect("the one-state fixture should settle its initialization system");
-    kernel
-        .update_discrete_states()
-        .expect("the initial event boundary should run");
-    kernel
-        .enter_continuous_time_mode()
-        .expect("continuous-time mode should be enterable after the initial event");
+fn apply_lifecycle_command(
+    kernel: &mut SolveMeKernel,
+    command: MeLifecycleCommand,
+) -> Result<(), MeError> {
+    match command {
+        MeLifecycleCommand::EnterInitializationMode => kernel.enter_initialization_mode(),
+        MeLifecycleCommand::ExitInitializationMode => kernel.exit_initialization_mode(),
+        MeLifecycleCommand::UpdateDiscreteStates => kernel.update_discrete_states().map(|_| ()),
+        MeLifecycleCommand::EnterContinuousTimeMode => kernel.enter_continuous_time_mode(),
+        MeLifecycleCommand::EnterEventMode => kernel.enter_event_mode(MeEventEntry {
+            cause: MeEventCause::StateEvent,
+            event_time: START_TIME,
+            horizon: STOP_TIME,
+        }),
+        MeLifecycleCommand::Terminate => kernel.terminate(),
+    }
 }
 
-/// # Property
-///
+fn relation_rejects(state: MeState, command: MeLifecycleCommand) -> bool {
+    let mut lifecycle = MeLifecycle::instantiated();
+    lifecycle.restore_for_verification(state);
+    lifecycle.next(command).is_err()
+}
+
+/// ME-LIFE-001/002 facade clause: every lifecycle transition rejected by the
+/// pure relation is rejected by the production facade before any externally
+/// observable component state changes.
+fn property_rejected_facade_transition_preserves_state(
+    state: MeState,
+    command: MeLifecycleCommand,
+) {
+    if !relation_rejects(state, command) {
+        return;
+    }
+    let mut kernel = kernel_in_state(state);
+    let before = observable_state(&kernel);
+    let checkpoint = kernel.fmu_state();
+    let error = apply_lifecycle_command(&mut kernel, command)
+        .expect_err("the dynamic facade must reject an edge absent from the pure relation");
+    assert!(
+        matches!(error.kind(), MeError::Contract { .. }),
+        "an invalid lifecycle call is a host contract violation"
+    );
+    assert_eq!(
+        observable_state(&kernel),
+        before,
+        "a rejected lifecycle transition must not mutate observable kernel state"
+    );
+    assert!(kernel.verification_matches_snapshot(&checkpoint));
+}
+
+fn non_finite_from_index(index: u8) -> f64 {
+    match index % 3 {
+        0 => f64::NAN,
+        1 => f64::INFINITY,
+        2 => f64::NEG_INFINITY,
+        _ => unreachable!("index modulo three is covered above"),
+    }
+}
+
+/// ME-BUF-001 scalar clause: non-finite time, event-boundary, and
+/// continuous-state writes are rejected before any observable state changes.
+fn property_non_finite_setters_are_transactional(index: u8) {
+    let model = single_state_model();
+    let mut kernel = instantiate(&model);
+    kernel
+        .set_time(MeTime::at(0.25))
+        .expect("the finite baseline time is valid");
+    kernel
+        .set_continuous_states(&[1.5])
+        .expect("the finite baseline state is valid");
+    let before = observable_state(&kernel);
+    let checkpoint = kernel.fmu_state();
+    let non_finite = non_finite_from_index(index);
+
+    let error = kernel
+        .set_time(MeTime::at(non_finite))
+        .expect_err("a non-finite time must be rejected");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(observable_state(&kernel), before);
+    assert!(kernel.verification_matches_snapshot(&checkpoint));
+
+    let error = kernel
+        .set_time(MeTime::new(0.25, Some(non_finite)))
+        .expect_err("a non-finite event boundary must be rejected");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(observable_state(&kernel), before);
+    assert!(kernel.verification_matches_snapshot(&checkpoint));
+
+    let error = kernel
+        .set_continuous_states(&[non_finite])
+        .expect_err("a non-finite continuous state must be rejected");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(observable_state(&kernel), before);
+    assert!(kernel.verification_matches_snapshot(&checkpoint));
+}
+
+/// ME-BUF-001 value-reference clause: every bounded contract-validation
+/// rejection happens before a valid prefix can update any parameter.
+fn property_rejected_value_reference_batch_is_transactional(case: u8) {
+    let model = single_state_input_model();
+    let mut kernel = instantiate(&model);
+    let other = instantiate(&model);
+    let valid = kernel
+        .value_reference("u")
+        .expect("the fixture exposes one input");
+    let foreign = other
+        .value_reference("u")
+        .expect("the second fixture exposes its own input");
+    let mut out_of_range = valid.clone();
+    out_of_range.index = usize::MAX;
+    let before = observable_state(&kernel);
+    let checkpoint = kernel.fmu_state();
+
+    let result = match case % 6 {
+        0 => kernel.set_float64(&[valid], &[]),
+        1 => kernel.set_float64(&[valid], &[f64::NAN]),
+        2 => kernel.set_float64(&[valid], &[f64::INFINITY]),
+        3 => kernel.set_float64(&[valid], &[f64::NEG_INFINITY]),
+        4 => kernel.set_float64(&[valid, foreign], &[2.0, 3.0]),
+        5 => kernel.set_float64(&[valid, out_of_range], &[2.0, 3.0]),
+        _ => unreachable!("case modulo six is covered above"),
+    };
+    let error = result.expect_err("the malformed Float64 batch must be rejected");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(observable_state(&kernel), before);
+    assert!(kernel.verification_matches_snapshot(&checkpoint));
+}
+
+/// ME-BUF-001 buffer clause: invalid bounded host buffers remain untouched,
+/// and their rejection cannot mutate component state.
+fn property_rejected_host_buffers_are_transactional(case: u8) {
+    let model = if case % 9 == 7 {
+        single_state_indicator_model()
+    } else {
+        single_state_model()
+    };
+    let mut kernel = instantiate(&model);
+    let before = observable_state(&kernel);
+    let checkpoint = kernel.fmu_state();
+    match case % 9 {
+        0 => {
+            let mut states = vec![7.0, 8.0];
+            let error = kernel
+                .get_continuous_states(&mut states)
+                .expect_err("the oversized state buffer must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert_eq!(states, vec![7.0, 8.0]);
+        }
+        1 => {
+            let mut sensitivity = [9.0];
+            let error = kernel
+                .get_directional_derivative(&[], &mut sensitivity)
+                .expect_err("the undersized seed must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert_eq!(sensitivity, [9.0]);
+        }
+        2 => {
+            let mut crossings = vec![MeIndicatorCrossing {
+                index: 7,
+                post_indicator_value: 1.0,
+            }];
+            let error = kernel
+                .event_indicator_crossings(&[0.0], &[1.0], &mut crossings)
+                .expect_err("buffers cannot name an undeclared event indicator");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert_eq!(crossings.len(), 1);
+            assert_eq!(crossings[0].index, 7);
+        }
+        3 => {
+            let error = kernel
+                .arm_state_event(&[MeIndicatorCrossing {
+                    index: 7,
+                    post_indicator_value: 1.0,
+                }])
+                .expect_err("an undeclared event indicator must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+        }
+        4 => {
+            let mut nominals = [7.0, 8.0];
+            let error = kernel
+                .get_nominals_of_continuous_states(&mut nominals)
+                .expect_err("the oversized nominal buffer must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert_eq!(nominals, [7.0, 8.0]);
+        }
+        5 => {
+            let error = kernel
+                .set_continuous_states(&[2.0, 3.0])
+                .expect_err("the oversized state input must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+        }
+        6 => {
+            let mut sensitivity = [9.0, 10.0];
+            let error = kernel
+                .get_directional_derivative(&[1.0], &mut sensitivity)
+                .expect_err("the oversized sensitivity buffer must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert_eq!(sensitivity, [9.0, 10.0]);
+        }
+        7 => {
+            let mut crossings = vec![MeIndicatorCrossing {
+                index: 7,
+                post_indicator_value: 1.0,
+            }];
+            let error = kernel
+                .event_indicator_crossings(&[f64::NAN], &[1.0], &mut crossings)
+                .expect_err("non-finite indicator buffers must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert_eq!(crossings.len(), 1);
+            assert_eq!(crossings[0].index, 7);
+        }
+        8 => {
+            let observation = kernel.observe().expect("the fixture is observable");
+            let mut series = MeOutputSeries::default();
+            let error = kernel
+                .record_outputs(&observation, START_TIME, &mut series)
+                .expect_err("an output series with no declared columns must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert!(series.into_columns().is_empty());
+        }
+        _ => unreachable!("case modulo nine is covered above"),
+    }
+    assert_eq!(observable_state(&kernel), before);
+    assert!(kernel.verification_matches_snapshot(&checkpoint));
+}
+
+/// ME-BRAND-001: value references, observations, and component snapshots are
+/// unforgeable per-instance capabilities; a foreign capability is rejected
+/// before component or host output state changes.
+fn property_foreign_instance_capabilities_are_rejected(case: u8) {
+    let model = single_state_input_model();
+    let first = instantiate(&model);
+    let mut second = instantiate(&model);
+    let foreign_ref = first
+        .value_reference("u")
+        .expect("the first fixture exposes one input");
+    let foreign_observation = first.observe().expect("the first fixture is observable");
+    let foreign_snapshot = first.fmu_state();
+    let before = observable_state(&second);
+    let checkpoint = second.fmu_state();
+
+    match case % 3 {
+        0 => {
+            let error = second
+                .set_float64(&[foreign_ref], &[2.0])
+                .expect_err("a foreign value reference must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+        }
+        1 => {
+            let mut outputs = vec![7.0];
+            let error = second
+                .get_outputs(&foreign_observation, START_TIME, &mut outputs)
+                .expect_err("a foreign observation must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+            assert_eq!(outputs, vec![7.0]);
+        }
+        2 => {
+            let error = second
+                .reset_to_fmu_state(&foreign_snapshot)
+                .expect_err("a foreign component snapshot must be rejected");
+            assert!(matches!(error.kind(), MeError::Contract { .. }));
+        }
+        _ => unreachable!("case modulo three is covered above"),
+    }
+    assert_eq!(observable_state(&second), before);
+    assert!(second.verification_matches_snapshot(&checkpoint));
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveFacadeOperation {
+    GetStates,
+    GetDerivatives,
+    GetDirectionalDerivative,
+    GetIndicators,
+    ProjectStates,
+    CompleteStep,
+    NextEventStop,
+    ClassifyCrossings,
+    CapturePreEvent,
+    ArmStateEvent,
+    Observe,
+    RecordOutputs,
+    GetOutputs,
+    SetFloat64,
+    SetTime,
+    SetStates,
+    ExtendStopTime,
+}
+
+impl ActiveFacadeOperation {
+    const ALL: [Self; 17] = [
+        Self::GetStates,
+        Self::GetDerivatives,
+        Self::GetDirectionalDerivative,
+        Self::GetIndicators,
+        Self::ProjectStates,
+        Self::CompleteStep,
+        Self::NextEventStop,
+        Self::ClassifyCrossings,
+        Self::CapturePreEvent,
+        Self::ArmStateEvent,
+        Self::Observe,
+        Self::RecordOutputs,
+        Self::GetOutputs,
+        Self::SetFloat64,
+        Self::SetTime,
+        Self::SetStates,
+        Self::ExtendStopTime,
+    ];
+}
+
+fn active_operation_from_index(index: u8) -> ActiveFacadeOperation {
+    ActiveFacadeOperation::ALL[index as usize % ActiveFacadeOperation::ALL.len()]
+}
+
+/// ME-LIFE-003 facade clause: every operation requiring an active component
+/// rejects Terminated before it can mutate component state.
+fn property_terminated_facade_is_fail_closed(operation: ActiveFacadeOperation) {
+    let model = single_state_input_model();
+    let mut kernel = instantiate(&model);
+    let observation = kernel.observe().expect("the active fixture is observable");
+    let value_ref = kernel
+        .value_reference("u")
+        .expect("the fixture exposes one input");
+    kernel.terminate().expect("the fixture can terminate");
+    let before = observable_state(&kernel);
+    let checkpoint = kernel.fmu_state();
+    let mut scalar_buffer = vec![7.0];
+    let mut state_buffer = [7.0];
+    let mut sensitivity = [7.0];
+    let mut output_series =
+        MeOutputSeries::with_capacity(1, 1).expect("the proof-sized output series is allocatable");
+
+    let result = match operation {
+        ActiveFacadeOperation::GetStates => kernel.get_continuous_states(&mut state_buffer),
+        ActiveFacadeOperation::GetDerivatives => {
+            kernel.get_continuous_state_derivatives(&mut scalar_buffer)
+        }
+        ActiveFacadeOperation::GetDirectionalDerivative => {
+            kernel.get_directional_derivative(&[1.0], &mut sensitivity)
+        }
+        ActiveFacadeOperation::GetIndicators => kernel.get_event_indicators(&mut scalar_buffer),
+        ActiveFacadeOperation::ProjectStates => kernel
+            .project_continuous_states(&mut state_buffer)
+            .map(|_| ()),
+        ActiveFacadeOperation::CompleteStep => {
+            kernel.completed_integrator_step(MeStepCompletion::Continuous {
+                accepted_derivatives: None,
+            })
+        }
+        ActiveFacadeOperation::NextEventStop => kernel.next_event_stop(STOP_TIME).map(|_| ()),
+        ActiveFacadeOperation::ClassifyCrossings => {
+            kernel.event_indicator_crossings(&[], &[], &mut Vec::new())
+        }
+        ActiveFacadeOperation::CapturePreEvent => kernel.capture_pre_event_state(),
+        ActiveFacadeOperation::ArmStateEvent => kernel.arm_state_event(&[]),
+        ActiveFacadeOperation::Observe => kernel.observe().map(|_| ()),
+        ActiveFacadeOperation::RecordOutputs => {
+            kernel.record_outputs(&observation, START_TIME, &mut output_series)
+        }
+        ActiveFacadeOperation::GetOutputs => {
+            kernel.get_outputs(&observation, START_TIME, &mut scalar_buffer)
+        }
+        ActiveFacadeOperation::SetFloat64 => kernel.set_float64(&[value_ref], &[2.0]),
+        ActiveFacadeOperation::SetTime => kernel.set_time(MeTime::at(0.25)),
+        ActiveFacadeOperation::SetStates => kernel.set_continuous_states(&[2.0]),
+        ActiveFacadeOperation::ExtendStopTime => kernel.extend_stop_time(0.0, 2.0),
+    };
+    let error = result.expect_err("Terminated must reject every active-component operation");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(observable_state(&kernel), before);
+    assert!(kernel.verification_matches_snapshot(&checkpoint));
+}
+
+/// ME-STATE-001 facade clause: restoring an opaque snapshot restores its
+/// lifecycle and observable time/state/parameter values exactly, including
+/// restoration out of Terminated.
+fn property_snapshot_restores_observable_state(target: MeState) {
+    let model = single_state_input_model();
+    let mut kernel = instantiate(&model);
+    let instantiated = kernel.fmu_state();
+    if target != MeState::Terminated {
+        drive_to_state(&mut kernel, target);
+    }
+    kernel
+        .set_time(MeTime::at(0.375))
+        .expect("the saved time is finite");
+    kernel
+        .set_continuous_states(&[2.0])
+        .expect("the saved continuous state is finite");
+    let input = kernel
+        .value_reference("u")
+        .expect("the fixture exposes one input");
+    kernel
+        .set_float64(&[input], &[3.0])
+        .expect("the saved parameter is finite");
+    if target == MeState::Terminated {
+        kernel.terminate().expect("the saved state can terminate");
+    }
+    let expected_outputs = active_outputs(&kernel, target);
+    let saved = kernel.fmu_state();
+    let expected = observable_state(&kernel);
+    mutate_away_from_snapshot(&mut kernel, target, &instantiated);
+    kernel
+        .reset_to_fmu_state(&saved)
+        .expect("the same-instance snapshot is restorable");
+    assert_eq!(observable_state(&kernel), expected);
+    assert!(kernel.verification_matches_snapshot(&saved));
+    assert_eq!(active_outputs(&kernel, target), expected_outputs);
+    continue_after_restore(&mut kernel, target, &instantiated);
+}
+
+fn active_outputs(kernel: &SolveMeKernel, state: MeState) -> Option<Vec<f64>> {
+    if state == MeState::Terminated {
+        return None;
+    }
+    let observation = kernel.observe().expect("the active state is observable");
+    let mut outputs = Vec::new();
+    kernel
+        .get_outputs(&observation, observation.time(), &mut outputs)
+        .expect("the active outputs are readable");
+    Some(outputs)
+}
+
+fn mutate_away_from_snapshot(
+    kernel: &mut SolveMeKernel,
+    target: MeState,
+    instantiated: &MeFmuState,
+) {
+    if target == MeState::Terminated {
+        kernel
+            .reset_to_fmu_state(instantiated)
+            .expect("the same instance can restore its initial snapshot");
+        return;
+    }
+    kernel.set_time(MeTime::at(0.625)).expect("finite mutation");
+    kernel
+        .set_continuous_states(&[4.0])
+        .expect("finite state mutation");
+    let input = kernel
+        .value_reference("u")
+        .expect("the fixture exposes one input");
+    kernel
+        .set_float64(&[input], &[5.0])
+        .expect("finite parameter mutation");
+    kernel.terminate().expect("the active state can terminate");
+}
+
+fn continue_after_restore(kernel: &mut SolveMeKernel, target: MeState, instantiated: &MeFmuState) {
+    match target {
+        MeState::Instantiated => kernel
+            .enter_initialization_mode()
+            .expect("the restored Instantiated continuation is legal"),
+        MeState::InitializationMode => kernel
+            .exit_initialization_mode()
+            .expect("the restored initialization continuation settles"),
+        MeState::EventMode => {
+            kernel
+                .update_discrete_states()
+                .expect("the restored pending event continuation settles");
+        }
+        MeState::ContinuousTimeMode => {
+            kernel
+                .enter_event_mode(MeEventEntry {
+                    cause: MeEventCause::StateEvent,
+                    event_time: 0.375,
+                    horizon: STOP_TIME,
+                })
+                .expect("the restored continuous continuation can enter Event Mode");
+            kernel
+                .update_discrete_states()
+                .expect("the restored runtime event continuation settles");
+        }
+        MeState::Terminated => {
+            kernel
+                .observe()
+                .expect_err("the restored Terminated state remains fail-closed");
+            kernel
+                .reset_to_fmu_state(instantiated)
+                .expect("a saved active snapshot is the only legal exit");
+            assert_eq!(
+                kernel.verification_observable_state().0,
+                MeState::Instantiated
+            );
+        }
+    }
+}
+
 /// A conforming FMI host's `while discreteStatesNeedUpdate` loop terminates
-/// after exactly one `update_discrete_states` call, whatever operations
-/// preceded it.
-///
-/// FMI 3.0 lets a component request further event iterations through
-/// `fmi3UpdateDiscreteStates`'s `discreteStatesNeedUpdate` out-parameter, which
-/// is why a host writes the call as a loop at all.
-/// [`crate::fmi_me::MeDiscreteStates::discrete_states_need_update`] documents
-/// rumoca's answer as always `false` — "The rumoca component runs the whole
-/// discrete-state fixed point inside one call, so this is always `false`; a
-/// conforming host loop still terminates correctly." This harness is what
-/// makes that comment checkable.
-fn property_the_host_event_iteration_terminates_after_one_call(prefix: &[KernelOp]) {
+/// after one call because the component owns the whole discrete fixed point.
+fn property_host_event_iteration_terminates_after_one_call() -> bool {
     let model = single_state_model();
     let mut kernel = instantiate(&model);
     run_to_continuous_time_mode(&mut kernel);
-    for op in prefix {
-        // A prefix operation may legitimately fail out of lifecycle order; the
-        // property is about the host loop that follows it either way.
-        let _ = apply(&mut kernel, *op);
-    }
-    // Arm the boundary explicitly. Without this, a prefix that left the
-    // component outside event mode would make every `update_discrete_states`
-    // return "called outside event mode" and the loop below would terminate
-    // vacuously, proving nothing about the fixed point.
     kernel
         .enter_event_mode(MeEventEntry {
             cause: MeEventCause::StateEvent,
             event_time: START_TIME,
             horizon: STOP_TIME,
         })
-        .expect("entering event mode never fails on this component");
-    // The host's `while discreteStatesNeedUpdate` loop, written the way a
-    // conforming FMI importer writes it: keep calling until the component stops
-    // asking. The ceiling is the harness's own escape hatch — a component that
-    // kept asking would otherwise hang the run instead of failing it.
+        .expect("event mode is reachable from continuous-time mode");
     let mut iterations = 0_usize;
     loop {
         iterations += 1;
-        assert!(
-            iterations <= HOST_ITERATION_CEILING,
-            "the component asked a conforming host to iterate the discrete \
-             fixed point again, which its own contract says it never does"
-        );
-        match kernel.update_discrete_states() {
-            Ok(states) => {
-                if !states.discrete_states_need_update {
-                    break;
-                }
-            }
-            Err(_) => break,
+        assert!(iterations <= HOST_ITERATION_CEILING);
+        let states = kernel
+            .update_discrete_states()
+            .expect("the armed event boundary completes");
+        if !states.discrete_states_need_update {
+            break;
         }
     }
-    assert!(
-        iterations == 1,
-        "the whole discrete-state fixed point runs inside one call, so a \
-         conforming host must never enter a second iteration"
-    );
+    let completed_after_one_call = iterations == 1;
+    assert!(completed_after_one_call);
+    completed_after_one_call
 }
 
-/// # Property
-///
-/// No sequence of ME kernel operations, issued in any order on a well-formed
-/// instantiation, panics: every operation returns a `Result` its host can act
-/// on, and none of them changes the model description the component reports.
-///
-/// SPEC_0038 makes [`ModelExchangeKernel`] the only way into the model, so an
-/// out-of-order host call has to surface as an [`MeError`] rather than as an
-/// unwind through the FMI boundary. "Any order" is meant literally: the
-/// generated alphabet includes every lifecycle transition in every position,
-/// and its `f64` payloads include NaN and both infinities.
-fn property_no_operation_sequence_panics(ops: &[KernelOp]) {
-    let model = single_state_model();
+/// ME-LIFE-004 time-event clause: the distinct component-scheduled entry path
+/// consumes its pending stop and completes in one host update.
+fn property_scheduled_time_event_terminates_after_one_call() -> bool {
+    let model = single_state_time_event_model();
     let mut kernel = instantiate(&model);
-    let states_before = kernel.model_description().continuous_state_count;
-    let indicators_before = kernel.model_description().event_indicator_count;
-    let mut returned = 0_usize;
-    for op in ops {
-        let _ = apply(&mut kernel, *op);
-        // Reaching here means the call returned rather than unwinding; the
-        // count below is what turns that into a checkable postcondition.
-        returned += 1;
-    }
-    assert!(
-        returned == ops.len(),
-        "every operation in the sequence must return control to its host"
-    );
-    let after = kernel.model_description();
-    assert!(
-        after.continuous_state_count == states_before
-            && after.event_indicator_count == indicators_before,
-        "no host operation may change the shape the component describes itself \
-         with; a host sizes its buffers once"
-    );
+    run_to_continuous_time_mode(&mut kernel);
+    let stop = kernel
+        .next_event_stop(STOP_TIME)
+        .expect("the component can schedule its time event");
+    assert!(stop.is_event);
+    assert_eq!(stop.time, 0.5);
+    kernel
+        .set_time(MeTime::at(stop.time))
+        .expect("the scheduled time is finite");
+    kernel
+        .enter_event_mode(MeEventEntry {
+            cause: MeEventCause::TimeEvent,
+            event_time: stop.time,
+            horizon: STOP_TIME,
+        })
+        .expect("the pending time event can enter Event Mode");
+    let states = kernel
+        .update_discrete_states()
+        .expect("the scheduled time event settles");
+    let update_complete = !states.discrete_states_need_update;
+    assert!(update_complete);
+    assert!(states.time >= stop.time);
+    update_complete
 }
 
-/// # Property (PIN, not an invariant)
-///
-/// `set_time` applies whatever time it is given: the component neither rejects
-/// nor clamps a time earlier than the one it already holds, so a host that
-/// sets time backwards moves the component backwards.
-///
-/// This records CURRENT BEHAVIOUR, not a requirement met. FMI 3.0 gives Model
-/// Exchange a state machine in which `fmi3SetTime` is legal only in some
-/// states; rumoca's component enforces none of it. `SolveMeKernel::set_time`
-/// (`fmi_me/kernel.rs:749`) performs no validation at all: it returns `()`, so
-/// it cannot report a rejection, and it writes `self.time` and
-/// `self.event_boundary` straight out of the `MeTime` it is handed —
-/// `MeTime::at` does not check its argument either. The component's own
-/// `MeState` field is assigned in five places and read in none, so no operation
-/// is gated on the lifecycle position it records. The only monotonic clamp
-/// anywhere in the component is `self.time = event_time.max(self.time)` on the
-/// event-boundary path (`fmi_me/kernel.rs:594`), pinned separately below. Do
-/// not "fix" this harness by making it assert monotonicity: it would then
-/// assert something the component does not do.
-///
-/// Scope: both drivers feed this property finite pairs ordered inside the
-/// fixture's horizon, so what it pins is the backwards *finite* write. Because
-/// `set_time` validates nothing, NaN and infinite times are written just as
-/// unconditionally — but that is a reading of the implementation, not something
-/// asserted here. Those payloads reach `set_time` only through
-/// [`property_no_operation_sequence_panics`], which asserts no more than that
-/// the call returns; nothing in this harness pins what the component holds
-/// afterwards.
-fn property_set_time_is_not_monotonic(earlier: f64, later: f64) {
-    let model = single_state_model();
-    let mut kernel = instantiate(&model);
-    kernel.set_time(MeTime::at(later));
-    let at_later = kernel
-        .observe()
-        .expect("a bounded finite time should be observable")
-        .time();
-    kernel.set_time(MeTime::at(earlier));
-    let at_earlier = kernel
-        .observe()
-        .expect("a bounded finite time should be observable")
-        .time();
-    assert!(
-        at_later == later && at_earlier == earlier,
-        "set_time is applied verbatim in both directions"
-    );
-    assert!(
-        at_earlier < at_later,
-        "current behaviour: the component's time went backwards and nothing \
-         rejected it"
-    );
-}
-
-/// # Property (PIN, not an invariant)
-///
-/// The component's one and only monotonic clamp is on the event-boundary path:
-/// entering event mode at an instant *earlier* than the component's current
-/// time applies the event at the current time instead.
-///
-/// This records CURRENT BEHAVIOUR — `RuntimeEventBoundaryHandler::on_event_time`
-/// opens with `self.time = event_time.max(self.time)`
-/// (`fmi_me/kernel.rs:594`). It is the counterpart to
-/// [`property_set_time_is_not_monotonic`]: the clamp exists here and nowhere
-/// else, which is why "time is monotonic across the component" does not hold.
-fn property_the_event_boundary_clamps_time_upwards(earlier: f64, later: f64) {
+/// Event entry never moves the component backwards: an earlier requested
+/// event instant is clamped to the already-accepted component time.
+fn property_event_boundary_does_not_move_time_backward(earlier: f64, later: f64) {
     let model = single_state_model();
     let mut kernel = instantiate(&model);
     run_to_continuous_time_mode(&mut kernel);
-    kernel.set_time(MeTime::at(later));
+    kernel
+        .set_time(MeTime::at(later))
+        .expect("the bounded finite time is valid");
     kernel
         .enter_event_mode(MeEventEntry {
             cause: MeEventCause::StateEvent,
             event_time: earlier,
             horizon: STOP_TIME,
         })
-        .expect("event mode should be enterable from continuous-time mode");
+        .expect("event mode is reachable from continuous-time mode");
     let states = kernel
         .update_discrete_states()
-        .expect("a state event on the one-state fixture should apply");
-    assert!(
-        states.time == later,
-        "the event instant is clamped up to the component's current time, so \
-         an earlier requested instant does not move it backwards"
-    );
+        .expect("the state event applies");
+    assert_eq!(states.time, later);
 }
 
-/// # Property
-///
-/// A model whose MLS §8.6 initialization updates can never reach a fixed point
-/// makes the component stop at its own iteration ceiling and report
-/// an initialization-stage error whose kind is `MeError::Evaluation`, rather
-/// than looping forever or panicking.
-///
-/// `UPDATE_MAX_ITERS = 32` (`fmi_me/kernel.rs:38`) is the bound every internal
-/// fixed point in the component is given; `eval_and_apply_update_rows` returns
-/// `EvalSolveError::UpdateDidNotConverge` when it is reached, which the FMI
-/// boundary maps to `MeError::Evaluation` and annotates with the lifecycle
-/// stage where the failure arose.
-fn property_a_non_convergent_fixed_point_returns_an_error(increment: f64) {
+/// A non-convergent initialization fixed point reaches its iteration bound and
+/// returns a staged evaluation error instead of looping or panicking.
+fn property_non_convergent_fixed_point_returns_error(increment: f64) {
     let model = divergent_initialization_model(increment);
     let mut kernel = instantiate(&model);
     kernel
         .enter_initialization_mode()
-        .expect("initialization mode should be enterable from Instantiated");
+        .expect("initialization mode is reachable");
     let error = kernel
         .exit_initialization_mode()
-        .expect_err("a fixed point that cannot settle must fail");
-    assert_eq!(
-        error.stage(),
-        Some(MeStage::Initialization),
-        "the component must preserve the stage that raised the failure"
-    );
-    assert!(
-        matches!(error.kind(), MeError::Evaluation { .. }),
-        "a fixed point that cannot settle must be reported to the host as an \
-         evaluation failure, not run forever"
-    );
+        .expect_err("a divergent fixed point must fail");
+    assert_eq!(error.stage(), Some(MeStage::Initialization));
+    assert!(matches!(error.kind(), MeError::Evaluation { .. }));
+    assert!(error.to_string().contains("did not converge"));
+}
+
+/// ME-LIFE-004 bounded-error clause: an ordinary runtime event whose discrete
+/// fixed point diverges reaches the component ceiling and returns a staged
+/// evaluation error rather than looping, panicking, or claiming completion.
+fn property_non_convergent_runtime_event_returns_error(increment: f64) {
+    let model = divergent_runtime_event_model(increment);
+    let mut kernel = instantiate(&model);
+    run_to_continuous_time_mode(&mut kernel);
+    kernel
+        .enter_event_mode(MeEventEntry {
+            cause: MeEventCause::StateEvent,
+            event_time: START_TIME,
+            horizon: STOP_TIME,
+        })
+        .expect("the runtime state event is reachable");
+    let error = kernel
+        .update_discrete_states()
+        .expect_err("a divergent runtime event fixed point must fail");
+    assert_eq!(error.stage(), Some(MeStage::EventIteration));
+    assert!(matches!(error.kind(), MeError::Evaluation { .. }));
+    assert!(error.to_string().contains("did not converge"));
+}
+
+fn state_from_index(index: u8) -> MeState {
+    MeState::ALL[index as usize % MeState::ALL.len()]
+}
+
+fn command_from_index(index: u8) -> MeLifecycleCommand {
+    MeLifecycleCommand::ALL[index as usize % MeLifecycleCommand::ALL.len()]
 }
 
 #[cfg(kani)]
 mod proof {
-    use super::{KernelOp, MAX_OPS};
-
-    /// A bounded operation sequence: at most `MAX_OPS` operations, each
-    /// carrying one `f64` that is either small and finite or non-finite.
-    ///
-    /// The bound is on magnitude only, so NaN and both infinities stay in the
-    /// alphabet — the fallback strategy admits exactly the same set.
-    fn any_ops() -> Vec<KernelOp> {
-        let len: usize = kani::any();
-        kani::assume(len <= MAX_OPS);
-        let mut ops = Vec::with_capacity(len);
-        for _ in 0..len {
-            let index: u8 = kani::any();
-            let value: f64 = kani::any();
-            kani::assume(!value.is_finite() || value.abs() <= 2.0);
-            ops.push(KernelOp::from_index(index, value));
-        }
-        ops
+    fn prove_rejection_from(state: super::MeState) {
+        let command = super::command_from_index(kani::any());
+        kani::cover!(super::relation_rejects(state, command));
+        kani::cover!(!super::relation_rejects(state, command));
+        super::property_rejected_facade_transition_preserves_state(state, command);
     }
 
-    /// An ordered finite pair `earlier < later` inside the fixture's horizon,
-    /// separated by at least `MIN_TIME_GAP`.
-    fn any_ordered_times() -> (f64, f64) {
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn rejected_instantiated_transition_preserves_state() {
+        prove_rejection_from(super::MeState::Instantiated);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn rejected_initialization_transition_preserves_state() {
+        prove_rejection_from(super::MeState::InitializationMode);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn rejected_event_transition_preserves_state() {
+        prove_rejection_from(super::MeState::EventMode);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn rejected_continuous_transition_preserves_state() {
+        prove_rejection_from(super::MeState::ContinuousTimeMode);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn terminated_is_dynamically_absorbing() {
+        let command = super::command_from_index(kani::any());
+        kani::cover!(super::relation_rejects(super::MeState::Terminated, command));
+        super::property_rejected_facade_transition_preserves_state(
+            super::MeState::Terminated,
+            command,
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn non_finite_setters_are_transactional() {
+        let index: u8 = kani::any();
+        let value = super::non_finite_from_index(index);
+        kani::cover!(value.is_nan());
+        kani::cover!(value == f64::INFINITY);
+        kani::cover!(value == f64::NEG_INFINITY);
+        super::property_non_finite_setters_are_transactional(index);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn rejected_value_reference_batch_is_transactional() {
+        let case: u8 = kani::any();
+        kani::cover!(case % 6 == 0);
+        kani::cover!(case % 6 == 1);
+        kani::cover!(case % 6 == 2);
+        kani::cover!(case % 6 == 3);
+        kani::cover!(case % 6 == 4);
+        kani::cover!(case % 6 == 5);
+        super::property_rejected_value_reference_batch_is_transactional(case);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn rejected_host_buffers_are_transactional() {
+        let case: u8 = kani::any();
+        kani::cover!(case % 9 == 0);
+        kani::cover!(case % 9 == 1);
+        kani::cover!(case % 9 == 2);
+        kani::cover!(case % 9 == 3);
+        kani::cover!(case % 9 == 4);
+        kani::cover!(case % 9 == 5);
+        kani::cover!(case % 9 == 6);
+        kani::cover!(case % 9 == 7);
+        kani::cover!(case % 9 == 8);
+        super::property_rejected_host_buffers_are_transactional(case);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn foreign_instance_capabilities_are_rejected() {
+        let case: u8 = kani::any();
+        kani::cover!(case % 3 == 0);
+        kani::cover!(case % 3 == 1);
+        kani::cover!(case % 3 == 2);
+        super::property_foreign_instance_capabilities_are_rejected(case);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(20)]
+    fn terminated_facade_is_fail_closed() {
+        let operation = super::active_operation_from_index(kani::any());
+        kani::cover!(operation == super::ActiveFacadeOperation::GetStates);
+        kani::cover!(operation == super::ActiveFacadeOperation::GetDerivatives);
+        kani::cover!(operation == super::ActiveFacadeOperation::GetDirectionalDerivative);
+        kani::cover!(operation == super::ActiveFacadeOperation::GetIndicators);
+        kani::cover!(operation == super::ActiveFacadeOperation::ProjectStates);
+        kani::cover!(operation == super::ActiveFacadeOperation::CompleteStep);
+        kani::cover!(operation == super::ActiveFacadeOperation::NextEventStop);
+        kani::cover!(operation == super::ActiveFacadeOperation::ClassifyCrossings);
+        kani::cover!(operation == super::ActiveFacadeOperation::CapturePreEvent);
+        kani::cover!(operation == super::ActiveFacadeOperation::ArmStateEvent);
+        kani::cover!(operation == super::ActiveFacadeOperation::Observe);
+        kani::cover!(operation == super::ActiveFacadeOperation::RecordOutputs);
+        kani::cover!(operation == super::ActiveFacadeOperation::GetOutputs);
+        kani::cover!(operation == super::ActiveFacadeOperation::SetFloat64);
+        kani::cover!(operation == super::ActiveFacadeOperation::SetTime);
+        kani::cover!(operation == super::ActiveFacadeOperation::SetStates);
+        kani::cover!(operation == super::ActiveFacadeOperation::ExtendStopTime);
+        super::property_terminated_facade_is_fail_closed(operation);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn snapshot_restores_observable_state() {
+        let target = super::state_from_index(kani::any());
+        kani::cover!(target == super::MeState::Instantiated);
+        kani::cover!(target == super::MeState::InitializationMode);
+        kani::cover!(target == super::MeState::EventMode);
+        kani::cover!(target == super::MeState::ContinuousTimeMode);
+        kani::cover!(target == super::MeState::Terminated);
+        super::property_snapshot_restores_observable_state(target);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn host_event_iteration_terminates_after_one_call() {
+        let completed_after_one_call =
+            super::property_host_event_iteration_terminates_after_one_call();
+        kani::cover!(completed_after_one_call);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn scheduled_time_event_terminates_after_one_call() {
+        let update_complete = super::property_scheduled_time_event_terminates_after_one_call();
+        kani::cover!(update_complete);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn event_boundary_does_not_move_time_backward() {
         let earlier: f64 = kani::any();
         let later: f64 = kani::any();
         kani::assume(earlier.is_finite() && later.is_finite());
         kani::assume(earlier >= super::START_TIME && later <= super::STOP_TIME);
-        // See `MIN_TIME_GAP`: the fallback cannot draw a closer pair without an
-        // empty range, so the proof does not explore one either.
         kani::assume(earlier + super::MIN_TIME_GAP <= later);
-        (earlier, later)
+        kani::cover!(earlier < later);
+        super::property_event_boundary_does_not_move_time_backward(earlier, later);
     }
 
-    /// A conforming FMI host's `while discreteStatesNeedUpdate` loop terminates
-    /// after exactly one `update_discrete_states` call, whatever operations
-    /// preceded it.
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn the_host_event_iteration_terminates_after_one_call() {
-        super::property_the_host_event_iteration_terminates_after_one_call(&any_ops());
-    }
-
-    /// No sequence of ME kernel operations, issued in any order on a
-    /// well-formed instantiation, panics.
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn no_operation_sequence_panics() {
-        super::property_no_operation_sequence_panics(&any_ops());
-    }
-
-    /// PIN: `set_time` applies whatever time it is given, so a host that sets
-    /// time backwards moves the component backwards.
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn set_time_is_not_monotonic() {
-        let (earlier, later) = any_ordered_times();
-        super::property_set_time_is_not_monotonic(earlier, later);
-    }
-
-    /// PIN: the component's one monotonic clamp is on the event-boundary path.
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn the_event_boundary_clamps_time_upwards() {
-        let (earlier, later) = any_ordered_times();
-        super::property_the_event_boundary_clamps_time_upwards(earlier, later);
-    }
-
-    /// A fixed point that cannot settle stops at the component's iteration
-    /// ceiling and reports `MeError::Evaluation`.
     #[kani::proof]
     #[kani::unwind(64)]
-    fn a_non_convergent_fixed_point_returns_an_error() {
+    fn non_convergent_fixed_point_returns_error() {
         let increment: f64 = kani::any();
         kani::assume(increment.is_finite() && increment >= 1.0 && increment <= 4.0);
-        super::property_a_non_convergent_fixed_point_returns_an_error(increment);
+        kani::cover!(increment > 1.0);
+        super::property_non_convergent_fixed_point_returns_error(increment);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(128)]
+    fn non_convergent_runtime_event_returns_error() {
+        let increment: f64 = kani::any();
+        kani::assume(increment.is_finite() && increment >= 1.0 && increment <= 4.0);
+        kani::cover!(increment > 1.0);
+        super::property_non_convergent_runtime_event_returns_error(increment);
     }
 }
 
 #[cfg(all(test, not(kani)))]
 mod fallback {
-    // Fallback driver: identical property under proptest because Kani is not in
-    // the dev shell yet. Graduating means deleting this module.
     use proptest::prelude::*;
 
-    use super::{KernelOp, MAX_OPS, MIN_TIME_GAP, START_TIME, STOP_TIME};
-
-    /// One `f64` payload: small and finite, or non-finite. Mirrors the proof's
-    /// `!value.is_finite() || value.abs() <= 2.0` assumption.
-    fn any_value() -> impl Strategy<Value = f64> {
-        prop_oneof![
-            6 => -2.0f64..=2.0f64,
-            1 => Just(f64::NAN),
-            1 => Just(f64::INFINITY),
-            1 => Just(f64::NEG_INFINITY),
-        ]
-    }
-
-    /// The same operation alphabet the proof explores, over the same bounds.
-    fn any_ops() -> impl Strategy<Value = Vec<KernelOp>> {
-        prop::collection::vec(
-            (any::<u8>(), any_value())
-                .prop_map(|(index, value)| KernelOp::from_index(index, value)),
-            0..=MAX_OPS,
-        )
-    }
-
-    /// An ordered finite pair `earlier < later` inside the fixture's horizon,
-    /// separated by at least `MIN_TIME_GAP`.
-    ///
-    /// Both components are drawn from ranges fixed at compile time and `later`
-    /// is then computed, rather than drawing `later` from a range anchored at
-    /// `earlier`. That is deliberate: proptest's `f64` sampler panics on a
-    /// range whose ends coincide (`proptest-1.11.0/src/num/float_samplers.rs`),
-    /// and an anchored range collapses to exactly that at the top of its outer
-    /// range — with `earlier` at the largest double below `1.0`, `earlier +
-    /// f64::EPSILON` rounds to exactly `STOP_TIME` and the inner range becomes
-    /// `1.0..=1.0`. Computing `later` and clamping it removes the data-dependent
-    /// range altogether, so no draw can degenerate.
     fn any_ordered_times() -> impl Strategy<Value = (f64, f64)> {
         (
-            START_TIME..=(STOP_TIME - MIN_TIME_GAP),
-            MIN_TIME_GAP..=(STOP_TIME - START_TIME),
+            super::START_TIME..=(super::STOP_TIME - super::MIN_TIME_GAP),
+            super::MIN_TIME_GAP..=(super::STOP_TIME - super::START_TIME),
         )
-            .prop_map(|(earlier, gap)| {
-                // `earlier` is capped a full gap below the horizon and `gap` is
-                // whole orders of magnitude above the ULP anywhere in `[0, 1]`,
-                // so the sum is strictly greater than `earlier` and the clamp
-                // can only bring it back to `STOP_TIME`, which is greater still.
-                (earlier, (earlier + gap).min(STOP_TIME))
-            })
+            .prop_map(|(earlier, gap)| (earlier, (earlier + gap).min(super::STOP_TIME)))
     }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
-        /// A conforming FMI host's `while discreteStatesNeedUpdate` loop
-        /// terminates after exactly one `update_discrete_states` call, whatever
-        /// operations preceded it.
         #[test]
-        fn the_host_event_iteration_terminates_after_one_call(ops in any_ops()) {
-            super::property_the_host_event_iteration_terminates_after_one_call(&ops);
+        fn rejected_facade_transition_preserves_state(
+            state_index in any::<u8>(),
+            command_index in any::<u8>(),
+        ) {
+            super::property_rejected_facade_transition_preserves_state(
+                super::state_from_index(state_index),
+                super::command_from_index(command_index),
+            );
         }
 
-        /// No sequence of ME kernel operations, issued in any order on a
-        /// well-formed instantiation, panics.
         #[test]
-        fn no_operation_sequence_panics(ops in any_ops()) {
-            super::property_no_operation_sequence_panics(&ops);
+        fn non_finite_setters_are_transactional(index in any::<u8>()) {
+            super::property_non_finite_setters_are_transactional(index);
         }
 
-        /// PIN: `set_time` applies whatever time it is given, so a host that
-        /// sets time backwards moves the component backwards.
         #[test]
-        fn set_time_is_not_monotonic((earlier, later) in any_ordered_times()) {
-            super::property_set_time_is_not_monotonic(earlier, later);
+        fn rejected_value_reference_batch_is_transactional(case in any::<u8>()) {
+            super::property_rejected_value_reference_batch_is_transactional(case);
         }
 
-        /// PIN: the component's one monotonic clamp is on the event-boundary
-        /// path.
         #[test]
-        fn the_event_boundary_clamps_time_upwards((earlier, later) in any_ordered_times()) {
-            super::property_the_event_boundary_clamps_time_upwards(earlier, later);
+        fn rejected_host_buffers_are_transactional(case in any::<u8>()) {
+            super::property_rejected_host_buffers_are_transactional(case);
         }
 
-        /// A fixed point that cannot settle stops at the component's iteration
-        /// ceiling and reports `MeError::Evaluation`.
         #[test]
-        fn a_non_convergent_fixed_point_returns_an_error(increment in 1.0f64..=4.0f64) {
-            super::property_a_non_convergent_fixed_point_returns_an_error(increment);
+        fn foreign_instance_capabilities_are_rejected(case in any::<u8>()) {
+            super::property_foreign_instance_capabilities_are_rejected(case);
         }
+
+        #[test]
+        fn terminated_facade_is_fail_closed(index in any::<u8>()) {
+            super::property_terminated_facade_is_fail_closed(
+                super::active_operation_from_index(index),
+            );
+        }
+
+        #[test]
+        fn snapshot_restores_observable_state(state_index in any::<u8>()) {
+            super::property_snapshot_restores_observable_state(super::state_from_index(state_index));
+        }
+
+        #[test]
+        fn event_boundary_does_not_move_time_backward(
+            (earlier, later) in any_ordered_times(),
+        ) {
+            super::property_event_boundary_does_not_move_time_backward(earlier, later);
+        }
+
+        #[test]
+        fn non_convergent_fixed_point_returns_error(increment in 1.0f64..=4.0f64) {
+            super::property_non_convergent_fixed_point_returns_error(increment);
+        }
+
+        #[test]
+        fn non_convergent_runtime_event_returns_error(increment in 1.0f64..=4.0f64) {
+            super::property_non_convergent_runtime_event_returns_error(increment);
+        }
+    }
+
+    #[test]
+    fn host_event_iteration_terminates_after_one_call() {
+        assert!(super::property_host_event_iteration_terminates_after_one_call());
+    }
+
+    #[test]
+    fn scheduled_time_event_terminates_after_one_call() {
+        assert!(super::property_scheduled_time_event_terminates_after_one_call());
     }
 }

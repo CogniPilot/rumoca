@@ -1457,6 +1457,21 @@ fn simulation_runtime_state_clear_resets_impure_random_streams() {
 }
 
 #[test]
+fn simulation_runtime_snapshot_restores_impure_random_continuation() {
+    let runtime_state = SimulationRuntimeState::new();
+    let id = impure_random_stream_id(17);
+    let draw = |time| impure_random_sample(id, 9, time, &runtime_state.impure_random);
+    let _first = draw(1.0);
+    let saved = runtime_state.snapshot();
+    let expected = draw(2.0);
+    let _later = draw(3.0);
+
+    runtime_state.restore(&saved);
+
+    assert_eq!(draw(2.0).to_bits(), expected.to_bits());
+}
+
+#[test]
 fn row_eval_context_keeps_impure_random_state_model_local() {
     let init = vec![
         LinearOp::Const {

@@ -1,7 +1,8 @@
 //! Stable source identity, content ownership, and checked source-map replay.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use crate::{SourceId, Span};
@@ -42,16 +43,24 @@ fn decode_placeholder_source_name(name: &str) -> Option<SourceId> {
 ///
 /// This enables diagnostics to point to the correct source file when
 /// compiling models that span multiple files.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Clone, Default)]
 pub struct SourceMap {
+    storage: Arc<SourceMapStorage>,
+}
+
+#[derive(Clone, Default)]
+struct SourceMapStorage {
     /// (stable source id, name, content) in deterministic insertion order.
     files: Vec<(SourceId, String, Arc<str>)>,
     /// Reverse lookup from file name to SourceId.
-    #[serde(skip)]
     name_to_id: HashMap<String, SourceId>,
     /// Reverse lookup from SourceId to `files` index.
-    #[serde(skip)]
     id_to_index: HashMap<SourceId, usize>,
+}
+
+#[derive(Serialize)]
+struct SourceMapWireRef<'a> {
+    files: &'a [(SourceId, String, Arc<str>)],
 }
 
 #[derive(Deserialize)]
@@ -77,10 +86,35 @@ impl<'de> Deserialize<'de> for SourceMap {
             id_to_index,
         } = indexes;
         Ok(Self {
-            files,
-            name_to_id,
-            id_to_index,
+            storage: Arc::new(SourceMapStorage {
+                files,
+                name_to_id,
+                id_to_index,
+            }),
         })
+    }
+}
+
+impl Serialize for SourceMap {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        SourceMapWireRef {
+            files: &self.storage.files,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl fmt::Debug for SourceMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SourceMap")
+            .field("files", &self.storage.files)
+            .field("name_to_id", &self.storage.name_to_id)
+            .field("id_to_index", &self.storage.id_to_index)
+            .finish()
     }
 }
 
@@ -129,13 +163,14 @@ impl SourceMap {
     /// of copying whole files into every `SourceMap`.
     pub fn add_shared(&mut self, name: &str, content: Arc<str>) -> SourceId {
         let id = source_id_for_name(name);
-        self.name_to_id.insert(name.to_string(), id);
-        if self.get_source(id).is_some() {
+        let storage = Arc::make_mut(&mut self.storage);
+        storage.name_to_id.insert(name.to_string(), id);
+        if storage.id_to_index.contains_key(&id) {
             return id;
         }
-        let index = self.files.len();
-        self.files.push((id, name.to_string(), content));
-        self.id_to_index.insert(id, index);
+        let index = storage.files.len();
+        storage.files.push((id, name.to_string(), content));
+        storage.id_to_index.insert(id, index);
         id
     }
 
@@ -144,23 +179,24 @@ impl SourceMap {
     /// The answer is derived from `name` itself, so it cannot depend on
     /// insertion order.
     pub fn get_id(&self, name: &str) -> Option<SourceId> {
-        self.name_to_id.get(name).copied().or_else(|| {
+        self.storage.name_to_id.get(name).copied().or_else(|| {
             let id = source_id_for_name(name);
-            self.id_to_index.contains_key(&id).then_some(id)
+            self.storage.id_to_index.contains_key(&id).then_some(id)
         })
     }
 
     /// Get (name, content) for a SourceId.
     pub fn get_source(&self, id: SourceId) -> Option<(&str, &str)> {
-        self.id_to_index
+        self.storage
+            .id_to_index
             .get(&id)
-            .and_then(|&index| self.files.get(index))
+            .and_then(|&index| self.storage.files.get(index))
             .map(|(_, name, content)| (name.as_str(), content.as_ref()))
     }
 
     /// Get the first source id in deterministic map order.
     pub fn first_source_id(&self) -> Option<SourceId> {
-        self.files.first().map(|(id, _, _)| *id)
+        self.storage.files.first().map(|(id, _, _)| *id)
     }
 
     /// Register `content` under an explicit `SourceId`.
@@ -183,13 +219,14 @@ impl SourceMap {
         } else {
             placeholder_source_name(id)
         };
-        if self.get_source(id).is_some() || self.name_to_id.contains_key(&name) {
+        if self.get_source(id).is_some() || self.storage.name_to_id.contains_key(&name) {
             return false;
         }
-        let index = self.files.len();
-        self.files.push((id, name.clone(), content));
-        self.name_to_id.insert(name, id);
-        self.id_to_index.insert(id, index);
+        let storage = Arc::make_mut(&mut self.storage);
+        let index = storage.files.len();
+        storage.files.push((id, name.clone(), content));
+        storage.name_to_id.insert(name, id);
+        storage.id_to_index.insert(id, index);
         true
     }
 
@@ -215,20 +252,23 @@ impl SourceMap {
 
     /// Snapshot file-name to source-id mappings.
     pub fn source_ids(&self) -> HashMap<String, SourceId> {
-        self.name_to_id.clone()
+        self.storage.name_to_id.clone()
     }
 
     /// Return a copy that preserves source-id/name mappings but omits source text.
     pub fn without_source_contents(&self) -> Self {
         let files = self
+            .storage
             .files
             .iter()
             .map(|(id, name, _)| (*id, name.clone(), Arc::<str>::from("")))
             .collect();
         Self {
-            files,
-            name_to_id: self.name_to_id.clone(),
-            id_to_index: self.id_to_index.clone(),
+            storage: Arc::new(SourceMapStorage {
+                files,
+                name_to_id: self.storage.name_to_id.clone(),
+                id_to_index: self.storage.id_to_index.clone(),
+            }),
         }
     }
 }
@@ -320,7 +360,7 @@ mod tests {
         map.add("pkg/A.mo", "model A end A;");
         let parser_id = SourceId::from_source_name("original/path/A.mo");
         assert!(map.register_id(parser_id, "<parsed-source-root>", Arc::from("body")));
-        for (id, name, _) in &map.files {
+        for (id, name, _) in &map.storage.files {
             assert_eq!(
                 source_id_for_name(name),
                 *id,
@@ -386,7 +426,55 @@ mod tests {
             map.get_source(first).map(|(_, text)| text),
             Some("model A end A;")
         );
-        assert_eq!(map.files.len(), 1);
+        assert_eq!(map.storage.files.len(), 1);
+    }
+
+    #[test]
+    fn cloned_source_maps_detach_before_mutation() {
+        let mut original = SourceMap::new();
+        let first = original.add("pkg/A.mo", "model A end A;");
+        let mut cloned = original.clone();
+
+        let second = cloned.add("pkg/B.mo", "model B end B;");
+        assert_eq!(
+            original.get_source(first),
+            Some(("pkg/A.mo", "model A end A;"))
+        );
+        assert!(original.get_source(second).is_none());
+        assert_eq!(
+            cloned.get_source(second),
+            Some(("pkg/B.mo", "model B end B;"))
+        );
+
+        let parser_id = SourceId::from_source_name("original/path/C.mo");
+        assert!(original.register_id(
+            parser_id,
+            "<parsed-source-root>",
+            Arc::from("model C end C;")
+        ));
+        assert!(cloned.get_source(parser_id).is_none());
+        assert_eq!(
+            original.get_source(parser_id).map(|(_, source)| source),
+            Some("model C end C;")
+        );
+    }
+
+    #[test]
+    fn stripped_source_map_is_detached_from_content_owners() {
+        let mut original = SourceMap::new();
+        let source = original.add("pkg/A.mo", "model A end A;");
+        let cloned = original.clone();
+        let stripped = cloned.without_source_contents();
+
+        assert_eq!(
+            original.get_source(source),
+            Some(("pkg/A.mo", "model A end A;"))
+        );
+        assert_eq!(
+            cloned.get_source(source),
+            Some(("pkg/A.mo", "model A end A;"))
+        );
+        assert_eq!(stripped.get_source(source), Some(("pkg/A.mo", "")));
     }
 
     #[test]
@@ -412,6 +500,35 @@ mod tests {
                 Some((second_name.as_str(), "model B end B;"))
             );
         }
+    }
+
+    #[test]
+    fn source_map_wire_is_identical_to_the_canonical_files_record() {
+        #[derive(Serialize)]
+        struct ExpectedSourceMapWire<'a> {
+            files: &'a [(SourceId, String, Arc<str>)],
+        }
+
+        let mut map = SourceMap::new();
+        map.add("pkg/A.mo", "model A end A;");
+        let parser_id = SourceId::from_source_name("original/path/B.mo");
+        assert!(map.register_id(
+            parser_id,
+            "<parsed-source-root>",
+            Arc::from("model B end B;")
+        ));
+        let canonical = ExpectedSourceMapWire {
+            files: &map.storage.files,
+        };
+
+        assert_eq!(
+            serde_json::to_vec(&map).expect("source map JSON serializes"),
+            serde_json::to_vec(&canonical).expect("canonical JSON serializes")
+        );
+        assert_eq!(
+            bincode::serialize(&map).expect("source map bincode serializes"),
+            bincode::serialize(&canonical).expect("canonical bincode serializes")
+        );
     }
 
     #[test]

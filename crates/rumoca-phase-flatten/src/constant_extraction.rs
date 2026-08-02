@@ -641,7 +641,7 @@ pub(super) fn inject_model_extends_redeclare_constants(
             + ctx.enum_parameter_values.len();
 
         for (alias_name, package_class, package_context) in &redeclare_packages {
-            extract_constants_from_class_with_prefix(alias_name, package_class, ctx);
+            extract_constants_from_class_with_prefix(class_index, alias_name, package_class, ctx);
             for pkg_ext in &package_class.extends {
                 apply_extends_constants_for_scope(
                     tree,
@@ -1014,7 +1014,7 @@ pub(super) fn extract_extends_chain_constants_inner(
     if !visited.insert(qname.clone()) {
         return;
     }
-    extract_constants_from_class_with_prefix(alias, base_class, ctx);
+    extract_constants_from_class_with_prefix(class_index, alias, base_class, ctx);
     for ext in &base_class.extends {
         extract_extends_modification_constants(tree, class_index, alias, ext, &qname, ctx);
         if let Some(base_qname) =
@@ -1113,8 +1113,8 @@ pub(super) fn extract_extends_redeclare_package_constants(
         }
 
         let alias_scope = make_prefixed_name(prefix, alias_name);
-        extract_constants_from_class_with_prefix(&alias_scope, package_class, ctx);
-        extract_constants_from_class_with_prefix(prefix, package_class, ctx);
+        extract_constants_from_class_with_prefix(class_index, &alias_scope, package_class, ctx);
+        extract_constants_from_class_with_prefix(class_index, prefix, package_class, ctx);
 
         for pkg_ext in &package_class.extends {
             extract_extends_modification_constants(
@@ -1374,6 +1374,7 @@ fn extract_extends_shape_and_alias_modification(
 /// Extract integer constants and array dimensions from a class, using a prefix for names.
 /// Constants are stored as both `prefix.name` (e.g., `Medium.nX`) and unprefixed `name`.
 pub(super) fn extract_constants_from_class_with_prefix(
+    class_index: &ast::ClassDefIndex<'_>,
     prefix: &str,
     class_def: &ast::ClassDef,
     ctx: &mut Context,
@@ -1390,14 +1391,14 @@ pub(super) fn extract_constants_from_class_with_prefix(
         // type's default, so it is not a fallback here (SPEC_0008).
         let binding = comp.binding.as_ref();
         let synthesized = if binding.is_none() {
-            synthesize_component_modification_binding(comp)
+            synthesize_component_modification_binding(comp, class_index)
         } else {
             None
         };
         let expr = binding.or(synthesized.as_ref());
         let Some(expr) = expr else { continue };
         let full_name = make_prefixed_name(prefix, name);
-        extract_single_constant_with_prefix(prefix, name, &full_name, comp, expr, ctx);
+        extract_single_constant_with_prefix(class_index, prefix, name, &full_name, comp, expr, ctx);
     }
 }
 
@@ -1423,7 +1424,7 @@ pub(super) fn extract_constants_from_class_with_prefix_and_imports(
         // MLS §4.4.4 / §4.9: see above — `start` is not a value fallback.
         let binding = comp.binding.as_ref();
         let synthesized = if binding.is_none() {
-            synthesize_component_modification_binding(comp)
+            synthesize_component_modification_binding(comp, class_index)
         } else {
             None
         };
@@ -1434,6 +1435,7 @@ pub(super) fn extract_constants_from_class_with_prefix_and_imports(
             qualify::qualify_expression_with_imports(expr, &empty_prefix, qualify_opts, &imports);
         let full_name = make_prefixed_name(prefix, name);
         extract_single_constant_with_prefix_and_function_scope(
+            class_index,
             prefix,
             name,
             &full_name,
@@ -1470,6 +1472,7 @@ pub(super) fn constant_extraction_imports(
 
 /// Extract a single constant value (integer or array dims) into the context.
 pub(super) fn extract_single_constant_with_prefix(
+    class_index: &ast::ClassDefIndex<'_>,
     prefix: &str,
     name: &str,
     full_name: &str,
@@ -1478,7 +1481,14 @@ pub(super) fn extract_single_constant_with_prefix(
     ctx: &mut Context,
 ) {
     extract_single_constant_with_prefix_and_function_scope(
-        prefix, name, full_name, comp, expr, ctx, None,
+        class_index,
+        prefix,
+        name,
+        full_name,
+        comp,
+        expr,
+        ctx,
+        None,
     );
 }
 
@@ -1505,6 +1515,7 @@ pub(super) fn canonicalize_constant_function_calls(
 }
 
 pub(super) fn extract_single_constant_with_prefix_and_function_scope(
+    class_index: &ast::ClassDefIndex<'_>,
     prefix: &str,
     name: &str,
     full_name: &str,
@@ -1528,7 +1539,7 @@ pub(super) fn extract_single_constant_with_prefix_and_function_scope(
         let val = canonicalize_constant_function_calls(val, function_scope);
         insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
     }
-    if is_record_like_type(&type_name)
+    if component_type_is_record(comp, class_index)
         && let Some(val) =
             try_extract_record_array_constructor_constant(expr, ctx, prefix, full_name)
         && (!preserve_existing || !ctx.constant_values.contains_key(full_name))

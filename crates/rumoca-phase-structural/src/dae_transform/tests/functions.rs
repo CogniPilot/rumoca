@@ -113,7 +113,7 @@ fn holonomic_reconstruction_preserves_checked_function_owners() {
         .next()
         .expect("fixture exposes a twice-differentiable state constraint");
     let expected_inventory = model.inspect(function_expression_inventory);
-    let (rebuilt, manifold) = rebuild_holonomic_constraint(&model, constraint)
+    let (rebuilt, manifold) = rebuild_holonomic_constraint(&model, &constraint)
         .expect("holonomic replacement reconstructs checked function owners");
     assert_eq!(manifold.len(), 2);
     rebuilt.inspect(|view| {

@@ -11,11 +11,12 @@
 //! - `mod fallback`, compiled only under `cfg(all(test, not(kani)))`, feeds it
 //!   proptest strategies over the same bounds and samples that space.
 //!
-//! The fallback exists because Kani is not in the dev shell yet. Graduating a
-//! harness to the model checker is therefore mechanical: install Kani, delete
-//! the fallback module, and neither the property text nor its assertions move.
-//! Because both drivers call the same function, a property can never drift
-//! between what is proved and what is tested.
+//! Kani 0.67.0 is pinned in the dedicated `nix develop .#kani` shell. The
+//! canonical `cargo xtask verify kani` gate reads
+//! `verification/kani-proofs.json` and proves every required harness listed
+//! there. The fallback remains useful conventional test evidence, but a green
+//! fallback run is never reported as a proof. Because both drivers call the
+//! same function, a property cannot drift between what is proved and sampled.
 //!
 //! Every submodule below is `cfg(any(test, kani))`, so no production build
 //! carries one and the SPEC_0038 FMI-boundary hardening test never sees them.
@@ -27,5 +28,7 @@
 mod condition_memory;
 #[cfg(any(test, kani))]
 mod kernel_lifecycle;
+#[cfg(any(test, kani))]
+mod me_lifecycle;
 #[cfg(any(test, kani))]
 mod model_fixture;

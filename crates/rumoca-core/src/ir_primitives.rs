@@ -113,6 +113,10 @@ impl FunctionInstanceId {
 pub struct ResolvedFunctionReference {
     pub instance_id: FunctionInstanceId,
     pub base_part_count: usize,
+    /// This exact call occurrence proved its complete MLS §6.4 exposure path
+    /// transitively non-replaceable. Automatic vectorization requires this
+    /// occurrence-level fact in addition to exact function-instance identity.
+    pub transitively_non_replaceable: bool,
 }
 
 /// A unique identifier for a type.

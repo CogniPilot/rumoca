@@ -5,7 +5,7 @@ pub(super) fn validate_condition_expression(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     validate_condition_expression_in_context(
         expression,
@@ -30,7 +30,7 @@ pub(super) fn validate_when_condition_expression(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
     clocked: bool,
 ) -> Result<(), ToDaeError> {
     validate_condition_expression_in_context(
@@ -48,7 +48,7 @@ fn validate_condition_expression_in_context(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
     when_clause: PreContext,
 ) -> Result<(), ToDaeError> {
     match expression {
@@ -72,12 +72,12 @@ fn validate_condition_expression_in_context(
             args,
             span,
         } => {
-            let lattice = evaluate_sample_lattice(args, constants, *span)?;
+            let schedule = evaluate_sample_schedule(args, constants, *span)?;
             if !sample_lattices
                 .iter()
                 .any(|(existing, _)| *existing == *span)
             {
-                sample_lattices.push((*span, lattice));
+                sample_lattices.push((*span, schedule));
             }
             Ok(())
         }
@@ -146,7 +146,7 @@ pub(super) fn validate_algorithm_condition(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     match expression {
         Expression::BuiltinCall {
@@ -185,12 +185,12 @@ pub(super) fn validate_algorithm_condition(
             args,
             span,
         } => {
-            let lattice = evaluate_sample_lattice(args, constants, *span)?;
+            let schedule = evaluate_sample_schedule(args, constants, *span)?;
             if !sample_lattices
                 .iter()
                 .any(|(existing, _)| *existing == *span)
             {
-                sample_lattices.push((*span, lattice));
+                sample_lattices.push((*span, schedule));
             }
             Ok(())
         }
@@ -272,11 +272,11 @@ fn reject_rescheduling_initial_activation(
     Ok(())
 }
 
-pub(super) fn evaluate_sample_lattice(
+pub(super) fn evaluate_sample_schedule(
     arguments: &[Expression],
     constants: &EvalContext,
     span: Span,
-) -> Result<ClockLattice, ToDaeError> {
+) -> Result<rumoca_core::PeriodicClockSchedule, ToDaeError> {
     let [start, interval] = arguments else {
         return Err(ToDaeError::unsupported_runtime_operator(
             "sample",
@@ -284,7 +284,16 @@ pub(super) fn evaluate_sample_lattice(
             span,
         ));
     };
-    let start = evaluate_clock_seconds(start, constants, "sample start", span)?;
+    let start_result = evaluate_clock_seconds(start, constants, "sample start", span);
+    let (start, anchor) = match start_result {
+        Ok(start) => (start, rumoca_core::ClockPhaseAnchor::Absolute),
+        Err(error) => match affine_start_instant_coefficients(start, constants) {
+            Some((slope, offset)) if slope == 1.0 && offset.is_finite() => {
+                (offset, rumoca_core::ClockPhaseAnchor::SimulationStart)
+            }
+            _ => return Err(error),
+        },
+    };
     let interval = evaluate_clock_seconds(interval, constants, "sample interval", span)?;
     let phase = ClockRational::from_seconds(start).map_err(|error| {
         ToDaeError::unsupported_runtime_operator("sample", error.to_string(), span)
@@ -292,9 +301,105 @@ pub(super) fn evaluate_sample_lattice(
     let period = ClockRational::from_seconds(interval).map_err(|error| {
         ToDaeError::unsupported_runtime_operator("sample", error.to_string(), span)
     })?;
-    ClockLattice::new(period, phase).map_err(|error| {
+    let lattice = ClockLattice::new(period, phase).map_err(|error| {
+        ToDaeError::unsupported_runtime_operator("sample", error.to_string(), span)
+    })?;
+    let schedule = match anchor {
+        rumoca_core::ClockPhaseAnchor::Absolute => {
+            rumoca_core::PeriodicClockSchedule::absolute(lattice)
+        }
+        rumoca_core::ClockPhaseAnchor::SimulationStart => {
+            rumoca_core::PeriodicClockSchedule::simulation_start_relative(lattice)
+        }
+    };
+    schedule.map_err(|error| {
         ToDaeError::unsupported_runtime_operator("sample", error.to_string(), span)
     })
+}
+
+/// `(slope, offset)` of an expression affine in the simulation start instant.
+///
+/// Only parameters already proved to be initialized directly from `time` are
+/// variables of this affine form. Every other leaf must evaluate as a finite
+/// translation-time scalar, so the result cannot launder a general deferred
+/// initialization value into a runtime schedule.
+fn affine_start_instant_coefficients(
+    expression: &Expression,
+    constants: &EvalContext,
+) -> Option<(f64, f64)> {
+    if let Expression::VarRef {
+        name, subscripts, ..
+    } = expression
+        && subscripts.is_empty()
+        && constants.deferred_parameter(name.as_str())
+            == Some(rumoca_eval_flat::constant::DeferredParameterSource::StartInstant)
+    {
+        return Some((1.0, 0.0));
+    }
+    if let Ok(value) = eval_expr(expression, constants)
+        && let Some(value) = value.to_real()
+        && value.is_finite()
+    {
+        return Some((0.0, value));
+    }
+    match expression {
+        Expression::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } => affine_start_instant_coefficients(rhs, constants)
+            .map(|(slope, offset)| (-slope, -offset)),
+        Expression::Unary {
+            op: OpUnary::Plus,
+            rhs,
+            ..
+        } => affine_start_instant_coefficients(rhs, constants),
+        Expression::Binary {
+            op: op @ (OpBinary::Add | OpBinary::Sub),
+            lhs,
+            rhs,
+            ..
+        } => {
+            let (lhs_slope, lhs_offset) = affine_start_instant_coefficients(lhs, constants)?;
+            let (rhs_slope, rhs_offset) = affine_start_instant_coefficients(rhs, constants)?;
+            let sign = if matches!(op, OpBinary::Add) {
+                1.0
+            } else {
+                -1.0
+            };
+            Some((lhs_slope + sign * rhs_slope, lhs_offset + sign * rhs_offset))
+        }
+        Expression::Binary {
+            op: OpBinary::Mul,
+            lhs,
+            rhs,
+            ..
+        } => {
+            let (lhs_slope, lhs_offset) = affine_start_instant_coefficients(lhs, constants)?;
+            let (rhs_slope, rhs_offset) = affine_start_instant_coefficients(rhs, constants)?;
+            if lhs_slope != 0.0 && rhs_slope != 0.0 {
+                return None;
+            }
+            Some((
+                lhs_slope * rhs_offset + rhs_slope * lhs_offset,
+                lhs_offset * rhs_offset,
+            ))
+        }
+        Expression::Binary {
+            op: OpBinary::Div,
+            lhs,
+            rhs,
+            ..
+        } => {
+            let (lhs_slope, lhs_offset) = affine_start_instant_coefficients(lhs, constants)?;
+            let (rhs_slope, rhs_offset) = affine_start_instant_coefficients(rhs, constants)?;
+            if rhs_slope != 0.0 || rhs_offset == 0.0 {
+                return None;
+            }
+            Some((lhs_slope / rhs_offset, lhs_offset / rhs_offset))
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn evaluate_clock_seconds(

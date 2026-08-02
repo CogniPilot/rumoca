@@ -1003,6 +1003,69 @@ fn test_compile_model_strict_reachable_uncached_with_recovery_ignores_cache() {
 }
 
 #[test]
+fn strict_target_source_map_tracks_the_current_planning_revision() {
+    const FIRST: &str = r#"
+        model Target
+          Real x(start=0);
+        equation
+          der(x) = 1;
+        end Target;
+    "#;
+    const SECOND: &str = r#"
+        model Target
+          Real x(start=0);
+        equation
+          der(x) = 2;
+        end Target;
+    "#;
+    let mut session = Session::default();
+    session
+        .add_document("target.mo", FIRST)
+        .expect("first target revision should parse");
+    session
+        .add_document(
+            "unrelated.mo",
+            "model Unrelated\n  MissingType value;\nend Unrelated;\n",
+        )
+        .expect("unrelated source should parse before resolve rejects its type");
+
+    let first = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("Target")
+        .expect("strict target recovery should ignore the unrelated resolve error");
+    let source = rumoca_core::SourceId::from_source_name("target.mo");
+    assert_eq!(
+        first
+            .source_map
+            .as_ref()
+            .and_then(|map| map.get_source(source))
+            .map(|(_, text)| text),
+        Some(FIRST)
+    );
+
+    assert!(
+        session.update_document("target.mo", SECOND).is_none(),
+        "second target revision should parse"
+    );
+    let second = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("Target")
+        .expect("updated strict target should compile");
+    assert_eq!(
+        second
+            .source_map
+            .as_ref()
+            .and_then(|map| map.get_source(source))
+            .map(|(_, text)| text),
+        Some(SECOND),
+        "the compile result must retain the current planning revision"
+    );
+    assert_eq!(
+        second.dae.source_map().get_source(source),
+        Some(("target.mo", SECOND)),
+        "the checked DAE must own the same current-revision source snapshot"
+    );
+}
+
+#[test]
 fn query_methods_fallback_to_partial_parse_and_invalidate_on_update() {
     let mut session = Session::default();
     session

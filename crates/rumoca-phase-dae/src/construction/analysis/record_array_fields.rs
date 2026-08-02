@@ -3,12 +3,13 @@ mod tests;
 
 use super::*;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(in crate::construction) enum RecordArrayFieldPlan {
     MaterializedCoordinate {
         coordinate: rumoca_core::InstanceId,
         target: rumoca_core::DefId,
         value_type: rumoca_core::TypeId,
+        shape: Box<[i64]>,
     },
     Projection {
         coordinates: Box<[rumoca_core::InstanceId]>,
@@ -19,8 +20,8 @@ pub(in crate::construction) enum RecordArrayFieldPlan {
     },
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum RecordArrayFieldPlanKey {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(in crate::construction) enum RecordArrayFieldPlanKey {
     Materialized {
         occurrence: Span,
         scope: rumoca_core::InstanceId,
@@ -42,8 +43,26 @@ enum RecordArrayFieldPlanKey {
     },
 }
 
+impl RecordArrayFieldPlanKey {
+    fn occurrence(&self) -> Span {
+        match self {
+            Self::Materialized { occurrence, .. } | Self::Projection { occurrence, .. } => {
+                *occurrence
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
 pub(in crate::construction) struct RecordArrayFieldPlans {
     by_occurrence: HashMap<RecordArrayFieldPlanKey, RecordArrayFieldPlan>,
+    /// Declared trailing shape of every structurally accessible record field.
+    ///
+    /// `DefId` is the field identity; the dimensions come from Flat's retained
+    /// record layout.  This lets function-shape proof handle ordinary field
+    /// access (for example `(a - b).re`) without recovering a declaration from
+    /// a rendered field name.
+    field_shapes: HashMap<rumoca_core::DefId, Box<[i64]>>,
 }
 
 /// Flat coordinates indexed by the declaration they materialize.
@@ -100,31 +119,55 @@ impl RecordArrayFieldPlans {
     ) -> Option<&RecordArrayFieldPlan> {
         self.by_occurrence.get(&field_access_key(expression)?)
     }
+
+    pub(in crate::construction) fn field_shape(&self, field: rumoca_core::DefId) -> Option<&[i64]> {
+        self.field_shapes.get(&field).map(Box::as_ref)
+    }
 }
 
 pub(super) fn analyze_record_array_fields<'expression>(
     flat: &flat::Model,
     expressions: impl IntoIterator<Item = &'expression Expression>,
-    roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<RecordArrayFieldPlans, ToDaeError> {
     let candidates = CoordinateCandidates::new(flat);
+    let field_shapes = declared_record_field_shapes(flat)?;
     let mut plans = HashMap::new();
     for expression in expressions {
-        collect_plans(flat, &candidates, roles, expression, &mut plans)?;
+        collect_plans(flat, &candidates, expression, &mut plans)?;
     }
     Ok(RecordArrayFieldPlans {
         by_occurrence: plans,
+        field_shapes,
     })
+}
+
+fn declared_record_field_shapes(
+    flat: &flat::Model,
+) -> Result<HashMap<rumoca_core::DefId, Box<[i64]>>, ToDaeError> {
+    let mut shapes = HashMap::new();
+    for field in flat.record_types.values().flat_map(|record| &record.fields) {
+        let shape = field.dims.clone().into_boxed_slice();
+        if let Some(previous) = shapes.insert(field.def_id, shape.clone())
+            && previous != shape
+        {
+            return Err(ToDaeError::MissingSemanticIdentity {
+                identity: format!(
+                    "record field declaration {} has one exact retained shape",
+                    field.def_id.index()
+                ),
+            });
+        }
+    }
+    Ok(shapes)
 }
 
 fn collect_plans(
     flat: &flat::Model,
     candidates: &CoordinateCandidates<'_>,
-    roles: &HashMap<VarName, PlannedRole>,
     expression: &Expression,
     plans: &mut HashMap<RecordArrayFieldPlanKey, RecordArrayFieldPlan>,
 ) -> Result<(), ToDaeError> {
-    if let Some((key, plan)) = plan_field_access(flat, candidates, roles, expression)? {
+    if let Some((key, plan)) = plan_field_access(flat, candidates, expression)? {
         if let Some(previous) = plans.insert(key, plan.clone())
             && previous != plan
         {
@@ -137,7 +180,7 @@ fn collect_plans(
         return Ok(());
     }
     for child in expression_children(expression) {
-        collect_plans(flat, candidates, roles, child, plans)?;
+        collect_plans(flat, candidates, child, plans)?;
     }
     Ok(())
 }
@@ -145,23 +188,21 @@ fn collect_plans(
 fn plan_field_access(
     flat: &flat::Model,
     candidates: &CoordinateCandidates<'_>,
-    roles: &HashMap<VarName, PlannedRole>,
     expression: &Expression,
 ) -> Result<Option<(RecordArrayFieldPlanKey, RecordArrayFieldPlan)>, ToDaeError> {
     let Expression::FieldAccess { span, .. } = expression else {
         return Ok(None);
     };
     require_span(*span, "record-array member slice")?;
-    if let Some(plan) = plan_materialized_coordinate(flat, candidates, roles, expression, *span)? {
+    if let Some(plan) = plan_materialized_coordinate(flat, candidates, expression, *span)? {
         return Ok(Some(plan));
     }
-    plan_projection(flat, candidates, roles, expression, *span)
+    plan_projection(flat, candidates, expression, *span)
 }
 
 fn plan_materialized_coordinate(
     flat: &flat::Model,
     candidates: &CoordinateCandidates<'_>,
-    roles: &HashMap<VarName, PlannedRole>,
     expression: &Expression,
     span: Span,
 ) -> Result<Option<(RecordArrayFieldPlanKey, RecordArrayFieldPlan)>, ToDaeError> {
@@ -194,7 +235,6 @@ fn plan_materialized_coordinate(
     else {
         return Ok(None);
     };
-    require_runtime_coordinate(variable, roles, span)?;
     Ok(Some((
         RecordArrayFieldPlanKey::Materialized {
             occurrence: span,
@@ -209,6 +249,7 @@ fn plan_materialized_coordinate(
             coordinate: variable.instance_id,
             target,
             value_type: variable.type_id,
+            shape: variable.dims.clone().into_boxed_slice(),
         },
     )))
 }
@@ -223,7 +264,6 @@ struct ProjectedElement {
 fn plan_projection(
     flat: &flat::Model,
     candidates: &CoordinateCandidates<'_>,
-    roles: &HashMap<VarName, PlannedRole>,
     expression: &Expression,
     span: Span,
 ) -> Result<Option<(RecordArrayFieldPlanKey, RecordArrayFieldPlan)>, ToDaeError> {
@@ -261,16 +301,12 @@ fn plan_projection(
                 rank,
                 span,
             ) {
-                Ok(Some(indices)) => {
-                    Some(require_runtime_coordinate(variable, roles, span).map(|()| {
-                        ProjectedElement {
-                            indices,
-                            coordinate: variable.instance_id,
-                            value_type: variable.type_id,
-                            shape: variable.dims.clone(),
-                        }
-                    }))
-                }
+                Ok(Some(indices)) => Some(Ok(ProjectedElement {
+                    indices,
+                    coordinate: variable.instance_id,
+                    value_type: variable.type_id,
+                    shape: variable.dims.clone(),
+                })),
                 Ok(None) => None,
                 Err(error) => Some(Err(error)),
             }
@@ -308,6 +344,51 @@ fn plan_projection(
             subscripts: pattern.subscripts.to_vec().into_boxed_slice(),
         },
     )))
+}
+
+/// Complete the projection certificate by proving that every selected Flat
+/// instance becomes a runtime DAE coordinate.
+///
+/// Shape specialization runs before model-role planning, but it may consume
+/// only the declaration/instance/type/range facts above. Construction receives
+/// the plan only after this second, role-owned transition succeeds, so no
+/// aggregate or otherwise non-runtime Flat value can enter DAE lowering.
+pub(super) fn validate_record_array_field_runtime_coordinates(
+    flat: &flat::Model,
+    plans: &RecordArrayFieldPlans,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<(), ToDaeError> {
+    let variables = flat
+        .variables
+        .values()
+        .map(|variable| (variable.instance_id, variable))
+        .collect::<HashMap<_, _>>();
+    let mut ordered = plans.by_occurrence.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(key, _)| {
+        let span = key.occurrence();
+        (span.source.0, span.start.0, span.end.0)
+    });
+    for (key, plan) in ordered {
+        let occurrence = key.occurrence();
+        let coordinates: &[rumoca_core::InstanceId] = match plan {
+            RecordArrayFieldPlan::MaterializedCoordinate { coordinate, .. } => {
+                std::slice::from_ref(coordinate)
+            }
+            RecordArrayFieldPlan::Projection { coordinates, .. } => coordinates,
+        };
+        for coordinate in coordinates {
+            let variable = variables.get(coordinate).copied().ok_or_else(|| {
+                ToDaeError::MissingSemanticIdentity {
+                    identity: format!(
+                        "record-array projection coordinate instance {}",
+                        coordinate.index()
+                    ),
+                }
+            })?;
+            require_runtime_coordinate(variable, roles, occurrence)?;
+        }
+    }
+    Ok(())
 }
 
 struct ProjectionPattern<'expression> {

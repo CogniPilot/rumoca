@@ -6,10 +6,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -19,7 +16,9 @@ use crate::{
 };
 
 mod fuzz;
+mod kani;
 mod msl_cargo_setup_timing;
+mod msl_local_run;
 mod msl_quality_baseline;
 mod msl_results_cleanup;
 mod parity_budgets;
@@ -28,13 +27,18 @@ mod parity_comparator;
 use fuzz::VerifyFuzzArgs;
 use msl_cargo_setup_timing::{
     MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
-    write_msl_cargo_setup_timing_report,
+    run_msl_cargo_setup_step_with, write_msl_cargo_setup_timing_report,
+};
+use msl_local_run::{
+    MSL_BUILD_PROFILE, MslTestBinaries, msl_test_binary_command, optimized_msl_artifact_build,
+    run_optimized_msl_artifact_build,
 };
 use msl_quality_baseline::resolve_msl_quality_baseline;
 use msl_results_cleanup::clean_msl_results_dir;
 use parity_comparator::check_comparator_evidence;
 
 const MSL_VERSION: &str = "4.1.0";
+const MSL_FULL_TEST_FEATURE: &str = "msl-full-test";
 const MSL_RELEASE_ZIP_URL: &str = "https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip";
 const MSL_MODELICA_DIR_NAME: &str = "Modelica 4.1.0";
 const MSL_MODELICA_SERVICES_DIR_NAME: &str = "ModelicaServices 4.1.0";
@@ -317,6 +321,36 @@ fn parity_config_path(root: &Path) -> PathBuf {
     root.join("target/msl/parity-config.json")
 }
 
+/// Exclusive ownership of the fixed xtask->libtest parity-config channel.
+///
+/// Libtest cannot receive these knobs through argv, so SPEC_0018 permits one
+/// inspectable fixed-path file. The lock must outlive both writing and every
+/// consumer: otherwise a concurrent focused run can replace the selected model
+/// set while the first harness is starting and silently certify the wrong run.
+struct ParityConfigLock {
+    _file: fs::File,
+}
+
+impl ParityConfigLock {
+    fn acquire(root: &Path) -> Result<Self> {
+        let path = root.join("target/msl/parity-config.lock");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("failed to lock {}", path.display()))?;
+        Ok(Self { _file: file })
+    }
+}
+
 /// Write the parity config to the fixed path before the libtest gate runs. The
 /// file is rewritten every invocation so a previous run's config never leaks.
 fn write_parity_config(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
@@ -340,6 +374,8 @@ pub(crate) enum VerifyCommand {
     Architecture,
     /// Rust formatting, traversal policy, and clippy
     Lint,
+    /// Required bounded proofs under the repository-pinned Kani toolchain
+    Kani,
     /// Workspace tests that mirror the main test matrix
     Workspace(test_cmd::WorkspaceArgs),
     /// Environment-dependent example template runtime checks
@@ -506,6 +542,7 @@ impl VerifySuite {
 pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
     match args.command {
         VerifyCommand::Lint => run_lint_job(root),
+        VerifyCommand::Kani => kani::run(root),
         VerifyCommand::Workspace(args) => args.run(root),
         VerifyCommand::TemplateRuntimes(args) => run_template_runtime_checks(root, args),
         VerifyCommand::Examples => run_examples_smoke(root),
@@ -1126,6 +1163,10 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     let ci_env = MslCiEnvironment::from_args(root, args);
     ci_env.print_notice();
     ci_env.clean_stale_results()?;
+    // Held through the libtest run and comparator-evidence check: the config is
+    // an argv-equivalent channel, so changing it while any consumer is alive
+    // would change the meaning of that invocation.
+    let _parity_config_lock = ParityConfigLock::acquire(root)?;
     write_parity_config(root, args)?;
     let _cleanup = MslResultsCleanupGuard::new(ci_env.results_dir.clone(), ci_env.clean_results);
     let _monitor = MslResourceMonitor::start(ci_env.clone());
@@ -1180,49 +1221,19 @@ fn run_prebuilt_msl_test(
     test_target: &str,
     cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
 ) -> Result<()> {
-    ensure!(
-        binary.is_file(),
-        "prebuilt msl_tests binary not found at {}",
-        binary.display()
-    );
-    let target_dir = cargo_target_dir(root);
-    let mut run = Command::new(binary);
-    run.arg(test_target)
-        .arg("--exact")
-        .arg("--nocapture")
-        .env("RUST_BACKTRACE", "full")
-        .current_dir(root);
-    if let Some(worker) = model_worker {
-        ensure!(
-            worker.is_file(),
-            "prebuilt rumoca-worker not found at {}",
-            worker.display()
-        );
-        run.env("CARGO_BIN_EXE_rumoca-worker", worker);
-    }
-    if let Some(worker) = sim_worker {
-        ensure!(
-            worker.is_file(),
-            "prebuilt rumoca-sim-worker not found at {}",
-            worker.display()
-        );
-        run.env("CARGO_BIN_EXE_rumoca-sim-worker", worker);
-    }
-    if let Some(tools) = prebuilt_sibling_binary(binary, "rumoca-msl-tools") {
-        run.env("CARGO_BIN_EXE_rumoca-msl-tools", &tools);
-        run.env("CARGO_BIN_EXE_rumoca_msl_tools", tools);
-    }
-    run_msl_cargo_setup_step(
+    let tools = prebuilt_sibling_binary(binary, "rumoca-msl-tools");
+    let binaries = MslTestBinaries {
+        test_binary: binary,
+        model_worker,
+        sim_worker,
+        msl_tools: tools.as_deref(),
+    };
+    run_msl_test_binary(
+        root,
+        binaries,
+        test_target,
+        MslTestRunSource::Prebuilt,
         cargo_setup_steps,
-        MslCargoSetupStepMetadata::new(
-            "run prebuilt MSL test",
-            "run",
-            "rumoca-test-msl",
-            "prebuilt",
-            vec!["msl-full-test".to_string()],
-            &target_dir,
-        ),
-        run,
     )
 }
 
@@ -1241,71 +1252,63 @@ fn run_msl_quality_gate_cargo_commands(
 
     // The merge-and-gate fan-in entry runs NO simulations: it loads the per-shard
     // `msl_results.json`, concatenates them, and runs the quality ratchet on the
-    // merged aggregate. So it needs neither the release `rumoca-sim-worker` /
-    // `rumoca-msl-tools` binaries (only the sharded sim run spawns those) nor a
-    // release + LTO build of the harness. Building just the merge test in debug
-    // avoids a ~20min release recompile of the whole workspace in the fan-in job,
+    // merged aggregate. So it needs neither the optimized `rumoca-sim-worker` /
+    // `rumoca-msl-tools` binaries (only the sharded sim run spawns those) nor an
+    // optimized build of the harness. Building just the merge test in debug
+    // avoids rebuilding the whole workspace in the fan-in job,
     // which otherwise runs sequentially after the shards and inflates the gate.
-    if !merge_only {
-        let mut build_sim_worker = Command::new("cargo");
-        build_sim_worker
-            .arg("build")
-            .arg("--verbose")
-            .arg("--release")
-            .arg("--package")
-            .arg("rumoca-test-msl")
-            .arg("--bin")
-            .arg("rumoca-sim-worker")
-            .current_dir(root);
-        let result = run_msl_cargo_setup_step(
+    if local_msl_run_plan(merge_only) == LocalMslRunPlan::ReleaseArtifacts {
+        // Include the integration test and every spawned runtime in one Cargo
+        // graph. The test's dev-dependencies participate in feature unification;
+        // separate binary builds therefore cannot be reused reliably even when
+        // their top-level feature flag matches this test.
+        let build = optimized_msl_artifact_build(root);
+        let artifacts = run_msl_cargo_setup_step_with(
             cargo_setup_steps,
             MslCargoSetupStepMetadata::new(
-                "build rumoca-sim-worker",
+                "build optimized MSL artifacts",
                 "build",
-                "rumoca-test-msl",
-                "release",
-                Vec::new(),
+                "rumoca-worker + rumoca-test-msl",
+                MSL_BUILD_PROFILE,
+                vec![format!("rumoca-test-msl/{MSL_FULL_TEST_FEATURE}")],
                 &target_dir,
             ),
-            build_sim_worker,
-        );
-        result?;
-
-        let mut build_msl_tools = Command::new("cargo");
-        build_msl_tools
-            .arg("build")
-            .arg("--verbose")
-            .arg("--release")
-            .arg("--package")
-            .arg("rumoca-test-msl")
-            .arg("--bin")
-            .arg("rumoca-msl-tools")
-            .current_dir(root);
-        let result = run_msl_cargo_setup_step(
+            build,
+            run_optimized_msl_artifact_build,
+        )?;
+        return run_msl_test_binary(
+            root,
+            artifacts.binaries(),
+            test_target,
+            MslTestRunSource::Optimized,
             cargo_setup_steps,
-            MslCargoSetupStepMetadata::new(
-                "build rumoca-msl-tools",
-                "build",
-                "rumoca-test-msl",
-                "release",
-                Vec::new(),
-                &target_dir,
-            ),
-            build_msl_tools,
         );
-        result?;
     }
 
-    let profile = if merge_only { "debug" } else { "release" };
-    let mut gate = Command::new("cargo");
-    gate.arg("test").arg("--verbose");
-    if !merge_only {
-        gate.arg("--release");
-    }
-    gate.arg("--package")
+    let gate = debug_msl_merge_test_command(root, test_target);
+    run_msl_cargo_setup_step(
+        cargo_setup_steps,
+        MslCargoSetupStepMetadata::new(
+            "run debug MSL merge test",
+            "test",
+            "rumoca-test-msl",
+            "debug",
+            vec![MSL_FULL_TEST_FEATURE.to_string()],
+            &target_dir,
+        ),
+        gate,
+    )
+}
+
+fn debug_msl_merge_test_command(root: &Path, test_target: &str) -> Command {
+    let mut command = Command::new("cargo");
+    command
+        .arg("test")
+        .arg("--verbose")
+        .arg("--package")
         .arg("rumoca-test-msl")
         .arg("--features")
-        .arg("msl-full-test")
+        .arg(MSL_FULL_TEST_FEATURE)
         .arg("--test")
         .arg("msl_tests")
         .arg(test_target)
@@ -1313,21 +1316,65 @@ fn run_msl_quality_gate_cargo_commands(
         .arg("--nocapture")
         .env("RUST_BACKTRACE", "full")
         .current_dir(root);
+    command
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalMslRunPlan {
+    MergeOnly,
+    ReleaseArtifacts,
+}
+
+fn local_msl_run_plan(merge_only: bool) -> LocalMslRunPlan {
+    if merge_only {
+        LocalMslRunPlan::MergeOnly
+    } else {
+        LocalMslRunPlan::ReleaseArtifacts
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MslTestRunSource {
+    Prebuilt,
+    Optimized,
+}
+
+impl MslTestRunSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Prebuilt => "run prebuilt MSL test",
+            Self::Optimized => "run optimized MSL test",
+        }
+    }
+
+    fn profile(self) -> &'static str {
+        match self {
+            Self::Prebuilt => "prebuilt",
+            Self::Optimized => MSL_BUILD_PROFILE,
+        }
+    }
+}
+
+fn run_msl_test_binary(
+    root: &Path,
+    binaries: MslTestBinaries<'_>,
+    test_target: &str,
+    source: MslTestRunSource,
+    cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
+) -> Result<()> {
+    let target_dir = cargo_target_dir(root);
+    let run = msl_test_binary_command(root, binaries, test_target)?;
     run_msl_cargo_setup_step(
         cargo_setup_steps,
         MslCargoSetupStepMetadata::new(
-            if merge_only {
-                "run debug MSL merge test"
-            } else {
-                "run release MSL test"
-            },
-            "test",
+            source.label(),
+            "run",
             "rumoca-test-msl",
-            profile,
-            vec!["msl-full-test".to_string()],
+            source.profile(),
+            vec![MSL_FULL_TEST_FEATURE.to_string()],
             &target_dir,
         ),
-        gate,
+        run,
     )
 }
 
@@ -1423,7 +1470,7 @@ impl Drop for MslResultsCleanupGuard {
 
 struct MslResourceMonitor {
     config: MslCiEnvironment,
-    done: Arc<AtomicBool>,
+    stop: Option<mpsc::Sender<()>>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -1433,20 +1480,19 @@ impl MslResourceMonitor {
         let Some(interval) = config.monitor_interval else {
             return Self {
                 config,
-                done: Arc::new(AtomicBool::new(true)),
+                stop: None,
                 worker: None,
             };
         };
 
-        let done = Arc::new(AtomicBool::new(false));
-        let done_flag = Arc::clone(&done);
+        let (stop, stop_receiver) = mpsc::channel();
         let config_for_worker = config.clone();
         let worker = thread::spawn(move || {
-            run_resource_monitor_loop(done_flag, interval, config_for_worker);
+            run_resource_monitor_loop(stop_receiver, interval, config_for_worker);
         });
         Self {
             config,
-            done,
+            stop: Some(stop),
             worker: Some(worker),
         }
     }
@@ -1454,7 +1500,7 @@ impl MslResourceMonitor {
 
 impl Drop for MslResourceMonitor {
     fn drop(&mut self) {
-        self.done.store(true, Ordering::Relaxed);
+        self.stop.take();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -1463,17 +1509,13 @@ impl Drop for MslResourceMonitor {
 }
 
 fn run_resource_monitor_loop(
-    done_flag: Arc<AtomicBool>,
+    stop: mpsc::Receiver<()>,
     interval: Duration,
     config: MslCiEnvironment,
 ) {
     let mut last_cpu_sample = Instant::now();
     let mut last_print: Option<Instant> = None;
-    while !done_flag.load(Ordering::Relaxed) {
-        thread::sleep(interval);
-        if done_flag.load(Ordering::Relaxed) {
-            break;
-        }
+    while let Err(RecvTimeoutError::Timeout) = stop.recv_timeout(interval) {
         // Throttle the (verbose) periodic snapshot to the floor, independent of
         // the wake interval, so a small `--monitor-interval-secs` does not spam.
         if last_print.is_some_and(|at| at.elapsed() < MSL_RESOURCE_PERIODIC_MIN_INTERVAL) {
@@ -1606,14 +1648,18 @@ mod template_runtime_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        MslCargoSetupTimingStep, MslCiEnvironment, MslHotspotModelResult, MslHotspotSummary,
-        VERIFY_SUITE_STEPS, VerifyMslParityArgs, VerifySuite, VerifyTimingReport, VerifyTimingStep,
-        hottest_compile_model, hottest_sim_model, msl_cache_layout_valid, prebuilt_sibling_binary,
-        render_verify_timing_markdown, should_log_process_tables,
-        write_msl_cargo_setup_timing_report, write_verify_timing_report,
+        LocalMslRunPlan, MSL_FULL_TEST_FEATURE, MslCargoSetupTimingStep, MslCiEnvironment,
+        MslHotspotModelResult, MslHotspotSummary, ParityConfigLock, VERIFY_SUITE_STEPS,
+        VerifyMslParityArgs, VerifySuite, VerifyTimingReport, VerifyTimingStep,
+        debug_msl_merge_test_command, hottest_compile_model, hottest_sim_model, local_msl_run_plan,
+        msl_cache_layout_valid, prebuilt_sibling_binary, render_verify_timing_markdown,
+        run_resource_monitor_loop, should_log_process_tables, write_msl_cargo_setup_timing_report,
+        write_verify_timing_report,
     };
     use std::path::PathBuf;
-    use std::time::Duration;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     fn step_argvs(suite: VerifySuite) -> Vec<Vec<&'static str>> {
         VERIFY_SUITE_STEPS
@@ -1621,6 +1667,33 @@ mod tests {
             .filter(|step| suite.includes(step))
             .map(|step| step.args.to_vec())
             .collect()
+    }
+
+    #[test]
+    fn parity_config_lock_serializes_fixed_path_harness_configuration() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = ParityConfigLock::acquire(temp.path()).expect("first lock");
+        let root = temp.path().to_path_buf();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            started_tx.send(()).expect("announce lock attempt");
+            let second = ParityConfigLock::acquire(&root).expect("second lock");
+            acquired_tx.send(()).expect("announce acquisition");
+            drop(second);
+        });
+
+        started_rx.recv().expect("waiter started");
+        assert_eq!(
+            acquired_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "a concurrent parity invocation must wait while the config is live"
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter acquires after the first invocation finishes");
+        waiter.join().expect("waiter exits");
     }
 
     #[test]
@@ -1762,11 +1835,11 @@ mod tests {
         let results_dir = root.path().join("target/msl/results");
         let steps = vec![
             MslCargoSetupTimingStep {
-                label: "build rumoca-sim-worker".to_string(),
+                label: "build release MSL artifacts".to_string(),
                 cargo_action: "build".to_string(),
-                package: "rumoca-test-msl".to_string(),
+                package: "rumoca-worker + rumoca-test-msl".to_string(),
                 profile: "release".to_string(),
-                features: Vec::new(),
+                features: vec![format!("rumoca-test-msl/{MSL_FULL_TEST_FEATURE}")],
                 target_dir: root.path().join("target").display().to_string(),
                 command: "\"cargo\" \"build\"".to_string(),
                 status: "pass".to_string(),
@@ -1774,12 +1847,12 @@ mod tests {
             },
             MslCargoSetupTimingStep {
                 label: "run release MSL test".to_string(),
-                cargo_action: "test".to_string(),
+                cargo_action: "run".to_string(),
                 package: "rumoca-test-msl".to_string(),
                 profile: "release".to_string(),
                 features: vec!["msl-full-test".to_string()],
                 target_dir: root.path().join("target").display().to_string(),
-                command: "\"cargo\" \"test\"".to_string(),
+                command: "\"target/release/deps/msl_tests-abc\"".to_string(),
                 status: "fail".to_string(),
                 elapsed_seconds: 1.3,
             },
@@ -1794,8 +1867,9 @@ mod tests {
         assert!(markdown_path.is_file());
         let json = std::fs::read_to_string(json_path).expect("read setup timing json");
         assert!(json.contains(r#""success": false"#));
-        assert!(json.contains(r#""label": "build rumoca-sim-worker""#));
-        assert!(json.contains(r#""package": "rumoca-test-msl""#));
+        assert!(json.contains(r#""label": "build release MSL artifacts""#));
+        assert!(json.contains(r#""package": "rumoca-worker + rumoca-test-msl""#));
+        assert!(json.contains("rumoca-test-msl/msl-full-test"));
         assert!(json.contains(r#""features": ["#));
         let markdown = std::fs::read_to_string(markdown_path).expect("read setup timing markdown");
         assert!(markdown.contains("# MSL Cargo Setup Timing"));
@@ -1817,6 +1891,35 @@ mod tests {
             prebuilt_sibling_binary(&msl_tests, "rumoca-msl-tools"),
             Some(tools)
         );
+    }
+
+    #[test]
+    fn local_msl_run_plan_keeps_merge_and_release_paths_distinct() {
+        assert_eq!(local_msl_run_plan(true), LocalMslRunPlan::MergeOnly);
+        assert_eq!(local_msl_run_plan(false), LocalMslRunPlan::ReleaseArtifacts);
+
+        let root = PathBuf::from("/workspace");
+        let command = debug_msl_merge_test_command(&root, "suite::test_merge");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "test",
+                "--verbose",
+                "--package",
+                "rumoca-test-msl",
+                "--features",
+                "msl-full-test",
+                "--test",
+                "msl_tests",
+                "suite::test_merge",
+                "--",
+                "--nocapture",
+            ]
+        );
+        assert_eq!(command.get_current_dir(), Some(root.as_path()));
     }
 
     #[test]
@@ -1968,5 +2071,30 @@ mod tests {
         };
 
         assert!(should_log_process_tables(&env));
+    }
+
+    #[test]
+    fn msl_resource_monitor_shutdown_interrupts_the_sampling_wait() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env = MslCiEnvironment {
+            root: PathBuf::from(temp.path()),
+            results_dir: temp.path().join("results"),
+            monitor_interval: Some(Duration::from_secs(30)),
+            clean_results: false,
+            github_actions: true,
+        };
+        let (stop, stop_receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            run_resource_monitor_loop(stop_receiver, Duration::from_secs(30), env);
+        });
+        let started = Instant::now();
+
+        drop(stop);
+        worker.join().expect("resource monitor should stop cleanly");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "monitor shutdown must not wait for the next sampling interval"
+        );
     }
 }

@@ -334,3 +334,71 @@ end P;
         );
     }
 }
+
+#[test]
+fn strict_model_closure_retains_component_redeclare_function_value() {
+    // MLS §7.2: the function substituted by a component modifier is looked
+    // up where the modifier occurs. Its exact source-ordered identity must keep
+    // the function definition in the pruned strict-target Resolve proof.
+    let mut session = Session::default();
+    session
+        .add_document(
+            "redeclared_function.mo",
+            r#"
+package Shapes
+  partial function Characteristic
+    input Real length = 1;
+    output Real x;
+  end Characteristic;
+
+  function defaultCharacteristic
+    extends Characteristic;
+  algorithm
+    x := 0;
+  end defaultCharacteristic;
+
+  function rectangle
+    extends Characteristic;
+  algorithm
+    x := length;
+  end rectangle;
+
+  partial model PartialSurface
+    replaceable function surfaceCharacteristic = defaultCharacteristic
+      constrainedby Characteristic;
+  end PartialSurface;
+
+  model Surface
+    extends PartialSurface;
+  end Surface;
+
+  model Probe
+    Surface surface(
+      redeclare function surfaceCharacteristic = rectangle(length = 2));
+  end Probe;
+end Shapes;
+"#,
+        )
+        .expect("redeclared function fixture should parse");
+
+    let closure = strict_model_closure(&mut session, "Shapes.Probe");
+    assert!(
+        closure
+            .reachable_classes
+            .iter()
+            .any(|name| name == "Shapes.rectangle"),
+        "strict closure must retain the exact redeclared function: {:?}",
+        closure.reachable_classes
+    );
+    assert!(
+        closure
+            .reachable_classes
+            .iter()
+            .any(|name| name == "Shapes.PartialSurface.surfaceCharacteristic"),
+        "strict closure must retain the inherited redeclare slot: {:?}",
+        closure.reachable_classes
+    );
+    session
+        .resolve_strict_target("Shapes.Probe")
+        .unwrap_or_else(|_| panic!("pruned strict Resolve must retain the redeclared function"));
+}

@@ -204,6 +204,99 @@ fn alias_chain_model() -> dae::Dae {
     )
 }
 
+/// `phi1 = angle1; phi2 = angle2; angle1 = 2*angle2;`
+/// `der(phi1) = w1; der(phi2) = w2; der(w1) = acc1;`
+/// `der(w2) = acc2; acc1 = 1`
+///
+/// The position constraint is written entirely in connector algebraics. The
+/// two adjacent component equations prove which state each endpoint names,
+/// while the acceleration equations make the second derivative exact.
+const HIDDEN_HOLONOMIC_TEXT: &str = "Real phi1; Real w1; Real phi2; Real w2; Real angle1; Real angle2; Real acc1; Real acc2; equation phi1 = angle1; phi2 = angle2; angle1 = 2*angle2; der(phi1) = w1; der(phi2) = w2; der(w1) = acc1; der(w2) = acc2; acc1 = 1;";
+const HIDDEN_HOLONOMIC_NAMES: &[&str] = &[
+    "sphi1", "sw1", "sphi2", "sw2", "aangle1", "aangle2", "aacc1", "aacc2",
+];
+const HIDDEN_HOLONOMIC_EQUATIONS: &[&str] = &[
+    "phi1 = angle1",
+    "phi2 = angle2",
+    "angle1 = 2*angle2",
+    "der(phi1) = w1",
+    "der(phi2) = w2",
+    "der(w1) = acc1",
+    "der(w2) = acc2",
+    "acc1 = 1",
+];
+
+fn hidden_holonomic_model() -> dae::Dae {
+    connector_fixture(
+        HIDDEN_HOLONOMIC_TEXT,
+        HIDDEN_HOLONOMIC_NAMES,
+        HIDDEN_HOLONOMIC_EQUATIONS,
+        |model, declared, spans| {
+            let [phi1, w1, phi2, w2, angle1, angle2, acc1, acc2] = *declared else {
+                unreachable!("fixture declares eight variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let two = expressions
+                    .at(spans[2])
+                    .literal(dae::DaeLiteral::Real(2.0))?;
+                let one = expressions
+                    .at(spans[7])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                let angle2_value = coordinate(expressions, spans[2], angle2.value())?;
+                let twice_angle2 = expressions.at(spans[2]).binary(
+                    dae::BinaryOperator::Multiply,
+                    two,
+                    angle2_value,
+                )?;
+                let terms = [
+                    (
+                        spans[0],
+                        coordinate(expressions, spans[0], phi1.value())?,
+                        coordinate(expressions, spans[0], angle1.value())?,
+                    ),
+                    (
+                        spans[1],
+                        coordinate(expressions, spans[1], phi2.value())?,
+                        coordinate(expressions, spans[1], angle2.value())?,
+                    ),
+                    (
+                        spans[2],
+                        coordinate(expressions, spans[2], angle1.value())?,
+                        twice_angle2,
+                    ),
+                    (
+                        spans[3],
+                        coordinate(expressions, spans[3], phi1.derivative())?,
+                        coordinate(expressions, spans[3], w1.value())?,
+                    ),
+                    (
+                        spans[4],
+                        coordinate(expressions, spans[4], phi2.derivative())?,
+                        coordinate(expressions, spans[4], w2.value())?,
+                    ),
+                    (
+                        spans[5],
+                        coordinate(expressions, spans[5], w1.derivative())?,
+                        coordinate(expressions, spans[5], acc1.value())?,
+                    ),
+                    (
+                        spans[6],
+                        coordinate(expressions, spans[6], w2.derivative())?,
+                        coordinate(expressions, spans[6], acc2.value())?,
+                    ),
+                    (
+                        spans[7],
+                        coordinate(expressions, spans[7], acc1.value())?,
+                        one,
+                    ),
+                ];
+                residuals(expressions, terms)
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
 /// `pi + ni = 0; ni + q = 0; q = I; psi = pi; der(psi) = v; v = w`
 ///
 /// The flux state is pinned to a constant excitation current through two node
@@ -653,6 +746,60 @@ fn derivative_coordinates(view: dae::DaeView<'_>) -> Vec<u32> {
         .collect()
 }
 
+fn algebraic_coordinate<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<u32> {
+    let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(id)) =
+        view.expression(expression)?.operation()
+    else {
+        return None;
+    };
+    Some(id.index())
+}
+
+fn negated_algebraic_coordinate<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<u32> {
+    let dae::ExpressionOperation::Unary {
+        operator: dae::UnaryOperator::Negate,
+        mut operand,
+    } = view.expression(expression)?.operation()
+    else {
+        return None;
+    };
+    if let dae::ExpressionOperation::Unary {
+        operator: dae::UnaryOperator::Plus,
+        operand: inner,
+    } = view.expression(operand)?.operation()
+    {
+        operand = inner;
+    }
+    algebraic_coordinate(view, operand)
+}
+
+fn is_signed_definition<'dae>(
+    view: dae::DaeView<'dae>,
+    equation: dae::ResidualEquationView<'dae>,
+    signed: u32,
+    rhs_coordinate: u32,
+) -> bool {
+    let Some(residual) = view.expression(equation.residual()) else {
+        return false;
+    };
+    let dae::ExpressionOperation::Binary {
+        operator: dae::BinaryOperator::Subtract,
+        lhs,
+        rhs,
+    } = residual.operation()
+    else {
+        return false;
+    };
+    negated_algebraic_coordinate(view, lhs) == Some(signed)
+        && algebraic_coordinate(view, rhs) == Some(rhs_coordinate)
+}
+
 #[test]
 fn connector_alias_chain_demotes_the_redundant_state_and_matches() {
     let model = alias_chain_model();
@@ -694,7 +841,7 @@ fn alias_closure_reports_the_anchor_state_of_a_connector_chain() {
         assert_eq!(
             equalities
                 .redundant_states()
-                .map(|(state, _)| state)
+                .map(|(state, _, _)| state)
                 .collect::<Vec<_>>(),
             vec![phi2],
             "only the non-anchor state is reported redundant"
@@ -849,7 +996,7 @@ fn a_displaced_equality_never_reports_a_redundant_state() {
         assert_eq!(
             equalities
                 .redundant_states()
-                .map(|(state, _)| state)
+                .map(|(state, _, _)| state)
                 .collect::<Vec<_>>(),
             Vec::<u32>::new(),
             "`b - L = a` proves a shared derivative, never a shared value"
@@ -858,7 +1005,7 @@ fn a_displaced_equality_never_reports_a_redundant_state() {
 }
 
 #[test]
-fn an_opposite_signed_state_pair_reports_the_sign_and_is_not_offered_for_demotion() {
+fn an_opposite_signed_state_pair_carries_its_sign_into_demotion() {
     let model = opposed_states_model();
     model.inspect(|view| {
         let equalities = SystemEqualities::collect(view);
@@ -875,24 +1022,98 @@ fn an_opposite_signed_state_pair_reports_the_sign_and_is_not_offered_for_demotio
             "the anchor signs against itself"
         );
         assert_eq!(
-            equalities
-                .redundant_states()
-                .map(|(state, _)| state)
-                .collect::<Vec<_>>(),
-            Vec::<u32>::new(),
-            "a demotion hands reconstruction an existing coordinate expression as \
-             the state's definition, and the sign does not vanish under `d/dt`, \
-             so an opposite-signed member is not a candidate"
+            equalities.redundant_states().collect::<Vec<_>>(),
+            vec![(b, EqualityAnchor::State(a), EqualitySign::Opposite)],
+            "the non-anchor state carries the exact sign its class proves"
         );
     });
     assert!(
         model.inspect(|view| sort(view).is_err()),
         "an anti-series state pair is structurally singular"
     );
+    let prepared = prepare_for_solve(&model).expect("opposed state pair is reducible");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed { .. } => panic!("opposed state pair requires a state demotion"),
+    };
+    assert_eq!(role(&transformed, "a"), dae::VariableRole::State);
+    assert_eq!(role(&transformed, "b"), dae::VariableRole::Algebraic);
+    transformed.inspect(|view| {
+        assert!(sort(view).is_ok(), "replacement DAE matches perfectly");
+        assert!(
+            !derivative_coordinates(view).contains(&variable_index(view, "b")),
+            "the demoted state keeps no derivative coordinate"
+        );
+        let w = variable_index(view, "w");
+        let v = variable_index(view, "v");
+        let signed_definition = view.continuous_owners().any(|owner| {
+            let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
+                return false;
+            };
+            is_signed_definition(view, equation, v, w)
+        });
+        assert!(
+            signed_definition,
+            "`der(b) = w` becomes the proved signed definition `-v = w`"
+        );
+    });
+}
+
+#[test]
+fn a_connector_hidden_holonomic_constraint_carries_an_anchor_proof() {
+    let model = hidden_holonomic_model();
     assert!(
-        prepare_for_solve(&model).is_err(),
-        "and stays unreduced rather than being demoted with the wrong sign"
+        model.inspect(|view| sort(view).is_err()),
+        "the position constraint leaves one acceleration structurally undefined"
     );
+    model.inspect(|view| {
+        let constraints = holonomic_constraints(view);
+        assert_eq!(
+            constraints.len(),
+            1,
+            "only the two-body constraint qualifies"
+        );
+        let constraint = &constraints[0];
+        assert_eq!(
+            view.source_text(
+                view.expression(view.expression_id(constraint.residual as usize).unwrap())
+                    .unwrap()
+                    .provenance()
+            ),
+            Some("angle1 = 2*angle2")
+        );
+        assert_eq!(constraint.proof.maximum_order, 2);
+        assert_eq!(constraint.proof.residual, constraint.residual);
+        assert_eq!(
+            &*constraint.proof.anchored_states,
+            &[variable_index(view, "phi1"), variable_index(view, "phi2")],
+            "the certificate records both distinct state anchors"
+        );
+    });
+
+    let prepared = prepare_for_solve(&model).expect("hidden constraint is reducible");
+    let (transformed, manifold) = match prepared {
+        PreparedDae::Transformed { dae, manifold, .. } => (dae, manifold),
+        PreparedDae::Borrowed { .. } => panic!("hidden constraint requires index reduction"),
+    };
+    assert_eq!(
+        manifold.len(),
+        2,
+        "value and first derivative stay on the manifold"
+    );
+    for variable in ["phi1", "w1", "phi2", "w2"] {
+        assert_eq!(
+            role(&transformed, variable),
+            dae::VariableRole::State,
+            "holonomic reduction must not demote {variable}"
+        );
+    }
+    transformed.inspect(|view| {
+        assert!(
+            sort(view).is_ok(),
+            "second derivative completes the matching"
+        );
+    });
 }
 
 #[test]
@@ -910,7 +1131,7 @@ fn contradicting_equalities_prove_nothing_about_their_class() {
         assert_eq!(
             equalities
                 .redundant_states()
-                .map(|(state, _)| state)
+                .map(|(state, _, _)| state)
                 .collect::<Vec<_>>(),
             Vec::<u32>::new(),
             "and offers no state as redundant"

@@ -78,6 +78,7 @@ struct FixtureFeatures {
     deep_function: bool,
     same_rhs_definitions: bool,
     range: bool,
+    shaped_parameter: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -723,9 +724,14 @@ fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) ->
     } else {
         ""
     };
+    let shaped_parameter_declaration = if features.shaped_parameter {
+        " parameter Integer m = 3; parameter Real q[3] = fill(1, m);"
+    } else {
+        ""
+    };
     let derivative_y_rhs = if features.holonomic { "x" } else { "a" };
     format!(
-        "{record_declarations}{function_declarations} parameter Real p;{range_declaration} Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = {derivative_y_rhs}; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
+        "{record_declarations}{function_declarations} parameter Real p;{range_declaration}{shaped_parameter_declaration} Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = {derivative_y_rhs}; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
     )
 }
 
@@ -789,6 +795,7 @@ fn build_constrained_fixture(
         let variables =
             fixture_variables(model, real, vector, boolean, spans.declaration, features)?;
         insert_fixture_range_parameter(model, source, text, features.range)?;
+        insert_fixture_shaped_parameter(model, source, text, features.shaped_parameter)?;
         insert_fixture_record_companion(model, real, record, source, text)?;
         insert_fixture_functions(
             model,
@@ -825,6 +832,72 @@ fn build_constrained_fixture(
         Ok(())
     })
     .expect("fixture DAE is valid")
+}
+
+fn insert_fixture_shaped_parameter<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    source: rumoca_core::SourceId,
+    text: &str,
+    enabled: bool,
+) -> Result<(), dae::DaeConstructionError> {
+    if !enabled {
+        return Ok(());
+    }
+    let m_declaration = source_provenance(source, text, "parameter Integer m = 3");
+    let q_declaration = source_provenance(source, text, "parameter Real q[3]");
+    let fill_owner = source_provenance(source, text, "fill(1, m)");
+    let integer = model.types(|types| {
+        types.derived(
+            dae::ValueType::scalar(dae::ScalarType::Integer),
+            m_declaration,
+        )
+    })?;
+    let real_vector = model.types(|types| {
+        types.derived(
+            dae::ValueType::array(dae::ScalarType::Real, [3]),
+            q_declaration,
+        )
+    })?;
+    let m_binding = model.expressions(|expressions| {
+        expressions
+            .at(m_declaration)
+            .literal(dae::DaeLiteral::Integer(3))
+    })?;
+    let m = model.variables(|variables| {
+        variables.parameter(
+            VarName::new("m"),
+            integer,
+            m_declaration,
+            dae::VariableAttributes {
+                binding: Some(m_binding),
+                ..dae::VariableAttributes::default()
+            },
+        )
+    })?;
+    let q_binding = model.expressions(|expressions| {
+        let value = expressions
+            .at(fill_owner)
+            .literal(dae::DaeLiteral::Integer(1))?;
+        let extent = expressions
+            .at(fill_owner)
+            .coordinate(dae::CoordinateInput::Parameter(m))?;
+        expressions
+            .at(fill_owner)
+            .builtin(dae::PureBuiltin::Fill, [value, extent])
+    })?;
+    model.variables(|variables| {
+        variables
+            .parameter(
+                VarName::new("q"),
+                real_vector,
+                q_declaration,
+                dae::VariableAttributes {
+                    binding: Some(q_binding),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+            .map(|_| ())
+    })
 }
 
 fn insert_fixture_range_parameter<'dae>(
@@ -1018,6 +1091,40 @@ fn state_demotion_preserves_range_bound_identity_and_provenance() {
         assert_eq!(view.source_text(step.provenance()), Some("1"));
         assert_eq!(view.source_text(range.stop().provenance()), Some("3"));
         assert_ne!(range.start().expression(), step.expression());
+    });
+}
+
+#[test]
+fn state_demotion_replays_static_parameter_bindings_before_shaped_builtins() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            shaped_parameter: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    let prepared = prepare_for_solve(&model)
+        .expect("parameter-defined compact extent survives checked reconstruction");
+    assert!(matches!(prepared, PreparedDae::Transformed { .. }));
+
+    prepared.as_dae().inspect(|view| {
+        let q = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "q")
+            .map(|(_, variable)| variable)
+            .expect("shaped parameter survives reconstruction");
+        let binding = view
+            .expression(q.binding().expect("shaped parameter retains its binding"))
+            .expect("shaped parameter binding resolves");
+        assert_eq!(binding.value_type().dimensions(), [3]);
+        assert!(matches!(
+            binding.operation(),
+            dae::ExpressionOperation::Builtin {
+                builtin: dae::PureBuiltin::Fill,
+                ..
+            }
+        ));
+        assert_eq!(view.source_text(binding.provenance()), Some("fill(1, m)"));
     });
 }
 
@@ -1244,8 +1351,8 @@ fn state_demotion_preserves_clock_history_and_terminal_owners() {
         assert_eq!(view.source_text(clock.provenance()), Some("Clock(1, 10)"));
         assert!(matches!(
             clock.operation(),
-            dae::ClockOperation::Periodic(lattice)
-                if lattice.period()
+            dae::ClockOperation::Periodic(schedule)
+                if schedule.lattice().period()
                     == rumoca_core::ClockRational::new(1, 10)
                         .expect("expected period is positive")
         ));

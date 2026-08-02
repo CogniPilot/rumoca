@@ -3,12 +3,14 @@ use std::collections::{BTreeSet, HashMap};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
+use super::LoweredLayout;
 use crate::LowerError;
 
 pub(super) struct LoweredClocks<'dae> {
     pub(super) partition: solve::SolveClockPartition,
     dae_clocks: Vec<solve::PeriodicClockId>,
     variable_owners: Vec<Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>>,
+    sampled_variables: Vec<bool>,
     marker: std::marker::PhantomData<&'dae mut &'dae ()>,
 }
 
@@ -36,12 +38,23 @@ impl<'dae> LoweredClocks<'dae> {
             .copied()
             .flatten()
     }
+
+    pub(super) fn variable_is_sampled(&self, variable: dae::VariableId<'dae>) -> bool {
+        self.sampled_variables
+            .get(variable.index() as usize)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 pub(super) fn lower_clocks<'dae>(
     view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
 ) -> Result<LoweredClocks<'dae>, LowerError> {
-    let mut partition = solve::SolveClockPartition::default();
+    let mut partition = solve::SolveClockPartition {
+        periodic_event_schedules: Vec::with_capacity(view.clock_count()),
+        activation_parameter_indices: layout.clock_activations.clone(),
+    };
     let mut dae_clocks = Vec::with_capacity(view.clock_count());
     for index in 0..view.clock_count() {
         let dae_clock = view
@@ -50,13 +63,13 @@ pub(super) fn lower_clocks<'dae>(
         let clock = view
             .clock(dae_clock)
             .expect("checked clock identity resolves");
-        let dae::ClockOperation::Periodic(lattice) = clock.operation() else {
+        let dae::ClockOperation::Periodic(schedule) = clock.operation() else {
             return Err(LowerError::unsupported(
                 "triggered clocks do not yet have checked Solve scheduling",
                 clock.provenance().span(),
             ));
         };
-        let schedule = solve::PeriodicEventSchedule::new(*lattice).map_err(|error| {
+        let schedule = solve::PeriodicEventSchedule::from_schedule(*schedule).map_err(|error| {
             LowerError::contract(
                 format!("checked DAE clock lattice cannot form a Solve schedule: {error}"),
                 clock.provenance().span(),
@@ -70,6 +83,7 @@ pub(super) fn lower_clocks<'dae>(
     }
 
     let mut variable_owners = vec![None; view.variable_count()];
+    let mut sampled_variables = vec![false; view.variable_count()];
     for index in 0..view.clock_ownership_count() {
         let ownership = view
             .clock_ownership_id(index)
@@ -83,12 +97,14 @@ pub(super) fn lower_clocks<'dae>(
                 ownership.provenance().span(),
             ));
         }
+        sampled_variables[ownership.variable().index() as usize] = ownership.sampled();
     }
 
     Ok(LoweredClocks {
         partition,
         dae_clocks,
         variable_owners,
+        sampled_variables,
         marker: std::marker::PhantomData,
     })
 }
@@ -100,11 +116,12 @@ pub(super) fn lower_clocks<'dae>(
 /// `y(t_i) = u(t_i - eps)`, "the value of u just before the clock became
 /// active", and states in the same paragraph that "algebraic loops between
 /// clocked and continuous-time partitions cannot occur" precisely *because* of
-/// that infinitesimal delay. The checked DAE lowers a clocked value sample to
-/// the temporal identity of `u`, which reproduces the left limit exactly when
-/// `u` cannot jump at a tick of the sampling clock.
+/// that infinitesimal delay. A checked sampled owner is lowered against the
+/// event-entry snapshot of `u`, so a discontinuity coincident with the clock
+/// cannot replace the required left limit with the event's settled value.
 ///
-/// **Accepted** — the identity is the left limit, so no schedule is invented:
+/// **Accepted** — the typed sampled owner supplies the left-limit boundary, so
+/// no schedule is invented:
 /// * a clocked row whose continuous-time operands are outside the
 ///   *instantaneous* algebraic reach of the variables its own clock writes.
 ///   Every path that crosses a state coordinate is outside that reach: the
@@ -113,12 +130,12 @@ pub(super) fn lower_clocks<'dae>(
 /// * a clocked row reading only its own partition's clocked variables,
 ///   `previous(..)`, `interval(..)`, parameters, inputs, and `time`.
 ///
-/// **Rejected here** — this is the first owner that sees a whole partition
-/// together with the continuous system it samples:
+/// **Rejected here for non-sampled clock owners** — this is the first owner
+/// that sees a whole partition together with the continuous system it reads:
 /// * a clocked row that reads a continuous-time variable which is
 ///   instantaneously (algebraically) coupled to a variable the *same* clock
 ///   writes. Such a loop is not expressible under MLS §16.5.1; it only becomes
-///   representable once the mandatory left limit is dropped, and the runtime
+///   representable without the typed sampled-owner boundary, and the runtime
 ///   would otherwise settle it as an ordinary algebraic loop whose answer is
 ///   fixed by the loop gain instead of by the clock, silently replacing the
 ///   per-tick recurrence with a single steady-state solve.
@@ -142,6 +159,9 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
         let equation = view
             .discrete_real_equation(index)
             .expect("dense checked discrete Real equation resolves");
+        if expression_defines_sampled_variable(view, clocks, equation.residual()) {
+            continue;
+        }
         check_clocked_row_operands(
             view,
             clocks,
@@ -158,20 +178,32 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
         let owner = view
             .discrete_value_owner(id)
             .expect("checked B.1c owner resolves");
-        for branch in owner.branches().iter() {
-            for (value, provenance) in branch.values().iter() {
-                check_clocked_row_operands(
-                    view,
-                    clocks,
-                    &reach,
-                    &written,
-                    value,
-                    provenance.span(),
-                )?;
-            }
+        let values = owner.branches().iter().flat_map(|branch| {
+            owner
+                .targets()
+                .iter()
+                .zip(branch.values().iter())
+                .filter(|(target, _)| !clocks.variable_is_sampled(dae::VariableId::from(*target)))
+        });
+        for (_, (value, provenance)) in values {
+            check_clocked_row_operands(view, clocks, &reach, &written, value, provenance.span())?;
         }
     }
     Ok(())
+}
+
+fn expression_defines_sampled_variable<'dae>(
+    view: dae::DaeView<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    root: dae::ExprId<'dae>,
+) -> bool {
+    let mut sampled = false;
+    dae::for_each_expression(view, root, |_, expression| {
+        sampled |= expression
+            .variable_coordinate()
+            .is_some_and(|variable| clocks.variable_is_sampled(variable));
+    });
+    sampled
 }
 
 /// One clocked row: the operands it reads must not reach its own clock's writes

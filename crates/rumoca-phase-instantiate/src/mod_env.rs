@@ -13,7 +13,7 @@ use rumoca_ir_ast::AstIndexMap as IndexMap;
 
 mod record_projection;
 
-pub(super) use record_projection::propagate_record_binding_to_fields;
+pub(super) use record_projection::{RecordBindingProjection, propagate_record_binding_to_fields};
 
 const MAX_MOD_RESOLVE_DEPTH: usize = 20;
 
@@ -529,7 +529,8 @@ fn collect_structural_integer_fields_from_sibling_reference(
         .modifications
         .iter()
         .filter_map(|(field_name, field_expr)| {
-            try_eval_integer_expr(&eval_ctx, field_expr).map(|value| {
+            let binding = field_expr.component_modifier_binding_value()?;
+            try_eval_integer_expr(&eval_ctx, binding).map(|value| {
                 (
                     field_name.clone(),
                     ast::Expression::Terminal {
@@ -538,7 +539,7 @@ fn collect_structural_integer_fields_from_sibling_reference(
                             text: value.to_string().into(),
                             ..Default::default()
                         },
-                        span: field_expr.span(),
+                        span: binding.span(),
                     },
                 )
             })

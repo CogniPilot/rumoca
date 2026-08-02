@@ -147,6 +147,7 @@ impl TypeChecker {
             "der" | "pre" | "noEvent" | "actualStream" if args.len() == 1 => {
                 self.infer_expression_shape(&args[0], type_table)
             }
+            "cross" if args.len() == 2 => Some(vec![3]),
             "fill" if args.len() >= 2 => {
                 let mut shape = rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
                     expression,

@@ -442,3 +442,74 @@ end Top;
         .expect("the argument names an exact enclosing declaration");
     assert_eq!(tree.def_map[&argument_target], "Top.p");
 }
+
+#[test]
+fn source_ordered_redeclare_function_values_carry_exact_identities() {
+    // A component modifier's outer target is instance-owned, but the function
+    // substituted on its RHS is looked up where the modifier is written (MLS
+    // §7.2). Strict reachability walks this source-ordered copy, so the RHS
+    // must retain the exact function identity rather than only its spelling.
+    let source = r#"
+package Shapes
+  partial function Characteristic
+    input Real length = 1;
+    output Real x;
+  end Characteristic;
+
+  function defaultCharacteristic
+    extends Characteristic;
+  algorithm
+    x := 0;
+  end defaultCharacteristic;
+
+  function rectangle
+    extends Characteristic;
+  algorithm
+    x := length;
+  end rectangle;
+
+  model Surface
+    replaceable function surfaceCharacteristic = defaultCharacteristic
+      constrainedby Characteristic;
+  end Surface;
+
+  model Top
+    Surface surface(
+      redeclare function surfaceCharacteristic = rectangle(length = 2));
+  end Top;
+end Shapes;
+    "#;
+    let tree = resolve_tree_source(source).into_inner();
+    let component = &tree.definitions.classes["Shapes"].classes["Top"].components["surface"];
+    let [
+        rumoca_ir_ast::Expression::Modification {
+            target: slot,
+            value,
+            ..
+        },
+    ] = component.source_modifications.as_slice()
+    else {
+        panic!("fixture declares exactly one source-ordered modifier");
+    };
+    assert_eq!(
+        slot.target_def_id(),
+        None,
+        "the modified slot remains instance-owned"
+    );
+    let rumoca_ir_ast::Expression::ClassModification { target, .. } = value.as_ref() else {
+        panic!("redeclare function RHS is a class modification");
+    };
+    let source_target = target
+        .target_def_id()
+        .expect("source-ordered redeclare RHS names an exact function");
+    let rumoca_ir_ast::Expression::ClassModification {
+        target: keyed_target,
+        ..
+    } = &component.modifications["surfaceCharacteristic"]
+    else {
+        panic!("keyed redeclare value is a class modification");
+    };
+
+    assert_eq!(tree.def_map[&source_target], "Shapes.rectangle");
+    assert_eq!(keyed_target.target_def_id(), Some(source_target));
+}

@@ -13,25 +13,14 @@ pub(crate) fn canonicalize_collected_function_calls(
     flat: &mut flat::Model,
     class_index: &ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
-    let canonical_functions = flat
-        .functions
-        .values()
-        .map(|function| {
-            Ok(CanonicalFunction {
-                name: function.name.as_str().to_string(),
-                def_id: function.def_id,
-                instance_id: function
-                    .instance_id
-                    .ok_or_else(|| FlattenError::internal("missing function instance identity"))?,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let canonical_functions = collect_canonical_functions(flat)?;
     if canonical_functions.is_empty() {
         return Ok(());
     }
     let mut rewriter = CollectedFunctionCallCanonicalizer {
         canonical_functions,
         class_index,
+        nonreplaceability_by_path: HashMap::new(),
         error: None,
     };
 
@@ -120,6 +109,22 @@ pub(crate) fn canonicalize_collected_function_calls(
     }
 }
 
+fn collect_canonical_functions(flat: &flat::Model) -> Result<CanonicalFunctionIndex, FlattenError> {
+    let mut index = CanonicalFunctionIndex::default();
+    for function in flat.functions.values() {
+        let instance_id = function
+            .instance_id
+            .ok_or_else(|| FlattenError::internal("missing function instance identity"))?;
+        index.insert(CanonicalFunction {
+            name: function.name.clone(),
+            def_id: function.def_id,
+            instance_id,
+            is_constructor: function.is_constructor,
+        })?;
+    }
+    Ok(index)
+}
+
 fn canonicalize_when_equations(
     equations: &mut [flat::WhenEquation],
     rewriter: &mut CollectedFunctionCallCanonicalizer,
@@ -184,52 +189,160 @@ fn canonicalize_function_param_expressions(
 }
 
 struct CanonicalFunction {
-    name: String,
+    name: rumoca_core::VarName,
     def_id: Option<rumoca_core::DefId>,
     instance_id: rumoca_core::FunctionInstanceId,
+    is_constructor: bool,
+}
+
+#[derive(Clone, Copy)]
+struct CanonicalFunctionMatch<'a> {
+    function: &'a CanonicalFunction,
+    exact_instance: bool,
+}
+
+#[derive(Default)]
+struct CanonicalFunctionIndex {
+    entries: Vec<CanonicalFunction>,
+    by_name: HashMap<rumoca_core::VarName, usize>,
+    by_instance: HashMap<rumoca_core::FunctionInstanceId, usize>,
+    unique_by_def: HashMap<rumoca_core::DefId, Option<usize>>,
+}
+
+impl CanonicalFunctionIndex {
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn insert(&mut self, function: CanonicalFunction) -> Result<(), FlattenError> {
+        let entry = self.entries.len();
+        if self.by_name.insert(function.name.clone(), entry).is_some() {
+            return Err(FlattenError::internal(format!(
+                "duplicate canonical function name `{}`",
+                function.name
+            )));
+        }
+        if self
+            .by_instance
+            .insert(function.instance_id, entry)
+            .is_some()
+        {
+            return Err(FlattenError::internal(format!(
+                "duplicate canonical function instance {}",
+                function.instance_id.index()
+            )));
+        }
+        if let Some(def_id) = function.def_id {
+            self.unique_by_def
+                .entry(def_id)
+                .and_modify(|candidate| *candidate = None)
+                .or_insert(Some(entry));
+        }
+        self.entries.push(function);
+        Ok(())
+    }
+
+    fn by_reference(
+        &self,
+        reference: &rumoca_core::Reference,
+    ) -> Option<CanonicalFunctionMatch<'_>> {
+        if let Some(resolved) = reference.resolved_function() {
+            return self.by_instance.get(&resolved.instance_id).map(|entry| {
+                CanonicalFunctionMatch {
+                    function: &self.entries[*entry],
+                    exact_instance: true,
+                }
+            });
+        }
+        if let Some(entry) = self.by_name.get(reference.var_name()) {
+            return Some(CanonicalFunctionMatch {
+                function: &self.entries[*entry],
+                exact_instance: false,
+            });
+        }
+        self.sole_by_def(reference.target_def_id()?)
+            .map(|function| CanonicalFunctionMatch {
+                function,
+                exact_instance: false,
+            })
+    }
+
+    fn sole_by_def(&self, def_id: rumoca_core::DefId) -> Option<&CanonicalFunction> {
+        self.unique_by_def
+            .get(&def_id)
+            .copied()
+            .flatten()
+            .map(|entry| &self.entries[entry])
+    }
 }
 
 struct CollectedFunctionCallCanonicalizer<'a> {
-    canonical_functions: Vec<CanonicalFunction>,
+    canonical_functions: CanonicalFunctionIndex,
     class_index: &'a ast::ClassDefIndex<'a>,
+    nonreplaceability_by_path: HashMap<(bool, Vec<rumoca_core::DefId>), bool>,
     error: Option<FlattenError>,
 }
 
 impl CollectedFunctionCallCanonicalizer<'_> {
+    fn record_call_kind_conflict(
+        &mut self,
+        name: &rumoca_core::Reference,
+        occurrence_is_constructor: bool,
+        canonical_instance: rumoca_core::FunctionInstanceId,
+        canonical_is_constructor: bool,
+        span: rumoca_core::Span,
+    ) {
+        if occurrence_is_constructor && !canonical_is_constructor {
+            self.error.get_or_insert_with(|| {
+                FlattenError::inconsistent_function_call_kind(
+                    name.as_str(),
+                    canonical_instance,
+                    span,
+                )
+            });
+        }
+    }
+
     fn canonical_function_for_reference(
         &self,
         reference: &rumoca_core::Reference,
-    ) -> Option<&CanonicalFunction> {
-        if let Some(resolved) = reference.resolved_function() {
-            return self
-                .canonical_functions
-                .iter()
-                .find(|function| function.instance_id == resolved.instance_id);
-        }
-        let exact = self
-            .canonical_functions
-            .iter()
-            .find(|function| function.name == reference.var_name().as_str());
-        if exact.is_some() {
-            return exact;
-        }
-        if let Some(def_id) = reference.target_def_id() {
-            return self.sole_canonical_function_for_declaration(def_id);
-        }
-        None
+    ) -> Option<CanonicalFunctionMatch<'_>> {
+        self.canonical_functions.by_reference(reference)
     }
 
     fn sole_canonical_function_for_declaration(
         &self,
         def_id: rumoca_core::DefId,
     ) -> Option<&CanonicalFunction> {
-        let mut matches = self
-            .canonical_functions
+        self.canonical_functions.sole_by_def(def_id)
+    }
+
+    fn occurrence_proves_transitive_nonreplaceability(
+        &mut self,
+        reference: &rumoca_core::Reference,
+    ) -> bool {
+        let Some(component) = reference.component_ref() else {
+            return false;
+        };
+        let is_structured = component
+            .parts()
             .iter()
-            .filter(|function| function.def_id == Some(def_id));
-        let first = matches.next()?;
-        let second = matches.next();
-        second.is_none().then_some(first)
+            .all(|part| !part.ident.contains('.'));
+        let path = component
+            .parts()
+            .iter()
+            .map(|part| part.def_id)
+            .collect::<Vec<_>>();
+        let key = (is_structured, path);
+        if let Some(proven) = self.nonreplaceability_by_path.get(&key) {
+            return *proven;
+        }
+        let proven = super::request_proves_transitive_non_replaceability(
+            self.class_index,
+            &FunctionRequest::from_reference(reference),
+        );
+        self.nonreplaceability_by_path.insert(key, proven);
+        proven
     }
 
     /// Restate a statement call's callee path so it spells the collected
@@ -251,19 +364,11 @@ impl CollectedFunctionCallCanonicalizer<'_> {
         callee: &rumoca_core::ComponentReference,
     ) -> Option<rumoca_core::ComponentReference> {
         let rendered = callee.to_var_name();
-        if self
-            .canonical_functions
-            .iter()
-            .any(|function| function.name == rendered.as_str())
-        {
+        if self.canonical_functions.by_name.contains_key(&rendered) {
             return None;
         }
         let canonical = self.sole_canonical_function_for_declaration(callee.target_def_id())?;
-        callable_scope_identity::scope_qualified_path(
-            self.class_index,
-            callee,
-            &rumoca_core::VarName::new(&canonical.name),
-        )
+        callable_scope_identity::scope_qualified_path(self.class_index, callee, &canonical.name)
     }
 }
 
@@ -294,20 +399,62 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer<'_> {
             return self.walk_expression(expr);
         }
         let args = self.rewrite_expressions(args);
-        if let Some(canonical) = self.canonical_function_for_reference(name) {
+        if let Some((
+            canonical_name,
+            canonical_instance,
+            canonical_is_constructor,
+            exact_instance,
+        )) = self.canonical_function_for_reference(name).map(|matched| {
+            (
+                matched.function.name.clone(),
+                matched.function.instance_id,
+                matched.function.is_constructor,
+                matched.exact_instance,
+            )
+        }) {
+            if exact_instance {
+                self.record_call_kind_conflict(
+                    name,
+                    *is_constructor,
+                    canonical_instance,
+                    canonical_is_constructor,
+                    *span,
+                );
+            }
             let base_part_count = name
                 .component_ref()
                 .map(|reference| reference.parts().len())
                 .unwrap_or(0);
+            let transitively_non_replaceable =
+                self.occurrence_proves_transitive_nonreplaceability(name);
+            let call_kind_agrees = *is_constructor == canonical_is_constructor;
+            let canonical_name = name.with_var_name(canonical_name);
+            // A name-only or declaration-only match may continue carrying an
+            // already established call kind, but it cannot mint the exact
+            // identity that a later pass could use to launder a contradictory
+            // kind into constructor semantics. Exact-instance input, or a
+            // fallback whose kind already agrees, remains safe to canonicalize.
+            let name = if exact_instance || call_kind_agrees {
+                canonical_name.with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                    instance_id: canonical_instance,
+                    base_part_count,
+                    transitively_non_replaceable,
+                })
+            } else {
+                canonical_name
+            };
             return rumoca_core::Expression::FunctionCall {
-                name: name
-                    .with_var_name(rumoca_core::VarName::new(&canonical.name))
-                    .with_resolved_function(rumoca_core::ResolvedFunctionReference {
-                        instance_id: canonical.instance_id,
-                        base_part_count,
-                    }),
+                name,
                 args,
-                is_constructor: *is_constructor,
+                // The exact collected callable owns its kind. This semantic
+                // completion is what turns an operator-record conversion
+                // occurrence selected through its constructor function into
+                // the structural constructor call represented in Flat.
+                is_constructor: if exact_instance {
+                    canonical_is_constructor
+                } else {
+                    *is_constructor
+                },
                 span: *span,
             };
         }

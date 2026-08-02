@@ -187,6 +187,7 @@ fn reference_appended_index_uses_required_owner_provenance() {
     let function = ResolvedFunctionReference {
         instance_id: FunctionInstanceId::new(8),
         base_part_count: 1,
+        transitively_non_replaceable: false,
     };
     let reference = Reference::with_component_reference("body", component_ref)
         .with_instance_id(InstanceId::new(9))
@@ -226,6 +227,7 @@ fn appended_field_cannot_inherit_the_base_exact_target() {
     let function = ResolvedFunctionReference {
         instance_id: FunctionInstanceId::new(8),
         base_part_count: 2,
+        transitively_non_replaceable: false,
     };
     let reference = Reference::from_component_reference(
         ComponentReference::construct(
@@ -751,6 +753,7 @@ fn fingerprint_separates_distinct_function_instances_that_render_alike() {
         Reference::new("Medium.density").with_resolved_function(super::ResolvedFunctionReference {
             instance_id: super::FunctionInstanceId::new(instance),
             base_part_count: 1,
+            transitively_non_replaceable: false,
         })
     };
     let call = |instance: u32| Expression::FunctionCall {

@@ -301,7 +301,12 @@ pub(super) fn builtin_result<'dae>(
     at: DaeProvenance,
 ) -> Result<ValueType, DaeConstructionError> {
     let Some(first) = arguments.first().copied() else {
-        return Err(invalid_arity(1, 0, at));
+        let expected = if builtin == PureBuiltin::OuterProduct {
+            2
+        } else {
+            1
+        };
+        return Err(invalid_arity(expected, 0, at));
     };
     let first = storage.expr_type(first, at)?.clone();
     if builtin.has_shaped_result() {
@@ -365,19 +370,24 @@ pub(super) fn builtin_result<'dae>(
             Ok(ValueType::scalar(first.scalar_type()))
         }
         PureBuiltin::Min | PureBuiltin::Max => {
-            for argument in &arguments[1..] {
-                if storage.expr_type(*argument, at)? != &first {
-                    return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-                }
-            }
-            Ok(first)
+            arguments[1..].iter().try_fold(first, |common, argument| {
+                common_value_type(&common, storage.expr_type(*argument, at)?, at)
+            })
         }
         PureBuiltin::Size => unreachable!("size returns after checking its dimension argument"),
         PureBuiltin::Zeros
         | PureBuiltin::Ones
         | PureBuiltin::Fill
         | PureBuiltin::Linspace
-        | PureBuiltin::Cross => {
+        | PureBuiltin::Cross
+        | PureBuiltin::PromotedCat1
+        | PureBuiltin::PromotedCat2
+        | PureBuiltin::Identity
+        | PureBuiltin::Vector
+        | PureBuiltin::Transpose
+        | PureBuiltin::Diagonal
+        | PureBuiltin::OuterProduct
+        | PureBuiltin::Skew => {
             unreachable!("array constructors return before numeric builtins")
         }
         PureBuiltin::NoEvent => {
@@ -476,12 +486,25 @@ fn shaped_builtin_result(
         }
         PureBuiltin::Cross => {
             expect_arity(arguments, 2, at)?;
-            let result = common_value_type(first, storage.expr_type(arguments[1], at)?, at)?;
-            if result.dimensions() != [3] {
-                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-            }
-            return Ok(result);
+            real_three_vector(first, at)?;
+            real_three_vector(storage.expr_type(arguments[1], at)?, at)?;
+            return Ok(ValueType::array(ScalarType::Real, [3]));
         }
+        PureBuiltin::PromotedCat1 | PureBuiltin::PromotedCat2 => {
+            return promoted_concatenation_result(storage, builtin, arguments, at);
+        }
+        PureBuiltin::Identity => {
+            expect_arity(arguments, 1, at)?;
+            let extent = literal_array_extent(storage, arguments[0], at)?;
+            return Ok(ValueType::array(ScalarType::Integer, [extent, extent]));
+        }
+        PureBuiltin::Vector => return vector_result(arguments, first, at),
+        PureBuiltin::Transpose => return transpose_result(arguments, first, at),
+        PureBuiltin::Diagonal => return diagonal_result(arguments, first, at),
+        PureBuiltin::OuterProduct => {
+            return outer_product_result(storage, arguments, first, at);
+        }
+        PureBuiltin::Skew => return skew_result(arguments, first, at),
         _ => unreachable!("only compact shaped builtins use this validator"),
     };
     let dimensions = extents
@@ -490,6 +513,196 @@ fn shaped_builtin_result(
         .map(|expression| literal_array_extent(storage, expression, at))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ValueType::array(scalar, dimensions))
+}
+
+/// Construct the exact rank-one type MLS §10.3.2 gives `vector(A)`.
+///
+/// At most one operand dimension may exceed one. Under that proof the checked
+/// product is the unique vector extent, including the scalar (`1`) and empty
+/// (`0`) cases. The caller supplies no result shape and the operation retains
+/// only its compact operand.
+fn vector_result(
+    arguments: &[ExprId<'_>],
+    input: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 1, at)?;
+    // A record root currently has no aggregate dimensions: its field dimensions
+    // cannot distinguish an array of records from a scalar record with intrinsic
+    // array-valued fields. Reject until that ownership is represented explicitly.
+    if input.is_record() {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    let extent = vector_extent(input.dimensions(), at)?;
+    Ok(ValueType::array(input.scalar_type(), [extent]))
+}
+
+fn vector_extent(dimensions: &[u32], at: DaeProvenance) -> Result<u32, DaeConstructionError> {
+    if dimensions.iter().filter(|&&extent| extent > 1).count() > 1 {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    dimensions.iter().try_fold(1_u32, |product, extent| {
+        product
+            .checked_mul(*extent)
+            .ok_or_else(|| DaeConstructionError::CapacityExceeded {
+                arena: "vector extent",
+                attempted_index: (product as usize).saturating_mul(*extent as usize),
+                span: at.span(),
+            })
+    })
+}
+
+/// Construct the exact primitive array type MLS §10.3.5 gives `transpose(A)`.
+///
+/// ARR-038 requires at least two dimensions. Only axes zero and one exchange
+/// places, so higher-rank tensor extents remain compact and retain their order.
+fn transpose_result(
+    arguments: &[ExprId<'_>],
+    input: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 1, at)?;
+    if input.is_record() || input.dimensions().len() < 2 {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    let mut dimensions = input.dimensions().to_vec();
+    dimensions.swap(0, 1);
+    Ok(ValueType::array(input.scalar_type(), dimensions))
+}
+
+/// Construct the exact compact matrix type ARR-041 gives `diagonal(v)`.
+///
+/// The operand must be one primitive numeric vector. The constructor retains
+/// that vector and derives both matrix extents from it, so neither lowering nor
+/// wire replay can supply a contradictory result shape.
+fn diagonal_result(
+    arguments: &[ExprId<'_>],
+    input: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 1, at)?;
+    expect_numeric(input.scalar_type(), at)?;
+    let [extent] = input.dimensions() else {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    };
+    Ok(ValueType::array(input.scalar_type(), [*extent, *extent]))
+}
+
+/// Construct the exact compact matrix type ARR-042 gives
+/// `outerProduct(v1, v2)`.
+///
+/// Both operands must be primitive numeric vectors. Their extents remain in
+/// source order, while mixed Integer/Real element types promote to Real.
+fn outer_product_result(
+    storage: &Storage,
+    arguments: &[ExprId<'_>],
+    lhs: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 2, at)?;
+    let rhs = storage.expr_type(arguments[1], at)?;
+    expect_numeric(lhs.scalar_type(), at)?;
+    expect_numeric(rhs.scalar_type(), at)?;
+    let ([lhs_extent], [rhs_extent]) = (lhs.dimensions(), rhs.dimensions()) else {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    };
+    Ok(ValueType::array(
+        promoted_numeric_scalar(lhs.scalar_type(), rhs.scalar_type(), false),
+        [*lhs_extent, *rhs_extent],
+    ))
+}
+
+/// Construct the exact compact matrix type ARR-037 gives `skew(x)`.
+///
+/// MLS admits exactly one Real 3-vector. The operation retains that single
+/// vector and derives its fixed matrix result, so no caller or wire payload can
+/// claim a different rank, extent, or scalar type.
+fn skew_result(
+    arguments: &[ExprId<'_>],
+    input: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 1, at)?;
+    real_three_vector(input, at)?;
+    Ok(ValueType::array(ScalarType::Real, [3, 3]))
+}
+
+fn real_three_vector(input: &ValueType, at: DaeProvenance) -> Result<(), DaeConstructionError> {
+    expect_numeric(input.scalar_type(), at)?;
+    if input.scalar_type() != ScalarType::Real {
+        return Err(type_mismatch(ScalarType::Real, input.scalar_type(), at));
+    }
+    if input.dimensions() != [3] {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    Ok(())
+}
+
+/// Construct the one exact type MLS §10.4.2.1 gives a promoted concatenation.
+///
+/// Promotion appends unit extents on the right until every operand has the
+/// common rank `max(2, ndims(A), ndims(B), ...)`. Concatenation then requires
+/// every non-concatenated extent to agree and sums only the selected extent.
+/// Keeping this in the constructor means neither wire input nor a lowering
+/// caller can mint a concatenation whose stored result type disagrees with its
+/// operands.
+fn promoted_concatenation_result(
+    storage: &Storage,
+    builtin: PureBuiltin,
+    arguments: &[ExprId<'_>],
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    let Some(first_id) = arguments.first().copied() else {
+        return Err(invalid_arity(1, 0, at));
+    };
+    let axis = match builtin {
+        PureBuiltin::PromotedCat1 => 0,
+        PureBuiltin::PromotedCat2 => 1,
+        _ => unreachable!("only promoted concatenation reaches this constructor"),
+    };
+    let rank = arguments.iter().try_fold(2_usize, |rank, argument| {
+        let ty = storage.expr_type(*argument, at)?;
+        if ty.is_record() {
+            return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+        }
+        Ok(rank.max(ty.dimensions().len()))
+    })?;
+    let first = storage.expr_type(first_id, at)?;
+    let mut scalar = first.scalar_type();
+    let mut result = promoted_dimensions(first.dimensions(), rank);
+    for argument in &arguments[1..] {
+        let ty = storage.expr_type(*argument, at)?;
+        scalar = if scalar == ty.scalar_type() {
+            scalar
+        } else if scalar.is_numeric() && ty.scalar_type().is_numeric() {
+            ScalarType::Real
+        } else {
+            return Err(type_mismatch(scalar, ty.scalar_type(), at));
+        };
+        let dimensions = promoted_dimensions(ty.dimensions(), rank);
+        for dimension in 0..rank {
+            if dimension != axis && result[dimension] != dimensions[dimension] {
+                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+            }
+        }
+        let attempted_extent = (result[axis] as usize).saturating_add(dimensions[axis] as usize);
+        result[axis] = result[axis].checked_add(dimensions[axis]).ok_or(
+            DaeConstructionError::CapacityExceeded {
+                arena: "concatenation extent",
+                attempted_index: attempted_extent,
+                span: at.span(),
+            },
+        )?;
+    }
+    Ok(ValueType::array(scalar, result))
+}
+
+fn promoted_dimensions(dimensions: &[u32], rank: usize) -> Vec<u32> {
+    dimensions
+        .iter()
+        .copied()
+        .chain(std::iter::repeat_n(1, rank - dimensions.len()))
+        .collect()
 }
 
 fn literal_array_extent(

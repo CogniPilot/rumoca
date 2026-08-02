@@ -97,12 +97,15 @@
 //!   host re-derive it from rendered text.
 
 mod kernel;
+pub(crate) mod lifecycle;
 mod no_state;
 #[cfg(test)]
 mod tests;
 
 pub use kernel::SolveMeKernel;
 pub use no_state::MeNoStateSession;
+
+use std::rc::Rc;
 
 use crate::solver::{SimTermination, SimVariableMeta};
 
@@ -315,6 +318,58 @@ pub struct MeInstanceConfig {
     pub start_time: f64,
     /// FMI `stopTime` (`stopTimeDefined = true`).
     pub stop_time: f64,
+    /// Temporary phase-2 compatibility profile for the host's root inventory
+    /// and initial-event trigger. This is not an FMI capability: it freezes the
+    /// two pre-migration Diffsol choices while that host moves onto the shared
+    /// component, and is deleted as those divergences are adjudicated.
+    pub root_profile: MeRootProfile,
+    /// Temporary phase-2 compatibility profile for component lifecycle and
+    /// algebraic numerics. In addition to callback tolerance, iteration, and
+    /// warm-start policy, this freezes Diffsol's initialization sequencing,
+    /// accepted-step/event projection, delay-history commits, and full-state
+    /// dual-run checks. It remains independent of the root inventory selected
+    /// by [`Self::root_profile`].
+    pub numerics_profile: MeNumericsProfile,
+}
+
+/// Temporary SPEC_0038 phase-2 compatibility profile.
+///
+/// The ordinary component profile exposes the checked event indicators and
+/// runs an initial event only when initialization produced one. The legacy
+/// Diffsol path instead exposed the runtime's root-search inventory (including
+/// planned time roots) and always performed the post-initialization refresh.
+/// Keeping that choice explicit makes the migration behaviour-freezing and
+/// prevents an adapter from silently choosing whichever inventory is easiest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeRootProfile {
+    /// The FMI-style component inventory used by the rk-like host.
+    Component,
+    /// The pre-migration Diffsol/BDF inventory and initial-event policy.
+    DiffsolFrozen,
+}
+
+impl MeRootProfile {
+    #[must_use]
+    pub(crate) fn apply_without_initial_event(self) -> bool {
+        matches!(self, Self::DiffsolFrozen)
+    }
+}
+
+/// Temporary SPEC_0038 phase-2 lifecycle-and-numerics compatibility profile.
+///
+/// This is not an FMI capability. It exists only while the Diffsol state-only
+/// path moves onto the shared ME component without changing its observable
+/// lifecycle or numerical behavior, and is deleted once those divergences are
+/// adjudicated independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeNumericsProfile {
+    /// The FMI-style component lifecycle, projection, delay-history, and
+    /// persistent callback warm-start policies.
+    Component,
+    /// The pre-migration Diffsol initialization/event sequencing, full-state
+    /// compatibility guards, algebraic settle, accepted-point seed handling,
+    /// delay-history commits, and speculative numerical callbacks.
+    DiffsolFrozen,
 }
 
 /// The subset of the FMI model description an ME host needs.
@@ -332,8 +387,11 @@ pub struct MeModelDescription<'a> {
 }
 
 /// A resolved FMI value reference. Opaque: only the component interprets it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MeValueRef(pub(crate) usize);
+#[derive(Debug, Clone)]
+pub struct MeValueRef {
+    pub(crate) index: usize,
+    pub(crate) instance_brand: Rc<()>,
+}
 
 /// `fmi3SetTime`, carrying the event instant the integrator is stepping
 /// toward so the component can evaluate that instant's left limit.
@@ -457,6 +515,7 @@ pub struct MeObservation {
     pub(crate) time: f64,
     pub(crate) solver_y: Vec<f64>,
     pub(crate) parameters: Vec<f64>,
+    pub(crate) instance_brand: Rc<()>,
 }
 
 impl MeObservation {
@@ -467,9 +526,16 @@ impl MeObservation {
 }
 
 /// An opaque saved component state (`fmi3GetFMUState`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MeFmuState {
-    pub(crate) parameters: Vec<f64>,
+    pub(crate) component: kernel::MeKernelSnapshot,
+    pub(crate) instance_brand: Rc<()>,
+}
+
+impl std::fmt::Debug for MeFmuState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("MeFmuState").finish_non_exhaustive()
+    }
 }
 
 /// Column-major output buffer a host accumulates batched reads into.
@@ -554,7 +620,7 @@ pub trait ModelExchangeKernel {
     // -- time and continuous state ---------------------------------------
 
     /// `fmi3SetTime`.
-    fn set_time(&mut self, time: MeTime);
+    fn set_time(&mut self, time: MeTime) -> Result<(), MeError>;
 
     /// `fmi3SetContinuousStates`.
     fn set_continuous_states(&mut self, states: &[f64]) -> Result<(), MeError>;
@@ -661,14 +727,22 @@ pub trait ModelExchangeKernel {
     /// `fmi3GetFMUState`.
     fn fmu_state(&self) -> MeFmuState;
 
-    /// `fmi3Reset` + `fmi3SetFMUState` + `fmi3SetTime` +
-    /// `fmi3SetContinuousStates`, composed because rumoca's reset also
-    /// rewinds the component's delay history to `start_time`.
-    fn reset_to_fmu_state(
+    /// `fmi3SetFMUState`. Restores the exact component time, continuous and
+    /// discrete state, lifecycle, event schedule, caches, and delay history
+    /// captured by [`Self::fmu_state`].
+    fn reset_to_fmu_state(&mut self, saved: &MeFmuState) -> Result<(), MeError>;
+
+    /// Restart the session-owned component from `saved` at a new start time.
+    ///
+    /// This is the explicit host composition `fmi3Reset` +
+    /// `fmi3SetFMUState` + `fmi3SetTime`. Unlike [`Self::reset_to_fmu_state`],
+    /// it intentionally starts a new schedule and delay timeline. The
+    /// continuous and discrete values still come only from the opaque saved
+    /// state; a caller cannot substitute them during restore.
+    fn restart_from_fmu_state(
         &mut self,
         saved: &MeFmuState,
         start_time: f64,
-        states: &[f64],
     ) -> Result<(), MeError>;
 
     /// Extend the component's horizon and reschedule its event set from
@@ -676,7 +750,7 @@ pub trait ModelExchangeKernel {
     ///
     /// Extension: FMI 3.0 fixes `stopTime` at
     /// `fmi3EnterInitializationMode`; a live rumoca session may run past it.
-    fn extend_stop_time(&mut self, from_time: f64, stop_time: f64);
+    fn extend_stop_time(&mut self, from_time: f64, stop_time: f64) -> Result<(), MeError>;
 }
 
 /// Whether two consecutive event-indicator values bracket a crossing.

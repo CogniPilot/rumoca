@@ -1,4 +1,7 @@
-use rumoca_solver::RuntimeSolveError;
+use rumoca_solver::{
+    RuntimeSolveError,
+    fmi_me::{MeError, MeStage},
+};
 
 /// The simulation sub-stage that raised a failure.
 ///
@@ -43,6 +46,18 @@ impl std::fmt::Display for SimFailureStage {
             Self::Integration => "Integration",
         };
         f.write_str(name)
+    }
+}
+
+impl From<MeStage> for SimFailureStage {
+    fn from(value: MeStage) -> Self {
+        match value {
+            MeStage::Instantiate => Self::BackendBuild,
+            MeStage::Initialization => Self::Initialization,
+            MeStage::EventIteration => Self::EventIteration,
+            MeStage::ManifoldProjection => Self::ManifoldProjection,
+            MeStage::Integration => Self::Integration,
+        }
     }
 }
 
@@ -239,6 +254,33 @@ impl From<RuntimeSolveError> for SimError {
             non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
                 Self::SolveIr(non_finite.to_string())
             }
+        }
+    }
+}
+
+impl From<MeError> for SimError {
+    fn from(value: MeError) -> Self {
+        let stage = value.stage().map(SimFailureStage::from);
+        let error = match value.into_kind() {
+            MeError::NoContinuousStates => Self::EmptySystem,
+            MeError::UnsupportedModel { reason } | MeError::Evaluation { message: reason } => {
+                Self::SolveIr(reason)
+            }
+            MeError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
+                "non-finite derivative evaluation for state '{state_name}'"
+            )),
+            MeError::Contract { reason } => Self::RuntimeContract { reason },
+            MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
+            MeError::Allocation { context, entries } => Self::RuntimeContract {
+                reason: format!("{context} allocation failed for {entries} entries"),
+            },
+            staged @ MeError::Staged { .. } => Self::RuntimeContract {
+                reason: format!("stage annotation survived peeling: {staged}"),
+            },
+        };
+        match stage {
+            Some(stage) => error.at_stage(stage),
+            None => error,
         }
     }
 }

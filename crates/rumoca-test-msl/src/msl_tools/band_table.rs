@@ -88,7 +88,7 @@ use indexmap::IndexMap;
 use rumoca_sim::sim_trace_compare::{
     AgreementBand, MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE, MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
     MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE, MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
-    ModelDeviationMetric, classify_trace_metric_channel_distribution,
+    ModelDeviationMetric, TraceCertificationProfile, classify_trace_metric_channel_distribution,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -174,6 +174,9 @@ pub enum TraceExitKind {
     /// variable with comparable samples. Distinct from a comparator failure
     /// because it is a property of the traces, not a defect in the comparator.
     NoComparableSamples,
+    /// Pointwise comparison is non-identifying for this trace. This is an
+    /// uncertified proof obligation, not an agreement band or policy skip.
+    TraceNonidentifiable,
     /// Rumoca produced no usable trace for a model it reported as simulated.
     RumocaTraceMissing,
     /// The OMC reference trace is missing or unusable.
@@ -186,6 +189,7 @@ impl TraceExitKind {
             Self::PolicyExcluded => ExitReason::Excluded,
             Self::ComparatorFailed => ExitReason::ComparatorFailed,
             Self::NoComparableSamples => ExitReason::NoComparableSamples,
+            Self::TraceNonidentifiable => ExitReason::TraceNonidentifiable,
             Self::RumocaTraceMissing => ExitReason::RumocaTraceMissing,
             Self::OmcTraceMissing => ExitReason::ReferenceMissing,
         }
@@ -193,10 +197,12 @@ impl TraceExitKind {
 }
 
 /// One comparator-recorded non-comparison, as it appears on the wire.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraceExitRecord {
     pub kind: TraceExitKind,
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certification_profile: Option<TraceCertificationProfile>,
 }
 
 impl TraceExitRecord {
@@ -205,6 +211,19 @@ impl TraceExitRecord {
         Self {
             kind,
             detail: detail.into(),
+            certification_profile: None,
+        }
+    }
+
+    /// Record an explicitly uncertified pointwise proof boundary.
+    pub fn trace_nonidentifiable(profile: TraceCertificationProfile) -> Self {
+        Self {
+            kind: TraceExitKind::TraceNonidentifiable,
+            detail: format!(
+                "pointwise trace certification is non-identifying ({:?}); replacement proof obligations remain outstanding",
+                profile.reason()
+            ),
+            certification_profile: Some(profile),
         }
     }
 }
@@ -237,6 +256,9 @@ pub enum ExitReason {
     /// The two traces shared no variable with comparable samples, so there was
     /// nothing to band.
     NoComparableSamples,
+    /// Typed evidence says pointwise trace identity cannot certify this model;
+    /// replacement invariant/statistical obligations are still outstanding.
+    TraceNonidentifiable,
     /// Comparison is excluded by the tracked policy list, with that entry's
     /// reason.
     Excluded,
@@ -256,6 +278,7 @@ impl ExitReason {
             Self::TraceMissingSideUnrecorded => "trace_missing_side_unrecorded",
             Self::ComparatorFailed => "comparator_failed",
             Self::NoComparableSamples => "no_comparable_samples",
+            Self::TraceNonidentifiable => "trace_nonidentifiable",
             Self::Excluded => "excluded",
             Self::NotCompared => "not_compared",
         }
@@ -830,6 +853,15 @@ pub fn derive_band_table(
             "skipped",
             ExitReason::ComparatorFailed,
             Some(exclusions),
+        ),
+    );
+    add_exit_absences(
+        &mut rows,
+        &collect_exit_map(
+            trace,
+            "trace_nonidentifiable",
+            ExitReason::TraceNonidentifiable,
+            None,
         ),
     );
     let roster = results.map(collect_cohort_roster).transpose()?;

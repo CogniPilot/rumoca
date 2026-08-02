@@ -14,6 +14,9 @@ pub(super) fn lower_equation_systems<'dae>(
     excluded_equation_rows.extend(&analysis.derived_parameter_rows);
     let no_clocked_owners = HashMap::new();
     let no_semi_linear_rules = SemiLinearRules::default();
+    let no_aggregate_connections = AggregateDiscreteConnections::default();
+    let mut excluded_initial_rows = analysis.initialization_family_rows.clone();
+    excluded_initial_rows.extend(&analysis.initial_discrete_equation_rows);
     lower_equations(
         construction,
         discrete_values,
@@ -25,6 +28,8 @@ pub(super) fn lower_equation_systems<'dae>(
             excluded: &excluded_equation_rows,
             records: &analysis.record_equations,
             roles: &analysis.roles,
+            connection_ranks: &analysis.discrete_connection_ranks,
+            aggregate_connections: &analysis.aggregate_discrete_connections,
             topology: &analysis.discrete_value_topology,
             clocked_owners: &analysis.clocked_equation_owners,
             clocks,
@@ -34,12 +39,24 @@ pub(super) fn lower_equation_systems<'dae>(
     )?;
     lower_structured_equations(
         construction,
+        discrete_values,
         coordinates,
         functions,
-        &flat.equations,
-        &flat.structured_equations,
-        &analysis.derived_parameter_families,
-        false,
+        StructuredEquationRows {
+            equations: &flat.equations,
+            families: &flat.structured_equations,
+            excluded_families: &analysis.derived_parameter_families,
+            environment: Some(StructuredEquationEnvironment {
+                flat,
+                roles: &analysis.roles,
+                topology: &analysis.discrete_value_topology,
+                connection_ranks: &analysis.discrete_connection_ranks,
+                aggregate_connections: &analysis.aggregate_discrete_connections,
+                clocked_owners: &analysis.clocked_equation_owners,
+                clocks,
+            }),
+            initialization: false,
+        },
     )?;
     lower_equations(
         construction,
@@ -49,9 +66,11 @@ pub(super) fn lower_equation_systems<'dae>(
         EquationRows {
             flat,
             equations: &flat.initial_equations,
-            excluded: &analysis.initialization_family_rows,
+            excluded: &excluded_initial_rows,
             records: &analysis.initial_record_equations,
             roles: &analysis.roles,
+            connection_ranks: &analysis.discrete_connection_ranks,
+            aggregate_connections: &no_aggregate_connections,
             topology: &analysis.discrete_value_topology,
             clocked_owners: &no_clocked_owners,
             clocks,
@@ -63,12 +82,16 @@ pub(super) fn lower_equation_systems<'dae>(
     )?;
     lower_structured_equations(
         construction,
+        discrete_values,
         coordinates,
         functions,
-        &flat.initial_equations,
-        &flat.initial_structured_equations,
-        &HashSet::new(),
-        true,
+        StructuredEquationRows {
+            equations: &flat.initial_equations,
+            families: &flat.initial_structured_equations,
+            excluded_families: &HashSet::new(),
+            environment: None,
+            initialization: true,
+        },
     )?;
     Ok(())
 }

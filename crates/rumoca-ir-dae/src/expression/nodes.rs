@@ -69,13 +69,68 @@ pub enum PureBuiltin {
     Fill,
     Linspace,
     Cross,
+    /// MLS §10.4.2.1 concatenation after promoting every operand to at
+    /// least rank two, along the first dimension.
+    PromotedCat1,
+    /// MLS §10.4.2.1 concatenation after promoting every operand to at
+    /// least rank two, along the second dimension.
+    PromotedCat2,
+    /// MLS §10.3.3 Integer identity matrix with its extent retained as the
+    /// constructor operand and no materialized scalar payload.
+    ///
+    /// Appended because the wire encoding uses enum ordinals; see
+    /// `DAE_SCHEMA_VERSION`.
+    Identity,
+    /// MLS §10.3.2 rank-one view of one compact operand. The checked
+    /// constructor derives its sole extent from the operand dimensions.
+    ///
+    /// Appended because the wire encoding uses enum ordinals; see
+    /// `DAE_SCHEMA_VERSION`.
+    Vector,
+    /// MLS §10.3.5 permutation of the first two axes of one compact primitive
+    /// operand. Axes at ordinal two and above retain their original order.
+    ///
+    /// Appended because the wire encoding uses enum ordinals; see
+    /// `DAE_SCHEMA_VERSION`.
+    Transpose,
+    /// MLS §10.3.5 square matrix formed from one compact numeric vector.
+    /// The checked constructor derives both result extents from the operand.
+    ///
+    /// Appended because the wire encoding uses enum ordinals; see
+    /// `DAE_SCHEMA_VERSION`.
+    Diagonal,
+    /// MLS §10.3.5 matrix formed from two compact numeric vectors. The
+    /// checked constructor derives each result extent from its corresponding
+    /// operand.
+    ///
+    /// Appended because the wire encoding uses enum ordinals; see
+    /// `DAE_SCHEMA_VERSION`.
+    OuterProduct,
+    /// MLS §10.3.5 antisymmetric matrix formed from one compact Real
+    /// 3-vector. The checked constructor derives the fixed `[3, 3]` result.
+    ///
+    /// Appended because the wire encoding uses enum ordinals; see
+    /// `DAE_SCHEMA_VERSION`.
+    Skew,
 }
 
 impl PureBuiltin {
     pub(super) fn has_shaped_result(self) -> bool {
         matches!(
             self,
-            Self::Zeros | Self::Ones | Self::Fill | Self::Linspace | Self::Cross
+            Self::Zeros
+                | Self::Ones
+                | Self::Fill
+                | Self::Linspace
+                | Self::Cross
+                | Self::PromotedCat1
+                | Self::PromotedCat2
+                | Self::Identity
+                | Self::Vector
+                | Self::Transpose
+                | Self::Diagonal
+                | Self::OuterProduct
+                | Self::Skew
         )
     }
 }

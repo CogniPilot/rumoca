@@ -37,7 +37,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 25;
+pub const SOLVE_SCHEMA_VERSION: u16 = 26;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -776,6 +776,9 @@ fn validate_discrete_system_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let system = &problem.discrete;
+    system
+        .structured_rhs
+        .validate_shape_contract("discrete.structured_rhs")?;
     validate_count(
         "discrete.runtime_assignment_targets",
         system.runtime_assignment_rhs.len(),
@@ -809,6 +812,95 @@ fn validate_discrete_system_shape(
     let clock_count = problem.clocks.periodic_event_schedules.len();
     for clock in system.clock_owners.iter().flatten().copied() {
         validate_indices("discrete.clock_owners", &[clock.index()], clock_count)?;
+    }
+    validate_structured_discrete_shape(problem, clock_count)?;
+    validate_count(
+        "clocks.activation_parameter_indices",
+        clock_count,
+        problem.clocks.activation_parameter_indices.len(),
+    )?;
+    validate_indices(
+        "clocks.activation_parameter_indices",
+        &problem.clocks.activation_parameter_indices,
+        problem.layout.p_scalars(),
+    )?;
+    validate_unique_indices(
+        "clocks.activation_parameter_indices",
+        &problem.clocks.activation_parameter_indices,
+    )?;
+    Ok(())
+}
+
+fn validate_structured_discrete_shape(
+    problem: &SolveProblem,
+    clock_count: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    let system = &problem.discrete;
+    validate_count(
+        "discrete.structured_updates",
+        system.structured_rhs.nodes.len(),
+        system.structured_updates.len(),
+    )?;
+    let scalar_targets = system
+        .update_targets
+        .iter()
+        .filter_map(|target| match target {
+            ScalarSlot::Y { index, .. } => Some(("Y", *index)),
+            ScalarSlot::P { index, .. } => Some(("P", *index)),
+            ScalarSlot::Time | ScalarSlot::Constant(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut structured_nodes = BTreeSet::new();
+    let mut structured_targets = BTreeSet::new();
+    for (update_index, update) in system.structured_updates.iter().enumerate() {
+        if !structured_nodes.insert(update.node_index) {
+            return Err(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                update_index,
+                node_index: update.node_index,
+                detail: "compute node is claimed by more than one update",
+                span: None,
+            });
+        }
+        if let Some(clock) = update.clock_owner {
+            validate_indices(
+                "discrete.structured_updates.clock_owner",
+                &[clock.index()],
+                clock_count,
+            )?;
+        }
+        for (target, _) in system.structured_assignments(update_index)? {
+            let (storage, index, extent) = match target {
+                ScalarSlot::Y { index, .. } => ("Y", index, problem.layout.y_scalars()),
+                ScalarSlot::P { index, .. } => ("P", index, problem.layout.p_scalars()),
+                ScalarSlot::Time | ScalarSlot::Constant(_) => {
+                    unreachable!("structured_assignments admits only Y/P target bases")
+                }
+            };
+            if index >= extent {
+                return Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
+                    context: "discrete.structured_updates.target",
+                    storage,
+                    index,
+                    extent,
+                    span: None,
+                });
+            }
+            if scalar_targets.contains(&(storage, index)) {
+                return Err(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                    update_index,
+                    node_index: update.node_index,
+                    detail: "target is also owned by a scalar discrete update",
+                    span: None,
+                });
+            }
+            if !structured_targets.insert((storage, index)) {
+                return Err(SolveProblemShapeContractError::DuplicateIndex {
+                    context: "discrete.structured_updates.target",
+                    index,
+                    span: None,
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -1365,8 +1457,9 @@ pub enum InitializationRowRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum InitializationCoordinateKind {
     /// A continuous algebraic or output coordinate. The initialization residual
-    /// is evaluated before the algebraic refresh, so such a row is checked
-    /// against a seeded `start` rather than the coordinate's value.
+    /// is certified against a reconstructed value, but the reduced
+    /// initialization projection does not yet own the coordinate or its total
+    /// derivative through the continuous system.
     Algebraic,
     /// A discrete-time coordinate or its `pre` value.
     Discrete,
@@ -1395,6 +1488,120 @@ pub struct DiscreteSolveSystem {
     /// `None` denotes an ordinary event-iteration row. A clock-owned row is
     /// evaluated only when the referenced exact lattice ticks.
     pub clock_owners: Vec<Option<PeriodicClockId>>,
+    /// Compact B.1c maps. Scalar owners remain in `rhs`; a structured owner is
+    /// represented exactly once here and is scalarized only by evaluation or
+    /// backend adapter APIs.
+    #[serde(default)]
+    pub structured_rhs: ComputeBlock,
+    #[serde(default)]
+    pub structured_updates: Vec<StructuredDiscreteUpdate>,
+}
+
+/// Compact target projection and row policy for one structured B.1c map node.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StructuredDiscreteUpdate {
+    /// Absolute index into [`DiscreteSolveSystem::structured_rhs`] nodes.
+    pub node_index: usize,
+    pub target: StructuredDiscreteTargetMap,
+    pub role: DiscreteRowRole,
+    pub pre_mode: DiscreteEventPreMode,
+    pub observation_refresh: bool,
+    pub clock_owner: Option<PeriodicClockId>,
+}
+
+/// One compact affine projection from map points to consecutive Y/P storage.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StructuredDiscreteTargetMap {
+    pub base: ScalarSlot,
+    pub map: TensorOutputMap,
+}
+
+impl DiscreteSolveSystem {
+    /// Checked scalar adapter view for one compact structured update.
+    ///
+    /// Each pair is `(target slot, structured_rhs output lane)`. Backends use
+    /// this at their scalar boundary; the Solve IR retains only the compact map.
+    pub fn structured_assignments(
+        &self,
+        update_index: usize,
+    ) -> Result<Vec<(ScalarSlot, usize)>, SolveProblemShapeContractError> {
+        let update = self.structured_updates.get(update_index).ok_or(
+            SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                update_index,
+                node_index: usize::MAX,
+                detail: "update index is out of bounds",
+                span: None,
+            },
+        )?;
+        let node = self.structured_rhs.nodes.get(update.node_index).ok_or(
+            SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                update_index,
+                node_index: update.node_index,
+                detail: "compute node index is out of bounds",
+                span: None,
+            },
+        )?;
+        let ComputeNode::Map {
+            domain,
+            output_map,
+            span,
+            ..
+        } = node
+        else {
+            return Err(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                update_index,
+                node_index: update.node_index,
+                detail: "compute node is not a Map",
+                span: None,
+            });
+        };
+        let sources = output_map.output_indices(domain).map_err(|_| {
+            SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                update_index,
+                node_index: update.node_index,
+                detail: "compute output projection is invalid",
+                span: Some(*span),
+            }
+        })?;
+        let targets = update.target.map.output_indices(domain).map_err(|_| {
+            SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                update_index,
+                node_index: update.node_index,
+                detail: "target projection is invalid",
+                span: Some(*span),
+            }
+        })?;
+        if sources.len() != targets.len() {
+            return Err(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                update_index,
+                node_index: update.node_index,
+                detail: "compute and target projections have different cardinality",
+                span: Some(*span),
+            });
+        }
+        targets
+            .into_iter()
+            .zip(sources)
+            .map(|(offset, source)| {
+                offset_scalar_slot(update.target.base, offset)
+                    .map(|target| (target, source))
+                    .ok_or(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+                        update_index,
+                        node_index: update.node_index,
+                        detail: "target base is not Y/P storage or its offset overflows",
+                        span: Some(*span),
+                    })
+            })
+            .collect()
+    }
+}
+
+fn offset_scalar_slot(base: ScalarSlot, offset: usize) -> Option<ScalarSlot> {
+    match base {
+        ScalarSlot::Y { index, .. } => index.checked_add(offset).map(scalar_slot_y),
+        ScalarSlot::P { index, .. } => index.checked_add(offset).map(scalar_slot_p),
+        ScalarSlot::Time | ScalarSlot::Constant(_) => None,
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1496,6 +1703,12 @@ pub enum SolveEventActionKind {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SolveClockPartition {
     pub periodic_event_schedules: Vec<PeriodicEventSchedule>,
+    /// Hidden Boolean-as-Real P slot for each typed periodic clock.
+    ///
+    /// The runtime derives each value from the schedule at the current event
+    /// instant. These lanes make clock leaves computable inside mixed
+    /// condition DAGs without creating another clock or row owner.
+    pub activation_parameter_indices: Vec<usize>,
 }
 
 impl SolveClockPartition {
@@ -1546,6 +1759,7 @@ pub enum DiscreteRowRole {
 #[derive(Clone, Debug, Serialize)]
 pub struct PeriodicEventSchedule {
     lattice: rumoca_core::ClockLattice,
+    anchor: rumoca_core::ClockPhaseAnchor,
 }
 
 impl PeriodicEventSchedule {
@@ -1564,14 +1778,46 @@ impl PeriodicEventSchedule {
     pub fn new(
         lattice: rumoca_core::ClockLattice,
     ) -> Result<Self, rumoca_core::ClockLatticeErrorKind> {
+        Self::from_schedule(rumoca_core::PeriodicClockSchedule::absolute(lattice)?)
+    }
+
+    pub fn from_schedule(
+        schedule: rumoca_core::PeriodicClockSchedule,
+    ) -> Result<Self, rumoca_core::ClockLatticeErrorKind> {
+        let schedule = match schedule.anchor() {
+            rumoca_core::ClockPhaseAnchor::Absolute => {
+                rumoca_core::PeriodicClockSchedule::absolute(schedule.lattice())?
+            }
+            rumoca_core::ClockPhaseAnchor::SimulationStart => {
+                rumoca_core::PeriodicClockSchedule::simulation_start_relative(schedule.lattice())?
+            }
+        };
         Ok(Self {
-            lattice: rumoca_core::ClockLattice::new(lattice.period(), lattice.phase())?,
+            lattice: schedule.lattice(),
+            anchor: schedule.anchor(),
         })
     }
 
     /// The authoritative exact rational lattice (MLS §16.3/§16.5).
     pub const fn lattice(&self) -> rumoca_core::ClockLattice {
         self.lattice
+    }
+
+    pub const fn anchor(&self) -> rumoca_core::ClockPhaseAnchor {
+        self.anchor
+    }
+
+    /// Resolve a simulation-start-relative phase for one ME instance.
+    pub fn resolved_at(&self, start_time: f64) -> Result<Self, rumoca_core::ClockLatticeErrorKind> {
+        let schedule = match self.anchor {
+            rumoca_core::ClockPhaseAnchor::Absolute => {
+                rumoca_core::PeriodicClockSchedule::absolute(self.lattice)?
+            }
+            rumoca_core::ClockPhaseAnchor::SimulationStart => {
+                rumoca_core::PeriodicClockSchedule::simulation_start_relative(self.lattice)?
+            }
+        };
+        Self::from_schedule(schedule.resolve_at(start_time)?)
     }
 
     pub fn period_seconds(&self) -> f64 {
@@ -1609,6 +1855,8 @@ impl Default for PeriodicEventSchedule {
 #[serde(deny_unknown_fields)]
 struct PeriodicEventScheduleWire {
     lattice: rumoca_core::ClockLattice,
+    #[serde(default)]
+    anchor: rumoca_core::ClockPhaseAnchor,
 }
 
 impl<'de> Deserialize<'de> for PeriodicEventSchedule {
@@ -1617,7 +1865,16 @@ impl<'de> Deserialize<'de> for PeriodicEventSchedule {
         D: serde::Deserializer<'de>,
     {
         let wire = PeriodicEventScheduleWire::deserialize(deserializer)?;
-        Self::new(wire.lattice).map_err(serde::de::Error::custom)
+        let schedule = match wire.anchor {
+            rumoca_core::ClockPhaseAnchor::Absolute => {
+                rumoca_core::PeriodicClockSchedule::absolute(wire.lattice)
+            }
+            rumoca_core::ClockPhaseAnchor::SimulationStart => {
+                rumoca_core::PeriodicClockSchedule::simulation_start_relative(wire.lattice)
+            }
+        }
+        .map_err(serde::de::Error::custom)?;
+        Self::from_schedule(schedule).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1813,6 +2070,24 @@ pub struct SolveModel {
 }
 
 impl SolveModel {
+    /// Clone this compile-time model and resolve every periodic schedule at
+    /// the FMI instance's simulation start instant.
+    pub fn resolved_periodic_schedules_at(
+        &self,
+        start_time: f64,
+    ) -> Result<Self, rumoca_core::ClockLatticeErrorKind> {
+        let mut resolved = self.clone();
+        for schedule in &mut resolved.problem.clocks.periodic_event_schedules {
+            *schedule = schedule.resolved_at(start_time)?;
+        }
+        for binding in &mut resolved.problem.solve_layout.pre_param_bindings {
+            if let Some(schedule) = &mut binding.clock_schedule {
+                *schedule = schedule.resolved_at(start_time)?;
+            }
+        }
+        Ok(resolved)
+    }
+
     pub fn state_scalar_count(&self) -> usize {
         self.problem.solve_layout.state_scalar_count()
     }

@@ -1,4 +1,4 @@
-use rumoca_core::{Reference, TypeId};
+use rumoca_core::{Reference, ResolvedFunctionReference, TypeId};
 
 use super::super::*;
 use super::support::*;
@@ -361,6 +361,265 @@ fn nested_assert_function_model(source: &TestSource, assertion_span: Span) -> fl
         },
     ));
     model
+}
+
+fn integer_assertion_function(source: &TestSource) -> rumoca_core::Function {
+    let assertion_span = source.span("assert(i >= 1, \"i must be positive\")", 0);
+    let assignment_span = source.span("y := i", 0);
+    let mut function = rumoca_core::Function::new("positive", source.span("function positive", 0));
+    function.add_input(integer_function_param(
+        "i",
+        Vec::new(),
+        source.span("input Integer i", 0),
+    ));
+    function.add_output(integer_function_param(
+        "y",
+        Vec::new(),
+        source.span("output Integer y", 0),
+    ));
+    function.body = vec![
+        // Algorithm assert syntax is the predefined zero-output call shape
+        // Flat production currently retains.
+        rumoca_core::Statement::FunctionCall {
+            comp: test_component_reference("assert", assertion_span),
+            args: vec![
+                Expression::Binary {
+                    op: OpBinary::Ge,
+                    lhs: Box::new(Expression::VarRef {
+                        name: Reference::new("i"),
+                        subscripts: Vec::new(),
+                        span: source.span("i", 2),
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Integer(1),
+                        span: source.span("1", 0),
+                    }),
+                    span: source.span("i >= 1", 0),
+                },
+                Expression::Literal {
+                    value: Literal::String("i must be positive".to_string()),
+                    span: source.span("\"i must be positive\"", 0),
+                },
+            ],
+            outputs: Vec::new(),
+            span: assertion_span,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: test_component_reference("y", assignment_span),
+            value: Expression::VarRef {
+                name: Reference::new("i"),
+                subscripts: Vec::new(),
+                span: source.span("i", 3),
+            },
+            span: assignment_span,
+        },
+    ];
+    function
+}
+
+fn add_integer_assertion_call(model: &mut flat::Model, source: &TestSource, argument: Expression) {
+    let call_span = source.span("positive(", 0);
+    let equation_span = source.span("1.0 * positive(", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(Expression::Literal {
+                value: Literal::Real(1.0),
+                span: source.span("1.0", 0),
+            }),
+            rhs: Box::new(Expression::FunctionCall {
+                name: Reference::new("positive"),
+                args: vec![argument],
+                is_constructor: false,
+                span: call_span,
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+}
+
+#[test]
+fn proven_true_function_assertion_is_elided_by_its_exact_specialization() {
+    let source = TestSource::new(
+        "function positive input Integer i; output Integer y; algorithm assert(i >= 1, \"i must be positive\"); y := i; end positive; 1.0 * positive(3);",
+    );
+    let mut model = test_model();
+    model.add_function(integer_assertion_function(&source));
+    model.is_partial = true;
+    add_integer_assertion_call(
+        &mut model,
+        &source,
+        Expression::Literal {
+            value: Literal::Integer(3),
+            span: source.span("3", 0),
+        },
+    );
+
+    let dae = construct(&model, source.map).expect("the exact input proves the assertion true");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(
+            function.statements().count(),
+            1,
+            "only the value assignment reaches the pure DAE function body"
+        );
+    });
+}
+
+#[test]
+fn proven_false_function_assertion_is_a_typed_capability_rejection() {
+    let source = TestSource::new(
+        "function positive input Integer i; output Integer y; algorithm assert(i >= 1, \"i must be positive\"); y := i; end positive; 1.0 * positive(0);",
+    );
+    let assertion_span = source.span("assert(i >= 1, \"i must be positive\")", 0);
+    let mut model = test_model();
+    model.add_function(integer_assertion_function(&source));
+    model.is_partial = true;
+    add_integer_assertion_call(
+        &mut model,
+        &source,
+        Expression::Literal {
+            value: Literal::Integer(0),
+            span: source.span("0", 0),
+        },
+    );
+
+    let error = construct(&model, source.map).expect_err("a false assertion cannot be erased");
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics { feature, detail, span }
+            if feature == "function assertion"
+                && detail.contains("proves false")
+                && span == assertion_span
+    ));
+}
+
+#[test]
+fn unsettled_function_assertion_requires_a_runtime_action_capability() {
+    let source = TestSource::new(
+        "input Integer n; function positive input Integer i; output Integer y; algorithm assert(i >= 1, \"i must be positive\"); y := i; end positive; 1.0 * positive(n);",
+    );
+    let assertion_span = source.span("assert(i >= 1, \"i must be positive\")", 0);
+    let declaration = source.span("input Integer n", 0);
+    let mut model = test_model();
+    let mut input = flat::Variable::empty_with_span(declaration);
+    input.name = VarName::new("n");
+    input.instance_id = test_instance_id("n");
+    input.component_ref = Some(test_component_reference("n", declaration));
+    input.type_id = TypeId::new(904);
+    input.variability = Variability::Discrete(Default::default());
+    input.causality = Causality::Input(Default::default());
+    input.is_discrete_type = true;
+    input.is_primitive = true;
+    register_test_integer_type(&mut model, input.type_id, &input.dims);
+    model.add_variable(input.name.clone(), input);
+    model
+        .variable_type_names
+        .insert(VarName::new("n"), "Integer".to_string());
+    model.add_function(integer_assertion_function(&source));
+    model.is_partial = true;
+    add_integer_assertion_call(
+        &mut model,
+        &source,
+        Expression::VarRef {
+            name: test_reference("n"),
+            subscripts: Vec::new(),
+            span: source.span("n", 1),
+        },
+    );
+
+    let error = construct(&model, source.map).expect_err("runtime assertion needs an owner");
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics { feature, detail, span }
+            if feature == "function assertion"
+                && detail.contains("call-scoped flow-action owner")
+                && span == assertion_span
+    ));
+}
+
+#[test]
+fn declared_function_named_assert_is_not_predefined_assertion_elision() {
+    let source = TestSource::new(
+        "function assert output Integer y; algorithm y := 1; end assert; function f output Integer y; algorithm assert(); y := 1; end f; 1.0 * f();",
+    );
+    let call_statement_span = source.span("assert()", 0);
+    let mut user_assert = rumoca_core::Function::new("assert", source.span("function assert", 0));
+    user_assert.add_output(integer_function_param(
+        "y",
+        Vec::new(),
+        source.span("output Integer y", 0),
+    ));
+    user_assert.body.push(rumoca_core::Statement::Assignment {
+        comp: test_component_reference("y", source.span("y := 1", 0)),
+        value: Expression::Literal {
+            value: Literal::Integer(1),
+            span: source.span("1", 0),
+        },
+        span: source.span("y := 1", 0),
+    });
+    let mut caller = rumoca_core::Function::new("f", source.span("function f", 0));
+    caller.add_output(integer_function_param(
+        "y",
+        Vec::new(),
+        source.span("output Integer y", 1),
+    ));
+    caller.body = vec![
+        rumoca_core::Statement::FunctionCall {
+            comp: test_component_reference("assert", call_statement_span),
+            args: Vec::new(),
+            outputs: Vec::new(),
+            span: call_statement_span,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: test_component_reference("y", source.span("y := 1", 1)),
+            value: Expression::Literal {
+                value: Literal::Integer(1),
+                span: source.span("1", 1),
+            },
+            span: source.span("y := 1", 1),
+        },
+    ];
+    let mut model = test_model();
+    model.add_function(user_assert);
+    model.add_function(caller);
+    model.is_partial = true;
+    let call_span = source.span("f()", 0);
+    let equation_span = source.span("1.0 * f()", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Mul,
+            lhs: Box::new(Expression::Literal {
+                value: Literal::Real(1.0),
+                span: source.span("1.0", 0),
+            }),
+            rhs: Box::new(Expression::FunctionCall {
+                name: Reference::new("f"),
+                args: Vec::new(),
+                is_constructor: false,
+                span: call_span,
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let error = construct(&model, source.map)
+        .expect_err("a declared function named assert remains an ordinary call");
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics { feature, detail, span }
+            if feature == "function call statement"
+                && detail.contains("without reading a result")
+                && span == call_statement_span
+    ));
 }
 
 #[test]
@@ -1245,4 +1504,89 @@ fn external_function_without_a_declared_entry_point_is_rejected() {
             ..
         } if feature == "external function entry point" && span == function_span
     ));
+}
+
+#[test]
+fn automatic_function_vectorization_constructs_one_compact_domain() {
+    let source = TestSource::new(
+        "function f input Real u; output Real y; algorithm y := u; end f; \
+         parameter Real result[3] = f({1.0,2.0,3.0});",
+    );
+    let mut model = test_model();
+    let mut function = identity_function(
+        &source,
+        real_function_param("u", Vec::new(), source.span("input Real u", 0)),
+        real_function_param("y", Vec::new(), source.span("output Real y", 0)),
+    );
+    function.transitively_non_replaceable = true;
+    model.add_function(function);
+    let instance = model.functions[&VarName::new("f")]
+        .instance_id
+        .expect("Flat assigns the selected function an exact instance");
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "result",
+        "parameter Real result[3]",
+        907,
+        vec![3],
+        false,
+    );
+    let call_span = source.span("f({1.0,2.0,3.0})", 0);
+    let result = model.variables.get_mut(&VarName::new("result")).unwrap();
+    result.variability = Variability::Parameter(Default::default());
+    result.binding = Some(Expression::FunctionCall {
+        name: Reference::new("f").with_resolved_function(ResolvedFunctionReference {
+            instance_id: instance,
+            base_part_count: 1,
+            transitively_non_replaceable: true,
+        }),
+        args: vec![Expression::Array {
+            elements: [1.0, 2.0, 3.0]
+                .into_iter()
+                .map(|value| Expression::Literal {
+                    value: Literal::Real(value),
+                    span: call_span,
+                })
+                .collect(),
+            is_matrix: false,
+            span: call_span,
+        }],
+        is_constructor: false,
+        span: call_span,
+    });
+
+    let dae = construct(&model, source.map)
+        .expect("automatic vectorization has a checked compact DAE owner");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let parameter = function.parameters().next().unwrap();
+        assert!(
+            view.value_type(parameter.value_type())
+                .unwrap()
+                .dimensions()
+                .is_empty(),
+            "the specialization keeps the declared scalar parameter"
+        );
+
+        let result = view
+            .variables()
+            .map(|(_, variable)| variable)
+            .find(|variable| variable.name().as_str() == "result")
+            .unwrap();
+        let binding = view.expression(result.binding().unwrap()).unwrap();
+        assert_eq!(binding.value_type().dimensions(), [3]);
+        let dae::ExpressionOperation::Comprehension { domain, body } = binding.operation() else {
+            panic!("vectorization must remain one compact comprehension owner")
+        };
+        assert_eq!(view.domain(domain).unwrap().extents(), [3]);
+        let body = view.expression(body).unwrap();
+        let dae::ExpressionOperation::Call { arguments, .. } = body.operation() else {
+            panic!("the compact body is one exact scalar function call")
+        };
+        let argument = view.expression(arguments.get(0).unwrap()).unwrap();
+        assert_eq!(argument.kind(), dae::ExpressionKind::Index);
+        assert!(argument.value_type().dimensions().is_empty());
+        assert_eq!(body.provenance().span(), call_span);
+    });
 }

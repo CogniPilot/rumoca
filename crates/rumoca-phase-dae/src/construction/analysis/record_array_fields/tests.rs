@@ -1,6 +1,6 @@
 use rumoca_core::{
-    ComponentRefPart, ComponentReference, DefId, Expression, Reference, SourceMap, Span, Subscript,
-    TypeId, VarName,
+    ComponentRefPart, ComponentReference, DefId, EffectiveType, Expression, FunctionParam,
+    OpBinary, Reference, SourceMap, Span, Subscript, TypeId, VarName,
 };
 
 use super::super::PlannedRole;
@@ -153,14 +153,6 @@ fn member_access(
     )
 }
 
-fn runtime_roles(model: &flat::Model) -> HashMap<VarName, PlannedRole> {
-    model
-        .variables
-        .values()
-        .map(|variable| (variable.name.clone(), PlannedRole::Algebraic))
-        .collect()
-}
-
 fn projection(
     field_span: Span,
     base_span: Span,
@@ -205,6 +197,7 @@ fn projection(
                 subscripts: vec![subscript].into_boxed_slice(),
             },
         )]),
+        ..RecordArrayFieldPlans::default()
     };
     (expression, plans)
 }
@@ -261,12 +254,10 @@ fn absent_materialized_coordinate_fails_at_field_occurrence() {
         field_span,
     );
 
-    let error = match analyze_record_array_fields(&model, [&expression], &HashMap::new()) {
-        Ok(_) => {
-            panic!("a selected Flat occurrence without a runtime role cannot mint a certificate")
-        }
-        Err(error) => error,
-    };
+    let plans = analyze_record_array_fields(&model, [&expression])
+        .expect("identity/type/shape planning precedes runtime-role planning");
+    let error = validate_record_array_field_runtime_coordinates(&model, &plans, &HashMap::new())
+        .expect_err("a selected Flat occurrence without a runtime role cannot reach construction");
 
     assert!(matches!(
         error,
@@ -307,8 +298,8 @@ fn nested_component_array_member_is_one_exact_materialized_coordinate() {
         span,
     );
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
-        .expect("materialized path should plan");
+    let plans =
+        analyze_record_array_fields(&model, [&expression]).expect("materialized path should plan");
 
     assert!(matches!(
         plans.get(&expression),
@@ -316,7 +307,9 @@ fn nested_component_array_member_is_one_exact_materialized_coordinate() {
             coordinate: planned,
             target,
             value_type: planned_type,
+            shape,
         }) if planned == &coordinate && *target == field_target && *planned_type == value_type
+            && shape.as_ref() == [2]
     ));
 }
 
@@ -365,12 +358,8 @@ fn same_span_component_instances_keep_distinct_materialized_coordinates() {
         span,
     );
 
-    let plans = analyze_record_array_fields(
-        &model,
-        [&first_expression, &second_expression],
-        &runtime_roles(&model),
-    )
-    .expect("same-span replicated expressions should have compact distinct keys");
+    let plans = analyze_record_array_fields(&model, [&first_expression, &second_expression])
+        .expect("same-span replicated expressions should have compact distinct keys");
 
     assert!(matches!(
         plans.get(&first_expression),
@@ -422,8 +411,8 @@ fn block_array_slice_projects_the_exact_nested_value_member() {
         span,
     );
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
-        .expect("block slice should plan");
+    let plans =
+        analyze_record_array_fields(&model, [&expression]).expect("block slice should plan");
 
     assert!(matches!(
         plans.get(&expression),
@@ -476,7 +465,7 @@ fn nested_component_array_slice_projects_the_subscripted_part() {
         span,
     );
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
+    let plans = analyze_record_array_fields(&model, [&expression])
         .expect("a slice on a nested component array has an exact projection proof");
 
     assert!(
@@ -487,6 +476,169 @@ fn nested_component_array_slice_projects_the_subscripted_part() {
         ),
         "the projection must select the members of the subscripted part, in index order"
     );
+}
+
+/// A function call consumes the typed projection certificate as its argument
+/// shape. This is the first-divergence shape behind the MSL SoftStarter family:
+/// the call sees the two projected scalar members as one exact vector, without
+/// flattening the slice or resolving the field from its rendered spelling.
+#[test]
+fn function_specialization_reads_symbolic_record_member_projection_shape() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("projection_call.mo", "identity(ac.pin[:].v)");
+    let span = Span::from_offsets(source, 0, 21);
+    let plug = DefId::new(130);
+    let pin = DefId::new(131);
+    let potential = DefId::new(132);
+    let real = TypeId::new(1);
+    let mut model = flat::Model::new();
+    for (index, instance) in [(1, 210), (2, 211)] {
+        add_variable(
+            &mut model,
+            &[
+                ("ac", &[], plug),
+                ("pin", &[index], pin),
+                ("v", &[], potential),
+            ],
+            instance,
+            (real, &[]),
+            span,
+        );
+    }
+    let projection = member_access(
+        component_reference(&[("ac", &[], plug), ("pin", &[], pin)], span),
+        Subscript::Colon { span },
+        &[("v", potential)],
+        span,
+    );
+    let mut identity = rumoca_core::Function::new("identity", span);
+    identity.add_input(
+        FunctionParam::new(
+            "u",
+            "Real",
+            EffectiveType::new(real, real, vec![0]).expect("test input type is resolved"),
+            span,
+        )
+        .with_shape_expr(vec![Subscript::Colon { span }]),
+    );
+    identity.add_output(FunctionParam::new(
+        "y",
+        "Real",
+        EffectiveType::new(real, real, Vec::new()).expect("test output type is resolved"),
+        span,
+    ));
+    model.add_function(identity);
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("identity"),
+            args: vec![projection],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let shapes = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+        .expect("the typed record-member projection proves the call signature");
+    let [certificate] = shapes.certificates() else {
+        panic!("one call must own one specialization certificate");
+    };
+    assert_eq!(certificate.parameters, vec![vec![2]]);
+}
+
+/// Ordinary structural field access uses the field declaration's retained
+/// dimensions in addition to the recursively proven shape of its base. This is
+/// deliberately separate from the occurrence plan needed by `r[:].field`:
+/// operator-record expressions such as `(a - b).samples` own no Flat coordinate
+/// projection to materialize.
+#[test]
+fn function_specialization_reads_declared_shape_of_structural_record_field() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("structural_field.mo", "identity((a-b).samples)");
+    let span = Span::from_offsets(source, 0, 23);
+    let record = DefId::new(140);
+    let samples = DefId::new(141);
+    let real = TypeId::new(1);
+    let mut model = flat::Model::new();
+    for name in ["a", "b"] {
+        model.add_variable(
+            VarName::new(name),
+            flat::Variable {
+                name: VarName::new(name),
+                type_id: TypeId::new(2),
+                ..flat::Variable::empty_with_span(span)
+            },
+        );
+    }
+    model.record_types.insert(
+        record,
+        flat::RecordType {
+            name: "SampleRecord".to_string(),
+            fields: vec![flat::RecordField {
+                name: "samples".to_string(),
+                def_id: samples,
+                dims: vec![3],
+            }],
+        },
+    );
+    let field = Expression::FieldAccess {
+        base: Box::new(Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(Expression::VarRef {
+                name: Reference::new("a"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            rhs: Box::new(Expression::VarRef {
+                name: Reference::new("b"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            span,
+        }),
+        field: "samples".to_string(),
+        field_def_id: samples,
+        span,
+    };
+    let mut identity = rumoca_core::Function::new("identity", span);
+    identity.add_input(
+        FunctionParam::new(
+            "u",
+            "Real",
+            EffectiveType::new(real, real, vec![0]).expect("test input type is resolved"),
+            span,
+        )
+        .with_shape_expr(vec![Subscript::Colon { span }]),
+    );
+    identity.add_output(FunctionParam::new(
+        "y",
+        "Real",
+        EffectiveType::new(real, real, Vec::new()).expect("test output type is resolved"),
+        span,
+    ));
+    model.add_function(identity);
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("identity"),
+            args: vec![field],
+            is_constructor: false,
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let shapes = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+        .expect("the field DefId and retained record layout prove the call signature");
+    let [certificate] = shapes.certificates() else {
+        panic!("one call must own one specialization certificate");
+    };
+    assert_eq!(certificate.parameters, vec![vec![3]]);
 }
 
 /// Two sibling instances of one class spell the same nested slice, and both
@@ -543,7 +695,7 @@ fn a_sibling_instance_cannot_join_a_nested_slice() {
         span,
     );
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
+    let plans = analyze_record_array_fields(&model, [&expression])
         .expect("a nested slice plans from the instance that wrote it");
 
     assert!(
@@ -594,7 +746,7 @@ fn a_foreign_path_prefix_cannot_join_a_nested_slice() {
         span,
     );
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
+    let plans = analyze_record_array_fields(&model, [&expression])
         .expect("a nested slice plans from its own declaration chain");
 
     assert!(
@@ -651,7 +803,7 @@ fn a_second_array_part_on_the_slice_path_is_rejected_by_name() {
         span,
     );
 
-    let error = match analyze_record_array_fields(&model, [&expression], &runtime_roles(&model)) {
+    let error = match analyze_record_array_fields(&model, [&expression]) {
         Ok(_) => panic!("two array parts on one path cannot mint a rank-one projection"),
         Err(error) => error,
     };
@@ -720,7 +872,7 @@ fn a_multi_dimensional_member_slice_abstains_by_name() {
         span,
     };
 
-    let error = match analyze_record_array_fields(&model, [&expression], &runtime_roles(&model)) {
+    let error = match analyze_record_array_fields(&model, [&expression]) {
         Ok(_) => panic!("a rank-two written slice has no rank-preserving certificate"),
         Err(error) => error,
     };
@@ -793,12 +945,8 @@ fn same_shaped_sibling_fields_keep_distinct_projection_identities() {
     let right_expression =
         member_access(base, Subscript::Colon { span }, &[("right", right)], span);
 
-    let plans = analyze_record_array_fields(
-        &model,
-        [&left_expression, &right_expression],
-        &runtime_roles(&model),
-    )
-    .expect("exact sibling declaration chains produce independent certificates");
+    let plans = analyze_record_array_fields(&model, [&left_expression, &right_expression])
+        .expect("exact sibling declaration chains produce independent certificates");
 
     assert!(matches!(
         plans.get(&left_expression),
@@ -842,7 +990,7 @@ fn rendered_name_mismatch_cannot_redirect_materialized_identity() {
         span,
     );
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
+    let plans = analyze_record_array_fields(&model, [&expression])
         .expect("exact identity is independent of rendered storage spelling");
 
     assert!(matches!(
@@ -879,7 +1027,7 @@ fn same_spelling_foreign_identity_cannot_join_projection_family() {
         span,
     );
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
+    let plans = analyze_record_array_fields(&model, [&expression])
         .expect("foreign identity is ignored, not repaired by spelling");
 
     assert!(
@@ -918,7 +1066,7 @@ fn inconsistent_projected_member_shape_fails_before_construction() {
         span,
     );
 
-    let error = match analyze_record_array_fields(&model, [&expression], &runtime_roles(&model)) {
+    let error = match analyze_record_array_fields(&model, [&expression]) {
         Ok(_) => panic!("non-uniform member shapes must violate MLS ARR-004"),
         Err(error) => error,
     };
@@ -943,7 +1091,7 @@ fn unproven_empty_slice_cannot_fabricate_scalar_elements() {
     );
     let model = flat::Model::new();
 
-    let plans = analyze_record_array_fields(&model, [&expression], &runtime_roles(&model))
+    let plans = analyze_record_array_fields(&model, [&expression])
         .expect("absence of elements cannot create a projection proof");
     let error = validate_expression_with_record_array_fields(
         &expression,

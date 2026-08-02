@@ -287,6 +287,94 @@ fn initial_event_advances_pre_memory_before_the_synthetic_right_limit() {
 }
 
 #[test]
+fn phase_zero_clock_tick_executes_once_after_initialization() {
+    let schedule = solve::PeriodicEventSchedule::new(
+        rumoca_core::ClockLattice::from_seconds(0.1, 0.0).expect("positive phase-zero lattice"),
+    )
+    .expect("phase-zero schedule");
+    let clocks = solve::SolveClockPartition {
+        periodic_event_schedules: vec![schedule.clone()],
+        activation_parameter_indices: vec![2],
+    };
+    let owner = clocks
+        .periodic_clock_id(0)
+        .expect("inserted clock has a typed identity");
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                parameter_count: 3,
+                compiled_parameter_len: 3,
+                pre_param_bindings: vec![solve::PreParamBinding {
+                    dest_p_index: 1,
+                    source: solve::PreParamSource::P { index: 0 },
+                    clock_schedule: Some(schedule),
+                }],
+                ..Default::default()
+            },
+            clocks,
+            discrete: solve::DiscreteSolveSystem {
+                rhs: spanned_block(
+                    vec![vec![
+                        solve::LinearOp::LoadP { dst: 0, index: 1 },
+                        solve::LinearOp::Const { dst: 1, value: 1.0 },
+                        solve::LinearOp::Binary {
+                            dst: 2,
+                            op: solve::BinaryOp::Add,
+                            lhs: 0,
+                            rhs: 1,
+                        },
+                        solve::LinearOp::StoreOutput { src: 2 },
+                    ]],
+                    "phase_zero_clock_tick.mo",
+                ),
+                update_targets: vec![solve::scalar_slot_p(0)],
+                row_roles: vec![solve::DiscreteRowRole::Equation],
+                pre_modes: vec![solve::DiscreteEventPreMode::EventEntry],
+                observation_refresh: vec![false],
+                clock_owners: vec![Some(owner)],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        parameters: vec![0.0, 0.0, 0.0],
+        visible_names: vec!["counter".to_string()],
+        visible_value_rows: spanned_block(
+            vec![direct_param_visible_value_row(0)],
+            "phase_zero_clock_tick_visible.mo",
+        ),
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("clock fixture should prepare");
+    let mut p = model.parameters.clone();
+    let event_pre_p = p.clone();
+
+    let outcome = runtime
+        .apply_projected_initial_event_boundary(
+            ProjectedInitialEventInput {
+                y: &mut [],
+                p: &mut p,
+                t_start: 0.0,
+                t_end: 0.1,
+                tol: 1.0e-9,
+                event_pre_y: &[],
+                event_pre_p: &event_pre_p,
+                max_iters: 8,
+                dynamic_event: None,
+                apply_without_initial_event: false,
+            },
+            |_, _, _| Ok(false),
+        )
+        .expect("initial event and coincident tick should settle");
+
+    assert_eq!(p[0], 1.0, "the first clock tick must execute exactly once");
+    assert_eq!(outcome.observations.len(), 2);
+    assert_eq!(outcome.observations[0].t, 0.0);
+    assert_eq!(outcome.observations[1].t, 0.0);
+    assert_eq!(outcome.observations[0].p[0], 0.0);
+    assert_eq!(outcome.observations[1].p[0], 1.0);
+}
+
+#[test]
 fn root_evaluation_rejects_non_finite_surfaces() {
     let model = solve::SolveModel {
         problem: solve::SolveProblem {

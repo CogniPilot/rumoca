@@ -67,6 +67,7 @@ pub(super) fn compute_trace_output_summary(
         models_compared: model_count,
         missing_trace_models: trace_report.missing_trace.len(),
         skipped_models: trace_report.skipped.len(),
+        trace_nonidentifiable_models: trace_report.trace_nonidentifiable.len(),
         agreement_high: agreement.high_agreement,
         agreement_minor: agreement.minor_agreement,
         agreement_deviation: agreement.deviation,
@@ -302,6 +303,7 @@ fn build_trace_report_payload(
         "models_compared": trace_summary.models_compared,
         "missing_trace_models": trace_summary.missing_trace_models,
         "skipped_models": trace_summary.skipped_models,
+        "trace_nonidentifiable_models": trace_summary.trace_nonidentifiable_models,
         "agreement_bands": {
             "high_agreement": trace_summary.agreement_high,
             "minor_agreement": trace_summary.agreement_minor,
@@ -347,6 +349,7 @@ fn build_trace_report_payload(
         "shape_counts": shape_counts,
         "missing_trace": quantification.missing_trace,
         "skipped": quantification.skipped,
+        "trace_nonidentifiable": quantification.trace_nonidentifiable,
         "models": quantification.models,
     })
 }

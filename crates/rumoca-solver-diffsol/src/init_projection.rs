@@ -246,13 +246,14 @@ impl EventObservation<'_> {
         &mut self,
         event_t: f64,
         horizon_t: f64,
+        boundary_tolerance: f64,
         event: RuntimeEventStop,
     ) -> Result<f64, SimError> {
         let outcome = process_runtime_event_boundary(
             RuntimeEventBoundary {
                 event_t,
                 horizon_t,
-                tolerance: self.tol,
+                tolerance: boundary_tolerance,
                 event,
             },
             self,
@@ -314,20 +315,13 @@ impl RuntimeEventBoundaryHandler for EventObservation<'_> {
             right_t,
             self.tol,
         )?;
-        let mut samples = SampleRecorder {
-            runtime: Some(self.runtime),
-            model: self.model,
-            recorded_times: &mut *self.recorded_times,
-            data: &mut *self.data,
-        };
-        record_sample_if_new(
-            &mut samples,
-            SamplePoint {
-                y: self.y,
-                params: self.params,
-                t: right_t,
-            },
-        )?;
+        // An event right limit is a distinct superdense observation even when
+        // its timestamp is the next representable value. Ordinary output-time
+        // deduplication would collapse it back into the event instant.
+        self.recorded_times.push(right_t);
+        self.runtime
+            .record_visible_sample(self.data, self.y, self.params, right_t)
+            .map_err(|error| SimError::SolveIr(error.to_string()))?;
         Ok(())
     }
 }

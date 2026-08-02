@@ -11,6 +11,7 @@
 mod bdf;
 mod error;
 mod init_projection;
+mod me;
 mod ode;
 mod prepared;
 mod runtime;
@@ -32,6 +33,7 @@ use diffsol::{
     Vector as _, VectorHost,
 };
 use init_projection::{EventObservation, initialize_state_runtime_values};
+use me::{DiffsolMeHost, MeInitialState, MePostEventState};
 use rumoca_eval_solve::{self as solve_eval, RowEvalContext};
 use rumoca_ir_solve as solve;
 use rumoca_solver::runtime::driver::{
@@ -43,8 +45,8 @@ use rumoca_solver::{
     build_sim_result_from_solve_model, commit_pre_params_after_event_at,
     current_dynamic_time_event_stop, next_runtime_event_stop, process_runtime_event_boundary,
     push_visible_values, replace_last_visible_values, runtime_event_horizon,
-    runtime_values_changed, stop_time_reached_with_tol, timeline::sample_time_match_with_tol,
-    visible_values_with_context,
+    runtime_root_event_application_time, runtime_values_changed, stop_time_reached_with_tol,
+    timeline::sample_time_match_with_tol, visible_values_with_context,
 };
 pub(crate) use runtime::{
     EventUpdateInput, apply_event_updates, apply_event_updates_with_event_pre,
@@ -101,7 +103,7 @@ impl AlgebraicWarmStart {
 }
 pub use error::{SimError, SimFailureStage, StateOnlyRejection};
 pub(crate) use ode::{
-    OdeModel, build_ode_problem_with_runtime_params_and_initial,
+    OdeModel, build_me_state_ode_problem, build_ode_problem_with_runtime_params_and_initial,
     build_state_ode_problem_with_runtime_params_and_initial, state_ode_problem_input,
     trace_bdf_eval_counter_snapshot, validate_model,
 };
@@ -242,6 +244,7 @@ fn check_state_only_initialization(
         &params,
         opts,
         &algebraic_warm_start,
+        None,
     )
     .map(|_| ())
 }
@@ -337,40 +340,15 @@ fn simulate_state_only_bdf(
     equilibrium_model: &Arc<OdeModel>,
     runtime: &Arc<SolveRuntime>,
 ) -> Result<SimResult, SimError> {
-    let mut params = model.parameters.clone();
-    let mut data = vec![Vec::with_capacity(times.len()); model.visible_names.len()];
-    let mut recorded_times = Vec::with_capacity(times.len());
-    let mut current_t = opts.t_start;
-    let mut current_y = model.initial_y.clone();
-    let initial_observations = initialize_state_runtime_values(
-        model,
-        opts,
-        runtime,
-        equilibrium_model,
-        &mut current_y,
-        &mut params,
-        &mut current_t,
-    )?;
+    let StateOnlyInitialization {
+        mut params,
+        mut data,
+        mut recorded_times,
+        mut current_t,
+        mut current_y,
+        me_host,
+    } = initialize_state_only_bdf(model, opts, times, equilibrium_model, runtime)?;
     let current_state = current_y[..model.state_scalar_count()].to_vec();
-    let mut samples = SampleRecorder {
-        runtime: Some(runtime.as_ref()),
-        model,
-        recorded_times: &mut recorded_times,
-        data: &mut data,
-    };
-    record_initial_samples(
-        &mut samples,
-        runtime.as_ref(),
-        equilibrium_model,
-        opts.atol.max(1.0e-10),
-        SamplePoint {
-            y: &current_y,
-            params: &params,
-            t: current_t,
-        },
-        &initial_observations,
-    )?;
-
     let runtime_params: RuntimeParameters = Rc::new(RefCell::new(params.clone()));
     let algebraic_warm_start = AlgebraicWarmStart::new(current_y.clone());
     let (problem_input, eval_counters) = state_ode_problem_input(
@@ -380,8 +358,14 @@ fn simulate_state_only_bdf(
         &current_state,
         runtime,
     );
-    let problem =
-        build_state_ode_problem_with_runtime_params_and_initial(model, opts, problem_input)?;
+    let ode_build = build_me_state_ode_problem(model, opts, me_host.clone(), problem_input)?;
+    let problem = ode_build.problem;
+    debug_assert!(ode_build.eval_counters.is_some() == eval_counters.is_some());
+    // `OdeBuilder` probes RHS while constructing the problem, before the BDF
+    // host has performed its one-time accepted-seed preparation.
+    if let Some(error) = me_host.take_callback_error() {
+        return Err(error);
+    }
     let state = initial_state_only_bdf_state(
         runtime,
         &problem,
@@ -389,12 +373,22 @@ fn simulate_state_only_bdf(
         &params,
         opts,
         &algebraic_warm_start,
+        Some(&me_host),
+    )?;
+    me_host.verify_frozen_compatibility_state(
+        &algebraic_warm_start.speculative(),
+        &params,
+        rumoca_solver::fmi_me::MeStage::Initialization,
     )?;
     let nl_solver =
         NewtonNonlinearSolver::new(LinearSolver::default(), BacktrackingLineSearch::default());
     let solver = solver_call("BDF new", || {
         diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
-    })?;
+    });
+    if let Some(error) = me_host.take_callback_error() {
+        return Err(error);
+    }
+    let solver = solver?;
     let stage_recorder = StageRecorder::default();
     let mut backend = DiffsolAdvanceBackend::new(DiffsolAdvanceBackendInputs {
         solver,
@@ -405,6 +399,7 @@ fn simulate_state_only_bdf(
         algebraic_warm_start,
         opts,
         stage_recorder: stage_recorder.clone(),
+        me_host,
     });
 
     // Drive the reduced solver through the backend-neutral output / event /
@@ -445,6 +440,101 @@ fn simulate_state_only_bdf(
     )
 }
 
+struct StateOnlyInitialization {
+    params: Vec<f64>,
+    data: Vec<Vec<f64>>,
+    recorded_times: Vec<f64>,
+    current_t: f64,
+    current_y: Vec<f64>,
+    me_host: DiffsolMeHost,
+}
+
+fn initialize_state_only_bdf(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    times: &[f64],
+    equilibrium_model: &Arc<OdeModel>,
+    runtime: &Arc<SolveRuntime>,
+) -> Result<StateOnlyInitialization, SimError> {
+    let mut params = model.parameters.clone();
+    let mut data = vec![Vec::with_capacity(times.len()); model.visible_names.len()];
+    let mut recorded_times = Vec::with_capacity(times.len());
+    let mut current_t = opts.t_start;
+    let mut current_y = model.initial_y.clone();
+    let observations = initialize_state_runtime_values(
+        model,
+        opts,
+        runtime,
+        equilibrium_model,
+        &mut current_y,
+        &mut params,
+        &mut current_t,
+    )?;
+    let me_host = DiffsolMeHost::instantiate(model, opts)?;
+    let current_state = &current_y[..model.state_scalar_count()];
+    verify_me_initial_state(
+        &me_host.initialize(&current_y, &params)?,
+        current_t,
+        current_state,
+    )?;
+    record_initial_samples(
+        &mut SampleRecorder {
+            runtime: Some(runtime.as_ref()),
+            model,
+            recorded_times: &mut recorded_times,
+            data: &mut data,
+        },
+        runtime.as_ref(),
+        equilibrium_model,
+        opts.atol.max(1.0e-10),
+        SamplePoint {
+            y: &current_y,
+            params: &params,
+            t: current_t,
+        },
+        &observations,
+    )?;
+    Ok(StateOnlyInitialization {
+        params,
+        data,
+        recorded_times,
+        current_t,
+        current_y,
+        me_host,
+    })
+}
+
+fn verify_me_initial_state(
+    component: &MeInitialState,
+    legacy_time: f64,
+    legacy_states: &[f64],
+) -> Result<(), SimError> {
+    let diverged = component.time.to_bits() != legacy_time.to_bits()
+        || component.states.len() != legacy_states.len()
+        || component
+            .states
+            .iter()
+            .zip(legacy_states)
+            .any(|(lhs, rhs)| lhs.to_bits() != rhs.to_bits())
+        || component.termination.is_some();
+    if !diverged {
+        return Ok(());
+    }
+    Err(SimError::RuntimeContract {
+        reason: format!(
+            "ME initialization diverged from the frozen Diffsol state: component_t={} \
+             legacy_t={legacy_time} component_states={} legacy_states={} \
+             component_observations={} terminated={}",
+            component.time,
+            component.states.len(),
+            legacy_states.len(),
+            component.observations.len(),
+            component.termination.is_some(),
+        ),
+    }
+    .at_stage(SimFailureStage::Initialization))
+}
+
 fn initial_state_only_bdf_state<Eqn>(
     runtime: &SolveRuntime,
     problem: &diffsol::OdeSolverProblem<Eqn>,
@@ -452,6 +542,7 @@ fn initial_state_only_bdf_state<Eqn>(
     params: &[f64],
     opts: &SimOptions,
     algebraic_warm_start: &AlgebraicWarmStart,
+    me_host: Option<&DiffsolMeHost>,
 ) -> Result<BdfState<Vector>, SimError>
 where
     Eqn: diffsol::OdeEquationsImplicit<
@@ -461,8 +552,14 @@ where
             C = <Matrix as MatrixCommon>::C,
         >,
 {
-    let mut state = BdfState::<Vector>::new_without_initialise(problem)
-        .map_err(|err| SimError::SolverError(format!("BDF state init: {err}")))?;
+    let state = BdfState::<Vector>::new_without_initialise(problem)
+        .map_err(|err| SimError::SolverError(format!("BDF state init: {err}")));
+    if let Some(me_host) = me_host
+        && let Some(error) = me_host.take_callback_error()
+    {
+        return Err(error);
+    }
+    let mut state = state?;
     let mut solver_y = algebraic_warm_start.speculative();
     let dy = runtime.eval_state_derivatives_with_guess(
         problem.t0,
@@ -472,7 +569,14 @@ where
         opts.atol,
         256,
     )?;
-    algebraic_warm_start.commit(solver_y);
+    algebraic_warm_start.commit(solver_y.clone());
+    if let Some(me_host) = me_host {
+        me_host
+            .prepare_bdf_initial_seed(&solver_y, rumoca_solver::fmi_me::MeStage::Initialization)?;
+        if let Some(error) = me_host.take_callback_error() {
+            return Err(error);
+        }
+    }
     {
         let state_ref = state.as_mut();
         state_ref.y.as_mut_slice().copy_from_slice(state_y);
@@ -480,11 +584,17 @@ where
         *state_ref.t = problem.t0;
     }
     state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+    if let Some(me_host) = me_host
+        && let Some(error) = me_host.take_callback_error()
+    {
+        return Err(error);
+    }
     Ok(state)
 }
 
 /// Map an internal diffsol [`SimError`] into the backend-neutral driver error,
-/// preserving `Terminated` so finalization can replay `terminate()` semantics.
+/// preserving typed outcomes so finalization and failure classification see
+/// the same variant on the far side of the driver boundary.
 fn sim_to_driver(error: SimError) -> SimDriverError {
     // Stage annotations are recorded separately (see [`StageRecorder`]) because
     // the driver error cannot carry them; peel them off so an annotated failure
@@ -492,10 +602,21 @@ fn sim_to_driver(error: SimError) -> SimDriverError {
     match error {
         SimError::Staged { inner, .. } => sim_to_driver(*inner),
         SimError::Terminated { time, message } => SimDriverError::Terminated { time, message },
+        SimError::AssertionFailed { time, message } => {
+            SimDriverError::AssertionFailed { time, message }
+        }
+        SimError::RuntimeContract { reason } => SimDriverError::RuntimeContract { reason },
         SimError::SolveIr(message) => SimDriverError::SolveIr(message),
         SimError::Timeout { seconds } => SimDriverError::Timeout(TimeoutExceeded { seconds }),
         other => SimDriverError::Backend(other.to_string()),
     }
+}
+
+fn staged_sim_to_driver(recorder: &StageRecorder, error: SimError) -> SimDriverError {
+    if let Some(stage) = error.stage() {
+        recorder.set(Some(stage));
+    }
+    sim_to_driver(error)
 }
 
 impl From<SimDriverError> for SimError {
@@ -507,6 +628,10 @@ impl From<SimDriverError> for SimError {
             SimDriverError::Timeout(timeout) => SimError::Timeout {
                 seconds: timeout.seconds,
             },
+            SimDriverError::AssertionFailed { time, message } => {
+                SimError::AssertionFailed { time, message }
+            }
+            SimDriverError::RuntimeContract { reason } => SimError::RuntimeContract { reason },
             SimDriverError::Terminated { time, message } => SimError::Terminated { time, message },
         }
     }
@@ -531,6 +656,8 @@ struct DiffsolAdvanceBackend<'a, Eqn, S> {
     opts: &'a SimOptions,
     active_stop_time: Option<f64>,
     stage_recorder: StageRecorder,
+    me_host: DiffsolMeHost,
+    pending_component_event: Option<MePostEventState>,
     _eqn: std::marker::PhantomData<fn() -> Eqn>,
 }
 
@@ -543,6 +670,7 @@ struct DiffsolAdvanceBackendInputs<'a, S> {
     algebraic_warm_start: AlgebraicWarmStart,
     opts: &'a SimOptions,
     stage_recorder: StageRecorder,
+    me_host: DiffsolMeHost,
 }
 
 impl<'a, Eqn, S> DiffsolAdvanceBackend<'a, Eqn, S>
@@ -562,6 +690,8 @@ where
             opts: inputs.opts,
             active_stop_time: None,
             stage_recorder: inputs.stage_recorder,
+            me_host: inputs.me_host,
+            pending_component_event: None,
             _eqn: std::marker::PhantomData,
         }
     }
@@ -574,6 +704,35 @@ where
     /// [`StageRecorder`].
     fn note<E>(&self, stage: SimFailureStage, error: E) -> E {
         note_stage(&self.stage_recorder, stage, error)
+    }
+
+    fn me_to_driver(&self, error: SimError) -> SimDriverError {
+        staged_sim_to_driver(&self.stage_recorder, error)
+    }
+
+    fn take_me_callback_error(&self) -> Option<SimDriverError> {
+        self.me_host
+            .take_callback_error()
+            .map(|error| self.me_to_driver(error))
+    }
+
+    fn native_at_time(&mut self, time: f64) -> Result<Vec<f64>, SimDriverError> {
+        if sample_time_match_with_tol(self.solver.state().t, time) {
+            return Ok(self.solver.state().y.as_slice().to_vec());
+        }
+        self.solver
+            .interpolate(time)
+            .map(|values| values.as_slice().to_vec())
+            .map_err(|error| {
+                self.note(
+                    SimFailureStage::TargetIsolation,
+                    SimDriverError::Backend(format!("ME event interpolation: {error}")),
+                )
+            })
+    }
+
+    fn retain_component_event(&mut self, event: MePostEventState) {
+        self.pending_component_event = Some(event);
     }
 
     fn commit_state_only_warm_start(&self) -> Result<(), SimDriverError> {
@@ -605,22 +764,44 @@ where
         let mut solver_y = self.native_to_full_y(&native, t, &params)?;
         self.runtime
             .refresh_delay_values(t, &solver_y, &mut params)?;
-        if !self
+        let projection_changed = self
             .runtime
             .project_state_manifold(&mut solver_y, &params, t, self.tol())
-            .map_err(|error| self.note(SimFailureStage::ManifoldProjection, error))?
-        {
-            return self.commit_state_only_warm_start();
+            .map_err(|error| self.note(SimFailureStage::ManifoldProjection, error))?;
+        if projection_changed {
+            self.runtime.refresh_algebraic_and_output_slots(
+                t,
+                &mut solver_y,
+                &params,
+                self.tol(),
+                EVENT_UPDATE_MAX_ITERS,
+            )?;
+            let (native_y, native_dy) = self.reset_vectors(&solver_y, &params, t)?;
+            self.reset(&native_y, &native_dy, &params, t, h_cap)?;
+        } else {
+            self.commit_state_only_warm_start()?;
         }
-        self.runtime.refresh_algebraic_and_output_slots(
-            t,
-            &mut solver_y,
-            &params,
-            self.tol(),
-            EVENT_UPDATE_MAX_ITERS,
-        )?;
-        let (native_y, native_dy) = self.reset_vectors(&solver_y, &params, t)?;
-        self.reset(&native_y, &native_dy, &params, t, h_cap)
+        let driver_state = self.solver.state().y.as_slice().to_vec();
+        let frozen_solver_y = self.algebraic_warm_start.speculative();
+        let frozen_parameters = self.runtime_params.borrow();
+        let component_state = self
+            .me_host
+            .accept_continuous_step(t, &driver_state, &frozen_solver_y, &frozen_parameters)
+            .map_err(|error| self.me_to_driver(error))?;
+        if component_state.len() != driver_state.len()
+            || component_state.iter().zip(&driver_state).any(|(lhs, rhs)| {
+                (lhs - rhs).abs() > self.tol() * 8.0 * (1.0 + lhs.abs().max(rhs.abs()))
+            })
+        {
+            return Err(self.note(
+                SimFailureStage::ManifoldProjection,
+                SimDriverError::Backend(format!(
+                    "ME accepted-state projection diverged from the frozen driver: \
+                     component={component_state:?} driver={driver_state:?}"
+                )),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -643,12 +824,17 @@ where
         // error, for example) must not be mistaken for the origin of a later
         // one, so each step starts from a clean slate.
         self.stage_recorder.set(None);
-        let outcome = match solver_call("BDF step", || self.solver.step())
-            .map_err(|error| self.note(SimFailureStage::Integration, sim_to_driver(error)))?
-        {
+        let step = solver_call("BDF step", || self.solver.step())
+            .map_err(|error| self.note(SimFailureStage::Integration, sim_to_driver(error)));
+        if let Some(error) = self.take_me_callback_error() {
+            return Err(error);
+        }
+        let outcome = match step? {
             OdeSolverStopReason::TstopReached => StepOutcome::Stop,
             OdeSolverStopReason::InternalTimestep => StepOutcome::Internal,
-            OdeSolverStopReason::RootFound(t_root, _) => StepOutcome::Root { t_root },
+            OdeSolverStopReason::RootFound(t_root, root_index) => {
+                StepOutcome::Root { t_root, root_index }
+            }
         };
         if !matches!(outcome, StepOutcome::Root { .. }) {
             self.project_accepted_solver_state()?;
@@ -692,6 +878,101 @@ where
         })
     }
 
+    fn arm_component_time_event(
+        &mut self,
+        current_time: f64,
+        event_time: f64,
+        horizon: f64,
+    ) -> Result<(), SimDriverError> {
+        let states = self.native_at_time(current_time)?;
+        self.me_host
+            .arm_time_event(current_time, &states, event_time, horizon)
+            .map_err(|error| self.me_to_driver(error))
+    }
+
+    fn process_component_time_event(
+        &mut self,
+        event_time: f64,
+        horizon: f64,
+    ) -> Result<(), SimDriverError> {
+        let states = self.native_at_time(event_time)?;
+        let event = self
+            .me_host
+            .process_time_event(event_time, &states, horizon)
+            .map_err(|error| self.me_to_driver(error))?;
+        self.retain_component_event(event);
+        Ok(())
+    }
+
+    fn process_component_state_event(
+        &mut self,
+        root_time: f64,
+        root_index: usize,
+        root_states: &[f64],
+        horizon: f64,
+    ) -> Result<(), SimDriverError> {
+        let right_time = runtime_root_event_application_time(root_time, horizon, self.tol());
+        let event = self
+            .me_host
+            .process_state_event(root_time, root_index, root_states, right_time, horizon)
+            .map_err(|error| self.me_to_driver(error))?;
+        self.retain_component_event(event);
+        Ok(())
+    }
+
+    fn validate_component_event_error(&mut self, error: SimDriverError) -> SimDriverError {
+        let SimDriverError::Terminated { time, message } = &error else {
+            let component_termination = self.pending_component_event.as_ref().and_then(|event| {
+                event
+                    .termination
+                    .clone()
+                    .map(|termination| (event.entry, termination))
+            });
+            let Some((entry, termination)) = component_termination else {
+                return error;
+            };
+            self.pending_component_event.take();
+            return self.note(
+                SimFailureStage::EventIteration,
+                SimDriverError::Backend(format!(
+                    "ME component terminated after {entry:?} at time={} message={:?}, but the \
+                     frozen driver returned {error}",
+                    termination.time, termination.message
+                )),
+            );
+        };
+        let Some(component) = self.pending_component_event.take() else {
+            return self.note(
+                SimFailureStage::EventIteration,
+                SimDriverError::Backend(format!(
+                    "frozen driver terminated at time={time} message={message:?}, but the ME \
+                     component retained no event result"
+                )),
+            );
+        };
+        let Some(termination) = component.termination else {
+            return self.note(
+                SimFailureStage::EventIteration,
+                SimDriverError::Backend(format!(
+                    "frozen driver terminated after {:?} at time={time} message={message:?}, but \
+                     the ME component did not terminate",
+                    component.entry
+                )),
+            );
+        };
+        if termination.time.to_bits() != time.to_bits() || termination.message != *message {
+            return self.note(
+                SimFailureStage::EventIteration,
+                SimDriverError::Backend(format!(
+                    "ME termination diverged from the frozen driver after {:?}: component_time={} \
+                     component_message={:?} driver_time={time} driver_message={message:?}",
+                    component.entry, termination.time, termination.message
+                )),
+            );
+        }
+        error
+    }
+
     fn native_to_full_y(
         &self,
         native: &[f64],
@@ -720,14 +1001,24 @@ where
         let state_count = self.model.state_scalar_count().min(current_y.len());
         let native = current_y[..state_count].to_vec();
         let mut solver_y = current_y.to_vec();
-        let dy = self.runtime.eval_state_derivatives_with_guess(
-            t,
-            &native,
-            params,
-            &mut solver_y,
-            self.tol(),
-            EVENT_UPDATE_MAX_ITERS,
-        )?;
+        let dy = self
+            .runtime
+            .eval_state_derivatives_with_guess(
+                t,
+                &native,
+                params,
+                &mut solver_y,
+                self.tol(),
+                EVENT_UPDATE_MAX_ITERS,
+            )
+            .map_err(SimDriverError::from)
+            .map_err(|error| {
+                if self.pending_component_event.is_some() {
+                    self.note(SimFailureStage::EventIteration, error)
+                } else {
+                    self.note(SimFailureStage::ManifoldProjection, error)
+                }
+            })?;
         Ok((native, dy))
     }
 
@@ -739,7 +1030,50 @@ where
         t: f64,
         h_cap: f64,
     ) -> Result<(), SimDriverError> {
-        reset_solver_state(
+        let event_reset = self.pending_component_event.is_some();
+        let failure_stage = if event_reset {
+            SimFailureStage::EventIteration
+        } else {
+            SimFailureStage::ManifoldProjection
+        };
+        let me_stage = if event_reset {
+            rumoca_solver::fmi_me::MeStage::EventIteration
+        } else {
+            rumoca_solver::fmi_me::MeStage::ManifoldProjection
+        };
+        if let Some(component) = self.pending_component_event.take() {
+            if let Some(termination) = component.termination {
+                return Err(self.note(
+                    SimFailureStage::EventIteration,
+                    SimDriverError::Backend(format!(
+                        "ME component terminated after {:?} at time={} message={:?}, but the \
+                         frozen driver continued to its post-event reset at time={t}",
+                        component.entry, termination.time, termination.message
+                    )),
+                ));
+            }
+            if component.time.to_bits() != t.to_bits()
+                || component.states.len() != native_y.len()
+                || component
+                    .states
+                    .iter()
+                    .zip(native_y)
+                    .any(|(lhs, rhs)| lhs.to_bits() != rhs.to_bits())
+            {
+                return Err(self.note(
+                    SimFailureStage::EventIteration,
+                    SimDriverError::Backend(format!(
+                        "ME post-event state diverged from the frozen driver after {:?} at \
+                         component_t={} driver_t={t}: component={:?} driver={native_y:?}",
+                        component.entry, component.time, component.states
+                    )),
+                ));
+            }
+        }
+        self.me_host
+            .sync_continuous_point(t, native_y)
+            .map_err(|error| self.note(failure_stage, self.me_to_driver(error)))?;
+        let reset = reset_solver_state(
             &mut self.solver,
             &self.runtime_params,
             native_y,
@@ -748,12 +1082,28 @@ where
             t,
             h_cap,
         )
-        .map_err(sim_to_driver)?;
+        .map_err(sim_to_driver)
+        .map_err(|error| self.note(failure_stage, error));
+        if let Some(error) = self.me_host.take_callback_error() {
+            return Err(self.note(failure_stage, sim_to_driver(error)));
+        }
+        reset?;
         let stop_time = self.active_stop_time.unwrap_or(self.opts.t_end);
         if !stop_time_reached_with_tol(t, stop_time) {
-            set_solver_stop_time(&mut self.solver, stop_time).map_err(sim_to_driver)?;
+            set_solver_stop_time(&mut self.solver, stop_time)
+                .map_err(sim_to_driver)
+                .map_err(|error| self.note(failure_stage, error))?;
         }
         self.commit_state_only_warm_start()
+            .map_err(|error| self.note(failure_stage, error))?;
+        let frozen_solver_y = self.algebraic_warm_start.speculative();
+        let frozen_parameters = self.runtime_params.borrow();
+        self.me_host
+            .prepare_bdf_initial_seed(&frozen_solver_y, me_stage)
+            .map_err(|error| self.me_to_driver(error))?;
+        self.me_host
+            .verify_frozen_compatibility_state(&frozen_solver_y, &frozen_parameters, me_stage)
+            .map_err(|error| self.me_to_driver(error))
     }
 
     fn project_algebraics(

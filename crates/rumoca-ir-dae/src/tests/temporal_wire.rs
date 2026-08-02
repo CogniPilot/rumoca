@@ -7,6 +7,51 @@ fn exact_clocks_own_each_clocked_variable_once() {
     assert_clock_wire_round_trip(&dae);
 }
 
+#[test]
+fn sampled_clock_ownership_round_trips_as_typed_semantics() {
+    let source = TestSource::new("discrete Real sampled; sampled = sample(u, Clock(0.1));");
+    let variable_at = source.source("discrete Real sampled", 0);
+    let sample_at = source.source("sample(u, Clock(0.1))", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Real),
+                variable_at,
+            )
+        })?;
+        let sampled = dae.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("sampled"),
+                real,
+                variable_at,
+                VariableAttributes::default(),
+            )
+        })?;
+        dae.clocks(|clocks| {
+            let lattice = ClockLattice::new(
+                ClockRational::new(1, 10).unwrap(),
+                ClockRational::new(0, 1).unwrap(),
+            )
+            .unwrap();
+            let clock = clocks.periodic(lattice, sample_at)?;
+            clocks.own_sampled_discrete_real(clock.into(), sampled, sample_at)?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        let ownership = view
+            .clock_ownership(view.clock_ownership_id(0).unwrap())
+            .unwrap();
+        assert!(ownership.sampled());
+        assert_eq!(ownership.variable().index(), 0);
+    });
+}
+
 fn exact_clock_fixture() -> Dae {
     let source = TestSource::new(
         "discrete Real z; discrete Boolean m; when trigger then z = 1; m = true; end when; \
@@ -176,7 +221,7 @@ fn assert_clock_wire_round_trip(dae: &Dae) {
     });
 
     let mut forged: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    forged["storage"]["clocks"][0]["kind"]["periodic"]["period"]["den"] = 0.into();
+    forged["storage"]["clocks"][0]["kind"]["periodic"]["lattice"]["period"]["den"] = 0.into();
     assert!(matches!(
         serde_json::from_value::<Dae>(forged),
         Err(error) if error.to_string().contains("invalid exact DAE clock value")

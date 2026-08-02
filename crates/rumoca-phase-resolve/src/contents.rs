@@ -281,14 +281,20 @@ impl Resolver {
     /// first), so only the values are resolved here, in the enclosing class
     /// scope where they are written (MLS §7.2.5).
     fn resolve_source_modification(&mut self, expr: &mut Expression, class_scope: ScopeId) {
-        let mut pending = vec![expr];
-        while let Some(current) = pending.pop() {
+        // A ClassModification at the root names the member being modified and
+        // remains instance-owned. A ClassModification used as the value of an
+        // outer Modification instead names the substituting class/function;
+        // that occurrence is written in `class_scope` and must carry the same
+        // exact identity as the keyed modification copy.
+        let mut pending = vec![(expr, false)];
+        while let Some((current, resolve_class_target)) = pending.pop() {
+            self.resolve_source_class_value_target(current, class_scope, resolve_class_target);
             match current {
                 Expression::Modification { value, .. } => {
-                    pending.push(std::sync::Arc::make_mut(value));
+                    pending.push((std::sync::Arc::make_mut(value), true));
                 }
                 Expression::ClassModification { modifications, .. } => {
-                    pending.extend(modifications.iter_mut());
+                    pending.extend(modifications.iter_mut().map(|item| (item, false)));
                 }
                 Expression::NamedArgument { value, .. } => {
                     self.resolve_expression(std::sync::Arc::make_mut(value), class_scope);
@@ -296,6 +302,21 @@ impl Resolver {
                 other => self.resolve_expression(other, class_scope),
             }
         }
+    }
+
+    fn resolve_source_class_value_target(
+        &mut self,
+        expr: &mut Expression,
+        class_scope: ScopeId,
+        resolve_target: bool,
+    ) {
+        if !resolve_target {
+            return;
+        }
+        let Expression::ClassModification { target, .. } = expr else {
+            return;
+        };
+        self.resolve_function_reference(target, class_scope);
     }
 
     /// Try partial type resolution for qualified names (MLS §7.3).

@@ -1,5 +1,5 @@
 {
-  "schema_version": 25,
+  "schema_version": 26,
   "layout": {
     "bindings": {
       "x": {
@@ -557,8 +557,12 @@
             "num": 0,
             "den": 1
           }
-        }
+        },
+        "anchor": "absolute"
       }
+    ],
+    "activation_parameter_indices": [
+      0
     ]
   }
 }

@@ -56,6 +56,153 @@ pub(super) struct InitialAlgorithmAnalysis {
     pub(super) assertions: Vec<flat::AssertEquation>,
 }
 
+/// Claim explicit initial-equation definitions of discrete coordinates.
+///
+/// Flat preserves an equality as `lhs - rhs`; either side may name the
+/// coordinate directly or through `pre(m)`. Both spellings determine the one
+/// MLS §8.6 initialization value that seeds current and pre storage. The
+/// checked DAE constructor remains responsible for scalar type,
+/// initialization-settled reads, and unique ownership.
+pub(super) fn claim_initial_discrete_equations(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    definitions: &mut HashMap<VarName, InitialDiscreteValue>,
+) -> Result<HashSet<usize>, ToDaeError> {
+    let mut claimed = HashSet::new();
+    for (row, equation) in flat.initial_equations.iter().enumerate() {
+        let Some((target, value)) = initial_discrete_equation(flat, &equation.residual, roles)?
+        else {
+            continue;
+        };
+        if definitions
+            .insert(
+                target.clone(),
+                InitialDiscreteValue {
+                    value: value.clone(),
+                    span: equation.span,
+                },
+            )
+            .is_some()
+        {
+            return Err(unsupported(
+                format!(
+                    "`{target}` is determined by more than one initial owner; an \
+                     initialization-determined coordinate has exactly one determining owner"
+                ),
+                equation.span,
+            ));
+        }
+        claimed.insert(row);
+    }
+    Ok(claimed)
+}
+
+fn initial_discrete_equation<'flat>(
+    flat: &'flat flat::Model,
+    residual: &'flat Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<Option<(&'flat VarName, &'flat Expression)>, ToDaeError> {
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        span,
+    } = residual
+    else {
+        return Ok(None);
+    };
+    let definition = match (
+        initial_discrete_target(lhs, roles),
+        initial_discrete_target(rhs, roles),
+    ) {
+        (Some(target), None) => Some((target, rhs.as_ref())),
+        (None, Some(target)) => Some((target, lhs.as_ref())),
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            return Err(unsupported(
+                "an initial equation relating two unsettled discrete coordinates has no proven \
+             initialization evaluation order",
+                *span,
+            ));
+        }
+    };
+    let Some((target, value)) = definition else {
+        return Ok(None);
+    };
+    if !has_only_initialization_settled_reads(flat, value, roles) {
+        return Ok(None);
+    }
+    Ok(Some((target, value)))
+}
+
+/// Whether a definition can be evaluated directly at the initialization
+/// instant, without participating in the numeric initialization system.
+///
+/// This selects the owner; the checked DAE constructor independently proves
+/// the same property before accepting an [`InitialDiscreteValue`]. A discrete
+/// target defined from an input, output, state, algebraic, `pre`, or another
+/// discrete coordinate remains an initialization residual, because those
+/// values are settled together by that system rather than before it.
+fn has_only_initialization_settled_reads(
+    flat: &flat::Model,
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> bool {
+    if let Expression::FunctionCall { name, .. } = expression
+        && let Some(function) = flat.functions.get(name.var_name())
+        && !function.body_is_pure()
+    {
+        return false;
+    }
+    if let Expression::VarRef { name, .. } = expression {
+        let referenced = name.var_name();
+        if referenced.as_str() != "time"
+            && !matches!(
+                roles.get(referenced),
+                Some(
+                    PlannedRole::Parameter
+                        | PlannedRole::Constant
+                        | PlannedRole::EnumerationLiteral
+                )
+            )
+        {
+            return false;
+        }
+    }
+    expression_children(expression)
+        .into_iter()
+        .all(|child| has_only_initialization_settled_reads(flat, child, roles))
+}
+
+fn initial_discrete_target<'flat>(
+    expression: &'flat Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<&'flat VarName> {
+    let expression = match expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Pre,
+            args,
+            ..
+        } if args.len() == 1 => &args[0],
+        expression => expression,
+    };
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expression
+    else {
+        return None;
+    };
+    if !subscripts.is_empty()
+        || !matches!(
+            roles.get(name.var_name()),
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        )
+    {
+        return None;
+    }
+    Some(name.var_name())
+}
+
 /// One discrete coordinate's initialization-instant value.
 pub(in crate::construction) struct InitialDiscreteValue {
     pub(in crate::construction) value: Expression,

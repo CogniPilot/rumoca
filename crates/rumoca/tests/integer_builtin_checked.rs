@@ -2,7 +2,7 @@ use rumoca::Compiler;
 use rumoca_sim::{SimOptions, simulate_dae};
 
 #[test]
-fn integer_builtin_truncates_through_wire_and_solve() {
+fn integer_builtin_floors_through_wire_and_solve() {
     let compiled = Compiler::new()
         .model("IntegerBuiltin")
         .compile_str(
@@ -22,7 +22,7 @@ end IntegerBuiltin;
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 should reconstruct integer()");
     let simulation = simulate_dae(&decoded, &SimOptions::default())
-        .expect("integer() should lower to the Solve truncation operation");
+        .expect("integer() should lower to the Solve floor operation");
     let y = simulation
         .names
         .iter()
@@ -31,6 +31,6 @@ end IntegerBuiltin;
     assert!(
         simulation.data[y]
             .iter()
-            .all(|value| (*value - (-1.0)).abs() <= 1.0e-12)
+            .all(|value| (*value - (-2.0)).abs() <= 1.0e-12)
     );
 }

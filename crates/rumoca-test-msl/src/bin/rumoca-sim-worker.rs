@@ -1,6 +1,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,9 @@ use std::time::Instant;
 
 use clap::Parser;
 use rumoca_compile::compile::Dae;
+use rumoca_ir_solve::visitor::SolveVisitor;
+use rumoca_ir_solve::{LinearOp, SolveModel};
+use rumoca_sim::sim_trace_compare::{TraceCertificationProfile, TraceRandomOpKind};
 use rumoca_sim::{
     BuildSimulationTimings, SimError, build_simulation_with_stage_timing_and_solve_model,
     check_prepared_initialization, run_prepared_simulation,
@@ -125,6 +129,8 @@ struct SimTraceArtifact {
     data: Vec<Vec<f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     variable_meta: Option<Vec<SimTraceVariableMetaArtifact>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    certification_profile: Option<TraceCertificationProfile>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -421,7 +427,12 @@ fn classify_solver_error(
     }
 }
 
-fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> Result<(), String> {
+fn write_trace_json(
+    trace_path: &Path,
+    model_name: &str,
+    result: &SimResult,
+    certification_profile: Option<TraceCertificationProfile>,
+) -> Result<(), String> {
     if let Some(parent) = trace_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -454,6 +465,7 @@ fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> 
                     .collect(),
             )
         },
+        certification_profile,
     };
 
     let file = File::create(trace_path).map_err(|e| {
@@ -559,7 +571,14 @@ fn sim_options_from_args(args: &Args) -> SimOptions {
     opts
 }
 
-type WorkerRunOk = (SimResult, BuildSimulationTimings, f64, f64, f64);
+type WorkerRunOk = (
+    SimResult,
+    BuildSimulationTimings,
+    f64,
+    f64,
+    f64,
+    Option<TraceCertificationProfile>,
+);
 type WorkerRunErr = (SimError, BuildSimulationTimings, f64, WorkerErrorPhase);
 
 #[derive(Debug, Clone, Copy)]
@@ -632,6 +651,47 @@ struct SolveIrMeasurement<'a> {
     bytes: Option<u64>,
 }
 
+#[derive(Default)]
+struct RandomOpCollector {
+    kinds: BTreeSet<TraceRandomOpKind>,
+}
+
+impl SolveVisitor for RandomOpCollector {
+    type Error = std::convert::Infallible;
+
+    fn visit_linear_op(
+        &mut self,
+        _kind: rumoca_ir_solve::visitor::LinearOpSliceKind,
+        _op_index: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        self.kinds.extend(random_op_kind(op));
+        Ok(())
+    }
+}
+
+fn random_op_kind(op: &LinearOp) -> Option<TraceRandomOpKind> {
+    match op {
+        LinearOp::RandomInitialState { .. } => Some(TraceRandomOpKind::RandomInitialState),
+        LinearOp::RandomResult { .. } => Some(TraceRandomOpKind::RandomResult),
+        LinearOp::RandomState { .. } => Some(TraceRandomOpKind::RandomState),
+        LinearOp::ImpureRandomInit { .. } => Some(TraceRandomOpKind::ImpureRandomInit),
+        LinearOp::ImpureRandom { .. } => Some(TraceRandomOpKind::ImpureRandom),
+        LinearOp::ImpureRandomInteger { .. } => Some(TraceRandomOpKind::ImpureRandomInteger),
+        _ => None,
+    }
+}
+
+fn certification_profile_for_solve_model(model: &SolveModel) -> Option<TraceCertificationProfile> {
+    let mut collector = RandomOpCollector::default();
+    match collector.visit_solve_model(model) {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
+    (!collector.kinds.is_empty())
+        .then(|| TraceCertificationProfile::stochastic(collector.kinds.into_iter().collect()))
+}
+
 fn run_simulation_pipeline(
     dae: &Dae,
     opts: &SimOptions,
@@ -643,6 +703,7 @@ fn run_simulation_pipeline(
     let build_started = Instant::now();
     let mut build_timings = BuildSimulationTimings::default();
     let mut solve_ir_error: Option<String> = None;
+    let mut certification_profile = None;
     let prepared = build_simulation_with_stage_timing_and_solve_model(
         dae,
         opts,
@@ -654,9 +715,12 @@ fn run_simulation_pipeline(
             };
             watchdog.enter(stage, timeout_seconds);
         },
-        |solve_model| match measure_solve_ir(solve_ir.path, solve_model, solve_ir.budget) {
-            Ok(bytes) => solve_ir.bytes = Some(bytes),
-            Err(err) => solve_ir_error = Some(err),
+        |solve_model| {
+            certification_profile = certification_profile_for_solve_model(solve_model);
+            match measure_solve_ir(solve_ir.path, solve_model, solve_ir.budget) {
+                Ok(bytes) => solve_ir.bytes = Some(bytes),
+                Err(err) => solve_ir_error = Some(err),
+            }
         },
     );
     let sim_build_seconds = build_started.elapsed().as_secs_f64();
@@ -705,6 +769,7 @@ fn run_simulation_pipeline(
                 sim_build_seconds,
                 sim_run_seconds,
                 ic_seconds,
+                certification_profile,
             )
         })
         .map_err(|err| {
@@ -813,7 +878,14 @@ type WorkerRunOutcome = std::thread::Result<Result<WorkerRunOk, WorkerRunErr>>;
 /// Turn the pipeline outcome (or its panic) into a worker result row.
 fn classify_run_outcome(args: &Args, outcome: WorkerRunOutcome, elapsed: f64) -> SimWorkerResult {
     match outcome {
-        Ok(Ok((result, build_timings, sim_build_seconds, sim_run_seconds, ic_seconds))) => {
+        Ok(Ok((
+            result,
+            build_timings,
+            sim_build_seconds,
+            sim_run_seconds,
+            ic_seconds,
+            certification_profile,
+        ))) => {
             let mut worker_result = with_build_timings(
                 classify_success(&result, elapsed, sim_build_seconds, sim_run_seconds),
                 build_timings,
@@ -823,7 +895,8 @@ fn classify_run_outcome(args: &Args, outcome: WorkerRunOutcome, elapsed: f64) ->
             if worker_result.status == "sim_ok"
                 && let Some(trace_path) = args.trace_json.as_deref()
             {
-                match write_trace_json(trace_path, &args.model_name, &result) {
+                match write_trace_json(trace_path, &args.model_name, &result, certification_profile)
+                {
                     Ok(()) => {
                         worker_result.trace_file = Some(trace_path.to_string_lossy().to_string());
                     }
@@ -899,11 +972,29 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         Args, WorkerErrorPhase, classify_worker_error, effective_output_dt, parse_dae_json,
-        sample_grid_dt,
+        random_op_kind, sample_grid_dt,
     };
     use rumoca_compile::compile::{Session, SessionConfig};
+    use rumoca_ir_solve::LinearOp;
+    use rumoca_sim::sim_trace_compare::TraceRandomOpKind;
     use rumoca_sim::{BuildSimulationTimings, SimError};
     use std::path::PathBuf;
+
+    #[test]
+    fn random_trace_profile_detection_is_structural_not_model_named() {
+        assert_eq!(
+            random_op_kind(&LinearOp::ImpureRandom {
+                dst: 0,
+                id: 1,
+                call_site: 2,
+            }),
+            Some(TraceRandomOpKind::ImpureRandom)
+        );
+        assert_eq!(
+            random_op_kind(&LinearOp::Const { dst: 0, value: 1.0 }),
+            None
+        );
+    }
 
     #[test]
     fn parse_dae_json_handles_large_flat_expression_arenas() {

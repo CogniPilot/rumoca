@@ -22,6 +22,7 @@ pub(crate) struct LoweredLayout<'dae> {
     pub(crate) pre_variables: Vec<Option<usize>>,
     pub(crate) previous_values: Vec<usize>,
     pub(crate) condition_memory: Vec<usize>,
+    pub(crate) clock_activations: Vec<usize>,
     pub(crate) delay_values: Vec<usize>,
     pub(crate) layout: solve::VarLayout,
     pub(crate) solve_layout: solve::SolveLayout,
@@ -30,8 +31,10 @@ pub(crate) struct LoweredLayout<'dae> {
 
 struct RuntimeLayout {
     condition_memory: Vec<usize>,
+    clock_activations: Vec<usize>,
     delay_values: Vec<usize>,
     initial_event_parameter_index: Option<usize>,
+    terminal_event_parameter_index: Option<usize>,
     initial_homotopy_parameter_index: Option<usize>,
     scalar_count: usize,
 }
@@ -117,7 +120,7 @@ pub(crate) fn lower_layout<'dae>(
         discrete_valued_scalar_names: p.discrete_value_names,
         relation_memory_parameter_indices: Vec::new(),
         initial_event_parameter_index: runtime.initial_event_parameter_index,
-        terminal_event_parameter_index: None,
+        terminal_event_parameter_index: runtime.terminal_event_parameter_index,
         initial_homotopy_parameter_index: runtime.initial_homotopy_parameter_index,
         pre_param_bindings: pre.bindings,
     };
@@ -126,6 +129,7 @@ pub(crate) fn lower_layout<'dae>(
         pre_variables: pre.variables,
         previous_values: pre.previous_values,
         condition_memory: runtime.condition_memory,
+        clock_activations: runtime.clock_activations,
         delay_values: runtime.delay_values,
         layout,
         solve_layout,
@@ -151,13 +155,29 @@ fn append_runtime_layout(
     let after_conditions = condition_base
         .checked_add(condition_memory.len())
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
-    let (delay_values, after_delays) = append_delay_values(view, after_conditions)?;
-    let (initial_event_parameter_index, initial_homotopy_parameter_index, scalar_count) =
-        append_runtime_flags(view, after_delays)?;
+    let clock_activations = (0..view.clock_count())
+        .map(|offset| {
+            after_conditions.checked_add(offset).ok_or_else(|| {
+                LowerError::contract("clock-activation layout overflow", first_model_span(view))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let after_clocks = after_conditions
+        .checked_add(clock_activations.len())
+        .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
+    let (delay_values, after_delays) = append_delay_values(view, after_clocks)?;
+    let (
+        initial_event_parameter_index,
+        terminal_event_parameter_index,
+        initial_homotopy_parameter_index,
+        scalar_count,
+    ) = append_runtime_flags(view, after_delays)?;
     Ok(RuntimeLayout {
         condition_memory,
+        clock_activations,
         delay_values,
         initial_event_parameter_index,
+        terminal_event_parameter_index,
         initial_homotopy_parameter_index,
         scalar_count,
     })
@@ -190,7 +210,7 @@ fn append_delay_values(
 fn append_runtime_flags(
     view: dae::DaeView<'_>,
     first_index: usize,
-) -> Result<(Option<usize>, Option<usize>, usize), LowerError> {
+) -> Result<(Option<usize>, Option<usize>, Option<usize>, usize), LowerError> {
     let has_initial = (0..view.condition_count()).any(|index| {
         view.condition(view.condition_id(index).expect("dense condition identity"))
             .is_some_and(|condition| {
@@ -199,6 +219,10 @@ fn append_runtime_flags(
     });
     let after_initial = first_index
         .checked_add(usize::from(has_initial))
+        .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
+    let has_terminal = view.terminal_count() != 0;
+    let after_terminal = after_initial
+        .checked_add(usize::from(has_terminal))
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
     let has_homotopy = (0..view.expression_count()).any(|index| {
         view.expression(
@@ -215,12 +239,13 @@ fn append_runtime_flags(
             )
         })
     });
-    let end = after_initial
+    let end = after_terminal
         .checked_add(usize::from(has_homotopy))
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
     Ok((
         has_initial.then_some(first_index),
-        has_homotopy.then_some(after_initial),
+        has_terminal.then_some(after_initial),
+        has_homotopy.then_some(after_terminal),
         end,
     ))
 }
@@ -365,7 +390,104 @@ fn continuous_pre_variables(view: dae::DaeView<'_>) -> Vec<bool> {
             *slot = true;
         }
     }
+    mark_sampled_value_sources(view, &mut referenced);
     referenced
+}
+
+/// Add the continuous coordinates read by MLS §16.5.1 `sample(u)` owners.
+///
+/// Discrete coordinates already receive a pre lane unconditionally. A
+/// continuous sample source needs the same event-entry lane so a tick that is
+/// coincident with a source discontinuity reads `u(t - eps)`, not the value
+/// produced while that event is settling.
+fn mark_sampled_value_sources(view: dae::DaeView<'_>, referenced: &mut [bool]) {
+    let sampled = sampled_clock_variables(view);
+    for index in 0..view.discrete_real_equation_count() {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("dense checked discrete Real equation resolves");
+        let has_sampled_target =
+            expression_mentions_sampled_variable(view, equation.residual(), &sampled);
+        if has_sampled_target {
+            mark_expression_variables(view, equation.residual(), referenced);
+        }
+    }
+    for index in 0..view.discrete_value_owner_count() {
+        let owner = view
+            .discrete_value_owner(
+                view.discrete_value_owner_id(index)
+                    .expect("dense B.1c owner identity resolves"),
+            )
+            .expect("checked B.1c owner resolves");
+        for (target_ordinal, target) in owner.targets().iter().enumerate() {
+            if !sampled[target.index() as usize] {
+                continue;
+            }
+            for branch in owner.branches().iter() {
+                let (value, _) = branch
+                    .values()
+                    .get(target_ordinal)
+                    .expect("checked B.1c branch matches its target arity");
+                mark_expression_variables(view, value, referenced);
+            }
+        }
+    }
+}
+
+fn expression_mentions_sampled_variable<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+    sampled: &[bool],
+) -> bool {
+    let mut found = false;
+    dae::for_each_expression(view, root, |_, expression| {
+        found |= expression.variable_coordinate().is_some_and(|variable| {
+            sampled
+                .get(variable.index() as usize)
+                .copied()
+                .unwrap_or(false)
+        });
+    });
+    found
+}
+
+fn sampled_clock_variables(view: dae::DaeView<'_>) -> Vec<bool> {
+    let mut sampled = vec![false; view.variable_count()];
+    for index in 0..view.clock_ownership_count() {
+        let ownership = view
+            .clock_ownership(
+                view.clock_ownership_id(index)
+                    .expect("dense clock ownership identity resolves"),
+            )
+            .expect("checked clock ownership resolves");
+        sampled[ownership.variable().index() as usize] = ownership.sampled();
+    }
+    sampled
+}
+
+fn mark_expression_variables<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ExprId<'dae>,
+    referenced: &mut [bool],
+) {
+    dae::for_each_expression(view, root, |_, expression| {
+        let Some(variable) = expression.variable_coordinate() else {
+            return;
+        };
+        let role = view
+            .variable(variable)
+            .expect("checked expression coordinate resolves")
+            .role();
+        if matches!(
+            role,
+            dae::VariableRole::Input
+                | dae::VariableRole::State
+                | dae::VariableRole::Algebraic
+                | dae::VariableRole::Output
+        ) {
+            referenced[variable.index() as usize] = true;
+        }
+    });
 }
 
 fn previous_schedule<'dae>(
@@ -375,13 +497,13 @@ fn previous_schedule<'dae>(
     let clock = view
         .clock(previous.clock())
         .expect("checked previous clock resolves");
-    let dae::ClockOperation::Periodic(lattice) = clock.operation() else {
+    let dae::ClockOperation::Periodic(schedule) = clock.operation() else {
         return Err(LowerError::unsupported(
             "triggered-clock previous history has no periodic Solve schedule",
             previous.provenance().span(),
         ));
     };
-    solve::PeriodicEventSchedule::new(*lattice).map_err(|error| {
+    solve::PeriodicEventSchedule::from_schedule(*schedule).map_err(|error| {
         LowerError::contract(
             format!("invalid previous-value clock schedule: {error}"),
             previous.provenance().span(),

@@ -20,7 +20,8 @@ use rumoca_solver::{
 };
 
 use crate::{
-    AlgebraicWarmStart, EVENT_UPDATE_MAX_ITERS, Matrix, RuntimeParameters, Scalar, SimError, Vector,
+    AlgebraicWarmStart, EVENT_UPDATE_MAX_ITERS, Matrix, RuntimeParameters, Scalar, SimError,
+    Vector, me::DiffsolMeHost,
 };
 
 #[derive(Debug, Default)]
@@ -675,6 +676,119 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")));
     sparsity_probe.store(false, Ordering::Relaxed);
     problem
+}
+
+/// Build the state-only Diffsol problem over the FMI 3 ME adapter.
+///
+/// The model is still consulted for the solver-owned tolerance vector and
+/// structural sparsity pattern during the migration. Every migrated numerical
+/// callback crosses `DiffsolMeHost`. The retired-runtime RHS oracle was removed
+/// after the full migration cohort passed its bit-exact dual-run guard.
+fn finish_me_ode_problem<Eqn, Error>(
+    problem: Result<OdeSolverProblem<Eqn>, Error>,
+    host: &DiffsolMeHost,
+    eval_counters: Option<Arc<BdfEvalCounters>>,
+) -> Result<MeOdeProblemBuild<Eqn>, SimError>
+where
+    Eqn: StateOdeEquations,
+    Error: std::fmt::Display,
+{
+    if let Some(error) = host.take_callback_error() {
+        return Err(error);
+    }
+    let problem = problem.map_err(|error| {
+        SimError::SolverError(format!("ME ODE problem builder failed: {error}"))
+    })?;
+    Ok(MeOdeProblemBuild {
+        problem,
+        eval_counters,
+    })
+}
+
+pub(crate) fn build_me_state_ode_problem(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    host: DiffsolMeHost,
+    input: StateOdeProblemInput,
+) -> Result<MeOdeProblemBuild<impl StateOdeEquations + use<>>, SimError> {
+    let state_count = host.state_count();
+    let root_count = host.event_indicator_count().max(1);
+    let atol = solver_absolute_tolerances(model, opts.atol, state_count.max(1));
+    let eval_counters = input.eval_counters.clone();
+    let rhs_counters = eval_counters.clone();
+    let jacobian_counters = eval_counters.clone();
+    let root_counters = eval_counters.clone();
+    let rhs_host = host.clone();
+    let jacobian_host = host.clone();
+    let build_error_host = host.clone();
+    let root_host = host;
+    let pattern = derivative_jacobian_pattern(model)?;
+    let sparsity_probe = Arc::new(AtomicBool::new(true));
+    let jacobian_probe = sparsity_probe.clone();
+
+    let rhs = move |y: &Vector, _p: &Vector, t: Scalar, out: &mut Vector| {
+        let start = rhs_counters.as_ref().map(|_| Instant::now());
+        rhs_host.derivatives_into(t, y.as_slice(), out.as_mut_slice());
+        if let (Some(counters), Some(start)) = (rhs_counters.as_ref(), start) {
+            counters.rhs(elapsed_nanos_u64(start));
+        }
+    };
+    let jacobian = move |y: &Vector, _p: &Vector, t: Scalar, seed: &Vector, out: &mut Vector| {
+        if jacobian_probe.load(Ordering::Relaxed) {
+            apply_structural_jacobian_probe(&pattern, seed.as_slice(), out.as_mut_slice());
+            return;
+        }
+        let start = jacobian_counters.as_ref().map(|_| Instant::now());
+        jacobian_host.directional_derivative_into(
+            t,
+            y.as_slice(),
+            seed.as_slice(),
+            out.as_mut_slice(),
+        );
+        if let (Some(counters), Some(start)) = (jacobian_counters.as_ref(), start) {
+            counters.jacobian_vector(elapsed_nanos_u64(start));
+        }
+    };
+    let roots = move |y: &Vector, _p: &Vector, t: Scalar, out: &mut Vector| {
+        let start = root_counters.as_ref().map(|_| Instant::now());
+        root_host.event_indicators_into(t, y.as_slice(), out.as_mut_slice());
+        if let (Some(counters), Some(start)) = (root_counters.as_ref(), start) {
+            counters.root(elapsed_nanos_u64(start));
+        }
+    };
+
+    let problem = OdeBuilder::<Matrix>::new()
+        .t0(input.t_start)
+        .h0(opts.dt.unwrap_or(1.0e-3).abs().max(1.0e-9))
+        .rtol(opts.rtol)
+        .atol(atol)
+        .p(model.parameters.clone())
+        .rhs_implicit(rhs, jacobian)
+        .init(
+            move |_p: &Vector, _t: Scalar, y: &mut Vector| {
+                y.as_mut_slice().copy_from_slice(&input.initial_state);
+            },
+            state_count.max(1),
+        )
+        .root(roots, root_count)
+        .build();
+    sparsity_probe.store(false, Ordering::Relaxed);
+    finish_me_ode_problem(problem, &build_error_host, eval_counters)
+}
+
+pub(crate) trait StateOdeEquations:
+    OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>
+{
+}
+
+impl<T> StateOdeEquations for T where
+    T: OdeEquationsImplicit<M = Matrix, V = Vector, T = Scalar, C = <Matrix as MatrixCommon>::C>
+{
+}
+
+pub(crate) struct MeOdeProblemBuild<Eqn: StateOdeEquations> {
+    pub(crate) problem: OdeSolverProblem<Eqn>,
+    pub(crate) eval_counters: Option<Arc<BdfEvalCounters>>,
 }
 
 struct StateJacobianEvaluatorInput {

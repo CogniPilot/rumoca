@@ -49,6 +49,7 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     function_arguments: Vec<(dae::FunctionId<'dae>, Vec<dae::ExprId<'dae>>)>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
     active_clock: Option<dae::ClockId<'dae>>,
+    sampled_source: bool,
     derivative_definitions: Option<&'layout DerivativeRowIndex<'dae>>,
     active_derivatives: Vec<(u32, usize)>,
     parameter_substitutions: Option<&'layout ParameterBindingSubstitutions<'dae>>,
@@ -72,6 +73,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
             active_clock: None,
+            sampled_source: false,
             derivative_definitions: None,
             active_derivatives: Vec::new(),
             parameter_substitutions: None,
@@ -118,6 +120,22 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         self.active_clock = Some(clock);
+        let output = self.expression(expression, scalar)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    /// Compile the source of MLS §16.5.1 `sample(u)` against event-entry
+    /// snapshot lanes. The surrounding row still owns the exact clock; this
+    /// flag changes only coordinate reads inside `u` to their left limits.
+    pub(super) fn sampled_program(
+        mut self,
+        clock: dae::ClockId<'dae>,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        self.sampled_source = true;
         let output = self.expression(expression, scalar)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
         Ok(self.ops)
@@ -307,9 +325,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     None => self.expression(base, scalar),
                 }
             }
-            dae::ExpressionOperation::Builtin { builtin, arguments } => {
-                self.builtin(builtin, arguments, scalar, node.provenance().span())
-            }
+            dae::ExpressionOperation::Builtin { builtin, arguments } => self.builtin(
+                builtin,
+                arguments,
+                node.value_type().dimensions(),
+                scalar,
+                node.provenance().span(),
+            ),
             dae::ExpressionOperation::Call {
                 function,
                 output,

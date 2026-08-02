@@ -5,7 +5,7 @@ pub(super) fn validate_model_algorithm(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     require_span(algorithm.span, "model algorithm")?;
     validate_algorithm_statements(
@@ -25,7 +25,7 @@ fn validate_algorithm_statements(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         match statement {

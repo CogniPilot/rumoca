@@ -34,7 +34,7 @@ impl ComponentSemantics {
     pub(crate) fn from_declaration_with_type(component: &Component, type_id: TypeId) -> Self {
         Self {
             type_id,
-            shape: component_shape(&component.shape, component.shape_expr.is_empty()),
+            shape: component_shape(&component.shape, component.shape_expr.len()),
             variability: VariabilityLevel::from_variability(&component.variability),
         }
     }
@@ -258,7 +258,7 @@ impl InstanceSemanticScope {
         for (&map_id, data) in &overlay.components {
             let semantics = ComponentSemantics {
                 type_id: data.type_id,
-                shape: component_shape(&data.dims, data.dims_expr.is_empty()),
+                shape: component_shape(&data.dims, data.dims_expr.len()),
                 variability: VariabilityLevel::from_variability(&data.variability),
             };
             let path = data.qualified_name.to_component_path();
@@ -714,12 +714,15 @@ impl InstanceSemanticScope {
     }
 }
 
-fn component_shape<T>(dimensions: &[T], has_no_dimension_expressions: bool) -> Option<Vec<usize>>
+fn component_shape<T>(dimensions: &[T], dimension_expression_count: usize) -> Option<Vec<usize>>
 where
     T: Copy + TryInto<usize>,
 {
+    if dimension_expression_count != 0 && dimensions.len() != dimension_expression_count {
+        return None;
+    }
     if dimensions.is_empty() {
-        return has_no_dimension_expressions.then(Vec::new);
+        return (dimension_expression_count == 0).then(Vec::new);
     }
     dimensions
         .iter()

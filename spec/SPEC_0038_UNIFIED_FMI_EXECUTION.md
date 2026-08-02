@@ -105,6 +105,16 @@ that decision in the trace. A transport implementation may not swallow a send
 error, convert a receive error to "no input", or allow a failed lockstep
 exchange to advance as a successful model step.
 
+### Bounded ME Verification Profile
+
+The linked FMI 3 ME component exposes a checked lifecycle aggregate and pure
+property functions shared by production code, property tests, and bounded Kani
+harnesses. The normative transition table, proof obligations, exact bounded
+domains, and claim limits are cataloged in
+[SPEC_0044 §1](SPEC_0044_FMI_EXECUTION_CATALOG.md#1-bounded-me-verification-profile).
+That bounded evidence does not claim arbitrary-model trajectory correctness,
+floating-point accuracy, solver convergence, or end-to-end Modelica refinement.
+
 ### Phasing
 
 The cutover lands in four phases. Each phase is behaviour-freezing unless its

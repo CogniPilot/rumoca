@@ -885,10 +885,21 @@ impl AstScalarContext for InstantiateScalarAdapter<'_> {
         &self,
         function: &ast::ComponentReference,
         args: &[ast::Expression],
-        _scope: &str,
+        scope: &str,
         depth: usize,
         _span: rumoca_core::Span,
     ) -> Option<i64> {
+        if function.parts.len() == 1
+            && function.parts[0].ident.text.as_ref() == "integer"
+            && let [argument] = args
+        {
+            let value = ast_scalar::eval_real(argument, self, scope, depth)?;
+            let value = rumoca_core::modelica_integer_value(value);
+            if value.is_finite() && value >= i64::MIN as f64 && value < -(i64::MIN as f64) {
+                return Some(value as i64);
+            }
+            return None;
+        }
         eval_integer_function_call(function, args, self.env, depth, self.local_ints)
     }
 
@@ -1631,7 +1642,8 @@ fn eval_integer_function_call(
     // Handle Modelica builtins that return integers
     match func_name.as_str() {
         "integer" => {
-            // MLS §3.7.2: integer(x) truncates Real to Integer
+            // Integral arguments are unchanged. Real arguments are evaluated by
+            // the scalar adapter above so MLS floor semantics stay type-aware.
             let val = recurse(args.first()?)?;
             return Some(val);
         }

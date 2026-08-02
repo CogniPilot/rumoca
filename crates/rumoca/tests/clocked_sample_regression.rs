@@ -551,6 +551,10 @@ end NamedSampleOwner;
         let clock = view
             .clock(ownership.clock())
             .expect("the ownership names a constructed clock");
+        assert!(
+            ownership.sampled(),
+            "sample(u, c) must retain its left-limit semantics in checked DAE ownership"
+        );
         let rumoca_ir_dae::ClockOperation::Periodic(lattice) = clock.operation() else {
             panic!("a named sample clock must be periodic");
         };

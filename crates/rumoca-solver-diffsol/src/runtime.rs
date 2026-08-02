@@ -2,10 +2,10 @@ use super::*;
 use rumoca_solver::{
     EventActionOutcome, EventPreMode, EventUpdateRowFilter, NoStateEventStep,
     NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
-    ProjectedEventUpdateInput, RuntimeSolveError, apply_discrete_slot_values,
-    build_sim_result_from_solve_model, first_no_state_root_crossing,
-    no_state_root_scan_step_ceiling, project_algebraics, project_algebraics_and_detect_changes,
-    run_no_state_output_schedule, timeline::event_left_probe_time,
+    ProjectedEventUpdateInput, RuntimeSolveError, build_sim_result_from_solve_model,
+    first_no_state_root_crossing, no_state_root_scan_step_ceiling, project_algebraics,
+    project_algebraics_and_detect_changes, run_no_state_output_schedule,
+    timeline::event_left_probe_time,
 };
 
 pub(crate) fn settle_algebraics_and_relation_memory(
@@ -207,17 +207,10 @@ pub(crate) fn apply_no_state_deadline_tick(
     tol: f64,
 ) -> Result<(), SimError> {
     runtime.current_t = target;
-    let values = runtime.runtime.eval_scalar_program_block(
-        &model.problem.discrete.rhs,
-        &runtime.current_y,
-        &runtime.params,
-        target,
-    )?;
-    apply_discrete_slot_values(
-        &model.problem.discrete.update_targets,
-        &values,
+    runtime.runtime.apply_unfiltered_discrete_rows_once(
         &mut runtime.current_y,
         &mut runtime.params,
+        target,
         tol,
     )?;
     runtime.runtime.apply_runtime_assignments_once(
@@ -470,6 +463,7 @@ fn record_no_state_event_step(
     .record_time_event(
         runtime.current_t,
         runtime_event_horizon(event, step.target, opts.t_end),
+        rumoca_solver::runtime::no_state::NO_STATE_EVENT_TIME_TOLERANCE,
         event,
     )?;
     Ok(())

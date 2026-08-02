@@ -96,13 +96,24 @@ pub struct PreparedSystem<'prepared, 'dae> {
 struct DirectStateConstraint {
     state: u32,
     rhs: u32,
+    rhs_sign: self::equalities::EqualitySign,
     owner: dae::DaeProvenance,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct HolonomicConstraint {
     residual: u32,
     owner: dae::DaeProvenance,
+    proof: HolonomicDifferentiationProof,
+}
+
+/// Evidence collected from the finalized source DAE before a residual may be
+/// differentiated for index reduction.
+#[derive(Clone)]
+struct HolonomicDifferentiationProof {
+    residual: u32,
+    maximum_order: u8,
+    anchored_states: Box<[u32]>,
 }
 
 /// Prepare a finalized DAE for Solve without admitting a weaker intermediate.
@@ -326,7 +337,7 @@ fn reduce_holonomic_constraint(model: &dae::Dae) -> Result<HolonomicRound, Struc
     let stated = model.inspect(represented_initial_values);
     let mut blocked = None;
     for constraint in model.inspect(holonomic_constraints) {
-        let (rebuilt, manifold) = rebuild_holonomic_constraint(model, constraint)?;
+        let (rebuilt, manifold) = rebuild_holonomic_constraint(model, &constraint)?;
         if rebuilt.inspect(|view| sort(view).map(|_| ())).is_err() {
             continue;
         }

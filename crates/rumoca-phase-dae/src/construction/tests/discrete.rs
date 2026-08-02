@@ -534,6 +534,680 @@ fn b1c_connection_assigns_the_exact_input_from_its_output_owner() {
 }
 
 #[test]
+fn b1c_connection_keeps_indexed_output_value_when_output_is_written_first() {
+    assert_indexed_output_connection_value(true);
+}
+
+#[test]
+fn b1c_connection_keeps_indexed_output_value_when_input_is_written_first() {
+    assert_indexed_output_connection_value(false);
+}
+
+fn assert_indexed_output_connection_value(output_first: bool) {
+    let connection = if output_first {
+        "connect(source[1], sink)"
+    } else {
+        "connect(sink, source[1])"
+    };
+    let text = format!(
+        "model M output Boolean source[2] = {{true, false}}; input Boolean sink; equation {connection}; end M;"
+    );
+    let source = TestSource::new(&text);
+    let connection_span = source.span(connection, 0);
+    let mut model = indexed_output_connection_model(&source, output_first);
+    model
+        .variables
+        .get_mut(&VarName::new("source"))
+        .unwrap()
+        .binding = Some(Expression::Array {
+        elements: vec![
+            Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            },
+            Expression::Literal {
+                value: Literal::Boolean(false),
+                span: source.span("false", 0),
+            },
+        ],
+        is_matrix: false,
+        span: source.span("{true, false}", 0),
+    });
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let owner = (0..view.discrete_value_owner_count())
+            .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
+            .find(|owner| owner.provenance().span() == connection_span)
+            .expect("the connection owns the scalar input definition");
+        let branch = owner.branches().get(0).expect("the owner is unconditional");
+        let value = view
+            .expression(branch.values().get(0).expect("the branch assigns sink").0)
+            .expect("the assigned value resolves");
+        let dae::ExpressionOperation::Index { base, subscripts } = value.operation() else {
+            panic!("the output element remains a checked Index expression");
+        };
+        assert_eq!(subscripts.len(), 1);
+        assert!(matches!(
+            view.expression(base).unwrap().operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteValue(_))
+        ));
+        assert_eq!(value.value_type().scalar_type(), dae::ScalarType::Boolean);
+        assert!(value.value_type().dimensions().is_empty());
+    });
+}
+
+#[test]
+fn b1c_connection_rejects_a_subscripted_input_target() {
+    let source = TestSource::new(
+        "model M output Boolean source = true; input Boolean sink[2]; equation connect(source, sink[1]); end M;",
+    );
+    let connection_span = source.span("connect(source, sink[1])", 0);
+    let mut model = test_model();
+    add_connection_endpoint(
+        &mut model,
+        &source,
+        "source",
+        "output Boolean source",
+        8,
+        Vec::new(),
+        Causality::Output(Default::default()),
+    );
+    add_connection_endpoint(
+        &mut model,
+        &source,
+        "sink",
+        "input Boolean sink[2]",
+        9,
+        vec![2],
+        Causality::Input(Default::default()),
+    );
+    model
+        .variables
+        .get_mut(&VarName::new("source"))
+        .unwrap()
+        .binding = Some(Expression::Literal {
+        value: Literal::Boolean(true),
+        span: source.span("true", 0),
+    });
+    model.add_equation(connection_equation(
+        Expression::VarRef {
+            name: test_reference("source"),
+            subscripts: Vec::new(),
+            span: source.span("source", 1),
+        },
+        Expression::VarRef {
+            name: test_reference("sink"),
+            subscripts: vec![Subscript::Index {
+                value: 1,
+                span: source.span("sink[1]", 0),
+            }],
+            span: source.span("sink[1]", 0),
+        },
+        connection_span,
+    ));
+
+    assert!(matches!(
+        construct(&model, source.map),
+        Err(ToDaeError::DiscreteSolvedFormViolation { detail, span })
+            if detail.contains("cover a discrete coordinate exactly once")
+                && span == connection_span
+    ));
+}
+
+#[test]
+fn b1c_connections_coalesce_complete_element_coverage_into_one_array_owner() {
+    let source = TestSource::new(
+        "model M output Boolean a = true; output Boolean b = false; input Boolean sink[2]; \
+         equation connect(a, sink[1]); connect(b, sink[2]); end M;",
+    );
+    let model = complete_array_connection_model(&source, false);
+    let dae = construct(&model, source.map).unwrap();
+
+    dae.inspect(|view| {
+        let owner = (0..view.discrete_value_owner_count())
+            .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
+            .find(|owner| {
+                owner
+                    .targets()
+                    .get(0)
+                    .is_some_and(|target| target.index() == 2)
+            })
+            .expect("the two element edges form one array-coordinate owner");
+        let branch = owner.branches().get(0).unwrap();
+        let value = view.expression(branch.values().get(0).unwrap().0).unwrap();
+        let dae::ExpressionOperation::Array(elements) = value.operation() else {
+            panic!("the complete element coverage is represented as one array value");
+        };
+        assert_eq!(elements.len(), 2);
+        assert_eq!(value.value_type().dimensions(), &[2]);
+    });
+}
+
+#[test]
+fn b1c_connections_reject_overlapping_element_coverage() {
+    let source = TestSource::new(
+        "model M output Boolean a = true; output Boolean b = false; input Boolean sink[2]; \
+         equation connect(a, sink[1]); connect(b, sink[1]); end M;",
+    );
+    let duplicate_span = source.span("connect(b, sink[1])", 0);
+    let model = complete_array_connection_model(&source, true);
+
+    assert!(matches!(
+        construct(&model, source.map),
+        Err(ToDaeError::DiscreteSolvedFormViolation { detail, span })
+            if detail.contains("overlapping element connections") && span == duplicate_span
+    ));
+}
+
+fn complete_array_connection_model(source: &TestSource, duplicate: bool) -> flat::Model {
+    let mut model = test_model();
+    for (name, declaration, type_id, value) in [
+        ("a", "output Boolean a", 8, true),
+        ("b", "output Boolean b", 9, false),
+    ] {
+        add_connection_endpoint(
+            &mut model,
+            source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            Causality::Output(Default::default()),
+        );
+        model
+            .variables
+            .get_mut(&VarName::new(name))
+            .unwrap()
+            .binding = Some(Expression::Literal {
+            value: Literal::Boolean(value),
+            span: source.span(if value { "true" } else { "false" }, 0),
+        });
+    }
+    add_connection_endpoint(
+        &mut model,
+        source,
+        "sink",
+        "input Boolean sink[2]",
+        10,
+        vec![2],
+        Causality::Input(Default::default()),
+    );
+    for (member, (source_name, sink_index)) in [("a", 1), ("b", if duplicate { 1 } else { 2 })]
+        .into_iter()
+        .enumerate()
+    {
+        let rendered = format!("sink[{sink_index}]");
+        let connection = format!("connect({source_name}, {rendered})");
+        let span = source.span(&connection, 0);
+        let sink_occurrence = usize::from(duplicate && member == 1);
+        model.add_equation(connection_equation(
+            scalar_connection_reference(source, source_name, 1),
+            Expression::VarRef {
+                name: test_reference("sink"),
+                subscripts: vec![Subscript::Index {
+                    value: sink_index,
+                    span: source.span(&rendered, sink_occurrence),
+                }],
+                span: source.span(&rendered, sink_occurrence),
+            },
+            span,
+        ));
+    }
+    model
+}
+
+#[test]
+fn b1c_classification_keeps_discrete_controlled_real_equations_continuous() {
+    let source = TestSource::new(
+        "model M Boolean m = true; Real y; equation if m then y = 1.0; else y = 2.0; end if; end M;",
+    );
+    let mut model = test_model();
+    add_primitive_variable(&mut model, &source, "m", "Boolean m", 8, Vec::new(), true);
+    model.variables.get_mut(&VarName::new("m")).unwrap().binding = Some(Expression::Literal {
+        value: Literal::Boolean(true),
+        span: source.span("true", 0),
+    });
+    add_primitive_variable(&mut model, &source, "y", "Real y", 9, Vec::new(), false);
+    let owner = source.span("if m then y = 1.0; else y = 2.0; end if", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::If {
+            branches: vec![(
+                Expression::VarRef {
+                    name: test_reference("m"),
+                    subscripts: Vec::new(),
+                    span: source.span("m", 1),
+                },
+                real_assignment_residual(&source, "1.0", 1.0, owner),
+            )],
+            else_branch: Box::new(real_assignment_residual(&source, "2.0", 2.0, owner)),
+            span: owner,
+        },
+        owner,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.continuous_equation_count(), 1);
+        assert_eq!(view.discrete_value_owner_count(), 1);
+    });
+}
+
+#[test]
+fn b1c_classification_ignores_discrete_guards_inside_a_continuous_value() {
+    let source = TestSource::new(
+        "model M Boolean m = true; Real y; equation (if m then y else 2.0) = 1.0; end M;",
+    );
+    let mut model = test_model();
+    add_primitive_variable(&mut model, &source, "m", "Boolean m", 8, Vec::new(), true);
+    model.variables.get_mut(&VarName::new("m")).unwrap().binding = Some(Expression::Literal {
+        value: Literal::Boolean(true),
+        span: source.span("true", 0),
+    });
+    add_primitive_variable(&mut model, &source, "y", "Real y", 9, Vec::new(), false);
+    let owner = source.span("(if m then y else 2.0) = 1.0", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(Expression::If {
+                branches: vec![(
+                    Expression::VarRef {
+                        name: test_reference("m"),
+                        subscripts: Vec::new(),
+                        span: source.span("m", 1),
+                    },
+                    Expression::VarRef {
+                        name: test_reference("y"),
+                        subscripts: Vec::new(),
+                        span: source.span("y", 1),
+                    },
+                )],
+                else_branch: Box::new(Expression::Literal {
+                    value: Literal::Real(2.0),
+                    span: source.span("2.0", 0),
+                }),
+                span: owner,
+            }),
+            rhs: Box::new(Expression::Literal {
+                value: Literal::Real(1.0),
+                span: source.span("1.0", 0),
+            }),
+            span: owner,
+        },
+        owner,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| assert_eq!(view.continuous_equation_count(), 1));
+}
+
+#[test]
+fn b1c_classification_rejects_mixed_discrete_and_continuous_if_branches() {
+    let source = TestSource::new(
+        "model M Boolean m; Real y; equation if true then m = true; else y = 2.0; end if; end M;",
+    );
+    let mut model = test_model();
+    add_primitive_variable(&mut model, &source, "m", "Boolean m", 8, Vec::new(), true);
+    add_primitive_variable(&mut model, &source, "y", "Real y", 9, Vec::new(), false);
+    let owner = source.span("if true then m = true; else y = 2.0; end if", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::If {
+            branches: vec![(
+                Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("true", 0),
+                },
+                Expression::Binary {
+                    op: OpBinary::Sub,
+                    lhs: Box::new(Expression::VarRef {
+                        name: test_reference("m"),
+                        subscripts: Vec::new(),
+                        span: source.span("m", 1),
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Boolean(true),
+                        span: source.span("true", 1),
+                    }),
+                    span: owner,
+                },
+            )],
+            else_branch: Box::new(real_assignment_residual(&source, "2.0", 2.0, owner)),
+            span: owner,
+        },
+        owner,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    assert!(matches!(
+        construct(&model, source.map),
+        Err(ToDaeError::DiscreteSolvedFormViolation { detail, span })
+            if detail.contains("all branches") && span == owner
+    ));
+}
+
+fn real_assignment_residual(
+    source: &TestSource,
+    literal: &str,
+    value: f64,
+    span: Span,
+) -> Expression {
+    Expression::Binary {
+        op: OpBinary::Sub,
+        lhs: Box::new(Expression::VarRef {
+            name: test_reference("y"),
+            subscripts: Vec::new(),
+            span: source.span("y", 1),
+        }),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Real(value),
+            span: source.span(literal, 0),
+        }),
+        span,
+    }
+}
+
+#[test]
+fn b1c_connection_orients_output_forwarders_from_the_exact_source_owner() {
+    let source = TestSource::new(
+        "model M output Boolean producer; output Boolean forwarded[1]; output Boolean boundary; \
+         input Boolean sink; equation producer = true; connect(forwarded[1], producer); \
+         connect(producer, boundary); connect(boundary, sink); end M;",
+    );
+    let (model, aggregate_span, boundary_span, sink_span) =
+        output_forwarder_connection_model(&source);
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_value_owner_count(), 4);
+        let aggregate_owner = (0..view.discrete_value_owner_count())
+            .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
+            .find(|owner| owner.provenance().span() == aggregate_span)
+            .expect("the singleton aggregate connection has one exact owner");
+        let value = view
+            .expression(
+                aggregate_owner
+                    .branches()
+                    .get(0)
+                    .unwrap()
+                    .values()
+                    .get(0)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap();
+        let dae::ExpressionOperation::Array(elements) = value.operation() else {
+            panic!("the full singleton selection is reconstructed as one aggregate value");
+        };
+        assert_eq!(elements.len(), 1);
+        assert_eq!(value.value_type().dimensions(), &[1]);
+        assert!(matches!(
+            view.expression(elements.get(0).unwrap())
+                .unwrap()
+                .operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteValue(_))
+        ));
+        assert!(
+            (0..view.discrete_value_owner_count())
+                .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
+                .any(|owner| owner.provenance().span() == boundary_span)
+        );
+        assert!(
+            (0..view.discrete_value_owner_count())
+                .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
+                .any(|owner| owner.provenance().span() == sink_span)
+        );
+    });
+}
+
+fn output_forwarder_connection_model(source: &TestSource) -> (flat::Model, Span, Span, Span) {
+    let mut model = test_model();
+    add_connection_endpoint(
+        &mut model,
+        source,
+        "producer",
+        "output Boolean producer",
+        8,
+        Vec::new(),
+        Causality::Output(Default::default()),
+    );
+    add_connection_endpoint(
+        &mut model,
+        source,
+        "forwarded",
+        "output Boolean forwarded[1]",
+        9,
+        vec![1],
+        Causality::Output(Default::default()),
+    );
+    add_connection_endpoint(
+        &mut model,
+        source,
+        "boundary",
+        "output Boolean boundary",
+        10,
+        Vec::new(),
+        Causality::Output(Default::default()),
+    );
+    add_connection_endpoint(
+        &mut model,
+        source,
+        "sink",
+        "input Boolean sink",
+        11,
+        Vec::new(),
+        Causality::Input(Default::default()),
+    );
+    add_boolean_source_equation(&mut model, source, "producer", "producer = true");
+    let aggregate_span = source.span("connect(forwarded[1], producer)", 0);
+    model.add_equation(connection_equation(
+        indexed_connection_reference(source, "forwarded", "forwarded[1]", 0),
+        scalar_connection_reference(source, "producer", 2),
+        aggregate_span,
+    ));
+    let boundary_span = source.span("connect(producer, boundary)", 0);
+    model.add_equation(connection_equation(
+        scalar_connection_reference(source, "producer", 3),
+        scalar_connection_reference(source, "boundary", 1),
+        boundary_span,
+    ));
+    let sink_span = source.span("connect(boundary, sink)", 0);
+    model.add_equation(connection_equation(
+        scalar_connection_reference(source, "boundary", 2),
+        scalar_connection_reference(source, "sink", 1),
+        sink_span,
+    ));
+    (model, aggregate_span, boundary_span, sink_span)
+}
+
+fn add_boolean_source_equation(
+    model: &mut flat::Model,
+    source: &TestSource,
+    target: &str,
+    equation: &str,
+) {
+    let span = source.span(equation, 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(scalar_connection_reference(source, target, 1)),
+            rhs: Box::new(Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            }),
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+}
+
+fn scalar_connection_reference(source: &TestSource, name: &str, occurrence: usize) -> Expression {
+    Expression::VarRef {
+        name: test_reference(name),
+        subscripts: Vec::new(),
+        span: source.span(name, occurrence),
+    }
+}
+
+fn indexed_connection_reference(
+    source: &TestSource,
+    name: &str,
+    rendered: &str,
+    occurrence: usize,
+) -> Expression {
+    Expression::VarRef {
+        name: test_reference(name),
+        subscripts: vec![Subscript::Index {
+            value: 1,
+            span: source.span(rendered, occurrence),
+        }],
+        span: source.span(rendered, occurrence),
+    }
+}
+
+#[test]
+fn b1c_connection_does_not_invent_an_owner_between_two_producers() {
+    let source = TestSource::new(
+        "model M output Boolean a = true; output Boolean b = false; equation connect(a, b); end M;",
+    );
+    let mut model = test_model();
+    add_connection_endpoint(
+        &mut model,
+        &source,
+        "a",
+        "output Boolean a",
+        8,
+        Vec::new(),
+        Causality::Output(Default::default()),
+    );
+    add_connection_endpoint(
+        &mut model,
+        &source,
+        "b",
+        "output Boolean b",
+        9,
+        Vec::new(),
+        Causality::Output(Default::default()),
+    );
+    model.variables.get_mut(&VarName::new("a")).unwrap().binding = Some(Expression::Literal {
+        value: Literal::Boolean(true),
+        span: source.span("true", 0),
+    });
+    model.variables.get_mut(&VarName::new("b")).unwrap().binding = Some(Expression::Literal {
+        value: Literal::Boolean(false),
+        span: source.span("false", 0),
+    });
+    let connection_span = source.span("connect(a, b)", 0);
+    model.add_equation(connection_equation(
+        Expression::VarRef {
+            name: test_reference("a"),
+            subscripts: Vec::new(),
+            span: connection_span,
+        },
+        Expression::VarRef {
+            name: test_reference("b"),
+            subscripts: Vec::new(),
+            span: connection_span,
+        },
+        connection_span,
+    ));
+
+    assert!(matches!(
+        construct(&model, source.map),
+        Err(ToDaeError::DiscreteSolvedFormViolation { detail, .. })
+            if detail.contains("more than one semantic definition owner")
+    ));
+}
+
+fn indexed_output_connection_model(source: &TestSource, output_first: bool) -> flat::Model {
+    let mut model = test_model();
+    add_connection_endpoint(
+        &mut model,
+        source,
+        "source",
+        "output Boolean source[2]",
+        8,
+        vec![2],
+        Causality::Output(Default::default()),
+    );
+    add_connection_endpoint(
+        &mut model,
+        source,
+        "sink",
+        "input Boolean sink",
+        9,
+        Vec::new(),
+        Causality::Input(Default::default()),
+    );
+    let output = Expression::VarRef {
+        name: test_reference("source"),
+        subscripts: vec![Subscript::Index {
+            value: 1,
+            span: source.span("source[1]", 0),
+        }],
+        span: source.span("source[1]", 0),
+    };
+    let input = Expression::VarRef {
+        name: test_reference("sink"),
+        subscripts: Vec::new(),
+        span: source.span("sink", 1),
+    };
+    let (lhs, rhs) = if output_first {
+        (output, input)
+    } else {
+        (input, output)
+    };
+    let connection_span = if output_first {
+        source.span("connect(source[1], sink)", 0)
+    } else {
+        source.span("connect(sink, source[1])", 0)
+    };
+    model.add_equation(connection_equation(lhs, rhs, connection_span));
+    model
+}
+
+fn add_connection_endpoint(
+    model: &mut flat::Model,
+    source: &TestSource,
+    name: &str,
+    declaration: &str,
+    type_id: u32,
+    dimensions: Vec<i64>,
+    causality: Causality,
+) {
+    add_primitive_variable(model, source, name, declaration, type_id, dimensions, true);
+    let variable = model.variables.get_mut(&VarName::new(name)).unwrap();
+    variable.causality = causality;
+    variable.component_ref = Some(test_component_reference(name, source.span(declaration, 0)));
+}
+
+fn connection_equation(lhs: Expression, rhs: Expression, span: Span) -> flat::Equation {
+    flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        },
+        span,
+        flat::EquationOrigin::Connection {
+            lhs: String::new(),
+            rhs: String::new(),
+        },
+    )
+}
+
+#[test]
 fn b1c_topology_orders_targets_inside_one_atomic_owner() {
     let source = TestSource::new(
         "model M discrete Boolean a; discrete Boolean z; equation \
@@ -640,6 +1314,125 @@ fn unassigned_discrete_value_has_explicit_generated_hold_owner() {
             value.operation(),
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::PreDiscreteValue(_))
         ));
+    });
+}
+
+#[test]
+fn initial_pre_equation_uses_checked_discrete_initial_value_owner() {
+    let source =
+        TestSource::new("model M discrete Boolean m; initial equation pre(m) = true; end M;");
+    let mut model = test_model();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "m",
+        "discrete Boolean m",
+        8,
+        Vec::new(),
+        true,
+    );
+    let equation_span = source.span("pre(m) = true", 0);
+    model.initial_equations.push(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Pre,
+                args: vec![variable_reference(&source, "m", "m", 1, Vec::new())],
+                span: source.span("pre(m)", 0),
+            }),
+            rhs: Box::new(Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.initialization_owner_count(), 0);
+        assert_eq!(view.initial_discrete_value_count(), 1);
+        let definition = view.initial_discrete_value(0).unwrap();
+        assert_eq!(definition.target().index(), 0);
+        assert_eq!(definition.provenance().span(), equation_span);
+        assert!(matches!(
+            view.expression(definition.value()).unwrap().operation(),
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(true))
+        ));
+    });
+}
+
+#[test]
+fn coupled_initial_discrete_real_definition_remains_a_numeric_initialization_row() {
+    let source = TestSource::new(
+        "model M discrete Real d; input Real u; initial equation d = u; equation d = u; end M;",
+    );
+    let mut model = test_model();
+    let mut target = flat::Variable::empty_with_span(source.span("discrete Real d", 0));
+    target.name = VarName::new("d");
+    target.instance_id = test_instance_id("d");
+    target.type_id = rumoca_core::TypeId::new(8);
+    target.variability = Variability::Discrete(Default::default());
+    target.is_primitive = true;
+    register_test_real_type(&mut model, target.type_id, &target.dims);
+    model.add_variable(target.name.clone(), target);
+    model
+        .variable_type_names
+        .insert(VarName::new("d"), "Real".to_string());
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "u",
+        "input Real u",
+        9,
+        Vec::new(),
+        false,
+    );
+    let input = model.variables.get_mut(&VarName::new("u")).unwrap();
+    input.causality = Causality::Input(Default::default());
+    input.component_ref = Some(test_component_reference(
+        "u",
+        source.span("input Real u", 0),
+    ));
+    model.top_level_input_components.insert("u".to_string());
+    let equation = |occurrence| {
+        let span = source.span("d = u", occurrence);
+        flat::Equation::new(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(variable_reference(
+                    &source,
+                    "d",
+                    "d = u",
+                    occurrence,
+                    Vec::new(),
+                )),
+                rhs: Box::new(variable_reference(
+                    &source,
+                    "u",
+                    "d = u",
+                    occurrence,
+                    Vec::new(),
+                )),
+                span,
+            },
+            span,
+            flat::EquationOrigin::ComponentEquation {
+                component: String::new(),
+            },
+        )
+    };
+    model.initial_equations.push(equation(0));
+    model.equations.push(equation(1));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.initial_discrete_value_count(), 0);
+        assert_eq!(view.initialization_owner_count(), 1);
     });
 }
 

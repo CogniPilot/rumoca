@@ -515,6 +515,7 @@ impl Session {
         &self,
         source_files: &IndexSet<String>,
         retained_names: &IndexSet<String>,
+        source_map: SourceMap,
     ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
         let definitions = self
             .documents
@@ -526,7 +527,6 @@ impl Session {
                 Some((document.uri.clone(), parsed))
             })
             .collect::<Vec<_>>();
-        let source_map = self.session_source_map();
         let merged = merge_stored_definitions(definitions).map_err(|error| {
             let mut diagnostics = CommonDiagnostics::new();
             diagnostics.emit(merge_error_to_common(&error, &source_map));
@@ -611,12 +611,17 @@ impl Session {
             });
         }
 
+        let closure_source_map = source_map.clone();
         let (resolved, closure_diagnostics) = self
-            .resolve_source_definition_closure(&target_source_files, &retained_names)
+            .resolve_source_definition_closure(
+                &target_source_files,
+                &retained_names,
+                closure_source_map,
+            )
             .map_err(|diagnostics| StrictTargetResolutionFailure {
                 failures: resolve_error_failures(&diagnostics),
                 diagnostics: diagnostics.iter().cloned().collect(),
-                source_map: Box::new(source_map.clone()),
+                source_map: Box::new(source_map),
             })?;
         Ok(StrictTargetResolution {
             resolved,

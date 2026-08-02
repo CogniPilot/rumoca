@@ -483,7 +483,7 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
         }
     }
 
-    let mut decomposition_map: HashMap<String, Vec<DecomposedParam>> = HashMap::new();
+    let mut decomposition_map = RecordDecompositionMap::default();
     let mut local_decomposed_params: HashMap<String, HashSet<String>> = HashMap::new();
 
     for (func_name, func) in flat.functions.iter_mut() {
@@ -535,7 +535,12 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
             }
         }
 
-        decomposition_map.insert(func_name.as_str().to_string(), decomposed);
+        decomposition_map.insert(
+            func_name.as_str().to_string(),
+            func.instance_id,
+            func.def_id,
+            decomposed,
+        );
     }
 
     if decomposition_map.is_empty() {
@@ -548,10 +553,13 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
 
 fn rewrite_decomposed_record_call_sites(
     flat: &mut flat::Model,
-    decomposition_map: &HashMap<String, Vec<DecomposedParam>>,
+    decomposition_map: &RecordDecompositionMap,
     local_decomposed_params: &HashMap<String, HashSet<String>>,
 ) -> Result<(), FlattenError> {
-    // Rewrite call sites in equations, variable bindings, and function bodies.
+    // Rewrite every executable expression surface in Flat. Keeping this in
+    // lockstep with final call-argument materialization is part of the stage
+    // contract: a decomposed signature may never coexist with a source-shaped
+    // record argument in a compact template or auxiliary attribute.
     for eq in &mut flat.equations {
         decompose_record_call_args_in_expr(&mut eq.residual, decomposition_map, None)?;
     }
@@ -570,15 +578,77 @@ fn rewrite_decomposed_record_call_sites(
         }
     }
     for var in flat.variables.values_mut() {
-        if let Some(ref mut binding) = var.binding {
-            decompose_record_call_args_in_expr(binding, decomposition_map, None)?;
+        for expression in [
+            &mut var.binding,
+            &mut var.start,
+            &mut var.min,
+            &mut var.max,
+            &mut var.nominal,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            decompose_record_call_args_in_expr(expression, decomposition_map, None)?;
         }
-        if let Some(ref mut start) = var.start {
-            decompose_record_call_args_in_expr(start, decomposition_map, None)?;
+    }
+    for family in flat
+        .structured_equations
+        .iter_mut()
+        .chain(flat.initial_structured_equations.iter_mut())
+    {
+        if let Some(template) = family.template.as_mut() {
+            for expression in &mut template.body {
+                decompose_record_call_args_in_expr(expression, decomposition_map, None)?;
+            }
+        }
+    }
+    for algorithm in flat
+        .algorithms
+        .iter_mut()
+        .chain(flat.initial_algorithms.iter_mut())
+    {
+        for statement in &mut algorithm.statements {
+            decompose_record_call_args_in_stmt(statement, decomposition_map, None)?;
+        }
+    }
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            decompose_record_call_args_in_expr(&mut branch.condition, decomposition_map, None)?;
+            decompose_record_calls_in_when_equations(&mut branch.equations, decomposition_map)?;
         }
     }
     for (func_name, func) in flat.functions.iter_mut() {
         let local_record_params = local_decomposed_params.get(func_name.as_str());
+        for parameter in func
+            .inputs
+            .iter_mut()
+            .chain(func.outputs.iter_mut())
+            .chain(func.locals.iter_mut())
+        {
+            for expression in [
+                &mut parameter.default,
+                &mut parameter.min,
+                &mut parameter.max,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                decompose_record_call_args_in_expr(
+                    expression,
+                    decomposition_map,
+                    local_record_params,
+                )?;
+            }
+            for subscript in &mut parameter.shape_expr {
+                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+                    decompose_record_call_args_in_expr(
+                        expr,
+                        decomposition_map,
+                        local_record_params,
+                    )?;
+                }
+            }
+        }
         for stmt in &mut func.body {
             decompose_record_call_args_in_stmt(stmt, decomposition_map, local_record_params)?;
         }
@@ -588,10 +658,55 @@ fn rewrite_decomposed_record_call_sites(
         // consume one level of its nested record before the outer call sees it.
         // Normalize generated field paths, then reconstruct only values that
         // genuinely remain record-valued after call decomposition.
-        if let Some(decomposed) = decomposition_map.get(func_name.as_str()) {
+        if let Some(decomposed) = decomposition_map.get_name(func_name.as_str()) {
             for stmt in &mut func.body {
                 rewrite_field_access_in_statement(stmt, decomposed);
                 rewrite_whole_record_params_in_statement(stmt, decomposed);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn decompose_record_calls_in_when_equations(
+    equations: &mut [flat::WhenEquation],
+    decomposition_map: &RecordDecompositionMap,
+) -> Result<(), FlattenError> {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+                decompose_record_call_args_in_expr(value, decomposition_map, None)?;
+            }
+            flat::WhenEquation::Assert {
+                condition,
+                message,
+                level,
+                ..
+            } => {
+                decompose_record_call_args_in_expr(condition, decomposition_map, None)?;
+                decompose_record_call_args_in_expr(message, decomposition_map, None)?;
+                if let Some(level) = level.as_deref_mut() {
+                    decompose_record_call_args_in_expr(level, decomposition_map, None)?;
+                }
+            }
+            flat::WhenEquation::Terminate { message, .. } => {
+                decompose_record_call_args_in_expr(message, decomposition_map, None)?;
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, branch_equations) in branches {
+                    decompose_record_call_args_in_expr(condition, decomposition_map, None)?;
+                    decompose_record_calls_in_when_equations(branch_equations, decomposition_map)?;
+                }
+                if let Some(else_branch) = else_branch {
+                    decompose_record_calls_in_when_equations(else_branch, decomposition_map)?;
+                }
+            }
+            flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+                decompose_record_call_args_in_expr(function, decomposition_map, None)?;
             }
         }
     }
@@ -604,6 +719,65 @@ struct DecomposedParam {
     constructor_name: String,
     constructor_def_id: rumoca_core::DefId,
     fields: Vec<rumoca_core::FunctionParam>,
+}
+
+/// Record-parameter lowering follows callable identity, not the spelling a
+/// call happened to carry before late canonicalization.
+///
+/// A replaceable/package-qualified call can still have its source-relative
+/// name when this pass runs. Its resolved function instance or declaration is
+/// the stable fact shared with the collected function table. The name index is
+/// retained only for compiler-generated calls that have no source identity.
+#[derive(Default)]
+struct RecordDecompositionMap {
+    by_name: HashMap<String, Vec<DecomposedParam>>,
+    name_by_instance: HashMap<rumoca_core::FunctionInstanceId, String>,
+    unique_name_by_def: HashMap<rumoca_core::DefId, Option<String>>,
+}
+
+impl RecordDecompositionMap {
+    fn insert(
+        &mut self,
+        name: String,
+        instance_id: Option<rumoca_core::FunctionInstanceId>,
+        def_id: Option<rumoca_core::DefId>,
+        decomposition: Vec<DecomposedParam>,
+    ) {
+        if let Some(instance_id) = instance_id {
+            self.name_by_instance.insert(instance_id, name.clone());
+        }
+        if let Some(def_id) = def_id {
+            self.unique_name_by_def
+                .entry(def_id)
+                .and_modify(|candidate| *candidate = None)
+                .or_insert_with(|| Some(name.clone()));
+        }
+        self.by_name.insert(name, decomposition);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+
+    fn get_name(&self, name: &str) -> Option<&[DecomposedParam]> {
+        self.by_name.get(name).map(Vec::as_slice)
+    }
+
+    fn get_reference(&self, reference: &rumoca_core::Reference) -> Option<&[DecomposedParam]> {
+        if let Some(resolved) = reference.resolved_function()
+            && let Some(name) = self.name_by_instance.get(&resolved.instance_id)
+        {
+            return self.get_name(name);
+        }
+        if let Some(name) = reference
+            .target_def_id()
+            .and_then(|def_id| self.unique_name_by_def.get(&def_id))
+            .and_then(Option::as_ref)
+        {
+            return self.get_name(name);
+        }
+        self.get_name(reference.as_str())
+    }
 }
 
 fn record_param_shape_source(param: &DecomposedParam) -> Option<String> {
@@ -664,7 +838,7 @@ fn named_constructor_arg<'a>(
 
 fn decompose_record_call_args_in_stmt(
     stmt: &mut rumoca_core::Statement,
-    map: &HashMap<String, Vec<DecomposedParam>>,
+    map: &RecordDecompositionMap,
     local_record_params: Option<&HashSet<String>>,
 ) -> Result<(), FlattenError> {
     let mut decomposer = RecordCallArgDecomposer {
@@ -681,7 +855,7 @@ fn decompose_record_call_args_in_stmt(
 
 fn decompose_record_call_args_in_expr(
     expr: &mut rumoca_core::Expression,
-    map: &HashMap<String, Vec<DecomposedParam>>,
+    map: &RecordDecompositionMap,
     local_record_params: Option<&HashSet<String>>,
 ) -> Result<(), FlattenError> {
     let mut decomposer = RecordCallArgDecomposer {
@@ -697,7 +871,7 @@ fn decompose_record_call_args_in_expr(
 }
 
 struct RecordCallArgDecomposer<'a> {
-    map: &'a HashMap<String, Vec<DecomposedParam>>,
+    map: &'a RecordDecompositionMap,
     local_record_params: Option<&'a HashSet<String>>,
     error: Option<FlattenError>,
 }
@@ -708,7 +882,7 @@ impl RecordCallArgDecomposer<'_> {
         name: &rumoca_core::Reference,
         rewritten_args: Vec<rumoca_core::Expression>,
     ) -> Vec<rumoca_core::Expression> {
-        let Some(decomposed) = self.map.get(name.as_str()) else {
+        let Some(decomposed) = self.map.get_reference(name) else {
             return rewritten_args;
         };
         match decompose_record_call_args(
@@ -1102,6 +1276,8 @@ mod tests {
     const STATE_FIELD_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7034);
     const REFERENCE_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7035);
     const LOCAL_N_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7036);
+    const FUNCTION_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7037);
+    const ALIAS_SCOPE_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(7038);
 
     fn test_span() -> Span {
         Span::from_offsets(
@@ -1271,6 +1447,117 @@ mod tests {
             "decomposed record fields are compiler-generated function locals"
         );
         let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.a"
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.b"
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_follows_function_identity_before_name_canonicalization() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor());
+        let mut function = function_with_record_input();
+        function.def_id = Some(FUNCTION_DEF_ID);
+        flat.add_function(function);
+
+        let alias_reference = rumoca_core::Reference::with_component_reference(
+            "Alias.f",
+            rumoca_core::ComponentReference::construct(
+                false,
+                test_span(),
+                vec![
+                    rumoca_core::ComponentRefPart {
+                        ident: "Alias".to_string(),
+                        span: test_span(),
+                        subs: Vec::new(),
+                        def_id: ALIAS_SCOPE_DEF_ID,
+                    },
+                    rumoca_core::ComponentRefPart {
+                        ident: "f".to_string(),
+                        span: test_span(),
+                        subs: Vec::new(),
+                        def_id: FUNCTION_DEF_ID,
+                    },
+                ],
+            )
+            .expect("alias call has resolved declaration identity"),
+        );
+        flat.add_equation(flat::Equation::new(
+            rumoca_core::Expression::FunctionCall {
+                name: alias_reference,
+                args: vec![var_ref("rec", RECORD_VALUE_DEF_ID)],
+                is_constructor: false,
+                span: test_span(),
+            },
+            test_span(),
+            flat::EquationOrigin::ComponentEquation {
+                component: "alias probe".to_string(),
+            },
+        ));
+
+        lower_record_function_params(&mut flat)
+            .expect("resolved declaration identity selects the decomposed signature");
+
+        let rumoca_core::Expression::FunctionCall { args, .. } = &flat.equations[0].residual else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            &args[0],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.a"
+        ));
+        assert!(matches!(
+            &args[1],
+            rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "rec.b"
+        ));
+    }
+
+    #[test]
+    fn record_param_lowering_rewrites_compact_structured_templates() {
+        let mut flat = flat::Model::new();
+        flat.add_function(record_constructor());
+        flat.add_function(function_with_record_input());
+        flat.structured_equations
+            .push(flat::StructuredEquationFamily {
+                domain: rumoca_core::StructuredIndexDomain {
+                    binders: Vec::new(),
+                },
+                first_equation_index: 0,
+                equations_per_point: 1,
+                span: test_span(),
+                origin: flat::EquationOrigin::ComponentEquation {
+                    component: "compact probe".to_string(),
+                },
+                regular: None,
+                template: Some(rumoca_core::ComprehensionTemplate {
+                    body: vec![rumoca_core::Expression::FunctionCall {
+                        name: rumoca_core::Reference::new("Pkg.f"),
+                        args: vec![var_ref("rec", RECORD_VALUE_DEF_ID)],
+                        is_constructor: false,
+                        span: test_span(),
+                    }],
+                    scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                }),
+                interiors_materialized: false,
+            });
+
+        lower_record_function_params(&mut flat)
+            .expect("structured source and decomposed signature stay synchronized");
+
+        let body = &flat.structured_equations[0]
+            .template
+            .as_ref()
+            .expect("template remains compact")
+            .body[0];
+        let rumoca_core::Expression::FunctionCall { args, .. } = body else {
             panic!("expected function call");
         };
         assert_eq!(args.len(), 2);
