@@ -113,6 +113,8 @@ pub(super) fn substitute_known_constants_in_flat(
             &scope,
         )?;
     }
+    substitute_structured_templates(&mut flat.structured_equations, ctx, &live_vars)?;
+    substitute_structured_templates(&mut flat.initial_structured_equations, ctx, &live_vars)?;
     substitute_assert_equations(&mut flat.assert_equations, ctx, &live_vars, &no_locals)?;
     substitute_assert_equations(
         &mut flat.initial_assert_equations,
@@ -139,6 +141,35 @@ pub(super) fn substitute_known_constants_in_flat(
     substitute_variable_annotations(&mut flat.variables, ctx, &live_vars, &no_locals)?;
     substitute_function_bodies(&mut flat.functions, ctx, &live_vars)?;
     crate::zero_sized_arrays::materialize_referenced_zero_sized_array_variables(flat, ctx)?;
+    Ok(())
+}
+
+/// Substitute the canonical template view of materialized equation rows.
+///
+/// Templates are authoritative downstream owners, not diagnostic metadata, so
+/// every compile-time constant folded in a scalar row must be folded in its
+/// template peer as well. Domain binders remain lexical locals while the
+/// family's typed origin provides the same declaration scope as its rows.
+fn substitute_structured_templates(
+    families: &mut [flat::StructuredEquationFamily],
+    ctx: &Context,
+    live_vars: &rustc_hash::FxHashSet<String>,
+) -> Result<(), FlattenError> {
+    for family in families {
+        let scope = equation_origin_scope(&family.origin);
+        let locals = family
+            .domain
+            .binders
+            .iter()
+            .map(|binder| binder.display_name.clone())
+            .collect::<HashSet<_>>();
+        let Some(template) = family.template.as_mut() else {
+            continue;
+        };
+        for body in &mut template.body {
+            *body = substitute_known_constants_expr(body.clone(), ctx, live_vars, &locals, &scope)?;
+        }
+    }
     Ok(())
 }
 

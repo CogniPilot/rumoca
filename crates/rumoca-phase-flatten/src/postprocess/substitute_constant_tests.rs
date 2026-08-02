@@ -1097,6 +1097,76 @@ fn substitutes_component_equation_constants_in_origin_scope() {
 }
 
 #[test]
+fn substitutes_package_constant_in_structured_template_and_preserves_binder() {
+    let table_name = "Pkg.Tables.LogicTable";
+    let table_index = rumoca_core::Expression::Index {
+        base: Box::new(generated_var_ref(table_name)),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(generated_var_ref("i")),
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+    let origin = flat::EquationOrigin::ComponentEquation {
+        component: "gate".to_string(),
+    };
+    let mut model = flat::Model::new();
+    model.add_equation(flat::Equation::new(
+        table_index.clone(),
+        test_span(),
+        origin.clone(),
+    ));
+    model.add_structured_equation(flat::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        },
+        first_equation_index: 0,
+        equations_per_point: 1,
+        span: test_span(),
+        origin,
+        regular: None,
+        template: Some(rumoca_core::ComprehensionTemplate {
+            body: vec![table_index],
+            scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+        }),
+        interiors_materialized: true,
+    });
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        table_name.to_string(),
+        rumoca_core::Expression::Array {
+            elements: vec![int_literal(11), int_literal(12)],
+            is_matrix: false,
+            span: test_span(),
+        },
+    );
+    ctx.array_dimensions.insert(table_name.to_string(), vec![2]);
+
+    substitute_known_constants_in_flat(&mut model, &ctx)
+        .expect("structured templates fold translation-time package constants");
+
+    let body = &model.structured_equations[0]
+        .template
+        .as_ref()
+        .expect("fixture retains its compact owner")
+        .body[0];
+    assert!(!expr_contains_var_ref(body, table_name));
+    assert!(expr_contains_var_ref(body, "i"));
+    assert!(matches!(
+        body,
+        rumoca_core::Expression::Index { base, .. }
+            if matches!(base.as_ref(), rumoca_core::Expression::Array { elements, .. }
+                if elements.len() == 2)
+    ));
+}
+
+#[test]
 fn substitutes_fully_qualified_constant_alias_in_declaration_scope() {
     let mut model = flat::Model::new();
     add_primitive_variable(&mut model, "tank.X_start");
