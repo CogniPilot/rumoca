@@ -39,6 +39,13 @@ struct RuntimeLayout {
     scalar_count: usize,
 }
 
+struct RuntimeFlags {
+    initial_event_parameter_index: Option<usize>,
+    terminal_event_parameter_index: Option<usize>,
+    initial_homotopy_parameter_index: Option<usize>,
+    scalar_count: usize,
+}
+
 /// Build the public variable layout directly from checked declarations.
 pub fn build_var_layout(dae: &dae::Dae) -> Result<solve::VarLayout, LowerError> {
     dae.inspect(|view| lower_layout(view).map(|layout| layout.layout))
@@ -166,20 +173,15 @@ fn append_runtime_layout(
         .checked_add(clock_activations.len())
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
     let (delay_values, after_delays) = append_delay_values(view, after_clocks)?;
-    let (
-        initial_event_parameter_index,
-        terminal_event_parameter_index,
-        initial_homotopy_parameter_index,
-        scalar_count,
-    ) = append_runtime_flags(view, after_delays)?;
+    let flags = append_runtime_flags(view, after_delays)?;
     Ok(RuntimeLayout {
         condition_memory,
         clock_activations,
         delay_values,
-        initial_event_parameter_index,
-        terminal_event_parameter_index,
-        initial_homotopy_parameter_index,
-        scalar_count,
+        initial_event_parameter_index: flags.initial_event_parameter_index,
+        terminal_event_parameter_index: flags.terminal_event_parameter_index,
+        initial_homotopy_parameter_index: flags.initial_homotopy_parameter_index,
+        scalar_count: flags.scalar_count,
     })
 }
 
@@ -210,7 +212,7 @@ fn append_delay_values(
 fn append_runtime_flags(
     view: dae::DaeView<'_>,
     first_index: usize,
-) -> Result<(Option<usize>, Option<usize>, Option<usize>, usize), LowerError> {
+) -> Result<RuntimeFlags, LowerError> {
     let has_initial = (0..view.condition_count()).any(|index| {
         view.condition(view.condition_id(index).expect("dense condition identity"))
             .is_some_and(|condition| {
@@ -242,12 +244,12 @@ fn append_runtime_flags(
     let end = after_terminal
         .checked_add(usize::from(has_homotopy))
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
-    Ok((
-        has_initial.then_some(first_index),
-        has_terminal.then_some(after_initial),
-        has_homotopy.then_some(after_terminal),
-        end,
-    ))
+    Ok(RuntimeFlags {
+        initial_event_parameter_index: has_initial.then_some(first_index),
+        terminal_event_parameter_index: has_terminal.then_some(after_initial),
+        initial_homotopy_parameter_index: has_homotopy.then_some(after_terminal),
+        scalar_count: end,
+    })
 }
 
 struct PreVariableLayout {
