@@ -142,6 +142,10 @@ Failure classifications:
 | A full Tier 2 quality gate MUST require `sim_ok == agreement_high` | harness gate | Every claimed execution must be certified |
 | Every compiled non-high model MUST be triaged as a counterexample to simulation refinement | dev/ ledger, issue/PR | Wrong traces falsify the candidate claim |
 | A counterexample MUST yield a general semantic fix or typed profile rejection | compiler/runtime owners | Model exceptions cannot establish correctness |
+| The actionable counterexample count MUST be zero before compile-frontier or unrelated capability work resumes | campaign planning, dev/ ledger | False success outranks breadth work |
+| Counterexample closure MUST be recorded model-by-model as strict-high after a general fix or as a producer-derived typed refusal | dev/ ledger, issue/PR | Aggregate improvement cannot close individual false success |
+| Tolerance changes, retries, and model-specific branches MUST NOT close a counterexample | compiler/runtime owners | Exceptions cannot establish semantic correctness |
+| Pointwise-nonidentifiable traces and independently demonstrated oracle discrepancies MUST be tallied separately and remain visible as uncertified | comparator reports, dev/ ledger | Separation must not manufacture certification |
 | No validity check that reads simulation outcomes may run before the comparator stage | harness gate flow | A gate that aborts first destroys the measurement it judges |
 | Every quoted parity number MUST name the Tier 2 run and commit it came from | reports, PRs, specs | An unsourced number cannot be rechecked |
 | Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
