@@ -24,22 +24,29 @@ pub enum TargetAssignmentShape {
         coefficient_scale: f64,
         expr_eval_len: usize,
     },
+    AffineResidual {
+        target_y_index: usize,
+        target_reg: u32,
+        residual_reg: u32,
+        coefficient: f64,
+        expr_eval_len: usize,
+    },
 }
 
 impl TargetAssignmentShape {
     pub fn target_y_index(self) -> usize {
         match self {
-            Self::Direct { target_y_index, .. } | Self::Affine { target_y_index, .. } => {
-                target_y_index
-            }
+            Self::Direct { target_y_index, .. }
+            | Self::Affine { target_y_index, .. }
+            | Self::AffineResidual { target_y_index, .. } => target_y_index,
         }
     }
 
     pub fn expr_eval_len(self) -> usize {
         match self {
-            Self::Direct { expr_eval_len, .. } | Self::Affine { expr_eval_len, .. } => {
-                expr_eval_len
-            }
+            Self::Direct { expr_eval_len, .. }
+            | Self::Affine { expr_eval_len, .. }
+            | Self::AffineResidual { expr_eval_len, .. } => expr_eval_len,
         }
     }
 
@@ -71,6 +78,25 @@ impl TargetAssignmentShape {
                     });
                 }
                 Ok(-offset / coefficient)
+            }
+            Self::AffineResidual {
+                target_y_index,
+                target_reg,
+                residual_reg,
+                coefficient,
+                ..
+            } => {
+                if coefficient == 0.0 || !coefficient.is_finite() {
+                    return Err(EvalSolveError::SingularTargetAssignment {
+                        row: row_idx,
+                        target_y_index,
+                        coefficient,
+                        span,
+                    });
+                }
+                let target = read_shape_reg(regs, target_reg, span)?;
+                let residual = read_shape_reg(regs, residual_reg, span)?;
+                Ok(target - residual / coefficient)
             }
         }
     }
@@ -104,7 +130,90 @@ pub fn target_assignment_shapes(
             shapes.push(shape);
         }
     }
+    for shape in affine_residual_shapes(row, output_reg)? {
+        if shapes
+            .iter()
+            .all(|existing| existing.target_y_index() != shape.target_y_index())
+        {
+            shapes.push(shape);
+        }
+    }
     Ok(shapes)
+}
+
+fn affine_residual_shapes(
+    row: &[LinearOp],
+    residual_reg: u32,
+) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
+    let Some(residual_pos) = producer_pos(row, residual_reg) else {
+        return Ok(Vec::new());
+    };
+    let expr_eval_len = checked_expr_eval_len(residual_pos)?;
+    let mut targets = Vec::new();
+    for op in row {
+        let LinearOp::LoadY {
+            dst: target_reg,
+            index: target_y_index,
+        } = *op
+        else {
+            continue;
+        };
+        if targets
+            .iter()
+            .any(|shape: &TargetAssignmentShape| shape.target_y_index() == target_y_index)
+        {
+            continue;
+        }
+        let Some(coefficient) = additive_target_coefficient(row, residual_reg, target_y_index)
+        else {
+            continue;
+        };
+        if coefficient == 0.0 || !coefficient.is_finite() {
+            continue;
+        }
+        targets.push(TargetAssignmentShape::AffineResidual {
+            target_y_index,
+            target_reg,
+            residual_reg,
+            coefficient,
+            expr_eval_len,
+        });
+    }
+    Ok(targets)
+}
+
+fn additive_target_coefficient(row: &[LinearOp], reg: u32, target_y_index: usize) -> Option<f64> {
+    if !reg_depends_on_y_index(row, reg, target_y_index) {
+        return Some(0.0);
+    }
+    match producer(row, reg)? {
+        LinearOp::LoadY { index, .. } if *index == target_y_index => Some(1.0),
+        LinearOp::Move { src, .. } => additive_target_coefficient(row, *src, target_y_index),
+        LinearOp::Unary {
+            op: UnaryOp::Neg,
+            arg,
+            ..
+        } => additive_target_coefficient(row, *arg, target_y_index).map(|value| -value),
+        LinearOp::Binary {
+            op: BinaryOp::Add,
+            lhs,
+            rhs,
+            ..
+        } => Some(
+            additive_target_coefficient(row, *lhs, target_y_index)?
+                + additive_target_coefficient(row, *rhs, target_y_index)?,
+        ),
+        LinearOp::Binary {
+            op: BinaryOp::Sub,
+            lhs,
+            rhs,
+            ..
+        } => Some(
+            additive_target_coefficient(row, *lhs, target_y_index)?
+                - additive_target_coefficient(row, *rhs, target_y_index)?,
+        ),
+        _ => None,
+    }
 }
 
 fn read_shape_reg(

@@ -248,7 +248,7 @@ fn algebraic_refresh_rows_from_row_targets(
         let Some(position) = output_row_positions.get(&row_idx).copied() else {
             continue;
         };
-        if !block.can_evaluate_target_assignment(position.program_index, target_index) {
+        if !block.can_evaluate_declared_target_assignment(position.program_index, target_index) {
             continue;
         }
         reserve_refresh_index_set_capacity(&mut claimed_targets, 1, "claimed row targets", span)?;
@@ -273,25 +273,28 @@ fn algebraic_refresh_rows_from_row_targets(
 pub fn build_derivative_refresh_plan(
     model: &solve::SolveModel,
     derivative_block: &solve::ScalarProgramBlock,
+    implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
 ) -> Result<RefreshPlan, EvalSolveError> {
     let state_count = model.state_scalar_count();
     let initial_deps = derivative_row_dependencies(derivative_block, state_count)?;
-    build_dependency_refresh_plan(model, full_plan, initial_deps)
+    build_dependency_refresh_plan(model, implicit_block, full_plan, initial_deps)
 }
 
 pub fn build_root_refresh_plan(
     model: &solve::SolveModel,
+    implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
 ) -> Result<RefreshPlan, EvalSolveError> {
     let state_count = model.state_scalar_count();
     let initial_deps =
         root_condition_dependencies(&model.problem.events.root_conditions, state_count)?;
-    build_dependency_refresh_plan(model, full_plan, initial_deps)
+    build_dependency_refresh_plan(model, implicit_block, full_plan, initial_deps)
 }
 
 fn build_dependency_refresh_plan(
     model: &solve::SolveModel,
+    prepared_implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
     initial_deps: IndexSet<usize>,
 ) -> Result<RefreshPlan, EvalSolveError> {
@@ -324,6 +327,14 @@ fn build_dependency_refresh_plan(
             .filter(|row| needed.contains(&row.target_index))
             .cloned(),
     );
+    append_exact_projection_owners(
+        prepared_implicit_block,
+        full_plan,
+        &needed,
+        &needed_blocks,
+        &output_positions,
+        &mut rows,
+    )?;
     let simultaneous_plan = solve::AlgebraicProjectionPlan {
         blocks: full_plan
             .simultaneous_plan
@@ -351,6 +362,64 @@ fn build_dependency_refresh_plan(
     plan.simultaneous_plan = simultaneous_plan;
     configure_causal_seed_rows(&mut plan, state_count)?;
     Ok(plan)
+}
+
+fn append_exact_projection_owners(
+    block: &PreparedScalarProgramBlock,
+    full_plan: &RefreshPlan,
+    needed: &IndexSet<usize>,
+    needed_blocks: &IndexSet<usize>,
+    output_positions: &IndexMap<usize, OutputRowPosition>,
+    rows: &mut Vec<AlgebraicRefreshRow>,
+) -> Result<(), EvalSolveError> {
+    let span = first_block_span(block.block());
+    let mut claimed_targets = rows
+        .iter()
+        .map(|row| row.target_index)
+        .collect::<IndexSet<_>>();
+    reserve_refresh_index_set_capacity(
+        &mut claimed_targets,
+        needed.len(),
+        "dependency exact-owner targets",
+        span,
+    )?;
+    for block_index in needed_blocks {
+        let Some(projection_block) = full_plan.simultaneous_plan.blocks.get(*block_index) else {
+            continue;
+        };
+        let ([equation_index], [target_index]) = (
+            projection_block.rows.as_slice(),
+            projection_block.y_indices.as_slice(),
+        ) else {
+            continue;
+        };
+        if !needed.contains(target_index) || claimed_targets.contains(target_index) {
+            continue;
+        }
+        let Some(position) = output_positions.get(equation_index).copied() else {
+            continue;
+        };
+        if position.output_offset != 0
+            || block.row_output_count(position.program_index) != Some(1)
+            || !block.can_evaluate_target_assignment(position.program_index, *target_index)
+            || !block.certifies_exact_target_assignment(position.program_index, *target_index)
+        {
+            continue;
+        }
+        reserve_refresh_vec_capacity(rows, 1, "dependency exact-owner rows", span)?;
+        rows.push(AlgebraicRefreshRow {
+            equation_index: *equation_index,
+            row_idx: position.program_index,
+            output_offset: position.output_offset,
+            target_index: *target_index,
+            assignment_target: Some(*target_index),
+            direct_assignment_certified: block
+                .certifies_direct_target_assignment(position.program_index, *target_index),
+            exact_assignment_certified: true,
+        });
+        claimed_targets.insert(*target_index);
+    }
+    Ok(())
 }
 
 fn dependency_target_rows(
@@ -641,7 +710,7 @@ fn dependency_causal_projection_is_certified(
                 || solve::ScalarProgramBlock::program_output_count(&block.programs()[row.row_idx])
                     != 1
                 || row.assignment_target != Some(row.target_index)
-                || !row.direct_assignment_certified
+                || !row.exact_assignment_certified
         })
     {
         return false;

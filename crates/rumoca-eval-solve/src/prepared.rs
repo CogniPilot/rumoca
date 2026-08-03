@@ -593,6 +593,18 @@ impl PreparedScalarProgramBlock {
             || !row_loads_y_index(row, target_y_index)
     }
 
+    pub(crate) fn can_evaluate_declared_target_assignment(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+    ) -> bool {
+        self.can_evaluate_target_assignment(row_idx, target_y_index)
+            && !matches!(
+                self.assignment_shape(row_idx, target_y_index),
+                Some(TargetAssignmentShape::AffineResidual { .. })
+            )
+    }
+
     pub(crate) fn certifies_direct_target_assignment(
         &self,
         row_idx: usize,

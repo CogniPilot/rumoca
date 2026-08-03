@@ -552,7 +552,7 @@ fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output(
         "derivative_dependency_slice_rhs.mo",
     );
 
-    let plan = build_derivative_refresh_plan(&model, &derivative, &full)
+    let plan = build_derivative_refresh_plan(&model, &derivative, &implicit, &full)
         .expect("dependency refresh should retain complete coupled blocks");
 
     assert_eq!(
@@ -566,6 +566,60 @@ fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output(
     assert_eq!(plan.simultaneous_plan.blocks.len(), 1);
     assert_eq!(plan.simultaneous_plan.blocks[0].rows, vec![1, 2]);
     assert_eq!(plan.simultaneous_plan.blocks[0].y_indices, vec![1, 2]);
+}
+
+#[test]
+fn derivative_refresh_rejects_missing_owner_without_exact_isolation() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "a".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                algebraic_scalar_count: 1,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![
+                        derivative_placeholder_row(0),
+                        nonlinear_target_residual_row(1, 0),
+                    ],
+                    "missing_exact_dependency_owner.mo",
+                )),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(0)), None],
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![1],
+                        y_indices: vec![1],
+                    }],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![1.0, 1.0],
+        ..Default::default()
+    };
+    let implicit =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("implicit block should prepare");
+    let full = valid_algebraic_refresh_plan(&model, &implicit);
+    let derivative = spanned_block(
+        vec![derivative_placeholder_row(1)],
+        "missing_exact_dependency_owner_rhs.mo",
+    );
+
+    let plan = build_derivative_refresh_plan(&model, &derivative, &implicit, &full)
+        .expect("an unproved owner must retain residual projection");
+
+    assert!(plan.rows.is_empty());
+    assert!(!plan.causal_solution_certified);
+    assert_eq!(plan.value_projection_plan.blocks.len(), 1);
+    assert_eq!(plan.value_projection_plan.blocks[0].rows, vec![1]);
+    assert_eq!(plan.value_projection_plan.blocks[0].y_indices, vec![1]);
 }
 
 #[test]
@@ -2037,6 +2091,36 @@ fn positive_sum_residual_row() -> Vec<solve::LinearOp> {
             rhs: 1,
         },
         solve::LinearOp::StoreOutput { src: 2 },
+    ]
+}
+
+fn nonlinear_target_residual_row(target: usize, source: usize) -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadY {
+            dst: 0,
+            index: target,
+        },
+        solve::LinearOp::LoadY {
+            dst: 1,
+            index: target,
+        },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::LoadY {
+            dst: 3,
+            index: source,
+        },
+        solve::LinearOp::Binary {
+            dst: 4,
+            op: solve::BinaryOp::Sub,
+            lhs: 2,
+            rhs: 3,
+        },
+        solve::LinearOp::StoreOutput { src: 4 },
     ]
 }
 

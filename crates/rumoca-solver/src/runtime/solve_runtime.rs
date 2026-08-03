@@ -202,13 +202,8 @@ impl SolveRuntime {
         let (manifold_residual, manifold_jacobian_v) = prepare_manifold_projection_programs(model)?;
         let derivative_scalar_rhs =
             to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
-        let algebraic_refresh = build_algebraic_refresh_plan(model, &implicit_scalar_rhs)?;
-        let derivative_refresh =
-            build_derivative_refresh_plan(model, &derivative_scalar_rhs, &algebraic_refresh)?;
-        let root_refresh = build_root_refresh_plan(model, &algebraic_refresh)?;
-        trace_refresh_plan(model, "algebraic", &algebraic_refresh);
-        trace_refresh_plan(model, "derivative", &derivative_refresh);
-        trace_refresh_plan(model, "root", &root_refresh);
+        let (algebraic_refresh, derivative_refresh, root_refresh) =
+            build_runtime_refresh_plans(model, &implicit_scalar_rhs, &derivative_scalar_rhs)?;
         trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
@@ -2029,6 +2024,20 @@ impl SolveRuntime {
         }
         Ok(())
     }
+}
+
+fn build_runtime_refresh_plans(
+    model: &solve::SolveModel,
+    implicit: &PreparedScalarProgramBlock,
+    derivative: &solve::ScalarProgramBlock,
+) -> Result<(RefreshPlan, RefreshPlan, RefreshPlan), EvalSolveError> {
+    let algebraic = build_algebraic_refresh_plan(model, implicit)?;
+    let derivative = build_derivative_refresh_plan(model, derivative, implicit, &algebraic)?;
+    let root = build_root_refresh_plan(model, implicit, &algebraic)?;
+    trace_refresh_plan(model, "algebraic", &algebraic);
+    trace_refresh_plan(model, "derivative", &derivative);
+    trace_refresh_plan(model, "root", &root);
+    Ok((algebraic, derivative, root))
 }
 
 fn fill_inactive_root_output(out: &mut [f64]) -> Result<(), RuntimeSolveError> {
