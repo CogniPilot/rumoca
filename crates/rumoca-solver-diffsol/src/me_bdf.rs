@@ -130,7 +130,7 @@ where
     Eqn: StateOdeEquations + 'a,
     S: OdeSolverMethod<'a, Eqn>,
 {
-    let tolerance = opts.atol.max(1.0e-10);
+    let state_tolerance = opts.atol.max(1.0e-10);
     for _ in 0..MAX_STEPS_PER_OUTPUT {
         budget
             .check()
@@ -169,12 +169,12 @@ where
                 *pending_root = Some(root);
                 return interpolate_deferred_sample(solver, target).map(Some);
             }
-            process_root_event(host, solver, trace, root, target, tolerance)?;
+            process_root_event(host, solver, trace, root, target, state_tolerance)?;
             continue;
         }
         let requested = host.next_event_stop(opts.t_end)?;
         let current = solver.state().t;
-        if requested.is_event && time_reached_with_tolerance(current, requested.time, tolerance) {
+        if requested.is_event && integration_time_reached(current, requested.time) {
             if event_time_is_beyond_horizon(requested.time, target) {
                 return interpolate_deferred_sample(solver, target).map(Some);
             }
@@ -206,15 +206,15 @@ where
         set_stop_time(solver, stop_time)?;
         match solver_call("BDF step", || solver.step())? {
             OdeSolverStopReason::InternalTimestep => {
-                let sample = sample_crossed_output(solver, target, tolerance)?;
-                accept_step(host, solver, tolerance)?;
+                let sample = sample_crossed_output(solver, target)?;
+                accept_step(host, solver, state_tolerance)?;
                 if sample.is_some() {
                     return Ok(sample);
                 }
             }
             OdeSolverStopReason::TstopReached => {
-                let sample = sample_crossed_output(solver, target, tolerance)?;
-                accept_step(host, solver, tolerance)?;
+                let sample = sample_crossed_output(solver, target)?;
+                accept_step(host, solver, state_tolerance)?;
                 if requested.is_event {
                     *pending_time_event = Some(requested.time);
                     if sample.is_some() {
@@ -252,7 +252,7 @@ where
                     *pending_root = Some(root);
                     return Ok(Some(sample));
                 }
-                process_root_event(host, solver, trace, root, target, tolerance)?;
+                process_root_event(host, solver, trace, root, target, state_tolerance)?;
             }
         }
     }
@@ -264,14 +264,13 @@ where
 fn sample_crossed_output<'a, Eqn, S>(
     solver: &mut S,
     target: f64,
-    tolerance: f64,
 ) -> Result<Option<Vec<f64>>, SimError>
 where
     Eqn: StateOdeEquations + 'a,
     S: OdeSolverMethod<'a, Eqn>,
 {
     let reached = solver.state().t;
-    if reached <= target || time_reached_with_tolerance(reached, target, tolerance) {
+    if reached <= target || integration_time_reached(reached, target) {
         return Ok(None);
     }
     interpolate_deferred_sample(solver, target).map(Some)
@@ -367,8 +366,8 @@ fn event_requires_integrator_restart(
     values_of_continuous_states_changed || matches!(cause, MeEventCause::StateEvent)
 }
 
-fn time_reached_with_tolerance(current: f64, target: f64, tolerance: f64) -> bool {
-    (current - target).abs() <= tolerance * (1.0 + current.abs().max(target.abs()))
+fn integration_time_reached(current: f64, target: f64) -> bool {
+    sample_time_match_with_tol(current, target)
 }
 
 fn event_time_is_beyond_horizon(event_time: f64, horizon: f64) -> bool {
@@ -560,8 +559,22 @@ fn empty_terminated_result(
 
 #[cfg(test)]
 mod tests {
-    use super::{event_requires_integrator_restart, event_time_is_beyond_horizon};
+    use super::{
+        event_requires_integrator_restart, event_time_is_beyond_horizon,
+        integration_time_reached,
+    };
     use rumoca_solver::fmi_me::MeEventCause;
+
+    #[test]
+    fn integration_time_reach_is_independent_of_state_error_tolerance() {
+        let current = 0.0;
+        let deadline = 1.0e-9;
+        let state_absolute_tolerance = 1.0e-6;
+
+        assert!((deadline - current) < state_absolute_tolerance);
+        assert!(!integration_time_reached(current, deadline));
+        assert!(integration_time_reached(deadline, deadline));
+    }
 
     #[test]
     fn event_times_beyond_the_output_horizon_are_not_value_tolerance_matches() {
