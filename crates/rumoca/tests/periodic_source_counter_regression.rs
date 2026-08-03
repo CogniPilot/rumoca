@@ -104,6 +104,22 @@ equation
 end ZeroPhaseSampleCounter;
 "#;
 
+const SAMPLE_ALIAS_COUNTER_WITH_UNRELATED_EVENT: &str = r#"
+model SampleAliasCounterWithUnrelatedEvent
+  Boolean sampleTrigger;
+  discrete Integer count(start = 0, fixed = true);
+  discrete Integer unrelated(start = 0, fixed = true);
+equation
+  sampleTrigger = sample(0.1, 0.1);
+  when sampleTrigger then
+    count = pre(count) + 1;
+  end when;
+  when time >= 0.25 then
+    unrelated = pre(unrelated) + 1;
+  end when;
+end SampleAliasCounterWithUnrelatedEvent;
+"#;
+
 const VECTOR_SELF_RESCHEDULING_COUNTER: &str = r#"
 model VectorSelfReschedulingCounter
   parameter Real period = 0.1;
@@ -299,6 +315,54 @@ fn const_threshold_when_accumulator_fires_exactly_once() {
         value_at(&sim, "count", 0.2) <= 0.5,
         "count must stay 0 before the 0.3 threshold"
     );
+}
+
+#[test]
+fn exact_sample_alias_fires_every_tick_and_does_not_allocate_condition_memory() {
+    let compiled = rumoca::Compiler::new()
+        .model("SampleAliasCounterWithUnrelatedEvent")
+        .compile_str(
+            SAMPLE_ALIAS_COUNTER_WITH_UNRELATED_EVENT,
+            "sample_alias_counter_with_unrelated_event.mo",
+        )
+        .expect("exact sample alias should compile");
+    let solve = rumoca_phase_solve::lower_solve_problem(&compiled.dae)
+        .expect("sample alias has a checked Solve owner");
+    let condition_memory_rows = solve
+        .discrete
+        .row_roles
+        .iter()
+        .filter(|role| **role == rumoca_ir_solve::DiscreteRowRole::ConditionMemory)
+        .count();
+    assert_eq!(
+        condition_memory_rows, 1,
+        "only the unrelated time relation needs a buffer; the sample alias is a typed clock leaf"
+    );
+
+    let sim = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.5,
+            dt: Some(0.025),
+            ..SimOptions::default()
+        },
+    )
+    .expect("sample alias model should simulate");
+    for (time, expected) in [
+        (0.05, 0.0),
+        (0.15, 1.0),
+        (0.25, 2.0),
+        (0.35, 3.0),
+        (0.45, 4.0),
+        (0.50, 5.0),
+    ] {
+        let actual = value_at(&sim, "count", time);
+        assert!(
+            (actual - expected).abs() <= 1.0e-9,
+            "sample alias count at t={time} should be {expected}, got {actual}"
+        );
+    }
+    assert_eq!(value_at(&sim, "unrelated", 0.5), 1.0);
 }
 
 #[test]

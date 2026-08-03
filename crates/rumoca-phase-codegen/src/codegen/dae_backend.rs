@@ -897,11 +897,20 @@ fn project_events(view: dae::DaeView<'_>) -> Value {
                     .time_event_id(index)
                     .expect("dense checked time-event identity resolves");
                 let event = view.time_event(id).expect("checked time event resolves");
-                json!({
-                    "id": id.index(),
-                    "instant": event.instant(),
-                    "provenance": event.provenance(),
-                })
+                match event.operation() {
+                    dae::TimeEventOperation::Static(instant) => json!({
+                        "id": id.index(),
+                        "kind": "static",
+                        "instant": instant,
+                        "provenance": event.provenance(),
+                    }),
+                    dae::TimeEventOperation::Dynamic(deadline) => json!({
+                        "id": id.index(),
+                        "kind": "dynamic",
+                        "deadline": deadline.index(),
+                        "provenance": event.provenance(),
+                    }),
+                }
             })
             .collect::<Vec<_>>(),
         "actions": (0..view.event_action_count())

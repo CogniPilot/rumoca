@@ -216,6 +216,14 @@ their authoritative DAE domain and scalar view as a compact map plus a compact
 target map. Scalar programs are derived only by evaluator/backend scalar-view
 APIs; phase lowering does not create a parallel scalar owner.
 
+Each scalar or structured discrete update also owns a typed integrator-history
+effect derived by Solve lowering. The effect is `Preserve` only when compiler
+dependency analysis proves that changing the update cannot reach continuous
+dynamics; every unresolved dependency, cycle, unsupported target, or state
+reinitialization is `Restart`. Runtimes may combine this construction evidence
+with the set of updates that actually changed at an event, but must not recover
+the effect from model names, row positions, or observed numerical behavior.
+
 The root `schema_version` is mandatory on serialized Solve payloads.
 Deserializers reject unsupported versions and pre-versioned `ComputeBlock` row
 payloads.
@@ -226,7 +234,7 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 `rumoca-phase-solve` only when a backend/template/runtime boundary asks.
 `lower_solve_problem` must not eagerly populate them.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C20` in
+**Contract:** rows `SOLVE-C01`–`SOLVE-C21` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
 Steady-state objectives, adjoints, parameter sensitivities, and

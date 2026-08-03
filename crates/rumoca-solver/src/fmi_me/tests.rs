@@ -7,7 +7,9 @@
 
 use rumoca_ir_solve as solve;
 
-use super::kernel::{event_update_application_time, frozen_projection_changed};
+use super::kernel::{
+    event_right_limit_state_derivatives, event_update_application_time, frozen_projection_changed,
+};
 use super::{
     MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig, MeModelSource,
     MeNoStateSession, MeStage, MeTime, ModelExchangeKernel, SolveMeKernel, resolve_me_stage,
@@ -213,6 +215,143 @@ fn harmonic_oscillator() -> solve::SolveModel {
         visible_names: vec!["x".to_string(), "v".to_string()],
         ..Default::default()
     }
+}
+
+fn nonlinear_right_limit_implicit_jvp() -> solve::ScalarProgramBlock {
+    use solve::LinearOp::{Binary, Const, LoadSeed, LoadY, StoreOutput};
+    block(
+        vec![
+            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![
+                Const { dst: 0, value: 2.0 },
+                LoadY { dst: 1, index: 1 },
+                Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LoadSeed { dst: 3, index: 1 },
+                Binary {
+                    dst: 4,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 2,
+                    rhs: 3,
+                },
+                LoadSeed { dst: 5, index: 0 },
+                Binary {
+                    dst: 6,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 4,
+                    rhs: 5,
+                },
+                StoreOutput { src: 6 },
+            ],
+        ],
+        "fmi_me_right_limit_implicit_jvp.mo",
+    )
+}
+
+fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
+    use solve::LinearOp::{Binary, LoadY, StoreOutput};
+    let derivative = block(
+        vec![vec![LoadY { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
+        "fmi_me_right_limit_derivative.mo",
+    );
+    let implicit = block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![
+                LoadY { dst: 0, index: 1 },
+                Binary {
+                    dst: 1,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 0,
+                },
+                LoadY { dst: 2, index: 0 },
+                Binary {
+                    dst: 3,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 1,
+                    rhs: 2,
+                },
+                StoreOutput { src: 3 },
+            ],
+        ],
+        "fmi_me_right_limit_implicit.mo",
+    );
+    let implicit_jvp = nonlinear_right_limit_implicit_jvp();
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
+                implicit_row_targets: vec![
+                    Some(solve::scalar_slot_y(0)),
+                    Some(solve::scalar_slot_y(1)),
+                ],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![1],
+                        y_indices: vec![1],
+                    }],
+                },
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "a".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                algebraic_scalar_count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        artifacts: solve::SolveArtifacts {
+            continuous: solve::ContinuousSolveArtifacts {
+                implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
+                    implicit_jvp.clone(),
+                ),
+                implicit_jacobian_v_scalar: implicit_jvp,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![4.0, 2.0],
+        solver_nominals: vec![1.0, 1.0],
+        visible_names: vec!["x".to_string(), "a".to_string()],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn event_right_limit_derivative_retains_the_full_algebraic_seed() {
+    let model = nonlinear_right_limit_seed_model();
+    let runtime = crate::runtime::solve_runtime::SolveRuntime::new(&model)
+        .expect("right-limit seed fixture should prepare");
+    let settle = crate::runtime::solve_runtime::AlgebraicSettle {
+        tol: 1.0e-12,
+        max_iters: 32,
+    };
+
+    let derivative =
+        event_right_limit_state_derivatives(&runtime, &model.initial_y, 0.0, &[4.0], &[], settle)
+            .expect("the retained positive algebraic branch should remain solvable");
+    assert_eq!(derivative, vec![2.0]);
+
+    let error =
+        event_right_limit_state_derivatives(&runtime, &[4.0, 0.0], 0.0, &[4.0], &[], settle)
+            .expect_err("a zeroed algebraic seed is singular for a² - x at a = 0");
+    assert!(
+        error
+            .to_string()
+            .contains("algebraic projection did not converge"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("target=a"), "{error}");
 }
 
 fn strict_root_relation_memory() -> solve::SolveModel {

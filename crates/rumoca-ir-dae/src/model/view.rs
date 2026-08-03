@@ -524,8 +524,14 @@ impl<'dae> DaeView<'dae> {
 
     pub fn time_event(self, id: TimeEventId<'dae>) -> Option<TimeEventView<'dae>> {
         let entry = self.dae.storage.time_events.get(id.index() as usize)?;
+        let operation = match &entry.kind {
+            TimeEventKind::Static { instant } => TimeEventOperation::Static(instant),
+            TimeEventKind::Dynamic { deadline } => {
+                TimeEventOperation::Dynamic(ExprId::from_raw(*deadline))
+            }
+        };
         Some(TimeEventView {
-            instant: &entry.instant,
+            operation,
             provenance: entry.provenance,
         })
     }

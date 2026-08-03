@@ -281,8 +281,8 @@ fn static_time_event_instants_agree_with_the_compiler() {
         let actual: Vec<f64> = compiled.dae.inspect(|view| {
             (0..view.time_event_count())
                 .filter_map(|index| view.time_event(view.time_event_id(index)?))
-                .map(|event| {
-                    let instant = event.instant();
+                .filter_map(|event| event.instant())
+                .map(|instant| {
                     #[expect(
                         clippy::cast_precision_loss,
                         reason = "slice-1 instants are small dyadic rationals; the comparison below is exact for them"

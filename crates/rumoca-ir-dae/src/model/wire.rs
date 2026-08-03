@@ -464,7 +464,8 @@ struct RootEntryWire {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TimeEventEntryWire {
-    instant: ClockRationalWire,
+    instant: Option<ClockRationalWire>,
+    deadline: Option<u32>,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -1653,8 +1654,26 @@ fn reconstruct_events<'dae>(
     ids: &WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
     for (index, event) in wire.time_events.iter().enumerate() {
-        let instant = event.instant.checked(event.provenance)?;
-        let id = dae.events(|events| events.time_event(instant, event.provenance))?;
+        let id = match (event.instant, event.deadline) {
+            (Some(instant), None) => {
+                let instant = instant.checked(event.provenance)?;
+                dae.events(|events| events.time_event(instant, event.provenance))?
+            }
+            (None, Some(deadline)) => {
+                let deadline = mapped(
+                    &ids.expressions,
+                    deadline,
+                    "dynamic time-event deadline",
+                    event.provenance,
+                )?;
+                dae.events(|events| events.dynamic_time_event(deadline, event.provenance))?
+            }
+            _ => {
+                return Err(DaeConstructionError::InvalidDynamicTimeEventDeadline {
+                    span: event.provenance.span(),
+                });
+            }
+        };
         expect_ordinal("time event", index, id.index(), event.provenance)?;
     }
     for (index, action) in wire.event_actions.iter().enumerate() {

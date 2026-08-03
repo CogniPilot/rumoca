@@ -73,7 +73,20 @@ use refresh_projection::*;
 
 impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
     fn from(value: solve_eval::EvalSolveError) -> Self {
-        Self::solve_ir_with_span(value.to_string(), value.source_span())
+        match value {
+            EvalSolveError::SingularTargetAssignment {
+                row,
+                target_y_index,
+                coefficient,
+                span,
+            } => Self::RefreshTargetSingular {
+                row,
+                target_y_index,
+                coefficient,
+                span,
+            },
+            error => Self::solve_ir_with_span(error.to_string(), error.source_span()),
+        }
     }
 }
 
@@ -1510,9 +1523,13 @@ impl SolveRuntime {
                     &mut project_algebraics,
                 )?;
             }
-            if root_relation_overrides.is_empty() {
-                changed |= self.update_relation_memory_from_solver_y(t, y, p, tol)?;
-            }
+            changed |= self.update_relation_memory_from_solver_y_except_overrides(
+                t,
+                y,
+                p,
+                tol,
+                root_relation_overrides,
+            )?;
             changed |=
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             changed |= project_algebraics(y, p)?;
@@ -1614,7 +1631,18 @@ impl SolveRuntime {
         t: f64,
         y: &[f64],
         p: &mut [f64],
+        tol: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        self.update_relation_memory_from_solver_y_except_overrides(t, y, p, tol, &[])
+    }
+
+    fn update_relation_memory_from_solver_y_except_overrides(
+        &self,
+        t: f64,
+        y: &[f64],
+        p: &mut [f64],
         _tol: f64,
+        root_relation_overrides: &[(usize, f64)],
     ) -> Result<bool, RuntimeSolveError> {
         let relation_memory_indices = &self
             .model
@@ -1625,11 +1653,45 @@ impl SolveRuntime {
             return Ok(false);
         }
         let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
-        Ok(update_relation_memory_slots(
-            &roots,
-            p,
-            relation_memory_indices,
-        ))
+        let mut changed = false;
+        for (root_index, (root, parameter_index)) in
+            roots.iter().zip(relation_memory_indices).enumerate()
+        {
+            if self.relation_memory_root_is_overridden(
+                root_index,
+                *parameter_index,
+                root_relation_overrides,
+            ) {
+                continue;
+            }
+            changed |= update_relation_memory_slots(
+                std::slice::from_ref(root),
+                p,
+                std::slice::from_ref(parameter_index),
+            );
+        }
+        Ok(changed)
+    }
+
+    fn relation_memory_root_is_overridden(
+        &self,
+        root_index: usize,
+        parameter_index: usize,
+        root_relation_overrides: &[(usize, f64)],
+    ) -> bool {
+        root_relation_overrides.iter().any(|(override_index, _)| {
+            if *override_index != root_index {
+                return false;
+            }
+            matches!(
+                self.model
+                    .problem
+                    .events
+                    .root_relation_memory_targets
+                    .get(root_index),
+                Some(Some(solve::ScalarSlot::P { index, .. })) if *index == parameter_index
+            )
+        })
     }
 
     pub fn eval_root_conditions_from_solver_y(

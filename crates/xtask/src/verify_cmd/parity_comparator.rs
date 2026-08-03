@@ -20,9 +20,6 @@
 //! * a results directory carrying a non-empty `omc_simulation_reference.json`
 //!   whose `trace_comparison.models_compared` is greater than zero, alongside a
 //!   non-empty `sim_trace_comparison.json`;
-//! * a focused run (`--sim-targets-file`, `--sim-match`, `--sim-limit`, or
-//!   `--require-selected-targets-success`), which names its own targets and is
-//!   gated on those, not on cohort parity;
 //! * any run passing `--allow-unmeasured-parity`, which prints the same
 //!   "parity unmeasured" headline as a warning instead of failing. The flag is
 //!   the ONLY way to get a green cohort-shaped run with no comparison, and it
@@ -117,19 +114,8 @@ pub(crate) fn read_comparator_evidence(results_dir: &Path) -> ComparatorEvidence
 }
 
 /// Enforce the contract in the module docs. `allow_unmeasured` downgrades the
-/// rejection to a warning; `focused` skips the check entirely.
-pub(crate) fn check_comparator_evidence(
-    results_dir: &Path,
-    focused: bool,
-    allow_unmeasured: bool,
-) -> Result<()> {
-    if focused {
-        println!(
-            "MSL parity comparator check: skipped for a focused run (its gate is \
-             every named target simulating, not cohort parity)."
-        );
-        return Ok(());
-    }
+/// rejection to a warning.
+pub(crate) fn check_comparator_evidence(results_dir: &Path, allow_unmeasured: bool) -> Result<()> {
     match read_comparator_evidence(results_dir) {
         ComparatorEvidence::Measured { models_compared } => {
             println!(
@@ -180,7 +166,7 @@ mod tests {
                 models_compared: 48
             }
         );
-        check_comparator_evidence(dir.path(), false, false).expect("a measured run passes");
+        check_comparator_evidence(dir.path(), false).expect("a measured run passes");
     }
 
     #[test]
@@ -190,7 +176,7 @@ mod tests {
             read_comparator_evidence(dir.path()),
             ComparatorEvidence::Unmeasured { .. }
         ));
-        let error = check_comparator_evidence(dir.path(), false, false)
+        let error = check_comparator_evidence(dir.path(), false)
             .expect_err("a run with no OMC reference must fail");
         let message = format!("{error:#}");
         assert!(
@@ -204,7 +190,7 @@ mod tests {
     fn a_reference_without_a_trace_comparison_file_is_unmeasured() {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), OMC_REFERENCE_FILE, &complete_reference(48));
-        let error = check_comparator_evidence(dir.path(), false, false)
+        let error = check_comparator_evidence(dir.path(), false)
             .expect_err("a reference with no trace comparison is not a comparison");
         assert!(format!("{error:#}").contains(TRACE_COMPARISON_FILE));
     }
@@ -214,7 +200,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), OMC_REFERENCE_FILE, &complete_reference(0));
         write(dir.path(), TRACE_COMPARISON_FILE, "{}");
-        let error = check_comparator_evidence(dir.path(), false, false)
+        let error = check_comparator_evidence(dir.path(), false)
             .expect_err("comparing zero models is not a parity reading");
         assert!(format!("{error:#}").contains("models_compared = 0"));
     }
@@ -224,7 +210,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), OMC_REFERENCE_FILE, "");
         write(dir.path(), TRACE_COMPARISON_FILE, "{}");
-        let error = check_comparator_evidence(dir.path(), false, false)
+        let error = check_comparator_evidence(dir.path(), false)
             .expect_err("an empty reference is not a reading");
         assert!(format!("{error:#}").contains("is empty"));
     }
@@ -234,22 +220,22 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), OMC_REFERENCE_FILE, "{not json");
         write(dir.path(), TRACE_COMPARISON_FILE, "{}");
-        let error = check_comparator_evidence(dir.path(), false, false)
+        let error = check_comparator_evidence(dir.path(), false)
             .expect_err("unparseable reference must not read as a pass");
         assert!(format!("{error:#}").contains("not valid JSON"));
     }
 
     #[test]
-    fn a_focused_run_is_not_held_to_cohort_parity() {
+    fn a_focused_run_has_no_unmeasured_bypass() {
         let dir = tempdir().expect("tempdir");
-        check_comparator_evidence(dir.path(), true, false)
-            .expect("a focused run is gated on its named targets");
+        check_comparator_evidence(dir.path(), false)
+            .expect_err("selecting named targets must not suppress comparator evidence");
     }
 
     #[test]
     fn the_escape_hatch_downgrades_the_failure_but_keeps_the_headline() {
         let dir = tempdir().expect("tempdir");
-        check_comparator_evidence(dir.path(), false, true)
+        check_comparator_evidence(dir.path(), true)
             .expect("--allow-unmeasured-parity accepts a run that measures nothing");
     }
 }

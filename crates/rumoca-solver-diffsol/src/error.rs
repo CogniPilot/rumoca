@@ -248,6 +248,9 @@ impl From<RuntimeSolveError> for SimError {
             unassignable @ RuntimeSolveError::RefreshTargetUnassignable { .. } => {
                 Self::SolveIr(unassignable.to_string())
             }
+            singular @ RuntimeSolveError::RefreshTargetSingular { .. } => {
+                Self::SolveIr(singular.to_string())
+            }
             RuntimeSolveError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
                 "non-finite derivative evaluation for state '{state_name}'"
             )),

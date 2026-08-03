@@ -195,6 +195,101 @@ fn me_callbacks_observe_a_discrete_parameter_changed_by_a_root_event() {
     );
 }
 
+/// A state root is not allowed to consume a later deadline computed by the
+/// tensor-native dynamic-time-event program. The ME host must ask for the next
+/// runtime stop again after event iteration, using the settled current y/p
+/// values, so the later time event is both announced and applied.
+#[test]
+fn dynamic_time_event_deadline_survives_an_unrelated_state_root() {
+    const ROOT_TIME: f64 = 0.05;
+    const DEADLINE: f64 = 0.08;
+
+    let mut model = unit_integrator_model();
+    model.problem.solve_layout.parameter_count = 0;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec!["fired".to_string()];
+    model.problem.events.root_conditions = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: ROOT_TIME,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.events.dynamic_time_event_rhs = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::Const {
+                dst: 0,
+                value: DEADLINE,
+            },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.discrete.rhs = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadTime { dst: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: DEADLINE,
+            },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Ge,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 1.0 },
+            solve::LinearOp::LoadP { dst: 4, index: 0 },
+            solve::LinearOp::Select {
+                dst: 5,
+                cond: 2,
+                if_true: 3,
+                if_false: 4,
+            },
+            solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        fixture_span!(),
+    );
+    ordinary_equation_row_metadata(&mut model);
+    model.parameters = vec![0.0];
+    model.visible_names = vec!["x".to_string(), "fired".to_string()];
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("the later dynamic deadline should survive the unrelated root");
+
+    let root_index = result
+        .times
+        .iter()
+        .position(|time| (*time - ROOT_TIME).abs() <= 1.0e-12)
+        .expect("the unrelated state root should be observed");
+    let deadline_index = result
+        .times
+        .iter()
+        .position(|time| (*time - DEADLINE).abs() <= 1.0e-12)
+        .expect("the dynamic time event should be announced after the root");
+    assert!(deadline_index > root_index);
+    assert_eq!(result.data[1][root_index], 0.0);
+    assert_eq!(result.data[1][deadline_index], 1.0);
+}
+
 /// A located root ends one continuous mode and starts another at the exact
 /// event instant. Bracketing may inspect a state just to the right of the root,
 /// but that synthetic interval must use the post-event derivative. Otherwise

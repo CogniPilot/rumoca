@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
@@ -14,6 +14,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
+    continuous: &solve::ContinuousSolveSystem,
 ) -> Result<(solve::DiscreteSolveSystem, solve::SolveEventPartition), LowerError> {
     let mut discrete = DiscreteRows::new(view);
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
@@ -30,15 +31,21 @@ pub(super) fn lower_discrete_and_events<'dae>(
     )?;
     lower_condition_memory(view, layout, clocks, &mut discrete)?;
     let roots = lower_roots(view, layout, clocks, &discrete.relation_memory_owners)?;
-    let scheduled_time_events = lower_time_events(view);
+    let (scheduled_time_events, dynamic_time_event_rhs) = lower_time_events(view, layout)?;
     let delays = lower_delays(view, layout)?;
-    let discrete = discrete.finish()?;
+    let mut discrete = discrete.finish()?;
+    derive_integrator_history_effects(
+        &mut discrete,
+        continuous,
+        layout.solve_layout.state_scalar_count,
+    );
     let events = solve::SolveEventPartition {
         root_conditions: roots.programs,
         root_relation_memory_targets: roots.relation_memory_targets,
         root_zero_domains: roots.zero_domains,
         condition_memory_parameter_indices: layout.condition_memory.clone(),
         scheduled_time_events,
+        dynamic_time_event_rhs,
         action_conditions: action_conditions.into_scalar_block()?,
         actions: event_actions,
         has_terminal_event: view.terminal_count() != 0,
@@ -46,6 +53,258 @@ pub(super) fn lower_discrete_and_events<'dae>(
         ..solve::SolveEventPartition::default()
     };
     Ok((discrete, events))
+}
+
+fn derive_integrator_history_effects(
+    discrete: &mut solve::DiscreteSolveSystem,
+    continuous: &solve::ContinuousSolveSystem,
+    state_scalar_count: usize,
+) {
+    let Some(sensitive) = integrator_history_sensitive_slots(
+        continuous,
+        &discrete.runtime_assignment_rhs,
+        &discrete.runtime_assignment_targets,
+        state_scalar_count,
+    ) else {
+        // Rows are initialized fail-closed. An incomplete compact dependency
+        // proof cannot manufacture `Preserve`.
+        return;
+    };
+
+    for (effect, target) in discrete
+        .integrator_history_effects
+        .iter_mut()
+        .zip(discrete.update_targets.iter().copied())
+    {
+        *effect = integrator_history_effect_for_target(target, &sensitive, state_scalar_count);
+    }
+
+    for update_index in 0..discrete.structured_updates.len() {
+        let effect = match discrete.structured_assignments(update_index) {
+            Ok(assignments) => assignments
+                .into_iter()
+                .map(|(target, _)| {
+                    integrator_history_effect_for_target(target, &sensitive, state_scalar_count)
+                })
+                .fold(
+                    solve::IntegratorHistoryEffect::Preserve,
+                    join_integrator_history_effect,
+                ),
+            Err(_) => solve::IntegratorHistoryEffect::Restart,
+        };
+        discrete.structured_updates[update_index].integrator_history_effect = effect;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum HistoryDependencySlot {
+    Y(usize),
+    P(usize),
+}
+
+fn integrator_history_effect_for_target(
+    target: solve::ScalarSlot,
+    sensitive: &BTreeSet<HistoryDependencySlot>,
+    state_scalar_count: usize,
+) -> solve::IntegratorHistoryEffect {
+    let dependency = match target {
+        solve::ScalarSlot::Y { index, .. } => HistoryDependencySlot::Y(index),
+        solve::ScalarSlot::P { index, .. } => HistoryDependencySlot::P(index),
+        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
+            return solve::IntegratorHistoryEffect::Restart;
+        }
+    };
+    if matches!(dependency, HistoryDependencySlot::Y(index) if index < state_scalar_count)
+        || sensitive.contains(&dependency)
+    {
+        solve::IntegratorHistoryEffect::Restart
+    } else {
+        solve::IntegratorHistoryEffect::Preserve
+    }
+}
+
+fn join_integrator_history_effect(
+    left: solve::IntegratorHistoryEffect,
+    right: solve::IntegratorHistoryEffect,
+) -> solve::IntegratorHistoryEffect {
+    if left == solve::IntegratorHistoryEffect::Restart
+        || right == solve::IntegratorHistoryEffect::Restart
+    {
+        solve::IntegratorHistoryEffect::Restart
+    } else {
+        solve::IntegratorHistoryEffect::Preserve
+    }
+}
+
+fn integrator_history_sensitive_slots(
+    continuous: &solve::ContinuousSolveSystem,
+    runtime_rhs: &solve::ScalarProgramBlock,
+    runtime_targets: &[solve::ScalarSlot],
+    state_scalar_count: usize,
+) -> Option<BTreeSet<HistoryDependencySlot>> {
+    let mut sensitive = (0..state_scalar_count)
+        .map(HistoryDependencySlot::Y)
+        .collect::<BTreeSet<_>>();
+    for block in [
+        &continuous.implicit_rhs,
+        &continuous.residual,
+        &continuous.manifold_residual,
+        &continuous.derivative_rhs,
+    ] {
+        collect_compute_block_dependencies(block, &mut sensitive)?;
+    }
+    if runtime_rhs.len() != runtime_targets.len() {
+        return None;
+    }
+
+    let mut assignments = Vec::with_capacity(runtime_targets.len());
+    for (program, target) in runtime_rhs
+        .programs()
+        .iter()
+        .zip(runtime_targets.iter().copied())
+    {
+        let target = history_dependency_slot(target)?;
+        let mut dependencies = BTreeSet::new();
+        collect_linear_op_dependencies(program, &mut dependencies)?;
+        assignments.push((target, dependencies));
+    }
+
+    // A disconnected runtime-assignment cycle is still not positive evidence
+    // for history preservation. Mark every target in a cycle sensitive before
+    // propagating ordinary dependencies toward continuous consumers.
+    let graph = assignments
+        .iter()
+        .map(|(target, dependencies)| {
+            (
+                *target,
+                dependencies
+                    .iter()
+                    .copied()
+                    .filter(|dependency| {
+                        runtime_targets.iter().copied().any(|candidate| {
+                            history_dependency_slot(candidate) == Some(*dependency)
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for target in graph.keys().copied() {
+        if dependency_reaches(target, target, &graph, &mut BTreeSet::new()) {
+            sensitive.insert(target);
+        }
+    }
+
+    loop {
+        let before = sensitive.len();
+        for (target, dependencies) in &assignments {
+            if sensitive.contains(target) {
+                sensitive.extend(dependencies.iter().copied());
+            }
+        }
+        if sensitive.len() == before {
+            break;
+        }
+    }
+    Some(sensitive)
+}
+
+fn dependency_reaches(
+    start: HistoryDependencySlot,
+    current: HistoryDependencySlot,
+    graph: &BTreeMap<HistoryDependencySlot, Vec<HistoryDependencySlot>>,
+    visited: &mut BTreeSet<HistoryDependencySlot>,
+) -> bool {
+    let Some(next) = graph.get(&current) else {
+        return false;
+    };
+    for dependency in next.iter().copied() {
+        if dependency == start {
+            return true;
+        }
+        if visited.insert(dependency) && dependency_reaches(start, dependency, graph, visited) {
+            return true;
+        }
+    }
+    false
+}
+
+fn history_dependency_slot(target: solve::ScalarSlot) -> Option<HistoryDependencySlot> {
+    match target {
+        solve::ScalarSlot::Y { index, .. } => Some(HistoryDependencySlot::Y(index)),
+        solve::ScalarSlot::P { index, .. } => Some(HistoryDependencySlot::P(index)),
+        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
+    }
+}
+
+fn collect_compute_block_dependencies(
+    block: &solve::ComputeBlock,
+    dependencies: &mut BTreeSet<HistoryDependencySlot>,
+) -> Option<()> {
+    for node in &block.nodes {
+        match node {
+            solve::ComputeNode::ScalarPrograms(rows) => {
+                for program in rows.programs() {
+                    collect_linear_op_dependencies(program, dependencies)?;
+                }
+            }
+            solve::ComputeNode::MatMul {
+                lhs_ops, rhs_ops, ..
+            } => {
+                collect_linear_op_dependencies(lhs_ops, dependencies)?;
+                collect_linear_op_dependencies(rhs_ops, dependencies)?;
+            }
+            solve::ComputeNode::LinSolve { setup_ops, .. } => {
+                collect_linear_op_dependencies(setup_ops, dependencies)?;
+            }
+            solve::ComputeNode::Map {
+                base_ops,
+                load_strides,
+                ..
+            }
+            | solve::ComputeNode::AffineStencil {
+                base_ops,
+                load_strides,
+                ..
+            } => {
+                // Keep the compact node authoritative. Until dependency
+                // ranges are proven directly from its affine domain, a
+                // strided load is deliberately not scalarized or guessed.
+                if !load_strides.is_empty() {
+                    return None;
+                }
+                collect_linear_op_dependencies(base_ops, dependencies)?;
+            }
+        }
+    }
+    Some(())
+}
+
+fn collect_linear_op_dependencies(
+    ops: &[solve::LinearOp],
+    dependencies: &mut BTreeSet<HistoryDependencySlot>,
+) -> Option<()> {
+    for op in ops {
+        match *op {
+            solve::LinearOp::LoadY { index, .. } => {
+                dependencies.insert(HistoryDependencySlot::Y(index));
+            }
+            solve::LinearOp::LoadP { index, .. } => {
+                dependencies.insert(HistoryDependencySlot::P(index));
+            }
+            solve::LinearOp::LoadIndexedP { base, count, .. } => {
+                let end = base.checked_add(count)?;
+                dependencies.extend((base..end).map(HistoryDependencySlot::P));
+            }
+            solve::LinearOp::LoadSeed { .. } | solve::LinearOp::LoadIndexedSeed { .. } => {
+                // Seed programs are derived artifacts and cannot prove a base
+                // continuous/discrete dependency contract.
+                return None;
+            }
+            _ => {}
+        }
+    }
+    Some(())
 }
 
 fn lower_delays<'dae>(
@@ -153,6 +412,10 @@ impl<'dae> DiscreteRows<'dae> {
             row_roles: self.roles,
             pre_modes: self.pre_modes,
             observation_refresh: vec![false; rhs.programs().len()],
+            integrator_history_effects: vec![
+                solve::IntegratorHistoryEffect::Restart;
+                rhs.programs().len()
+            ],
             clock_owners: self.clock_owners,
             structured_rhs: self.structured_rhs,
             structured_updates: self.structured_updates,
@@ -676,6 +939,7 @@ fn lower_structured_discrete_value_owner<'dae>(
                 role: solve::DiscreteRowRole::Equation,
                 pre_mode: expression_pre_mode(view, value, sampled),
                 observation_refresh: false,
+                integrator_history_effect: solve::IntegratorHistoryEffect::Restart,
                 clock_owner: clock.map(|(_, solve)| solve),
             });
         rows.structured_output_cursor = rows
@@ -1721,18 +1985,29 @@ fn root_zero_domain<'dae>(
     }
 }
 
-fn lower_time_events(view: dae::DaeView<'_>) -> Vec<f64> {
-    (0..view.time_event_count())
-        .map(|index| {
-            let id = view
-                .time_event_id(index)
-                .expect("dense time event identity resolves");
-            view.time_event(id)
-                .expect("checked time event identity resolves")
-                .instant()
-                .to_f64()
-        })
-        .collect()
+fn lower_time_events<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+) -> Result<(Vec<f64>, solve::ScalarProgramBlock), LowerError> {
+    let mut scheduled = Vec::new();
+    let mut dynamic = ScalarRows::default();
+    for index in 0..view.time_event_count() {
+        let id = view
+            .time_event_id(index)
+            .expect("dense time event identity resolves");
+        let event = view
+            .time_event(id)
+            .expect("checked time event identity resolves");
+        match event.operation() {
+            dae::TimeEventOperation::Static(instant) => scheduled.push(instant.to_f64()),
+            dae::TimeEventOperation::Dynamic(deadline) => dynamic.push(
+                ScalarCompiler::new(view, layout, None).program(deadline, 0)?,
+                event.provenance().span(),
+                dynamic.len(),
+            ),
+        }
+    }
+    Ok((scheduled, dynamic.into_scalar_block()?))
 }
 
 fn expression_pre_mode<'dae>(
@@ -1803,4 +2078,121 @@ fn expression_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'da
         );
     });
     found
+}
+
+#[cfg(test)]
+mod integrator_history_effect_tests {
+    use super::*;
+
+    fn provenance() -> rumoca_core::ProvenanceSpan {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("integrator_history_effect.mo"),
+            0,
+            1,
+        )
+        .require_provenance("integrator history effect fixture")
+        .unwrap()
+    }
+
+    fn load_program(slot: solve::ScalarSlot) -> Vec<solve::LinearOp> {
+        let load = match slot {
+            solve::ScalarSlot::Y { index, .. } => solve::LinearOp::LoadY { dst: 0, index },
+            solve::ScalarSlot::P { index, .. } => solve::LinearOp::LoadP { dst: 0, index },
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => unreachable!(),
+        };
+        vec![load, solve::LinearOp::StoreOutput { src: 0 }]
+    }
+
+    fn scalar_block(programs: Vec<Vec<solve::LinearOp>>) -> solve::ScalarProgramBlock {
+        solve::ScalarProgramBlock::with_source_span(programs, provenance()).unwrap()
+    }
+
+    fn compute_block(programs: Vec<Vec<solve::LinearOp>>) -> solve::ComputeBlock {
+        solve::ComputeBlock::from_scalar_program_block(scalar_block(programs))
+    }
+
+    fn discrete_with_targets(targets: Vec<solve::ScalarSlot>) -> solve::DiscreteSolveSystem {
+        let row_count = targets.len();
+        solve::DiscreteSolveSystem {
+            rhs: scalar_block(
+                targets
+                    .iter()
+                    .map(|_| {
+                        vec![
+                            solve::LinearOp::Const { dst: 0, value: 0.0 },
+                            solve::LinearOp::StoreOutput { src: 0 },
+                        ]
+                    })
+                    .collect(),
+            ),
+            update_targets: targets,
+            row_roles: vec![solve::DiscreteRowRole::Equation; row_count],
+            pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; row_count],
+            observation_refresh: vec![false; row_count],
+            integrator_history_effects: vec![solve::IntegratorHistoryEffect::Restart; row_count],
+            clock_owners: vec![None; row_count],
+            ..solve::DiscreteSolveSystem::default()
+        }
+    }
+
+    #[test]
+    fn direct_continuous_dependencies_and_state_targets_restart() {
+        let mut continuous = solve::ContinuousSolveSystem::default();
+        continuous.derivative_rhs = compute_block(vec![load_program(solve::scalar_slot_p(0))]);
+        let mut discrete = discrete_with_targets(vec![
+            solve::scalar_slot_p(0),
+            solve::scalar_slot_p(1),
+            solve::scalar_slot_y(0),
+        ]);
+
+        derive_integrator_history_effects(&mut discrete, &continuous, 1);
+
+        assert_eq!(
+            discrete.integrator_history_effects,
+            [
+                solve::IntegratorHistoryEffect::Restart,
+                solve::IntegratorHistoryEffect::Preserve,
+                solve::IntegratorHistoryEffect::Restart,
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_assignment_dependencies_propagate_transitively() {
+        let mut continuous = solve::ContinuousSolveSystem::default();
+        continuous.derivative_rhs = compute_block(vec![load_program(solve::scalar_slot_p(0))]);
+        let mut discrete = discrete_with_targets(vec![solve::scalar_slot_p(1)]);
+        discrete.runtime_assignment_rhs = scalar_block(vec![load_program(solve::scalar_slot_p(1))]);
+        discrete.runtime_assignment_targets = vec![solve::scalar_slot_p(0)];
+
+        derive_integrator_history_effects(&mut discrete, &continuous, 0);
+
+        assert_eq!(
+            discrete.integrator_history_effects,
+            [solve::IntegratorHistoryEffect::Restart]
+        );
+    }
+
+    #[test]
+    fn disconnected_runtime_assignment_cycles_fail_closed() {
+        let continuous = solve::ContinuousSolveSystem::default();
+        let mut discrete =
+            discrete_with_targets(vec![solve::scalar_slot_p(2), solve::scalar_slot_p(4)]);
+        discrete.runtime_assignment_rhs = scalar_block(vec![
+            load_program(solve::scalar_slot_p(3)),
+            load_program(solve::scalar_slot_p(2)),
+        ]);
+        discrete.runtime_assignment_targets =
+            vec![solve::scalar_slot_p(2), solve::scalar_slot_p(3)];
+
+        derive_integrator_history_effects(&mut discrete, &continuous, 0);
+
+        assert_eq!(
+            discrete.integrator_history_effects,
+            [
+                solve::IntegratorHistoryEffect::Restart,
+                solve::IntegratorHistoryEffect::Preserve,
+            ]
+        );
+    }
 }

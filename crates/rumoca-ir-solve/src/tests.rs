@@ -494,6 +494,7 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
         row_roles: vec![DiscreteRowRole::Equation],
         pre_modes: vec![DiscreteEventPreMode::Fixed],
         observation_refresh: vec![true],
+        integrator_history_effects: vec![IntegratorHistoryEffect::Restart],
         clock_owners: vec![None],
         structured_rhs: ComputeBlock::default(),
         structured_updates: Vec::new(),
@@ -523,6 +524,7 @@ fn structured_discrete_fixture(base: ScalarSlot) -> (ComputeBlock, StructuredDis
         role: DiscreteRowRole::Equation,
         pre_mode: DiscreteEventPreMode::FollowCurrent,
         observation_refresh: false,
+        integrator_history_effect: IntegratorHistoryEffect::Preserve,
         clock_owner: None,
     };
     (ComputeBlock { nodes: vec![node] }, update)
@@ -935,6 +937,41 @@ fn representative_solve_problem_json_roundtrip_preserves_schema_shape() {
     let json = serde_json::to_string_pretty(&problem).expect("serialize SolveProblem");
     let decoded: SolveProblem = serde_json::from_str(&json).expect("deserialize SolveProblem");
     assert_same_json_shape(&decoded, &problem);
+}
+
+#[test]
+fn solve_problem_json_requires_integrator_history_effects() {
+    let mut value =
+        serde_json::to_value(representative_solve_problem_fixture()).expect("serialize fixture");
+    value["discrete"]
+        .as_object_mut()
+        .expect("discrete system is an object")
+        .remove("integrator_history_effects");
+
+    let error = serde_json::from_value::<SolveProblem>(value)
+        .expect_err("integrator-history evidence must not default on the wire");
+    assert!(
+        error
+            .to_string()
+            .contains("missing field `integrator_history_effects`"),
+        "unexpected omission error: {error}"
+    );
+}
+
+#[test]
+fn solve_problem_shape_rejects_misaligned_integrator_history_effects() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.discrete.integrator_history_effects.clear();
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "discrete.integrator_history_effects",
+            expected: 1,
+            actual: 0,
+            span: None,
+        })
+    );
 }
 
 #[test]

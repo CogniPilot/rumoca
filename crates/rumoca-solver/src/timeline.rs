@@ -371,7 +371,27 @@ pub fn event_left_probe_time(t_event: f64, tolerance: f64) -> f64 {
     }
 }
 
-pub fn event_right_limit_time(t_event: f64, tolerance: f64) -> f64 {
+/// Return the representable coordinate immediately after an event instant.
+///
+/// This is a superdense observation coordinate, not a physical integration
+/// step. Solver state-value tolerances therefore cannot widen it. Typed
+/// relation memory carries the mathematical post-event side when one
+/// floating-point step cannot move a state value.
+pub fn event_right_limit_time(t_event: f64, _tolerance: f64) -> f64 {
+    if !t_event.is_finite() {
+        return t_event;
+    }
+    next_representable_time(t_event)
+}
+
+/// Return an internal probe coordinate far enough beyond an event to classify
+/// its numerical post side.
+///
+/// Unlike [`event_right_limit_time`], this coordinate is never reported as a
+/// trace observation. A solver tolerance may widen the probe so a dense state
+/// changes representably before typed relation memory records the resulting
+/// side.
+pub fn event_right_probe_time(t_event: f64, tolerance: f64) -> f64 {
     if !t_event.is_finite() {
         return t_event;
     }
@@ -481,11 +501,21 @@ mod tests {
     }
 
     #[test]
-    fn event_right_limit_time_scales_with_solver_resolution() {
-        let t_event = 1000.0_f64;
-        let t_right = event_right_limit_time(t_event, 1.0e-10);
-        assert!(t_right > t_event);
-        assert!(t_right - t_event < 1.0e-8);
+    fn event_right_limit_time_is_independent_of_state_value_tolerance() {
+        let t_event = 0.0005_f64;
+        let exact = event_right_limit_time(t_event, 0.0);
+        let loose = event_right_limit_time(t_event, 1.0e-6);
+        assert_eq!(exact.to_bits(), t_event.next_up().to_bits());
+        assert_eq!(loose.to_bits(), exact.to_bits());
+    }
+
+    #[test]
+    fn event_right_probe_may_use_tolerance_without_moving_the_right_limit() {
+        let t_event = 0.0005_f64;
+        let right_limit = event_right_limit_time(t_event, 1.0e-6);
+        let probe = event_right_probe_time(t_event, 1.0e-6);
+        assert_eq!(right_limit.to_bits(), t_event.next_up().to_bits());
+        assert!(probe >= t_event + 2.0e-6);
     }
 
     #[test]

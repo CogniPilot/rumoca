@@ -1423,12 +1423,13 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
         if self.advance_state_to_event_right_limit || self.state_time_coincidence.is_some() {
             let event_time = self.time;
             let settle = self.numerics_settle();
-            let derivatives = self.runtime.eval_state_derivatives(
+            let derivatives = event_right_limit_state_derivatives(
+                &self.runtime,
+                &self.solver_y_guess.borrow(),
                 event_time,
                 &self.states,
                 &self.params,
-                settle.tol,
-                settle.max_iters,
+                settle,
             )?;
             advance_state_across_event_right_limit(
                 &mut self.states,
@@ -1461,6 +1462,25 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
         self.set_post_event_eval_time(Some(right_time));
         Ok(())
     }
+}
+
+pub(super) fn event_right_limit_state_derivatives(
+    runtime: &SolveRuntime,
+    retained_solver_y: &[f64],
+    time: f64,
+    states: &[f64],
+    params: &[f64],
+    settle: AlgebraicSettle,
+) -> Result<Vec<f64>, crate::runtime::solve_ops::RuntimeSolveError> {
+    let mut solver_y_guess = retained_solver_y.to_vec();
+    runtime.eval_state_derivatives_with_guess(
+        time,
+        states,
+        params,
+        &mut solver_y_guess,
+        settle.tol,
+        settle.max_iters,
+    )
 }
 
 impl ModelExchangeKernel for SolveMeKernel {

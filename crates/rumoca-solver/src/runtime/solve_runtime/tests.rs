@@ -263,6 +263,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
             role: solve::DiscreteRowRole::Equation,
             pre_mode: solve::DiscreteEventPreMode::FollowCurrent,
             observation_refresh: false,
+            integrator_history_effect: solve::IntegratorHistoryEffect::Preserve,
             clock_owner: None,
         });
     model
@@ -293,6 +294,98 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
 
     assert_eq!(p, vec![7.0, 7.0]);
     assert!(model.problem.discrete.rhs.is_empty());
+}
+
+#[test]
+fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
+    let roots = spanned_block(
+        vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        "typed_root_cascade.mo",
+    );
+    let discrete = spanned_block(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "typed_root_cascade_discrete.mo",
+    );
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["reported".to_string(), "cascade".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 2,
+                compiled_parameter_len: 3,
+                relation_memory_parameter_indices: vec![0, 1],
+                discrete_valued_scalar_names: vec!["mode".to_string()],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: roots,
+                root_relation_memory_targets: vec![
+                    Some(solve::scalar_slot_p(0)),
+                    Some(solve::scalar_slot_p(1)),
+                ],
+                root_zero_domains: vec![
+                    solve::RootZeroDomain::Previous,
+                    solve::RootZeroDomain::Previous,
+                ],
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                rhs: discrete,
+                update_targets: vec![solve::scalar_slot_p(2)],
+                row_roles: vec![solve::DiscreteRowRole::Equation],
+                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                observation_refresh: vec![false],
+                clock_owners: vec![None],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0, 1.0],
+        parameters: vec![0.0, 0.0, 0.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("root cascade runtime should prepare");
+    let mut y = model.initial_y.clone();
+    let mut p = model.parameters.clone();
+    let event_pre_y = y.clone();
+    let event_pre_p = p.clone();
+
+    runtime
+        .apply_projected_event_update(
+            ProjectedEventUpdateInput {
+                y: &mut y,
+                p: &mut p,
+                t: 0.0,
+                tol: 1.0e-12,
+                event_pre_y: &event_pre_y,
+                event_pre_p: &event_pre_p,
+                max_iters: 8,
+                row_filter: EventUpdateRowFilter::All,
+                root_relation_overrides: &[(0, 1.0)],
+            },
+            |solver_y, _| {
+                let changed = solver_y[1].to_bits() != (-1.0_f64).to_bits();
+                solver_y[1] = -1.0;
+                Ok(changed)
+            },
+        )
+        .expect("a typed root must allow a second relation to join the same event");
+
+    assert_eq!(p, vec![1.0, 1.0, 1.0]);
 }
 
 #[test]
@@ -1351,6 +1444,29 @@ fn refresh_iteration_propagates_semantic_errors_and_restores_snapshot() {
     assert_eq!(solver_y, vec![19.0]);
     assert!(error.to_string().contains("missing p[0]"));
     assert!(!seed_error_allows_projection(&error));
+}
+
+#[test]
+fn singular_affine_seed_falls_back_to_preserved_projection() {
+    let span = test_span("singular_affine_seed.mo");
+    let error: RuntimeSolveError = EvalSolveError::SingularTargetAssignment {
+        row: 7,
+        target_y_index: 0,
+        coefficient: -0.0,
+        span: Some(span),
+    }
+    .into();
+
+    assert!(matches!(
+        &error,
+        RuntimeSolveError::RefreshTargetSingular {
+            row: 7,
+            target_y_index: 0,
+            coefficient,
+            span: Some(error_span),
+        } if *coefficient == 0.0 && *error_span == span
+    ));
+    assert!(seed_error_allows_projection(&error));
 }
 
 #[test]

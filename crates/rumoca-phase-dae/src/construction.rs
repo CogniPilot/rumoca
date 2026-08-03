@@ -46,8 +46,8 @@ use algorithm::{
 use analysis::{
     AggregateDiscreteConnections, Analysis, ClockPlan, ComprehensionKey, ComprehensionPlans,
     DelayPlan, DerivedParameterPlan, DiscreteValueAssignmentPlan, DiscreteValueTopologyPlan,
-    EquationPartition, ExpressionEventPlan, ExpressionEventPlans, ExternalArgumentPlan,
-    ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
+    DynamicTimeEventOperand, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
+    ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
     FunctionStatementPlan, FunctionValueSeed, ModelAlgorithmPlan, PlannedRole,
     RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, SemiLinearRules, analyze,
@@ -274,6 +274,7 @@ fn build_checked<'dae>(
             delay_plans: &analysis.delay_plans,
             coordinate_instances: coordinates.by_instance(),
             expression_events: &analysis.expression_events,
+            sample_alias_schedules: &analysis.sample_alias_schedules,
             clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
             clocks: &clocks,
         },
@@ -289,6 +290,7 @@ fn build_checked<'dae>(
         delay_plans: &analysis.delay_plans,
         coordinate_instances: coordinates.by_instance(),
         expression_events: &analysis.expression_events,
+        sample_alias_schedules: &analysis.sample_alias_schedules,
         clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
         clocks: &clocks,
     };
@@ -354,6 +356,7 @@ fn model_function_registry<'scope, 'dae>(
         delay_plans: &analysis.delay_plans,
         coordinate_instances,
         expression_events: &analysis.expression_events,
+        sample_alias_schedules: &analysis.sample_alias_schedules,
         clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
         clocks,
     }
@@ -369,6 +372,15 @@ fn lower_analysis_clocks<'dae>(
         flat,
         &analysis.clock_plans,
         &analysis.clocked_value_owners,
+        analysis
+            .expression_events
+            .ordered()
+            .filter_map(|(span, plan)| {
+                let ExpressionEventPlan::SampleClock(schedule) = plan else {
+                    return None;
+                };
+                Some((schedule, span))
+            }),
     )
 }
 

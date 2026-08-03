@@ -293,13 +293,14 @@ impl VerifyMslParityArgs {
 
     fn requires_selected_targets_success(&self) -> bool {
         self.require_selected_targets_success
-            || self.sim_targets_file.is_some()
-            || !self.sim_match.is_empty()
-            || self.sim_limit.is_some()
     }
 
     fn uses_baseline_relative_quality_gate(&self) -> bool {
-        if self.requires_selected_targets_success() {
+        if self.requires_selected_targets_success()
+            || self.sim_targets_file.is_some()
+            || !self.sim_match.is_empty()
+            || self.sim_limit.is_some()
+        {
             return false;
         }
         // A shard runs only its stripe, so it never enforces the aggregate
@@ -1200,11 +1201,7 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     // Second, independent boundary: the harness gate can be skipped (shards,
     // focused runs), but "did anything get compared against OMC?" is answered
     // from what landed on disk, for every cohort-shaped run.
-    check_comparator_evidence(
-        &ci_env.results_dir,
-        args.requires_selected_targets_success(),
-        args.allows_unmeasured_parity(),
-    )
+    check_comparator_evidence(&ci_env.results_dir, args.allows_unmeasured_parity())
 }
 
 /// Run a specific libtest from a prebuilt `msl_tests` binary (built once by

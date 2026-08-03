@@ -85,10 +85,29 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
 }
 
 #[test]
-fn focused_msl_match_requires_selected_targets_success() {
+fn focused_msl_match_does_not_imply_selected_target_success_gate() {
     let args = VerifyMslParityArgs {
         sim_match: vec!["Modelica.Blocks.Examples.BooleanNetwork1".to_string()],
         sim_match_exact: true,
+        ..VerifyMslParityArgs::default()
+    };
+    let config = args.to_parity_config_json();
+
+    assert!(config.get("require_selected_targets_success").is_none());
+    assert_eq!(
+        config
+            .get("sim_match_exact")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(!args.requires_selected_targets_success());
+    assert!(!args.uses_baseline_relative_quality_gate());
+}
+
+#[test]
+fn explicit_selected_target_success_gate_is_forwarded() {
+    let args = VerifyMslParityArgs {
+        require_selected_targets_success: true,
         ..VerifyMslParityArgs::default()
     };
     let config = args.to_parity_config_json();
@@ -99,13 +118,7 @@ fn focused_msl_match_requires_selected_targets_success() {
             .and_then(serde_json::Value::as_bool),
         Some(true)
     );
-    assert_eq!(
-        config
-            .get("sim_match_exact")
-            .and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
-    assert!(!args.uses_baseline_relative_quality_gate());
+    assert!(args.requires_selected_targets_success());
 }
 
 #[test]

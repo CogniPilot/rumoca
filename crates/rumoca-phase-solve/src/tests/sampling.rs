@@ -301,4 +301,9 @@ fn clocked_row_sampling_an_independent_continuous_value_stays_accepted() {
 
     assert_eq!(solve.discrete.clock_owners.len(), 1);
     assert!(solve.discrete.clock_owners[0].is_some());
+    assert_eq!(
+        solve.discrete.integrator_history_effects,
+        [rumoca_ir_solve::IntegratorHistoryEffect::Preserve],
+        "a sampled observation that cannot reach the continuous carrier preserves history"
+    );
 }

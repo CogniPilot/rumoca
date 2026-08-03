@@ -64,32 +64,17 @@ fn lower_condition_tree<'dae>(
                 lower_condition_tree(construction, coordinates, functions, sample_lattices, rhs)?;
             (dae::ConditionInput::Not(condition), relations, None)
         }
-        Expression::Binary {
-            op: OpBinary::And,
-            lhs,
-            rhs,
-            ..
+        Expression::Binary { op, lhs, rhs, .. } if matches!(op, OpBinary::And | OpBinary::Or) => {
+            lower_binary_condition(
+                construction,
+                coordinates,
+                functions,
+                sample_lattices,
+                (lhs, rhs),
+                matches!(op, OpBinary::Or),
+                provenance,
+            )?
         }
-        | Expression::Binary {
-            op: OpBinary::Or,
-            lhs,
-            rhs,
-            ..
-        } => lower_binary_condition(
-            construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            (lhs, rhs),
-            matches!(
-                expression,
-                Expression::Binary {
-                    op: OpBinary::Or,
-                    ..
-                }
-            ),
-            provenance,
-        )?,
         Expression::Array { elements, .. } => {
             return lower_vector_condition(
                 construction,
@@ -104,7 +89,16 @@ fn lower_condition_tree<'dae>(
             function: BuiltinFunction::Sample,
             args,
             ..
-        } => lower_sample_condition(construction, functions, args, provenance)?,
+        } => lower_sample_condition(functions, args, provenance)?,
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty()
+            && functions
+                .sample_alias_schedules
+                .contains_key(name.var_name()) =>
+        {
+            lower_sample_alias_condition(functions, name.var_name(), provenance)?
+        }
         Expression::BuiltinCall {
             function: BuiltinFunction::Change,
             args,
@@ -144,6 +138,20 @@ fn lower_condition_tree<'dae>(
     Ok((condition, relations, owner_clock))
 }
 
+fn lower_sample_alias_condition<'dae>(
+    functions: &FunctionRegistry<'_, 'dae>,
+    name: &VarName,
+    provenance: dae::DaeProvenance,
+) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
+    let schedule = functions.sample_alias_schedules[name];
+    let clock = functions.clocks.sample_id(schedule, provenance.span())?;
+    Ok((
+        dae::ConditionInput::Clock(clock.into()),
+        Vec::new(),
+        Some(clock),
+    ))
+}
+
 /// The zero crossings a relational activation leaf owns.
 ///
 /// MLS §8.5 gives a relation over `time` alone an exactly known instant, and
@@ -166,7 +174,7 @@ fn activation_relation_roots<'dae>(
     let (lhs, rhs) = operands;
     if matches!(
         functions.expression_events.plan(span, &[lhs, rhs]),
-        Some(ExpressionEventPlan::TimeEvent(_))
+        Some(ExpressionEventPlan::TimeEvent(_) | ExpressionEventPlan::DynamicTimeEvent(_))
     ) {
         return Vec::new();
     }
@@ -174,7 +182,6 @@ fn activation_relation_roots<'dae>(
 }
 
 fn lower_sample_condition<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
     functions: &FunctionRegistry<'_, 'dae>,
     arguments: &[Expression],
     provenance: dae::DaeProvenance,
@@ -193,7 +200,7 @@ fn lower_sample_condition<'dae>(
             span: provenance.span(),
         });
     };
-    let clock = construction.clocks(|clocks| clocks.scheduled(schedule, provenance))?;
+    let clock = functions.clocks.sample_id(schedule, provenance.span())?;
     Ok((
         dae::ConditionInput::Clock(clock.into()),
         Vec::new(),

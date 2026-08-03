@@ -158,6 +158,7 @@ fn time_relation_in_discrete_binding_owns_its_scheduled_instant() {
             .time_event(view.time_event_id(0).unwrap())
             .unwrap()
             .instant()
+            .unwrap()
             .to_f64();
         assert!((instant - 0.5).abs() < 1.0e-12);
     });
@@ -205,6 +206,7 @@ fn every_time_ordering_owns_a_scheduled_instant_and_no_root() {
                 .time_event(view.time_event_id(0).unwrap())
                 .unwrap()
                 .instant()
+                .unwrap()
                 .to_f64();
             assert!(
                 (instant - 0.5).abs() < 1.0e-12,
@@ -344,6 +346,7 @@ fn parameter_threshold_still_resolves_to_an_exact_instant() {
             .time_event(view.time_event_id(0).unwrap())
             .unwrap()
             .instant()
+            .unwrap()
             .to_f64();
         assert!(
             (instant - 0.5).abs() < 1.0e-12,
@@ -352,15 +355,13 @@ fn parameter_threshold_still_resolves_to_an_exact_instant() {
     });
 }
 
-/// A threshold that moves with the model state is not knowable in advance.
+/// A threshold that moves only at events owns a dynamic deadline.
 ///
-/// `when time >= pre(y)` reschedules itself, so the instant is not known before
-/// the event that sets it and MLS §8.5's advance schedule does not apply: the
-/// activation keeps its zero crossing. This is the boundary of the
-/// classification — without it the periodic-source counter idiom of
-/// `Modelica.Blocks.Sources.Pulse` would lose its event.
+/// `when time >= pre(y)` reschedules itself, so the instant is re-evaluated
+/// after every event boundary. The checked deadline owner replaces the generic
+/// zero crossing that an unrelated solver reset could lose.
 #[test]
-fn state_dependent_threshold_keeps_its_zero_crossing() {
+fn event_dependent_threshold_owns_a_dynamic_time_event() {
     let text = "model M discrete Real y; equation \
                 when time >= pre(y) then y = 1.0; end when; end M;";
     let source = TestSource::new(text);
@@ -383,16 +384,19 @@ fn state_dependent_threshold_keeps_its_zero_crossing() {
 
     let dae = construct(&model, source.map).unwrap();
     dae.inspect(|view| {
-        assert_eq!(
-            view.time_event_count(),
-            0,
-            "a self-rescheduling threshold has no instant known in advance"
-        );
-        assert_eq!(
-            view.root_count(),
-            1,
-            "so the activation must keep the zero crossing that locates it"
-        );
+        assert_eq!(view.time_event_count(), 1);
+        assert_eq!(view.root_count(), 0);
+        let event = view
+            .time_event(view.time_event_id(0).unwrap())
+            .expect("dynamic time-event identity resolves");
+        let deadline = event
+            .deadline()
+            .expect("event-dependent threshold owns a deadline expression");
+        let deadline = view
+            .expression(deadline)
+            .expect("checked deadline expression resolves");
+        assert_eq!(deadline.variability(), dae::ExpressionVariability::Discrete);
+        assert_eq!(deadline.value_type().scalar_type(), dae::ScalarType::Real);
     });
 }
 
@@ -504,6 +508,7 @@ fn each_instance_of_a_replicated_activation_owns_its_own_instant() {
                 view.time_event(view.time_event_id(index).unwrap())
                     .unwrap()
                     .instant()
+                    .unwrap()
                     .to_f64()
             })
             .collect::<Vec<_>>();
@@ -600,6 +605,137 @@ fn each_instance_of_a_replicated_sample_owns_its_own_schedule() {
         periods.sort_by(f64::total_cmp);
         assert_eq!(periods, vec![0.1, 0.2]);
     });
+}
+
+/// An exact Boolean alias does not turn the periodic `sample` pulse into a
+/// held B.1c level.
+///
+/// MSL's `Blocks.Discrete.ZeroOrderHold` gives `sample(...)` the name
+/// `sampleTrigger` and then activates its update with `when sampleTrigger`.
+/// The condition must retain the authoritative clock through that exact alias
+/// (and through exact connection aliases), otherwise the first true value is
+/// buffered until an unrelated event and every intervening tick loses its
+/// rising edge.
+#[test]
+fn exact_sample_alias_chain_lowers_to_the_periodic_clock_leaf() {
+    let (model, source, condition_span) = exact_sample_alias_model();
+    let dae = construct(&model, source.map).expect("sample alias ownership is checked");
+    dae.inspect(|view| {
+        assert_eq!(view.clock_count(), 1, "aliases reuse one typed schedule");
+        let condition = (0..view.condition_count())
+            .filter_map(|index| view.condition(view.condition_id(index)?))
+            .find(|condition| condition.provenance().span() == condition_span)
+            .expect("the alias use has a checked condition leaf");
+        let dae::ConditionOperation::Clock(clock) = condition.operation() else {
+            panic!("an exact sample alias must not become a buffered discrete condition");
+        };
+        let clock = view.clock(clock).expect("alias clock identity resolves");
+        let dae::ClockOperation::Periodic(schedule) = clock.operation() else {
+            panic!("sample alias must retain a periodic clock");
+        };
+        assert!((schedule.period_seconds() - 0.1).abs() < 1.0e-12);
+    });
+}
+
+fn exact_sample_alias_model() -> (flat::Model, TestSource, Span) {
+    let text = "model M Boolean sourceTick; Boolean trigger; discrete Real y; equation \
+                sourceTick = sample(0.0, 0.1); trigger = sourceTick; \
+                when trigger then y = 1.0; end when; end M;";
+    let source = TestSource::new(text);
+    let mut model = test_model();
+    for (name, declaration, type_id) in [
+        ("sourceTick", "Boolean sourceTick", 8u32),
+        ("trigger", "Boolean trigger", 9u32),
+    ] {
+        add_primitive_variable(
+            &mut model,
+            &source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            true,
+        );
+    }
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "y",
+        "discrete Real y",
+        10,
+        Vec::new(),
+        false,
+    );
+    model
+        .variables
+        .get_mut(&VarName::new("y"))
+        .unwrap()
+        .variability = Variability::Discrete(Default::default());
+
+    let sample_span = source.span("sample(0.0, 0.1)", 0);
+    let sample = Expression::BuiltinCall {
+        function: BuiltinFunction::Sample,
+        args: vec![
+            Expression::Literal {
+                value: Literal::Real(0.0),
+                span: source.span("0.0", 0),
+            },
+            Expression::Literal {
+                value: Literal::Real(0.1),
+                span: source.span("0.1", 0),
+            },
+        ],
+        span: sample_span,
+    };
+    for (target, value, span) in [
+        (
+            "sourceTick",
+            sample,
+            source.span("sourceTick = sample(0.0, 0.1)", 0),
+        ),
+        (
+            "trigger",
+            variable_reference(&source, "sourceTick", "trigger = sourceTick", 0, Vec::new()),
+            source.span("trigger = sourceTick", 0),
+        ),
+    ] {
+        model.add_equation(flat::Equation::new(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(variable_reference(&source, target, target, 1, Vec::new())),
+                rhs: Box::new(value),
+                span,
+            },
+            span,
+            flat::EquationOrigin::ComponentEquation {
+                component: String::new(),
+            },
+        ));
+    }
+
+    let condition_span = source.span("when trigger", 0);
+    let mut branch = flat::WhenBranch::new(
+        Expression::VarRef {
+            name: test_reference("trigger"),
+            subscripts: Vec::new(),
+            span: condition_span,
+        },
+        condition_span,
+    );
+    branch.add_equation(flat::WhenEquation::assign(
+        VarName::new("y"),
+        Expression::Literal {
+            value: Literal::Real(1.0),
+            span: source.span("1.0", 0),
+        },
+        source.span("y = 1.0", 0),
+        "when assignment",
+    ));
+    model
+        .when_chains
+        .push(flat::WhenChain::new(branch, condition_span));
+
+    (model, source, condition_span)
 }
 
 /// An instant at the start of the interval is not a schedulable stop.
