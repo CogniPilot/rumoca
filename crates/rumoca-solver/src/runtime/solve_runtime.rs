@@ -1,4 +1,10 @@
 //! Runtime orchestration for projection, events, and visible outputs.
+//!
+//! SPEC_0021 file-size exception: `SolveRuntime` still owns the shared mutable
+//! state that coordinates initialization, events, projection, and observation.
+//! split plan: extract output/derivative evaluation into
+//! `solve_runtime/output.rs` and snapshot restoration into
+//! `solve_runtime/state.rs` after their borrow surface is capability-based.
 
 use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;

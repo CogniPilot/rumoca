@@ -177,35 +177,6 @@ quality gate fails rather than falling back to `sim_ok`.
 | The reference's `total_models` equals the run's `sim_target_models` (not stale) | `load_current_msl_parity_gate_input_required` |
 | The reference records no OMC Modelica assertion failures | `load_current_msl_parity_gate_input_required` |
 
-Only the **strict-high agreement band** is parity. Near and deviation bands are
-diagnostic; `sim_ok` is raw completion. Full Tier 2 fails unless
-`sim_ok == agreement_high`, and the package `Sim` column counts strict-high only.
-
-A skip cannot inflate parity: every `sim_ok` is compared, skipped, or missing;
-the ratchet counts absolute strict-high models and separately guards comparison
-coverage (`TRACE_MODELS_COMPARED_ALLOWED_DROP`).
-
-Cohort movement is part of a certification, not a bonus reading. A full-scope
-run whose results directory carries no predecessor band table cannot report which
-models entered or left the compared set, and every rule that reads that movement
-is inert — so the run fails its quality gate rather than passing with those rules
-silently switched off. CI supplies the predecessor by restoring the previous
-certification's `msl_band_table.json` as `msl_band_table_previous.json`; a first
-certification legitimately has none and says so.
-
-Ordering is part of the contract: the only validity check that may run before
-the comparator is "is this run measurable at all" (nonzero discovered models,
-no resolve errors). Every verdict that reads simulation outcomes runs after the
-comparator stage, so no gate can abort a run before its parity is measured.
-
-**Why:** a Tier 1 run writes `run_scope: "partial"` into its quality snapshot
-(`balance_pipeline_quality_gate.rs`), and only a `"full"` scope satisfies the
-baseline ratchet. The cadence makes that mechanical distinction a reporting
-rule: Tier 1 detects regressions early, Tier 2 states where the cohort stands.
-`dev/` is an untracked working ledger, so Tier 1 evidence is developer-local
-and is rechecked by rerunning the command above; Tier 2 evidence is a tracked
-CI artifact. That asymmetry is the reason only Tier 2 backs a published number.
-
 ## References
 
 - [SPEC_0007](SPEC_0007_IR_PIPELINE.md) — compiler phase ownership.

@@ -37,10 +37,15 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | Native and Wasm hosts expose batched state/variable access | FMI host | Avoid per-scalar boundary overhead |
 | `rumoca-input` writes model inputs only through typed FMI setters | input/runtime boundary | One input lifecycle |
 | Input mappings resolve to FMI value references before execution | scenario preparation | Reject unknown or mistyped inputs early |
+| Input clocks use `fmi3SetClock`; structural parameters use Configuration Mode | input/runtime boundary | Preserve FMI lifecycle |
+| Name-based private solver input setters are prohibited | bindings/runtime | Keep one model API |
+| Native slot writes only implement validated FMI operations | linked runtime | Optimization is non-semantic |
 | `rumoca-codec` remains bytes-to-signal-frame only | codec facade | Preserve transport neutrality |
 | Codec/model mappings use typed batched FMI get/set operations | runtime adapter | One model boundary |
+| Invalid codec/model mappings fail during preparation | scenario preparation | No runtime data loss |
 | Transport crates move payloads and controls only | UDP/Zenoh/WebSocket | No model semantics |
 | Transport timeout, disconnect, and failure remain distinct | scheduler boundary | Prevent false successful steps |
+| Transport errors never become no-input or successful-step outcomes | scheduler boundary | Failures remain visible |
 | FMI 2 and FMI 3 adapters share semantic state | FMI runtime | Reduce certification surface |
 | eFMI GALEC/Production Code remains a main target | eFMI projection | Safety-oriented deployment |
 | Symbolic targets project from computable checked Solve | analysis codegen | Avoid duplicate structural analysis |
@@ -115,48 +120,6 @@ importer/host contract. Until that accepted-spec amendment lands, this draft is
 the migration proposal and MUST NOT be used to silently weaken either accepted
 crate-boundary rule.
 
-`rumoca-input` retains physical-device adapters, local input state, debounce,
-preconditions, derived controls, and signal mapping. Its model-facing product
-is a typed batch of FMI value references and values, not `(name, f64)` calls
-against a Rumoca simulation session. Scenario preparation resolves configured
-names through FMI model-variable metadata, checks causality, primitive type,
-shape, variability, and writable lifecycle states, and fails before execution
-when a mapping is invalid. Runtime application uses the corresponding
-`fmi3Set{VariableType}` operation in a legal FMI state. Input clocks use
-`fmi3SetClock`; structural parameters use Configuration Mode rather than the
-ordinary input path. Native linked execution may lower a validated batch to
-direct slot writes only as an implementation of those same FMI operations and
-state transitions.
-
-The existing public `SimulationSession::set_input(name, f64)` family and
-backend-specific equivalents are removed during this cutover. Bindings and
-interactive tools expose FMI value-reference or metadata-resolved input
-operations; they do not recreate name-based private solver setters.
-
-`rumoca-codec` does not depend on an FMI runtime and does not interpret model
-semantics. It continues to encode and decode transport-neutral signal frames.
-Scenario preparation compiles the separate frame-to-model mapping against FMI
-model-variable metadata. The runtime adapter applies decoded fields with
-typed, batched `fmi3Set{VariableType}` operations and obtains outgoing model
-fields with typed, batched `fmi3Get{VariableType}` operations. Unknown fields,
-type or shape mismatches, illegal writes, and unavailable outputs are rejected
-when the mapping is prepared rather than ignored during a simulation step.
-
-The `rumoca-transport-udp`, `rumoca-transport-zenoh`, and
-`rumoca-transport-websocket` crates carry bytes or control messages. They do
-not depend on FMI, codecs, Solve IR, or a simulation session. The scenario
-runtime composes transport → codec → prepared FMI binding for inbound data and
-prepared FMI binding → codec → transport for outbound data. Viewer controls
-enter `rumoca-input` local/control state before the resulting model inputs use
-the same FMI binding.
-
-Transport APIs return typed outcomes that distinguish data, a configured
-timeout, orderly disconnect, backpressure/data loss, and I/O failure. The
-scenario policy may explicitly tolerate a timeout or lossy link, but it records
-that decision in the trace. A transport implementation may not swallow a send
-error, convert a receive error to "no input", or allow a failed lockstep
-exchange to advance as a successful model step.
-
 ### Bounded ME Verification Profile
 
 The linked FMI 3 ME component exposes a checked lifecycle aggregate and pure
@@ -177,7 +140,6 @@ relocating semantics cannot be told apart from the divergence being fixed.
 | Phase | Scope | Exit evidence |
 |---|---|---|
 | 1 | Internal ME kernel trait in `rumoca-solver` and one `SolveModel` projection; migrate the rk-like session onto it | Bit-identical traces vs. the pre-migration binary; the rk-like crate links Solve IR from no dependency table except `dev-dependencies`, so no production path there can name it |
-| 2 | Migrate the Diffsol/BDF session; delete the private model paths both backends used | One shared event loop; recorded rk-like/diffsol divergences resolve on the shared semantics, with the band table as the record |
 | 3 | FMI CS profile as an ME host plus a selected integrator | ME/CS trace parity on one kernel artifact |
 | 4 | Packaged FMU and Wasm deployment forms | Linked-versus-packaged and native-versus-Wasm lifecycle parity |
 
@@ -210,27 +172,6 @@ rejection path ships with the shapes that stay legal:
       producers), and
       `::simulate_rejects_an_unprojectable_derivative_dependency_by_name`
       (the rejection reaches the caller by name).
-
-The rejection is deliberately *not* reachable from `SimulationSession`, which
-constructs its own problem and so bypasses the check; consolidating the session
-onto the same reduction is follow-on work, recorded on `FS-SIM-015`.
-
-**Fixture note.** Ten Diffsol unit tests previously exercised the
-general/implicit construction only because their `SolveModel` fixtures were
-under-specified: they set `implicit_rhs` but left `derivative_rhs` empty, so the
-eligibility walk saw zero derivative rows and routed them to the general path.
-Their edits add the `derivative_rhs` and `full_jacobian_v` rows Solve actually
-emits for those systems — the mass matrix is the identity in every one, so the
-derivative program is the same rows as the residual, and the added Jacobians are
-the exact JVPs (`der(x)=1` -> `0`; `der(x)=v, der(v)=-9.81` -> `[seed[1], 0]`;
-`der(x)=0` -> `0`). No assertion was weakened: the edits complete the fixtures
-towards the shape Solve emits, so each test now pins its original semantics on
-the path the model would really take.
-
-Composing work: the target/backend registry (#121) supplies the capability
-discovery the profile table above assumes, and declarative buffer starts (#119)
-remove the last initialization state a host would otherwise have to reach for
-directly.
 
 ### External I/O Profile Semantics
 
@@ -312,15 +253,6 @@ Diffsol or a private in-memory Rumoca backend.
 | Identical OMC inventory through native and Wasm runners | Backend-neutral parity evidence |
 | eFMI schema and checksum validation | Production package integrity |
 | Injected unsupported-capability failures | Early-error behavior |
-
-## Motivation
-
-- Separate FMI implementations multiply semantic and certification evidence.
-- A solver facade parallel to FMI duplicates lifecycle, event, state, and
-  capability abstractions; the solver layer should implement the ME host.
-- An FMU interface does not require an operating-system process.
-- Wasm offers an in-process portable deployment form without a private runtime.
-- The current Diffsol path is naturally an FMI 3 ME host, not another model API.
 
 ## References
 

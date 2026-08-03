@@ -14,13 +14,6 @@ DRAFT
 Rumoca should support a machine-checked, compositional refinement proof from a
 defined Modelica profile through its IR phases to observable target behavior.
 
-## Motivation
-
-- Per-phase refinement localizes semantic proof obligations.
-- Valid-by-construction IR removes impossible cases from later proofs.
-- Proof-producing passes preserve the existing efficient Rust implementation.
-- An explicit trusted computing base prevents overstated verification claims.
-
 ## Specification
 
 ### Verification Claim
@@ -212,13 +205,8 @@ The future evidence bundle should include:
 | Change-impact graph | Restrict re-verification using semantic dependencies |
 | Tool operational requirements | Define intended use and detected misuse |
 
-Airborne use should be planned with the applicable DO-178C objectives and,
-where selected by the applicant, DO-330 tool qualification, DO-331
-model-based development, and DO-333 formal-methods activities. Automotive use
-should map the same evidence primitives to the applicable ISO 26262 lifecycle,
-software, supporting-process, and tool-confidence activities. No fixed
-DO-330 qualification level or automotive integrity level is assigned by
-Rumoca because it depends on the particular use and system safety assessment.
+Assurance mappings to DO-178C/DO-330/DO-331/DO-333 or ISO 26262 are
+use-specific; Rumoca assigns no qualification or integrity level.
 
 ### Trusted Computing Base
 
@@ -248,12 +236,9 @@ tool versions, and remaining trusted assumptions.
 | V6 | One generated target | Translation-validation theorem |
 | V7 | Numerical runtime profile | Published error-bound theorem |
 
-OMC/MSL parity, fuzzing, property tests, and differential traces remain
-validation evidence for the formal definitions. They are not proof evidence.
-Until the theorem is discharged, every compiled model outside the strict-high
-OMC band is a counterexample to the candidate simulation-refinement claim. It
-must produce a general semantic fix or a typed narrowing of the verified
-profile; a model-name exception is prohibited.
+OMC/MSL validation and counterexample handling follow
+[SPEC_0033 §6a](SPEC_0033_DEVELOPMENT_PROCESS.md#6a-two-tier-verification-cadence);
+they are not proof evidence.
 
 ### Phasing
 

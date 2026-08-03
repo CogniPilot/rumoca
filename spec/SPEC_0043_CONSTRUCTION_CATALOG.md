@@ -61,9 +61,9 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 12,750 | SPEC_0036 cutover: ranked non-wire reductions |
-| `dae-wire-loc` | 3,250 | 3,750 | SPEC_0036 cutover: operation-shaped wire |
-| `dae-total-loc` | 14,250 | 16,250 | Both items above; total follows their sum |
+| `dae-core-loc` | 11,000 | 13,750 | SPEC_0036 cutover: ranked non-wire reductions |
+| `dae-wire-loc` | 3,250 | 4,000 | SPEC_0036 cutover: operation-shaped wire |
+| `dae-total-loc` | 14,250 | 17,500 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is

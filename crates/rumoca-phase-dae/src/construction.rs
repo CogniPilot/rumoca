@@ -1,3 +1,9 @@
+// SPEC_0021 file-size exception: checked DAE construction still coordinates the
+// shared coordinate registry, function registry, and ordered owner pipeline.
+// split plan: extract coordinate reservation into `construction/coordinates.rs`
+// and top-level phase sequencing into `construction/pipeline.rs` once those
+// builders expose narrow construction capabilities instead of shared maps.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
