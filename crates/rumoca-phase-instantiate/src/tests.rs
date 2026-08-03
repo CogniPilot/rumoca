@@ -674,12 +674,11 @@ package P
 end P;
 "#;
     let file_name = "transitive_condition.mo";
-    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
-        .expect("source should parse");
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
     let mut tree = ast::ClassTree::from_parsed(parsed);
     tree.source_map.add(file_name, source);
-    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
-        .expect("source should resolve");
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
 
     let winding = resolved
         .get_class_by_qualified_name("P.Winding")
@@ -736,12 +735,11 @@ package P
 end P;
 "#;
     let file_name = "record_scoped_condition.mo";
-    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
-        .expect("source should parse");
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
     let mut tree = ast::ClassTree::from_parsed(parsed);
     tree.source_map.add(file_name, source);
-    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
-        .expect("source should resolve");
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
 
     let instanced = instantiate(resolved, "P.Brake")
         .expect("the record parameter expression should decide the component");
@@ -783,12 +781,11 @@ package P
 end P;
 "#;
     let file_name = "forwarded_enum_condition.mo";
-    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
-        .expect("source should parse");
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
     let mut tree = ast::ClassTree::from_parsed(parsed);
     tree.source_map.add(file_name, source);
-    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
-        .expect("source should resolve");
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
 
     let instanced = instantiate(resolved, "P.Root")
         .expect("forwarded enum modifiers should decide the component");

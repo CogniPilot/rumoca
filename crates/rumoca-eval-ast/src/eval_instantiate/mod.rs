@@ -306,12 +306,7 @@ fn eval_param_ref(
         resolve_class_components,
         None,
     )?;
-    eval_scoped_string_condition_with_depth(
-        &binding,
-        env,
-        binding_scope.as_deref(),
-        depth + 1,
-    )
+    eval_scoped_string_condition_with_depth(&binding, env, binding_scope.as_deref(), depth + 1)
 }
 
 /// Build a ast::QualifiedName from a ast::ComponentReference's parts.
@@ -856,8 +851,7 @@ impl AstScalarContext for InstantiateScalarAdapter<'_> {
         // the Integer evaluator first: it only returns a value when the full
         // declaration expression is exact, while `/` inside the surrounding
         // Real expression remains Real division.
-        if let Some(value) =
-            eval_integer_component_ref(reference, self.env, depth, self.local_ints)
+        if let Some(value) = eval_integer_component_ref(reference, self.env, depth, self.local_ints)
         {
             return Some(value as f64);
         }
