@@ -1094,6 +1094,20 @@ pub(crate) fn eval_program_single(
     scratch: &mut RowEvalScratch,
 ) -> Result<f64, EvalSolveError> {
     require_program_output_count(input.row, 1, input.source_span)?;
+    eval_prevalidated_single_output_program(input, register_safe, scratch)
+}
+
+/// Evaluate a program whose prepared block metadata already proves that it
+/// stores exactly one output.
+///
+/// Construction through `PreparedScalarProgramBlock` owns that proof. Keeping
+/// the unchecked primitive crate-private prevents an unprepared row from
+/// bypassing the ordinary shape check.
+pub(crate) fn eval_prevalidated_single_output_program(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<f64, EvalSolveError> {
     let mut buf = [0.0f64];
     {
         let mut sink = OutputCursor::new(&mut buf);
@@ -1108,6 +1122,16 @@ pub(crate) fn eval_program_no_output(
     scratch: &mut RowEvalScratch,
 ) -> Result<(), EvalSolveError> {
     require_program_output_count(input.row, 0, input.source_span)?;
+    eval_prevalidated_no_output_program(input, register_safe, scratch)
+}
+
+/// Evaluate a program prefix whose prepared assignment shape proves that it
+/// stores no outputs.
+pub(crate) fn eval_prevalidated_no_output_program(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<(), EvalSolveError> {
     let mut sink = OutputCursor::new(&mut []);
     eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)
 }

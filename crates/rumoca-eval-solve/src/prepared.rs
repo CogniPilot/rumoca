@@ -20,7 +20,8 @@ use crate::{
         checked_contiguous_output_count, scalar_program_output_count,
         scalar_program_output_indices, tensor_output_count, validate_affine_stride_metadata,
     },
-    eval_program_no_output, eval_program_single, eval_row_prepared_maybe_fast,
+    eval_prevalidated_no_output_program, eval_prevalidated_single_output_program,
+    eval_program_no_output, eval_row_prepared_maybe_fast,
     linear_solve::solve_all_unchecked,
     record_solve_block_eval, required_registers, row_input_requirements,
     validate_input_requirements, validate_input_requirements_with_span, validate_output_len,
@@ -411,6 +412,7 @@ impl PreparedScalarProgramBlock {
     }
 
     fn eval_row_inner(&self, request: RowEvalRequest<'_>) -> Result<f64, EvalSolveError> {
+        let span = self.block.program_span(request.row_idx);
         let row =
             self.block
                 .programs()
@@ -418,20 +420,21 @@ impl PreparedScalarProgramBlock {
                 .ok_or(EvalSolveError::OutputTooSmall {
                     required: checked_required_row_count(request.row_idx)?,
                     len: self.block.row_count(),
-                    span: self.block.program_span(request.row_idx),
+                    span,
                 })?;
+        self.require_row_output_count(request.row_idx, 1, span)?;
         if request.validate_inputs {
             validate_input_requirements_with_span(
                 self.row_requirements[request.row_idx],
                 request.y,
                 request.p,
                 request.context.seed,
-                self.block.program_span(request.row_idx),
+                span,
             )?;
         }
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval(request.label, self.output_count, 1);
-        eval_program_single(
+        eval_prevalidated_single_output_program(
             PreparedRowEval::new(
                 row,
                 self.row_registers[request.row_idx],
@@ -440,11 +443,11 @@ impl PreparedScalarProgramBlock {
                 request.t,
                 request.context,
             )
-            .with_source_span(self.block.program_span(request.row_idx)),
+            .with_source_span(span),
             true,
             &mut scratch,
         )
-        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
+        .map_err(|error| error.with_source_span(span))
     }
 
     fn eval_row_output_inner(&self, request: RowOutputRequest<'_>) -> Result<f64, EvalSolveError> {
@@ -718,6 +721,7 @@ impl PreparedScalarProgramBlock {
         &self,
         request: TargetAssignmentRowRequest<'_>,
     ) -> Result<Option<f64>, EvalSolveError> {
+        let span = self.block.program_span(request.row_idx);
         let row =
             self.block
                 .programs()
@@ -725,7 +729,7 @@ impl PreparedScalarProgramBlock {
                 .ok_or(EvalSolveError::OutputTooSmall {
                     required: checked_required_row_count(request.row_idx)?,
                     len: self.block.row_count(),
-                    span: self.block.program_span(request.row_idx),
+                    span,
                 })?;
         if request.validate_inputs {
             validate_input_requirements_with_span(
@@ -733,7 +737,7 @@ impl PreparedScalarProgramBlock {
                 request.y,
                 request.p,
                 request.context.seed,
-                self.block.program_span(request.row_idx),
+                span,
             )?;
         }
         let mut scratch = self.scratch.borrow_mut();
@@ -745,7 +749,8 @@ impl PreparedScalarProgramBlock {
             if !self.row_assignment_shapes[request.row_idx].is_empty() {
                 return Ok(None);
             }
-            let output = eval_program_single(
+            self.require_row_output_count(request.row_idx, 1, span)?;
+            let output = eval_prevalidated_single_output_program(
                 PreparedRowEval::new(
                     row,
                     self.row_registers[request.row_idx],
@@ -754,14 +759,14 @@ impl PreparedScalarProgramBlock {
                     request.t,
                     request.context,
                 )
-                .with_source_span(self.block.program_span(request.row_idx)),
+                .with_source_span(span),
                 true,
                 &mut scratch,
             )
-            .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+            .map_err(|error| error.with_source_span(span))?;
             return Ok((!row_loads_y_index(row, request.target_y_index)).then_some(output));
         };
-        eval_program_no_output(
+        eval_prevalidated_no_output_program(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -770,19 +775,35 @@ impl PreparedScalarProgramBlock {
                 request.t,
                 request.context,
             )
-            .with_source_span(self.block.program_span(request.row_idx)),
+            .with_source_span(span),
             true,
             &mut scratch,
         )
-        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+        .map_err(|error| error.with_source_span(span))?;
         let value = shape
-            .eval_value(
-                request.row_idx,
-                &scratch.regs,
-                self.block.program_span(request.row_idx),
-            )
-            .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
+            .eval_value(request.row_idx, &scratch.regs, span)
+            .map_err(|error| error.with_source_span(span))?;
         Ok(Some(value))
+    }
+
+    fn require_row_output_count(
+        &self,
+        row_idx: usize,
+        expected: usize,
+        span: Option<rumoca_core::Span>,
+    ) -> Result<(), EvalSolveError> {
+        let actual = self.row_output_count(row_idx).ok_or_else(|| {
+            invalid_prepared_row_with_span("prepared row output metadata is missing", span)
+        })?;
+        if actual == expected {
+            return Ok(());
+        }
+        Err(EvalSolveError::InvalidRow {
+            message: format!(
+                "single-program evaluation expected {expected} outputs, found {actual}"
+            ),
+            span,
+        })
     }
 
     fn eval_target_assignment_row_with_scratch(
@@ -804,7 +825,7 @@ impl PreparedScalarProgramBlock {
                 self.block.program_span(request.row_idx),
             ));
         };
-        eval_program_no_output(
+        eval_prevalidated_no_output_program(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
