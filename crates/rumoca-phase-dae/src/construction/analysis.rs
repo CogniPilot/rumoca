@@ -71,6 +71,7 @@ use expression_validation::{
     when_body_context,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
+pub(super) use function_bodies::function_assertion;
 use function_bodies::{
     plan_function_statements, resolve_function_definitions,
     validate_function_expression_with_roles, validate_function_statements,
@@ -199,8 +200,11 @@ pub(super) enum FunctionStatementPlan {
     ///
     /// The plan is the proof that construction may erase the flow action. An
     /// unsettled assertion is never represented by this variant: it needs a
-    /// call-scoped runtime owner and is rejected while that owner is absent.
+    /// call-scoped runtime owner.
     ProvenAssertion,
+    /// A default-level MLS §8.3.7 assertion owned by the top-level function
+    /// statement sequence and evaluated once for every call.
+    RuntimeAssertion,
     For {
         domain: StructuredIndexDomain,
         binder_spans: Vec<Span>,
@@ -300,6 +304,9 @@ struct FunctionValidationContext<'scope> {
     static_integers: &'scope HashMap<VarName, i64>,
     shapes: &'scope ShapeEnvironment,
     shape_analysis: &'scope FunctionShapeAnalysis,
+    /// Whether this source sequence maps directly to the call-scoped action
+    /// sequence rather than a loop or runtime-conditional value owner.
+    call_scoped_actions: bool,
 }
 
 /// Name the statement form, so a report says which owner is missing.

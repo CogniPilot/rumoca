@@ -479,6 +479,17 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 dae::FunctionStatementView::Assignment { definition } => {
                     self.assign_statement(target, function, &mut body, definition)?
                 }
+                dae::FunctionStatementView::Assertion {
+                    condition,
+                    message,
+                    provenance,
+                } => {
+                    let condition = self.rebuild_expression(target, &body, condition)?;
+                    let message = self.rebuild_expression(target, &body, message)?;
+                    target.functions(|functions| {
+                        functions.assertion(&mut body, condition, message, provenance)
+                    })?;
+                }
                 dae::FunctionStatementView::For {
                     fold,
                     statements,
@@ -581,7 +592,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
     ) -> Result<(), dae::DaeConstructionError> {
         for statement in statements {
             let dae::FunctionStatementView::Assignment { definition } = statement else {
-                unreachable!("checked function loops cannot contain nested folds")
+                unreachable!("checked function loops contain only assignments")
             };
             let source_target = definition.target();
             let source_rhs = definition.rhs();

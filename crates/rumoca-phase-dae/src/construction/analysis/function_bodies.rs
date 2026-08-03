@@ -49,6 +49,7 @@ pub(super) fn validate_functions(
             static_integers: &static_integers,
             shapes: &certificate.values,
             shape_analysis: shapes,
+            call_scoped_actions: true,
         };
         let plan = if function.external.is_some() {
             if !function.body.is_empty() {
@@ -264,11 +265,11 @@ pub(super) fn plan_function_statements(
 }
 
 #[derive(Clone, Copy)]
-struct FunctionAssertion<'statement> {
-    condition: &'statement Expression,
-    message: &'statement Expression,
-    level: Option<&'statement Expression>,
-    span: Span,
+pub(in crate::construction) struct FunctionAssertion<'statement> {
+    pub(in crate::construction) condition: &'statement Expression,
+    pub(in crate::construction) message: &'statement Expression,
+    pub(in crate::construction) level: Option<&'statement Expression>,
+    pub(in crate::construction) span: Span,
 }
 
 /// Recognize MLS §8.3.7 `assert` in both statement shapes Flat retains.
@@ -277,7 +278,7 @@ struct FunctionAssertion<'statement> {
 /// operator, while some producers use the dedicated statement. A declared
 /// function named `assert` remains an ordinary user call: exact Flat function
 /// identity wins over the predefined short name.
-fn function_assertion<'statement>(
+pub(in crate::construction) fn function_assertion<'statement>(
     statement: &'statement rumoca_core::Statement,
     flat: &flat::Model,
 ) -> Result<Option<FunctionAssertion<'statement>>, ToDaeError> {
@@ -360,25 +361,33 @@ fn plan_proven_function_assertion(
             context.shapes,
         )?;
     }
-    match context.shapes.proven_value(assertion.condition) {
-        Some(ProvenValue::Boolean(true)) => Ok(FunctionStatementPlan::ProvenAssertion),
-        Some(ProvenValue::Boolean(false)) => Err(ToDaeError::unsupported_flat(
-            "function assertion",
-            format!(
-                "`{}` contains an assertion this specialization proves false",
-                context.function.name
-            ),
-            assertion.span,
-        )),
-        Some(ProvenValue::Integer(_)) | None => Err(ToDaeError::unsupported_flat(
-            "function assertion",
-            format!(
-                "`{}` contains an assertion whose condition is not proven true; a runtime function assertion requires a call-scoped flow-action owner",
-                context.function.name
-            ),
-            assertion.span,
-        )),
+    if matches!(
+        context.shapes.proven_value(assertion.condition),
+        Some(ProvenValue::Boolean(true))
+    ) {
+        return Ok(FunctionStatementPlan::ProvenAssertion);
     }
+    if assertion.level.is_some() {
+        return Err(ToDaeError::unsupported_flat(
+            "function assertion",
+            format!(
+                "`{}` contains a non-default assertion level without a checked severity owner",
+                context.function.name
+            ),
+            assertion.span,
+        ));
+    }
+    if !context.call_scoped_actions {
+        return Err(ToDaeError::unsupported_flat(
+            "function assertion",
+            format!(
+                "`{}` contains an assertion inside a runtime branch or loop without a nested flow-action owner",
+                context.function.name
+            ),
+            assertion.span,
+        ));
+    }
+    Ok(FunctionStatementPlan::RuntimeAssertion)
 }
 
 fn validate_function_assignment_target(
@@ -630,6 +639,12 @@ pub(super) fn resolve_function_definitions(
                 // Only the condition is evaluated on the proven-success path;
                 // message and level are failure-path values.
                 definitions.require_readable(assertion.condition, context, assertion.span)?;
+            }
+            (statement, FunctionStatementPlan::RuntimeAssertion) => {
+                let assertion = function_assertion(statement, context.flat)?
+                    .expect("a runtime assertion plan owns an assertion statement");
+                definitions.require_readable(assertion.condition, context, assertion.span)?;
+                definitions.require_readable(assertion.message, context, assertion.span)?;
             }
             (
                 rumoca_core::Statement::Assignment { value, span, .. },

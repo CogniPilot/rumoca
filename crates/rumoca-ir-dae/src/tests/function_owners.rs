@@ -1640,6 +1640,89 @@ fn enumeration_literals_are_canonical_checked_values_and_round_trip() {
 }
 
 #[test]
+fn function_assertion_is_a_checked_call_scoped_statement_and_round_trips() {
+    let source = TestSource::new(
+        "function f\n output Real y;\nalgorithm\n assert(true, \"valid call\");\n y := 0;\nend f;",
+    );
+    let function_at = source.source("function f", 0);
+    let output_at = source.source("output Real y", 0);
+    let assertion_at = source.source("assert(true, \"valid call\")", 0);
+    let condition_at = source.source("true", 0);
+    let message_at = source.source("\"valid call\"", 0);
+    let assignment_at = source.source("y := 0", 0);
+    let zero_at = source.source("0", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let condition = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_at)
+                        .literal(DaeLiteral::Boolean(true))
+                })?;
+                let message = dae.expressions(|expressions| {
+                    expressions
+                        .at(message_at)
+                        .literal(DaeLiteral::String("valid call".to_owned()))
+                })?;
+                dae.functions(|functions| {
+                    functions.assertion(&mut body, condition, message, assertion_at)
+                })?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, zero, assignment_at)
+                })?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("a typed top-level function assertion has a checked owner");
+
+    let assert_owner = |view: DaeView<'_>| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let statements = function.statements().collect::<Vec<_>>();
+        assert_eq!(statements.len(), 2);
+        let FunctionStatementView::Assertion {
+            condition,
+            message,
+            provenance,
+        } = statements[0].clone()
+        else {
+            panic!("the first function statement retains the assertion action");
+        };
+        assert_eq!(
+            view.source_text(provenance),
+            Some("assert(true, \"valid call\")")
+        );
+        assert_eq!(
+            view.expression(condition)
+                .unwrap()
+                .value_type()
+                .scalar_type(),
+            ScalarType::Boolean
+        );
+        assert_eq!(
+            view.expression(message).unwrap().value_type().scalar_type(),
+            ScalarType::String
+        );
+    };
+    dae.inspect(assert_owner);
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(assert_owner);
+}
+
+#[test]
 fn function_for_loop_is_a_compact_checked_transition() {
     let source = TestSource::new(
         "function sum3\n output Real y;\n protected Real scratch;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",

@@ -1045,6 +1045,11 @@ pub enum FunctionStatementView<'dae> {
     Assignment {
         definition: FunctionDefinitionView<'dae>,
     },
+    Assertion {
+        condition: ExprId<'dae>,
+        message: ExprId<'dae>,
+        provenance: DaeProvenance,
+    },
     For {
         fold: FunctionFoldId<'dae>,
         statements: FunctionStatements<'dae>,
@@ -1061,6 +1066,15 @@ impl<'dae> FunctionStatementView<'dae> {
         match statement {
             FunctionStatementWire::Assignment { definition } => Self::Assignment {
                 definition: function_definition_view(dae, function, *definition),
+            },
+            FunctionStatementWire::Assertion {
+                condition,
+                message,
+                provenance,
+            } => Self::Assertion {
+                condition: ExprId::from_raw(*condition),
+                message: ExprId::from_raw(*message),
+                provenance: *provenance,
             },
             FunctionStatementWire::For {
                 fold,

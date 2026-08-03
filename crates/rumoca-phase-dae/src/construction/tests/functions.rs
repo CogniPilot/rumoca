@@ -417,6 +417,58 @@ fn integer_assertion_function(source: &TestSource) -> rumoca_core::Function {
     function
 }
 
+fn real_assertion_function(source: &TestSource) -> rumoca_core::Function {
+    let assertion_span = source.span("assert(r >= 0.0, \"r must be positive\")", 0);
+    let assignment_span = source.span("y := r", 0);
+    let mut function = rumoca_core::Function::new("positive", source.span("function positive", 0));
+    function.add_input(real_function_param(
+        "r",
+        Vec::new(),
+        source.span("input Real r", 0),
+    ));
+    function.add_output(real_function_param(
+        "y",
+        Vec::new(),
+        source.span("output Real y", 0),
+    ));
+    function.body = vec![
+        rumoca_core::Statement::FunctionCall {
+            comp: test_component_reference("assert", assertion_span),
+            args: vec![
+                Expression::Binary {
+                    op: OpBinary::Ge,
+                    lhs: Box::new(Expression::VarRef {
+                        name: Reference::new("r"),
+                        subscripts: Vec::new(),
+                        span: source.span("r", 2),
+                    }),
+                    rhs: Box::new(Expression::Literal {
+                        value: Literal::Real(0.0),
+                        span: source.span("0.0", 0),
+                    }),
+                    span: source.span("r >= 0.0", 0),
+                },
+                Expression::Literal {
+                    value: Literal::String("r must be positive".to_string()),
+                    span: source.span("\"r must be positive\"", 0),
+                },
+            ],
+            outputs: Vec::new(),
+            span: assertion_span,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: test_component_reference("y", assignment_span),
+            value: Expression::VarRef {
+                name: Reference::new("r"),
+                subscripts: Vec::new(),
+                span: source.span("r", 3),
+            },
+            span: assignment_span,
+        },
+    ];
+    function
+}
+
 fn add_integer_assertion_call(model: &mut flat::Model, source: &TestSource, argument: Expression) {
     let call_span = source.span("positive(", 0);
     let equation_span = source.span("1.0 * positive(", 0);
@@ -471,7 +523,7 @@ fn proven_true_function_assertion_is_elided_by_its_exact_specialization() {
 }
 
 #[test]
-fn proven_false_function_assertion_is_a_typed_capability_rejection() {
+fn proven_false_function_assertion_retains_its_call_scoped_action() {
     let source = TestSource::new(
         "function positive input Integer i; output Integer y; algorithm assert(i >= 1, \"i must be positive\"); y := i; end positive; 1.0 * positive(0);",
     );
@@ -488,58 +540,48 @@ fn proven_false_function_assertion_is_a_typed_capability_rejection() {
         },
     );
 
-    let error = construct(&model, source.map).expect_err("a false assertion cannot be erased");
-    assert!(matches!(
-        error,
-        ToDaeError::UnsupportedFlatSemantics { feature, detail, span }
-            if feature == "function assertion"
-                && detail.contains("proves false")
-                && span == assertion_span
-    ));
+    let dae = construct(&model, source.map).expect("a false assertion has a runtime owner");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let statements = function.statements().collect::<Vec<_>>();
+        assert_eq!(statements.len(), 2);
+        assert!(matches!(
+            statements[0].clone(),
+            dae::FunctionStatementView::Assertion { provenance, .. }
+                if provenance.span() == assertion_span
+        ));
+    });
 }
 
 #[test]
-fn unsettled_function_assertion_requires_a_runtime_action_capability() {
+fn unsettled_function_assertion_retains_its_call_scoped_action() {
     let source = TestSource::new(
-        "input Integer n; function positive input Integer i; output Integer y; algorithm assert(i >= 1, \"i must be positive\"); y := i; end positive; 1.0 * positive(n);",
+        "function positive input Real r; output Real y; algorithm assert(r >= 0.0, \"r must be positive\"); y := r; end positive; 1.0 * positive(2.0);",
     );
-    let assertion_span = source.span("assert(i >= 1, \"i must be positive\")", 0);
-    let declaration = source.span("input Integer n", 0);
+    let assertion_span = source.span("assert(r >= 0.0, \"r must be positive\")", 0);
     let mut model = test_model();
-    let mut input = flat::Variable::empty_with_span(declaration);
-    input.name = VarName::new("n");
-    input.instance_id = test_instance_id("n");
-    input.component_ref = Some(test_component_reference("n", declaration));
-    input.type_id = TypeId::new(904);
-    input.variability = Variability::Discrete(Default::default());
-    input.causality = Causality::Input(Default::default());
-    input.is_discrete_type = true;
-    input.is_primitive = true;
-    register_test_integer_type(&mut model, input.type_id, &input.dims);
-    model.add_variable(input.name.clone(), input);
-    model
-        .variable_type_names
-        .insert(VarName::new("n"), "Integer".to_string());
-    model.add_function(integer_assertion_function(&source));
+    model.add_function(real_assertion_function(&source));
     model.is_partial = true;
     add_integer_assertion_call(
         &mut model,
         &source,
-        Expression::VarRef {
-            name: test_reference("n"),
-            subscripts: Vec::new(),
-            span: source.span("n", 1),
+        Expression::Literal {
+            value: Literal::Real(2.0),
+            span: source.span("2.0", 0),
         },
     );
 
-    let error = construct(&model, source.map).expect_err("runtime assertion needs an owner");
-    assert!(matches!(
-        error,
-        ToDaeError::UnsupportedFlatSemantics { feature, detail, span }
-            if feature == "function assertion"
-                && detail.contains("call-scoped flow-action owner")
-                && span == assertion_span
-    ));
+    let dae = construct(&model, source.map).expect("an unsettled assertion has a runtime owner");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let statements = function.statements().collect::<Vec<_>>();
+        assert_eq!(statements.len(), 2);
+        assert!(matches!(
+            statements[0].clone(),
+            dae::FunctionStatementView::Assertion { provenance, .. }
+                if provenance.span() == assertion_span
+        ));
+    });
 }
 
 #[test]

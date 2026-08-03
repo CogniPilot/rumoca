@@ -35,6 +35,10 @@ pub(super) fn plan_function_conditional(
     if let Some(selected) = proven_conditional_branch(blocks, context.shapes) {
         return plan_proven_conditional_branch(blocks, fallback, selected, context);
     }
+    let branch_context = FunctionValidationContext {
+        call_scoped_actions: false,
+        ..context
+    };
     let mut branches = Vec::with_capacity(blocks.len());
     for block in blocks {
         validate_function_expression_with_roles(
@@ -43,10 +47,10 @@ pub(super) fn plan_function_conditional(
             context.flat,
             context.shapes,
         )?;
-        branches.push(plan_function_statements(&block.stmts, context)?);
+        branches.push(plan_function_statements(&block.stmts, branch_context)?);
     }
     let fallback = fallback
-        .map(|statements| plan_function_statements(statements, context))
+        .map(|statements| plan_function_statements(statements, branch_context))
         .transpose()?;
     Ok(FunctionStatementPlan::If {
         branches,
@@ -199,6 +203,9 @@ fn validate_conditional_branch_shape(
     for (statement, plan) in statements.iter().zip(plans) {
         match (statement, plan) {
             (_, FunctionStatementPlan::ProvenAssertion) => continue,
+            (_, FunctionStatementPlan::RuntimeAssertion) => {
+                unreachable!("runtime conditional assertions are rejected during planning")
+            }
             (_, FunctionStatementPlan::Assignment(_)) => continue,
             (
                 rumoca_core::Statement::If {

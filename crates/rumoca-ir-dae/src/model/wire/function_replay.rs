@@ -104,6 +104,15 @@ fn project_statements(
                     provenance: definition.provenance,
                 }
             }
+            FunctionStatementWire::Assertion {
+                condition,
+                message,
+                provenance,
+            } => FunctionStatementInput::Assertion {
+                condition: *condition,
+                message: *message,
+                provenance: *provenance,
+            },
             FunctionStatementWire::For {
                 fold: fold_ordinal,
                 statements,
@@ -299,6 +308,7 @@ enum ReplayCapability<'group, 'dae> {
 #[derive(Clone, Copy)]
 enum ReplayOp<'wire> {
     Assign(AssignmentInput),
+    Assert(AssertionInput),
     BeginFold(FoldInput<'wire>),
     EndFold(FoldEnd),
 }
@@ -307,6 +317,13 @@ enum ReplayOp<'wire> {
 struct AssignmentInput {
     target: u32,
     rhs: u32,
+    provenance: DaeProvenance,
+}
+
+#[derive(Clone, Copy)]
+struct AssertionInput {
+    condition: u32,
+    message: u32,
     provenance: DaeProvenance,
 }
 
@@ -369,6 +386,9 @@ fn flatten_operations(
             FunctionStatementInput::Assignment { .. } => {
                 operations.push(ReplayOp::Assign(assignment(statement)?));
             }
+            FunctionStatementInput::Assertion { .. } => {
+                operations.push(ReplayOp::Assert(assertion(statement)?));
+            }
             FunctionStatementInput::For {
                 domain,
                 targets,
@@ -398,7 +418,14 @@ fn push_fold_operations<'wire>(
 ) -> Result<(), DaeConstructionError> {
     operations.push(ReplayOp::BeginFold(begin));
     for statement in statements {
-        operations.push(ReplayOp::Assign(assignment(statement)?));
+        match statement {
+            FunctionStatementInput::Assignment { .. } => {
+                operations.push(ReplayOp::Assign(assignment(statement)?));
+            }
+            FunctionStatementInput::Assertion { .. } | FunctionStatementInput::For { .. } => {
+                return Err(malformed("functions.statements.nesting"));
+            }
+        }
     }
     operations.push(ReplayOp::EndFold(FoldEnd {
         target_count: begin.targets.len(),
@@ -418,7 +445,27 @@ fn assignment(statement: &FunctionStatementInput) -> Result<AssignmentInput, Dae
             rhs: *rhs,
             provenance: *provenance,
         }),
+        FunctionStatementInput::Assertion { .. } => {
+            Err(malformed("functions.statements.assignment"))
+        }
         FunctionStatementInput::For { .. } => Err(malformed("functions.statements.nesting")),
+    }
+}
+
+fn assertion(statement: &FunctionStatementInput) -> Result<AssertionInput, DaeConstructionError> {
+    match statement {
+        FunctionStatementInput::Assertion {
+            condition,
+            message,
+            provenance,
+        } => Ok(AssertionInput {
+            condition: *condition,
+            message: *message,
+            provenance: *provenance,
+        }),
+        FunctionStatementInput::Assignment { .. } | FunctionStatementInput::For { .. } => {
+            Err(malformed("functions.statements.assertion"))
+        }
     }
 }
 
@@ -473,7 +520,7 @@ fn advance_to_definition<'dae>(
                 span: provenance.span(),
             });
         }
-        if !apply_next_ready_assignment(wire, dae, ids, state)? {
+        if !apply_next_ready_operation(wire, dae, ids, state)? {
             break;
         }
     }
@@ -507,32 +554,69 @@ fn current_definition_ordinal<'dae>(
     }
 }
 
-fn apply_next_ready_assignment<'dae>(
+fn apply_next_ready_operation<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
     state: &mut FunctionReplay<'_, '_, 'dae>,
 ) -> Result<bool, DaeConstructionError> {
-    let Some(ReplayOp::Assign(assignment)) = state.operations.get(state.next_operation).copied()
-    else {
+    let Some(operation) = state.operations.get(state.next_operation).copied() else {
         return Ok(false);
     };
-    if assignment.rhs as usize >= ids.expressions.len() {
-        return Ok(false);
+    match operation {
+        ReplayOp::Assign(assignment) => {
+            if assignment.rhs as usize >= ids.expressions.len() {
+                return Ok(false);
+            }
+            apply_assignment(wire, dae, ids, state, assignment)?;
+        }
+        ReplayOp::Assert(assertion) => {
+            if [assertion.condition, assertion.message]
+                .into_iter()
+                .any(|expression| expression as usize >= ids.expressions.len())
+            {
+                return Ok(false);
+            }
+            apply_assertion(dae, ids, state, assertion)?;
+        }
+        ReplayOp::BeginFold(_) | ReplayOp::EndFold(_) => return Ok(false),
     }
-    apply_assignment(wire, dae, ids, state, assignment)?;
     state.next_operation += 1;
     Ok(true)
 }
 
-fn apply_ready_assignments<'dae>(
+fn apply_ready_operations<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
     state: &mut FunctionReplay<'_, '_, 'dae>,
 ) -> Result<(), DaeConstructionError> {
-    while apply_next_ready_assignment(wire, dae, ids, state)? {}
+    while apply_next_ready_operation(wire, dae, ids, state)? {}
     Ok(())
+}
+
+fn apply_assertion<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    state: &mut FunctionReplay<'_, '_, 'dae>,
+    input: AssertionInput,
+) -> Result<(), DaeConstructionError> {
+    let condition = mapped_expression(ids, input.condition, input.provenance)?;
+    let message = mapped_expression(ids, input.message, input.provenance)?;
+    let capability = state.capability.as_mut().ok_or_else(|| {
+        incomplete(
+            "function capability",
+            state.function_index,
+            input.provenance,
+        )
+    })?;
+    dae.functions(|functions| match capability {
+        ReplayCapability::Body(body) => {
+            functions.assertion(body, condition, message, input.provenance)
+        }
+        ReplayCapability::Fold(_) => Err(malformed("functions.statements.nesting")),
+        ReplayCapability::External(_) => Err(malformed("functions.external")),
+    })
 }
 
 fn apply_assignment<'dae>(
@@ -598,7 +682,7 @@ fn replay_loop_entry<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
-    apply_ready_assignments(wire, dae, ids, state)?;
+    apply_ready_operations(wire, dae, ids, state)?;
     let pending_fold = dae.storage.functions[state.function_index].folds.len();
     let Some(ReplayOp::BeginFold(input)) = state.operations.get(state.next_operation).copied()
     else {
@@ -654,7 +738,7 @@ fn replay_loop_exit<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
-    apply_ready_assignments(wire, dae, ids, state)?;
+    apply_ready_operations(wire, dae, ids, state)?;
     let open_fold = dae.storage.functions[state.function_index]
         .folds
         .len()
@@ -701,7 +785,7 @@ fn finish_functions<'dae>(
     mut functions: Vec<FunctionReplay<'_, '_, 'dae>>,
 ) -> Result<(), DaeConstructionError> {
     for state in &mut functions {
-        apply_ready_assignments(wire, dae, ids, state)?;
+        apply_ready_operations(wire, dae, ids, state)?;
         if state.next_operation != state.operations.len() {
             return Err(incomplete(
                 "function operation",

@@ -47,9 +47,9 @@ use analysis::{
     RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, SemiLinearRules, analyze,
     assigned_function_targets, discrete_value_assignment, effective_function_scalar_type,
     effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
-    is_inferred_clock_condition, is_whole_clock_coordinate, model_algorithm_targets,
-    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
-    structured_assignment_names,
+    function_assertion, is_inferred_clock_condition, is_whole_clock_coordinate,
+    model_algorithm_targets, record_field_projections, selected_conditional_statements,
+    specialized_comprehension_plan, structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use conditions::{combine_conditions, lower_condition, negate_condition};
@@ -507,6 +507,32 @@ fn lower_function_statement<'dae>(
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match (statement, plan) {
         (_, FunctionStatementPlan::ProvenAssertion) => Ok(body),
+        (statement, FunctionStatementPlan::RuntimeAssertion) => {
+            let assertion = function_assertion(statement, symbols.functions.flat)
+                .expect("analysis already validates the assertion statement")
+                .expect("a runtime assertion plan owns an assertion statement");
+            let condition = lower_function_expression(
+                construction,
+                symbols.coordinates,
+                symbols.functions,
+                symbols.shapes,
+                &body,
+                assertion.condition,
+            )?;
+            let message = lower_function_expression(
+                construction,
+                symbols.coordinates,
+                symbols.functions,
+                symbols.shapes,
+                &body,
+                assertion.message,
+            )?;
+            let provenance = dae::DaeProvenance::source(assertion.span)?;
+            construction.functions(|functions| {
+                functions.assertion(&mut body, condition, message, provenance)
+            })?;
+            Ok(body)
+        }
         (
             rumoca_core::Statement::Assignment { value, span, .. },
             FunctionStatementPlan::Assignment(plan),
