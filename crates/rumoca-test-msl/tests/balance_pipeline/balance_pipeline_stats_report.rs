@@ -605,6 +605,23 @@ fn print_simulatable_compilation_rate(summary: &MslSummary) {
     );
 }
 
+fn run_comparator_before_quality_gate<State, Compare, Gate>(
+    simulations_attempted: bool,
+    state: &mut State,
+    compare: Compare,
+    gate: Gate,
+) where
+    Compare: FnOnce(&mut State) -> MslParityStageOutcome,
+    Gate: FnOnce(&MslParityStageOutcome, &mut State),
+{
+    let parity_stage = if simulations_attempted {
+        compare(state)
+    } else {
+        MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted)
+    };
+    gate(&parity_stage, state);
+}
+
 pub(super) fn print_final_stats(summary: &MslSummary) {
     let write_start = Instant::now();
     write_msl_results(summary).expect("Failed to write results");
@@ -620,33 +637,21 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
         "  - Core + JSON write subtotal: {:.2}s",
         summary.timings.core_pipeline_seconds + json_write_seconds
     );
-    // Only the measurability check runs before the comparator. Every verdict
-    // that depends on simulation outcomes is downstream of the parity stage, so
-    // no gate can abort the run before its parity is measured. (`results-wave3`
-    // aborted here on the old `sim_ok` hard floor and published `sim_ok 49/566`
-    // with no comparator behind it.)
+    // Only the structural measurability check runs before the comparator.
+    // Every verdict that depends on simulation outcomes, including the
+    // explicit selected-target success gate, is downstream of the parity
+    // stage, so no gate can abort before every surviving trace is measured.
     assert_msl_run_is_measurable(summary);
-    // A focused run that already lost a named target has nothing a cohort
-    // comparison could add, and paying for OMC references to report a failure
-    // we already have is waste. The skip is still typed and still printed, so
-    // the run says "parity unmeasured" rather than falling silent.
-    if require_selected_targets_success() && !selected_target_failures(summary).is_empty() {
-        let stage = MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::StageNotExecuted {
-            detail: "focused run: a selected simulation target failed before the comparator stage"
-                .to_string(),
-        });
-        run_quality_gate_stage(summary, &stage, &mut timing_report);
-        finalize_msl_parity_timing_report(&mut timing_report);
-        return;
-    }
-    let parity_stage = if summary.sim_attempted > 0 {
-        let stage = run_simulation_parity_stages(summary, &mut timing_report);
-        run_quality_snapshot_stage(summary, &stage, &mut timing_report);
-        stage
-    } else {
-        MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted)
-    };
-    run_quality_gate_stage(summary, &parity_stage, &mut timing_report);
+    run_comparator_before_quality_gate(
+        summary.sim_attempted > 0,
+        &mut timing_report,
+        |report| {
+            let stage = run_simulation_parity_stages(summary, report);
+            run_quality_snapshot_stage(summary, &stage, report);
+            stage
+        },
+        |stage, report| run_quality_gate_stage(summary, stage, report),
+    );
     finalize_msl_parity_timing_report(&mut timing_report);
     print_simulatable_compilation_rate(summary);
 }
@@ -1001,5 +1006,21 @@ mod tests {
             .expect("failed stage should be recorded");
         assert_eq!(stage.label, "quality_gate_eval");
         assert_eq!(stage.status, "fail");
+    }
+
+    #[test]
+    fn explicit_selected_target_failure_gate_runs_after_comparator() {
+        let mut stages = Vec::new();
+        run_comparator_before_quality_gate(
+            true,
+            &mut stages,
+            |stages| {
+                stages.push("comparator");
+                MslParityStageOutcome::Ran
+            },
+            |_stage, stages| stages.push("selected_target_success_gate"),
+        );
+
+        assert_eq!(stages, ["comparator", "selected_target_success_gate"]);
     }
 }
