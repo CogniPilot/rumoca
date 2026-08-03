@@ -389,6 +389,64 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
 }
 
 #[test]
+fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() {
+    let mut model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["surface".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                compiled_parameter_len: 2,
+                // The first relation is scheduled/non-root; only the second
+                // relation owns the continuously monitored root below.
+                relation_memory_parameter_indices: vec![0, 1],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: spanned_block(
+                    vec![vec![
+                        solve::LinearOp::LoadY { dst: 0, index: 0 },
+                        solve::LinearOp::StoreOutput { src: 0 },
+                    ]],
+                    "root_relation_owner.mo",
+                ),
+                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(1))],
+                root_zero_domains: vec![solve::RootZeroDomain::Previous],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![-1.0],
+        parameters: vec![0.0, 0.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("typed root target is a valid runtime");
+    let mut params = model.parameters.clone();
+
+    runtime
+        .update_relation_memory_from_state(0.0, &model.initial_y, &mut params, 1.0e-12, 4)
+        .expect("root relation memory refresh should succeed");
+
+    assert_eq!(
+        params,
+        vec![0.0, 1.0],
+        "the root's aligned target owns the update; an earlier non-root relation must remain intact"
+    );
+
+    model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_y(0))];
+    let runtime = SolveRuntime::new(&model).expect("the root target shape remains aligned");
+    let error = runtime
+        .update_relation_memory_from_state(0.0, &model.initial_y, &mut params, 1.0e-12, 4)
+        .expect_err("a relation-memory root cannot write continuous solver storage");
+    assert!(
+        error.to_string().contains("not a parameter slot"),
+        "the invalid typed target must fail closed: {error}"
+    );
+}
+
+#[test]
 fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {

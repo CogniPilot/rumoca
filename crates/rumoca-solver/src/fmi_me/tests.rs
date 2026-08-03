@@ -782,6 +782,11 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
         vec![1.0f64.to_bits()],
         "the exact-root comparison is false, but the typed crossing owns the post-root value"
     );
+    assert_eq!(
+        kernel.verification_frozen_root_override_count(),
+        0,
+        "the typed post-side override belongs to exactly one event boundary"
+    );
     kernel
         .enter_continuous_time_mode()
         .expect("the settled strict-root event should resume integration");
