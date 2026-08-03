@@ -638,6 +638,34 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
 }
 
 #[test]
+fn diffsol_profile_preserves_a_nonzero_root_distance_inside_solver_tolerance() {
+    let mut model = strict_root_relation_memory();
+    let positive_distance = 5.0e-11;
+    model.initial_y = vec![positive_distance];
+    model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::NonPositive];
+    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    kernel
+        .enter_initialization_mode()
+        .expect("near-root initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("near-root initialization should settle");
+    kernel
+        .update_discrete_states()
+        .expect("near-root initial event should run");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("near-root model should enter continuous time");
+
+    let mut indicators = Vec::new();
+    kernel
+        .get_event_indicators(&mut indicators)
+        .expect("the component should expose its signed root distance");
+
+    assert_eq!(indicators, vec![positive_distance]);
+}
+
+#[test]
 fn the_directional_derivative_is_the_exact_state_jacobian_product() {
     let model = harmonic_oscillator();
     let mut kernel = instantiate(&model);

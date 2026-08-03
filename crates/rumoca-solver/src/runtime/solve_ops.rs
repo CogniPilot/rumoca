@@ -435,21 +435,18 @@ pub fn update_relation_memory_slots(
     changed
 }
 
-/// Give a tolerance-zero root the compiler-owned side of its source relation.
+/// Give an exactly zero root the compiler-owned side of its source relation.
 ///
 /// Numerical root finders detect sign changes, so an unqualified `0.0` at an
 /// accepted point cannot represent whether a strict or non-strict relation
 /// owns that point. Solve IR preserves that semantic distinction explicitly;
 /// the smallest ordinary dimensionless perturbation is enough to expose its
-/// sign without moving the mathematical root. The same root tolerance used by
-/// crossing detection defines which numerical values represent semantic zero.
-pub fn orient_typed_root_zeros(
-    roots: &mut [f64],
-    zero_domains: &[solve::RootZeroDomain],
-    tolerance: f64,
-) {
+/// sign without moving the mathematical root. A nonzero value remains a signed
+/// distance from the root even when it lies inside the solver's convergence
+/// tolerance; changing that sign would contradict the source relation.
+pub fn orient_typed_root_zeros(roots: &mut [f64], zero_domains: &[solve::RootZeroDomain]) {
     for (root, zero_domain) in roots.iter_mut().zip(zero_domains) {
-        if root.abs() > tolerance {
+        if *root != 0.0 {
             continue;
         }
         *root = match zero_domain {
@@ -685,11 +682,10 @@ mod tests {
                 solve::RootZeroDomain::Previous,
                 solve::RootZeroDomain::Positive,
             ],
-            1.0e-6,
         );
 
         assert!(roots[0].is_sign_positive() && roots[0] > 0.0);
-        assert!(roots[1].is_sign_negative() && roots[1] < 0.0);
+        assert_eq!(roots[1], -1.0e-8);
         assert_eq!(roots[2], 0.0);
         assert_eq!(roots[3], -2.0);
     }

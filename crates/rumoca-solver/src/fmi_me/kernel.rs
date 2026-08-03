@@ -1715,7 +1715,6 @@ impl ModelExchangeKernel for SolveMeKernel {
         crate::orient_typed_root_zeros(
             &mut values,
             &self.runtime.model.problem.events.root_zero_domains,
-            self.tolerance,
         );
         self.cache_root_conditions(time, &self.states, &values);
         *indicators = values;
