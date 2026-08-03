@@ -762,7 +762,8 @@ Defines state-to-state transitions with priority and timing control.
 | SIM-006 | Integer solved form | App B | "Solved variable must appear uniquely as term (no multiplicative factor) on either side" |
 | SIM-007 | Non-Integer flip form | App B | "Non-Integer equations require at most flipping sides to obtain assignment form" |
 | SIM-008 | Discrete variable stability | App B | "Values of conditions c, z, and m only changed at event instant, constant during continuous integration" |
-| SIM-009 | DAE structure | App B | "System shall consist of differential equations, discrete equations, discrete-valued assignments, and condition equations"
+| SIM-009 | DAE structure | App B | "System shall consist of differential equations, discrete equations, discrete-valued assignments, and condition equations" |
+| SIM-010 | Clocked event-iteration participation | App B | "Clocked variables use previous values and their equations are solved only in the first event iteration; they do not participate in ordinary z == pre(z), m == pre(m) convergence" |
 
 ### 4.14 Clock/Synchronous Contracts (CLK)
 
@@ -905,18 +906,18 @@ areas.
 | Equations | EQN | 38 |
 | Algorithms | ALG | 17 |
 | Connections | CONN | 30 |
-| Functions | FUNC | 35 |
+| Functions | FUNC | 38 |
 | Types/Interfaces | TYPE | 35 |
-| Arrays | ARR | 40 |
+| Arrays | ARR | 42 |
 | Packages | PKG | 12 |
 | Operator Records | OPREC | 11 |
-| Simulation | SIM | 9 |
+| Simulation | SIM | 10 |
 | Clocks/Synchronous | CLK | 20 |
 | Stream Connectors | STRM | 11 |
 | State Machines | SM | 8 |
 | Annotations | ANN | 15 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **432** |
+| **Total** | | **438** |
 
 ---
 
@@ -1005,5 +1006,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 430 |
+| Total Contracts | 438 |
 | MLS Chapters Referenced | 21 |
