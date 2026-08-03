@@ -14,7 +14,8 @@ pub(super) fn source_balance(
         let variable = &flat.variables[name];
         let scalar_count = checked_shape_size(name, variable)?;
         match role {
-            PlannedRole::Parameter
+            PlannedRole::UnusedExpandable
+            | PlannedRole::Parameter
             | PlannedRole::Constant
             | PlannedRole::Input
             | PlannedRole::Clock => {}
@@ -65,7 +66,8 @@ pub(super) fn source_balance(
         }
         let scalar_count = checked_shape_size(name, variable)?;
         match roles[name] {
-            PlannedRole::Parameter
+            PlannedRole::UnusedExpandable
+            | PlannedRole::Parameter
             | PlannedRole::Constant
             | PlannedRole::Input
             | PlannedRole::Clock => {}
@@ -103,7 +105,8 @@ fn add_algorithm_target(
         }
         PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
         PlannedRole::DiscreteValue => detail.discrete_value_definitions += scalar_count,
-        PlannedRole::Parameter
+        PlannedRole::UnusedExpandable
+        | PlannedRole::Parameter
         | PlannedRole::Constant
         | PlannedRole::Input
         | PlannedRole::Clock

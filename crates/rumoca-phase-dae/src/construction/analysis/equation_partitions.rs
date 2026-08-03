@@ -99,7 +99,8 @@ pub(in crate::construction) fn equation_partition<'flat>(
         PlannedRole::DiscreteValue => {
             unreachable!("discrete-value equations are classified before residual equations")
         }
-        PlannedRole::Parameter
+        PlannedRole::UnusedExpandable
+        | PlannedRole::Parameter
         | PlannedRole::Constant
         | PlannedRole::Input
         | PlannedRole::State

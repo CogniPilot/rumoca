@@ -862,7 +862,12 @@ fn require_runtime_coordinate(
             | PlannedRole::DiscreteReal
             | PlannedRole::DiscreteValue,
         ) => Ok(()),
-        Some(PlannedRole::Clock | PlannedRole::EnumerationLiteral | PlannedRole::Aggregate)
+        Some(
+            PlannedRole::UnusedExpandable
+            | PlannedRole::Clock
+            | PlannedRole::EnumerationLiteral
+            | PlannedRole::Aggregate,
+        )
         | None => Err(ToDaeError::unsupported_flat(
             "record-array member slice",
             format!(

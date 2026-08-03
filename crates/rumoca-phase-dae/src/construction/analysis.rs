@@ -340,6 +340,9 @@ pub(super) fn required_statement_span(
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PlannedRole {
+    /// An MLS §9.1.3 member that has no connection and no binding. It is
+    /// retained in Flat IR for source identity, but has no runtime coordinate.
+    UnusedExpandable,
     Parameter,
     Constant,
     Input,

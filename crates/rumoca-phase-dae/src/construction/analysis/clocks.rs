@@ -564,7 +564,8 @@ fn resolve_inferred_when_owners(
 fn is_clock_runtime_role(role: PlannedRole) -> bool {
     !matches!(
         role,
-        PlannedRole::Parameter
+        PlannedRole::UnusedExpandable
+            | PlannedRole::Parameter
             | PlannedRole::Constant
             | PlannedRole::Clock
             | PlannedRole::EnumerationLiteral

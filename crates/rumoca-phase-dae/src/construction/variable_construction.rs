@@ -21,7 +21,7 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
     let mut reserved = (0..flat.variables.len()).map(|_| None).collect::<Vec<_>>();
     for (source_ordinal, (name, variable)) in flat.variables.iter().enumerate() {
         let role = analysis.roles[name];
-        if matches!(role, PlannedRole::Clock) {
+        if matches!(role, PlannedRole::UnusedExpandable | PlannedRole::Clock) {
             continue;
         }
         if matches!(
@@ -126,8 +126,10 @@ fn reserve_variable_identity<'dae>(
                 variables.reserve_discrete_value(variable.name.clone(), value_type, provenance)?;
             Ok((Coordinate::DiscreteValue(id), definition))
         }
-        PlannedRole::EnumerationLiteral | PlannedRole::Aggregate => {
-            unreachable!("expression-only roles are never reserved as variables")
+        PlannedRole::UnusedExpandable
+        | PlannedRole::EnumerationLiteral
+        | PlannedRole::Aggregate => {
+            unreachable!("non-runtime roles are never reserved as variables")
         }
         PlannedRole::Clock => unreachable!("clock variables live in the clock arena"),
     })
@@ -263,8 +265,11 @@ fn insert_complete_variable<'dae>(
                 attributes,
             )
             .map(Coordinate::DiscreteValue),
-        PlannedRole::Clock | PlannedRole::EnumerationLiteral | PlannedRole::Aggregate => {
-            unreachable!("expression-only roles are never inserted as variables")
+        PlannedRole::UnusedExpandable
+        | PlannedRole::Clock
+        | PlannedRole::EnumerationLiteral
+        | PlannedRole::Aggregate => {
+            unreachable!("non-runtime roles are never inserted as variables")
         }
     })
 }

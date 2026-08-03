@@ -188,7 +188,10 @@ fn merge_dependencies(
 fn constructed_role(role: PlannedRole) -> bool {
     !matches!(
         role,
-        PlannedRole::Clock | PlannedRole::EnumerationLiteral | PlannedRole::Aggregate
+        PlannedRole::UnusedExpandable
+            | PlannedRole::Clock
+            | PlannedRole::EnumerationLiteral
+            | PlannedRole::Aggregate
     )
 }
 

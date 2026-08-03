@@ -153,6 +153,37 @@ fn input_ownership_requires_resolved_component_identity() {
 }
 
 #[test]
+fn unused_expandable_member_is_not_a_runtime_coordinate() {
+    let source = TestSource::new("model M Real x; equation x - 1.0; Real unused; end M;");
+    let mut model = scalar_real_model(&source);
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "bus.unused",
+        "Real unused",
+        8,
+        Vec::new(),
+        false,
+    );
+    let unused = model
+        .variables
+        .get_mut(&VarName::new("bus.unused"))
+        .unwrap();
+    unused.from_expandable_connector = true;
+    unused.connected = false;
+    assert!(unused.binding.is_none());
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.variable_count(), 1);
+        assert_eq!(
+            view.variable(view.variable_id(0).unwrap()).unwrap().name(),
+            &VarName::new("x")
+        );
+    });
+}
+
+#[test]
 fn zero_extent_parameter_binding_takes_its_element_type_from_the_declaration() {
     let source = TestSource::new("Real x; parameter Real p[0] = {}; equation x - 1.0;");
     let mut model = scalar_real_model(&source);
