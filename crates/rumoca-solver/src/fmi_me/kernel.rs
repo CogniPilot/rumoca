@@ -2256,9 +2256,10 @@ fn validate_event_entry(entry: MeEventEntry, tolerance: f64) -> Result<(), MeErr
         || !entry.horizon.is_finite()
         || (entry.horizon < entry.event_time && entry.event_time - entry.horizon > order_tolerance)
     {
-        return Err(contract(
-            "event entry requires finite values with horizon >= event_time",
-        ));
+        return Err(contract(format!(
+            "event entry requires finite values with horizon >= event_time; cause={:?} event_time={} horizon={}",
+            entry.cause, entry.event_time, entry.horizon
+        )));
     }
     Ok(())
 }

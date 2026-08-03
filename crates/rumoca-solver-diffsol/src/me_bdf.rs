@@ -139,7 +139,7 @@ where
             })
             .map_err(|error| error.at_stage(SimFailureStage::Integration))?;
         if let Some(event_time) = *pending_time_event {
-            if event_time > target && !time_reached_with_tolerance(event_time, target, tolerance) {
+            if event_time_is_beyond_horizon(event_time, target) {
                 return interpolate_deferred_sample(solver, target).map(Some);
             }
             let states = solver.state().y.as_slice().to_vec();
@@ -158,7 +158,7 @@ where
             continue;
         }
         if let Some(root) = pending_root.take() {
-            if root.time > target && !time_reached_with_tolerance(root.time, target, tolerance) {
+            if event_time_is_beyond_horizon(root.time, target) {
                 *pending_root = Some(root);
                 return interpolate_deferred_sample(solver, target).map(Some);
             }
@@ -168,9 +168,7 @@ where
         let requested = host.next_event_stop(opts.t_end)?;
         let current = solver.state().t;
         if requested.is_event && time_reached_with_tolerance(current, requested.time, tolerance) {
-            if requested.time > target
-                && !time_reached_with_tolerance(requested.time, target, tolerance)
-            {
+            if event_time_is_beyond_horizon(requested.time, target) {
                 return interpolate_deferred_sample(solver, target).map(Some);
             }
             let states = solver.state().y.as_slice().to_vec();
@@ -235,8 +233,7 @@ where
                     index: root_index,
                     states: root_states,
                 };
-                if root_time > target && !time_reached_with_tolerance(root_time, target, tolerance)
-                {
+                if event_time_is_beyond_horizon(root_time, target) {
                     let sample = interpolate_deferred_sample(solver, target)?;
                     *pending_root = Some(root);
                     return Ok(Some(sample));
@@ -322,6 +319,10 @@ where
 
 fn time_reached_with_tolerance(current: f64, target: f64, tolerance: f64) -> bool {
     (current - target).abs() <= tolerance * (1.0 + current.abs().max(target.abs()))
+}
+
+fn event_time_is_beyond_horizon(event_time: f64, horizon: f64) -> bool {
+    event_time > horizon && !sample_time_match_with_tol(event_time, horizon)
 }
 
 fn accept_step<'a, Eqn, S>(
@@ -504,5 +505,22 @@ fn empty_terminated_result(
         n_states: host.state_count(),
         variable_meta: host.output_meta(),
         termination: Some(termination),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::event_time_is_beyond_horizon;
+
+    #[test]
+    fn event_times_beyond_the_output_horizon_are_not_value_tolerance_matches() {
+        for (event_time, horizon) in [
+            (1.300_001_999_999_999_9, 1.3),
+            (1.001_001_001_001_001, 1.001_000_000_000_000_1),
+            (0.038_061_032_863_850_19, 0.038_060_000_000_000_004),
+            (0.000_025, 0.000_024),
+        ] {
+            assert!(event_time_is_beyond_horizon(event_time, horizon));
+        }
     }
 }
