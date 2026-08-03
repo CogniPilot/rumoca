@@ -648,9 +648,15 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             });
         }
         let extents = self.storage.domain_extents(domain, provenance)?;
+        let domain_scalar_count = self.storage.domain_scalar_count(domain, provenance)?;
         let shape_matches = match scalar_view {
             ComprehensionScalarView::BinderSubstitution => found.is_scalar(),
-            ComprehensionScalarView::RowMajorProjection => found.dimensions() == extents,
+            // Row-major ownership is by scalar ordinal. Preserve the value's
+            // tensor rank (including singleton axes) while proving that every
+            // domain point owns exactly one scalar and no scalar is omitted.
+            ComprehensionScalarView::RowMajorProjection => {
+                found.scalar_count() == Some(domain_scalar_count)
+            }
             ComprehensionScalarView::BinderPrefixProjection { binder_count } => {
                 extents.get(usize::try_from(binder_count).unwrap_or(usize::MAX)..)
                     == Some(found.dimensions())

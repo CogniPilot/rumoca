@@ -572,6 +572,53 @@ fn structured_families_derive_rows_and_preserve_multidimensional_domains() {
 }
 
 #[test]
+fn row_major_family_preserves_singleton_axes_with_equal_scalar_cardinality() {
+    let source = TestSource::new("Real y[3]; equation [y] = [1; 2; 3];");
+    let owner = source.source("[y] = [1; 2; 3]", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let domain = dae.domains(|domains| {
+            domains.structured(
+                StructuredIndexDomain {
+                    binders: vec![StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 3,
+                        step: 1,
+                    }],
+                },
+                owner,
+            )
+        })?;
+        let matrix = dae.expressions(|expressions| {
+            let zero = expressions.at(owner).literal(DaeLiteral::Real(0.0))?;
+            let cell = expressions.at(owner).array([zero])?;
+            expressions.at(owner).array([cell, cell, cell])
+        })?;
+        dae.continuous(|continuous| {
+            continuous.structured_family(
+                owner,
+                domain,
+                rumoca_core::ComprehensionScalarView::RowMajorProjection,
+                |family| family.body(matrix),
+            )?;
+            Ok(())
+        })
+    })
+    .expect("row-major ownership is by checked scalar ordinal, not identical rank");
+
+    dae.inspect(|view| {
+        let family = view.continuous_family(0).unwrap();
+        assert_eq!(family.scalar_rows(), 3);
+        let body = family.bodies().iter().next().unwrap();
+        assert_eq!(
+            view.expression(body).unwrap().value_type().dimensions(),
+            &[3, 1]
+        );
+    });
+}
+
+#[test]
 fn binder_prefix_projection_compacts_nested_array_families() {
     let source = TestSource::new("for i in 1:2 loop r[:] = a[i,:]; end for;");
     let owner = source.source("for i in 1:2 loop r[:] = a[i,:]; end for", 0);
@@ -1846,6 +1893,8 @@ fn construct_structured_b1c_dae() -> (Dae, DaeProvenance) {
             let no = expressions
                 .at(assignment)
                 .literal(DaeLiteral::Boolean(false))?;
+            let yes = expressions.at(assignment).array([yes])?;
+            let no = expressions.at(assignment).array([no])?;
             expressions.at(assignment).array([yes, no])
         })?;
         dae.b1c([target], |topology| {
