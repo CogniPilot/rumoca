@@ -451,10 +451,10 @@ fn frozen_me_positive_dt_state_event_keeps_located_nonstate_lanes() {
 
 /// A coincident periodic tick and located root form one ordered superdense
 /// transition. The clock owner executes at the semantic tick; the frozen
-/// Diffsol profile then advances the post-clock state to its numerical
-/// right-limit and settles only unowned root rows there.
+/// Diffsol profile accepts the numerical right-limit coordinate without
+/// physically integrating the exact post-clock state to that probe.
 #[test]
-fn frozen_coincident_clock_root_returns_the_post_clock_right_limit_state() {
+fn frozen_coincident_clock_root_preserves_the_exact_post_clock_state() {
     const ROOT_TIME: f64 = 0.05;
     const HORIZON: f64 = 0.1;
 
@@ -495,11 +495,10 @@ fn frozen_coincident_clock_root_returns_the_post_clock_right_limit_state() {
         .expect("coincident clock/root transition should settle");
 
     assert_eq!(event.time.to_bits(), right_time.to_bits());
-    let expected_state = right_time - ROOT_TIME;
     assert_eq!(
         event.states[0].to_bits(),
-        expected_state.to_bits(),
-        "post-reinit state must use the located root's exact right-limit step"
+        0.0_f64.to_bits(),
+        "the right-limit ordering coordinate must not Euler-advance the post-reinit state"
     );
 }
 

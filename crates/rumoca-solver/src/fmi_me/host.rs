@@ -12,7 +12,10 @@ use super::{
     MeInstanceConfig, MeModelSource, MeObservation, MeStage, MeTime, ModelExchangeKernel,
     SolveMeKernel,
 };
-use crate::{SimTermination, time_match_with_tol, timeline::sample_time_match_with_tol};
+use crate::{
+    SimTermination, time_match_with_tol,
+    timeline::{event_right_probe_time, sample_time_match_with_tol},
+};
 
 type SharedMeKernel = Rc<RefCell<SolveMeKernel>>;
 type SharedCallbackError = Rc<RefCell<Option<MeError>>>;
@@ -46,6 +49,7 @@ pub struct MeRuntimeHost {
     kernel: SharedMeKernel,
     callback_error: SharedCallbackError,
     start_time: f64,
+    event_probe_tolerance: f64,
     next_event_time: Rc<RefCell<Option<f64>>>,
 }
 
@@ -59,6 +63,7 @@ impl MeRuntimeHost {
             kernel: Rc::new(RefCell::new(kernel)),
             callback_error: Rc::new(RefCell::new(None)),
             start_time: config.start_time,
+            event_probe_tolerance: config.tolerance,
             next_event_time: Rc::new(RefCell::new(None)),
         })
     }
@@ -348,14 +353,15 @@ impl MeRuntimeHost {
         kernel.set_time(MeTime::at(root_time))?;
         kernel.set_continuous_states(root_states)?;
         let derivatives = kernel.frozen_event_state_derivatives(root_time, root_states)?;
+        let probe_time = event_right_probe_time(root_time, self.event_probe_tolerance);
         let (pre_states, right_states) =
-            bracket_root_states(root_states, &derivatives, root_time, right_time);
+            bracket_root_states(root_states, &derivatives, root_time, probe_time);
         kernel.capture_frozen_located_event_pre(&pre_states)?;
         kernel.set_continuous_states(&pre_states)?;
         let mut before = Vec::new();
         kernel.get_event_indicators(&mut before)?;
 
-        kernel.set_time(MeTime::at(right_time))?;
+        kernel.set_time(MeTime::at(probe_time))?;
         kernel.set_continuous_states(&right_states)?;
         let mut after = Vec::new();
         kernel.get_event_indicators(&mut after)?;
@@ -462,8 +468,11 @@ fn advance_post_event_state(
     event_time: f64,
     continuation_time: f64,
 ) -> Result<(), MeError> {
-    if continuation_time <= event_time || sample_time_match_with_tol(event_time, continuation_time)
-    {
+    if continuation_time <= event_time {
+        return Ok(());
+    }
+    if sample_time_match_with_tol(event_time, continuation_time) {
+        kernel.set_time(MeTime::at(continuation_time))?;
         return Ok(());
     }
     let state_count = kernel.model_description().continuous_state_count;
