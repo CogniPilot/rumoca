@@ -38,8 +38,10 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
         ],
         "projection_implicit.mo",
     ));
-    model.problem.continuous.implicit_row_targets =
-        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+    // The BLT pairing is the owner for this singleton. The general
+    // implicit-row target table intentionally has no entry for `a`, matching
+    // connection/flow rows whose structural owner is the projection block.
+    model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0)), None];
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
         blocks: vec![solve::AlgebraicProjectionBlock {
             rows: vec![1],
@@ -108,6 +110,52 @@ fn state_jacobian_includes_projection_forward_sensitivity() {
         "expected total state Jacobian {k}, got {} (projection sensitivity missing?)",
         out[0]
     );
+}
+
+#[test]
+fn exact_dependency_owner_keeps_primal_and_jvp_consistent_below_projection_tolerance() {
+    let k = 2.0;
+    let runtime = SolveRuntime::new(&projection_coupled_state_model(k))
+        .expect("valid runtime should prepare");
+    assert!(runtime.derivative_refresh.causal_solution_certified);
+    assert!(
+        runtime
+            .derivative_refresh
+            .value_projection_plan
+            .blocks
+            .is_empty()
+    );
+
+    let x = 3.0;
+    let step = 1.0e-7;
+    let tolerance = 1.0e-6;
+    let base = runtime
+        .eval_state_derivatives(0.0, &[x], &[], tolerance, 8)
+        .expect("base primal should evaluate");
+    let perturbed = runtime
+        .eval_state_derivatives(0.0, &[x + step], &[], tolerance, 8)
+        .expect("perturbed primal should evaluate");
+    let finite_difference = (perturbed[0] - base[0]) / step;
+
+    let mut jvp = [0.0];
+    runtime
+        .eval_state_jacobian_v_ad_into(
+            AlgebraicLinearization {
+                t: 0.0,
+                params: &[],
+                settle: AlgebraicSettle {
+                    tol: tolerance,
+                    max_iters: 8,
+                },
+            },
+            &[x],
+            &[1.0],
+            &mut jvp,
+        )
+        .expect("exact projection-owner JVP should evaluate");
+
+    assert!((finite_difference - k).abs() <= 1.0e-8);
+    assert!((jvp[0] - finite_difference).abs() <= 1.0e-8);
 }
 
 fn parameter_projection_residual() -> solve::ComputeBlock {

@@ -206,3 +206,45 @@ fn affine_shape_isolates_a_coordinate_from_negated_zero_sum() {
 
     assert_eq!(value, Some(-4.0));
 }
+
+#[test]
+fn affine_residual_shape_isolates_nested_connection_difference() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 3 },
+        LinearOp::LoadY { dst: 1, index: 4 },
+        LinearOp::LoadY { dst: 2, index: 6 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Sub,
+            lhs: 1,
+            rhs: 2,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(
+        vec![row],
+        fixture_span()
+            .require_provenance("nested connection-difference fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("scalar fixture is computable");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("affine row should prepare");
+    let mut y = [0.0; 7];
+    y[3] = 1.0;
+    y[4] = 99.0;
+    y[6] = 2.0;
+
+    assert!(!prepared.certifies_direct_target_assignment(0, 4));
+    assert!(prepared.certifies_exact_target_assignment(0, 4));
+    let value = prepared
+        .eval_target_assignment_row_with_context(0, 4, &y, &[], 0.0, RowEvalContext::default())
+        .expect("nested connection difference is exactly isolatable");
+
+    assert_eq!(value, Some(3.0));
+}

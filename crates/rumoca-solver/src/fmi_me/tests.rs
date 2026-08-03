@@ -8,7 +8,8 @@
 use rumoca_ir_solve as solve;
 
 use super::kernel::{
-    event_right_limit_state_derivatives, event_update_application_time, frozen_projection_changed,
+    continuous_state_values_changed, event_right_limit_state_derivatives,
+    event_update_application_time, frozen_projection_changed,
 };
 use super::{
     MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig, MeModelSource,
@@ -425,6 +426,85 @@ fn strict_root_relation_memory() -> solve::SolveModel {
     }
 }
 
+fn post_pre_relation_cycle() -> solve::SolveModel {
+    let derivative = block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_post_pre_relation_cycle_derivative.mo",
+    );
+    let runtime_assignment = block(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 0.5 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 1.0 },
+            solve::LinearOp::Const {
+                dst: 4,
+                value: -1.0,
+            },
+            solve::LinearOp::Select {
+                dst: 5,
+                cond: 2,
+                if_true: 3,
+                if_false: 4,
+            },
+            solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        "fmi_me_post_pre_relation_cycle_assignment.mo",
+    );
+    let root = block(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_post_pre_relation_cycle_root.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                runtime_assignment_rhs: runtime_assignment,
+                runtime_assignment_targets: vec![solve::scalar_slot_p(1)],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: root,
+                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                root_zero_domains: vec![solve::RootZeroDomain::Previous],
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["state".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                compiled_parameter_len: 2,
+                relation_memory_parameter_indices: vec![0],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![0.0, 0.0],
+        visible_names: vec!["state".to_string()],
+        ..Default::default()
+    }
+}
+
 fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarProgramBlock {
     let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 1, 2);
     solve::ScalarProgramBlock::with_source_span(
@@ -503,12 +583,23 @@ fn discrete_update_reports_the_complete_fmi_output_set() {
 
     assert!(!discrete.discrete_states_need_update);
     assert!(discrete.terminate_simulation.is_none());
-    assert!(discrete.values_of_continuous_states_changed);
+    assert!(
+        !discrete.values_of_continuous_states_changed,
+        "an event-free initial update must report that its state vector is unchanged"
+    );
     assert!(!discrete.nominals_of_continuous_states_changed);
     assert_eq!(
         discrete.next_event_time.map(f64::to_bits),
         Some(0.5f64.to_bits())
     );
+}
+
+#[test]
+fn continuous_state_change_flag_uses_the_exact_fmi_state_vector() {
+    assert!(!continuous_state_values_changed(&[1.0, -2.0], &[1.0, -2.0]));
+    assert!(continuous_state_values_changed(&[1.0, -2.0], &[1.0, -3.0]));
+    assert!(continuous_state_values_changed(&[0.0], &[-0.0]));
+    assert!(continuous_state_values_changed(&[1.0], &[1.0, 2.0]));
 }
 
 #[test]
@@ -564,6 +655,10 @@ fn fmu_state_restore_replays_the_same_scheduled_event_continuation() {
     let saved = kernel.fmu_state();
 
     let first = continue_from_scheduled_event(&mut kernel);
+    assert!(
+        !first.2,
+        "a scheduled event with no state update must preserve the exact state vector"
+    );
     kernel
         .terminate()
         .expect("terminate after first continuation");
@@ -578,7 +673,7 @@ fn fmu_state_restore_replays_the_same_scheduled_event_continuation() {
     assert_eq!(first, second);
 }
 
-fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u64>) {
+fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u64>, bool) {
     kernel
         .set_time(MeTime::at(0.5))
         .expect("reach scheduled event");
@@ -592,7 +687,7 @@ fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u
             horizon: 0.75,
         })
         .expect("enter scheduled event");
-    kernel
+    let discrete = kernel
         .update_discrete_states()
         .expect("apply scheduled event");
     kernel
@@ -609,6 +704,7 @@ fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u
     (
         states.into_iter().map(f64::to_bits).collect(),
         derivatives.into_iter().map(f64::to_bits).collect(),
+        discrete.values_of_continuous_states_changed,
     )
 }
 
@@ -765,6 +861,11 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
         vec![1.0f64.to_bits()],
         "the exact-root comparison is false, but the typed crossing owns the post-root value"
     );
+    assert_eq!(
+        kernel.verification_frozen_root_override_count(),
+        0,
+        "the typed post-side override belongs to exactly one event boundary"
+    );
     kernel
         .enter_continuous_time_mode()
         .expect("the settled strict-root event should resume integration");
@@ -774,6 +875,28 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
     kernel
         .verify_frozen_compatibility_state(&[0.0], &[1.0], MeStage::EventIteration)
         .expect("the reset seam should observe the same typed post-root relation memory");
+}
+
+#[test]
+fn post_pre_canonicalization_refreshes_relation_memory_once_then_holds_it() {
+    let model = post_pre_relation_cycle();
+    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let mut solver_y = model.initial_y.clone();
+
+    kernel
+        .verification_canonicalize_committed_event_view(0.0, &mut solver_y)
+        .expect("derived settling must not start a second relation-memory event iteration");
+
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![1.0f64.to_bits(), 1.0f64.to_bits()],
+        "the one relation refresh selects the negative-root side"
+    );
+    assert_eq!(
+        solver_y,
+        vec![0.0],
+        "derived settling observes the selected side without feeding back into relation memory"
+    );
 }
 
 #[test]

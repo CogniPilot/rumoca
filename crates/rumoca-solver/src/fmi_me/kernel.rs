@@ -121,6 +121,7 @@ pub struct SolveMeKernel {
     skip_next_enter_continuous_delay_commit: bool,
 
     pending_root_crossings: Vec<RootCrossing>,
+    frozen_event_root_crossings: Vec<RootCrossing>,
     pending_event_pre_y: Option<Vec<f64>>,
     pending_event_pre_p: Option<Vec<f64>>,
     boundary_event_pre_y: Option<Vec<f64>>,
@@ -167,6 +168,7 @@ pub(crate) struct MeKernelSnapshot {
     initial_event_pending: bool,
     skip_next_enter_continuous_delay_commit: bool,
     pending_root_crossings: Vec<RootCrossing>,
+    frozen_event_root_crossings: Vec<RootCrossing>,
     pending_event_pre_y: Option<Vec<f64>>,
     pending_event_pre_p: Option<Vec<f64>>,
     boundary_event_pre_y: Option<Vec<f64>>,
@@ -196,6 +198,20 @@ impl SolveMeKernel {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn verification_frozen_root_override_count(&self) -> usize {
+        self.frozen_event_root_crossings.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_canonicalize_committed_event_view(
+        &mut self,
+        event_time: f64,
+        solver_y: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.canonicalize_committed_event_view(event_time, solver_y, &[])
+    }
+
     #[cfg(any(test, kani))]
     pub(crate) fn verification_matches_snapshot(&self, saved: &MeFmuState) -> bool {
         if !Rc::ptr_eq(&saved.instance_brand, &self.instance_brand) {
@@ -220,6 +236,10 @@ impl SolveMeKernel {
             && self.skip_next_enter_continuous_delay_commit
                 == state.skip_next_enter_continuous_delay_commit
             && root_crossings_bit_eq(&self.pending_root_crossings, &state.pending_root_crossings)
+            && root_crossings_bit_eq(
+                &self.frozen_event_root_crossings,
+                &state.frozen_event_root_crossings,
+            )
             && option_float_vec_bit_eq(&self.pending_event_pre_y, &state.pending_event_pre_y)
             && option_float_vec_bit_eq(&self.pending_event_pre_p, &state.pending_event_pre_p)
             && option_float_vec_bit_eq(&self.boundary_event_pre_y, &state.boundary_event_pre_y)
@@ -432,6 +452,7 @@ impl SolveMeKernel {
             initial_event_pending: false,
             skip_next_enter_continuous_delay_commit: false,
             pending_root_crossings: Vec::new(),
+            frozen_event_root_crossings: Vec::new(),
             pending_event_pre_y: None,
             pending_event_pre_p: None,
             boundary_event_pre_y: None,
@@ -957,9 +978,9 @@ impl SolveMeKernel {
                 solver_y
             }
         };
-        let pending_root_overrides = self
-            .pending_root_crossings
-            .drain(..)
+        let pending_root_crossings = self.pending_root_crossings.drain(..).collect::<Vec<_>>();
+        let pending_root_overrides = pending_root_crossings
+            .iter()
             .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
             .collect::<Vec<_>>();
         let has_typed_root_override = pending_root_overrides.iter().any(|(index, _)| {
@@ -980,6 +1001,25 @@ impl SolveMeKernel {
             }
             MeNumericsProfile::DiffsolFrozen => &[],
         };
+        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
+            let typed_crossings = pending_root_crossings
+                .into_iter()
+                .filter(|crossing| {
+                    matches!(
+                        self.runtime
+                            .model
+                            .problem
+                            .events
+                            .root_relation_memory_targets
+                            .get(crossing.index),
+                        Some(Some(_))
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !typed_crossings.is_empty() {
+                self.frozen_event_root_crossings = typed_crossings;
+            }
+        }
         let runtime = Rc::clone(&self.runtime);
         let projection_runtime = Rc::clone(&runtime);
         let settle_projection_runtime = Rc::clone(&runtime);
@@ -1019,17 +1059,21 @@ impl SolveMeKernel {
                 },
             )?;
         }
-        self.copy_states_from_solver_y(&solver_y);
-        *self.solver_y_guess.borrow_mut() = solver_y;
         if matches!(self.numerics_profile, MeNumericsProfile::Component) {
-            let post_event_y = self.current_solver_y()?;
-            commit_pre_params_after_event_at(
+            let history_changed = commit_pre_params_after_event_at(
                 &self.runtime.model,
-                &post_event_y,
+                &solver_y,
                 &mut self.params,
                 Some(event_time),
                 self.tolerance,
             );
+            if history_changed {
+                self.canonicalize_committed_event_view(event_time, &mut solver_y, root_overrides)?;
+            }
+        }
+        self.copy_states_from_solver_y(&solver_y);
+        *self.solver_y_guess.borrow_mut() = solver_y;
+        if matches!(self.numerics_profile, MeNumericsProfile::Component) {
             self.commit_delay_point()?;
         }
         self.record_event_action_outcome(outcome, event_time)?;
@@ -1042,19 +1086,84 @@ impl SolveMeKernel {
             return Ok(());
         }
         let post_event_y = self.current_solver_y()?;
-        commit_pre_params_after_event_at(
+        let root_overrides = std::mem::take(&mut self.frozen_event_root_crossings)
+            .into_iter()
+            .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
+            .collect::<Vec<_>>();
+        let history_changed = commit_pre_params_after_event_at(
             &self.runtime.model,
             &post_event_y,
             &mut self.params,
             Some(event_time),
             self.tolerance,
         );
+        if history_changed {
+            let mut canonical_y = post_event_y;
+            self.canonicalize_committed_event_view(event_time, &mut canonical_y, &root_overrides)?;
+        }
         self.commit_delay_point()?;
         if let Some(accepted_seed) = self.frozen_event_accepted_seed.take() {
             *self.solver_y_guess.borrow_mut() = accepted_seed;
         }
         self.skip_next_enter_continuous_delay_commit = true;
         Ok(())
+    }
+
+    /// Reconstruct the canonical post-event view after `pre` history advances.
+    ///
+    /// This deliberately settles runtime assignments, algebraic projection,
+    /// and typed root relation memory. Discrete event rows are not replayed:
+    /// they already completed their one Appendix-B event iteration.
+    fn canonicalize_committed_event_view(
+        &mut self,
+        event_time: f64,
+        solver_y: &mut [f64],
+        root_relation_overrides: &[(usize, f64)],
+    ) -> Result<(), MeError> {
+        let runtime = Rc::clone(&self.runtime);
+        let policy = self.algebraic_projection_policy();
+        // The event iteration already selected the post-event relation sides,
+        // including at boundaries without a located-root override. Refresh
+        // relation memory exactly once while retaining any typed selections,
+        // then keep it fixed while derived values settle. Re-evaluating it in
+        // this loop would invent a new event iteration from exact-root numerics
+        // after `pre` was committed.
+        runtime.apply_runtime_assignments_until_stable(
+            solver_y,
+            &mut self.params,
+            event_time,
+            policy.settle.tol,
+            policy.settle.max_iters,
+        )?;
+        project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
+        runtime.update_relation_memory_from_solver_y_except_overrides(
+            event_time,
+            solver_y,
+            &mut self.params,
+            policy.settle.tol,
+            root_relation_overrides,
+        )?;
+        project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
+        for _ in 0..policy.settle.max_iters {
+            let before_y = solver_y.to_vec();
+            let before_p = self.params.clone();
+            runtime.apply_runtime_assignments_until_stable(
+                solver_y,
+                &mut self.params,
+                event_time,
+                policy.settle.tol,
+                policy.settle.max_iters,
+            )?;
+            project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
+            if !runtime_values_changed(&before_y, solver_y, policy.settle.tol)
+                && !runtime_values_changed(&before_p, &self.params, policy.settle.tol)
+            {
+                return Ok(());
+            }
+        }
+        Err(contract(format!(
+            "post-commit derived event view did not converge at t={event_time}"
+        )))
     }
 
     fn complete_coincident_root_right_limit(
@@ -1195,6 +1304,7 @@ impl SolveMeKernel {
     }
 
     fn run_initial_event_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
+        let continuous_states_before = self.states.clone();
         let event_time = self.time;
         let mut solver_y = self
             .settled_initialization_y
@@ -1252,13 +1362,17 @@ impl SolveMeKernel {
         let right_limit = (outcome.final_t > event_time).then_some(outcome.final_t);
         self.time = event_time;
         self.set_post_event_eval_time(right_limit);
-        self.discrete_states_after_update(true)
+        self.discrete_states_after_update(continuous_state_values_changed(
+            &continuous_states_before,
+            &self.states,
+        ))
     }
 
     fn run_runtime_event_boundary(
         &mut self,
         entry: MeEventEntry,
     ) -> Result<MeDiscreteStates, MeError> {
+        let continuous_states_before = self.states.clone();
         let tolerance = self.tolerance.max(1.0e-10);
         match entry.cause {
             MeEventCause::StateEvent => {
@@ -1317,7 +1431,10 @@ impl SolveMeKernel {
                     self.clear_runtime_caches();
                 }
                 self.state_time_coincidence = StateTimeCoincidence::None;
-                self.discrete_states_after_update(true)
+                self.discrete_states_after_update(continuous_state_values_changed(
+                    &continuous_states_before,
+                    &self.states,
+                ))
             }
             MeEventCause::TimeEvent => {
                 self.advance_state_to_event_right_limit = true;
@@ -1340,7 +1457,10 @@ impl SolveMeKernel {
                 self.set_post_event_eval_time(outcome.right_limit_t);
                 self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
                 self.clear_runtime_caches();
-                self.discrete_states_after_update(true)
+                self.discrete_states_after_update(continuous_state_values_changed(
+                    &continuous_states_before,
+                    &self.states,
+                ))
             }
         }
     }
@@ -2012,6 +2132,7 @@ impl ModelExchangeKernel for SolveMeKernel {
                 skip_next_enter_continuous_delay_commit: self
                     .skip_next_enter_continuous_delay_commit,
                 pending_root_crossings: self.pending_root_crossings.clone(),
+                frozen_event_root_crossings: self.frozen_event_root_crossings.clone(),
                 pending_event_pre_y: self.pending_event_pre_y.clone(),
                 pending_event_pre_p: self.pending_event_pre_p.clone(),
                 boundary_event_pre_y: self.boundary_event_pre_y.clone(),
@@ -2058,6 +2179,8 @@ impl ModelExchangeKernel for SolveMeKernel {
             state.skip_next_enter_continuous_delay_commit;
         self.pending_root_crossings
             .clone_from(&state.pending_root_crossings);
+        self.frozen_event_root_crossings
+            .clone_from(&state.frozen_event_root_crossings);
         self.pending_event_pre_y
             .clone_from(&state.pending_event_pre_y);
         self.pending_event_pre_p
@@ -2141,13 +2264,16 @@ impl ModelExchangeKernel for SolveMeKernel {
     }
 }
 
-#[cfg(any(test, kani))]
 fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
     left.len() == right.len()
         && left
             .iter()
             .zip(right)
             .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
+pub(super) fn continuous_state_values_changed(before: &[f64], after: &[f64]) -> bool {
+    !float_slice_bit_eq(before, after)
 }
 
 #[cfg(any(test, kani))]

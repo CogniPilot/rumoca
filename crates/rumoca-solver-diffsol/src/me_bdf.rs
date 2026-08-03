@@ -10,7 +10,7 @@ use diffsol::{
 };
 use rumoca_solver::{
     SimOptions, SimResult, TimeoutBudget,
-    fmi_me::{MeModelSource, MeRuntimeHost, MeRuntimeOutput},
+    fmi_me::{MeEventCause, MeModelSource, MeRuntimeHost, MeRuntimeOutput},
     runtime_root_event_application_time,
     timeline::{sample_time_match_with_tol, try_build_output_times},
 };
@@ -130,7 +130,7 @@ where
     Eqn: StateOdeEquations + 'a,
     S: OdeSolverMethod<'a, Eqn>,
 {
-    let tolerance = opts.atol.max(1.0e-10);
+    let state_tolerance = opts.atol.max(1.0e-10);
     for _ in 0..MAX_STEPS_PER_OUTPUT {
         budget
             .check()
@@ -154,7 +154,14 @@ where
             if let Some(observation) = event.observation {
                 trace.record(observation)?;
             }
-            reset_after_event(host, solver, event.time, &event.states)?;
+            resume_after_event(
+                host,
+                solver,
+                event.time,
+                &event.states,
+                event.entry.cause,
+                event.values_of_continuous_states_changed,
+            )?;
             continue;
         }
         if let Some(root) = pending_root.take() {
@@ -162,12 +169,12 @@ where
                 *pending_root = Some(root);
                 return interpolate_deferred_sample(solver, target).map(Some);
             }
-            process_root_event(host, solver, trace, root, target, tolerance)?;
+            process_root_event(host, solver, trace, root, target, state_tolerance)?;
             continue;
         }
         let requested = host.next_event_stop(opts.t_end)?;
         let current = solver.state().t;
-        if requested.is_event && time_reached_with_tolerance(current, requested.time, tolerance) {
+        if requested.is_event && integration_time_reached(current, requested.time) {
             if event_time_is_beyond_horizon(requested.time, target) {
                 return interpolate_deferred_sample(solver, target).map(Some);
             }
@@ -182,7 +189,14 @@ where
             if let Some(observation) = event.observation {
                 trace.record(observation)?;
             }
-            reset_after_event(host, solver, event.time, &event.states)?;
+            resume_after_event(
+                host,
+                solver,
+                event.time,
+                &event.states,
+                event.entry.cause,
+                event.values_of_continuous_states_changed,
+            )?;
             continue;
         }
         if current >= target || sample_time_match_with_tol(current, target) {
@@ -192,15 +206,15 @@ where
         set_stop_time(solver, stop_time)?;
         match solver_call("BDF step", || solver.step())? {
             OdeSolverStopReason::InternalTimestep => {
-                let sample = sample_crossed_output(solver, target, tolerance)?;
-                accept_step(host, solver, tolerance)?;
+                let sample = sample_crossed_output(solver, target)?;
+                accept_step(host, solver, state_tolerance)?;
                 if sample.is_some() {
                     return Ok(sample);
                 }
             }
             OdeSolverStopReason::TstopReached => {
-                let sample = sample_crossed_output(solver, target, tolerance)?;
-                accept_step(host, solver, tolerance)?;
+                let sample = sample_crossed_output(solver, target)?;
+                accept_step(host, solver, state_tolerance)?;
                 if requested.is_event {
                     *pending_time_event = Some(requested.time);
                     if sample.is_some() {
@@ -238,7 +252,7 @@ where
                     *pending_root = Some(root);
                     return Ok(Some(sample));
                 }
-                process_root_event(host, solver, trace, root, target, tolerance)?;
+                process_root_event(host, solver, trace, root, target, state_tolerance)?;
             }
         }
     }
@@ -250,14 +264,13 @@ where
 fn sample_crossed_output<'a, Eqn, S>(
     solver: &mut S,
     target: f64,
-    tolerance: f64,
 ) -> Result<Option<Vec<f64>>, SimError>
 where
     Eqn: StateOdeEquations + 'a,
     S: OdeSolverMethod<'a, Eqn>,
 {
     let reached = solver.state().t;
-    if reached <= target || time_reached_with_tolerance(reached, target, tolerance) {
+    if reached <= target || integration_time_reached(reached, target) {
         return Ok(None);
     }
     interpolate_deferred_sample(solver, target).map(Some)
@@ -314,11 +327,47 @@ where
     if let Some(observation) = event.observation {
         trace.record(observation)?;
     }
-    reset_after_event(host, solver, event.time, &event.states)
+    resume_after_event(
+        host,
+        solver,
+        event.time,
+        &event.states,
+        event.entry.cause,
+        event.values_of_continuous_states_changed,
+    )
 }
 
-fn time_reached_with_tolerance(current: f64, target: f64, tolerance: f64) -> bool {
-    (current - target).abs() <= tolerance * (1.0 + current.abs().max(target.abs()))
+fn resume_after_event<'a, Eqn, S>(
+    host: &MeRuntimeHost,
+    solver: &mut S,
+    event_time: f64,
+    states: &[f64],
+    cause: MeEventCause,
+    values_of_continuous_states_changed: bool,
+) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    // A located state event invalidates the step that bracketed the root even
+    // when the component did not reinitialize a continuous state. A pure time
+    // event with unchanged states can retain the BDF history; the component's
+    // FMI result is the owner of that distinction.
+    if event_requires_integrator_restart(cause, values_of_continuous_states_changed) {
+        return reset_after_event(host, solver, event_time, states);
+    }
+    clear_stop_time_after_reset(solver, event_time)
+}
+
+fn event_requires_integrator_restart(
+    cause: MeEventCause,
+    values_of_continuous_states_changed: bool,
+) -> bool {
+    values_of_continuous_states_changed || matches!(cause, MeEventCause::StateEvent)
+}
+
+fn integration_time_reached(current: f64, target: f64) -> bool {
+    sample_time_match_with_tol(current, target)
 }
 
 fn event_time_is_beyond_horizon(event_time: f64, horizon: f64) -> bool {
@@ -510,7 +559,21 @@ fn empty_terminated_result(
 
 #[cfg(test)]
 mod tests {
-    use super::event_time_is_beyond_horizon;
+    use super::{
+        event_requires_integrator_restart, event_time_is_beyond_horizon, integration_time_reached,
+    };
+    use rumoca_solver::fmi_me::MeEventCause;
+
+    #[test]
+    fn integration_time_reach_is_independent_of_state_error_tolerance() {
+        let current = 0.0;
+        let deadline = 1.0e-9;
+        let state_absolute_tolerance = 1.0e-6;
+
+        assert!((deadline - current) < state_absolute_tolerance);
+        assert!(!integration_time_reached(current, deadline));
+        assert!(integration_time_reached(deadline, deadline));
+    }
 
     #[test]
     fn event_times_beyond_the_output_horizon_are_not_value_tolerance_matches() {
@@ -522,5 +585,21 @@ mod tests {
         ] {
             assert!(event_time_is_beyond_horizon(event_time, horizon));
         }
+    }
+
+    #[test]
+    fn only_unchanged_time_events_preserve_integrator_history() {
+        assert!(!event_requires_integrator_restart(
+            MeEventCause::TimeEvent,
+            false
+        ));
+        assert!(event_requires_integrator_restart(
+            MeEventCause::TimeEvent,
+            true
+        ));
+        assert!(event_requires_integrator_restart(
+            MeEventCause::StateEvent,
+            false
+        ));
     }
 }

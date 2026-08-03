@@ -22,8 +22,8 @@ use crate::runtime::solve_events::{
 use crate::{
     EventActionOutcome, ImplicitProjectionModel, ManifoldProjectionModel, RuntimeEventStop,
     RuntimeSolveError, SolveStopSchedule, project_algebraic_seed_with_plan,
-    project_algebraics_with_plan, push_visible_values, replace_last_visible_values,
-    timeline::sample_time_match_with_tol, update_relation_memory_slots,
+    project_algebraics_with_plan, push_visible_values, relation_memory_value_from_root,
+    replace_last_visible_values, timeline::sample_time_match_with_tol,
 };
 use rumoca_eval_solve::refresh_plan::{
     AlgebraicRefreshRow, RefreshPlan, build_algebraic_refresh_plan, build_derivative_refresh_plan,
@@ -202,13 +202,8 @@ impl SolveRuntime {
         let (manifold_residual, manifold_jacobian_v) = prepare_manifold_projection_programs(model)?;
         let derivative_scalar_rhs =
             to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
-        let algebraic_refresh = build_algebraic_refresh_plan(model, &implicit_scalar_rhs)?;
-        let derivative_refresh =
-            build_derivative_refresh_plan(model, &derivative_scalar_rhs, &algebraic_refresh)?;
-        let root_refresh = build_root_refresh_plan(model, &algebraic_refresh)?;
-        trace_refresh_plan(model, "algebraic", &algebraic_refresh);
-        trace_refresh_plan(model, "derivative", &derivative_refresh);
-        trace_refresh_plan(model, "root", &root_refresh);
+        let (algebraic_refresh, derivative_refresh, root_refresh) =
+            build_runtime_refresh_plans(model, &implicit_scalar_rhs, &derivative_scalar_rhs)?;
         trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
@@ -1228,20 +1223,37 @@ impl SolveRuntime {
         tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        let relation_memory_indices = &self
+        self.update_relation_memory_from_state_except_overrides(
+            t,
+            state,
+            params,
+            tol,
+            max_iters,
+            &[],
+        )
+    }
+
+    pub(crate) fn update_relation_memory_from_state_except_overrides(
+        &self,
+        t: f64,
+        state: &[f64],
+        params: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        root_relation_overrides: &[(usize, f64)],
+    ) -> Result<bool, RuntimeSolveError> {
+        if self
             .model
             .problem
-            .solve_layout
-            .relation_memory_parameter_indices;
-        if relation_memory_indices.is_empty() {
+            .events
+            .root_relation_memory_targets
+            .iter()
+            .all(Option::is_none)
+        {
             return Ok(false);
         }
         let roots = self.eval_root_conditions(t, state, params, tol, max_iters)?;
-        Ok(update_relation_memory_slots(
-            &roots,
-            params,
-            relation_memory_indices,
-        ))
+        self.update_root_relation_memory_from_values(&roots, params, root_relation_overrides)
     }
 
     pub fn eval_dynamic_time_event_rows(
@@ -1636,7 +1648,7 @@ impl SolveRuntime {
         self.update_relation_memory_from_solver_y_except_overrides(t, y, p, tol, &[])
     }
 
-    fn update_relation_memory_from_solver_y_except_overrides(
+    pub(crate) fn update_relation_memory_from_solver_y_except_overrides(
         &self,
         t: f64,
         y: &[f64],
@@ -1644,31 +1656,60 @@ impl SolveRuntime {
         _tol: f64,
         root_relation_overrides: &[(usize, f64)],
     ) -> Result<bool, RuntimeSolveError> {
-        let relation_memory_indices = &self
+        if self
             .model
             .problem
-            .solve_layout
-            .relation_memory_parameter_indices;
-        if relation_memory_indices.is_empty() {
+            .events
+            .root_relation_memory_targets
+            .iter()
+            .all(Option::is_none)
+        {
             return Ok(false);
         }
         let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
+        self.update_root_relation_memory_from_values(&roots, p, root_relation_overrides)
+    }
+
+    fn update_root_relation_memory_from_values(
+        &self,
+        roots: &[f64],
+        p: &mut [f64],
+        root_relation_overrides: &[(usize, f64)],
+    ) -> Result<bool, RuntimeSolveError> {
         let mut changed = false;
-        for (root_index, (root, parameter_index)) in
-            roots.iter().zip(relation_memory_indices).enumerate()
+        for (root_index, (root, target)) in roots
+            .iter()
+            .zip(&self.model.problem.events.root_relation_memory_targets)
+            .enumerate()
         {
+            let Some(target) = *target else {
+                continue;
+            };
+            let solve::ScalarSlot::P {
+                index: parameter_index,
+                ..
+            } = target
+            else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "root relation-memory target {root_index} is not a parameter slot"
+                )));
+            };
             if self.relation_memory_root_is_overridden(
                 root_index,
-                *parameter_index,
+                parameter_index,
                 root_relation_overrides,
             ) {
                 continue;
             }
-            changed |= update_relation_memory_slots(
-                std::slice::from_ref(root),
-                p,
-                std::slice::from_ref(parameter_index),
-            );
+            let slot = p.get_mut(parameter_index).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "root relation-memory parameter index {parameter_index} is out of bounds"
+                ))
+            })?;
+            let value = relation_memory_value_from_root(*root);
+            let before = *slot;
+            changed |= before != value;
+            *slot = value;
         }
         Ok(changed)
     }
@@ -1983,6 +2024,20 @@ impl SolveRuntime {
         }
         Ok(())
     }
+}
+
+fn build_runtime_refresh_plans(
+    model: &solve::SolveModel,
+    implicit: &PreparedScalarProgramBlock,
+    derivative: &solve::ScalarProgramBlock,
+) -> Result<(RefreshPlan, RefreshPlan, RefreshPlan), EvalSolveError> {
+    let algebraic = build_algebraic_refresh_plan(model, implicit)?;
+    let derivative = build_derivative_refresh_plan(model, derivative, implicit, &algebraic)?;
+    let root = build_root_refresh_plan(model, implicit, &algebraic)?;
+    trace_refresh_plan(model, "algebraic", &algebraic);
+    trace_refresh_plan(model, "derivative", &derivative);
+    trace_refresh_plan(model, "root", &root);
+    Ok((algebraic, derivative, root))
 }
 
 fn fill_inactive_root_output(out: &mut [f64]) -> Result<(), RuntimeSolveError> {

@@ -1543,12 +1543,16 @@ fn print_resource_snapshot(phase: &str, config: &MslCiEnvironment, include_cpu: 
     }
     log_command_output("free -h", "free", ["-h"]);
     log_command_output("df -h", "df", ["-h", ".", "/tmp"]);
-    log_path_size("target/msl", &config.root.join("target/msl"));
-    log_path_size("msl_results", &config.results_dir);
+    // `df` is the bounded disk-capacity monitor. Recursively walking the large
+    // shared target trees here used to add minutes to otherwise focused gates.
+    eprintln!(
+        "target_msl_path={}",
+        config.root.join("target/msl").display()
+    );
+    eprintln!("msl_results_path={}", config.results_dir.display());
     if !concise {
         log_command_output("uptime", "uptime", std::iter::empty::<&str>());
         log_command_output("df -ih", "df", ["-ih", ".", "/tmp"]);
-        log_path_size("target", &config.root.join("target"));
         print_results_dir_summary("results-breakdown", &config.results_dir);
     }
     if !should_log_process_tables(config) {
@@ -1562,24 +1566,6 @@ fn print_resource_snapshot(phase: &str, config: &MslCiEnvironment, include_cpu: 
 
 fn should_log_process_tables(config: &MslCiEnvironment) -> bool {
     !config.github_actions
-}
-
-fn log_path_size(label: &str, path: &Path) {
-    if !path.exists() {
-        return;
-    }
-    let output = Command::new("du").arg("-sh").arg(path).output();
-    match output {
-        Ok(output) if output.status.success() => {
-            let summary = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !summary.is_empty() {
-                eprintln!("{label}: {summary} ({})", path.display());
-            }
-        }
-        Ok(_) | Err(_) => {
-            eprintln!("{label}: {}", path.display());
-        }
-    }
 }
 
 fn print_results_dir_summary(label: &str, results_dir: &Path) {
@@ -1596,7 +1582,15 @@ fn print_results_dir_summary(label: &str, results_dir: &Path) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        log_path_size("  entry", &path);
+        match entry.metadata() {
+            Ok(metadata) if metadata.is_file() => {
+                eprintln!("  file: {} bytes ({})", metadata.len(), path.display());
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                eprintln!("  dir: {}", path.display());
+            }
+            Ok(_) | Err(_) => eprintln!("  entry: {}", path.display()),
+        }
     }
 }
 

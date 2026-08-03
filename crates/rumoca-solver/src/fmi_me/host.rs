@@ -33,6 +33,8 @@ pub struct MeRuntimePostEventState {
     pub time: f64,
     pub states: Vec<f64>,
     pub entry: MeEventEntry,
+    /// FMI `valuesOfContinuousStatesChanged` from the settled event iteration.
+    pub values_of_continuous_states_changed: bool,
     pub observation: Option<MeRuntimeOutput>,
     pub termination: Option<SimTermination>,
 }
@@ -538,6 +540,7 @@ fn post_event_state(
     discrete: MeDiscreteStates,
     record_observation: bool,
 ) -> Result<MeRuntimePostEventState, MeError> {
+    let values_of_continuous_states_changed = discrete.values_of_continuous_states_changed;
     let mut states = vec![0.0; kernel.model_description().continuous_state_count];
     kernel.get_continuous_states(&mut states)?;
     let observation = record_observation
@@ -547,6 +550,7 @@ fn post_event_state(
         time: continuation_time,
         states,
         entry,
+        values_of_continuous_states_changed,
         observation,
         termination: discrete.terminate_simulation,
     })
