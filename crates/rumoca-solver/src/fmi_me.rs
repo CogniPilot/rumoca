@@ -358,7 +358,7 @@ pub struct MeInstanceConfig {
 /// Temporary SPEC_0038 phase-2 compatibility profile.
 ///
 /// The ordinary component profile exposes the checked event indicators and
-/// runs an initial event only when initialization produced one. The legacy
+/// runs an initial event only when initialization produced one. The frozen
 /// Diffsol path instead exposed the runtime's root-search inventory (including
 /// planned time roots) and always performed the post-initialization refresh.
 /// Keeping that choice explicit makes the migration behaviour-freezing and

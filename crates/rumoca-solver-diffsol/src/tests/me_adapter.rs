@@ -87,7 +87,7 @@ fn me_rhs_callbacks_preserve_frozen_algebraic_seed_and_commit_policy() {
         &mut params,
         &mut time,
     )
-    .expect("legacy initialization should settle the accepted full solver vector");
+    .expect("state-only initialization should settle the accepted full solver vector");
 
     let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
         .expect("ME host should instantiate");
@@ -168,7 +168,7 @@ fn frozen_me_state_event_keeps_located_nonstate_lanes_when_time_snaps_back() {
         &mut params,
         &mut time,
     )
-    .expect("legacy initialization should settle the accepted full solver vector");
+    .expect("state-only initialization should settle the accepted full solver vector");
 
     let mut located_solver_y = accepted_y.clone();
     runtime
@@ -273,7 +273,7 @@ fn frozen_me_state_event_uses_snapped_host_time_for_discrete_rows() {
         &mut params,
         &mut time,
     )
-    .expect("legacy initialization should settle");
+    .expect("state-only initialization should settle");
 
     let right_time = runtime_root_event_application_time(LOCATED_ROOT, HORIZON, CALLBACK_TOLERANCE);
     assert_eq!(right_time.to_bits(), HORIZON.to_bits());
@@ -382,7 +382,7 @@ fn frozen_me_positive_dt_state_event_keeps_located_nonstate_lanes() {
         &mut params,
         &mut time,
     )
-    .expect("legacy initialization should settle the accepted full solver vector");
+    .expect("state-only initialization should settle the accepted full solver vector");
     assert_eq!(params, vec![1.0], "the falling condition must start true");
 
     let root_states = [ROOT_TIME];
@@ -479,7 +479,7 @@ fn frozen_coincident_clock_root_returns_the_post_clock_right_limit_state() {
         &mut params,
         &mut time,
     )
-    .expect("legacy initialization should settle");
+    .expect("state-only initialization should settle");
 
     let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
         .expect("ME host should instantiate");

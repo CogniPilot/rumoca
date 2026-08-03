@@ -283,10 +283,10 @@ impl SolveMeKernel {
 
     /// Temporary phase-2 dual-run guard for the frozen Diffsol host.
     ///
-    /// The legacy driver still owns a full Solve vector during this migration
-    /// step. Compare it inside the component so the adapter does not gain
-    /// access to component-private algebraic storage. Delete this operation
-    /// with [`MeNumericsProfile::DiffsolFrozen`].
+    /// The frozen Diffsol driver still owns a full Solve vector during this
+    /// migration step. Compare it inside the component so the adapter does not
+    /// gain access to component-private algebraic storage. Delete this
+    /// operation with [`MeNumericsProfile::DiffsolFrozen`].
     pub fn verify_frozen_compatibility_state(
         &self,
         expected_solver_y: &[f64],
@@ -333,7 +333,7 @@ impl SolveMeKernel {
         Err(contract(format!(
             "frozen compatibility state diverged at {stage:?}: component_time={} \
              last_event={:?} component_solver_y={} \
-             legacy_solver_y={} component_parameters={} legacy_parameters={} \
+             expected_solver_y={} component_parameters={} expected_parameters={} \
              solver_mismatch={solver_mismatch:?} solver_name={solver_name:?} \
              parameter_mismatch={parameter_mismatch:?}",
             self.time,
