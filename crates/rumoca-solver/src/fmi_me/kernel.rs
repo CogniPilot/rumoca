@@ -1195,6 +1195,7 @@ impl SolveMeKernel {
     }
 
     fn run_initial_event_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
+        let continuous_states_before = self.states.clone();
         let event_time = self.time;
         let mut solver_y = self
             .settled_initialization_y
@@ -1252,13 +1253,17 @@ impl SolveMeKernel {
         let right_limit = (outcome.final_t > event_time).then_some(outcome.final_t);
         self.time = event_time;
         self.set_post_event_eval_time(right_limit);
-        self.discrete_states_after_update(true)
+        self.discrete_states_after_update(continuous_state_values_changed(
+            &continuous_states_before,
+            &self.states,
+        ))
     }
 
     fn run_runtime_event_boundary(
         &mut self,
         entry: MeEventEntry,
     ) -> Result<MeDiscreteStates, MeError> {
+        let continuous_states_before = self.states.clone();
         let tolerance = self.tolerance.max(1.0e-10);
         match entry.cause {
             MeEventCause::StateEvent => {
@@ -1317,7 +1322,10 @@ impl SolveMeKernel {
                     self.clear_runtime_caches();
                 }
                 self.state_time_coincidence = StateTimeCoincidence::None;
-                self.discrete_states_after_update(true)
+                self.discrete_states_after_update(continuous_state_values_changed(
+                    &continuous_states_before,
+                    &self.states,
+                ))
             }
             MeEventCause::TimeEvent => {
                 self.advance_state_to_event_right_limit = true;
@@ -1340,7 +1348,10 @@ impl SolveMeKernel {
                 self.set_post_event_eval_time(outcome.right_limit_t);
                 self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
                 self.clear_runtime_caches();
-                self.discrete_states_after_update(true)
+                self.discrete_states_after_update(continuous_state_values_changed(
+                    &continuous_states_before,
+                    &self.states,
+                ))
             }
         }
     }
@@ -2141,13 +2152,16 @@ impl ModelExchangeKernel for SolveMeKernel {
     }
 }
 
-#[cfg(any(test, kani))]
 fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
     left.len() == right.len()
         && left
             .iter()
             .zip(right)
             .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
+pub(super) fn continuous_state_values_changed(before: &[f64], after: &[f64]) -> bool {
+    !float_slice_bit_eq(before, after)
 }
 
 #[cfg(any(test, kani))]

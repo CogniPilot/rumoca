@@ -495,11 +495,8 @@ pub struct MeDiscreteStates {
     pub discrete_states_need_update: bool,
     /// FMI `terminateSimulation`, carrying the Modelica `terminate()` payload.
     pub terminate_simulation: Option<SimTermination>,
-    /// FMI `valuesOfContinuousStatesChanged`. Always `true`: every rumoca
-    /// event boundary re-solves the algebraic system, so the component cannot
-    /// currently tell a host that the continuous states came back unchanged.
-    /// A host that re-reads them unconditionally is therefore always correct,
-    /// and one that trusts a `false` would never see one.
+    /// FMI `valuesOfContinuousStatesChanged`, derived by comparing the exact
+    /// continuous-state vector before and after the settled event iteration.
     pub values_of_continuous_states_changed: bool,
     /// FMI `nominalsOfContinuousStatesChanged`. Rumoca's nominals are fixed
     /// at instantiation, so this is currently always `false`.

@@ -8,7 +8,8 @@
 use rumoca_ir_solve as solve;
 
 use super::kernel::{
-    event_right_limit_state_derivatives, event_update_application_time, frozen_projection_changed,
+    continuous_state_values_changed, event_right_limit_state_derivatives,
+    event_update_application_time, frozen_projection_changed,
 };
 use super::{
     MeError, MeEventCause, MeEventEntry, MeIndicatorCrossing, MeInstanceConfig, MeModelSource,
@@ -503,12 +504,23 @@ fn discrete_update_reports_the_complete_fmi_output_set() {
 
     assert!(!discrete.discrete_states_need_update);
     assert!(discrete.terminate_simulation.is_none());
-    assert!(discrete.values_of_continuous_states_changed);
+    assert!(
+        !discrete.values_of_continuous_states_changed,
+        "an event-free initial update must report that its state vector is unchanged"
+    );
     assert!(!discrete.nominals_of_continuous_states_changed);
     assert_eq!(
         discrete.next_event_time.map(f64::to_bits),
         Some(0.5f64.to_bits())
     );
+}
+
+#[test]
+fn continuous_state_change_flag_uses_the_exact_fmi_state_vector() {
+    assert!(!continuous_state_values_changed(&[1.0, -2.0], &[1.0, -2.0]));
+    assert!(continuous_state_values_changed(&[1.0, -2.0], &[1.0, -3.0]));
+    assert!(continuous_state_values_changed(&[0.0], &[-0.0]));
+    assert!(continuous_state_values_changed(&[1.0], &[1.0, 2.0]));
 }
 
 #[test]
@@ -564,6 +576,10 @@ fn fmu_state_restore_replays_the_same_scheduled_event_continuation() {
     let saved = kernel.fmu_state();
 
     let first = continue_from_scheduled_event(&mut kernel);
+    assert!(
+        !first.2,
+        "a scheduled event with no state update must preserve the exact state vector"
+    );
     kernel
         .terminate()
         .expect("terminate after first continuation");
@@ -578,7 +594,7 @@ fn fmu_state_restore_replays_the_same_scheduled_event_continuation() {
     assert_eq!(first, second);
 }
 
-fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u64>) {
+fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u64>, bool) {
     kernel
         .set_time(MeTime::at(0.5))
         .expect("reach scheduled event");
@@ -592,7 +608,7 @@ fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u
             horizon: 0.75,
         })
         .expect("enter scheduled event");
-    kernel
+    let discrete = kernel
         .update_discrete_states()
         .expect("apply scheduled event");
     kernel
@@ -609,6 +625,7 @@ fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u
     (
         states.into_iter().map(f64::to_bits).collect(),
         derivatives.into_iter().map(f64::to_bits).collect(),
+        discrete.values_of_continuous_states_changed,
     )
 }
 

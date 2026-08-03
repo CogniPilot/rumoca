@@ -10,7 +10,7 @@ use diffsol::{
 };
 use rumoca_solver::{
     SimOptions, SimResult, TimeoutBudget,
-    fmi_me::{MeModelSource, MeRuntimeHost, MeRuntimeOutput},
+    fmi_me::{MeEventCause, MeModelSource, MeRuntimeHost, MeRuntimeOutput},
     runtime_root_event_application_time,
     timeline::{sample_time_match_with_tol, try_build_output_times},
 };
@@ -154,7 +154,14 @@ where
             if let Some(observation) = event.observation {
                 trace.record(observation)?;
             }
-            reset_after_event(host, solver, event.time, &event.states)?;
+            resume_after_event(
+                host,
+                solver,
+                event.time,
+                &event.states,
+                event.entry.cause,
+                event.values_of_continuous_states_changed,
+            )?;
             continue;
         }
         if let Some(root) = pending_root.take() {
@@ -182,7 +189,14 @@ where
             if let Some(observation) = event.observation {
                 trace.record(observation)?;
             }
-            reset_after_event(host, solver, event.time, &event.states)?;
+            resume_after_event(
+                host,
+                solver,
+                event.time,
+                &event.states,
+                event.entry.cause,
+                event.values_of_continuous_states_changed,
+            )?;
             continue;
         }
         if current >= target || sample_time_match_with_tol(current, target) {
@@ -314,7 +328,43 @@ where
     if let Some(observation) = event.observation {
         trace.record(observation)?;
     }
-    reset_after_event(host, solver, event.time, &event.states)
+    resume_after_event(
+        host,
+        solver,
+        event.time,
+        &event.states,
+        event.entry.cause,
+        event.values_of_continuous_states_changed,
+    )
+}
+
+fn resume_after_event<'a, Eqn, S>(
+    host: &MeRuntimeHost,
+    solver: &mut S,
+    event_time: f64,
+    states: &[f64],
+    cause: MeEventCause,
+    values_of_continuous_states_changed: bool,
+) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    // A located state event invalidates the step that bracketed the root even
+    // when the component did not reinitialize a continuous state. A pure time
+    // event with unchanged states can retain the BDF history; the component's
+    // FMI result is the owner of that distinction.
+    if event_requires_integrator_restart(cause, values_of_continuous_states_changed) {
+        return reset_after_event(host, solver, event_time, states);
+    }
+    clear_stop_time_after_reset(solver, event_time)
+}
+
+fn event_requires_integrator_restart(
+    cause: MeEventCause,
+    values_of_continuous_states_changed: bool,
+) -> bool {
+    values_of_continuous_states_changed || matches!(cause, MeEventCause::StateEvent)
 }
 
 fn time_reached_with_tolerance(current: f64, target: f64, tolerance: f64) -> bool {
@@ -510,7 +560,8 @@ fn empty_terminated_result(
 
 #[cfg(test)]
 mod tests {
-    use super::event_time_is_beyond_horizon;
+    use super::{event_requires_integrator_restart, event_time_is_beyond_horizon};
+    use rumoca_solver::fmi_me::MeEventCause;
 
     #[test]
     fn event_times_beyond_the_output_horizon_are_not_value_tolerance_matches() {
@@ -522,5 +573,21 @@ mod tests {
         ] {
             assert!(event_time_is_beyond_horizon(event_time, horizon));
         }
+    }
+
+    #[test]
+    fn only_unchanged_time_events_preserve_integrator_history() {
+        assert!(!event_requires_integrator_restart(
+            MeEventCause::TimeEvent,
+            false
+        ));
+        assert!(event_requires_integrator_restart(
+            MeEventCause::TimeEvent,
+            true
+        ));
+        assert!(event_requires_integrator_restart(
+            MeEventCause::StateEvent,
+            false
+        ));
     }
 }
