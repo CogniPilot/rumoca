@@ -435,6 +435,31 @@ pub fn update_relation_memory_slots(
     changed
 }
 
+/// Give a tolerance-zero root the compiler-owned side of its source relation.
+///
+/// Numerical root finders detect sign changes, so an unqualified `0.0` at an
+/// accepted point cannot represent whether a strict or non-strict relation
+/// owns that point. Solve IR preserves that semantic distinction explicitly;
+/// the smallest ordinary dimensionless perturbation is enough to expose its
+/// sign without moving the mathematical root. The same root tolerance used by
+/// crossing detection defines which numerical values represent semantic zero.
+pub fn orient_typed_root_zeros(
+    roots: &mut [f64],
+    zero_domains: &[solve::RootZeroDomain],
+    tolerance: f64,
+) {
+    for (root, zero_domain) in roots.iter_mut().zip(zero_domains) {
+        if root.abs() > tolerance {
+            continue;
+        }
+        *root = match zero_domain {
+            solve::RootZeroDomain::Positive => f64::EPSILON,
+            solve::RootZeroDomain::NonPositive => -f64::EPSILON,
+            solve::RootZeroDomain::Previous => continue,
+        };
+    }
+}
+
 pub fn relation_memory_value_from_root(root: f64) -> f64 {
     if root < 0.0 { 1.0 } else { 0.0 }
 }
@@ -647,6 +672,26 @@ mod tests {
                 post_relation_memory_value: 1.0
             }]
         );
+    }
+
+    #[test]
+    fn typed_root_zero_orientation_exposes_relation_side_to_root_finders() {
+        let mut roots = [0.0, -1.0e-8, 0.0, -2.0];
+        orient_typed_root_zeros(
+            &mut roots,
+            &[
+                solve::RootZeroDomain::Positive,
+                solve::RootZeroDomain::NonPositive,
+                solve::RootZeroDomain::Previous,
+                solve::RootZeroDomain::Positive,
+            ],
+            1.0e-6,
+        );
+
+        assert!(roots[0].is_sign_positive() && roots[0] > 0.0);
+        assert!(roots[1].is_sign_negative() && roots[1] < 0.0);
+        assert_eq!(roots[2], 0.0);
+        assert_eq!(roots[3], -2.0);
     }
 
     #[test]

@@ -59,9 +59,9 @@ pub use runtime::solve_ops::{
     apply_discrete_slot_value, build_sim_result_from_solve_model, convert_variable_meta,
     discrete_row_active_at, discrete_row_pre_mode, event_eval_params_for_pre_mode,
     event_eval_params_for_row_pre_mode, filter_scheduled_root_crossings, first_root_crossing,
-    push_visible_values, relation_memory_value_from_root, replace_last_visible_values,
-    root_crossed, root_crossings, root_crossings_with_relation_memory, root_value_crossed,
-    row_reads_solver_or_time, runtime_value_changed, runtime_values_changed,
+    orient_typed_root_zeros, push_visible_values, relation_memory_value_from_root,
+    replace_last_visible_values, root_crossed, root_crossings, root_crossings_with_relation_memory,
+    root_value_crossed, row_reads_solver_or_time, runtime_value_changed, runtime_values_changed,
     update_relation_memory_slots,
 };
 pub use runtime::solve_runtime::{
