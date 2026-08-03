@@ -681,8 +681,7 @@ impl ShapeAnalyzer<'_> {
             is_matrix: true,
             ..
         } = expression
-        {
-            if elements.iter().all(|element| {
+            && elements.iter().all(|element| {
                 matches!(
                     element,
                     Expression::Array {
@@ -690,15 +689,15 @@ impl ShapeAnalyzer<'_> {
                         ..
                     }
                 )
-            }) {
-                // Parse reserves an all-matrix-child node for the `;`
-                // spelling. Its child rows may contain vectors or matrices:
-                // the checked promoted-concatenation constructor owns their
-                // exact shape. Descend through the row wrappers so calls are
-                // still discovered, without applying the deliberately narrower
-                // top-level horizontal-row rejection to those operands.
-                return self.discover_promoted_matrix_calls(elements, values);
-            }
+            })
+        {
+            // Parse reserves an all-matrix-child node for the `;`
+            // spelling. Its child rows may contain vectors or matrices:
+            // the checked promoted-concatenation constructor owns their
+            // exact shape. Descend through the row wrappers so calls are
+            // still discovered, without applying the deliberately narrower
+            // top-level horizontal-row rejection to those operands.
+            return self.discover_promoted_matrix_calls(elements, values);
         }
         for child in expression_children(expression) {
             self.discover_calls(child, values)?;

@@ -344,22 +344,7 @@ fn eval_builtin_integer_func_with_scope(
                 )
             })
             .or_else(|| eval_integer_with_scope(&args[0], ctx, scope)),
-        "size" if args.len() == 2 => {
-            let dim_idx = eval_integer_with_scope(&args[1], ctx, scope)? as usize;
-            if dim_idx < 1 {
-                return None;
-            }
-            // Try named array lookup first
-            if let Some(array_name) = extract_component_path(&args[0])
-                && let Some(dims) = lookup_dims_with_scope(&array_name, ctx, scope)
-                && dim_idx <= dims.len()
-            {
-                return Some(dims[dim_idx - 1] as i64);
-            }
-            // Fallback: infer dimensions from expression (handles fill(), zeros(), array literals)
-            let dims = infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)?;
-            (dim_idx <= dims.len()).then(|| dims[dim_idx - 1] as i64)
-        }
+        "size" if args.len() == 2 => eval_integer_size_with_scope(&args[0], &args[1], ctx, scope),
         "abs" if args.len() == 1 => eval_integer_with_scope(&args[0], ctx, scope)
             .and_then(|value| checked_abs_with_warning(value, ctx, call_span, "abs(...)")),
         "max" if args.len() == 2 => {
@@ -439,6 +424,28 @@ fn eval_builtin_integer_func_with_scope(
         }
         _ => None,
     }
+}
+
+fn eval_integer_size_with_scope(
+    array: &Expression,
+    dimension: &Expression,
+    ctx: &TypeCheckEvalContext,
+    scope: &str,
+) -> Option<i64> {
+    let dimension = eval_integer_with_scope(dimension, ctx, scope)? as usize;
+    if dimension < 1 {
+        return None;
+    }
+    // Prefer the declared shape, then infer constructors and array literals.
+    if let Some(array_name) = extract_component_path(array)
+        && let Some(dimensions) = lookup_dims_with_scope(&array_name, ctx, scope)
+        && let Some(value) = dimensions.get(dimension - 1)
+    {
+        return Some(*value as i64);
+    }
+    infer_dimensions_from_binding_with_scope(array, ctx, scope)?
+        .get(dimension - 1)
+        .map(|value| *value as i64)
 }
 
 const MAX_FUNC_EVAL_DEPTH: usize = 10;
