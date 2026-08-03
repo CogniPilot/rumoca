@@ -263,6 +263,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
             role: solve::DiscreteRowRole::Equation,
             pre_mode: solve::DiscreteEventPreMode::FollowCurrent,
             observation_refresh: false,
+            integrator_history_effect: solve::IntegratorHistoryEffect::Preserve,
             clock_owner: None,
         });
     model
