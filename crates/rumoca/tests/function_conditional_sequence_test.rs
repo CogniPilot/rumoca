@@ -143,6 +143,55 @@ equation
 end BranchElement;
 "#;
 
+/// Two ordered total array definitions share one compact source loop. The
+/// second reads the first at the exact same loop coordinate, so source order
+/// proves that two sequential compact maps preserve the scalar-loop meaning.
+const INDEPENDENT_ARRAY_LOOP_MODEL: &str = r#"
+within;
+function independentArrays
+  input Real u[:];
+  output Real doubled[size(u, 1)];
+  output Real shifted[size(u, 1)];
+algorithm
+  for i in 1:size(u, 1) loop
+    doubled[i] := 2 * u[i];
+    shifted[i] := doubled[i] + 1;
+  end for;
+end independentArrays;
+model IndependentArrayLoop
+  Real doubled[3];
+equation
+  doubled = independentArrays({1, 2, 3});
+end IndependentArrayLoop;
+"#;
+
+const ORDERED_THREE_ARRAY_LOOP_MODEL: &str = r#"
+within;
+function orderedThreeArrays
+  input Real c0_in[:];
+  input Real c1_in[size(c0_in, 1)];
+  output Real a[size(c0_in, 1)];
+  output Real b[size(c0_in, 1)];
+  output Real ku[size(c0_in, 1)];
+protected
+  Real c0[size(c0_in, 1)];
+  Real c1[size(c0_in, 1)];
+algorithm
+  c0 := c0_in;
+  c1 := c1_in;
+  for i in 1:size(c0_in, 1) loop
+    a[i] := -c1[i] / 2;
+    b[i] := sqrt(c0[i] - a[i] * a[i]);
+    ku[i] := c0[i] / b[i];
+  end for;
+end orderedThreeArrays;
+model OrderedThreeArrayLoop
+  Real a[2];
+equation
+  a = orderedThreeArrays({4, 9}, {2, 4});
+end OrderedThreeArrayLoop;
+"#;
+
 fn algebraic(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
     report
         .solver_y
@@ -234,6 +283,47 @@ fn exact_element_defined_on_every_branch_is_readable() {
     let report = evaluate(BRANCH_ELEMENT_MODEL, "BranchElement", "BranchElement.mo");
     assert_eq!(algebraic(&report, "positive"), 3.0);
     assert_eq!(algebraic(&report, "negative"), 4.0);
+}
+
+#[test]
+fn ordered_total_array_definitions_share_one_loop_domain() {
+    let report = evaluate(
+        INDEPENDENT_ARRAY_LOOP_MODEL,
+        "IndependentArrayLoop",
+        "IndependentArrayLoop.mo",
+    );
+    for (name, expected) in [
+        ("doubled[1]", 2.0),
+        ("doubled[2]", 4.0),
+        ("doubled[3]", 6.0),
+    ] {
+        assert_eq!(algebraic(&report, name), expected);
+    }
+}
+
+#[test]
+fn ordered_three_array_definitions_preserve_same_element_dependencies() {
+    let report = evaluate(
+        ORDERED_THREE_ARRAY_LOOP_MODEL,
+        "OrderedThreeArrayLoop",
+        "OrderedThreeArrayLoop.mo",
+    );
+    assert_eq!(algebraic(&report, "a[1]"), -1.0);
+    assert_eq!(algebraic(&report, "a[2]"), -2.0);
+}
+
+#[test]
+fn cross_dependent_array_loop_requires_a_transition_owner() {
+    let source = INDEPENDENT_ARRAY_LOOP_MODEL
+        .replace("doubled[i] := 2 * u[i];", "doubled[i] := shifted[i] + 1;");
+    let error = Compiler::new()
+        .model("IndependentArrayLoop")
+        .compile_str(&source, "DependentArrayLoop.mo")
+        .expect_err("an inter-target loop dependency needs an ordered transition owner");
+    assert!(
+        format!("{error:?}").contains("function loop transition"),
+        "unexpected diagnostic: {error:?}"
+    );
 }
 
 #[test]

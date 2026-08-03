@@ -740,12 +740,25 @@ pub(super) fn lower_total_function_array_definition<'dae>(
     body: &mut dae::FunctionBody<'dae>,
     input: TotalArrayDefinition<'_, '_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
+    for (statement, plan) in input.statements.iter().zip(input.plans) {
+        lower_one_total_function_array_definition(construction, body, &input, statement, plan)?;
+    }
+    Ok(())
+}
+
+fn lower_one_total_function_array_definition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    input: &TotalArrayDefinition<'_, '_, 'dae>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<(), dae::DaeConstructionError> {
     let (
-        [rumoca_core::Statement::Assignment { value, span, .. }],
-        [FunctionStatementPlan::Assignment(assignment)],
-    ) = (input.statements, input.plans)
+        rumoca_core::Statement::Assignment { value, span, .. },
+        FunctionStatementPlan::Assignment(assignment),
+    ) = (statement, plan)
     else {
-        unreachable!("analysis proves one total array-definition statement")
+        unreachable!("analysis proves total array-definition statements")
     };
     let element = lower_function_expression_scoped(
         construction,

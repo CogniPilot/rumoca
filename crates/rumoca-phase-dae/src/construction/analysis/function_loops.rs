@@ -254,33 +254,70 @@ fn classify_function_loop(
     shapes: &ShapeEnvironment,
 ) -> FunctionLoopLowering {
     let targets = function_loop_targets(plans);
-    let (
-        [rumoca_core::Statement::Assignment { value, .. }],
-        [FunctionStatementPlan::Assignment(assignment)],
-    ) = (statements, plans)
-    else {
-        return FunctionLoopLowering::Fold { targets };
-    };
-    let target = assignment.target();
-    if !function
+    if loop_is_ordered_total_array_definitions(
+        domain, indices, statements, plans, function, shapes, &targets,
+    ) {
+        FunctionLoopLowering::TotalArrayDefinition
+    } else {
+        FunctionLoopLowering::Fold { targets }
+    }
+}
+
+fn loop_is_ordered_total_array_definitions(
+    domain: &StructuredIndexDomain,
+    indices: &[&rumoca_core::ForIndex],
+    statements: &[rumoca_core::Statement],
+    plans: &[FunctionStatementPlan],
+    function: &rumoca_core::Function,
+    shapes: &ShapeEnvironment,
+    targets: &[VarName],
+) -> bool {
+    if plans.is_empty() || targets.len() != plans.len() {
+        return false;
+    }
+    let mut defined_targets = Vec::with_capacity(targets.len());
+    statements.iter().zip(plans).all(|(statement, plan)| {
+        let (
+            rumoca_core::Statement::Assignment { value, .. },
+            FunctionStatementPlan::Assignment(assignment),
+        ) = (statement, plan)
+        else {
+            return false;
+        };
+        let declared = declared_function_value(function, assignment.target());
+        let covers = assignment_covers_loop_domain(domain, indices, assignment, shapes);
+        let dependencies =
+            expression_reads_only_prior_loop_elements(value, targets, &defined_targets, indices);
+        let valid = declared && covers && dependencies;
+        defined_targets.push(assignment.target().clone());
+        valid
+    })
+}
+
+fn declared_function_value(function: &rumoca_core::Function, target: &VarName) -> bool {
+    function
         .outputs
         .iter()
         .chain(&function.locals)
         .any(|declaration| declaration.name == target.as_str())
-    {
-        return FunctionLoopLowering::Fold { targets };
-    }
+}
+
+fn assignment_covers_loop_domain(
+    domain: &StructuredIndexDomain,
+    indices: &[&rumoca_core::ForIndex],
+    assignment: &FunctionAssignmentPlan,
+    shapes: &ShapeEnvironment,
+) -> bool {
     let Ok(extents) = domain.extents() else {
-        return FunctionLoopLowering::Fold { targets };
+        return false;
     };
-    let Some(shape) = shapes.get(target) else {
-        return FunctionLoopLowering::Fold { targets };
+    let Some(shape) = shapes.get(assignment.target()) else {
+        return false;
     };
     let dimensions = shape
         .iter()
         .map(|dimension| usize::try_from(*dimension))
         .collect::<Result<Vec<_>, _>>();
-    let subscripts = assignment.subscripts();
     let exact_unit_domain = dimensions.as_ref().is_ok_and(|dimensions| {
         dimensions == &extents
             && domain
@@ -293,21 +330,88 @@ fn classify_function_loop(
                         && usize::try_from(binder.upper).ok() == Some(*dimension)
                 })
     });
-    let exact_subscripts = subscripts.len() == indices.len()
+    let subscripts = assignment.subscripts();
+    exact_unit_domain
+        && subscripts.len() == indices.len()
         && subscripts
             .iter()
             .zip(indices)
-            .all(|(subscript, index)| subscript_is_binder(subscript, &index.ident));
-    let mut references = Vec::new();
-    value.collect_var_refs(&mut references);
-    if exact_unit_domain
-        && exact_subscripts
-        && !references.iter().any(|reference| reference == target)
-    {
-        FunctionLoopLowering::TotalArrayDefinition
-    } else {
-        FunctionLoopLowering::Fold { targets }
+            .all(|(subscript, index)| subscript_is_binder(subscript, &index.ident))
+}
+
+fn expression_reads_only_prior_loop_elements(
+    value: &Expression,
+    targets: &[VarName],
+    defined_targets: &[VarName],
+    indices: &[&rumoca_core::ForIndex],
+) -> bool {
+    struct LoopDependencyProof<'a> {
+        targets: &'a [VarName],
+        defined_targets: &'a [VarName],
+        indices: &'a [&'a rumoca_core::ForIndex],
+        valid: bool,
     }
+
+    impl LoopDependencyProof<'_> {
+        fn prove_target_element(
+            &mut self,
+            target: &VarName,
+            subscripts: &[rumoca_core::Subscript],
+        ) {
+            self.valid &= self.defined_targets.contains(target)
+                && subscripts.len() == self.indices.len()
+                && subscripts
+                    .iter()
+                    .zip(self.indices)
+                    .all(|(subscript, index)| subscript_is_binder(subscript, &index.ident));
+        }
+
+        fn visit_subscripts(&mut self, subscripts: &[rumoca_core::Subscript]) {
+            for subscript in subscripts {
+                rumoca_core::ExpressionVisitor::visit_subscript(self, subscript);
+            }
+        }
+    }
+
+    impl rumoca_core::ExpressionVisitor for LoopDependencyProof<'_> {
+        fn visit_var_ref(
+            &mut self,
+            name: &rumoca_core::Reference,
+            subscripts: &[rumoca_core::Subscript],
+        ) {
+            let target = name.var_name();
+            if self.targets.contains(target) {
+                self.prove_target_element(target, subscripts);
+            }
+            self.walk_var_ref(name, subscripts);
+        }
+
+        fn visit_index(&mut self, base: &Expression, subscripts: &[rumoca_core::Subscript]) {
+            if let Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base
+                && base_subscripts.is_empty()
+                && self.targets.contains(name.var_name())
+            {
+                self.prove_target_element(name.var_name(), subscripts);
+                self.visit_subscripts(subscripts);
+            } else {
+                self.visit_expression(base);
+                self.visit_subscripts(subscripts);
+            }
+        }
+    }
+
+    let mut proof = LoopDependencyProof {
+        targets,
+        defined_targets,
+        indices,
+        valid: true,
+    };
+    rumoca_core::ExpressionVisitor::visit_expression(&mut proof, value);
+    proof.valid
 }
 
 pub(super) fn subscript_is_binder(subscript: &rumoca_core::Subscript, binder: &str) -> bool {
