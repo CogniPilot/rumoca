@@ -625,29 +625,11 @@ fn rewrite_decomposed_record_call_sites(
             .chain(func.outputs.iter_mut())
             .chain(func.locals.iter_mut())
         {
-            for expression in [
-                &mut parameter.default,
-                &mut parameter.min,
-                &mut parameter.max,
-            ]
-            .into_iter()
-            .flatten()
-            {
-                decompose_record_call_args_in_expr(
-                    expression,
-                    decomposition_map,
-                    local_record_params,
-                )?;
-            }
-            for subscript in &mut parameter.shape_expr {
-                if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-                    decompose_record_call_args_in_expr(
-                        expr,
-                        decomposition_map,
-                        local_record_params,
-                    )?;
-                }
-            }
+            decompose_record_calls_in_function_parameter(
+                parameter,
+                decomposition_map,
+                local_record_params,
+            )?;
         }
         for stmt in &mut func.body {
             decompose_record_call_args_in_stmt(stmt, decomposition_map, local_record_params)?;
@@ -663,6 +645,29 @@ fn rewrite_decomposed_record_call_sites(
                 rewrite_field_access_in_statement(stmt, decomposed);
                 rewrite_whole_record_params_in_statement(stmt, decomposed);
             }
+        }
+    }
+    Ok(())
+}
+
+fn decompose_record_calls_in_function_parameter(
+    parameter: &mut rumoca_core::FunctionParam,
+    decomposition_map: &RecordDecompositionMap,
+    local_record_params: Option<&HashSet<String>>,
+) -> Result<(), FlattenError> {
+    for expression in [
+        &mut parameter.default,
+        &mut parameter.min,
+        &mut parameter.max,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        decompose_record_call_args_in_expr(expression, decomposition_map, local_record_params)?;
+    }
+    for subscript in &mut parameter.shape_expr {
+        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
+            decompose_record_call_args_in_expr(expr, decomposition_map, local_record_params)?;
         }
     }
     Ok(())
