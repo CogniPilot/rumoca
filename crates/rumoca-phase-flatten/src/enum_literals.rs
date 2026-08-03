@@ -36,6 +36,16 @@ pub(crate) fn canonicalize_flat_enum_literals(
     for eq in &mut flat.initial_equations {
         canonicalize_expr(&mut eq.residual, &enum_literals, &variable_names);
     }
+    canonicalize_structured_templates(
+        &mut flat.structured_equations,
+        &enum_literals,
+        &variable_names,
+    );
+    canonicalize_structured_templates(
+        &mut flat.initial_structured_equations,
+        &enum_literals,
+        &variable_names,
+    );
 
     for chain in &mut flat.when_chains {
         for branch in chain.branches_mut() {
@@ -49,6 +59,21 @@ pub(crate) fn canonicalize_flat_enum_literals(
     }
     for algorithm in &mut flat.initial_algorithms {
         canonicalize_statements(&mut algorithm.statements, &enum_literals, &variable_names);
+    }
+}
+
+fn canonicalize_structured_templates(
+    families: &mut [flat::StructuredEquationFamily],
+    enum_literals: &EnumLiteralIndex,
+    variable_names: &FxHashSet<VarName>,
+) {
+    for family in families {
+        let Some(template) = family.template.as_mut() else {
+            continue;
+        };
+        for body in &mut template.body {
+            canonicalize_expr(body, enum_literals, variable_names);
+        }
     }
 }
 
@@ -649,5 +674,70 @@ mod tests {
             panic!("expected enum literal var ref");
         };
         assert_eq!(name.as_str(), "TypesPkg.Init.NoInit");
+    }
+
+    #[test]
+    fn rewrites_structured_template_literal_by_identity_and_preserves_binder() {
+        let enum_def_id = rumoca_core::DefId::new(71);
+        let binder_def_id = rumoca_core::DefId::new(72);
+        let tree = enum_tree(enum_def_id, Some("TypesPkg"), "Logic", "Unset");
+        let mut flat = flat::Model::new();
+        flat.structured_equations
+            .push(flat::StructuredEquationFamily {
+                domain: rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                first_equation_index: 0,
+                equations_per_point: 1,
+                span: test_span(),
+                origin: flat::EquationOrigin::Binding {
+                    variable: "x".to_string(),
+                },
+                regular: None,
+                template: Some(rumoca_core::ComprehensionTemplate {
+                    body: vec![rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Eq,
+                        lhs: Box::new(var_ref("i", &["i"], binder_def_id)),
+                        rhs: Box::new(var_ref("Logic.Unset", &["Logic", "Unset"], enum_def_id)),
+                        span: test_span(),
+                    }],
+                    scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                }),
+                interiors_materialized: true,
+            });
+        let mut known_enums = FxHashMap::default();
+        known_enums.insert("enumParam".to_string(), "TypesPkg.Logic.Unset".to_string());
+
+        canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
+
+        let rumoca_core::Expression::Binary { lhs, rhs, .. } = &flat.structured_equations[0]
+            .template
+            .as_ref()
+            .expect("structured owner remains compact")
+            .body[0]
+        else {
+            panic!("fixture remains a binary template body");
+        };
+        let rumoca_core::Expression::VarRef {
+            name: binder_name, ..
+        } = lhs.as_ref()
+        else {
+            panic!("lhs remains the domain binder");
+        };
+        let rumoca_core::Expression::VarRef {
+            name: literal_name, ..
+        } = rhs.as_ref()
+        else {
+            panic!("rhs remains an enum literal reference");
+        };
+        assert_eq!(binder_name.as_str(), "i");
+        assert_eq!(literal_name.as_str(), "TypesPkg.Logic.Unset");
+        assert_eq!(literal_name.target_def_id(), Some(enum_def_id));
     }
 }

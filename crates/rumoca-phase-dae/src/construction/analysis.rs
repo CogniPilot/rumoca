@@ -386,15 +386,19 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &flat.structured_equations,
         flat.equations.len(),
         &roles,
+        &expression_roles,
         &states,
         &record_array_fields,
+        function_shapes.model_values(),
     )?;
     let initialization_family_rows = validate_structured_families(
         &flat.initial_structured_equations,
         flat.initial_equations.len(),
         &roles,
+        &expression_roles,
         &states,
         &record_array_fields,
+        function_shapes.model_values(),
     )?;
     let (mut sample_lattices, model_algorithm_plans) =
         analyze_event_algorithms(flat, &roles, &expression_roles, &states, &constants)?;

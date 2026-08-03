@@ -6,6 +6,10 @@ struct ExpressionValidator<'a> {
     states: &'a HashSet<VarName>,
     binders: &'a HashSet<VarName>,
     record_array_fields: Option<&'a RecordArrayFieldPlans>,
+    /// Exact literal-name and enumeration-declaration evidence for scopes that
+    /// validate expressions retained outside the ordinary Flat equation rows.
+    /// A catalog spelling alone is never enough to admit such a reference.
+    enumeration_literals: Option<&'a ShapeEnvironment>,
     /// Translation-time values this scope proves, when it is a value-proven
     /// function specialization.
     ///
@@ -92,6 +96,7 @@ pub(super) fn validate_expression_in_context(
         states,
         binders: &binders,
         record_array_fields: None,
+        enumeration_literals: None,
         values: None,
         when_clause,
     }
@@ -115,6 +120,7 @@ pub(super) fn validate_specialized_expression(
         states: &states,
         binders: &binders,
         record_array_fields: None,
+        enumeration_literals: Some(values),
         values: Some(values),
         when_clause: PreContext::Continuous,
     }
@@ -134,6 +140,7 @@ pub(super) fn validate_specialized_subscripts(
         states: &states,
         binders: &binders,
         record_array_fields: None,
+        enumeration_literals: Some(values),
         values: Some(values),
         when_clause: PreContext::Continuous,
     }
@@ -152,6 +159,7 @@ pub(super) fn validate_expression_with_record_array_fields(
         states,
         binders: &binders,
         record_array_fields: Some(fields),
+        enumeration_literals: None,
         values: None,
         when_clause: PreContext::Continuous,
     }
@@ -164,12 +172,14 @@ pub(super) fn validate_expression_scoped_with_record_array_fields(
     states: &HashSet<VarName>,
     binders: &HashSet<VarName>,
     fields: &RecordArrayFieldPlans,
+    model_values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     ExpressionValidator {
         roles,
         states,
         binders,
         record_array_fields: Some(fields),
+        enumeration_literals: Some(model_values),
         values: None,
         when_clause: PreContext::Continuous,
     }
@@ -245,10 +255,14 @@ impl<'a> ExpressionValidator<'a> {
         subscripts: &[Subscript],
         span: Span,
     ) -> Result<(), ToDaeError> {
-        if name.as_str() != "time"
-            && !self.roles.contains_key(name.var_name())
-            && !self.binders.contains(name.var_name())
-        {
+        let role = self.roles.get(name.var_name());
+        let unresolved =
+            name.as_str() != "time" && role.is_none() && !self.binders.contains(name.var_name());
+        let forged_enumeration_literal = matches!(role, Some(PlannedRole::EnumerationLiteral))
+            && self
+                .enumeration_literals
+                .is_some_and(|catalog| !catalog.is_enumeration_literal(name));
+        if unresolved || forged_enumeration_literal {
             return Err(ToDaeError::unresolved_reference(name.as_str(), span));
         }
         if self.binders.contains(name.var_name()) && !subscripts.is_empty() {
@@ -721,6 +735,7 @@ pub(super) fn validate_subscripts_scoped(
         states,
         binders,
         record_array_fields: None,
+        enumeration_literals: None,
         values: None,
         when_clause: PreContext::Continuous,
     }
@@ -829,4 +844,82 @@ pub(super) fn require_integer_literal(
         "the canonical compact range requires an integer literal bound",
         expression_span(expression)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enumeration_reference(
+        name: &str,
+        declaration: rumoca_core::DefId,
+        span: Span,
+    ) -> Expression {
+        let component_ref = rumoca_core::ComponentReference::construct(
+            false,
+            span,
+            vec![rumoca_core::ComponentRefPart {
+                ident: "Choice".to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: declaration,
+            }],
+        )
+        .expect("fixture enumeration reference has exact identity");
+        Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(name, component_ref),
+            subscripts: Vec::new(),
+            span,
+        }
+    }
+
+    #[test]
+    fn structured_enum_literal_requires_catalog_and_enumeration_type_identity() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("structured_enum.mo", "Choice.active");
+        let span = Span::from_offsets(source, 0, 13);
+        let enum_declaration = rumoca_core::DefId::new(81);
+        let other_declaration = rumoca_core::DefId::new(82);
+        let enum_type = rumoca_core::TypeId::new(91);
+        let literal_name = "Pkg.Choice.active";
+        let mut model = flat::Model::new();
+        model.type_ids_by_def_id.insert(enum_declaration, enum_type);
+        model.enumeration_type_roots.insert(enum_type);
+        model
+            .enum_literal_ordinals
+            .insert(literal_name.to_string(), 1);
+        let shape_analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+            .expect("fixture model has an exact enumeration catalog");
+        let roles = HashMap::from([(VarName::new(literal_name), PlannedRole::EnumerationLiteral)]);
+        let states = HashSet::new();
+        let binders = HashSet::new();
+        let fields = RecordArrayFieldPlans::default();
+
+        validate_expression_scoped_with_record_array_fields(
+            &enumeration_reference(literal_name, enum_declaration, span),
+            &roles,
+            &states,
+            &binders,
+            &fields,
+            shape_analysis.model_values(),
+        )
+        .expect("cataloged literal with its enumeration declaration is resolved");
+
+        let error = validate_expression_scoped_with_record_array_fields(
+            &enumeration_reference(literal_name, other_declaration, span),
+            &roles,
+            &states,
+            &binders,
+            &fields,
+            shape_analysis.model_values(),
+        )
+        .expect_err("catalog spelling without enumeration identity stays unresolved");
+        assert!(matches!(
+            error,
+            ToDaeError::UnresolvedReference {
+                name,
+                span: error_span,
+            } if name == literal_name && error_span == span
+        ));
+    }
 }

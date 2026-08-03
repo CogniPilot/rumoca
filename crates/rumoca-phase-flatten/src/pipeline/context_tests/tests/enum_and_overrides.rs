@@ -99,15 +99,32 @@ fn test_try_eval_const_flat_expr_with_scope_resolves_enum_alias_component_ref() 
         "Modelica.Electrical.Digital.Tables.L.'U'".to_string(),
         "Modelica.Electrical.Digital.Interfaces.Logic.'U'".to_string(),
     );
-    let expr = component_ref_expr("L.'U'");
+    let enum_type = rumoca_core::DefId::new(154);
+    let mut expr = component_ref_expr("L.'U'");
+    let rumoca_ir_ast::Expression::ComponentReference(source_reference) = &mut expr else {
+        panic!("fixture is an enum component reference");
+    };
+    for part in &mut source_reference.parts {
+        part.def_id = Some(enum_type);
+    }
+    let rumoca_ir_ast::Expression::ComponentReference(source_reference) = &expr else {
+        panic!("fixture is an enum component reference");
+    };
+    let expected_type = source_reference
+        .target_def_id()
+        .expect("resolved fixture carries its enum declaration identity");
 
     let got =
         try_eval_const_flat_expr_with_scope(&expr, &ctx, "Modelica.Electrical.Digital.Tables");
-    assert!(matches!(
-        got,
-        Some(Expression::VarRef { ref name, .. })
-            if name.as_str() == "Modelica.Electrical.Digital.Interfaces.Logic.'U'"
-    ));
+    let Some(Expression::VarRef { name, .. }) = got else {
+        panic!("enum alias settles to a Flat reference");
+    };
+    assert_eq!(
+        name.as_str(),
+        "Modelica.Electrical.Digital.Interfaces.Logic.'U'"
+    );
+    assert!(!name.is_generated());
+    assert_eq!(name.target_def_id(), Some(expected_type));
 }
 
 #[test]

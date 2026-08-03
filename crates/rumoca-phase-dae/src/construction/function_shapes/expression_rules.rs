@@ -41,6 +41,23 @@ pub(in crate::construction) fn call_free_target_shape(
 pub(super) type FunctionResultShape<'scope> = dyn FnMut(&rumoca_core::Reference, &[Expression], bool, Span) -> Result<ValueShape, ToDaeError>
     + 'scope;
 
+fn reference_shape(
+    name: &rumoca_core::Reference,
+    values: &ShapeEnvironment,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    if values.is_enumeration_literal_name(name.var_name()) {
+        return values
+            .is_enumeration_literal(name)
+            .then(Vec::new)
+            .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span));
+    }
+    values
+        .get(name.var_name())
+        .cloned()
+        .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span))
+}
+
 pub(super) fn expression_shape(
     expression: &Expression,
     values: &ShapeEnvironment,
@@ -52,10 +69,7 @@ pub(super) fn expression_shape(
         Expression::VarRef {
             name, subscripts, ..
         } => {
-            let shape = values
-                .get(name.var_name())
-                .cloned()
-                .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span))?;
+            let shape = reference_shape(name, values, span)?;
             apply_subscripts(shape, subscripts, values)
         }
         Expression::Index {

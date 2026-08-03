@@ -1090,7 +1090,10 @@ pub(crate) fn try_eval_const_component_ref_expr(
         lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::generated(enum_name),
+            name: rumoca_core::Reference::with_component_reference(
+                enum_name,
+                core_component_reference_from_ast(cr),
+            ),
             subscripts: vec![],
             span: owner_span,
         });
@@ -1099,13 +1102,10 @@ pub(crate) fn try_eval_const_component_ref_expr(
     let resolved_text = resolved.as_ref().unwrap_or(&name).to_flat_string();
     try_eval_resolved_const_ref(&resolved_text, ctx, owner_span).or_else(|| {
         looks_like_enum_literal_path(&resolved_text).then(|| rumoca_core::Expression::VarRef {
-            name: match resolved {
-                Some(_) => rumoca_core::Reference::generated(resolved_text),
-                None => rumoca_core::Reference::with_component_reference(
-                    &resolved_text,
-                    core_component_reference_from_ast(cr),
-                ),
-            },
+            name: rumoca_core::Reference::with_component_reference(
+                &resolved_text,
+                core_component_reference_from_ast(cr),
+            ),
             subscripts: vec![],
             span: owner_span,
         })

@@ -8,7 +8,7 @@ pub(in crate::construction) use expression_rules::{
     call_free_expression_shape, call_free_target_shape,
 };
 use expression_rules::{expression_shape, reject_shape_call};
-use rumoca_core::FunctionInstanceId;
+use rumoca_core::{DefId, FunctionInstanceId};
 use value_relevance::ValueReadInputs;
 
 #[cfg(test)]
@@ -93,6 +93,12 @@ const SPECIALIZATION_DEPTH_LIMIT: usize = 256;
 #[derive(Clone, Debug, Default)]
 pub(super) struct ShapeEnvironment {
     shapes: HashMap<VarName, ValueShape>,
+    /// Flat literal names paired with the declaration identities proven to be
+    /// enumeration types. Both sets are required before shape analysis treats
+    /// a reference as an enumeration scalar; rendered spelling alone grants no
+    /// semantic role.
+    enumeration_literals: Arc<HashSet<VarName>>,
+    enumeration_type_declarations: Arc<HashSet<DefId>>,
     /// Exact identity/type/range plans for structural field projections.
     ///
     /// The immutable plan is shared by the model and every specialization;
@@ -123,6 +129,8 @@ impl ShapeEnvironment {
     pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
             shapes: HashMap::with_capacity(capacity),
+            enumeration_literals: Arc::default(),
+            enumeration_type_declarations: Arc::default(),
             record_array_fields: None,
             values: EvalContext::with_capacity(capacity, 0, 0),
             specialized: false,
@@ -143,6 +151,17 @@ impl ShapeEnvironment {
 
     pub(super) fn get(&self, name: &VarName) -> Option<&ValueShape> {
         self.shapes.get(name)
+    }
+
+    pub(super) fn is_enumeration_literal(&self, reference: &rumoca_core::Reference) -> bool {
+        self.enumeration_literals.contains(reference.var_name())
+            && reference.target_def_id().is_some_and(|declaration| {
+                self.enumeration_type_declarations.contains(&declaration)
+            })
+    }
+
+    pub(super) fn is_enumeration_literal_name(&self, name: &VarName) -> bool {
+        self.enumeration_literals.contains(name)
     }
 
     pub(super) fn record_array_fields(&self) -> Option<&RecordArrayFieldPlans> {
@@ -1423,6 +1442,16 @@ fn concrete_model_shapes(
     constants: &EvalContext,
 ) -> Result<ShapeEnvironment, ToDaeError> {
     let mut values = ShapeEnvironment::with_capacity(flat.variables.len());
+    values.enumeration_type_declarations = Arc::new(
+        flat.type_ids_by_def_id
+            .iter()
+            .filter_map(|(declaration, type_id)| {
+                flat.enumeration_type_roots
+                    .contains(type_id)
+                    .then_some(*declaration)
+            })
+            .collect(),
+    );
     for (name, variable) in &flat.variables {
         let shape = concrete_dimensions(&variable.dims, variable.source_span, "model variable")?;
         match constants.get(name.as_str()) {
@@ -1435,9 +1464,13 @@ fn concrete_model_shapes(
     values.insert(VarName::new("time"), Vec::new());
     // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,
     // so a dimension written over a literal is an exact Integer extent.
+    let mut enumeration_literals = HashSet::with_capacity(flat.enum_literal_ordinals.len());
     for (name, ordinal) in &flat.enum_literal_ordinals {
-        values.bind_scalar_value(VarName::new(name), EvalValue::Integer(*ordinal));
+        let name = VarName::new(name);
+        enumeration_literals.insert(name.clone());
+        values.bind_scalar_value(name, EvalValue::Integer(*ordinal));
     }
+    values.enumeration_literals = Arc::new(enumeration_literals);
     Ok(values)
 }
 
@@ -1974,6 +2007,63 @@ mod tests {
         }
         function.add_output(output);
         function
+    }
+
+    fn enumeration_reference(name: &str, declaration: DefId, span: Span) -> Expression {
+        let component_ref = rumoca_core::ComponentReference::construct(
+            false,
+            span,
+            vec![rumoca_core::ComponentRefPart {
+                ident: "Choice".to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: declaration,
+            }],
+        )
+        .expect("fixture enumeration reference has exact identity");
+        Expression::VarRef {
+            name: Reference::with_component_reference(name, component_ref),
+            subscripts: Vec::new(),
+            span,
+        }
+    }
+
+    #[test]
+    fn enum_literal_shape_requires_catalog_and_enumeration_type_identity() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("enum_shape.mo", "Choice.active;");
+        let span = Span::from_offsets(source, 0, 13);
+        let enum_declaration = DefId::new(81);
+        let other_declaration = DefId::new(82);
+        let enum_type = TypeId::new(91);
+        let literal_name = "Pkg.Choice.active";
+        let mut model = flat::Model::new();
+        model.type_ids_by_def_id.insert(enum_declaration, enum_type);
+        model.enumeration_type_roots.insert(enum_type);
+        model
+            .enum_literal_ordinals
+            .insert(literal_name.to_string(), 1);
+        let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+            .expect("the fixture model has a valid shape environment");
+        let exact = enumeration_reference(literal_name, enum_declaration, span);
+        assert_eq!(
+            analysis
+                .expression_shape(&exact, analysis.model_values())
+                .expect("an exact cataloged enumeration literal is a scalar"),
+            Vec::<u32>::new()
+        );
+
+        let forged = enumeration_reference(literal_name, other_declaration, span);
+        let Err(error) = analysis.expression_shape(&forged, analysis.model_values()) else {
+            panic!("catalog spelling without enumeration type identity must be rejected");
+        };
+        assert!(matches!(
+            error,
+            ToDaeError::UnresolvedReference {
+                name,
+                span: error_span,
+            } if name == literal_name && error_span == span
+        ));
     }
 
     fn call(extent: usize, span: Span) -> flat::Equation {
