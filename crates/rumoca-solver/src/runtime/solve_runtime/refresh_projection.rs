@@ -385,5 +385,6 @@ pub(super) fn seed_error_allows_projection(error: &RuntimeSolveError) -> bool {
         error,
         RuntimeSolveError::NonFiniteValue { .. }
             | RuntimeSolveError::RefreshTargetUnassignable { .. }
+            | RuntimeSolveError::RefreshTargetSingular { .. }
     )
 }

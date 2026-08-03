@@ -313,6 +313,9 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
             unassignable @ Runtime::RefreshTargetUnassignable { .. } => Self::Evaluation {
                 message: unassignable.to_string(),
             },
+            singular @ Runtime::RefreshTargetSingular { .. } => Self::Evaluation {
+                message: singular.to_string(),
+            },
             Runtime::NonFiniteDerivative { state_name } => Self::NonFiniteDerivative { state_name },
             non_finite @ Runtime::NonFiniteValue { .. } => Self::Evaluation {
                 message: non_finite.to_string(),

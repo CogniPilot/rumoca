@@ -73,7 +73,20 @@ use refresh_projection::*;
 
 impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
     fn from(value: solve_eval::EvalSolveError) -> Self {
-        Self::solve_ir_with_span(value.to_string(), value.source_span())
+        match value {
+            EvalSolveError::SingularTargetAssignment {
+                row,
+                target_y_index,
+                coefficient,
+                span,
+            } => Self::RefreshTargetSingular {
+                row,
+                target_y_index,
+                coefficient,
+                span,
+            },
+            error => Self::solve_ir_with_span(error.to_string(), error.source_span()),
+        }
     }
 }
 

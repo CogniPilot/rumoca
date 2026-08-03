@@ -1446,6 +1446,29 @@ fn refresh_iteration_propagates_semantic_errors_and_restores_snapshot() {
 }
 
 #[test]
+fn singular_affine_seed_falls_back_to_preserved_projection() {
+    let span = test_span("singular_affine_seed.mo");
+    let error: RuntimeSolveError = EvalSolveError::SingularTargetAssignment {
+        row: 7,
+        target_y_index: 0,
+        coefficient: -0.0,
+        span: Some(span),
+    }
+    .into();
+
+    assert!(matches!(
+        &error,
+        RuntimeSolveError::RefreshTargetSingular {
+            row: 7,
+            target_y_index: 0,
+            coefficient,
+            span: Some(error_span),
+        } if *coefficient == 0.0 && *error_span == span
+    ));
+    assert!(seed_error_allows_projection(&error));
+}
+
+#[test]
 fn refresh_projects_complete_system_with_empty_causal_schedule() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {

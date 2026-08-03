@@ -30,6 +30,17 @@ pub enum RuntimeSolveError {
         span: Option<rumoca_core::Span>,
     },
 
+    #[error(
+        "algebraic refresh row {row} cannot isolate y[{target_y_index}]: singular coefficient {coefficient}{}",
+        span_suffix(*.span)
+    )]
+    RefreshTargetSingular {
+        row: usize,
+        target_y_index: usize,
+        coefficient: f64,
+        span: Option<rumoca_core::Span>,
+    },
+
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
 
@@ -67,6 +78,7 @@ impl RuntimeSolveError {
         match self {
             Self::SolveIr { span, .. }
             | Self::RefreshTargetUnassignable { span, .. }
+            | Self::RefreshTargetSingular { span, .. }
             | Self::NonFiniteValue { span, .. } => *span,
             _ => None,
         }
