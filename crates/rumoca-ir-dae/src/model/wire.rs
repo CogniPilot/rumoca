@@ -1232,7 +1232,33 @@ fn rebuild_node<'dae>(
         ExprNodeWire::FunctionFoldParameter { .. } | ExprNodeWire::FunctionFoldOutput { .. } => {
             Err(malformed("expressions.nodes.function_fold"))
         }
+        node @ ExprNodeWire::ClockTransfer { .. } => {
+            rebuild_clock_transfer(ids, at, node, provenance)
+        }
     }
+}
+
+fn rebuild_clock_transfer<'dae>(
+    ids: &WireIds<'dae>,
+    at: ExpressionAt<'_, 'dae>,
+    node: &ExprNodeWire,
+    provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let ExprNodeWire::ClockTransfer {
+        kind,
+        source,
+        source_clock,
+        target_clock,
+    } = node
+    else {
+        return Err(malformed("expressions.nodes.clock_transfer"));
+    };
+    at.clock_transfer(
+        *kind,
+        mapped(&ids.expressions, *source, "expression", provenance)?,
+        mapped(&ids.clocks, *source_clock, "clock", provenance)?.clock_id(),
+        mapped(&ids.clocks, *target_clock, "clock", provenance)?.clock_id(),
+    )
 }
 
 fn rebuild_range<'dae>(

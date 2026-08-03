@@ -242,19 +242,16 @@ fn build_checked<'dae>(
         construction.register_predefined_string(declaration)?;
     }
     let value_types = reserve_value_types(flat, analysis, construction)?;
+    let clocks = lower_analysis_clocks(construction, flat, analysis)?;
     let no_function_ids = HashMap::new();
     let no_coordinate_instances = HashMap::new();
-    let analysis_functions = FunctionRegistry {
+    let analysis_functions = model_function_registry(
         flat,
-        shapes: &analysis.function_shapes,
-        ids: &no_function_ids,
-        comprehension_plans: &analysis.comprehension_plans,
-        record_array_fields: &analysis.record_array_fields,
-        constants: &analysis.constants,
-        delay_plans: &analysis.delay_plans,
-        coordinate_instances: &no_coordinate_instances,
-        expression_events: &analysis.expression_events,
-    };
+        analysis,
+        &no_function_ids,
+        &no_coordinate_instances,
+        &clocks,
+    );
     let variable_identities = insert_variable_identities(
         flat,
         analysis,
@@ -277,6 +274,8 @@ fn build_checked<'dae>(
             delay_plans: &analysis.delay_plans,
             coordinate_instances: coordinates.by_instance(),
             expression_events: &analysis.expression_events,
+            clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
+            clocks: &clocks,
         },
         &analysis.function_plans,
     )?;
@@ -290,6 +289,8 @@ fn build_checked<'dae>(
         delay_plans: &analysis.delay_plans,
         coordinate_instances: coordinates.by_instance(),
         expression_events: &analysis.expression_events,
+        clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
+        clocks: &clocks,
     };
     define_reserved_variables(
         construction,
@@ -303,7 +304,6 @@ fn build_checked<'dae>(
         variable_plan,
         variable_identities.reserved,
     )?;
-    let clocks = lower_clocks(construction, flat, &analysis.clock_plans)?;
     lower_clocked_value_owners(
         construction,
         flat,
@@ -335,6 +335,41 @@ fn build_checked<'dae>(
         discrete_values,
     )?;
     lower_scheduled_time_events(construction, &analysis.expression_events)
+}
+
+fn model_function_registry<'scope, 'dae>(
+    flat: &'scope flat::Model,
+    analysis: &'scope Analysis,
+    ids: &'scope HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
+    coordinate_instances: &'scope HashMap<InstanceId, Coordinate<'dae>>,
+    clocks: &'scope LoweredClocks<'dae>,
+) -> FunctionRegistry<'scope, 'dae> {
+    FunctionRegistry {
+        flat,
+        shapes: &analysis.function_shapes,
+        ids,
+        comprehension_plans: &analysis.comprehension_plans,
+        record_array_fields: &analysis.record_array_fields,
+        constants: &analysis.constants,
+        delay_plans: &analysis.delay_plans,
+        coordinate_instances,
+        expression_events: &analysis.expression_events,
+        clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
+        clocks,
+    }
+}
+
+fn lower_analysis_clocks<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    flat: &flat::Model,
+    analysis: &Analysis,
+) -> Result<LoweredClocks<'dae>, dae::DaeConstructionError> {
+    lower_clocks(
+        construction,
+        flat,
+        &analysis.clock_plans,
+        &analysis.clocked_value_owners,
+    )
 }
 
 /// Build the MLS §8.5 time events proven by expression analysis.

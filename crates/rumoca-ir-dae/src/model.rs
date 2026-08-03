@@ -102,7 +102,9 @@ use crate::{
 ///
 /// 24 appends `DaeGeneration::RuntimeDiscontinuity`. Runtime quotient owners
 /// use this provenance for their generated continuous root surfaces.
-pub const DAE_SCHEMA_VERSION: u16 = 24;
+///
+/// 25 appends the checked cross-clock value-transfer expression node.
+pub const DAE_SCHEMA_VERSION: u16 = 25;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

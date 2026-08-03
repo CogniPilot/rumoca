@@ -136,6 +136,7 @@ fn push_children<'dae>(
             pending.push(range.start().expression());
         }
         ExpressionOperation::Unary { operand, .. } => pending.push(operand),
+        ExpressionOperation::ClockTransfer { source, .. } => pending.push(source),
         ExpressionOperation::Binary { lhs, rhs, .. } => {
             pending.push(rhs);
             pending.push(lhs);

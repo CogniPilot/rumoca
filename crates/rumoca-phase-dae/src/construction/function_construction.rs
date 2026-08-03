@@ -14,6 +14,8 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     /// registry lowers. Function bodies never occupy those spans, so the same
     /// registry serves both without leaking model events into functions.
     pub(super) expression_events: &'shape ExpressionEventPlans,
+    pub(super) clocked_coordinate_owners: &'shape HashMap<InstanceId, ClockPlan>,
+    pub(super) clocks: &'shape LoweredClocks<'dae>,
 }
 
 impl<'dae> FunctionRegistry<'_, 'dae> {
@@ -117,6 +119,8 @@ pub(super) struct FunctionRegistryInput<'shape, 'dae> {
     pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
     pub(super) coordinate_instances: &'shape HashMap<rumoca_core::InstanceId, Coordinate<'dae>>,
     pub(super) expression_events: &'shape ExpressionEventPlans,
+    pub(super) clocked_coordinate_owners: &'shape HashMap<InstanceId, ClockPlan>,
+    pub(super) clocks: &'shape LoweredClocks<'dae>,
 }
 
 impl<'shape, 'dae> FunctionRegistry<'shape, 'dae> {
@@ -135,6 +139,8 @@ impl<'shape, 'dae> FunctionRegistry<'shape, 'dae> {
             delay_plans: input.delay_plans,
             coordinate_instances: input.coordinate_instances,
             expression_events: input.expression_events,
+            clocked_coordinate_owners: input.clocked_coordinate_owners,
+            clocks: input.clocks,
         }
     }
 }

@@ -315,6 +315,12 @@ pub(crate) enum ExprNode {
         carried: u32,
         definition_ordinal: u32,
     },
+    ClockTransfer {
+        kind: crate::ClockTransferKind,
+        source: u32,
+        source_clock: u32,
+        target_clock: u32,
+    },
 }
 
 impl ExprNode {
@@ -331,7 +337,10 @@ impl ExprNode {
             | Self::FunctionFoldOutput { .. } => {}
             Self::Unary { operand, .. }
             | Self::Field { base: operand, .. }
-            | Self::Comprehension { body: operand, .. } => visit(*operand),
+            | Self::Comprehension { body: operand, .. }
+            | Self::ClockTransfer {
+                source: operand, ..
+            } => visit(*operand),
             Self::Binary { lhs, rhs, .. } => {
                 visit(*lhs);
                 visit(*rhs);

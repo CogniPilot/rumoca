@@ -390,7 +390,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let derived_parameters = analyze_derived_parameters(flat, &roles)?;
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
     let clock_domains =
-        analyze_clocked_partitions(flat, &clocks, &mut roles, &mut expression_roles)?;
+        analyze_clocked_partitions(flat, &clocks, &constants, &mut roles, &mut expression_roles)?;
     validate_model_expressions(
         flat,
         &expression_roles,
@@ -563,6 +563,7 @@ impl Analysis {
 fn analyze_clocked_partitions(
     flat: &flat::Model,
     clocks: &ClockAnalysis,
+    constants: &EvalContext,
     roles: &mut HashMap<VarName, PlannedRole>,
     expression_roles: &mut HashMap<VarName, PlannedRole>,
 ) -> Result<ClockDomainAnalysis, ToDaeError> {
@@ -572,6 +573,7 @@ fn analyze_clocked_partitions(
         &clocks.plans,
         &clocks.equation_rows,
         &clocks.sampled_targets,
+        constants,
     )?;
     if !apply_clocked_partition_roles(flat, &domains.coordinate_owners, roles, expression_roles)? {
         return Ok(domains);
@@ -582,6 +584,7 @@ fn analyze_clocked_partitions(
         &clocks.plans,
         &clocks.equation_rows,
         &clocks.sampled_targets,
+        constants,
     )
 }
 

@@ -1,6 +1,7 @@
 mod arena;
 mod array_nodes;
 mod call_nodes;
+mod clock_nodes;
 mod derived_facts;
 mod function_facts;
 mod function_nodes;
@@ -19,10 +20,10 @@ use serde::{Deserialize, Serialize};
 use crate::model::{FunctionReadSet, Storage, checked_u32, invalid_arity, unknown};
 use crate::temporal::{DelayEntry, DelayKind};
 use crate::{
-    AlgebraicId, DaeConstructionError, DaeProvenance, DelayCoordinate, DelayId, DiscreteRealId,
-    DiscreteValueId, DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId,
-    FunctionId, FunctionParameterId, FunctionValueId, InputId, ParameterId, PeriodicClockId,
-    PositiveParameter, StateId, ValueTypeId,
+    AlgebraicId, ClockId, ClockTransferKind, DaeConstructionError, DaeProvenance, DelayCoordinate,
+    DelayId, DiscreteRealId, DiscreteValueId, DomainBinderId, DomainId, ExprId,
+    FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
+    InputId, ParameterId, PeriodicClockId, PositiveParameter, StateId, ValueTypeId,
 };
 use derived_facts::{definition_type, max_variability, merge_binder_domain, merged_binder_domain};
 use function_facts::{FunctionCallFact, node_function_facts};

@@ -1230,6 +1230,7 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::FunctionValue { .. } => ExpressionKind::FunctionValue,
             ExprNode::FunctionFoldParameter { .. } => ExpressionKind::FunctionFoldParameter,
             ExprNode::FunctionFoldOutput { .. } => ExpressionKind::FunctionFoldOutput,
+            ExprNode::ClockTransfer { .. } => ExpressionKind::ClockTransfer,
         }
     }
 
@@ -1250,6 +1251,7 @@ impl<'dae> ExpressionView<'dae> {
             | ExprNode::Builtin { .. }
             | ExprNode::Call { .. }
             | ExprNode::StringConversion { .. } => self.application_operation(),
+            ExprNode::ClockTransfer { .. } => self.application_operation(),
             ExprNode::FunctionValue { .. }
             | ExprNode::FunctionFoldParameter { .. }
             | ExprNode::FunctionFoldOutput { .. } => self.function_operation(),
@@ -1356,6 +1358,17 @@ impl<'dae> ExpressionView<'dae> {
                         significant_digits: significant_digits.map(ExprId::from_raw),
                     },
                 },
+            },
+            ExprNode::ClockTransfer {
+                kind,
+                source,
+                source_clock,
+                target_clock,
+            } => ExpressionOperation::ClockTransfer {
+                kind: *kind,
+                source: ExprId::from_raw(*source),
+                source_clock: ClockId::from_raw(*source_clock),
+                target_clock: ClockId::from_raw(*target_clock),
             },
             _ => unreachable!("expression operation family is selected from its checked node"),
         }
@@ -1638,6 +1651,12 @@ pub enum ExpressionOperation<'dae> {
         value: ExprId<'dae>,
         format: StringConversionFormatView<'dae>,
     },
+    ClockTransfer {
+        kind: crate::ClockTransferKind,
+        source: ExprId<'dae>,
+        source_clock: ClockId<'dae>,
+        target_clock: ClockId<'dae>,
+    },
     FunctionValue {
         value: FunctionValueId<'dae>,
         definition: FunctionDefinitionView<'dae>,
@@ -1724,6 +1743,7 @@ pub enum ExpressionKind {
     FunctionValue,
     FunctionFoldParameter,
     FunctionFoldOutput,
+    ClockTransfer,
 }
 
 #[derive(Clone, Copy)]

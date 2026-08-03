@@ -458,6 +458,7 @@ pub(super) fn reject_model_coordinate(
         | ExprNode::Builtin { .. }
         | ExprNode::Call { .. }
         | ExprNode::StringConversion { .. } => return Ok(()),
+        ExprNode::ClockTransfer { .. } => "clock transfer",
         ExprNode::Coordinate(Coordinate::Parameter(_)) => "parameter",
         ExprNode::Coordinate(Coordinate::Input(_)) => "input",
         ExprNode::Coordinate(Coordinate::State(_)) => "state",

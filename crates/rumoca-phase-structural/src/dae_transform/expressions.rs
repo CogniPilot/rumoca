@@ -175,6 +175,20 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             | dae::ExpressionOperation::FunctionFoldOutput { .. } => {
                 unreachable!("function-owner reconstruction seeds scoped expression identities")
             }
+            dae::ExpressionOperation::ClockTransfer {
+                kind,
+                source,
+                source_clock,
+                target_clock,
+            } => {
+                let source = self.rebuild(source)?;
+                self.target.at(provenance).clock_transfer(
+                    kind,
+                    source,
+                    self.clocks[source_clock.index() as usize].clock_id(),
+                    self.clocks[target_clock.index() as usize].clock_id(),
+                )?
+            }
         };
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)

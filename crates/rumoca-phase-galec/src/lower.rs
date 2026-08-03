@@ -1055,6 +1055,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             dae::ExpressionOperation::Coordinate(coordinate) => {
                 return self.coordinate_at(coordinate, indices, node.provenance().span());
             }
+            dae::ExpressionOperation::ClockTransfer { .. } => {
+                return Err(unsupported(
+                    "clock-transfer",
+                    "cross-clock value transfer is not representable in scalar GALEC".to_owned(),
+                    node.provenance().span(),
+                ));
+            }
             dae::ExpressionOperation::Unary { operator, operand } => {
                 self.lower_unary_at(operator, operand, indices, node.provenance().span())?
             }

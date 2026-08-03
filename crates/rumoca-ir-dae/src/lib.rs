@@ -126,7 +126,9 @@ mod model;
 mod provenance;
 mod temporal;
 
-pub use clocks::{ClockOperation, ClockOwnershipView, ClockView, ClockedVariableKind, Clocks};
+pub use clocks::{
+    ClockOperation, ClockOwnershipView, ClockTransferKind, ClockView, ClockedVariableKind, Clocks,
+};
 pub use conditions::{
     ConditionInput, ConditionOperation, ConditionView, Conditions, RelationView, RootView,
 };

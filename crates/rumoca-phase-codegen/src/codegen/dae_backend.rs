@@ -454,6 +454,18 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             carried,
             definition,
         } => project_function_fold_operation("function_fold_output", fold, carried, definition),
+        dae::ExpressionOperation::ClockTransfer {
+            kind,
+            source,
+            source_clock,
+            target_clock,
+        } => json!({
+            "kind": "clock_transfer",
+            "conversion": kind,
+            "source": source.index(),
+            "source_clock": source_clock.index(),
+            "target_clock": target_clock.index(),
+        }),
     }
 }
 

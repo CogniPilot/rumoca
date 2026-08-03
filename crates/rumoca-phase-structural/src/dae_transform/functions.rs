@@ -824,6 +824,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 push(range.start().expression());
             }
             dae::ExpressionOperation::Unary { operand, .. } => push(operand),
+            dae::ExpressionOperation::ClockTransfer { source, .. } => push(source),
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
                 push(rhs);
                 push(lhs);

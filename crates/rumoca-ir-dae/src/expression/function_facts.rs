@@ -67,6 +67,7 @@ pub(super) fn node_function_facts(
             fold.merge_expression(storage, *base, at)?;
             fold.merge_subscripts(storage, *subscripts, at)?;
         }
+        ExprNode::ClockTransfer { source, .. } => fold.merge_expression(storage, *source, at)?,
         ExprNode::ArrayUpdate {
             base,
             value,
@@ -202,6 +203,7 @@ fn leaf_function_facts(
         | ExprNode::Builtin { .. }
         | ExprNode::Call { .. }
         | ExprNode::StringConversion { .. } => Ok(None),
+        ExprNode::ClockTransfer { .. } => Ok(None),
     }
 }
 
