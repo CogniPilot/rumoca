@@ -163,9 +163,8 @@ end P;
         .expect("the inherited algorithm and lexical modifier lower to DAE");
 }
 
-#[test]
-fn nested_modified_inherited_machine_keeps_internal_modifier_identities() {
-    let source = r#"
+fn nested_modified_inherited_machine_source() -> &'static str {
+    r#"
 package P
   function convertAlpha
     input Real alpha1;
@@ -218,7 +217,12 @@ package P
     Machine machine(alpha20=data.alpha20, useThermalPort=true);
   end Example;
 end P;
-"#;
+"#
+}
+
+#[test]
+fn nested_modified_inherited_machine_keeps_internal_modifier_identities() {
+    let source = nested_modified_inherited_machine_source();
     let ast::InstancedTree { tree, mut overlay } = instanced_tree(source, "P.Example");
     let projected_field = overlay
         .components
