@@ -6,6 +6,49 @@
 
 use super::*;
 
+/// SOLVE-C11 preserves a checked dynamic deadline as a pure scalar program.
+/// The runtime can therefore re-evaluate the absolute event instant after any
+/// intervening event without rediscovering source relation semantics.
+#[test]
+fn dynamic_time_event_deadline_lowers_to_owned_row() {
+    let source = TestSource::new("parameter Real nextEvent;");
+    let owner = source.at(0, 25);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                owner,
+            )
+        })?;
+        let next_event = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("nextEvent"),
+                real,
+                owner,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let deadline = model.expressions(|expressions| {
+            expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(next_event))
+        })?;
+        model.events(|events| events.dynamic_time_event(deadline, owner))?;
+        Ok(())
+    })
+    .expect("dynamic deadline is valid by construction");
+
+    let solve = lower_solve_problem(&model).expect("dynamic deadline lowers to Solve IR");
+    assert!(solve.events.scheduled_time_events.is_empty());
+    assert!(solve.events.root_conditions.is_empty());
+    assert_eq!(solve.events.dynamic_time_event_rhs.programs().len(), 1);
+    assert!(matches!(
+        solve.events.dynamic_time_event_rhs.programs()[0].as_slice(),
+        [LinearOp::LoadP { .. }, LinearOp::StoreOutput { .. }]
+    ));
+}
+
 /// SOLVE-C12 maps the typed DAE terminal coordinate to one runtime P-slot and
 /// marks the event partition so the driver activates that slot only at stop
 /// time. The action program therefore remains a pure load from `(y, p, t)`.

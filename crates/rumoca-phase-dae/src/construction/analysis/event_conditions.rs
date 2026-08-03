@@ -124,7 +124,6 @@ fn validate_condition_expression_in_context(
         // that spelling of `initial()`, and would let a `sample(...)` element
         // reach lowering with no collected clock lattice.
         Expression::Array { elements, .. } => {
-            reject_rescheduling_initial_activation(elements, constants)?;
             for element in elements {
                 validate_condition_expression_in_context(
                     element,
@@ -210,7 +209,6 @@ pub(super) fn validate_algorithm_condition(
         }
         // Same MLS §8.5 vector activation, reached through `lower_algorithm_when`.
         Expression::Array { elements, .. } => {
-            reject_rescheduling_initial_activation(elements, constants)?;
             for element in elements {
                 validate_algorithm_condition(element, roles, states, constants, sample_lattices)?;
             }
@@ -218,58 +216,6 @@ pub(super) fn validate_algorithm_condition(
         }
         _ => validate_expression(expression, roles, states),
     }
-}
-
-/// Reject the one vector activation this module newly made reachable and cannot
-/// yet simulate: `initial()` beside a `time` threshold the event itself moves.
-///
-/// `when {time >= pre(nextEvent), initial()} then nextEvent := …` is the shape
-/// `Modelica.Blocks.Sources.TimeTable` and `CombiTimeTable` are written in. The
-/// reschedule it asks for has no checked DAE owner, and what rumoca produces is
-/// not a missing trace but a wrong one — the accumulating threshold lags, so the
-/// `when` fires a few times at the wrong instants and stops.
-///
-/// The gate is `initial()`, and that is not arbitrary: it is exactly the door
-/// element-wise validation opened. A vector activation of plain relations was
-/// already validated and accepted before — `when {time >= (pre(count) + 1) *
-/// period, false}` simulates correctly and is covered by
-/// `periodic_source_counter_regression`, and the same lag is reachable through
-/// the scalar `when time >= pre(next)` either way, so neither is this module's
-/// to reject. What was *not* reachable was any vector carrying `initial()`,
-/// because `initial()` had no owner in plain expression validation and failed
-/// the model outright. Validating the elements properly is right, and buys the
-/// static forms their agreement with OpenModelica; this keeps the accident it
-/// removed from turning into a silently wrong trace, and nothing wider.
-fn reject_rescheduling_initial_activation(
-    elements: &[Expression],
-    constants: &EvalContext,
-) -> Result<(), ToDaeError> {
-    let enables_initialization = elements.iter().any(|element| {
-        matches!(
-            element,
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Initial,
-                ..
-            }
-        )
-    });
-    if !enables_initialization {
-        return Ok(());
-    }
-    for element in elements {
-        let Expression::Binary { op, lhs, rhs, span } = element else {
-            continue;
-        };
-        if is_rescheduling_time_relation(op, lhs, rhs, constants) {
-            return Err(ToDaeError::unsupported_runtime_operator(
-                "when",
-                "an `initial()` vector activation whose `time` threshold is moved by the event \
-                 itself needs a rescheduled time event, which has no checked DAE owner yet",
-                *span,
-            ));
-        }
-    }
-    Ok(())
 }
 
 pub(super) fn evaluate_sample_schedule(

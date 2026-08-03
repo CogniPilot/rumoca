@@ -464,7 +464,9 @@ fn sim_009_runtime_metadata_consistent_for_hybrid_model() {
                 let event = view
                     .time_event(view.time_event_id(index).expect("dense time event"))
                     .expect("checked time event resolves");
-                event.instant().numerator() == 1 && event.instant().denominator() == 2
+                event
+                    .instant()
+                    .is_some_and(|instant| instant.numerator() == 1 && instant.denominator() == 2)
             })),
         "time-driven discontinuity should be reflected in scheduled_time_events"
     );

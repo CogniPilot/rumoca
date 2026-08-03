@@ -46,8 +46,8 @@ use algorithm::{
 use analysis::{
     AggregateDiscreteConnections, Analysis, ClockPlan, ComprehensionKey, ComprehensionPlans,
     DelayPlan, DerivedParameterPlan, DiscreteValueAssignmentPlan, DiscreteValueTopologyPlan,
-    EquationPartition, ExpressionEventPlan, ExpressionEventPlans, ExternalArgumentPlan,
-    ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
+    DynamicTimeEventOperand, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
+    ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
     FunctionStatementPlan, FunctionValueSeed, ModelAlgorithmPlan, PlannedRole,
     RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, SemiLinearRules, analyze,

@@ -30,7 +30,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     )?;
     lower_condition_memory(view, layout, clocks, &mut discrete)?;
     let roots = lower_roots(view, layout, clocks, &discrete.relation_memory_owners)?;
-    let scheduled_time_events = lower_time_events(view);
+    let (scheduled_time_events, dynamic_time_event_rhs) = lower_time_events(view, layout)?;
     let delays = lower_delays(view, layout)?;
     let discrete = discrete.finish()?;
     let events = solve::SolveEventPartition {
@@ -39,6 +39,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
         root_zero_domains: roots.zero_domains,
         condition_memory_parameter_indices: layout.condition_memory.clone(),
         scheduled_time_events,
+        dynamic_time_event_rhs,
         action_conditions: action_conditions.into_scalar_block()?,
         actions: event_actions,
         has_terminal_event: view.terminal_count() != 0,
@@ -1721,18 +1722,29 @@ fn root_zero_domain<'dae>(
     }
 }
 
-fn lower_time_events(view: dae::DaeView<'_>) -> Vec<f64> {
-    (0..view.time_event_count())
-        .map(|index| {
-            let id = view
-                .time_event_id(index)
-                .expect("dense time event identity resolves");
-            view.time_event(id)
-                .expect("checked time event identity resolves")
-                .instant()
-                .to_f64()
-        })
-        .collect()
+fn lower_time_events<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+) -> Result<(Vec<f64>, solve::ScalarProgramBlock), LowerError> {
+    let mut scheduled = Vec::new();
+    let mut dynamic = ScalarRows::default();
+    for index in 0..view.time_event_count() {
+        let id = view
+            .time_event_id(index)
+            .expect("dense time event identity resolves");
+        let event = view
+            .time_event(id)
+            .expect("checked time event identity resolves");
+        match event.operation() {
+            dae::TimeEventOperation::Static(instant) => scheduled.push(instant.to_f64()),
+            dae::TimeEventOperation::Dynamic(deadline) => dynamic.push(
+                ScalarCompiler::new(view, layout, None).program(deadline, 0)?,
+                event.provenance().span(),
+                dynamic.len(),
+            ),
+        }
+    }
+    Ok((scheduled, dynamic.into_scalar_block()?))
 }
 
 fn expression_pre_mode<'dae>(

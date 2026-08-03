@@ -158,6 +158,7 @@ fn time_relation_in_discrete_binding_owns_its_scheduled_instant() {
             .time_event(view.time_event_id(0).unwrap())
             .unwrap()
             .instant()
+            .unwrap()
             .to_f64();
         assert!((instant - 0.5).abs() < 1.0e-12);
     });
@@ -205,6 +206,7 @@ fn every_time_ordering_owns_a_scheduled_instant_and_no_root() {
                 .time_event(view.time_event_id(0).unwrap())
                 .unwrap()
                 .instant()
+                .unwrap()
                 .to_f64();
             assert!(
                 (instant - 0.5).abs() < 1.0e-12,
@@ -344,6 +346,7 @@ fn parameter_threshold_still_resolves_to_an_exact_instant() {
             .time_event(view.time_event_id(0).unwrap())
             .unwrap()
             .instant()
+            .unwrap()
             .to_f64();
         assert!(
             (instant - 0.5).abs() < 1.0e-12,
@@ -352,15 +355,13 @@ fn parameter_threshold_still_resolves_to_an_exact_instant() {
     });
 }
 
-/// A threshold that moves with the model state is not knowable in advance.
+/// A threshold that moves only at events owns a dynamic deadline.
 ///
-/// `when time >= pre(y)` reschedules itself, so the instant is not known before
-/// the event that sets it and MLS §8.5's advance schedule does not apply: the
-/// activation keeps its zero crossing. This is the boundary of the
-/// classification — without it the periodic-source counter idiom of
-/// `Modelica.Blocks.Sources.Pulse` would lose its event.
+/// `when time >= pre(y)` reschedules itself, so the instant is re-evaluated
+/// after every event boundary. The checked deadline owner replaces the generic
+/// zero crossing that an unrelated solver reset could lose.
 #[test]
-fn state_dependent_threshold_keeps_its_zero_crossing() {
+fn event_dependent_threshold_owns_a_dynamic_time_event() {
     let text = "model M discrete Real y; equation \
                 when time >= pre(y) then y = 1.0; end when; end M;";
     let source = TestSource::new(text);
@@ -383,16 +384,19 @@ fn state_dependent_threshold_keeps_its_zero_crossing() {
 
     let dae = construct(&model, source.map).unwrap();
     dae.inspect(|view| {
-        assert_eq!(
-            view.time_event_count(),
-            0,
-            "a self-rescheduling threshold has no instant known in advance"
-        );
-        assert_eq!(
-            view.root_count(),
-            1,
-            "so the activation must keep the zero crossing that locates it"
-        );
+        assert_eq!(view.time_event_count(), 1);
+        assert_eq!(view.root_count(), 0);
+        let event = view
+            .time_event(view.time_event_id(0).unwrap())
+            .expect("dynamic time-event identity resolves");
+        let deadline = event
+            .deadline()
+            .expect("event-dependent threshold owns a deadline expression");
+        let deadline = view
+            .expression(deadline)
+            .expect("checked deadline expression resolves");
+        assert_eq!(deadline.variability(), dae::ExpressionVariability::Discrete);
+        assert_eq!(deadline.value_type().scalar_type(), dae::ScalarType::Real);
     });
 }
 
@@ -504,6 +508,7 @@ fn each_instance_of_a_replicated_activation_owns_its_own_instant() {
                 view.time_event(view.time_event_id(index).unwrap())
                     .unwrap()
                     .instant()
+                    .unwrap()
                     .to_f64()
             })
             .collect::<Vec<_>>();

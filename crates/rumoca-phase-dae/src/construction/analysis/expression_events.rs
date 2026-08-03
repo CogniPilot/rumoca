@@ -49,8 +49,18 @@ pub(in crate::construction) enum ExpressionEventPlan {
     /// A relation over `time` and parameter-evaluable operands alone. MLS §8.5
     /// gives its instant exactly, so it is scheduled instead of searched for.
     TimeEvent(ClockRational),
+    /// A relation between `time` and an event-invariant model expression. The
+    /// expression gives the next absolute event instant and is re-evaluated
+    /// after every event boundary.
+    DynamicTimeEvent(DynamicTimeEventOperand),
     /// `sample(start, interval)`, the MLS §3.7.5 periodic Boolean operator.
     SampleClock(rumoca_core::PeriodicClockSchedule),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::construction) enum DynamicTimeEventOperand {
+    Lhs,
+    Rhs,
 }
 
 /// One collected owner: the operands that name it, and the plan proved for them.
@@ -154,6 +164,7 @@ impl ExpressionEventPlan {
         match (self, other) {
             (Self::StateRelation, Self::StateRelation) => true,
             (Self::TimeEvent(left), Self::TimeEvent(right)) => left == right,
+            (Self::DynamicTimeEvent(left), Self::DynamicTimeEvent(right)) => left == right,
             (Self::SampleClock(left), Self::SampleClock(right)) => left == right,
             _ => false,
         }
@@ -187,11 +198,11 @@ pub(super) fn analyze_expression_events(
     }
     for chain in &flat.when_chains {
         for branch in chain.branches() {
-            collect_activation_time_events(&branch.condition, constants, &mut plans)?;
+            collect_activation_time_events(&branch.condition, &scope, &mut plans)?;
         }
     }
     for algorithm in &flat.algorithms {
-        collect_statement_activation_time_events(&algorithm.statements, constants, &mut plans)?;
+        collect_statement_activation_time_events(&algorithm.statements, &scope, &mut plans)?;
     }
     Ok(plans)
 }
@@ -212,7 +223,7 @@ pub(super) fn analyze_expression_events(
 /// make `lower_expression_event` build that root a second time.
 fn collect_activation_time_events(
     expression: &Expression,
-    constants: &EvalContext,
+    scope: &EventScope<'_>,
     plans: &mut ExpressionEventPlans,
 ) -> Result<(), ToDaeError> {
     match expression {
@@ -220,19 +231,19 @@ fn collect_activation_time_events(
             op: OpUnary::Not,
             rhs,
             ..
-        } => collect_activation_time_events(rhs, constants, plans)?,
+        } => collect_activation_time_events(rhs, scope, plans)?,
         Expression::Binary {
             op: OpBinary::And | OpBinary::Or,
             lhs,
             rhs,
             ..
         } => {
-            collect_activation_time_events(lhs, constants, plans)?;
-            collect_activation_time_events(rhs, constants, plans)?;
+            collect_activation_time_events(lhs, scope, plans)?;
+            collect_activation_time_events(rhs, scope, plans)?;
         }
         Expression::Array { elements, .. } => {
             for element in elements {
-                collect_activation_time_events(element, constants, plans)?;
+                collect_activation_time_events(element, scope, plans)?;
             }
         }
         Expression::BuiltinCall {
@@ -240,13 +251,19 @@ fn collect_activation_time_events(
             args,
             span,
         } => {
-            let schedule = evaluate_sample_schedule(args, constants, *span)?;
+            let schedule = evaluate_sample_schedule(args, scope.constants, *span)?;
             let operands: Vec<&Expression> = args.iter().collect();
             plans.insert(*span, &operands, ExpressionEventPlan::SampleClock(schedule))?;
         }
         Expression::Binary { op, lhs, rhs, span } if op.is_relational() => {
-            if let Some(instant) = time_event_instant(op, lhs, rhs, constants) {
+            if let Some(instant) = time_event_instant(op, lhs, rhs, scope.constants) {
                 plans.insert(*span, &[lhs, rhs], ExpressionEventPlan::TimeEvent(instant))?;
+            } else if let Some(operand) = dynamic_time_event_operand(op, lhs, rhs, scope) {
+                plans.insert(
+                    *span,
+                    &[lhs, rhs],
+                    ExpressionEventPlan::DynamicTimeEvent(operand),
+                )?;
             }
         }
         _ => {}
@@ -263,15 +280,15 @@ fn collect_activation_time_events(
 /// activations.
 fn collect_statement_activation_time_events(
     statements: &[rumoca_core::Statement],
-    constants: &EvalContext,
+    scope: &EventScope<'_>,
     plans: &mut ExpressionEventPlans,
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         match statement {
             rumoca_core::Statement::When { blocks, .. } => {
                 for block in blocks {
-                    collect_activation_time_events(&block.cond, constants, plans)?;
-                    collect_statement_activation_time_events(&block.stmts, constants, plans)?;
+                    collect_activation_time_events(&block.cond, scope, plans)?;
+                    collect_statement_activation_time_events(&block.stmts, scope, plans)?;
                 }
             }
             rumoca_core::Statement::If {
@@ -280,17 +297,17 @@ fn collect_statement_activation_time_events(
                 ..
             } => {
                 for block in cond_blocks {
-                    collect_statement_activation_time_events(&block.stmts, constants, plans)?;
+                    collect_statement_activation_time_events(&block.stmts, scope, plans)?;
                 }
                 if let Some(else_block) = else_block {
-                    collect_statement_activation_time_events(else_block, constants, plans)?;
+                    collect_statement_activation_time_events(else_block, scope, plans)?;
                 }
             }
             rumoca_core::Statement::For { equations, .. } => {
-                collect_statement_activation_time_events(equations, constants, plans)?;
+                collect_statement_activation_time_events(equations, scope, plans)?;
             }
             rumoca_core::Statement::While { block, .. } => {
-                collect_statement_activation_time_events(&block.stmts, constants, plans)?;
+                collect_statement_activation_time_events(&block.stmts, scope, plans)?;
             }
             _ => {}
         }
@@ -337,10 +354,13 @@ fn collect_event_owners(
         Expression::Binary { op, lhs, rhs, span }
             if op.is_relational() && !suppressed && relation_can_vary(expression, scope) =>
         {
-            let plan = time_event_instant(op, lhs, rhs, scope.constants).map_or(
-                ExpressionEventPlan::StateRelation,
-                ExpressionEventPlan::TimeEvent,
-            );
+            let plan = if let Some(instant) = time_event_instant(op, lhs, rhs, scope.constants) {
+                ExpressionEventPlan::TimeEvent(instant)
+            } else if let Some(operand) = dynamic_time_event_operand(op, lhs, rhs, scope) {
+                ExpressionEventPlan::DynamicTimeEvent(operand)
+            } else {
+                ExpressionEventPlan::StateRelation
+            };
             plans.insert(*span, &[lhs, rhs], plan)?;
         }
         _ => {}
@@ -349,6 +369,88 @@ fn collect_event_owners(
         collect_event_owners(child, suppressed, scope, plans)?;
     }
     Ok(())
+}
+
+/// Select the event-invariant operand of a direct `time` relation.
+///
+/// The selected expression is constant during continuous integration but may
+/// change during event iteration, so it is an absolute deadline rather than a
+/// continuously searched root. Restricting the time-bearing side to the typed
+/// `time` coordinate keeps the deadline expression exact; wider symbolic affine
+/// isolation belongs in analysis before this proof is extended.
+fn dynamic_time_event_operand(
+    op: &OpBinary,
+    lhs: &Expression,
+    rhs: &Expression,
+    scope: &EventScope<'_>,
+) -> Option<DynamicTimeEventOperand> {
+    if !matches!(
+        op,
+        OpBinary::Lt | OpBinary::Le | OpBinary::Gt | OpBinary::Ge
+    ) {
+        return None;
+    }
+    match (is_time_coordinate(lhs), is_time_coordinate(rhs)) {
+        (true, false)
+            if eval_expr(rhs, scope.constants).is_err()
+                && expression_is_event_invariant(rhs, scope) =>
+        {
+            Some(DynamicTimeEventOperand::Rhs)
+        }
+        (false, true)
+            if eval_expr(lhs, scope.constants).is_err()
+                && expression_is_event_invariant(lhs, scope) =>
+        {
+            Some(DynamicTimeEventOperand::Lhs)
+        }
+        _ => None,
+    }
+}
+
+fn is_time_coordinate(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "time" && subscripts.is_empty()
+    )
+}
+
+/// Whether an expression can change only at an event boundary.
+fn expression_is_event_invariant(expression: &Expression, scope: &EventScope<'_>) -> bool {
+    match expression {
+        Expression::VarRef { name, .. } => matches!(
+            scope.roles.get(name.var_name()),
+            Some(
+                PlannedRole::Parameter
+                    | PlannedRole::Constant
+                    | PlannedRole::DiscreteReal
+                    | PlannedRole::DiscreteValue
+                    | PlannedRole::EnumerationLiteral
+            )
+        ),
+        // A pre-coordinate is fixed throughout integration even when its
+        // current coordinate is continuous.
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Pre,
+            args,
+            ..
+        } => {
+            !args.is_empty()
+                && args
+                    .iter()
+                    .all(|argument| !contains_time_coordinate(argument))
+        }
+        _ => expression_children(expression)
+            .into_iter()
+            .all(|child| expression_is_event_invariant(child, scope)),
+    }
+}
+
+fn contains_time_coordinate(expression: &Expression) -> bool {
+    is_time_coordinate(expression)
+        || expression_children(expression)
+            .into_iter()
+            .any(contains_time_coordinate)
 }
 
 /// True for the MLS §16.5.1 clocked-value forms `sample(u)` and `sample(u, c)`.
@@ -387,40 +489,6 @@ fn relation_can_vary(expression: &Expression, scope: &EventScope<'_>) -> bool {
         _ => expression_children(expression)
             .into_iter()
             .any(|child| relation_can_vary(child, scope)),
-    }
-}
-
-/// True when a relation names `time` against a threshold the model moves.
-///
-/// This is the self-rescheduling shape — `time >= pre(nextEvent)` — whose next
-/// instant is not knowable in advance because the event it schedules is what
-/// sets it. It is the complement of [`time_event_instant`] on the axis that
-/// matters: `time > 0` and `time > 2 * p` also yield no instant, but for
-/// reasons that leave the relation an ordinary crossing, whereas this one needs
-/// a reschedule the checked DAE does not yet own.
-///
-/// Exactly one operand must be affine in `time`; if neither is, the relation is
-/// over model quantities and reschedules nothing, and if both are, its threshold
-/// is parameter-evaluable and settled before the first step.
-pub(super) fn is_rescheduling_time_relation(
-    op: &OpBinary,
-    lhs: &Expression,
-    rhs: &Expression,
-    constants: &EvalContext,
-) -> bool {
-    if !matches!(
-        op,
-        OpBinary::Lt | OpBinary::Le | OpBinary::Gt | OpBinary::Ge
-    ) {
-        return false;
-    }
-    let affine = (
-        affine_time_coefficients(lhs, constants),
-        affine_time_coefficients(rhs, constants),
-    );
-    match affine {
-        (Some((slope, _)), None) | (None, Some((slope, _))) => slope != 0.0,
-        _ => false,
     }
 }
 

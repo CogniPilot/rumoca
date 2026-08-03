@@ -36,7 +36,7 @@ use crate::equations::{
 };
 use crate::events::{
     EventActionEntry, EventActionKind, EventActionOperation, EventActionView, Events,
-    TimeEventEntry, TimeEventView,
+    TimeEventEntry, TimeEventKind, TimeEventOperation, TimeEventView,
 };
 use crate::expression::{
     BinaryOperator, Coordinate, CoordinateInput, ExprNode, ExpressionArenaStorage,
@@ -104,7 +104,7 @@ use crate::{
 /// use this provenance for their generated continuous root surfaces.
 ///
 /// 25 appends the checked cross-clock value-transfer expression node.
-pub const DAE_SCHEMA_VERSION: u16 = 25;
+pub const DAE_SCHEMA_VERSION: u16 = 26;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

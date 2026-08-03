@@ -9,9 +9,17 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum TimeEventKind {
+    Static { instant: ClockRational },
+    Dynamic { deadline: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TimeEventEntry {
-    pub(crate) instant: ClockRational,
+    #[serde(flatten)]
+    pub(crate) kind: TimeEventKind,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -34,13 +42,33 @@ pub(crate) struct EventActionEntry {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimeEventView<'dae> {
-    pub(crate) instant: &'dae ClockRational,
+    pub(crate) operation: TimeEventOperation<'dae>,
     pub(crate) provenance: DaeProvenance,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum TimeEventOperation<'dae> {
+    Static(&'dae ClockRational),
+    Dynamic(ExprId<'dae>),
+}
+
 impl<'dae> TimeEventView<'dae> {
-    pub const fn instant(self) -> &'dae ClockRational {
-        self.instant
+    pub const fn operation(self) -> TimeEventOperation<'dae> {
+        self.operation
+    }
+
+    pub const fn instant(self) -> Option<&'dae ClockRational> {
+        match self.operation {
+            TimeEventOperation::Static(instant) => Some(instant),
+            TimeEventOperation::Dynamic(_) => None,
+        }
+    }
+
+    pub const fn deadline(self) -> Option<ExprId<'dae>> {
+        match self.operation {
+            TimeEventOperation::Static(_) => None,
+            TimeEventOperation::Dynamic(deadline) => Some(deadline),
+        }
     }
 
     pub const fn provenance(self) -> DaeProvenance {
@@ -115,7 +143,41 @@ impl<'dae> Events<'_, 'dae> {
             provenance,
         )?;
         self.storage.time_events.push(TimeEventEntry {
-            instant,
+            kind: TimeEventKind::Static { instant },
+            provenance,
+        });
+        Ok(TimeEventId::from_raw(raw))
+    }
+
+    /// Own a time-event deadline that is fixed during continuous integration
+    /// and re-evaluated after each event boundary.
+    pub fn dynamic_time_event(
+        &mut self,
+        deadline: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<TimeEventId<'dae>, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        self.storage
+            .expect_closed_expression(deadline, provenance)?;
+        let ty = self.storage.expr_type(deadline, provenance)?;
+        let variability = self.storage.expr_variability(deadline, provenance)?;
+        if !ty.is_scalar()
+            || ty.scalar_type() != ScalarType::Real
+            || variability > crate::ExpressionVariability::Discrete
+        {
+            return Err(DaeConstructionError::InvalidDynamicTimeEventDeadline {
+                span: provenance.span(),
+            });
+        }
+        let raw = checked_u32(
+            self.storage.time_events.len(),
+            "time event arena",
+            provenance,
+        )?;
+        self.storage.time_events.push(TimeEventEntry {
+            kind: TimeEventKind::Dynamic {
+                deadline: deadline.index(),
+            },
             provenance,
         });
         Ok(TimeEventId::from_raw(raw))

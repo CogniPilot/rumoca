@@ -174,7 +174,7 @@ fn activation_relation_roots<'dae>(
     let (lhs, rhs) = operands;
     if matches!(
         functions.expression_events.plan(span, &[lhs, rhs]),
-        Some(ExpressionEventPlan::TimeEvent(_))
+        Some(ExpressionEventPlan::TimeEvent(_) | ExpressionEventPlan::DynamicTimeEvent(_))
     ) {
         return Vec::new();
     }

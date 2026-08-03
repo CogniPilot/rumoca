@@ -117,6 +117,10 @@ pub enum DaeConstructionError {
     #[error("expected a finite, strictly-positive parameter expression")]
     InvalidPositiveParameter { span: Span },
     #[error(
+        "dynamic time-event deadline must be a closed scalar Real expression with at-most-discrete variability"
+    )]
+    InvalidDynamicTimeEventDeadline { span: Span },
+    #[error(
         "discontinuous builtin `{operator}` requires statically computable operands until it has a checked event owner"
     )]
     NonStaticDiscontinuity { operator: &'static str, span: Span },
@@ -318,6 +322,7 @@ impl DaeConstructionError {
             | Self::RangeExtentOverflow { span }
             | Self::InvalidArrayExtent { span }
             | Self::InvalidPositiveParameter { span }
+            | Self::InvalidDynamicTimeEventDeadline { span }
             | Self::NonStaticDiscontinuity { span, .. }
             | Self::UndefinedBuiltinDomain { span, .. }
             | Self::InvalidSubscript { span }

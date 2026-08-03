@@ -190,7 +190,7 @@ pub(super) fn lower_expression_scoped<'dae>(
     Ok(lowered)
 }
 
-/// Build the MLS §8.5 state-event owner of a relation that analysis proved
+/// Build the MLS §8.5 event owner of a relation that analysis proved
 /// event-generating.
 ///
 /// The relation keeps its own expression identity in `f(x)`; the checked DAE
@@ -221,28 +221,45 @@ fn lower_expression_event<'dae>(
     if !op.is_relational() {
         return Ok(());
     }
-    if !matches!(
-        symbols
-            .functions
-            .expression_events
-            .plan(span, &[lhs.as_ref(), rhs.as_ref()]),
-        Some(ExpressionEventPlan::StateRelation)
-    ) {
-        return Ok(());
-    }
+    let plan = symbols
+        .functions
+        .expression_events
+        .plan(span, &[lhs.as_ref(), rhs.as_ref()]);
     let provenance = dae::DaeProvenance::source(span)?;
-    let relation =
-        construction.conditions(|conditions| conditions.relation(lowered, provenance))?;
-    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
-    construction.conditions(|conditions| {
-        conditions.define(
-            condition,
-            dae::ConditionInput::Relation(relation),
-            provenance,
-        )
-    })?;
-    construction.conditions(|conditions| conditions.root(relation, condition, provenance))?;
-    Ok(())
+    match plan {
+        Some(ExpressionEventPlan::StateRelation) => {
+            let relation =
+                construction.conditions(|conditions| conditions.relation(lowered, provenance))?;
+            let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
+            construction.conditions(|conditions| {
+                conditions.define(
+                    condition,
+                    dae::ConditionInput::Relation(relation),
+                    provenance,
+                )
+            })?;
+            construction
+                .conditions(|conditions| conditions.root(relation, condition, provenance))
+                .map(|_| ())
+        }
+        Some(ExpressionEventPlan::DynamicTimeEvent(operand)) => {
+            let deadline = match operand {
+                DynamicTimeEventOperand::Lhs => lhs.as_ref(),
+                DynamicTimeEventOperand::Rhs => rhs.as_ref(),
+            };
+            let deadline = lower_expression_scoped(
+                construction,
+                symbols,
+                binders,
+                deadline,
+                Some(dae::DaeGeneration::ConditionLowering),
+            )?;
+            construction
+                .events(|events| events.dynamic_time_event(deadline, provenance))
+                .map(|_| ())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn lower_expression_node<'dae>(

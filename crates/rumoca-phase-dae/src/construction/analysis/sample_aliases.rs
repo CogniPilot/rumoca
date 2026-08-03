@@ -111,7 +111,9 @@ fn alias_definition(
                 ExpressionEventPlan::SampleClock(schedule) => {
                     Some(AliasDefinition::Schedule(schedule))
                 }
-                ExpressionEventPlan::StateRelation | ExpressionEventPlan::TimeEvent(_) => None,
+                ExpressionEventPlan::StateRelation
+                | ExpressionEventPlan::TimeEvent(_)
+                | ExpressionEventPlan::DynamicTimeEvent(_) => None,
             }
         }
         Expression::VarRef {

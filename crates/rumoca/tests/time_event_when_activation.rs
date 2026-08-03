@@ -1661,39 +1661,32 @@ fn the_diffsol_session_agrees_on_a_scheduled_instant() {
     );
 }
 
-/// A vector activation whose `time` threshold reschedules itself is rejected.
+/// A vector activation whose `time` threshold reschedules itself owns a
+/// checked dynamic deadline.
 ///
 /// `when {time >= pre(nextEvent), initial()} then nextEvent := …` is the shape
 /// `Modelica.Blocks.Sources.TimeTable` and `CombiTimeTable` are written in: the
-/// event the activation fires sets the instant it next fires at. rumoca has no
-/// checked owner for that reschedule, and what it produces is not a missing
-/// trace but a wrong one — the threshold stalls, so the `when` fires a few times
-/// at the wrong instants and stops (`y` reaching 3 where omc counts 1, 2, 3, 4
-/// at `t = 0`, `0.5`, `0.75`, `1`).
+/// event the activation fires sets the instant it next fires at. The deadline is
+/// therefore not a static scheduled instant or a continuously searched root:
+/// it is fixed during integration and re-evaluated after each event boundary.
 ///
-/// Until the vector form was validated element-wise, it was the `initial()`
-/// element that made these models fail. That was an accident, and validating the
-/// elements properly — which is what buys `{initial(), time > 0.5}` its
-/// agreement with omc — removed it. This test pins the reason that replaced it,
-/// so the gap stays loud instead of becoming a silently wrong trace.
-///
-/// The rejection is gated on `initial()` and reaches no further. A vector
-/// activation of plain relations, `when {time >= (pre(count) + 1) * period,
-/// false}`, simulates correctly and is covered by
-/// `periodic_source_counter_regression`; the same accumulating lag is reachable
-/// through the scalar `when time >= pre(next)` with or without this module. Only
-/// the `initial()`-bearing form was newly reachable, and only it is rejected.
+/// The checked DAE owns that distinction explicitly. This test pins the
+/// compiler contract independently of a solver implementation: one dynamic
+/// time-event owner, no generic zero crossing, and no static instant.
 #[test]
-fn a_rescheduling_vector_activation_is_rejected_rather_than_mis_simulated() {
-    let Err(error) = rumoca::Compiler::new()
+fn a_rescheduling_vector_activation_owns_a_dynamic_time_event() {
+    let compiled = rumoca::Compiler::new()
         .model("ReschedulingVector")
         .compile_str(RESCHEDULING_VECTOR, "time_event_when_activation.mo")
-    else {
-        panic!("a rescheduled `initial()` vector activation has no checked owner yet");
-    };
-    let text = error.to_string();
-    assert!(
-        text.contains("moved by the event itself"),
-        "the rejection must name the reschedule gap, got: {text}"
-    );
+        .expect("a rescheduled activation now has a checked dynamic owner");
+
+    compiled.dae.inspect(|view| {
+        assert_eq!(view.root_count(), 0, "the deadline is not a root search");
+        assert_eq!(view.time_event_count(), 1);
+        let event = view
+            .time_event(view.time_event_id(0).expect("one time-event identity"))
+            .expect("checked time-event identity resolves");
+        assert!(event.instant().is_none(), "the deadline is not static");
+        assert!(event.deadline().is_some(), "the dynamic deadline is owned");
+    });
 }

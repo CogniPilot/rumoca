@@ -116,7 +116,13 @@ pub(super) fn rebuild_events<'target>(
         let event = source
             .time_event(id)
             .expect("finalized time-event identity resolves");
-        target.events(|events| events.time_event(*event.instant(), event.provenance()))?;
+        target.events(|events| match event.operation() {
+            dae::TimeEventOperation::Static(instant) => {
+                events.time_event(*instant, event.provenance())
+            }
+            dae::TimeEventOperation::Dynamic(deadline) => events
+                .dynamic_time_event(expressions[deadline.index() as usize], event.provenance()),
+        })?;
     }
     for index in 0..source.event_action_count() {
         rebuild_event_action(source, target, expressions, variables, conditions, index)?;

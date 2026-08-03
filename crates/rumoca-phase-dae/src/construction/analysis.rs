@@ -60,8 +60,10 @@ use event_conditions::{
     evaluate_clock_seconds, evaluate_sample_schedule, validate_algorithm_condition,
     validate_condition_expression, validate_when_condition_expression,
 };
-pub(super) use expression_events::{ExpressionEventPlan, ExpressionEventPlans};
-use expression_events::{analyze_expression_events, is_rescheduling_time_relation};
+use expression_events::analyze_expression_events;
+pub(super) use expression_events::{
+    DynamicTimeEventOperand, ExpressionEventPlan, ExpressionEventPlans,
+};
 use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{

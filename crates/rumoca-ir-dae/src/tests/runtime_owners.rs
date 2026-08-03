@@ -382,7 +382,7 @@ fn event_actions_are_guarded_typed_and_keep_coincident_time_ids() {
             view.time_event(view.time_event_id(0).unwrap())
                 .unwrap()
                 .instant(),
-            &ClockRational::new(1, 2).unwrap()
+            Some(&ClockRational::new(1, 2).unwrap())
         );
         let reinitialize = view.event_action(view.event_action_id(0).unwrap()).unwrap();
         assert_ne!(reinitialize.trigger().index(), reinitialize.guard().index());
