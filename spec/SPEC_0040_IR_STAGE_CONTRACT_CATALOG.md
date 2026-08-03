@@ -63,6 +63,7 @@ find the exact obligation without loading the whole pipeline spec.
 | SOLVE-C18 | Mass-matrix form lives in `ContinuousSolveArtifacts`, not DAE | It is solver-facing derived metadata, not canonical Modelica DAE semantics |
 | SOLVE-C19 | BLT orderings from DAE-IR MAY drive `ComputeBlock` layout | Reuses upstream structural analysis |
 | SOLVE-C20 | Solve lowering preserves a structured B.1c definition as a compact `ComputeNode::Map` (or stronger proven tensor node) plus a compact affine target map; row role, pre mode, observation policy, and clock owner derive from that owner | Scalar programs are produced only by `rumoca-eval-solve` or backend scalar-view APIs under SOLVE-C14; phase lowering never materializes a parallel scalar definition |
+| SOLVE-C21 | Every scalar and structured discrete update carries a typed integrator-history effect derived from compiler dependency analysis; `Preserve` proves the update cannot reach continuous dynamics, while state targets and every unknown, cyclic, ambiguous, or unsupported dependency are `Restart` | A runtime may retain multistep history only from compiler-owned evidence joined with actual event changes; model names, row positions, and observed traces are not evidence |
 
 ### 3. Structural Lowering Transformation Catalog (SPEC_0007 Structural Lowering Scope)
 

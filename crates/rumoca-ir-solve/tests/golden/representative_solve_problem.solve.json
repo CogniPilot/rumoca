@@ -1,5 +1,5 @@
 {
-  "schema_version": 26,
+  "schema_version": 27,
   "layout": {
     "bindings": {
       "x": {
@@ -456,9 +456,16 @@
     "observation_refresh": [
       true
     ],
+    "integrator_history_effects": [
+      "restart"
+    ],
     "clock_owners": [
       null
-    ]
+    ],
+    "structured_rhs": {
+      "nodes": []
+    },
+    "structured_updates": []
   },
   "events": {
     "root_conditions": {

@@ -51,6 +51,10 @@ fn unconditional_discrete_real_definition_does_not_require_a_clock() {
         [rumoca_ir_solve::DiscreteRowRole::Equation]
     );
     assert_eq!(solve.discrete.clock_owners, [None]);
+    assert_eq!(
+        solve.discrete.integrator_history_effects,
+        [rumoca_ir_solve::IntegratorHistoryEffect::Preserve]
+    );
 }
 
 /// Builds `a = <time>` plus `rows` further discrete `Real` residuals over the
@@ -295,6 +299,10 @@ fn structured_b1c_owner_lowers_to_one_compact_map_without_scalar_rows() {
     assert!(solve.discrete.rhs.is_empty());
     assert_eq!(solve.discrete.structured_rhs.nodes.len(), 1);
     assert_eq!(solve.discrete.structured_updates.len(), 1);
+    assert_eq!(
+        solve.discrete.structured_updates[0].integrator_history_effect,
+        rumoca_ir_solve::IntegratorHistoryEffect::Preserve
+    );
     assert!(matches!(
         solve.discrete.structured_rhs.nodes.first(),
         Some(ComputeNode::Map { .. })

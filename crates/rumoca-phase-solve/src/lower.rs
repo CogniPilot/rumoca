@@ -41,7 +41,8 @@ pub(crate) fn lower_solve_problem(
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;
-    let (discrete, events) = events::lower_discrete_and_events(view, &lowered, &clocks)?;
+    let (discrete, events) =
+        events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
     Ok(solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
         layout: lowered.layout,

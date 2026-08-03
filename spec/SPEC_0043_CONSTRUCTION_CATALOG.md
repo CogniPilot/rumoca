@@ -151,6 +151,7 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | A B.1c definition owns a target and either `Always` or ordered activated branches | Discrete system | Preserve source priority |
 | No active branch holds the current target | Discrete system | Hold cannot be omitted |
 | Each typed owner derives pre, observation, and clock policy | Solve construction | Parallel metadata cannot disagree |
+| Each typed discrete owner derives an integrator-history effect from the finalized dependency graph; only a proved non-continuous target constructs `Preserve` | Solve construction | Unknown, cyclic, ambiguous, unsupported, and state-affecting updates fail closed to `Restart` |
 | B.1b residuals, B.1c definitions, reinit, and condition memory are distinct owners | Solve construction | Tags cannot conflate semantics |
 | Definitions, branches, generated edges, and holds retain exact typed provenance | Construction scopes | No dummy source claims |
 | Dense vectors, packed branches, and `u32` IDs freeze without rescanning | Solve aggregate | Linear construction |

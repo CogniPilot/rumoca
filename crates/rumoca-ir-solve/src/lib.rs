@@ -42,7 +42,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 26;
+pub const SOLVE_SCHEMA_VERSION: u16 = 27;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -810,6 +810,11 @@ fn validate_discrete_system_shape(
         system.observation_refresh.len(),
     )?;
     validate_count(
+        "discrete.integrator_history_effects",
+        system.rhs.len(),
+        system.integrator_history_effects.len(),
+    )?;
+    validate_count(
         "discrete.clock_owners",
         system.rhs.len(),
         system.clock_owners.len(),
@@ -1488,6 +1493,13 @@ pub struct DiscreteSolveSystem {
     pub row_roles: Vec<DiscreteRowRole>,
     pub pre_modes: Vec<DiscreteEventPreMode>,
     pub observation_refresh: Vec<bool>,
+    /// Compiler-derived effect of changing each scalar update target on an
+    /// integrator's continuous multistep history.
+    ///
+    /// This vector is row-aligned with `rhs`. A runtime may join the effect
+    /// with exact update changes, but must not recover it from row position or
+    /// model identity.
+    pub integrator_history_effects: Vec<IntegratorHistoryEffect>,
     /// Periodic activation owner for each discrete row.
     ///
     /// `None` denotes an ordinary event-iteration row. A clock-owned row is
@@ -1511,6 +1523,7 @@ pub struct StructuredDiscreteUpdate {
     pub role: DiscreteRowRole,
     pub pre_mode: DiscreteEventPreMode,
     pub observation_refresh: bool,
+    pub integrator_history_effect: IntegratorHistoryEffect,
     pub clock_owner: Option<PeriodicClockId>,
 }
 
@@ -1749,6 +1762,19 @@ pub enum DiscreteEventPreMode {
     /// Read the current event-iteration fixed-point state.
     #[default]
     FollowCurrent,
+}
+
+/// Whether changing one typed discrete owner can invalidate continuous
+/// integrator history.
+///
+/// `Preserve` is positive compiler evidence. The fail-closed default is
+/// `Restart`, used whenever lowering cannot prove the dependency absent.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegratorHistoryEffect {
+    Preserve,
+    #[default]
+    Restart,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

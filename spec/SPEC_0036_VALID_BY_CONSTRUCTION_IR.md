@@ -49,6 +49,10 @@ rules are
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.
+Each definition derives its integrator-history effect from the finalized Solve
+dependency graph. `Preserve` is constructible only with a proof that the target
+cannot reach continuous dynamics; missing, cyclic, ambiguous, or unsupported
+evidence constructs `Restart` instead.
 
 ### Flat Aggregate Construction
 
