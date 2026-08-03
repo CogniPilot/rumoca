@@ -413,9 +413,7 @@ impl MeRuntimeHost {
             let mut kernel = self.kernel.borrow_mut();
             kernel.set_time(MeTime::at(time))?;
             kernel.set_continuous_states(states)?;
-            let mut values = Vec::new();
-            kernel.get_continuous_state_derivatives(&mut values)?;
-            copy_callback_values("state derivative", &values, out)
+            kernel.continuous_state_derivatives_into(out)
         })();
         self.finish_callback(result, out);
     }
@@ -443,13 +441,11 @@ impl MeRuntimeHost {
             let mut kernel = self.kernel.borrow_mut();
             kernel.set_time(MeTime::at(time))?;
             kernel.set_continuous_states(states)?;
-            let mut values = Vec::new();
-            kernel.get_event_indicators(&mut values)?;
-            if values.is_empty() {
+            if kernel.model_description().event_indicator_count == 0 {
                 out.fill(1.0);
                 return Ok(());
             }
-            copy_callback_values("event indicator", &values, out)
+            kernel.event_indicators_into(out)
         })();
         self.finish_callback(result, out);
     }
@@ -590,20 +586,6 @@ fn complete_integrator_step(kernel: &mut impl ModelExchangeKernel) -> Result<(),
             ),
         });
     }
-    Ok(())
-}
-
-fn copy_callback_values(label: &str, values: &[f64], out: &mut [f64]) -> Result<(), MeError> {
-    if values.len() != out.len() {
-        return Err(MeError::Contract {
-            reason: format!(
-                "{label} callback produced {} values for {} integrator slots",
-                values.len(),
-                out.len()
-            ),
-        });
-    }
-    out.copy_from_slice(values);
     Ok(())
 }
 

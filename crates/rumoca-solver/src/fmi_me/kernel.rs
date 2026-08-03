@@ -188,6 +188,94 @@ pub(crate) struct MeKernelSnapshot {
 }
 
 impl SolveMeKernel {
+    pub(crate) fn continuous_state_derivatives_into(
+        &self,
+        derivatives: &mut [f64],
+    ) -> Result<(), MeError> {
+        if derivatives.len() != self.state_count {
+            return Err(contract(format!(
+                "continuous-state derivative buffer has {} entries for {} states",
+                derivatives.len(),
+                self.state_count,
+            )));
+        }
+        self.require_active_lifecycle("get_continuous_state_derivatives")?;
+        let time = self.continuous_eval_time();
+        if let Some(cached) = self.cached_derivative(time, &self.states) {
+            derivatives.copy_from_slice(&cached);
+            return Ok(());
+        }
+        let settle = self.numerics_settle();
+        self.with_delay_evaluation_params(time, &self.states, |params| {
+            self.with_callback_solver_y(|guess| {
+                self.runtime
+                    .eval_state_derivatives_with_guess_into(
+                        time,
+                        &self.states,
+                        params,
+                        guess,
+                        settle.tol,
+                        settle.max_iters,
+                        derivatives,
+                    )
+                    .map_err(MeError::from)
+            })
+        })
+        .map_err(|error| error.at_stage(MeStage::Integration))?
+        .map_err(|error| error.at_stage(MeStage::Integration))?;
+        self.cache_derivative(time, &self.states, derivatives);
+        Ok(())
+    }
+
+    pub(crate) fn event_indicators_into(&self, indicators: &mut [f64]) -> Result<(), MeError> {
+        let indicator_count = self.runtime.root_condition_count();
+        if indicators.len() != indicator_count {
+            return Err(contract(format!(
+                "event-indicator buffer has {} entries for {} indicators",
+                indicators.len(),
+                indicator_count,
+            )));
+        }
+        self.require_active_lifecycle("get_event_indicators")?;
+        let time = self.continuous_eval_time();
+        if let Some(cached) = self.cached_root_conditions(time, &self.states) {
+            indicators.copy_from_slice(&cached);
+            return Ok(());
+        }
+        self.with_delay_evaluation_params(time, &self.states, |params| match self.root_profile {
+            MeRootProfile::Component => self
+                .runtime
+                .eval_root_conditions_into(
+                    time,
+                    &self.states,
+                    params,
+                    ALGEBRAIC_REFRESH_TOL,
+                    UPDATE_MAX_ITERS,
+                    indicators,
+                )
+                .map_err(MeError::from),
+            MeRootProfile::DiffsolFrozen => self
+                .runtime
+                .eval_root_search_conditions_into(
+                    time,
+                    &self.states,
+                    params,
+                    self.tolerance.max(1.0e-10),
+                    256,
+                    indicators,
+                )
+                .map_err(MeError::from),
+        })
+        .map_err(|error| error.at_stage(MeStage::Integration))?
+        .map_err(|error| error.at_stage(MeStage::Integration))?;
+        crate::orient_typed_root_zeros(
+            indicators,
+            &self.runtime.model.problem.events.root_zero_domains,
+        );
+        self.cache_root_conditions(time, &self.states, indicators);
+        Ok(())
+    }
+
     #[cfg(any(test, kani))]
     pub(crate) fn verification_observable_state(&self) -> (MeState, u64, Vec<u64>, Vec<u64>) {
         (
@@ -1771,35 +1859,8 @@ impl ModelExchangeKernel for SolveMeKernel {
     }
 
     fn get_continuous_state_derivatives(&self, derivatives: &mut Vec<f64>) -> Result<(), MeError> {
-        self.require_active_lifecycle("get_continuous_state_derivatives")?;
-        let time = self.continuous_eval_time();
-        if let Some(cached) = self.cached_derivative(time, &self.states) {
-            *derivatives = cached;
-            return Ok(());
-        }
-        let settle = self.numerics_settle();
-        let values = self
-            .with_delay_evaluation_params(time, &self.states, |params| {
-                self.with_callback_solver_y(|guess| {
-                    let values = self
-                        .runtime
-                        .eval_state_derivatives_with_guess(
-                            time,
-                            &self.states,
-                            params,
-                            guess,
-                            settle.tol,
-                            settle.max_iters,
-                        )
-                        .map_err(MeError::from)?;
-                    Ok::<_, MeError>(values)
-                })
-            })
-            .map_err(|error| error.at_stage(MeStage::Integration))?
-            .map_err(|error| error.at_stage(MeStage::Integration))?;
-        self.cache_derivative(time, &self.states, &values);
-        *derivatives = values;
-        Ok(())
+        derivatives.resize(self.state_count, 0.0);
+        self.continuous_state_derivatives_into(derivatives)
     }
 
     fn get_directional_derivative(
@@ -1852,48 +1913,8 @@ impl ModelExchangeKernel for SolveMeKernel {
     }
 
     fn get_event_indicators(&self, indicators: &mut Vec<f64>) -> Result<(), MeError> {
-        self.require_active_lifecycle("get_event_indicators")?;
-        let time = self.continuous_eval_time();
-        if let Some(cached) = self.cached_root_conditions(time, &self.states) {
-            *indicators = cached;
-            return Ok(());
-        }
-        let mut values = self
-            .with_delay_evaluation_params(time, &self.states, |params| match self.root_profile {
-                MeRootProfile::Component => self
-                    .runtime
-                    .eval_root_conditions(
-                        time,
-                        &self.states,
-                        params,
-                        ALGEBRAIC_REFRESH_TOL,
-                        UPDATE_MAX_ITERS,
-                    )
-                    .map_err(MeError::from),
-                MeRootProfile::DiffsolFrozen => {
-                    let mut values = vec![0.0; self.runtime.root_condition_count()];
-                    self.runtime
-                        .eval_root_search_conditions_into(
-                            time,
-                            &self.states,
-                            params,
-                            self.tolerance.max(1.0e-10),
-                            256,
-                            &mut values,
-                        )
-                        .map_err(MeError::from)?;
-                    Ok(values)
-                }
-            })
-            .map_err(|error| error.at_stage(MeStage::Integration))?
-            .map_err(|error| error.at_stage(MeStage::Integration))?;
-        crate::orient_typed_root_zeros(
-            &mut values,
-            &self.runtime.model.problem.events.root_zero_domains,
-        );
-        self.cache_root_conditions(time, &self.states, &values);
-        *indicators = values;
-        Ok(())
+        indicators.resize(self.runtime.root_condition_count(), 0.0);
+        self.event_indicators_into(indicators)
     }
 
     fn project_continuous_states(&mut self, states: &mut [f64]) -> Result<bool, MeError> {
@@ -1912,12 +1933,14 @@ impl ModelExchangeKernel for SolveMeKernel {
             self.clear_runtime_caches();
         } else if self.last_projection_changed {
             self.clear_derivative_cache();
-        } else {
+        } else if matches!(self.numerics_profile, MeNumericsProfile::Component) {
             // FMI does not let an importer hand an FSAL stage into the FMU.
             // Keep the ordinary accepted-point cache private by evaluating it
             // through the same standard derivative operation the importer
             // could call here. A located event stays cache-free until Event
-            // Mode consumes it.
+            // Mode consumes it. The frozen migration profile deliberately has
+            // no derivative cache, so evaluating here would immediately
+            // discard the result.
             let mut accepted_derivatives = Vec::new();
             self.get_continuous_state_derivatives(&mut accepted_derivatives)?;
         }
