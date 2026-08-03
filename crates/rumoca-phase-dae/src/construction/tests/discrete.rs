@@ -696,8 +696,125 @@ fn b1c_connections_reject_overlapping_element_coverage() {
     assert!(matches!(
         construct(&model, source.map),
         Err(ToDaeError::DiscreteSolvedFormViolation { detail, span })
-            if detail.contains("overlapping element connections") && span == duplicate_span
+            if detail.contains("overlapping element assignments") && span == duplicate_span
     ));
+}
+
+#[test]
+fn b1c_element_assignments_construct_one_ordered_array_owner() {
+    let source = TestSource::new(
+        "model M discrete Boolean auxiliary[2]; equation auxiliary[1] = true; \
+         auxiliary[2] = auxiliary[1]; end M;",
+    );
+    let model = ordered_array_assignment_model(&source, false);
+    let dae = construct(&model, source.map)
+        .expect("exact element coverage with a strictly backward recurrence constructs one owner");
+
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_value_owner_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        let value = view
+            .expression(owner.branches().get(0).unwrap().values().get(0).unwrap().0)
+            .unwrap();
+        assert!(matches!(
+            value.operation(),
+            dae::ExpressionOperation::Array(elements) if elements.len() == 2
+        ));
+        assert_eq!(value.value_type().dimensions(), &[2]);
+    });
+}
+
+#[test]
+fn b1c_element_assignments_reject_a_forward_array_recurrence() {
+    let source = TestSource::new(
+        "model M discrete Boolean auxiliary[2]; equation auxiliary[1] = auxiliary[2]; \
+         auxiliary[2] = true; end M;",
+    );
+    let model = ordered_array_assignment_model(&source, true);
+
+    assert!(matches!(
+        construct(&model, source.map),
+        Err(ToDaeError::DiscreteSolvedFormViolation { detail, .. })
+            if detail.contains("identity 0 reads discrete-value identity 0")
+    ));
+}
+
+fn ordered_array_assignment_model(source: &TestSource, forward: bool) -> flat::Model {
+    let mut model = test_model();
+    add_primitive_variable(
+        &mut model,
+        source,
+        "auxiliary",
+        "discrete Boolean auxiliary[2]",
+        8,
+        vec![2],
+        true,
+    );
+    for index in 1..=2 {
+        let lhs_text = format!("auxiliary[{index}]");
+        let lhs_occurrence = usize::from(index == 2 && !forward);
+        let rhs = if (index == 1) == forward {
+            Expression::VarRef {
+                name: test_reference("auxiliary"),
+                subscripts: vec![Subscript::Index {
+                    value: if forward { 2 } else { 1 },
+                    span: source.span(
+                        if forward {
+                            "auxiliary[2]"
+                        } else {
+                            "auxiliary[1]"
+                        },
+                        1,
+                    ),
+                }],
+                span: source.span(
+                    if forward {
+                        "auxiliary[2]"
+                    } else {
+                        "auxiliary[1]"
+                    },
+                    1,
+                ),
+            }
+        } else {
+            Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            }
+        };
+        let equation_text = if forward && index == 1 {
+            "auxiliary[1] = auxiliary[2]"
+        } else if !forward && index == 2 {
+            "auxiliary[2] = auxiliary[1]"
+        } else if index == 1 {
+            "auxiliary[1] = true"
+        } else {
+            "auxiliary[2] = true"
+        };
+        let span = source.span(equation_text, 0);
+        model.add_equation(flat::Equation::new(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(Expression::VarRef {
+                    name: test_reference("auxiliary"),
+                    subscripts: vec![Subscript::Index {
+                        value: index,
+                        span: source.span(&lhs_text, lhs_occurrence),
+                    }],
+                    span: source.span(&lhs_text, lhs_occurrence),
+                }),
+                rhs: Box::new(rhs),
+                span,
+            },
+            span,
+            flat::EquationOrigin::ComponentEquation {
+                component: String::new(),
+            },
+        ));
+    }
+    model
 }
 
 fn complete_array_connection_model(source: &TestSource, duplicate: bool) -> flat::Model {

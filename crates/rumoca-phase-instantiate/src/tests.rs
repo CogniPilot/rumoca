@@ -644,6 +644,167 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
 }
 
 #[test]
+fn conditional_component_folds_transitive_integer_function_parameter() {
+    let source = r#"
+package P
+  function numberOfBaseSystems
+    input Integer m = 3;
+    output Integer n;
+  algorithm
+    n := 1;
+    if mod(m, 2) == 0 then
+      if m == 2 then
+        n := 1;
+      else
+        n := n * 2 * numberOfBaseSystems(integer(m / 2));
+      end if;
+    else
+      n := 1;
+    end if;
+  end numberOfBaseSystems;
+
+  model Winding
+    parameter Integer m = 3;
+    final parameter Integer nBase = numberOfBaseSystems(m);
+    final parameter Integer mBase = integer(m / nBase);
+    final parameter Integer floored = integer(numberOfBaseSystems(4) / 3);
+    Real zeroInductor if mBase <> 2;
+    Real floorWitness if floored == 0;
+  end Winding;
+end P;
+"#;
+    let file_name = "transitive_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
+        .expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source should resolve");
+
+    let winding = resolved
+        .get_class_by_qualified_name("P.Winding")
+        .expect("resolved winding class");
+    let effective_components = resolve_effective_components_for_eval(&resolved, winding);
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&resolved, &mod_env, &effective_components);
+    for (name, expected) in [("m", 3), ("nBase", 1), ("mBase", 3), ("floored", 0)] {
+        let binding = effective_components[name]
+            .binding
+            .as_ref()
+            .expect("structural parameter binding");
+        assert_eq!(
+            rumoca_eval_ast::eval_instantiate::try_eval_integer_expr(&eval_ctx, binding),
+            Some(expected),
+            "{name} should fold transitively"
+        );
+    }
+
+    let instanced = instantiate(resolved, "P.Winding")
+        .expect("the parameter expression should decide the conditional component");
+
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "zeroInductor"),
+        "mBase=3 keeps the conditional component enabled"
+    );
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "floorWitness"),
+        "integer(2 / 3) uses Real division followed by floor"
+    );
+}
+
+#[test]
+fn conditional_component_folds_record_field_in_record_scope() {
+    let source = r#"
+package P
+  record Settings
+    parameter String layout = "Y3";
+    parameter Boolean connect3 = layout == "Y3" or layout == "D3";
+  end Settings;
+
+  model Brake
+    parameter Settings settings(layout = "D3");
+    Real plugToPin3 if settings.connect3;
+  end Brake;
+end P;
+"#;
+    let file_name = "record_scoped_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
+        .expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source should resolve");
+
+    let instanced = instantiate(resolved, "P.Brake")
+        .expect("the record parameter expression should decide the component");
+
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "plugToPin3"),
+        "the modified record sibling is evaluated in the record instance scope"
+    );
+}
+
+#[test]
+fn conditional_component_folds_forwarded_enum_modifiers() {
+    let source = r#"
+package P
+  type Frame = enumeration(world, frame_a, frame_b, frame_resolve);
+
+  model Transform
+    parameter Frame frame_r_in = Frame.frame_a;
+    parameter Frame frame_r_out = frame_r_in;
+    Real resolveConnector if
+      frame_r_in == Frame.frame_resolve or frame_r_out == Frame.frame_resolve;
+  end Transform;
+
+  model Relative
+    parameter Frame resolveInFrame = Frame.frame_a;
+    parameter Frame resolveAfter = resolveInFrame;
+    Transform transform(
+      frame_r_in = resolveInFrame,
+      frame_r_out = resolveAfter);
+  end Relative;
+
+  model Root
+    Relative relative(resolveInFrame = Frame.frame_a);
+  end Root;
+end P;
+"#;
+    let file_name = "forwarded_enum_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name)
+        .expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+        .expect("source should resolve");
+
+    let instanced = instantiate(resolved, "P.Root")
+        .expect("forwarded enum modifiers should decide the component");
+
+    assert!(
+        !instanced.overlay.components.iter().any(|(_, instance)| {
+            instance
+                .qualified_name
+                .to_flat_string()
+                .ends_with("resolveConnector")
+        }),
+        "the enum aliases all resolve to frame_a, so the conditional component is absent"
+    );
+}
+
+#[test]
 fn test_equations_to_instance_without_connections_filters_connect_equations()
 -> InstantiateResult<()> {
     let equations = vec![

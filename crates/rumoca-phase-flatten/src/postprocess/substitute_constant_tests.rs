@@ -111,6 +111,125 @@ fn int_literal(value: i64) -> rumoca_core::Expression {
     }
 }
 
+fn bool_literal(value: bool, span: Span) -> rumoca_core::Expression {
+    rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Boolean(value),
+        span,
+    }
+}
+
+#[test]
+fn substitution_removes_a_dead_specialized_conditional_branch() {
+    let source = rumoca_core::SourceId::from_source_name("dead_specialized_branch.mo");
+    let if_span = Span::from_offsets(source, 0, 48);
+    let selected_span = Span::from_offsets(source, 15, 23);
+    let dead_span = Span::from_offsets(source, 29, 47);
+    let condition = rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Eq,
+        lhs: Box::new(int_literal(1)),
+        rhs: Box::new(int_literal(1)),
+        span: Span::from_offsets(source, 3, 9),
+    };
+    let selected = rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Integer(7),
+        span: selected_span,
+    };
+    let dead = rumoca_core::Expression::Index {
+        base: Box::new(spanned_var_ref("inPort")),
+        subscripts: vec![rumoca_core::Subscript::Index {
+            value: 0,
+            span: dead_span,
+        }],
+        span: dead_span,
+    };
+    let expression = rumoca_core::Expression::If {
+        branches: vec![(condition, selected)],
+        else_branch: Box::new(dead),
+        span: if_span,
+    };
+
+    let rewritten = substitute_known_constants_expr(
+        expression,
+        &Context::new(),
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .expect("a settled condition selects exactly its live branch");
+
+    assert!(matches!(
+        rewritten,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(7),
+            span,
+        } if span == selected_span
+    ));
+}
+
+#[test]
+fn substitution_preserves_unknown_condition_order_and_provenance() {
+    let source = rumoca_core::SourceId::from_source_name("partly_static_conditional.mo");
+    let if_span = Span::from_offsets(source, 0, 64);
+    let unknown_span = Span::from_offsets(source, 3, 10);
+    let value_span = Span::from_offsets(source, 16, 21);
+    let fallback_span = Span::from_offsets(source, 42, 50);
+    let unknown = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(component_ref("active")),
+        subscripts: Vec::new(),
+        span: unknown_span,
+    };
+    let expression = rumoca_core::Expression::If {
+        branches: vec![
+            (
+                unknown,
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: value_span,
+                },
+            ),
+            (
+                bool_literal(false, Span::from_offsets(source, 24, 29)),
+                int_literal(2),
+            ),
+            (
+                bool_literal(true, Span::from_offsets(source, 33, 37)),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(3),
+                    span: fallback_span,
+                },
+            ),
+        ],
+        else_branch: Box::new(int_literal(4)),
+        span: if_span,
+    };
+
+    let rewritten = substitute_known_constants_expr(
+        expression,
+        &Context::new(),
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .expect("unknown branches remain ahead of a settled fallback");
+
+    assert!(matches!(
+        rewritten,
+        rumoca_core::Expression::If { branches, else_branch, span }
+            if span == if_span
+                && matches!(branches.as_slice(),
+                    [(rumoca_core::Expression::VarRef { span, .. },
+                      rumoca_core::Expression::Literal {
+                          value: rumoca_core::Literal::Integer(1),
+                          span: value,
+                      })] if *span == unknown_span && *value == value_span)
+                && matches!(else_branch.as_ref(),
+                    rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(3),
+                        span,
+                    } if *span == fallback_span)
+    ));
+}
+
 fn reference_x_fill_expr() -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
@@ -975,6 +1094,76 @@ fn substitutes_component_equation_constants_in_origin_scope() {
     let residual = &model.equations[0].residual;
     assert!(!expr_contains_var_ref(residual, "reference_X"));
     assert!(!expr_contains_var_ref(residual, "nS"));
+}
+
+#[test]
+fn substitutes_package_constant_in_structured_template_and_preserves_binder() {
+    let table_name = "Pkg.Tables.LogicTable";
+    let table_index = rumoca_core::Expression::Index {
+        base: Box::new(generated_var_ref(table_name)),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(generated_var_ref("i")),
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+    let origin = flat::EquationOrigin::ComponentEquation {
+        component: "gate".to_string(),
+    };
+    let mut model = flat::Model::new();
+    model.add_equation(flat::Equation::new(
+        table_index.clone(),
+        test_span(),
+        origin.clone(),
+    ));
+    model.add_structured_equation(flat::StructuredEquationFamily {
+        domain: rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 2,
+                step: 1,
+            }],
+        },
+        first_equation_index: 0,
+        equations_per_point: 1,
+        span: test_span(),
+        origin,
+        regular: None,
+        template: Some(rumoca_core::ComprehensionTemplate {
+            body: vec![table_index],
+            scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+        }),
+        interiors_materialized: true,
+    });
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        table_name.to_string(),
+        rumoca_core::Expression::Array {
+            elements: vec![int_literal(11), int_literal(12)],
+            is_matrix: false,
+            span: test_span(),
+        },
+    );
+    ctx.array_dimensions.insert(table_name.to_string(), vec![2]);
+
+    substitute_known_constants_in_flat(&mut model, &ctx)
+        .expect("structured templates fold translation-time package constants");
+
+    let body = &model.structured_equations[0]
+        .template
+        .as_ref()
+        .expect("fixture retains its compact owner")
+        .body[0];
+    assert!(!expr_contains_var_ref(body, table_name));
+    assert!(expr_contains_var_ref(body, "i"));
+    assert!(matches!(
+        body,
+        rumoca_core::Expression::Index { base, .. }
+            if matches!(base.as_ref(), rumoca_core::Expression::Array { elements, .. }
+                if elements.len() == 2)
+    ));
 }
 
 #[test]

@@ -563,7 +563,13 @@ impl<'dae> StructuredResiduals<'_, 'dae> {
                     span: self.owner.span(),
                 });
             }
-            ComprehensionScalarView::RowMajorProjection if ty.dimensions() != extents => {
+            // A row-major view selects by flat scalar ordinal. Singleton axes
+            // remain part of the tensor type, but do not add domain points;
+            // equal checked cardinality is therefore the exact ownership proof.
+            ComprehensionScalarView::RowMajorProjection
+                if ty.scalar_count()
+                    != Some(self.storage.domain_scalar_count(self.domain, self.owner)?) =>
+            {
                 return Err(DaeConstructionError::ShapeMismatch {
                     span: self.owner.span(),
                 });

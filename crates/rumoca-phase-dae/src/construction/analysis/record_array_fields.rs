@@ -55,7 +55,13 @@ impl RecordArrayFieldPlanKey {
 
 #[derive(Debug, Default)]
 pub(in crate::construction) struct RecordArrayFieldPlans {
-    by_occurrence: HashMap<RecordArrayFieldPlanKey, RecordArrayFieldPlan>,
+    // Flattening may specialize one source occurrence more than once in the
+    // same instance scope. The retained span and declaration path identify the
+    // occurrence, while the specialized subscript identifies which checked
+    // projection it denotes. Keep those selector-distinct certificates under
+    // one occurrence key instead of making the source span a false uniqueness
+    // proof.
+    by_occurrence: HashMap<RecordArrayFieldPlanKey, Vec<RecordArrayFieldPlan>>,
     /// Declared trailing shape of every structurally accessible record field.
     ///
     /// `DefId` is the field identity; the dimensions come from Flat's retained
@@ -117,7 +123,10 @@ impl RecordArrayFieldPlans {
         &self,
         expression: &Expression,
     ) -> Option<&RecordArrayFieldPlan> {
-        self.by_occurrence.get(&field_access_key(expression)?)
+        self.by_occurrence
+            .get(&field_access_key(expression)?)?
+            .iter()
+            .find(|plan| plan_selects_expression(plan, expression))
     }
 
     pub(in crate::construction) fn field_shape(&self, field: rumoca_core::DefId) -> Option<&[i64]> {
@@ -165,24 +174,70 @@ fn collect_plans(
     flat: &flat::Model,
     candidates: &CoordinateCandidates<'_>,
     expression: &Expression,
-    plans: &mut HashMap<RecordArrayFieldPlanKey, RecordArrayFieldPlan>,
+    plans: &mut HashMap<RecordArrayFieldPlanKey, Vec<RecordArrayFieldPlan>>,
 ) -> Result<(), ToDaeError> {
     if let Some((key, plan)) = plan_field_access(flat, candidates, expression)? {
-        if let Some(previous) = plans.insert(key, plan.clone())
-            && previous != plan
-        {
-            return Err(ToDaeError::unsupported_flat(
-                "record-array member slice",
-                "one semantic occurrence produced incompatible projection certificates",
-                expression_span(expression)?,
-            ));
-        }
+        insert_plan(plans, key, plan, expression_span(expression)?)?;
         return Ok(());
     }
     for child in expression_children(expression) {
         collect_plans(flat, candidates, child, plans)?;
     }
     Ok(())
+}
+
+fn insert_plan(
+    plans: &mut HashMap<RecordArrayFieldPlanKey, Vec<RecordArrayFieldPlan>>,
+    key: RecordArrayFieldPlanKey,
+    plan: RecordArrayFieldPlan,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    let alternatives = plans.entry(key).or_default();
+    if alternatives.contains(&plan) {
+        return Ok(());
+    }
+    if alternatives
+        .iter()
+        .any(|previous| same_projection_selector(previous, &plan))
+    {
+        return Err(ToDaeError::unsupported_flat(
+            "record-array member slice",
+            "one semantic occurrence and selector produced incompatible projection certificates",
+            span,
+        ));
+    }
+    alternatives.push(plan);
+    Ok(())
+}
+
+fn plan_selects_expression(plan: &RecordArrayFieldPlan, expression: &Expression) -> bool {
+    match plan {
+        RecordArrayFieldPlan::MaterializedCoordinate { .. } => {
+            concrete_component_reference(expression).is_some()
+        }
+        RecordArrayFieldPlan::Projection { subscripts, .. } => projection_pattern(expression)
+            .is_some_and(|pattern| pattern.subscripts == subscripts.as_ref()),
+    }
+}
+
+fn same_projection_selector(lhs: &RecordArrayFieldPlan, rhs: &RecordArrayFieldPlan) -> bool {
+    match (lhs, rhs) {
+        (
+            RecordArrayFieldPlan::Projection {
+                subscripts: lhs, ..
+            },
+            RecordArrayFieldPlan::Projection {
+                subscripts: rhs, ..
+            },
+        ) => lhs == rhs,
+        // A materialized key already includes every literal index, so two
+        // values under that key necessarily claim the same selector.
+        (
+            RecordArrayFieldPlan::MaterializedCoordinate { .. },
+            RecordArrayFieldPlan::MaterializedCoordinate { .. },
+        ) => true,
+        _ => false,
+    }
 }
 
 fn plan_field_access(
@@ -363,7 +418,11 @@ pub(super) fn validate_record_array_field_runtime_coordinates(
         .values()
         .map(|variable| (variable.instance_id, variable))
         .collect::<HashMap<_, _>>();
-    let mut ordered = plans.by_occurrence.iter().collect::<Vec<_>>();
+    let mut ordered = plans
+        .by_occurrence
+        .iter()
+        .flat_map(|(key, alternatives)| alternatives.iter().map(move |plan| (key, plan)))
+        .collect::<Vec<_>>();
     ordered.sort_by_key(|(key, _)| {
         let span = key.occurrence();
         (span.source.0, span.start.0, span.end.0)

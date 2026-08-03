@@ -1734,11 +1734,18 @@ fn lower_matrix_expression<'dae>(
         });
     }
     if is_non_array_operand_row(elements) {
-        // `[s1, …, sn]`: one row of scalars, so the matrix is that row wrapped
-        // once. The unambiguous semicolon form above is the other changed
-        // shape.
-        let row = lower_array_expression(construction, symbols, binders, elements, provenance)?;
-        return construction.expressions(|expressions| expressions.at(provenance).array([row]));
+        // Parse gives `[A, B, …]` a unique flat-operand representation when no
+        // operand is itself an array node. The DAE constructor therefore owns
+        // the MLS §10.4.2.1 `promote` and dimension-2 `cat` proof for scalar,
+        // vector, matrix, reference, and function-result operands alike.
+        return lower_promoted_matrix_concatenation(
+            construction,
+            symbols,
+            binders,
+            elements,
+            dae::PureBuiltin::PromotedCat2,
+            provenance,
+        );
     }
     // Every remaining shape keeps the nesting it already lowered to. A child that is
     // itself a scalar-operand row is lowered as its own operand list rather than
@@ -1778,12 +1785,10 @@ fn lower_promoted_matrix_concatenation<'dae>(
 /// Whether `elements` is a non-empty `[ ]` row in which no operand is an array
 /// *node*.
 ///
-/// This is a syntactic test, not a scalar-ness proof: a bare reference to a
-/// declared vector satisfies it. Proving the operands actually scalar is the
-/// checked shape rule's job — `function_shapes::expression_rules::
-/// matrix_row_columns` for a call argument, and
-/// `analysis::expression_validation::validate_matrix_row_operands` for a model
-/// expression — both of which name MLS §10.4.2.1 when they refuse.
+/// This is a syntactic proof that the node cannot be the array-bodied
+/// comprehension shape currently produced by flatten. The DAE
+/// `PromotedCat2` constructor independently derives and validates every operand
+/// type and extent; this predicate grants no shape fact itself.
 fn is_non_array_operand_row(elements: &[Expression]) -> bool {
     !elements.is_empty()
         && !elements

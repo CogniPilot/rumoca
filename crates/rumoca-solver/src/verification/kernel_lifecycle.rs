@@ -635,12 +635,14 @@ fn property_scheduled_time_event_terminates_after_one_call() -> bool {
         .expect("the scheduled time event settles");
     let update_complete = !states.discrete_states_need_update;
     assert!(update_complete);
-    assert!(states.time >= stop.time);
+    assert!(!states.nominals_of_continuous_states_changed);
+    let component_time = f64::from_bits(kernel.verification_observable_state().1);
+    assert!(component_time >= stop.time);
     update_complete
 }
 
-/// Event entry never moves the component backwards: an earlier requested
-/// event instant is clamped to the already-accepted component time.
+/// The transitional event-entry payload cannot move the component backwards:
+/// its numerical right-limit continuation remains at the importer-set time.
 fn property_event_boundary_does_not_move_time_backward(earlier: f64, later: f64) {
     let model = single_state_model();
     let mut kernel = instantiate(&model);
@@ -655,10 +657,10 @@ fn property_event_boundary_does_not_move_time_backward(earlier: f64, later: f64)
             horizon: STOP_TIME,
         })
         .expect("event mode is reachable from continuous-time mode");
-    let states = kernel
+    kernel
         .update_discrete_states()
         .expect("the state event applies");
-    assert_eq!(states.time, later);
+    assert_eq!(kernel.verification_observable_state().1, later.to_bits());
 }
 
 /// A non-convergent initialization fixed point reaches its iteration bound and

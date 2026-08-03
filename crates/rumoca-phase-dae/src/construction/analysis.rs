@@ -50,6 +50,7 @@ use discrete_values::analyze_discrete_value_topology;
 pub(super) use equation_partitions::{
     AggregateDiscreteConnections, DiscreteValueAssignmentPlan, EquationPartition,
     discrete_value_assignment, equation_partition, structured_discrete_assignments,
+    structured_discrete_element_assignments,
 };
 use equation_partitions::{
     aggregate_discrete_connections, defined_discrete_targets, discrete_connection_ranks,

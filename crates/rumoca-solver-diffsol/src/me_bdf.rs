@@ -87,8 +87,8 @@ pub(crate) fn simulate(
             opts,
             &budget,
         );
-        match advance {
-            Ok(()) => {}
+        let deferred_sample = match advance {
+            Ok(sample) => sample,
             Err(SimError::Terminated { time, message }) => {
                 return Ok(trace.finish(
                     host.state_count(),
@@ -96,11 +96,17 @@ pub(crate) fn simulate(
                 ));
             }
             Err(error) => return Err(error),
-        }
-        let states = if sample_time_match_with_tol(solver.state().t, target) {
+        };
+        let states = if let Some(states) = deferred_sample {
+            states
+        } else if sample_time_match_with_tol(solver.state().t, target) {
             solver.state().y.as_slice().to_vec()
         } else {
-            solver_call("BDF output interpolation", || solver.interpolate(target))?
+            let state_time = solver.state().t;
+            let context = format!(
+                "BDF output interpolation at target={target} with solver state time={state_time}"
+            );
+            solver_call(&context, || solver.interpolate(target))?
                 .as_slice()
                 .to_vec()
         };
@@ -119,7 +125,7 @@ fn advance_to<'a, Eqn, S>(
     target: f64,
     opts: &SimOptions,
     budget: &TimeoutBudget,
-) -> Result<(), SimError>
+) -> Result<Option<Vec<f64>>, SimError>
 where
     Eqn: StateOdeEquations + 'a,
     S: OdeSolverMethod<'a, Eqn>,
@@ -134,7 +140,7 @@ where
             .map_err(|error| error.at_stage(SimFailureStage::Integration))?;
         if let Some(event_time) = *pending_time_event {
             if event_time > target && !time_reached_with_tolerance(event_time, target, tolerance) {
-                return Ok(());
+                return interpolate_deferred_sample(solver, target).map(Some);
             }
             let states = solver.state().y.as_slice().to_vec();
             let event = host.process_time_event(event_time, &states, target)?;
@@ -154,7 +160,7 @@ where
         if let Some(root) = pending_root.take() {
             if root.time > target && !time_reached_with_tolerance(root.time, target, tolerance) {
                 *pending_root = Some(root);
-                return Ok(());
+                return interpolate_deferred_sample(solver, target).map(Some);
             }
             process_root_event(host, solver, trace, root, target, tolerance)?;
             continue;
@@ -165,7 +171,7 @@ where
             if requested.time > target
                 && !time_reached_with_tolerance(requested.time, target, tolerance)
             {
-                return Ok(());
+                return interpolate_deferred_sample(solver, target).map(Some);
             }
             let states = solver.state().y.as_slice().to_vec();
             let event = host.process_time_event(requested.time, &states, target)?;
@@ -181,20 +187,43 @@ where
             reset_after_event(host, solver, event.time, &event.states)?;
             continue;
         }
-        if current >= target || time_reached_with_tolerance(current, target, tolerance) {
-            return Ok(());
+        if current >= target || sample_time_match_with_tol(current, target) {
+            return Ok(None);
         }
         let stop_time = requested.time.min(opts.t_end);
         set_stop_time(solver, stop_time)?;
         match solver_call("BDF step", || solver.step())? {
-            OdeSolverStopReason::InternalTimestep => accept_step(host, solver, tolerance)?,
+            OdeSolverStopReason::InternalTimestep => {
+                let sample = sample_crossed_output(solver, target, tolerance)?;
+                accept_step(host, solver, tolerance)?;
+                if sample.is_some() {
+                    return Ok(sample);
+                }
+            }
             OdeSolverStopReason::TstopReached => {
+                let sample = sample_crossed_output(solver, target, tolerance)?;
                 accept_step(host, solver, tolerance)?;
                 if requested.is_event {
                     *pending_time_event = Some(requested.time);
+                    if sample.is_some() {
+                        return Ok(sample);
+                    }
                     continue;
                 }
-                return Ok(());
+                if sample.is_some() {
+                    return Ok(sample);
+                }
+                let reached = solver.state().t;
+                if reached < target && !sample_time_match_with_tol(reached, target) {
+                    return Err(SimError::RuntimeContract {
+                        reason: format!(
+                            "BDF reported a non-event stop at {reached} before output target \
+                             {target} (component stop={}, t_end={})",
+                            requested.time, opts.t_end
+                        ),
+                    });
+                }
+                return Ok(None);
             }
             OdeSolverStopReason::RootFound(root_time, root_index) => {
                 let root_states =
@@ -208,8 +237,9 @@ where
                 };
                 if root_time > target && !time_reached_with_tolerance(root_time, target, tolerance)
                 {
+                    let sample = interpolate_deferred_sample(solver, target)?;
                     *pending_root = Some(root);
-                    return Ok(());
+                    return Ok(Some(sample));
                 }
                 process_root_event(host, solver, trace, root, target, tolerance)?;
             }
@@ -218,6 +248,36 @@ where
     Err(SimError::SolverError(format!(
         "BDF exceeded {MAX_STEPS_PER_OUTPUT} ME steps before output t={target}"
     )))
+}
+
+fn sample_crossed_output<'a, Eqn, S>(
+    solver: &mut S,
+    target: f64,
+    tolerance: f64,
+) -> Result<Option<Vec<f64>>, SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let reached = solver.state().t;
+    if reached <= target || time_reached_with_tolerance(reached, target, tolerance) {
+        return Ok(None);
+    }
+    interpolate_deferred_sample(solver, target).map(Some)
+}
+
+fn interpolate_deferred_sample<'a, Eqn, S>(
+    solver: &mut S,
+    target: f64,
+) -> Result<Vec<f64>, SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    solver_call("BDF deferred output interpolation", || {
+        solver.interpolate(target)
+    })
+    .map(|values| values.as_slice().to_vec())
 }
 
 struct PendingRoot {

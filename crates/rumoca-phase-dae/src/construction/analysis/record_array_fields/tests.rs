@@ -189,13 +189,13 @@ fn projection(
     let plans = RecordArrayFieldPlans {
         by_occurrence: HashMap::from([(
             field_access_key(&expression).expect("projection has an exact key"),
-            RecordArrayFieldPlan::Projection {
+            vec![RecordArrayFieldPlan::Projection {
                 coordinates: vec![rumoca_core::InstanceId::new(9)].into_boxed_slice(),
                 target: DefId::new(3),
                 value_type: TypeId::new(4),
                 shape: Vec::new().into_boxed_slice(),
                 subscripts: vec![subscript].into_boxed_slice(),
-            },
+            }],
         )]),
         ..RecordArrayFieldPlans::default()
     };
@@ -476,6 +476,100 @@ fn nested_component_array_slice_projects_the_subscripted_part() {
         ),
         "the projection must select the members of the subscripted part, in index order"
     );
+}
+
+#[test]
+fn one_reused_occurrence_keeps_selector_distinct_projection_certificates() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("specialized_slice.mo", "records[:].value");
+    let span = Span::from_offsets(source, 0, 16);
+    let records = DefId::new(220);
+    let value = DefId::new(221);
+    let value_type = TypeId::new(222);
+    let mut model = flat::Model::new();
+    let coordinates = [
+        add_variable(
+            &mut model,
+            &[("records", &[1], records), ("value", &[], value)],
+            320,
+            (value_type, &[]),
+            span,
+        ),
+        add_variable(
+            &mut model,
+            &[("records", &[2], records), ("value", &[], value)],
+            321,
+            (value_type, &[]),
+            span,
+        ),
+    ];
+    let base = component_reference(&[("records", &[], records)], span);
+    let whole = member_access(
+        base.clone(),
+        Subscript::Colon { span },
+        &[("value", value)],
+        span,
+    );
+    let selected_subscript = Subscript::Expr {
+        expr: Box::new(Expression::VarRef {
+            name: Reference::new("selected"),
+            subscripts: Vec::new(),
+            span,
+        }),
+        span,
+    };
+    let selected = member_access(base, selected_subscript.clone(), &[("value", value)], span);
+
+    let plans = analyze_record_array_fields(&model, [&whole, &selected])
+        .expect("one source occurrence may own distinct specialized selectors");
+
+    assert!(matches!(
+        plans.get(&whole),
+        Some(RecordArrayFieldPlan::Projection { coordinates: planned, subscripts, .. })
+            if planned.as_ref() == coordinates
+                && matches!(subscripts.as_ref(), [Subscript::Colon { .. }])
+    ));
+    assert!(matches!(
+        plans.get(&selected),
+        Some(RecordArrayFieldPlan::Projection { coordinates: planned, subscripts, .. })
+            if planned.as_ref() == coordinates
+                && subscripts.as_ref() == std::slice::from_ref(&selected_subscript)
+    ));
+}
+
+#[test]
+fn one_reused_occurrence_rejects_same_selector_incompatible_certificates() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("conflicting_slice.mo", "records[:].value");
+    let span = Span::from_offsets(source, 0, 16);
+    let expression = member_access(
+        component_reference(&[("records", &[], DefId::new(230))], span),
+        Subscript::Colon { span },
+        &[("value", DefId::new(231))],
+        span,
+    );
+    let key = field_access_key(&expression).expect("projection has a checked identity");
+    let plan = |coordinate| RecordArrayFieldPlan::Projection {
+        coordinates: vec![rumoca_core::InstanceId::new(coordinate)].into_boxed_slice(),
+        target: DefId::new(231),
+        value_type: TypeId::new(232),
+        shape: Box::default(),
+        subscripts: vec![Subscript::Colon { span }].into_boxed_slice(),
+    };
+    let mut plans = HashMap::new();
+    insert_plan(&mut plans, key.clone(), plan(330), span)
+        .expect("the first certificate establishes the selector owner");
+
+    let error = insert_plan(&mut plans, key, plan(331), span)
+        .expect_err("one selector cannot own incompatible coordinate proofs");
+
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics { feature, detail, span: error_span }
+            if feature == "record-array member slice"
+                && detail.contains("occurrence and selector")
+                && error_span == span
+    ));
 }
 
 /// A function call consumes the typed projection certificate as its argument

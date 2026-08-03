@@ -359,7 +359,18 @@ fn matrix_expression_shape(
         }
         return concatenate_proven_shapes(0, &rows, span);
     }
-    // `[A, B, …]`: one row, concatenated along dimension 2.
+    // `[A, B, …]`: one row, concatenated along dimension 2. When the source
+    // operands are not themselves array nodes, Parse gives this form a unique
+    // representation, so the checked promoted-concatenation owner can derive
+    // the exact shape for scalars, references, and function results alike.
+    // Array-node operands retain the narrow refusal below because the current
+    // Flat producer also uses that shape for expanded comprehensions.
+    if elements
+        .iter()
+        .all(|element| !matches!(element, Expression::Array { .. }))
+    {
+        return promoted_concatenation_shape(1, elements, values, function_result, span);
+    }
     let columns = matrix_row_columns(elements, values, function_result, span)?;
     Ok(vec![1, columns])
 }
@@ -370,12 +381,10 @@ fn matrix_expression_shape(
 /// dimensions of size 1 from the right" — so a scalar becomes 1x1 and the row
 /// is 1 x (operand count).
 ///
-/// ACCEPTANCE CONTRACT (SPEC_0008): this rule is only for the ambiguous
-/// top-level horizontal row and proves scalar operands. The unambiguous nested
-/// shape Parse gives the `;` spelling is handled by
-/// [`promoted_concatenation_shape`] and the checked DAE promoted-concatenation
-/// owner. Keeping this narrower rule preserves the rejection for a horizontal
-/// vector row that aliases the comprehension frontend shape described above.
+/// ACCEPTANCE CONTRACT (SPEC_0008): this fallback is only for a horizontal row
+/// containing an array *node*, the shape that still aliases the comprehension
+/// frontend form described above. Syntactically non-array operands use the
+/// checked promoted-concatenation owner directly in [`matrix_expression_shape`].
 fn matrix_row_columns(
     operands: &[Expression],
     values: &ShapeEnvironment,

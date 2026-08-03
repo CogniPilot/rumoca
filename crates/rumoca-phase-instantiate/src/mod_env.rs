@@ -689,7 +689,8 @@ fn resolve_modification_expr_with_depth(
 
     // Resolve direct references in current scope (e.g. resolveInFrame=resolveInFrame).
     if mode == ModificationResolveMode::Modifier
-        && let Some(resolved_ref) = resolve_single_part_ref_expr(expr, mod_env)
+        && let Some(resolved_ref) =
+            resolve_single_part_ref_expr(expr, mod_env, effective_components, tree)
     {
         return resolve_modification_expr_with_depth(
             &resolved_ref,
@@ -717,6 +718,8 @@ fn resolve_modification_expr_with_depth(
 fn resolve_single_part_ref_expr(
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
+    effective_components: &IndexMap<String, ast::Component>,
+    tree: &ast::ClassTree,
 ) -> Option<ast::Expression> {
     let ast::Expression::ComponentReference(comp_ref) = expr else {
         return None;
@@ -739,7 +742,26 @@ fn resolve_single_part_ref_expr(
         return Some(mod_value.value.clone());
     }
 
-    None
+    // A modifier is evaluated in the scope where it is written (MLS §7.2.4).
+    // Enumeration values have no arithmetic evaluator, so follow an enum
+    // parameter's declaration binding here until the chain settles to a literal.
+    // Other component references deliberately retain their identity: inlining a
+    // numeric binding, for example, would change tensor-family ownership.
+    let component = effective_components.get(name)?;
+    let type_table_proves_enum = matches!(
+        component
+            .type_id
+            .and_then(|type_id| tree.type_table.get(type_id)),
+        Some(ast::Type::Enumeration(_))
+    );
+    let declaration_proves_enum = component
+        .type_def_id
+        .and_then(|def_id| tree.get_class_by_def_id(def_id))
+        .is_some_and(|class| !class.enum_literals.is_empty());
+    if !type_table_proves_enum && !declaration_proves_enum {
+        return None;
+    }
+    component.binding.clone()
 }
 
 fn select_array_value(

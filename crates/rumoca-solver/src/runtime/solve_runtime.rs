@@ -1290,7 +1290,7 @@ impl SolveRuntime {
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
-        tol: f64,
+        _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
         solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
@@ -1300,7 +1300,6 @@ impl SolveRuntime {
             p,
             t,
             context: self.row_eval_context(),
-            tol,
             max_iters,
         })
         .map_err(Into::into)
@@ -1338,7 +1337,7 @@ impl SolveRuntime {
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
-        tol: f64,
+        _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
         solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
@@ -1348,7 +1347,6 @@ impl SolveRuntime {
             p,
             t,
             context: self.row_eval_context(),
-            tol,
             max_iters,
         })
         .map_err(Into::into)
@@ -1586,7 +1584,7 @@ impl SolveRuntime {
         root_relation_overrides: &[(usize, f64)],
         y: &mut [f64],
         p: &mut [f64],
-        tol: f64,
+        _tol: f64,
     ) -> Result<bool, RuntimeSolveError> {
         let mut changed = false;
         for (root_idx, value) in root_relation_overrides {
@@ -1600,7 +1598,7 @@ impl SolveRuntime {
             else {
                 continue;
             };
-            changed |= solve_eval::apply_scalar_slot_value(target, *value, y, p, tol)?;
+            changed |= solve_eval::apply_scalar_slot_value_exact(target, *value, y, p)?;
         }
         Ok(changed)
     }

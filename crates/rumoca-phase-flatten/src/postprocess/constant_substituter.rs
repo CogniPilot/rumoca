@@ -86,6 +86,11 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
                 field_def_id,
                 span,
             } => self.rewrite_field_access(base, field, *field_def_id, *span),
+            rumoca_core::Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => self.rewrite_if(branches, else_branch, *span),
             other => self.walk_expression(other),
         }
     }
@@ -105,6 +110,52 @@ impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
 }
 
 impl KnownConstantSubstituter<'_> {
+    /// Remove branches whose condition becomes constant after substitution.
+    ///
+    /// Loop expansion can settle a structural index only after the source
+    /// conditional was lowered. MLS §11.2.3 evaluates at most one branch, so a
+    /// dead branch must not retain references such as `a[i - 1]` when the
+    /// specialized `i` selects an earlier branch. Unknown conditions remain in
+    /// source order; a later proven-true condition becomes their exact else
+    /// value because no following branch is reachable.
+    fn rewrite_if(
+        &mut self,
+        branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+        else_branch: &rumoca_core::Expression,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::Expression, FlattenError> {
+        let evaluation = rumoca_eval_flat::constant::EvalContext::new();
+        let mut retained = Vec::with_capacity(branches.len());
+        for (condition, value) in branches {
+            let condition = self.rewrite_expression(condition)?;
+            let constant = rumoca_eval_flat::constant::eval_expr(&condition, &evaluation)
+                .ok()
+                .and_then(|value| value.as_bool());
+            match constant {
+                Some(false) => {}
+                Some(true) if retained.is_empty() => return self.rewrite_expression(value),
+                Some(true) => {
+                    return Ok(rumoca_core::Expression::If {
+                        branches: retained,
+                        else_branch: Box::new(self.rewrite_expression(value)?),
+                        span,
+                    });
+                }
+                None => retained.push((condition, self.rewrite_expression(value)?)),
+            }
+        }
+        let else_branch = self.rewrite_expression(else_branch)?;
+        if retained.is_empty() {
+            Ok(else_branch)
+        } else {
+            Ok(rumoca_core::Expression::If {
+                branches: retained,
+                else_branch: Box::new(else_branch),
+                span,
+            })
+        }
+    }
+
     fn rewrite_var_ref(
         &mut self,
         name: &rumoca_core::Reference,

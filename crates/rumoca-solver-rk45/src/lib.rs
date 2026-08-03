@@ -1132,7 +1132,6 @@ impl SimulationBackend for Rk45Backend {
         self.kernel.exit_initialization_mode()?;
         let discrete = self.kernel.update_discrete_states()?;
         self.kernel.get_continuous_states(&mut self.state)?;
-        self.time = discrete.time;
         if let Some(termination) = discrete.terminate_simulation {
             self.termination = Some(termination);
         }

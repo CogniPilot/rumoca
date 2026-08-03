@@ -203,9 +203,9 @@ pub fn apply_discrete_slot_value(
     value: f64,
     y: &mut [f64],
     p: &mut [f64],
-    tol: f64,
+    _tol: f64,
 ) -> Result<bool, solve_eval::EvalSolveError> {
-    solve_eval::apply_scalar_slot_value(target, value, y, p, tol)
+    solve_eval::apply_scalar_slot_value_exact(target, value, y, p)
 }
 
 pub fn row_reads_solver_or_time(row: &[solve::LinearOp]) -> bool {
