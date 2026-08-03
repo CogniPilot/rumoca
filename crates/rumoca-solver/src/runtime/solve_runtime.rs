@@ -22,8 +22,8 @@ use crate::runtime::solve_events::{
 use crate::{
     EventActionOutcome, ImplicitProjectionModel, ManifoldProjectionModel, RuntimeEventStop,
     RuntimeSolveError, SolveStopSchedule, project_algebraic_seed_with_plan,
-    project_algebraics_with_plan, push_visible_values, relation_memory_value_from_root,
-    replace_last_visible_values, timeline::sample_time_match_with_tol,
+    project_algebraics_with_plan, push_visible_values, replace_last_visible_values,
+    timeline::sample_time_match_with_tol, update_relation_memory_slots,
 };
 use rumoca_eval_solve::refresh_plan::{
     AlgebraicRefreshRow, RefreshPlan, build_algebraic_refresh_plan, build_derivative_refresh_plan,
@@ -1228,37 +1228,20 @@ impl SolveRuntime {
         tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        self.update_relation_memory_from_state_except_overrides(
-            t,
-            state,
-            params,
-            tol,
-            max_iters,
-            &[],
-        )
-    }
-
-    pub(crate) fn update_relation_memory_from_state_except_overrides(
-        &self,
-        t: f64,
-        state: &[f64],
-        params: &mut [f64],
-        tol: f64,
-        max_iters: usize,
-        root_relation_overrides: &[(usize, f64)],
-    ) -> Result<bool, RuntimeSolveError> {
-        if self
+        let relation_memory_indices = &self
             .model
             .problem
-            .events
-            .root_relation_memory_targets
-            .iter()
-            .all(Option::is_none)
-        {
+            .solve_layout
+            .relation_memory_parameter_indices;
+        if relation_memory_indices.is_empty() {
             return Ok(false);
         }
         let roots = self.eval_root_conditions(t, state, params, tol, max_iters)?;
-        self.update_root_relation_memory_from_values(&roots, params, root_relation_overrides)
+        Ok(update_relation_memory_slots(
+            &roots,
+            params,
+            relation_memory_indices,
+        ))
     }
 
     pub fn eval_dynamic_time_event_rows(
@@ -1661,60 +1644,31 @@ impl SolveRuntime {
         _tol: f64,
         root_relation_overrides: &[(usize, f64)],
     ) -> Result<bool, RuntimeSolveError> {
-        if self
+        let relation_memory_indices = &self
             .model
             .problem
-            .events
-            .root_relation_memory_targets
-            .iter()
-            .all(Option::is_none)
-        {
+            .solve_layout
+            .relation_memory_parameter_indices;
+        if relation_memory_indices.is_empty() {
             return Ok(false);
         }
         let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
-        self.update_root_relation_memory_from_values(&roots, p, root_relation_overrides)
-    }
-
-    fn update_root_relation_memory_from_values(
-        &self,
-        roots: &[f64],
-        p: &mut [f64],
-        root_relation_overrides: &[(usize, f64)],
-    ) -> Result<bool, RuntimeSolveError> {
         let mut changed = false;
-        for (root_index, (root, target)) in roots
-            .iter()
-            .zip(&self.model.problem.events.root_relation_memory_targets)
-            .enumerate()
+        for (root_index, (root, parameter_index)) in
+            roots.iter().zip(relation_memory_indices).enumerate()
         {
-            let Some(target) = *target else {
-                continue;
-            };
-            let solve::ScalarSlot::P {
-                index: parameter_index,
-                ..
-            } = target
-            else {
-                return Err(RuntimeSolveError::solve_ir(format!(
-                    "root relation-memory target {root_index} is not a parameter slot"
-                )));
-            };
             if self.relation_memory_root_is_overridden(
                 root_index,
-                parameter_index,
+                *parameter_index,
                 root_relation_overrides,
             ) {
                 continue;
             }
-            let slot = p.get_mut(parameter_index).ok_or_else(|| {
-                RuntimeSolveError::solve_ir(format!(
-                    "root relation-memory parameter index {parameter_index} is out of bounds"
-                ))
-            })?;
-            let value = relation_memory_value_from_root(*root);
-            let before = *slot;
-            changed |= before != value;
-            *slot = value;
+            changed |= update_relation_memory_slots(
+                std::slice::from_ref(root),
+                p,
+                std::slice::from_ref(parameter_index),
+            );
         }
         Ok(changed)
     }

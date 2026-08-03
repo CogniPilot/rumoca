@@ -33,7 +33,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     let roots = lower_roots(view, layout, clocks, &discrete.relation_memory_owners)?;
     let (scheduled_time_events, dynamic_time_event_rhs) = lower_time_events(view, layout)?;
     let delays = lower_delays(view, layout)?;
-    let mut discrete = discrete.finish(&roots.relation_memory_targets)?;
+    let mut discrete = discrete.finish()?;
     derive_integrator_history_effects(
         &mut discrete,
         continuous,
@@ -369,9 +369,6 @@ fn lower_delays<'dae>(
 
 #[derive(Default)]
 struct DiscreteRows<'dae> {
-    runtime_rows: ScalarRows,
-    runtime_targets: Vec<solve::ScalarSlot>,
-    root_alias_candidates: Vec<RootAliasCandidate>,
     rows: ScalarRows,
     targets: Vec<solve::ScalarSlot>,
     roles: Vec<solve::DiscreteRowRole>,
@@ -408,29 +405,9 @@ impl<'dae> DiscreteRows<'dae> {
         self.clock_owners.push(clock_owner);
     }
 
-    fn push_root_alias_candidate(
-        &mut self,
-        program: Vec<solve::LinearOp>,
-        span: Span,
-        target: solve::ScalarSlot,
-    ) {
-        self.root_alias_candidates.push(RootAliasCandidate {
-            program,
-            span,
-            target,
-        });
-    }
-
-    fn finish(
-        mut self,
-        root_relation_targets: &[Option<solve::ScalarSlot>],
-    ) -> Result<solve::DiscreteSolveSystem, LowerError> {
-        self.partition_root_relation_aliases(root_relation_targets);
-        let runtime_assignment_rhs = self.runtime_rows.into_scalar_block()?;
+    fn finish(self) -> Result<solve::DiscreteSolveSystem, LowerError> {
         let rhs = self.rows.into_scalar_block()?;
         Ok(solve::DiscreteSolveSystem {
-            runtime_assignment_rhs,
-            runtime_assignment_targets: self.runtime_targets,
             update_targets: self.targets,
             row_roles: self.roles,
             pre_modes: self.pre_modes,
@@ -446,63 +423,6 @@ impl<'dae> DiscreteRows<'dae> {
             ..solve::DiscreteSolveSystem::default()
         })
     }
-
-    /// Derive the runtime refresh plan for aliases fed by root relation memory.
-    ///
-    /// The source event rows remain authoritative and retain their original
-    /// order. A row is mirrored into the refresh plan only when typed DAE
-    /// provenance proves it is a generated connection equation and its scalar
-    /// program transitively reads an aligned root-memory target. Dependency
-    /// forms that the compact proof cannot read remain event-only.
-    fn partition_root_relation_aliases(
-        &mut self,
-        root_relation_targets: &[Option<solve::ScalarSlot>],
-    ) {
-        let candidates = std::mem::take(&mut self.root_alias_candidates);
-        let mut reachable = root_relation_targets
-            .iter()
-            .flatten()
-            .copied()
-            .filter_map(history_dependency_slot)
-            .collect::<BTreeSet<_>>();
-        let mut selected = vec![false; candidates.len()];
-        loop {
-            let mut progress = false;
-            for (index, candidate) in candidates.iter().enumerate() {
-                if selected[index] {
-                    continue;
-                }
-                let mut dependencies = BTreeSet::new();
-                if collect_linear_op_dependencies(&candidate.program, &mut dependencies).is_none()
-                    || dependencies.is_disjoint(&reachable)
-                {
-                    continue;
-                }
-                let Some(target) = history_dependency_slot(candidate.target) else {
-                    continue;
-                };
-                selected[index] = true;
-                progress |= reachable.insert(target);
-            }
-            if !progress {
-                break;
-            }
-        }
-        for (candidate, selected) in candidates.into_iter().zip(selected) {
-            if selected {
-                let output = self.runtime_targets.len();
-                self.runtime_rows
-                    .push(candidate.program, candidate.span, output);
-                self.runtime_targets.push(candidate.target);
-            }
-        }
-    }
-}
-
-struct RootAliasCandidate {
-    program: Vec<solve::LinearOp>,
-    span: Span,
-    target: solve::ScalarSlot,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -905,10 +825,6 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         .get(0)
         .expect("checked unconditional B.1c owner has one branch");
     debug_assert_eq!(owner.branches().len(), 1);
-    let is_connection_alias = matches!(
-        owner.provenance().origin(),
-        dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::ConnectionEquation)
-    );
     for (target, (value, provenance)) in owner.targets().iter().zip(branch.values().iter()) {
         let expression = view
             .expression(value)
@@ -933,16 +849,12 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.relation_memory_owners
                 .claim_exact_expression(value, target);
-            let pre_mode = expression_pre_mode(view, value, sampled);
-            if clock.is_none() && is_connection_alias {
-                rows.push_root_alias_candidate(program.clone(), span, target);
-            }
             rows.push(
                 program,
                 span,
                 target,
                 solve::DiscreteRowRole::Equation,
-                pre_mode,
+                expression_pre_mode(view, value, sampled),
                 clock.map(|(_, solve)| solve),
             );
         }
