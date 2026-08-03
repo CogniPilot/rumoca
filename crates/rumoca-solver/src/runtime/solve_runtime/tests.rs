@@ -296,6 +296,98 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
 }
 
 #[test]
+fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
+    let roots = spanned_block(
+        vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        "typed_root_cascade.mo",
+    );
+    let discrete = spanned_block(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "typed_root_cascade_discrete.mo",
+    );
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["reported".to_string(), "cascade".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 2,
+                compiled_parameter_len: 3,
+                relation_memory_parameter_indices: vec![0, 1],
+                discrete_valued_scalar_names: vec!["mode".to_string()],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: roots,
+                root_relation_memory_targets: vec![
+                    Some(solve::scalar_slot_p(0)),
+                    Some(solve::scalar_slot_p(1)),
+                ],
+                root_zero_domains: vec![
+                    solve::RootZeroDomain::Previous,
+                    solve::RootZeroDomain::Previous,
+                ],
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                rhs: discrete,
+                update_targets: vec![solve::scalar_slot_p(2)],
+                row_roles: vec![solve::DiscreteRowRole::Equation],
+                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                observation_refresh: vec![false],
+                clock_owners: vec![None],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0, 1.0],
+        parameters: vec![0.0, 0.0, 0.0],
+        ..Default::default()
+    };
+    let runtime = SolveRuntime::new(&model).expect("root cascade runtime should prepare");
+    let mut y = model.initial_y.clone();
+    let mut p = model.parameters.clone();
+    let event_pre_y = y.clone();
+    let event_pre_p = p.clone();
+
+    runtime
+        .apply_projected_event_update(
+            ProjectedEventUpdateInput {
+                y: &mut y,
+                p: &mut p,
+                t: 0.0,
+                tol: 1.0e-12,
+                event_pre_y: &event_pre_y,
+                event_pre_p: &event_pre_p,
+                max_iters: 8,
+                row_filter: EventUpdateRowFilter::All,
+                root_relation_overrides: &[(0, 1.0)],
+            },
+            |solver_y, _| {
+                let changed = solver_y[1].to_bits() != (-1.0_f64).to_bits();
+                solver_y[1] = -1.0;
+                Ok(changed)
+            },
+        )
+        .expect("a typed root must allow a second relation to join the same event");
+
+    assert_eq!(p, vec![1.0, 1.0, 1.0]);
+}
+
+#[test]
 fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     let mut model = solve::SolveModel {
         problem: solve::SolveProblem {
