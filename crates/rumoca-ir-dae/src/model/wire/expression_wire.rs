@@ -220,6 +220,12 @@ pub(super) enum ExprNodeWire {
     FunctionFoldOutput {
         function: u32,
     },
+    ClockTransfer {
+        kind: crate::ClockTransferKind,
+        source: u32,
+        source_clock: u32,
+        target_clock: u32,
+    },
 }
 
 fn deserialize_required_option<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>

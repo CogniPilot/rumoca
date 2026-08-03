@@ -193,6 +193,9 @@ where
             dae::ExpressionOperation::StringConversion { value, format, .. } => {
                 self.string_conversion_dependencies(value, format)
             }
+            dae::ExpressionOperation::ClockTransfer { source, .. } => {
+                self.expression(source, scalar_index)
+            }
         }
     }
 

@@ -775,10 +775,12 @@ fn resolve_function_loop_definitions(
 ) -> Result<(), ToDaeError> {
     match lowering {
         FunctionLoopLowering::TotalArrayDefinition => {
-            let [FunctionStatementPlan::Assignment(assignment)] = body else {
-                unreachable!("a total array definition owns one element assignment")
-            };
-            definitions.define_whole(&assignment.target);
+            for plan in body {
+                let FunctionStatementPlan::Assignment(assignment) = plan else {
+                    unreachable!("total array definitions own only element assignments")
+                };
+                definitions.define_whole(&assignment.target);
+            }
         }
         FunctionLoopLowering::Fold { targets } => {
             for target in targets {

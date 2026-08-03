@@ -341,6 +341,75 @@ fn disconnected_clock_domains_retain_distinct_exact_owners() {
 }
 
 #[test]
+fn super_sample_value_constructs_an_exact_cross_clock_transfer() {
+    let source = TestSource::new(
+        "model M Clock baseClock=Clock(0.1); discrete Integer u; discrete Integer y; \
+         equation when baseClock then u=1; end when; y=superSample(u,2); end M;",
+    );
+    let mut model = test_model();
+    add_test_clock(
+        &mut model,
+        &source,
+        TestClock {
+            name: "baseClock",
+            declaration: "Clock baseClock=Clock(0.1)",
+            constructor_span: source.span("Clock(0.1)", 0),
+            interval_span: source.span("0.1", 0),
+            interval: 0.1,
+            type_id: 44,
+        },
+    );
+    add_test_integer(&mut model, &source, "u", "discrete Integer u", 45);
+    add_test_integer(&mut model, &source, "y", "discrete Integer y", 46);
+    add_test_clock_assignment(&mut model, &source, "baseClock", "u", 1);
+    let conversion_span = source.span("superSample(u,2)", 0);
+    let equation_span = source.span("y=superSample(u,2)", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(Expression::VarRef {
+                name: test_reference("y"),
+                subscripts: Vec::new(),
+                span: source.span("y", 1),
+            }),
+            rhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::SuperSample,
+                args: vec![
+                    Expression::VarRef {
+                        name: test_reference("u"),
+                        subscripts: Vec::new(),
+                        span: source.span("u", 2),
+                    },
+                    Expression::Literal {
+                        value: Literal::Integer(2),
+                        span: source.span("2", 0),
+                    },
+                ],
+                span: conversion_span,
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let dae = construct(&model, source.map)
+        .expect("superSample owns an exact source-to-derived-clock value transfer");
+    dae.inspect(|view| {
+        assert_eq!(view.clock_count(), 2);
+        assert_eq!(view.clock_ownership_count(), 2);
+        let transfer = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| expression.provenance().span() == conversion_span)
+            .expect("the conversion is retained as an explicit DAE expression owner");
+        assert_eq!(transfer.provenance().span(), conversion_span);
+    });
+}
+
+#[test]
 fn connected_equation_rejects_distinct_clock_owners_at_exact_second_clock_use() {
     let source = TestSource::new(
         "model M Clock leftClock=Clock(0.1); Clock rightClock=Clock(0.2); \

@@ -160,6 +160,73 @@ fn quotient_construction_rejects_dynamic_and_undefined_operands() {
 }
 
 #[test]
+fn runtime_mod_constructs_one_checked_synthetic_root() {
+    let source = TestSource::new("Real x; mod(x, 2)");
+    let declaration = source.source("Real x", 0);
+    let x_at = source.source("x", 1);
+    let two_at = source.source("2", 0);
+    let mod_at = source.source("mod(x, 2)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let x = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (x, two) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(x_at)
+                    .coordinate(CoordinateInput::Algebraic(x))?,
+                expressions.at(two_at).literal(DaeLiteral::Integer(2))?,
+            ))
+        })?;
+
+        dae.runtime_quotient(PureBuiltin::Mod, [x, two], mod_at)?;
+        Ok(())
+    })
+    .expect("runtime mod with a proven nonzero divisor owns its event surface");
+
+    dae.inspect(|view| {
+        assert_eq!(view.root_count(), 1);
+        let root = view
+            .root(view.root_id(0).expect("dense synthetic root identity"))
+            .expect("checked synthetic root");
+        assert_eq!(
+            root.provenance().origin(),
+            DaeProvenanceOrigin::Generated(DaeGeneration::RuntimeDiscontinuity)
+        );
+        assert!(matches!(
+            view.condition(root.activation())
+                .expect("checked root activation")
+                .operation(),
+            ConditionOperation::Always
+        ));
+        let relation = view
+            .relation(root.relation())
+            .expect("checked synthetic relation");
+        assert!(matches!(
+            view.expression(relation.expression())
+                .expect("checked relation expression")
+                .operation(),
+            ExpressionOperation::Binary {
+                operator: BinaryOperator::GreaterEqual,
+                ..
+            }
+        ));
+    });
+}
+
+#[test]
 fn roots_accept_only_closed_primitive_relations() {
     let source = TestSource::new("Real x; when x > 0 then end when;");
     let declaration = source.source("Real x", 0);

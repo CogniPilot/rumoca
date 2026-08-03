@@ -103,3 +103,106 @@ fn direct_assignment_shape_rejects_target_dependent_expression() {
 
     assert_eq!(target_assignment_shape(&row).unwrap(), None);
 }
+
+#[test]
+fn affine_shape_isolates_either_factor_of_two_solver_coordinates() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadY { dst: 1, index: 1 },
+        LinearOp::LoadY { dst: 2, index: 2 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Mul,
+            lhs: 1,
+            rhs: 2,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(
+        vec![row],
+        fixture_span()
+            .require_provenance("two-coordinate affine fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("scalar fixture is computable");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("affine row should prepare");
+    let y = [6.0, 3.0, 2.0];
+
+    let first = prepared
+        .eval_target_assignment_row_with_context(0, 1, &y, &[], 0.0, RowEvalContext::default())
+        .expect("first factor is exactly isolatable");
+    let second = prepared
+        .eval_target_assignment_row_with_context(0, 2, &y, &[], 0.0, RowEvalContext::default())
+        .expect("second factor is exactly isolatable");
+
+    assert_eq!(first, Some(3.0));
+    assert_eq!(second, Some(2.0));
+
+    let error = prepared
+        .eval_target_assignment_row_with_context(
+            0,
+            1,
+            &[6.0, 3.0, 0.0],
+            &[],
+            0.0,
+            RowEvalContext::default(),
+        )
+        .expect_err("a zero solver-coordinate coefficient remains singular");
+    assert!(matches!(
+        error,
+        EvalSolveError::SingularTargetAssignment {
+            target_y_index: 1,
+            coefficient: 0.0,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn affine_shape_isolates_a_coordinate_from_negated_zero_sum() {
+    let row = vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::LoadY { dst: 1, index: 0 },
+        LinearOp::LoadY { dst: 2, index: 1 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Add,
+            lhs: 1,
+            rhs: 2,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(
+        vec![row],
+        fixture_span()
+            .require_provenance("negated zero-sum fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("scalar fixture is computable");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("affine row should prepare");
+
+    let value = prepared
+        .eval_target_assignment_row_with_context(
+            0,
+            1,
+            &[4.0, 0.0],
+            &[],
+            0.0,
+            RowEvalContext::default(),
+        )
+        .expect("current-balance factor is exactly isolatable");
+
+    assert_eq!(value, Some(-4.0));
+}

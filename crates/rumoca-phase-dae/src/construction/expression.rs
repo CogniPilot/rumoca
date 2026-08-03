@@ -388,14 +388,20 @@ fn lower_builtin_expression<'dae>(
                     .coordinate(dae::CoordinateInput::ClockInterval(owner_clock))
             })
         }
-        BuiltinFunction::Clock
-        | BuiltinFunction::SubSample
-        | BuiltinFunction::SuperSample
-        | BuiltinFunction::ShiftSample
-        | BuiltinFunction::BackSample
-        | BuiltinFunction::NoClock => {
+        BuiltinFunction::Clock | BuiltinFunction::NoClock => {
             Err(dae::DaeConstructionError::InvalidExpressionForm { span })
         }
+        BuiltinFunction::SubSample
+        | BuiltinFunction::SuperSample
+        | BuiltinFunction::ShiftSample
+        | BuiltinFunction::BackSample => lower_clock_transfer(
+            construction,
+            symbols,
+            binders,
+            function,
+            arguments,
+            provenance,
+        ),
         BuiltinFunction::Delay => {
             lower_delay(construction, symbols, binders, arguments, provenance, span)
         }
@@ -410,6 +416,172 @@ fn lower_builtin_expression<'dae>(
             arguments,
             provenance,
         ),
+    }
+}
+
+fn lower_clock_transfer<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    function: BuiltinFunction,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let (source, kind) = clock_transfer_input(
+        function,
+        arguments,
+        symbols.functions.constants,
+        provenance.span(),
+    )?;
+    let source_plan = expression_clock_plan(source, symbols.functions).ok_or(
+        dae::DaeConstructionError::MissingClockDomainOwner {
+            span: provenance.span(),
+        },
+    )?;
+    let source_clock = symbols
+        .functions
+        .clocks
+        .id(&source_plan, provenance.span())?;
+    let target_clock =
+        symbols
+            .owner_clock
+            .ok_or(dae::DaeConstructionError::MissingClockDomainOwner {
+                span: provenance.span(),
+            })?;
+    let mut source_symbols = symbols;
+    source_symbols.owner_clock = Some(source_clock);
+    let source = lower_expression_scoped(construction, source_symbols, binders, source, None)?;
+    construction.expressions(|expressions| {
+        expressions.at(provenance).clock_transfer(
+            kind,
+            source,
+            source_clock.into(),
+            target_clock.into(),
+        )
+    })
+}
+
+fn clock_transfer_input<'expression>(
+    function: BuiltinFunction,
+    arguments: &'expression [Expression],
+    constants: &EvalContext,
+    span: Span,
+) -> Result<(&'expression Expression, dae::ClockTransferKind), dae::DaeConstructionError> {
+    let invalid = || dae::DaeConstructionError::InvalidClockedOperand {
+        operator: function.name(),
+        span,
+    };
+    let integer = |expression: &Expression| {
+        eval_expr(expression, constants)
+            .ok()
+            .and_then(|value| value.as_integer())
+            .ok_or_else(invalid)
+    };
+    match (function, arguments) {
+        (BuiltinFunction::SubSample, [source, factor]) => Ok((
+            source,
+            dae::ClockTransferKind::SubSample {
+                factor: integer(factor)?,
+            },
+        )),
+        (BuiltinFunction::SuperSample, [source, factor]) => Ok((
+            source,
+            dae::ClockTransferKind::SuperSample {
+                factor: integer(factor)?,
+            },
+        )),
+        (BuiltinFunction::ShiftSample, [source, counter]) => Ok((
+            source,
+            dae::ClockTransferKind::ShiftSample {
+                counter: integer(counter)?,
+                resolution: 1,
+            },
+        )),
+        (BuiltinFunction::ShiftSample, [source, counter, resolution]) => Ok((
+            source,
+            dae::ClockTransferKind::ShiftSample {
+                counter: integer(counter)?,
+                resolution: integer(resolution)?,
+            },
+        )),
+        (BuiltinFunction::BackSample, [source, counter]) => Ok((
+            source,
+            dae::ClockTransferKind::BackSample {
+                counter: integer(counter)?,
+                resolution: 1,
+            },
+        )),
+        (BuiltinFunction::BackSample, [source, counter, resolution]) => Ok((
+            source,
+            dae::ClockTransferKind::BackSample {
+                counter: integer(counter)?,
+                resolution: integer(resolution)?,
+            },
+        )),
+        _ => Err(invalid()),
+    }
+}
+
+fn expression_clock_plan(
+    expression: &Expression,
+    functions: &FunctionRegistry<'_, '_>,
+) -> Option<ClockPlan> {
+    if let Expression::BuiltinCall {
+        function,
+        args,
+        span,
+        ..
+    } = expression
+        && matches!(
+            function,
+            BuiltinFunction::SubSample
+                | BuiltinFunction::SuperSample
+                | BuiltinFunction::ShiftSample
+                | BuiltinFunction::BackSample
+        )
+    {
+        let (source, kind) =
+            clock_transfer_input(*function, args, functions.constants, *span).ok()?;
+        let source = expression_clock_plan(source, functions)?;
+        let lattice = match kind {
+            dae::ClockTransferKind::SubSample { factor } => source.lattice.sub_sample(factor),
+            dae::ClockTransferKind::SuperSample { factor } => source.lattice.super_sample(factor),
+            dae::ClockTransferKind::ShiftSample {
+                counter,
+                resolution,
+            } => source.lattice.shift_sample(counter, resolution),
+            dae::ClockTransferKind::BackSample {
+                counter,
+                resolution,
+            } => source.lattice.back_sample(counter, resolution),
+        }
+        .ok()?;
+        return Some(ClockPlan {
+            lattice,
+            constructor_span: *span,
+        });
+    }
+    let mut owner = None;
+    collect_expression_clock_plan(expression, functions, &mut owner);
+    owner
+}
+
+fn collect_expression_clock_plan(
+    expression: &Expression,
+    functions: &FunctionRegistry<'_, '_>,
+    owner: &mut Option<ClockPlan>,
+) {
+    if let Expression::VarRef { name, .. } = expression
+        && let Some(variable) = functions.flat.variables.get(name.var_name())
+        && let Some(plan) = functions
+            .clocked_coordinate_owners
+            .get(&variable.instance_id)
+    {
+        debug_assert!(owner.is_none_or(|existing| existing.lattice == plan.lattice));
+        owner.get_or_insert(*plan);
+    }
+    for child in expression_children(expression) {
+        collect_expression_clock_plan(child, functions, owner);
     }
 }
 
@@ -985,9 +1157,24 @@ fn lower_record_array_field_access<'dae>(
     expression: &Expression,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let plan = symbols
-        .functions
-        .record_array_fields
+    let fields = &symbols.functions.record_array_fields;
+    if let Some(plan) = fields.structural(expression) {
+        let Expression::FieldAccess { base, .. } = expression else {
+            unreachable!("structural field plans are keyed only by field access")
+        };
+        let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
+        let ordinal = construction.expressions(|expressions| {
+            expressions.record_field_ordinal(base, &plan.name, provenance)
+        })?;
+        if ordinal != Some(plan.ordinal) {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            });
+        }
+        return construction
+            .expressions(|expressions| expressions.at(provenance).field(base, plan.ordinal));
+    }
+    let plan = fields
         .get(expression)
         .expect("analysis certifies every lowered record-array field projection");
     let (coordinates, subscripts) = match plan {
@@ -1824,7 +2011,12 @@ fn lower_array_comprehension<'dae>(
     } else {
         let key = ComprehensionKey::new(provenance.span(), indices)
             .expect("analysis proves comprehension-owner provenance");
-        symbols.functions.comprehension_plans[&key].clone()
+        symbols
+            .functions
+            .comprehension_plans
+            .get(&key, indices)
+            .expect("analysis proves the exact comprehension occurrence")
+            .clone()
     };
     let domain = construction.domains(|domains| {
         domains.nested_in_scope(

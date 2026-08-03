@@ -167,6 +167,7 @@ where
                     span,
                 ));
             }
+            dae::ExpressionOperation::ClockTransfer { source, .. } => self.expression(source)?,
         };
         require_finite(&value, span)?;
         Ok(value)

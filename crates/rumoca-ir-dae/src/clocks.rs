@@ -8,6 +8,36 @@ use crate::{
     DiscreteValueId, PeriodicClockId, VariableId, VariableRole,
 };
 
+/// Exact MLS §16.5.2 relationship carried by one cross-clock value transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockTransferKind {
+    SubSample { factor: i64 },
+    SuperSample { factor: i64 },
+    ShiftSample { counter: i64, resolution: i64 },
+    BackSample { counter: i64, resolution: i64 },
+}
+
+impl ClockTransferKind {
+    pub(crate) fn target_lattice(
+        self,
+        source: ClockLattice,
+    ) -> Result<ClockLattice, rumoca_core::ClockLatticeErrorKind> {
+        match self {
+            Self::SubSample { factor } => source.sub_sample(factor),
+            Self::SuperSample { factor } => source.super_sample(factor),
+            Self::ShiftSample {
+                counter,
+                resolution,
+            } => source.shift_sample(counter, resolution),
+            Self::BackSample {
+                counter,
+                resolution,
+            } => source.back_sample(counter, resolution),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ClockKind {

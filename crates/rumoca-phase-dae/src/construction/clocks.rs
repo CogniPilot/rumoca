@@ -32,6 +32,7 @@ pub(super) fn lower_clocks<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     flat: &flat::Model,
     plans: &HashMap<InstanceId, ClockPlan>,
+    clocked_values: &HashMap<InstanceId, ClockedValuePlan>,
 ) -> Result<LoweredClocks<'dae>, dae::DaeConstructionError> {
     let mut plan_ids = HashMap::new();
     let mut coordinate_ids = HashMap::new();
@@ -48,6 +49,15 @@ pub(super) fn lower_clocks<'dae>(
             clock
         };
         coordinate_ids.insert(name.clone(), clock);
+    }
+    for value in clocked_values.values() {
+        if plan_ids.contains_key(&value.clock) {
+            continue;
+        }
+        let provenance = dae::DaeProvenance::source(value.clock.constructor_span)?;
+        let clock =
+            construction.clocks(|clocks| clocks.periodic(value.clock.lattice, provenance))?;
+        plan_ids.insert(value.clock, clock);
     }
     Ok(LoweredClocks {
         by_plan: plan_ids,

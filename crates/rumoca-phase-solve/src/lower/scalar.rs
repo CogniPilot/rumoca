@@ -356,7 +356,39 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 "String conversion escaped its checked event-message owner",
                 node.provenance().span(),
             )),
+            dae::ExpressionOperation::ClockTransfer {
+                source,
+                source_clock,
+                target_clock,
+                ..
+            } => self.clock_transfer(
+                source,
+                source_clock,
+                target_clock,
+                scalar,
+                node.provenance().span(),
+            ),
         }
+    }
+
+    fn clock_transfer(
+        &mut self,
+        source: dae::ExprId<'dae>,
+        source_clock: dae::ClockId<'dae>,
+        target_clock: dae::ClockId<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if self.active_clock != Some(target_clock) {
+            return Err(LowerError::contract(
+                "clock transfer escaped its target clock schedule",
+                span,
+            ));
+        }
+        let target = self.active_clock.replace(source_clock);
+        let value = self.expression(source, scalar);
+        self.active_clock = target;
+        value
     }
 
     fn load_slot(&mut self, slot: solve::ScalarSlot, span: Span) -> Result<solve::Reg, LowerError> {

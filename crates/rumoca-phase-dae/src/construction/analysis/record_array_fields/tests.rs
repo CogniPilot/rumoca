@@ -127,6 +127,27 @@ fn add_variable_in_scope(
     coordinate
 }
 
+fn add_record_layout(
+    model: &mut flat::Model,
+    owner: DefId,
+    name: &str,
+    field: DefId,
+    field_name: &str,
+    dims: &[i64],
+) {
+    model.record_types.insert(
+        owner,
+        flat::RecordType {
+            name: name.to_string(),
+            fields: vec![flat::RecordField {
+                name: field_name.to_string(),
+                def_id: field,
+                dims: dims.to_vec(),
+            }],
+        },
+    );
+}
+
 fn member_access(
     base: ComponentReference,
     subscript: Subscript,
@@ -655,6 +676,7 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
     let span = Span::from_offsets(source, 0, 23);
     let record = DefId::new(140);
     let samples = DefId::new(141);
+    let alias = DefId::new(142);
     let real = TypeId::new(1);
     let mut model = flat::Model::new();
     for name in ["a", "b"] {
@@ -667,16 +689,14 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
             },
         );
     }
-    model.record_types.insert(
-        record,
-        flat::RecordType {
-            name: "SampleRecord".to_string(),
-            fields: vec![flat::RecordField {
-                name: "samples".to_string(),
-                def_id: samples,
-                dims: vec![3],
-            }],
-        },
+    add_record_layout(&mut model, record, "SampleRecord", samples, "samples", &[3]);
+    add_record_layout(
+        &mut model,
+        alias,
+        "SampleRecordAlias",
+        samples,
+        "samples",
+        &[3],
     );
     let field = Expression::FieldAccess {
         base: Box::new(Expression::Binary {
@@ -697,6 +717,24 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
         field_def_id: samples,
         span,
     };
+    let plans = analyze_record_array_fields(&model, [&field])
+        .expect("the exact field declaration proves its structural owner");
+    let plan = plans
+        .structural(&field)
+        .expect("the structural field occurrence has a retained certificate");
+    assert_eq!(plan.owners.as_ref(), [record, alias]);
+    assert_eq!(plan.field, samples);
+    assert_eq!(plan.ordinal, 0);
+    validate_expression_with_record_array_fields(
+        &field,
+        &HashMap::from([
+            (VarName::new("a"), PlannedRole::Algebraic),
+            (VarName::new("b"), PlannedRole::Algebraic),
+        ]),
+        &HashSet::new(),
+        &plans,
+    )
+    .expect("validation accepts only the occurrence-scoped structural certificate");
     let mut identity = rumoca_core::Function::new("identity", span);
     identity.add_input(
         FunctionParam::new(

@@ -930,6 +930,7 @@ struct ChannelErrorAccumulator {
 
 fn accumulate_channel_error(
     samples: &[(f64, Option<f64>, Option<f64>)],
+    use_step_hold: bool,
 ) -> ChannelErrorAccumulator {
     let mut acc = ChannelErrorAccumulator {
         ref_samples: Vec::with_capacity(samples.len() * 2),
@@ -951,7 +952,15 @@ fn accumulate_channel_error(
         let e0 = (r0 - o0).abs();
         let e1 = (r1 - o1).abs();
 
-        acc.integral_abs_error += 0.5 * (e0 + e1) * dt;
+        acc.integral_abs_error += if use_step_hold {
+            // Discrete traces are right-continuous and constant on [t0, t1),
+            // so their exact L1 contribution is the left-endpoint rectangle.
+            // A trapezoid would smear an event-instant mismatch backward over
+            // the preceding hold and manufacture output-grid-sized error.
+            e0 * dt
+        } else {
+            0.5 * (e0 + e1) * dt
+        };
         acc.integral_duration += dt;
         acc.max_abs_error = acc.max_abs_error.max(e0).max(e1);
         acc.ref_samples.push(o0);
@@ -989,7 +998,7 @@ fn compare_channel(
         })
         .collect::<Vec<_>>();
 
-    let acc = accumulate_channel_error(&samples);
+    let acc = accumulate_channel_error(&samples, use_step_hold);
     if acc.ref_samples.len() < 2 || acc.integral_duration <= 0.0 {
         return None;
     }
@@ -1076,6 +1085,12 @@ fn dedup_grid_times(grid: Vec<f64>) -> Vec<f64> {
             .last()
             .is_some_and(|last| (time - *last).abs() <= GRID_DEDUP_EPS)
         {
+            // Event traces are right-continuous after normalization. Retaining
+            // the later representative keeps interpolation on the settled
+            // side of a pair of numerically coincident event instants.
+            if let Some(last) = deduped_grid.last_mut() {
+                *last = time;
+            }
             continue;
         }
         deduped_grid.push(time);

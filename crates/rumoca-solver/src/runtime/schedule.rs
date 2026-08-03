@@ -17,6 +17,7 @@ pub struct SolveStopSchedule {
     events: Vec<StopEvent>,
     periodic_schedules: Vec<solve::PeriodicEventSchedule>,
     next_idx: usize,
+    last_consumed_scheduled_time: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +33,7 @@ impl SolveStopSchedule {
             events: collect_static_solve_events(problem, t_start, t_end),
             periodic_schedules: problem.clocks.periodic_event_schedules.clone(),
             next_idx: 0,
+            last_consumed_scheduled_time: None,
         };
         schedule.advance_past(t_start);
         schedule
@@ -76,6 +78,14 @@ impl SolveStopSchedule {
     }
 
     pub fn advance_past(&mut self, t_current: f64) {
+        if let Some(event) = self.coincident_event_at(t_current) {
+            let advances_frontier = self.last_consumed_scheduled_time.is_none_or(|consumed| {
+                event.time > consumed && !sample_time_match_with_tol(event.time, consumed)
+            });
+            if advances_frontier {
+                self.last_consumed_scheduled_time = Some(event.time);
+            }
+        }
         while let Some(event) = self.events.get(self.next_idx) {
             if event.time < t_current || sample_time_match_with_tol(event.time, t_current) {
                 self.next_idx += 1;
@@ -85,9 +95,69 @@ impl SolveStopSchedule {
         }
     }
 
+    /// Return the scheduled owner at `time` only when that superdense instant
+    /// has not already completed.
+    ///
+    /// A numerical root can be rediscovered at the same real time after a time
+    /// event reset. The schedule, rather than a global clock lookup, owns the
+    /// one-shot evidence that distinguishes a genuine coincident event from a
+    /// replay of the consumed instant.
+    pub fn unconsumed_coincident_event_at(&self, time: f64) -> Option<CoincidentScheduledEvent> {
+        let coincidence = self.scheduled_event_coincidence_at(time)?;
+        match coincidence.consumption {
+            ScheduledEventConsumption::Unconsumed => Some(coincidence.event),
+            ScheduledEventConsumption::Consumed => None,
+        }
+    }
+
+    pub fn scheduled_event_coincidence_at(&self, time: f64) -> Option<ScheduledEventCoincidence> {
+        let event = self.coincident_event_at(time)?;
+        let consumption = if self.last_consumed_scheduled_time.is_some_and(|consumed| {
+            event.time < consumed || sample_time_match_with_tol(event.time, consumed)
+        }) {
+            ScheduledEventConsumption::Consumed
+        } else {
+            ScheduledEventConsumption::Unconsumed
+        };
+        Some(ScheduledEventCoincidence { event, consumption })
+    }
+
+    fn coincident_event_at(&self, time: f64) -> Option<CoincidentScheduledEvent> {
+        let mut found = None;
+        for event in &self.events {
+            if sample_time_match_with_tol(event.time, time) {
+                merge_coincident_stop(&mut found, *event);
+            }
+        }
+        for schedule in &self.periodic_schedules {
+            if let Some(tick_time) = periodic_tick_time_at(schedule, time) {
+                merge_coincident_stop(
+                    &mut found,
+                    StopEvent {
+                        time: tick_time,
+                        pre_mode: EventPreMode::EventEntry,
+                        terminal: false,
+                    },
+                );
+            }
+        }
+        found.map(|event| CoincidentScheduledEvent {
+            time: event.time,
+            event: RuntimeEventStop {
+                pre_mode: event.pre_mode,
+                observe_right_limit: event.pre_mode == EventPreMode::FollowCurrent,
+                terminal: event.terminal,
+            },
+        })
+    }
+
     #[cfg(any(test, kani))]
     pub(crate) fn bit_eq(&self, other: &Self) -> bool {
         self.next_idx == other.next_idx
+            && option_float_bit_eq(
+                self.last_consumed_scheduled_time,
+                other.last_consumed_scheduled_time,
+            )
             && self.events.len() == other.events.len()
             && self
                 .events
@@ -104,6 +174,15 @@ impl SolveStopSchedule {
                         && left.phase_seconds().to_bits() == right.phase_seconds().to_bits()
                         && left.anchor() == right.anchor()
                 })
+    }
+}
+
+#[cfg(any(test, kani))]
+fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.to_bits() == right.to_bits(),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -232,6 +311,18 @@ pub struct CoincidentScheduledEvent {
     pub event: RuntimeEventStop,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduledEventConsumption {
+    Unconsumed,
+    Consumed,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ScheduledEventCoincidence {
+    pub event: CoincidentScheduledEvent,
+    pub consumption: ScheduledEventConsumption,
+}
+
 fn merge_coincident_event(
     found: &mut Option<CoincidentScheduledEvent>,
     time: f64,
@@ -306,6 +397,16 @@ fn merge_next_stop(next: &mut Option<StopEvent>, candidate: StopEvent) {
         }
         Some(event) if event.time < candidate.time => {}
         _ => *next = Some(candidate),
+    }
+}
+
+fn merge_coincident_stop(found: &mut Option<StopEvent>, candidate: StopEvent) {
+    match found {
+        Some(event) => {
+            event.pre_mode = event.pre_mode.merge(candidate.pre_mode);
+            event.terminal |= candidate.terminal;
+        }
+        None => *found = Some(candidate),
     }
 }
 
@@ -496,6 +597,44 @@ mod tests {
 
         assert!(sample_time_match_with_tol(found.time, 0.01));
         assert_eq!(found.event.pre_mode, EventPreMode::EventEntry);
+    }
+
+    #[test]
+    fn unconsumed_coincident_tick_is_available_exactly_once() {
+        let mut problem = solve::SolveProblem::default();
+        problem
+            .clocks
+            .periodic_event_schedules
+            .push(periodic(0.01, 0.01));
+        let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.1);
+        let located_root = 0.009_999_999_999_642_817;
+
+        let found = schedule
+            .unconsumed_coincident_event_at(located_root)
+            .expect("an unconsumed tick remains available to the root event");
+        assert!(sample_time_match_with_tol(found.time, 0.01));
+
+        schedule.advance_past(found.time);
+        assert!(
+            schedule
+                .unconsumed_coincident_event_at(located_root)
+                .is_none(),
+            "a completed superdense tick must not be replayed by a later root"
+        );
+        assert!(
+            schedule.unconsumed_coincident_event_at(0.02).is_some(),
+            "consuming one tick must not suppress a genuinely future tick"
+        );
+
+        schedule.advance_past(0.02);
+        assert!(
+            schedule.unconsumed_coincident_event_at(0.01).is_none(),
+            "the consumed-through frontier must reject a backtracked older tick"
+        );
+        assert!(
+            schedule.unconsumed_coincident_event_at(0.03).is_some(),
+            "the consumed-through frontier must preserve a later tick"
+        );
     }
 
     #[test]

@@ -984,6 +984,7 @@ fn expression_contains_derivative<'dae>(
                 pending.push(range.start().expression());
             }
             dae::ExpressionOperation::Unary { operand, .. } => pending.push(operand),
+            dae::ExpressionOperation::ClockTransfer { source, .. } => pending.push(source),
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
                 pending.push(lhs);
                 pending.push(rhs);

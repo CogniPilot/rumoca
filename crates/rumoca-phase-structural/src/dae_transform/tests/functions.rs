@@ -271,6 +271,7 @@ fn function_expression_edges<'dae>(
             push(range.stop().expression());
         }
         dae::ExpressionOperation::Unary { operand, .. } => push(operand),
+        dae::ExpressionOperation::ClockTransfer { source, .. } => push(source),
         dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
             push(lhs);
             push(rhs);
@@ -346,6 +347,16 @@ fn function_operation_fingerprint(operation: dae::ExpressionOperation<'_>) -> St
         dae::ExpressionOperation::Coordinate(coordinate) => coordinate_fingerprint(coordinate),
         dae::ExpressionOperation::Unary { operator, .. } => format!("unary:{operator:?}"),
         dae::ExpressionOperation::Binary { operator, .. } => format!("binary:{operator:?}"),
+        dae::ExpressionOperation::ClockTransfer {
+            kind,
+            source_clock,
+            target_clock,
+            ..
+        } => format!(
+            "clock_transfer:{kind:?}:{}:{}",
+            source_clock.index(),
+            target_clock.index()
+        ),
         dae::ExpressionOperation::Conditional(operands) => {
             format!("conditional:{}", operands.len())
         }

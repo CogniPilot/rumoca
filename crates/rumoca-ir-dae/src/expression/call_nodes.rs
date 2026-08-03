@@ -7,7 +7,6 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         arguments: impl IntoIterator<Item = ExprId<'dae>>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let arguments = arguments.into_iter().collect::<Vec<_>>();
-        let variability = max_variability(self.storage, &arguments, self.provenance)?;
         let result = builtin_result(self.storage, builtin, &arguments, self.provenance)?;
         if matches!(
             builtin,
@@ -15,6 +14,26 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         ) {
             validate_static_quotient(self.storage, builtin, &arguments, self.provenance)?;
         }
+        self.insert_builtin(builtin, arguments, result)
+    }
+
+    pub(crate) fn checked_runtime_quotient(
+        self,
+        builtin: PureBuiltin,
+        arguments: [ExprId<'dae>; 2],
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let result = builtin_result(self.storage, builtin, &arguments, self.provenance)?;
+        validate_runtime_quotient(self.storage, builtin, &arguments, self.provenance)?;
+        self.insert_builtin(builtin, arguments.into(), result)
+    }
+
+    fn insert_builtin(
+        self,
+        builtin: PureBuiltin,
+        arguments: Vec<ExprId<'dae>>,
+        result: ValueType,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let variability = max_variability(self.storage, &arguments, self.provenance)?;
         let binder_domain =
             merged_binder_domain(self.storage, arguments.iter().copied(), self.provenance)?;
         let ty = self.storage.intern_type(result, self.provenance)?;

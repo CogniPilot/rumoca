@@ -220,6 +220,10 @@ fn validate_variable(
     states: &HashSet<VarName>,
     assigned_discrete: &HashSet<VarName>,
 ) -> Result<PlannedRole, ToDaeError> {
+    if variable.from_expandable_connector && !variable.connected && variable.binding.is_none() {
+        validate_variable_header(flat, name, variable)?;
+        return Ok(PlannedRole::UnusedExpandable);
+    }
     let external_input = is_external_input(flat, name, variable)?;
     if is_predefined_clock_variable(flat, variable)? {
         require_span(variable.source_span, format!("clock declaration `{name}`"))?;

@@ -20,6 +20,31 @@ pub(in crate::construction) enum RecordArrayFieldPlan {
     },
 }
 
+/// Exact Flat declaration evidence for an ordinary `record_expression.field`.
+///
+/// Unlike [`RecordArrayFieldPlan`], this certificate does not materialize a
+/// coordinate run. Its base remains an expression that DAE construction must
+/// lower and type-check before selecting the retained field ordinal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::construction) struct StructuralRecordFieldPlan {
+    pub(in crate::construction) owners: Box<[rumoca_core::DefId]>,
+    pub(in crate::construction) field: rumoca_core::DefId,
+    pub(in crate::construction) ordinal: usize,
+    pub(in crate::construction) name: VarName,
+    shape: Box<[i64]>,
+    /// Ordered field declarations of the complete record layout. More than one
+    /// retained record owner may name the same underlying record type (for
+    /// example a unit type alias), but only an identical declaration layout
+    /// may join this certificate.
+    layout: Box<[rumoca_core::DefId]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct StructuralRecordFieldKey {
+    occurrence: Span,
+    field: rumoca_core::DefId,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::construction) enum RecordArrayFieldPlanKey {
     Materialized {
@@ -62,6 +87,10 @@ pub(in crate::construction) struct RecordArrayFieldPlans {
     // one occurrence key instead of making the source span a false uniqueness
     // proof.
     by_occurrence: HashMap<RecordArrayFieldPlanKey, Vec<RecordArrayFieldPlan>>,
+    /// Structural projections keyed by their exact source occurrence and
+    /// declaration identity. A field spelling is checked against the retained
+    /// record layout, but never acts as semantic identity.
+    structural_by_occurrence: HashMap<StructuralRecordFieldKey, StructuralRecordFieldPlan>,
     /// Declared trailing shape of every structurally accessible record field.
     ///
     /// `DefId` is the field identity; the dimensions come from Flat's retained
@@ -132,6 +161,28 @@ impl RecordArrayFieldPlans {
     pub(in crate::construction) fn field_shape(&self, field: rumoca_core::DefId) -> Option<&[i64]> {
         self.field_shapes.get(&field).map(Box::as_ref)
     }
+
+    pub(in crate::construction) fn structural(
+        &self,
+        expression: &Expression,
+    ) -> Option<&StructuralRecordFieldPlan> {
+        let Expression::FieldAccess {
+            field,
+            field_def_id,
+            span,
+            ..
+        } = expression
+        else {
+            return None;
+        };
+        let plan = self
+            .structural_by_occurrence
+            .get(&StructuralRecordFieldKey {
+                occurrence: *span,
+                field: *field_def_id,
+            })?;
+        (plan.name.as_str() == field).then_some(plan)
+    }
 }
 
 pub(super) fn analyze_record_array_fields<'expression>(
@@ -139,51 +190,162 @@ pub(super) fn analyze_record_array_fields<'expression>(
     expressions: impl IntoIterator<Item = &'expression Expression>,
 ) -> Result<RecordArrayFieldPlans, ToDaeError> {
     let candidates = CoordinateCandidates::new(flat);
-    let field_shapes = declared_record_field_shapes(flat)?;
+    let declared_fields = declared_record_fields(flat)?;
+    let field_shapes = declared_fields
+        .iter()
+        .map(|(field, plan)| (*field, plan.shape.clone()))
+        .collect();
     let mut plans = HashMap::new();
+    let mut structural_plans = HashMap::new();
     for expression in expressions {
-        collect_plans(flat, &candidates, expression, &mut plans)?;
+        collect_plans(
+            flat,
+            &candidates,
+            &declared_fields,
+            expression,
+            &mut plans,
+            &mut structural_plans,
+        )?;
     }
     Ok(RecordArrayFieldPlans {
         by_occurrence: plans,
+        structural_by_occurrence: structural_plans,
         field_shapes,
     })
 }
 
-fn declared_record_field_shapes(
+fn declared_record_fields(
     flat: &flat::Model,
-) -> Result<HashMap<rumoca_core::DefId, Box<[i64]>>, ToDaeError> {
-    let mut shapes = HashMap::new();
-    for field in flat.record_types.values().flat_map(|record| &record.fields) {
-        let shape = field.dims.clone().into_boxed_slice();
-        if let Some(previous) = shapes.insert(field.def_id, shape.clone())
-            && previous != shape
-        {
-            return Err(ToDaeError::MissingSemanticIdentity {
-                identity: format!(
-                    "record field declaration {} has one exact retained shape",
-                    field.def_id.index()
-                ),
-            });
+) -> Result<HashMap<rumoca_core::DefId, StructuralRecordFieldPlan>, ToDaeError> {
+    let mut fields = HashMap::new();
+    for (owner, record) in &flat.record_types {
+        let layout = record
+            .fields
+            .iter()
+            .map(|field| field.def_id)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        for (ordinal, field) in record.fields.iter().enumerate() {
+            let plan = StructuralRecordFieldPlan {
+                owners: vec![*owner].into_boxed_slice(),
+                field: field.def_id,
+                ordinal,
+                name: VarName::new(&field.name),
+                shape: field.dims.clone().into_boxed_slice(),
+                layout: layout.clone(),
+            };
+            match fields.entry(field.def_id) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(plan);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if same_structural_layout(entry.get(), &plan) =>
+                {
+                    merge_structural_owner(entry.get_mut(), *owner);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(ToDaeError::MissingSemanticIdentity {
+                        identity: format!(
+                            "record field declaration {} has one exact retained layout",
+                            field.def_id.index()
+                        ),
+                    });
+                }
+            }
         }
     }
-    Ok(shapes)
+    Ok(fields)
+}
+
+fn merge_structural_owner(plan: &mut StructuralRecordFieldPlan, owner: rumoca_core::DefId) {
+    if plan.owners.contains(&owner) {
+        return;
+    }
+    let mut owners = plan.owners.to_vec();
+    owners.push(owner);
+    owners.sort_by_key(|owner| owner.index());
+    plan.owners = owners.into_boxed_slice();
+}
+
+fn same_structural_layout(
+    lhs: &StructuralRecordFieldPlan,
+    rhs: &StructuralRecordFieldPlan,
+) -> bool {
+    lhs.field == rhs.field
+        && lhs.ordinal == rhs.ordinal
+        && lhs.name == rhs.name
+        && lhs.shape == rhs.shape
+        && lhs.layout == rhs.layout
 }
 
 fn collect_plans(
     flat: &flat::Model,
     candidates: &CoordinateCandidates<'_>,
+    declared_fields: &HashMap<rumoca_core::DefId, StructuralRecordFieldPlan>,
     expression: &Expression,
     plans: &mut HashMap<RecordArrayFieldPlanKey, Vec<RecordArrayFieldPlan>>,
+    structural_plans: &mut HashMap<StructuralRecordFieldKey, StructuralRecordFieldPlan>,
 ) -> Result<(), ToDaeError> {
     if let Some((key, plan)) = plan_field_access(flat, candidates, expression)? {
         insert_plan(plans, key, plan, expression_span(expression)?)?;
         return Ok(());
     }
+    if let Some((key, plan)) = plan_structural_field(declared_fields, expression)? {
+        let incompatible = structural_plans
+            .insert(key, plan.clone())
+            .is_some_and(|previous| previous != plan);
+        if incompatible {
+            return Err(ToDaeError::unsupported_flat(
+                "aggregate expression",
+                "one semantic occurrence produced incompatible record-field owners",
+                key.occurrence,
+            ));
+        }
+    }
     for child in expression_children(expression) {
-        collect_plans(flat, candidates, child, plans)?;
+        collect_plans(
+            flat,
+            candidates,
+            declared_fields,
+            child,
+            plans,
+            structural_plans,
+        )?;
     }
     Ok(())
+}
+
+fn plan_structural_field(
+    declared_fields: &HashMap<rumoca_core::DefId, StructuralRecordFieldPlan>,
+    expression: &Expression,
+) -> Result<Option<(StructuralRecordFieldKey, StructuralRecordFieldPlan)>, ToDaeError> {
+    let Expression::FieldAccess {
+        field,
+        field_def_id,
+        span,
+        ..
+    } = expression
+    else {
+        return Ok(None);
+    };
+    let Some(plan) = declared_fields.get(field_def_id) else {
+        return Ok(None);
+    };
+    require_span(*span, "aggregate expression")?;
+    if plan.name.as_str() != field {
+        return Err(ToDaeError::unsupported_flat(
+            "aggregate expression",
+            "the field occurrence spelling disagrees with its retained declaration identity",
+            *span,
+        ));
+    }
+    Ok(Some((
+        StructuralRecordFieldKey {
+            occurrence: *span,
+            field: *field_def_id,
+        },
+        plan.clone(),
+    )))
 }
 
 fn insert_plan(
@@ -700,7 +862,12 @@ fn require_runtime_coordinate(
             | PlannedRole::DiscreteReal
             | PlannedRole::DiscreteValue,
         ) => Ok(()),
-        Some(PlannedRole::Clock | PlannedRole::EnumerationLiteral | PlannedRole::Aggregate)
+        Some(
+            PlannedRole::UnusedExpandable
+            | PlannedRole::Clock
+            | PlannedRole::EnumerationLiteral
+            | PlannedRole::Aggregate,
+        )
         | None => Err(ToDaeError::unsupported_flat(
             "record-array member slice",
             format!(

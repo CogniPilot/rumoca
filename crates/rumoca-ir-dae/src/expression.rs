@@ -1,6 +1,7 @@
 mod arena;
 mod array_nodes;
 mod call_nodes;
+mod clock_nodes;
 mod derived_facts;
 mod function_facts;
 mod function_nodes;
@@ -19,17 +20,17 @@ use serde::{Deserialize, Serialize};
 use crate::model::{FunctionReadSet, Storage, checked_u32, invalid_arity, unknown};
 use crate::temporal::{DelayEntry, DelayKind};
 use crate::{
-    AlgebraicId, DaeConstructionError, DaeProvenance, DelayCoordinate, DelayId, DiscreteRealId,
-    DiscreteValueId, DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId,
-    FunctionId, FunctionParameterId, FunctionValueId, InputId, ParameterId, PeriodicClockId,
-    PositiveParameter, StateId, ValueTypeId,
+    AlgebraicId, ClockId, ClockTransferKind, DaeConstructionError, DaeProvenance, DelayCoordinate,
+    DelayId, DiscreteRealId, DiscreteValueId, DomainBinderId, DomainId, ExprId,
+    FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
+    InputId, ParameterId, PeriodicClockId, PositiveParameter, StateId, ValueTypeId,
 };
 use derived_facts::{definition_type, max_variability, merge_binder_domain, merged_binder_domain};
 use function_facts::{FunctionCallFact, node_function_facts};
 use function_nodes::function_fold_entry;
 use type_rules::{
     binary_result, builtin_result, common_value_type, range_extent, type_mismatch,
-    validate_static_quotient, validate_subscript,
+    validate_runtime_quotient, validate_static_quotient, validate_subscript,
 };
 
 pub(crate) use arena::{ExpressionArenaStorage, FrozenExpressionArenaStorage, OperandRange};

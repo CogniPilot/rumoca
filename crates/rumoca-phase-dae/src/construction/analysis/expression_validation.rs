@@ -147,6 +147,7 @@ pub(super) fn validate_specialized_subscripts(
     .validate_subscripts(subscripts)
 }
 
+#[cfg(test)]
 pub(super) fn validate_expression_with_record_array_fields(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
@@ -166,6 +167,26 @@ pub(super) fn validate_expression_with_record_array_fields(
     .validate(expression)
 }
 
+pub(super) fn validate_model_expression_with_record_array_fields(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    fields: &RecordArrayFieldPlans,
+    model_values: &ShapeEnvironment,
+) -> Result<(), ToDaeError> {
+    let binders = HashSet::new();
+    ExpressionValidator {
+        roles,
+        states,
+        binders: &binders,
+        record_array_fields: Some(fields),
+        enumeration_literals: Some(model_values),
+        values: Some(model_values),
+        when_clause: PreContext::Continuous,
+    }
+    .validate(expression)
+}
+
 pub(super) fn validate_expression_scoped_with_record_array_fields(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
@@ -180,7 +201,7 @@ pub(super) fn validate_expression_scoped_with_record_array_fields(
         binders,
         record_array_fields: Some(fields),
         enumeration_literals: Some(model_values),
-        values: None,
+        values: Some(model_values),
         when_clause: PreContext::Continuous,
     }
     .validate(expression)
@@ -330,14 +351,21 @@ impl<'a> ExpressionValidator<'a> {
         let Some(fields) = self.record_array_fields else {
             return Err(unsupported_record_field(span));
         };
-        let Some(plan) = fields.get(expression) else {
-            return Err(unsupported_record_field(span));
-        };
-        match plan {
-            RecordArrayFieldPlan::MaterializedCoordinate { .. } => Ok(()),
-            RecordArrayFieldPlan::Projection { subscripts, .. } => {
-                self.validate_subscripts(subscripts)
-            }
+        if let Some(plan) = fields.get(expression) {
+            return match plan {
+                RecordArrayFieldPlan::MaterializedCoordinate { .. } => Ok(()),
+                RecordArrayFieldPlan::Projection { subscripts, .. } => {
+                    self.validate_subscripts(subscripts)
+                }
+            };
+        }
+        if fields.structural(expression).is_some() {
+            let Expression::FieldAccess { base, .. } = expression else {
+                unreachable!("structural field plans are keyed only by field access")
+            };
+            self.validate(base)
+        } else {
+            Err(unsupported_record_field(span))
         }
     }
 }
@@ -921,5 +949,50 @@ mod tests {
                 span: error_span,
             } if name == literal_name && error_span == span
         ));
+    }
+
+    #[test]
+    fn model_compact_range_accepts_a_settled_parameter_bound() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("model_range.mo", "1:n");
+        let span = Span::from_offsets(source, 0, 3);
+        let parameter = VarName::new("n");
+        let mut model = flat::Model::new();
+        model.add_variable(
+            parameter.clone(),
+            flat::Variable {
+                name: parameter.clone(),
+                variability: Variability::Parameter(Default::default()),
+                type_id: rumoca_core::TypeId::new(1),
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(span)
+            },
+        );
+        let mut constants = EvalContext::new();
+        constants.add_parameter("n", EvalValue::Integer(3));
+        let shapes = FunctionShapeAnalysis::analyze(&model, &constants)
+            .expect("the model parameter has one settled scalar value");
+        let range = Expression::Range {
+            start: Box::new(Expression::Literal {
+                value: Literal::Integer(1),
+                span,
+            }),
+            step: None,
+            end: Box::new(Expression::VarRef {
+                name: rumoca_core::Reference::new("n"),
+                subscripts: Vec::new(),
+                span,
+            }),
+            span,
+        };
+
+        validate_model_expression_with_record_array_fields(
+            &range,
+            &HashMap::from([(parameter, PlannedRole::Parameter)]),
+            &HashSet::new(),
+            &RecordArrayFieldPlans::default(),
+            shapes.model_values(),
+        )
+        .expect("a settled model parameter owns a static compact range extent");
     }
 }
