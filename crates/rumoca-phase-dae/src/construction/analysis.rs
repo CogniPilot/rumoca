@@ -66,7 +66,7 @@ pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
     PreContext, validate_expression, validate_expression_in_context,
     validate_expression_scoped_with_record_array_fields,
-    validate_expression_with_record_array_fields, validate_specialized_expression,
+    validate_model_expression_with_record_array_fields, validate_specialized_expression,
     validate_specialized_subscripts, validate_subscripts_scoped, validate_when_expression,
     when_body_context,
 };
@@ -388,7 +388,13 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
     let clock_domains =
         analyze_clocked_partitions(flat, &clocks, &mut roles, &mut expression_roles)?;
-    validate_model_expressions(flat, &expression_roles, &states, &record_array_fields)?;
+    validate_model_expressions(
+        flat,
+        &expression_roles,
+        &states,
+        &record_array_fields,
+        function_shapes.model_values(),
+    )?;
     let continuous_family_rows = validate_structured_families(
         &flat.structured_equations,
         flat.equations.len(),
@@ -650,6 +656,7 @@ fn validate_model_expressions(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     record_array_fields: &RecordArrayFieldPlans,
+    model_values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     for variable in flat.variables.values() {
         for expression in variable_attribute_expressions(variable) {
@@ -658,11 +665,12 @@ fn validate_model_expressions(
                 // the literal carries no operand that needs validating.
                 require_span(span, "empty array attribute")?;
             } else {
-                validate_expression_with_record_array_fields(
+                validate_model_expression_with_record_array_fields(
                     expression,
                     roles,
                     states,
                     record_array_fields,
+                    model_values,
                 )?;
             }
             validate_known_function_calls(expression, flat)?;
@@ -674,11 +682,12 @@ fn validate_model_expressions(
         .chain(flat.initial_equations.iter())
         .map(|equation| &equation.residual)
     {
-        validate_expression_with_record_array_fields(
+        validate_model_expression_with_record_array_fields(
             expression,
             roles,
             states,
             record_array_fields,
+            model_values,
         )?;
         validate_known_function_calls(expression, flat)?;
     }
