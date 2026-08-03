@@ -21,7 +21,7 @@ use crate::runtime::event::{
 use crate::runtime::pre_params::{
     clear_scheduled_root_relation_memory, commit_pre_params_after_event_at,
 };
-use crate::runtime::schedule::{RuntimeEventStop, SolveStopSchedule, coincident_scheduled_event};
+use crate::runtime::schedule::{RuntimeEventStop, ScheduledEventConsumption, SolveStopSchedule};
 use crate::runtime::solve_ops::{
     EventActionOutcome, EventPreMode, RootCrossing, convert_variable_meta,
     filter_scheduled_root_crossings, root_crossings_with_relation_memory, runtime_values_changed,
@@ -59,6 +59,23 @@ struct MeAlgebraicProjectionPolicy {
     tolerance: f64,
     profile: MeNumericsProfile,
     settle: AlgebraicSettle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StateTimeCoincidence {
+    None,
+    Unconsumed,
+    Consumed,
+}
+
+impl StateTimeCoincidence {
+    fn is_some(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn is_consumed(self) -> bool {
+        matches!(self, Self::Consumed)
+    }
 }
 
 /// The one projection of a checked `SolveModel` into an FMI 3 ME component.
@@ -99,7 +116,7 @@ pub struct SolveMeKernel {
     last_event_entry: Option<MeEventEntry>,
     pending_event_stop: Option<(f64, RuntimeEventStop)>,
     advance_state_to_event_right_limit: bool,
-    coincident_state_time_event: bool,
+    state_time_coincidence: StateTimeCoincidence,
     initial_event_pending: bool,
     skip_next_enter_continuous_delay_commit: bool,
 
@@ -146,7 +163,7 @@ pub(crate) struct MeKernelSnapshot {
     last_event_entry: Option<MeEventEntry>,
     pending_event_stop: Option<(f64, RuntimeEventStop)>,
     advance_state_to_event_right_limit: bool,
-    coincident_state_time_event: bool,
+    state_time_coincidence: StateTimeCoincidence,
     initial_event_pending: bool,
     skip_next_enter_continuous_delay_commit: bool,
     pending_root_crossings: Vec<RootCrossing>,
@@ -198,7 +215,7 @@ impl SolveMeKernel {
             && option_event_entry_bit_eq(self.last_event_entry, state.last_event_entry)
             && option_event_stop_bit_eq(self.pending_event_stop, state.pending_event_stop)
             && self.advance_state_to_event_right_limit == state.advance_state_to_event_right_limit
-            && self.coincident_state_time_event == state.coincident_state_time_event
+            && self.state_time_coincidence == state.state_time_coincidence
             && self.initial_event_pending == state.initial_event_pending
             && self.skip_next_enter_continuous_delay_commit
                 == state.skip_next_enter_continuous_delay_commit
@@ -411,7 +428,7 @@ impl SolveMeKernel {
             last_event_entry: None,
             pending_event_stop: None,
             advance_state_to_event_right_limit: false,
-            coincident_state_time_event: false,
+            state_time_coincidence: StateTimeCoincidence::None,
             initial_event_pending: false,
             skip_next_enter_continuous_delay_commit: false,
             pending_root_crossings: Vec::new(),
@@ -833,9 +850,12 @@ impl SolveMeKernel {
     }
 
     pub fn has_scheduled_event_at(&self, time: f64) -> bool {
-        self.pending_event_stop
-            .is_some_and(|(event_time, _)| time_match_with_tol(event_time, time))
-            || coincident_scheduled_event(&self.runtime.model.problem, time).is_some()
+        self.stop_schedule
+            .scheduled_event_coincidence_at(time)
+            .is_some()
+            || self
+                .pending_event_stop
+                .is_some_and(|(event_time, _)| time_match_with_tol(event_time, time))
     }
 
     pub fn frozen_event_state_derivatives(
@@ -1243,14 +1263,21 @@ impl SolveMeKernel {
         match entry.cause {
             MeEventCause::StateEvent => {
                 self.advance_state_to_event_right_limit = false;
-                let coincident_time_event = self
-                    .pending_event_stop
-                    .filter(|(time, _)| time_match_with_tol(*time, entry.event_time))
+                let scheduled = self
+                    .stop_schedule
+                    .scheduled_event_coincidence_at(entry.event_time);
+                let coincident_time_event = scheduled
+                    .map(|coincidence| (coincidence.event.time, coincidence.event.event))
                     .or_else(|| {
-                        coincident_scheduled_event(&self.runtime.model.problem, entry.event_time)
-                            .map(|scheduled| (scheduled.time, scheduled.event))
+                        self.pending_event_stop
+                            .filter(|(time, _)| time_match_with_tol(*time, entry.event_time))
                     });
-                self.coincident_state_time_event = coincident_time_event.is_some();
+                self.state_time_coincidence = match scheduled.map(|value| value.consumption) {
+                    Some(ScheduledEventConsumption::Unconsumed) => StateTimeCoincidence::Unconsumed,
+                    Some(ScheduledEventConsumption::Consumed) => StateTimeCoincidence::Consumed,
+                    None if coincident_time_event.is_some() => StateTimeCoincidence::Unconsumed,
+                    None => StateTimeCoincidence::None,
+                };
                 let (event_time, event) = coincident_time_event.unwrap_or_else(|| {
                     (
                         entry.event_time,
@@ -1289,12 +1316,12 @@ impl SolveMeKernel {
                     self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
                     self.clear_runtime_caches();
                 }
-                self.coincident_state_time_event = false;
+                self.state_time_coincidence = StateTimeCoincidence::None;
                 self.discrete_states_after_update(true)
             }
             MeEventCause::TimeEvent => {
                 self.advance_state_to_event_right_limit = true;
-                self.coincident_state_time_event = false;
+                self.state_time_coincidence = StateTimeCoincidence::None;
                 let (_, event) = self.pending_event_stop.take().ok_or_else(|| {
                     contract("time event entered without a scheduled component event")
                 })?;
@@ -1371,9 +1398,17 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
         self.pending_event_pre_y = Some(event_pre_y);
         self.pending_event_pre_p = Some(event_pre_p);
         self.seed_scheduled_root_relation_overrides(event_time, event);
-        let application_time =
-            event_update_application_time(event_time, self.time, self.coincident_state_time_event);
-        self.apply_discrete_event_updates(application_time, event, EventUpdateRowFilter::All)?;
+        let application_time = event_update_application_time(
+            event_time,
+            self.time,
+            self.state_time_coincidence.is_some(),
+        );
+        let row_filter = if self.state_time_coincidence.is_consumed() {
+            EventUpdateRowFilter::UnownedOnly
+        } else {
+            EventUpdateRowFilter::All
+        };
+        self.apply_discrete_event_updates(application_time, event, row_filter)?;
         if self.advance_state_to_event_right_limit {
             self.refresh_frozen_event_observation(event_time)?;
         }
@@ -1385,7 +1420,7 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
         right_time: f64,
         event: RuntimeEventStop,
     ) -> Result<(), Self::Error> {
-        if self.advance_state_to_event_right_limit || self.coincident_state_time_event {
+        if self.advance_state_to_event_right_limit || self.state_time_coincidence.is_some() {
             let event_time = self.time;
             let settle = self.numerics_settle();
             let derivatives = self.runtime.eval_state_derivatives(
@@ -1414,7 +1449,7 @@ impl RuntimeEventBoundaryHandler for SolveMeKernel {
             .unwrap_or_else(|| self.params.clone());
         self.pending_event_pre_y = Some(event_pre_y);
         self.pending_event_pre_p = Some(event_pre_p);
-        let row_filter = if self.coincident_state_time_event {
+        let row_filter = if self.state_time_coincidence.is_some() {
             EventUpdateRowFilter::UnownedOnly
         } else {
             EventUpdateRowFilter::All
@@ -1952,7 +1987,7 @@ impl ModelExchangeKernel for SolveMeKernel {
                 last_event_entry: self.last_event_entry,
                 pending_event_stop: self.pending_event_stop,
                 advance_state_to_event_right_limit: self.advance_state_to_event_right_limit,
-                coincident_state_time_event: self.coincident_state_time_event,
+                state_time_coincidence: self.state_time_coincidence,
                 initial_event_pending: self.initial_event_pending,
                 skip_next_enter_continuous_delay_commit: self
                     .skip_next_enter_continuous_delay_commit,
@@ -1997,7 +2032,7 @@ impl ModelExchangeKernel for SolveMeKernel {
         self.last_event_entry = state.last_event_entry;
         self.pending_event_stop = state.pending_event_stop;
         self.advance_state_to_event_right_limit = state.advance_state_to_event_right_limit;
-        self.coincident_state_time_event = state.coincident_state_time_event;
+        self.state_time_coincidence = state.state_time_coincidence;
         self.initial_event_pending = state.initial_event_pending;
         self.skip_next_enter_continuous_delay_commit =
             state.skip_next_enter_continuous_delay_commit;
@@ -2064,7 +2099,7 @@ impl ModelExchangeKernel for SolveMeKernel {
         self.last_event_entry = None;
         self.pending_event_stop = None;
         self.advance_state_to_event_right_limit = false;
-        self.coincident_state_time_event = false;
+        self.state_time_coincidence = StateTimeCoincidence::None;
         self.skip_next_enter_continuous_delay_commit = false;
         self.initial_observations.clear();
         self.clear_runtime_caches();
