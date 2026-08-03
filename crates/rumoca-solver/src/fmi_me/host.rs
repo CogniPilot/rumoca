@@ -378,13 +378,11 @@ impl MeRuntimeHost {
         let discrete = update_discrete_states_to_completion(&mut *kernel)?;
         let next_event_time = discrete.next_event_time;
         kernel.enter_continuous_time_mode()?;
-        let post = post_event_state(
-            &mut *kernel,
-            entry,
-            right_time,
-            discrete,
-            includes_scheduled_event,
-        )?;
+        // A located state event is an observable superdense instant even when
+        // it does not coincide with a scheduled event. The numerical plugin
+        // owns trace storage, while the ME host owns the settled right-limit
+        // values handed to that storage.
+        let post = post_event_state(&mut *kernel, entry, right_time, discrete, true)?;
         drop(kernel);
         *self.next_event_time.borrow_mut() = next_event_time;
         Ok(post)

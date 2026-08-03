@@ -286,6 +286,52 @@ fn discrete_inversion_over_the_whole_horizon_is_not_labelled_event_time_mismatch
     assert_ne!(metric.shape, TraceDeviationShape::EventTimeMismatch);
 }
 
+#[test]
+fn numerically_coincident_discrete_events_compare_on_the_right_limit() {
+    let rumoca_times = [0.0, 0.5, 1.0];
+    let rumoca_values = [Some(0.0), Some(1.0), Some(1.0)];
+    let omc_times = [0.0, 0.5 + 1.6e-13, 1.0];
+    let omc_values = [Some(0.0), Some(1.0), Some(1.0)];
+
+    let metric = compare_channel(
+        "q",
+        ChannelSeries::new(&rumoca_times, &rumoca_values),
+        ChannelSeries::new(&omc_times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert!(
+        metric.bounded_normalized_l1_error < 1.0e-12,
+        "a sub-grid-epsilon event shift must compare at its settled right limit, got {}",
+        metric.bounded_normalized_l1_error
+    );
+}
+
+#[test]
+fn discrete_event_shift_integrates_only_the_different_hold_interval() {
+    let rumoca_times = [0.0, 0.5, 1.0];
+    let rumoca_values = [Some(0.0), Some(1.0), Some(1.0)];
+    let omc_times = [0.0, 0.51, 1.0];
+    let omc_values = [Some(0.0), Some(1.0), Some(1.0)];
+
+    let metric = compare_channel(
+        "q",
+        ChannelSeries::new(&rumoca_times, &rumoca_values),
+        ChannelSeries::new(&omc_times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert!(
+        (metric.integral_abs_error - 0.01).abs() < 1.0e-12,
+        "step-hold L1 must equal the event-time shift, got {}",
+        metric.integral_abs_error
+    );
+}
+
 /// A two-level step-hold trace on a uniform tick grid; `level(k)` is the level
 /// the trace holds from tick `k` onwards.
 fn step_hold_series(

@@ -28,12 +28,12 @@ fn root_reinit_does_not_interpolate_from_mutated_diffsol_state() {
     )
     .expect("root-triggered reinit should restart the BDF state cleanly");
 
-    assert!(
-        result.data[0][1] > 2.0,
-        "times={:?} x={:?}",
-        result.times,
-        result.data[0]
-    );
+    let first_output = result
+        .times
+        .iter()
+        .position(|time| (*time - 0.1).abs() < 1.0e-12)
+        .expect("the requested output grid must remain present");
+    assert!(result.data[0][first_output] > 2.0);
     assert!(result.data[0].last().copied().unwrap() > 2.1);
 
     model.problem.events.root_conditions = solve::ScalarProgramBlock::default();
@@ -47,6 +47,30 @@ fn root_reinit_does_not_interpolate_from_mutated_diffsol_state() {
     )
     .expect("baseline without the root should integrate");
     assert!(no_event.data[0].last().copied().unwrap() < 0.25);
+}
+
+#[test]
+fn located_root_right_limit_is_recorded_as_a_trace_observation() {
+    let result = simulate(
+        &rising_state_with_root_reinit(),
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("a located root should be observable independently of the output grid");
+
+    assert!(
+        result
+            .times
+            .iter()
+            .zip(&result.data[0])
+            .any(|(&time, &x)| time > 0.05 && time < 0.1 && x >= 2.0),
+        "the trace omitted the root right limit: times={:?} x={:?}",
+        result.times,
+        result.data[0]
+    );
 }
 
 /// Diffsol reports a located root while retaining the accepted step endpoint
