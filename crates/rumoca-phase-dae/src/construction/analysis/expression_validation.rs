@@ -330,14 +330,21 @@ impl<'a> ExpressionValidator<'a> {
         let Some(fields) = self.record_array_fields else {
             return Err(unsupported_record_field(span));
         };
-        let Some(plan) = fields.get(expression) else {
-            return Err(unsupported_record_field(span));
-        };
-        match plan {
-            RecordArrayFieldPlan::MaterializedCoordinate { .. } => Ok(()),
-            RecordArrayFieldPlan::Projection { subscripts, .. } => {
-                self.validate_subscripts(subscripts)
-            }
+        if let Some(plan) = fields.get(expression) {
+            return match plan {
+                RecordArrayFieldPlan::MaterializedCoordinate { .. } => Ok(()),
+                RecordArrayFieldPlan::Projection { subscripts, .. } => {
+                    self.validate_subscripts(subscripts)
+                }
+            };
+        }
+        if fields.structural(expression).is_some() {
+            let Expression::FieldAccess { base, .. } = expression else {
+                unreachable!("structural field plans are keyed only by field access")
+            };
+            self.validate(base)
+        } else {
+            Err(unsupported_record_field(span))
         }
     }
 }

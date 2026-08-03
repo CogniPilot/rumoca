@@ -985,9 +985,24 @@ fn lower_record_array_field_access<'dae>(
     expression: &Expression,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let plan = symbols
-        .functions
-        .record_array_fields
+    let fields = &symbols.functions.record_array_fields;
+    if let Some(plan) = fields.structural(expression) {
+        let Expression::FieldAccess { base, .. } = expression else {
+            unreachable!("structural field plans are keyed only by field access")
+        };
+        let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
+        let ordinal = construction.expressions(|expressions| {
+            expressions.record_field_ordinal(base, &plan.name, provenance)
+        })?;
+        if ordinal != Some(plan.ordinal) {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            });
+        }
+        return construction
+            .expressions(|expressions| expressions.at(provenance).field(base, plan.ordinal));
+    }
+    let plan = fields
         .get(expression)
         .expect("analysis certifies every lowered record-array field projection");
     let (coordinates, subscripts) = match plan {
