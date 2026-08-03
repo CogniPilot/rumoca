@@ -483,13 +483,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                     condition,
                     message,
                     provenance,
-                } => {
-                    let condition = self.rebuild_expression(target, &body, condition)?;
-                    let message = self.rebuild_expression(target, &body, message)?;
-                    target.functions(|functions| {
-                        functions.assertion(&mut body, condition, message, provenance)
-                    })?;
-                }
+                } => self.rebuild_assertion(target, &mut body, condition, message, provenance)?,
                 dae::FunctionStatementView::For {
                     fold,
                     statements,
@@ -501,6 +495,20 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             }
         }
         Ok(body)
+    }
+
+    fn rebuild_assertion(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        body: &mut dae::FunctionBody<'target>,
+        condition: dae::ExprId<'source>,
+        message: dae::ExprId<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let condition = self.rebuild_expression(target, body, condition)?;
+        let message = self.rebuild_expression(target, body, message)?;
+        target.functions(|functions| functions.assertion(body, condition, message, provenance))?;
+        Ok(())
     }
 
     fn assign_statement(

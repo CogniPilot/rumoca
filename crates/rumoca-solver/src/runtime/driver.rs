@@ -499,6 +499,13 @@ struct EventPre<'a> {
     p: &'a [f64],
 }
 
+struct EventUpdate<'a> {
+    t: f64,
+    tol: f64,
+    row_filter: EventUpdateRowFilter,
+    pre: EventPre<'a>,
+}
+
 /// Apply the projected discrete-event update at `t`, using the backend's
 /// `project_algebraics` as the projection callback (shared by every backend).
 fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
@@ -506,11 +513,14 @@ fn apply_event_update_kernel<St: SolverAdvanceBackend + ?Sized>(
     backend: &St,
     y: &mut [f64],
     p: &mut [f64],
-    t: f64,
-    tol: f64,
-    row_filter: EventUpdateRowFilter,
-    pre: EventPre<'_>,
+    update: EventUpdate<'_>,
 ) -> Result<(), SimDriverError> {
+    let EventUpdate {
+        t,
+        tol,
+        row_filter,
+        pre,
+    } = update;
     let outcome = runtime.apply_projected_event_update(
         ProjectedEventUpdateInput {
             y,
@@ -680,12 +690,14 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
                 self.backend,
                 self.y,
                 self.p,
-                event_t,
-                self.tol,
-                EventUpdateRowFilter::All,
-                EventPre {
-                    y: &self.event_pre_y,
-                    p: &self.event_pre_p,
+                EventUpdate {
+                    t: event_t,
+                    tol: self.tol,
+                    row_filter: EventUpdateRowFilter::All,
+                    pre: EventPre {
+                        y: &self.event_pre_y,
+                        p: &self.event_pre_p,
+                    },
                 },
             )?;
             self.record(event_t)?;
@@ -725,12 +737,14 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
             self.backend,
             self.y,
             self.p,
-            right_t,
-            self.tol,
-            EventUpdateRowFilter::All,
-            EventPre {
-                y: &self.event_pre_y,
-                p: &self.event_pre_p,
+            EventUpdate {
+                t: right_t,
+                tol: self.tol,
+                row_filter: EventUpdateRowFilter::All,
+                pre: EventPre {
+                    y: &self.event_pre_y,
+                    p: &self.event_pre_p,
+                },
             },
         )?;
         if self.root_t.is_some() {
@@ -1043,12 +1057,14 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
             backend,
             state.current_y,
             state.params,
-            scheduled.time,
-            tol,
-            EventUpdateRowFilter::All,
-            EventPre {
-                y: &event_pre_y,
-                p: &event_pre_p,
+            EventUpdate {
+                t: scheduled.time,
+                tol,
+                row_filter: EventUpdateRowFilter::All,
+                pre: EventPre {
+                    y: &event_pre_y,
+                    p: &event_pre_p,
+                },
             },
         )
         .map_err(|error| backend.validate_component_event_error(error))?;
@@ -1074,20 +1090,22 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         backend,
         state.current_y,
         state.params,
-        right_t,
-        tol,
-        if coincident.is_some() {
-            // Clock-owned rows already executed at the semantic tick above.
-            // The right-limit pass belongs to the coincident root only; running
-            // a clock row again after reinit would sample the post-event state
-            // and overwrite the tick's authoritative left-limit value.
-            EventUpdateRowFilter::UnownedOnly
-        } else {
-            EventUpdateRowFilter::All
-        },
-        EventPre {
-            y: &event_pre_y,
-            p: &event_pre_p,
+        EventUpdate {
+            t: right_t,
+            tol,
+            row_filter: if coincident.is_some() {
+                // Clock-owned rows already executed at the semantic tick above.
+                // The right-limit pass belongs to the coincident root only; running
+                // a clock row again after reinit would sample the post-event state
+                // and overwrite the tick's authoritative left-limit value.
+                EventUpdateRowFilter::UnownedOnly
+            } else {
+                EventUpdateRowFilter::All
+            },
+            pre: EventPre {
+                y: &event_pre_y,
+                p: &event_pre_p,
+            },
         },
     )
     .map_err(|error| backend.validate_component_event_error(error))?;
@@ -1099,6 +1117,17 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         right_t,
         tol,
     )?;
+    reset_backend_after_root_event(ctx, state, root_t, tol, backend)?;
+    Ok(true)
+}
+
+fn reset_backend_after_root_event<St: SolverAdvanceBackend + ?Sized>(
+    ctx: AdvanceContext<'_>,
+    state: AdvanceState<'_>,
+    root_t: f64,
+    tol: f64,
+    backend: &mut St,
+) -> Result<(), SimDriverError> {
     commit_pre_params_after_event_at(ctx.model, state.current_y, state.params, Some(root_t), tol);
     ctx.runtime
         .commit_delay_history(root_t, state.current_y, state.params)?;
@@ -1113,7 +1142,7 @@ fn handle_root_crossing<St: SolverAdvanceBackend + ?Sized>(
         crate::event_solver_step_cap(ctx.opts.dt),
     )?;
     ctx.budget.check()?;
-    Ok(true)
+    Ok(())
 }
 
 fn step_with_budget<St: SolverAdvanceBackend + ?Sized>(
