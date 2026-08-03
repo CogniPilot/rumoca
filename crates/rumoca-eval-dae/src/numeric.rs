@@ -15,6 +15,7 @@ pub enum NumericEvaluationErrorKind {
     OutOfBounds,
     Overflow,
     InvalidOverride,
+    AssertionFailed,
 }
 
 /// A checked numeric-evaluation failure with exact expression provenance.
@@ -304,6 +305,18 @@ where
         carried: u32,
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
+        self.function_fold_values(fold, None, span)?
+            .get(carried as usize)
+            .cloned()
+            .ok_or_else(|| function_ordinal_error(span))
+    }
+
+    fn function_fold_values(
+        &mut self,
+        fold: dae::FunctionFoldId<'dae>,
+        statements: Option<dae::FunctionStatements<'dae>>,
+        span: Span,
+    ) -> Result<Vec<Vec<f64>>, NumericEvaluationError> {
         let fold_view = self.view.function_fold(fold).ok_or_else(|| {
             failure(
                 NumericEvaluationErrorKind::UnsupportedOperation,
@@ -321,30 +334,10 @@ where
             .domain(fold_view.domain())
             .expect("checked function loop domain resolves");
         for point_index in 0..domain.scalar_count() as usize {
-            let point = domain
-                .structured()
-                .index_tuple_at(point_index)
-                .map_err(|_| {
-                    failure(
-                        NumericEvaluationErrorKind::Overflow,
-                        "function loop domain projection overflowed",
-                        span,
-                    )
-                })?
-                .ok_or_else(|| {
-                    failure(
-                        NumericEvaluationErrorKind::OutOfBounds,
-                        "function loop domain point does not resolve",
-                        span,
-                    )
-                })?;
+            let point = function_loop_point(domain, point_index, span)?;
             self.function_fold_values.push((fold, values));
             self.domain_points.push((fold_view.domain(), point));
-            let next = fold_view
-                .update_values()
-                .rhs_iter()
-                .map(|update| self.expression(update))
-                .collect::<Result<Vec<_>, _>>();
+            let next = self.function_loop_iteration(fold_view, statements.clone());
             self.domain_points.pop();
             let (_, previous) = self
                 .function_fold_values
@@ -353,10 +346,7 @@ where
             values = next?;
             debug_assert_eq!(values.len(), previous.len());
         }
-        values
-            .get(carried as usize)
-            .cloned()
-            .ok_or_else(|| function_ordinal_error(span))
+        Ok(values)
     }
 
     fn function_call(
@@ -395,9 +385,77 @@ where
             .rhs(output as usize)
             .ok_or_else(|| function_result_error(span))?;
         self.function_arguments.push((function, arguments));
-        let value = self.expression(result);
+        let value = self
+            .function_statements(definition.statements())
+            .and_then(|()| self.expression(result));
         self.function_arguments.pop();
         value
+    }
+
+    fn function_statements(
+        &mut self,
+        statements: dae::FunctionStatements<'dae>,
+    ) -> Result<(), NumericEvaluationError> {
+        for statement in statements {
+            match statement {
+                dae::FunctionStatementView::Assignment { .. } => {}
+                dae::FunctionStatementView::Assertion {
+                    condition,
+                    message: _,
+                    provenance,
+                } => self.function_assertion(condition, provenance.span())?,
+                dae::FunctionStatementView::For {
+                    fold,
+                    statements,
+                    provenance,
+                } => self.function_loop_statements(fold, statements, provenance.span())?,
+            }
+        }
+        Ok(())
+    }
+
+    fn function_assertion(
+        &mut self,
+        condition: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<(), NumericEvaluationError> {
+        match self.expression(condition)?.as_slice() {
+            [1.0] => Ok(()),
+            [0.0] => Err(failure(
+                NumericEvaluationErrorKind::AssertionFailed,
+                "function assertion failed",
+                span,
+            )),
+            _ => Err(failure(
+                NumericEvaluationErrorKind::InvalidValue,
+                "function assertion condition is not scalar Boolean",
+                span,
+            )),
+        }
+    }
+
+    fn function_loop_statements(
+        &mut self,
+        fold: dae::FunctionFoldId<'dae>,
+        statements: dae::FunctionStatements<'dae>,
+        span: Span,
+    ) -> Result<(), NumericEvaluationError> {
+        self.function_fold_values(fold, Some(statements), span)
+            .map(drop)
+    }
+
+    fn function_loop_iteration(
+        &mut self,
+        fold: dae::FunctionFoldView<'dae>,
+        statements: Option<dae::FunctionStatements<'dae>>,
+    ) -> Result<Vec<Vec<f64>>, NumericEvaluationError> {
+        if let Some(statements) = statements {
+            self.function_statements(statements)?;
+        }
+        fold.update_values()
+            .rhs_iter()
+            .map(|update| self.expression(update))
+            .collect()
     }
 
     /// Evaluate the constructor-proven initial value of a variable.
@@ -856,9 +914,7 @@ where
         if builtin == dae::PureBuiltin::Cross {
             return self.cross(arguments);
         }
-        let first = arguments
-            .get(0)
-            .expect("checked builtin has its required operand");
+        let first = arguments.get(0).expect("checked builtin operand");
         let mut values = self.expression(first)?;
         use dae::PureBuiltin as B;
         match builtin {
@@ -1127,6 +1183,30 @@ where
             .provenance()
             .span()
     }
+}
+
+fn function_loop_point(
+    domain: dae::DomainView<'_>,
+    point_index: usize,
+    span: Span,
+) -> Result<Vec<i64>, NumericEvaluationError> {
+    domain
+        .structured()
+        .index_tuple_at(point_index)
+        .map_err(|_| {
+            failure(
+                NumericEvaluationErrorKind::Overflow,
+                "function loop domain projection overflowed",
+                span,
+            )
+        })?
+        .ok_or_else(|| {
+            failure(
+                NumericEvaluationErrorKind::OutOfBounds,
+                "function loop domain point does not resolve",
+                span,
+            )
+        })
 }
 
 /// Reorder one checked transpose result in row-major order. The result shape
@@ -2270,6 +2350,116 @@ mod tests {
                 vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0]
             );
         });
+    }
+
+    #[test]
+    fn function_assertions_execute_for_each_call_without_numeric_messages() {
+        let text = "function checked input Boolean ok; output Real y; algorithm \
+                    assert(ok, \"message\"); y := 1.0; end checked; \
+                    checked(true); checked(false)";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("checked.mo", text);
+        let at = |needle: &str, occurrence: usize| {
+            let start = text.match_indices(needle).nth(occurrence).unwrap().0;
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let assertion_at = at("assert(ok, \"message\")", 0);
+        let dae = Dae::construct(source_map, |dae| {
+            let boolean = dae.types(|types| {
+                types.derived(ValueType::scalar(ScalarType::Boolean), at("Boolean", 0))
+            })?;
+            let real = dae
+                .types(|types| types.derived(ValueType::scalar(ScalarType::Real), at("Real", 0)))?;
+            let function = construct_asserting_function(dae, boolean, real, at)?;
+            let true_value = dae.expressions(|expressions| {
+                expressions
+                    .at(at("true", 0))
+                    .literal(DaeLiteral::Boolean(true))
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(at("checked(true)", 0))
+                    .call(function, 0, [true_value])
+            })?;
+            let false_value = dae.expressions(|expressions| {
+                expressions
+                    .at(at("false", 0))
+                    .literal(DaeLiteral::Boolean(false))
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(at("checked(false)", 0))
+                    .call(function, 0, [false_value])
+            })?;
+            Ok(())
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let calls = (0..view.expression_count())
+                .filter_map(|index| view.expression_id(index))
+                .filter(|id| {
+                    matches!(
+                        view.expression(*id).unwrap().operation(),
+                        ExpressionOperation::Call { .. }
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(calls.len(), 2);
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(evaluator.expression(calls[0]).unwrap(), vec![1.0]);
+            let error = evaluator.expression(calls[1]).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                super::NumericEvaluationErrorKind::AssertionFailed
+            );
+            assert_eq!(error.span(), assertion_at.span());
+        });
+    }
+
+    fn construct_asserting_function<'dae>(
+        dae: &mut rumoca_ir_dae::DaeConstruction<'dae>,
+        boolean: rumoca_ir_dae::ValueTypeId<'dae>,
+        real: rumoca_ir_dae::ValueTypeId<'dae>,
+        at: impl Copy + Fn(&str, usize) -> DaeProvenance,
+    ) -> Result<rumoca_ir_dae::FunctionId<'dae>, rumoca_ir_dae::DaeConstructionError> {
+        let signature = rumoca_ir_dae::FunctionSignature::new(
+            VarName::new("checked"),
+            [boolean],
+            [real],
+            at("function checked", 0),
+        );
+        dae.function(signature, |dae, reservation| {
+            let input = dae.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("ok"), 0, at("Boolean ok", 0))
+            })?;
+            let output = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("y"), 0, at("Real y", 0))
+            })?;
+            let mut body =
+                dae.functions(|functions| functions.begin(reservation, at("function checked", 0)))?;
+            let condition = dae
+                .expressions(|expressions| expressions.at(at("ok", 1)).function_parameter(input))?;
+            let message = dae.expressions(|expressions| {
+                expressions
+                    .at(at("\"message\"", 0))
+                    .literal(DaeLiteral::String("message".to_string()))
+            })?;
+            dae.functions(|functions| {
+                functions.assertion(
+                    &mut body,
+                    condition,
+                    message,
+                    at("assert(ok, \"message\")", 0),
+                )
+            })?;
+            let one = dae.expressions(|expressions| {
+                expressions.at(at("1.0", 0)).literal(DaeLiteral::Real(1.0))
+            })?;
+            dae.functions(|functions| functions.assign(&mut body, output, one, at("y := 1.0", 0)))?;
+            dae.functions(|functions| functions.define(body, at("function checked", 0)))
+        })
+        .map(|(function, ())| function)
     }
 
     #[test]
