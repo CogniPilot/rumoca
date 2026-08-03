@@ -369,6 +369,8 @@ fn lower_delays<'dae>(
 
 #[derive(Default)]
 struct DiscreteRows<'dae> {
+    runtime_rows: ScalarRows,
+    runtime_targets: Vec<solve::ScalarSlot>,
     rows: ScalarRows,
     targets: Vec<solve::ScalarSlot>,
     roles: Vec<solve::DiscreteRowRole>,
@@ -405,9 +407,23 @@ impl<'dae> DiscreteRows<'dae> {
         self.clock_owners.push(clock_owner);
     }
 
+    fn push_runtime(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        target: solve::ScalarSlot,
+    ) {
+        let output = self.runtime_targets.len();
+        self.runtime_rows.push(program, span, output);
+        self.runtime_targets.push(target);
+    }
+
     fn finish(self) -> Result<solve::DiscreteSolveSystem, LowerError> {
+        let runtime_assignment_rhs = self.runtime_rows.into_scalar_block()?;
         let rhs = self.rows.into_scalar_block()?;
         Ok(solve::DiscreteSolveSystem {
+            runtime_assignment_rhs,
+            runtime_assignment_targets: self.runtime_targets,
             update_targets: self.targets,
             row_roles: self.roles,
             pre_modes: self.pre_modes,
@@ -458,9 +474,13 @@ impl<'dae> RelationMemoryOwners<'dae> {
         }
     }
 
-    fn claim_exact_expression(&mut self, expression: dae::ExprId<'dae>, target: solve::ScalarSlot) {
+    fn claim_exact_expression(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        target: solve::ScalarSlot,
+    ) -> bool {
         let solve::ScalarSlot::P { .. } = target else {
-            return;
+            return false;
         };
         let Some(relation) = self
             .relation_by_expression
@@ -468,7 +488,7 @@ impl<'dae> RelationMemoryOwners<'dae> {
             .copied()
             .flatten()
         else {
-            return;
+            return false;
         };
         let owner = &mut self.owners[relation.index() as usize];
         *owner = match *owner {
@@ -478,6 +498,7 @@ impl<'dae> RelationMemoryOwners<'dae> {
                 RelationMemoryOwner::Ambiguous
             }
         };
+        true
     }
 
     fn target(&self, relation: dae::RelationId<'dae>) -> Option<solve::ScalarSlot> {
@@ -588,14 +609,18 @@ fn lower_unconditional_discrete_real<'dae>(
             None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
         };
         let target = variable_scalar_slot(layout, variable.index(), scalar, span)?;
-        rows.push(
-            program,
-            span,
-            target,
-            solve::DiscreteRowRole::Equation,
-            expression_pre_mode(view, value, sampled),
-            clock.map(|(_, solve)| solve),
-        );
+        if let Some((_, clock)) = clock {
+            rows.push(
+                program,
+                span,
+                target,
+                solve::DiscreteRowRole::Equation,
+                expression_pre_mode(view, value, sampled),
+                Some(clock),
+            );
+        } else {
+            rows.push_runtime(program, span, target);
+        }
     }
     Ok(())
 }
@@ -847,16 +872,30 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                     None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
                 };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
-            rows.relation_memory_owners
+            let owns_relation_memory = rows
+                .relation_memory_owners
                 .claim_exact_expression(value, target);
-            rows.push(
-                program,
-                span,
-                target,
-                solve::DiscreteRowRole::Equation,
-                expression_pre_mode(view, value, sampled),
-                clock.map(|(_, solve)| solve),
-            );
+            if let Some((_, clock)) = clock {
+                rows.push(
+                    program,
+                    span,
+                    target,
+                    solve::DiscreteRowRole::Equation,
+                    expression_pre_mode(view, value, sampled),
+                    Some(clock),
+                );
+            } else if owns_relation_memory {
+                rows.push(
+                    program,
+                    span,
+                    target,
+                    solve::DiscreteRowRole::Equation,
+                    expression_pre_mode(view, value, sampled),
+                    None,
+                );
+            } else {
+                rows.push_runtime(program, span, target);
+            }
         }
     }
     Ok(())
