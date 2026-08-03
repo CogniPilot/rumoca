@@ -428,6 +428,7 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::Builtin { .. }
         | ExpressionOperation::Call { .. }
         | ExpressionOperation::StringConversion { .. }
+        | ExpressionOperation::ClockTransfer { .. }
         | ExpressionOperation::FunctionValue { .. }
         | ExpressionOperation::FunctionFoldParameter { .. }
         | ExpressionOperation::FunctionFoldOutput { .. }
