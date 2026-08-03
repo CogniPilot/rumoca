@@ -31,6 +31,7 @@ pub enum DaeGeneration {
     DerivedParameterLowering,
     IndexReduction,
     AliasElimination,
+    RuntimeDiscontinuity,
 }
 
 impl std::fmt::Display for DaeGeneration {
@@ -46,6 +47,7 @@ impl std::fmt::Display for DaeGeneration {
             Self::PreValueLowering => "pre-value lowering",
             Self::ClockLowering => "clock lowering",
             Self::DelayLowering => "delay lowering",
+            Self::RuntimeDiscontinuity => "runtime discontinuity",
             Self::SemiLinearLowering => "semiLinear lowering",
             Self::TerminalLowering => "terminal lowering",
             Self::EventActionLowering => "event-action lowering",

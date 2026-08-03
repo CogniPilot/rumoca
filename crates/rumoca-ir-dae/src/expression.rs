@@ -29,7 +29,7 @@ use function_facts::{FunctionCallFact, node_function_facts};
 use function_nodes::function_fold_entry;
 use type_rules::{
     binary_result, builtin_result, common_value_type, range_extent, type_mismatch,
-    validate_static_quotient, validate_subscript,
+    validate_runtime_quotient, validate_static_quotient, validate_subscript,
 };
 
 pub(crate) use arena::{ExpressionArenaStorage, FrozenExpressionArenaStorage, OperandRange};

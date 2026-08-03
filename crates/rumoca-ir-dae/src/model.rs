@@ -2,6 +2,7 @@ mod domains;
 mod external_functions;
 mod function_checks;
 mod function_reads;
+mod runtime_quotients;
 mod storage;
 mod value_types;
 mod variable_types;
@@ -98,7 +99,10 @@ use crate::{
 ///
 /// 23 appends `PureBuiltin::Skew` at ordinal 42. Checked replay derives the
 /// fixed Real `[3, 3]` result from its compact Real 3-vector operand.
-pub const DAE_SCHEMA_VERSION: u16 = 23;
+///
+/// 24 appends `DaeGeneration::RuntimeDiscontinuity`. Runtime quotient owners
+/// use this provenance for their generated continuous root surfaces.
+pub const DAE_SCHEMA_VERSION: u16 = 24;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;

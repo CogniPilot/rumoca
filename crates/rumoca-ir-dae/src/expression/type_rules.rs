@@ -39,6 +39,39 @@ pub(super) fn validate_static_quotient(
     }
 }
 
+pub(super) fn validate_runtime_quotient(
+    storage: &Storage,
+    builtin: PureBuiltin,
+    arguments: &[ExprId<'_>],
+    at: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    if !matches!(
+        builtin,
+        PureBuiltin::Div | PureBuiltin::Mod | PureBuiltin::Rem
+    ) {
+        return Err(DaeConstructionError::InvalidExpressionForm { span: at.span() });
+    }
+    let [lhs, rhs] = arguments else {
+        return Err(invalid_arity(2, arguments.len(), at));
+    };
+    if !storage.expr_type(*lhs, at)?.is_scalar() || !storage.expr_type(*rhs, at)?.is_scalar() {
+        return Err(DaeConstructionError::ExpectedScalar { span: at.span() });
+    }
+    let Some(divisor) = static_numeric_value(storage, rhs.index()) else {
+        return Err(DaeConstructionError::NonStaticDiscontinuity {
+            operator: quotient_name(builtin),
+            span: at.span(),
+        });
+    };
+    if divisor == 0.0 || !divisor.is_finite() {
+        return Err(DaeConstructionError::UndefinedBuiltinDomain {
+            operator: quotient_name(builtin),
+            span: at.span(),
+        });
+    }
+    Ok(())
+}
+
 fn quotient_name(builtin: PureBuiltin) -> &'static str {
     match builtin {
         PureBuiltin::Div => "div",
