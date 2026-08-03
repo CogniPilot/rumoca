@@ -39,7 +39,7 @@ pub(super) use clocks::{
 };
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{
-    ComprehensionKey, ComprehensionPlan, specialized_comprehension_plan,
+    ComprehensionKey, ComprehensionPlans, specialized_comprehension_plan,
 };
 pub(super) use delays::DelayPlan;
 use delays::analyze_delays;
@@ -148,7 +148,7 @@ pub(super) struct Analysis {
     pub(super) initial_algorithm_assertions: Vec<flat::AssertEquation>,
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
-    pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
+    pub(super) comprehension_plans: ComprehensionPlans,
     pub(super) record_array_fields: Arc<RecordArrayFieldPlans>,
     pub(super) derived_parameters: HashMap<VarName, DerivedParameterPlan>,
     pub(super) derived_parameter_families: HashSet<usize>,

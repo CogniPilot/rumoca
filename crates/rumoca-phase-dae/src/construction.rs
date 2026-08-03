@@ -44,7 +44,7 @@ use algorithm::{
     lower_algorithm_function_call, own_clocked_algorithm_targets,
 };
 use analysis::{
-    AggregateDiscreteConnections, Analysis, ClockPlan, ComprehensionKey, ComprehensionPlan,
+    AggregateDiscreteConnections, Analysis, ClockPlan, ComprehensionKey, ComprehensionPlans,
     DelayPlan, DerivedParameterPlan, DiscreteValueAssignmentPlan, DiscreteValueTopologyPlan,
     EquationPartition, ExpressionEventPlan, ExpressionEventPlans, ExternalArgumentPlan,
     ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,

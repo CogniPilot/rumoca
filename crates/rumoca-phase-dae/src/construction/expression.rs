@@ -1824,7 +1824,12 @@ fn lower_array_comprehension<'dae>(
     } else {
         let key = ComprehensionKey::new(provenance.span(), indices)
             .expect("analysis proves comprehension-owner provenance");
-        symbols.functions.comprehension_plans[&key].clone()
+        symbols
+            .functions
+            .comprehension_plans
+            .get(&key, indices)
+            .expect("analysis proves the exact comprehension occurrence")
+            .clone()
     };
     let domain = construction.domains(|domains| {
         domains.nested_in_scope(

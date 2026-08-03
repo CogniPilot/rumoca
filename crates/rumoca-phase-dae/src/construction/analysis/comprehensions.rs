@@ -9,7 +9,7 @@ pub(in crate::construction) struct ComprehensionPlan {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::construction) struct ComprehensionKey {
     owner: Span,
-    binders: Vec<(VarName, Span)>,
+    binders: Vec<(VarName, Span, u64)>,
 }
 
 impl ComprehensionKey {
@@ -19,17 +19,90 @@ impl ComprehensionKey {
     ) -> Option<Self> {
         indices
             .iter()
-            .map(|index| Some((VarName::new(&index.name), index.range.span()?)))
+            .map(|index| {
+                Some((
+                    VarName::new(&index.name),
+                    index.range.span()?,
+                    rumoca_core::expression_semantic_fingerprint(&index.range),
+                ))
+            })
             .collect::<Option<Vec<_>>>()
             .map(|binders| Self { owner, binders })
+    }
+}
+
+#[derive(Debug)]
+struct ComprehensionPlanEntry {
+    indices: Vec<rumoca_core::ComprehensionIndex>,
+    plan: ComprehensionPlan,
+}
+
+/// Exact model-scope comprehension certificates.
+///
+/// A `Span` proves source provenance, not semantic occurrence identity. One
+/// source declaration can be instantiated more than once and each exact Flat
+/// occurrence can carry a different rewritten range. The outer key is only a
+/// fast fingerprint bucket; every insertion and lookup confirms the complete
+/// exact Flat indices (including resolved reference identities) before using a
+/// plan. This is the same bucket-plus-equality discipline as the shared
+/// expression identity API, so a fingerprint collision cannot merge owners.
+#[derive(Debug, Default)]
+pub(in crate::construction) struct ComprehensionPlans {
+    buckets: HashMap<ComprehensionKey, Vec<ComprehensionPlanEntry>>,
+}
+
+impl ComprehensionPlans {
+    fn insert(
+        &mut self,
+        key: ComprehensionKey,
+        indices: &[rumoca_core::ComprehensionIndex],
+        plan: ComprehensionPlan,
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        let bucket = self.buckets.entry(key).or_default();
+        if let Some(previous) = bucket.iter().find(|entry| entry.indices == indices) {
+            if previous.plan != plan {
+                return Err(ToDaeError::unsupported_flat(
+                    "array comprehension provenance",
+                    format!(
+                        "one exact Flat occurrence denotes incompatible compact domains: {:?} versus {plan:?}",
+                        previous.plan
+                    ),
+                    span,
+                ));
+            }
+            return Ok(());
+        }
+        bucket.push(ComprehensionPlanEntry {
+            indices: indices.to_vec(),
+            plan,
+        });
+        Ok(())
+    }
+
+    pub(in crate::construction) fn get(
+        &self,
+        key: &ComprehensionKey,
+        indices: &[rumoca_core::ComprehensionIndex],
+    ) -> Option<&ComprehensionPlan> {
+        self.buckets
+            .get(key)?
+            .iter()
+            .find(|entry| entry.indices == indices)
+            .map(|entry| &entry.plan)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.buckets.values().map(Vec::len).sum()
     }
 }
 
 pub(super) fn analyze_comprehensions<'expression>(
     expressions: impl IntoIterator<Item = &'expression Expression>,
     constants: &EvalContext,
-) -> Result<HashMap<ComprehensionKey, ComprehensionPlan>, ToDaeError> {
-    let mut plans = HashMap::new();
+) -> Result<ComprehensionPlans, ToDaeError> {
+    let mut plans = ComprehensionPlans::default();
     for expression in expressions {
         analyze_expression(expression, constants, &mut plans)?;
     }
@@ -39,7 +112,7 @@ pub(super) fn analyze_comprehensions<'expression>(
 fn analyze_expression(
     expression: &Expression,
     constants: &EvalContext,
-    plans: &mut HashMap<ComprehensionKey, ComprehensionPlan>,
+    plans: &mut ComprehensionPlans,
 ) -> Result<(), ToDaeError> {
     if let Expression::ArrayComprehension {
         indices,
@@ -68,17 +141,7 @@ fn analyze_expression(
                 owner: "array comprehension range".to_string(),
             })?;
         let plan = comprehension_plan(indices, constants, *span)?;
-        if let Some(previous) = plans.insert(key, plan.clone())
-            && previous != plan
-        {
-            return Err(ToDaeError::unsupported_flat(
-                "array comprehension provenance",
-                format!(
-                    "one source span denotes incompatible compact domains: {previous:?} versus {plan:?}"
-                ),
-                *span,
-            ));
-        }
+        plans.insert(key, indices, plan, *span)?;
     }
     for child in expression_children(expression) {
         analyze_expression(child, constants, plans)?;
@@ -312,4 +375,88 @@ fn evaluated_integer(expression: &Expression, constants: &EvalContext) -> Result
                 span,
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{BytePos, ComprehensionIndex, SourceId};
+
+    fn literal(value: i64, span: Span) -> Expression {
+        Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            span,
+        }
+    }
+
+    fn comprehension(extent: i64, span: Span) -> Expression {
+        Expression::ArrayComprehension {
+            expr: Box::new(literal(0, span)),
+            indices: vec![ComprehensionIndex {
+                name: "i".to_string(),
+                range: Expression::Range {
+                    start: Box::new(literal(1, span)),
+                    step: None,
+                    end: Box::new(literal(extent, span)),
+                    span,
+                },
+            }],
+            filter: None,
+            span,
+        }
+    }
+
+    /// One declaration source can be instantiated into multiple exact Flat
+    /// occurrences. Source provenance stays identical, while specialization
+    /// has already rewritten each occurrence's compact range to its own exact
+    /// bound; provenance is therefore not a semantic occurrence identity.
+    #[test]
+    fn distinct_flat_occurrences_may_specialize_one_source_span() {
+        let span = Span::new(
+            SourceId::from_source_name("fixture.mo"),
+            BytePos(10),
+            BytePos(20),
+        );
+        let extent_two = comprehension(2, span);
+        let extent_three = comprehension(3, span);
+
+        let plans = analyze_comprehensions([&extent_two, &extent_three], &EvalContext::new())
+            .expect("distinct exact occurrences may retain distinct compact domains");
+
+        assert_eq!(plans.len(), 2);
+    }
+
+    /// The exact-expression check is authoritative, not the fingerprint: an
+    /// analysis contradiction for one exact Flat occurrence remains ED019.
+    #[test]
+    fn one_exact_flat_occurrence_cannot_change_domains() {
+        let span = Span::new(
+            SourceId::from_source_name("fixture.mo"),
+            BytePos(30),
+            BytePos(40),
+        );
+        let occurrence = comprehension(2, span);
+        let Expression::ArrayComprehension { indices, .. } = &occurrence else {
+            unreachable!("fixture is a comprehension")
+        };
+        let key = ComprehensionKey::new(span, indices).expect("fixture has exact provenance");
+        let expected = comprehension_plan(indices, &EvalContext::new(), span)
+            .expect("fixture has a constant compact domain");
+        let mut conflicting = expected.clone();
+        conflicting.domain.binders[0].upper = 3;
+        let mut plans = ComprehensionPlans::default();
+        plans
+            .insert(key.clone(), indices, expected, span)
+            .expect("first exact certificate is accepted");
+
+        let error = plans
+            .insert(key, indices, conflicting, span)
+            .expect_err("one exact occurrence cannot own two domains");
+
+        assert!(matches!(
+            error,
+            ToDaeError::UnsupportedFlatSemantics { feature, .. }
+                if feature == "array comprehension provenance"
+        ));
+    }
 }

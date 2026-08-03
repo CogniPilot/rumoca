@@ -5,7 +5,7 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) flat: &'shape flat::Model,
     pub(super) shapes: &'shape FunctionShapeAnalysis,
     pub(super) ids: &'shape HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
-    pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
+    pub(super) comprehension_plans: &'shape ComprehensionPlans,
     pub(super) record_array_fields: &'shape RecordArrayFieldPlans,
     pub(super) constants: &'shape EvalContext,
     pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
@@ -111,7 +111,7 @@ pub(super) fn construct_functions<'dae>(
 #[derive(Clone, Copy)]
 pub(super) struct FunctionRegistryInput<'shape, 'dae> {
     pub(super) flat: &'shape flat::Model,
-    pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
+    pub(super) comprehension_plans: &'shape ComprehensionPlans,
     pub(super) record_array_fields: &'shape RecordArrayFieldPlans,
     pub(super) constants: &'shape EvalContext,
     pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
