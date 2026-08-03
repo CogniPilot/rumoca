@@ -1,5 +1,6 @@
 use super::function_ranges::static_integer_expression;
 use super::*;
+use rumoca_core::FallibleExpressionVisitor;
 
 /// MLS §12.4.4 definedness certificate for the mutable values of one function.
 ///
@@ -161,35 +162,53 @@ impl FunctionDefinitions {
         context: FunctionValidationContext<'_>,
         span: Span,
     ) -> Result<(), ToDaeError> {
-        let mut references = Vec::new();
-        expression.collect_var_refs(&mut references);
-        for reference in references {
-            if let Some(conditional) = self.branch_only.get(&reference) {
-                return Err(ToDaeError::unsupported_flat(
-                    "function conditional",
-                    format!(
-                        "`{}` reads `{reference}`, which only some branches of the conditional at byte {} define",
-                        context.function.name, conditional.start.0
-                    ),
-                    span,
-                ));
-            }
-            if self
-                .values
-                .get(&reference)
-                .is_some_and(|coverage| !coverage.is_total())
-            {
-                return Err(ToDaeError::unsupported_flat(
-                    "function element assignment",
-                    format!(
-                        "`{}` reads `{reference}` before every element of `{reference}` has a definition",
-                        context.function.name
-                    ),
-                    span,
-                ));
-            }
+        DefinedValueReadChecker {
+            definitions: self,
+            context,
+            span,
         }
-        Ok(())
+        .visit_expression(expression)
+    }
+
+    fn require_reference_readable(
+        &self,
+        reference: &rumoca_core::Reference,
+        subscripts: &[Subscript],
+        context: FunctionValidationContext<'_>,
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        let name = reference.var_name();
+        if let Some(conditional) = self.branch_only.get(name) {
+            return Err(ToDaeError::unsupported_flat(
+                "function conditional",
+                format!(
+                    "`{}` reads `{name}`, which only some branches of the conditional at byte {} define",
+                    context.function.name, conditional.start.0
+                ),
+                span,
+            ));
+        }
+        let Some(coverage @ ValueCoverage::Elements { covered, .. }) = self.values.get(name) else {
+            return Ok(());
+        };
+        if coverage.is_total() {
+            return Ok(());
+        }
+        let dimensions = declared_dimensions(name, context, span)?;
+        if !subscripts.is_empty()
+            && let Some(read) = written_indices(subscripts, &dimensions, context)
+            && read.iter().all(|index| covered.contains(index))
+        {
+            return Ok(());
+        }
+        Err(ToDaeError::unsupported_flat(
+            "function element assignment",
+            format!(
+                "`{}` reads elements of `{name}` that do not all have a definition",
+                context.function.name
+            ),
+            span,
+        ))
     }
 
     /// Join the branch certificates of one conditional onto this one.
@@ -243,6 +262,79 @@ impl FunctionDefinitions {
             joined.push(target.clone());
         }
         Ok(joined)
+    }
+}
+
+struct DefinedValueReadChecker<'scope> {
+    definitions: &'scope FunctionDefinitions,
+    context: FunctionValidationContext<'scope>,
+    span: Span,
+}
+
+impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
+    type Error = ToDaeError;
+
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[Subscript],
+    ) -> Result<(), Self::Error> {
+        for subscript in subscripts {
+            self.visit_subscript(subscript)?;
+        }
+        self.definitions
+            .require_reference_readable(name, subscripts, self.context, self.span)
+    }
+
+    fn visit_index(
+        &mut self,
+        base: &Expression,
+        subscripts: &[Subscript],
+    ) -> Result<(), Self::Error> {
+        let mut selected = Vec::new();
+        if let Some(name) = indexed_reference(base, &mut selected) {
+            selected.extend_from_slice(subscripts);
+            for subscript in &selected {
+                self.visit_subscript(subscript)?;
+            }
+            return self.definitions.require_reference_readable(
+                name,
+                &selected,
+                self.context,
+                self.span,
+            );
+        }
+        self.visit_expression(base)?;
+        for subscript in subscripts {
+            self.visit_subscript(subscript)?;
+        }
+        Ok(())
+    }
+}
+
+fn indexed_reference<'expression>(
+    expression: &'expression Expression,
+    subscripts: &mut Vec<Subscript>,
+) -> Option<&'expression rumoca_core::Reference> {
+    match expression {
+        Expression::VarRef {
+            name,
+            subscripts: direct,
+            ..
+        } => {
+            subscripts.extend_from_slice(direct);
+            Some(name)
+        }
+        Expression::Index {
+            base,
+            subscripts: selected,
+            ..
+        } => {
+            let name = indexed_reference(base, subscripts)?;
+            subscripts.extend_from_slice(selected);
+            Some(name)
+        }
+        _ => None,
     }
 }
 

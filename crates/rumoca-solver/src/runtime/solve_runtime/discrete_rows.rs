@@ -29,6 +29,15 @@ pub(super) struct PreparedStructuredDiscreteRow {
     pub(super) clock_owner: Option<solve::PeriodicClockId>,
 }
 
+pub(super) struct StructuredDiscreteRowEvalInput<'a, 'snapshot> {
+    pub(super) snapshot: &'snapshot DiscretePreSnapshot<'a>,
+    pub(super) row: PreparedStructuredDiscreteRow,
+    pub(super) eval_y: &'a [f64],
+    pub(super) eval_p: &'a [f64],
+    pub(super) t: f64,
+    pub(super) tol: f64,
+}
+
 impl PreparedStructuredDiscreteRows {
     pub(super) fn new(model: &solve::SolveModel) -> Result<Self, solve_eval::EvalSolveError> {
         let scalar = solve_eval::to_scalar_program_block(&model.problem.discrete.structured_rhs)?;
@@ -147,14 +156,17 @@ impl SolveRuntime {
 
     pub(super) fn eval_structured_discrete_row_for_pre_snapshot(
         &self,
-        snapshot: &DiscretePreSnapshot<'_>,
-        row: PreparedStructuredDiscreteRow,
-        eval_y: &[f64],
-        eval_p: &[f64],
-        t: f64,
-        tol: f64,
+        input: StructuredDiscreteRowEvalInput<'_, '_>,
         eval_p_cache: &mut EventEvalParamCache,
     ) -> Result<Option<f64>, RuntimeSolveError> {
+        let StructuredDiscreteRowEvalInput {
+            snapshot,
+            row,
+            eval_y,
+            eval_p,
+            t,
+            tol,
+        } = input;
         if !self.structured_discrete_row_active_at(row, t)? {
             return Ok(None);
         }
@@ -514,12 +526,14 @@ impl SolveRuntime {
                 continue;
             }
             let Some(value) = self.eval_structured_discrete_row_for_pre_snapshot(
-                snapshot,
-                row,
-                &eval_y,
-                &eval_p,
-                t,
-                tol,
+                StructuredDiscreteRowEvalInput {
+                    snapshot,
+                    row,
+                    eval_y: &eval_y,
+                    eval_p: &eval_p,
+                    t,
+                    tol,
+                },
                 &mut eval_p_cache,
             )?
             else {

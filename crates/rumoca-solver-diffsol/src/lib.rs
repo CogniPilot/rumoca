@@ -515,15 +515,15 @@ fn initialize_state_only_bdf(
 #[allow(dead_code)]
 fn verify_me_initial_state(
     component: &MeInitialState,
-    legacy_time: f64,
-    legacy_states: &[f64],
+    reference_time: f64,
+    reference_states: &[f64],
 ) -> Result<(), SimError> {
-    let diverged = component.time.to_bits() != legacy_time.to_bits()
-        || component.states.len() != legacy_states.len()
+    let diverged = component.time.to_bits() != reference_time.to_bits()
+        || component.states.len() != reference_states.len()
         || component
             .states
             .iter()
-            .zip(legacy_states)
+            .zip(reference_states)
             .any(|(lhs, rhs)| lhs.to_bits() != rhs.to_bits())
         || component.termination.is_some();
     if !diverged {
@@ -532,11 +532,11 @@ fn verify_me_initial_state(
     Err(SimError::RuntimeContract {
         reason: format!(
             "ME initialization diverged from the frozen Diffsol state: component_t={} \
-             legacy_t={legacy_time} component_states={} legacy_states={} \
+             reference_t={reference_time} component_states={} reference_states={} \
              component_observations={} terminated={}",
             component.time,
             component.states.len(),
-            legacy_states.len(),
+            reference_states.len(),
             component.observations.len(),
             component.termination.is_some(),
         ),

@@ -1,3 +1,9 @@
+// SPEC_0021 file-size exception: projection still shares Newton block state
+// across algebraic seeding, continuous projection, and initialization.
+// split plan: extract the algebraic seed/block driver into
+// `projection/algebraic.rs` and the combined initialization adapter into
+// `projection/initial.rs` behind the existing checked projection plans.
+
 use std::collections::HashSet;
 
 use nalgebra::{DMatrix, DVector};
@@ -430,14 +436,11 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
                 step_limit,
             )?;
             if update.changed && !earlier_row_invalidated {
-                earlier_row_invalidated = block.y_indices.iter().any(|y_index| {
-                    plan.blocks[..block_index].iter().any(|earlier| {
-                        earlier
-                            .rows
-                            .iter()
-                            .any(|row| model.implicit_jacobian_v_row_depends_on(*row, *y_index))
-                    })
-                });
+                earlier_row_invalidated = block_invalidates_earlier_rows(
+                    model,
+                    &plan.blocks[..block_index],
+                    &block.y_indices,
+                );
             }
             changed |= update.changed;
             all_settled &= update.settled;
@@ -483,6 +486,21 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
         &rows,
         &residual,
     ))
+}
+
+fn block_invalidates_earlier_rows<M: ImplicitProjectionModel>(
+    model: &M,
+    earlier_blocks: &[solve::AlgebraicProjectionBlock],
+    changed_y_indices: &[usize],
+) -> bool {
+    changed_y_indices.iter().any(|y_index| {
+        earlier_blocks.iter().any(|earlier| {
+            earlier
+                .rows
+                .iter()
+                .any(|row| model.implicit_jacobian_v_row_depends_on(*row, *y_index))
+        })
+    })
 }
 
 fn project_algebraic_block<M: ImplicitProjectionModel>(

@@ -256,13 +256,10 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
             let Some(target) = component_modifier_target(modification) else {
                 continue;
             };
-            let mut owners = vec![type_def_id];
-            for part in &target.parts {
-                owners = self.add_deferred_segment_deps(&owners, part.ident.text.as_ref());
-                if owners.is_empty() {
-                    break;
-                }
-            }
+            self.add_deferred_path_deps(
+                type_def_id,
+                target.parts.iter().map(|part| part.ident.text.as_ref()),
+            );
         }
     }
 
@@ -395,11 +392,25 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
         else {
             return;
         };
+        self.add_deferred_path_deps(
+            anchor_def_id,
+            name.name
+                .iter()
+                .skip(anchor_index + 1)
+                .map(|segment| segment.text.as_ref()),
+        );
+    }
+
+    fn add_deferred_path_deps<'segment>(
+        &mut self,
+        anchor_def_id: DefId,
+        segments: impl IntoIterator<Item = &'segment str>,
+    ) {
         let mut owners = vec![anchor_def_id];
-        for segment in name.name.iter().skip(anchor_index + 1) {
-            owners = self.add_deferred_segment_deps(&owners, segment.text.as_ref());
+        for segment in segments {
+            owners = self.add_deferred_segment_deps(&owners, segment);
             if owners.is_empty() {
-                break;
+                return;
             }
         }
     }

@@ -484,7 +484,7 @@ fn retain_reported_root_crossing(
     let post_indicator_value = after
         .get(root_index)
         .copied()
-        .map_or(1.0, |value| if value >= 0.0 { 1.0 } else { 0.0 });
+        .map_or(1.0, crate::relation_memory_value_from_root);
     crossings.push(MeIndicatorCrossing {
         index: root_index,
         post_indicator_value,
@@ -561,4 +561,30 @@ fn copy_callback_values(label: &str, values: &[f64], out: &mut [f64]) -> Result<
     }
     out.copy_from_slice(values);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reported_root_fallback_uses_canonical_relation_memory_sign() {
+        let mut crossings = Vec::new();
+        retain_reported_root_crossing(0, &[-2.0], &mut crossings);
+        retain_reported_root_crossing(1, &[-2.0, 3.0], &mut crossings);
+
+        assert_eq!(
+            crossings,
+            [
+                MeIndicatorCrossing {
+                    index: 0,
+                    post_indicator_value: 1.0,
+                },
+                MeIndicatorCrossing {
+                    index: 1,
+                    post_indicator_value: 0.0,
+                },
+            ]
+        );
+    }
 }

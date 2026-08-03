@@ -428,6 +428,9 @@ fn lower_conditional_statements<'dae>(
     for (statement, plan) in statements.iter().zip(plans) {
         match (statement, plan) {
             (_, FunctionStatementPlan::ProvenAssertion) => {}
+            (_, FunctionStatementPlan::RuntimeAssertion) => {
+                unreachable!("runtime conditional assertions are rejected during planning")
+            }
             (
                 rumoca_core::Statement::Assignment { value, span, .. },
                 FunctionStatementPlan::Assignment(assignment),

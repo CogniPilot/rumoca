@@ -266,6 +266,12 @@ enum FunctionStatementInput {
         #[serde(deserialize_with = "deserialize_provenance")]
         provenance: DaeProvenance,
     },
+    Assertion {
+        condition: u32,
+        message: u32,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
     For {
         domain: u32,
         targets: Vec<u32>,

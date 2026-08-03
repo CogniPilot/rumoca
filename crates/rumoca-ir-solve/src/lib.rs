@@ -3,6 +3,11 @@
 //! This crate contains data consumed by simulation backends after DAE-level
 //! structural/lowering phases. It must stay free of DAE evaluation and phase
 //! logic.
+//!
+//! SPEC_0021 file-size exception: the Solve IR root still owns its checked wire
+//! forms and the aggregate `SolveProblem` validation boundary. split plan: move
+//! scalar-program wire validation into `scalar_program.rs` and `SolveProblem`
+//! wire/shape validation into `solve_problem.rs`, retaining facade re-exports.
 
 #[cfg(test)]
 mod compute_block_tests;

@@ -133,6 +133,7 @@ fn validate_nested_function_loop(
     let nested_context = FunctionValidationContext {
         roles: &validated.roles,
         shapes: &validated.shapes,
+        call_scoped_actions: false,
         ..context
     };
     let FunctionStatementPlan::For {
@@ -194,6 +195,7 @@ fn validate_function_loop_body(
     let body_context = FunctionValidationContext {
         roles: &validated.roles,
         shapes: &validated.shapes,
+        call_scoped_actions: false,
         ..context
     };
     let statements = plan_function_statements(equations, body_context)?;

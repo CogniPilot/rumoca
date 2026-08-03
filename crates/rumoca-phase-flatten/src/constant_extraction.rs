@@ -1436,9 +1436,11 @@ pub(super) fn extract_constants_from_class_with_prefix_and_imports(
         let full_name = make_prefixed_name(prefix, name);
         extract_single_constant_with_prefix_and_function_scope(
             class_index,
-            prefix,
-            name,
-            &full_name,
+            ConstantName {
+                prefix,
+                local: name,
+                full: &full_name,
+            },
             comp,
             &qualified_expr,
             ctx,
@@ -1482,9 +1484,11 @@ pub(super) fn extract_single_constant_with_prefix(
 ) {
     extract_single_constant_with_prefix_and_function_scope(
         class_index,
-        prefix,
-        name,
-        full_name,
+        ConstantName {
+            prefix,
+            local: name,
+            full: full_name,
+        },
         comp,
         expr,
         ctx,
@@ -1514,99 +1518,100 @@ pub(super) fn canonicalize_constant_function_calls(
     expr
 }
 
-pub(super) fn extract_single_constant_with_prefix_and_function_scope(
+#[derive(Clone, Copy)]
+struct ConstantName<'a> {
+    prefix: &'a str,
+    local: &'a str,
+    full: &'a str,
+}
+
+fn extract_single_constant_with_prefix_and_function_scope(
     class_index: &ast::ClassDefIndex<'_>,
-    prefix: &str,
-    name: &str,
-    full_name: &str,
+    name: ConstantName<'_>,
     comp: &rumoca_ir_ast::Component,
     expr: &ast::Expression,
     ctx: &mut Context,
     function_scope: Option<FunctionCanonicalScope<'_>>,
 ) {
+    let ConstantName {
+        prefix,
+        local,
+        full,
+    } = name;
     // Modified flat model variables are authoritative for instantiated
     // parameter/constant values. Do not inject declaration defaults for these
     // names; those defaults can override modifier-derived bindings (MLS §7.2.4).
-    if ctx.modified_constant_keys.contains(full_name) {
+    if ctx.modified_constant_keys.contains(full) {
         return;
     }
 
     let type_name = comp.type_name.to_string();
-    let preserve_existing = ctx.flat_parameter_constant_keys.contains(full_name);
-    if let Some(val) = try_extract_named_record_constructor_constant(expr, ctx, prefix, full_name)
-        && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
+    let preserve_existing = ctx.flat_parameter_constant_keys.contains(full);
+    if let Some(val) = try_extract_named_record_constructor_constant(expr, ctx, prefix, full)
+        && (!preserve_existing || !ctx.constant_values.contains_key(full))
     {
         let val = canonicalize_constant_function_calls(val, function_scope);
-        insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
+        insert_with_prefix(&mut ctx.constant_values, prefix, local, full, val);
     }
     if component_type_is_record(comp, class_index)
-        && let Some(val) =
-            try_extract_record_array_constructor_constant(expr, ctx, prefix, full_name)
-        && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
+        && let Some(val) = try_extract_record_array_constructor_constant(expr, ctx, prefix, full)
+        && (!preserve_existing || !ctx.constant_values.contains_key(full))
     {
         let val = canonicalize_constant_function_calls(val, function_scope);
-        insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
+        insert_with_prefix(&mut ctx.constant_values, prefix, local, full, val);
     }
     // Integer constants
     if type_name == "Integer"
         && let Some(val) = try_eval_const_integer_with_scope(expr, ctx, prefix)
-        && (!preserve_existing || !ctx.parameter_values.contains_key(full_name))
+        && (!preserve_existing || !ctx.parameter_values.contains_key(full))
     {
-        insert_with_prefix(&mut ctx.parameter_values, prefix, name, full_name, val);
+        insert_with_prefix(&mut ctx.parameter_values, prefix, local, full, val);
     }
     // Boolean constants (needed for evaluating conditional integer constants like
     // `nXi = if fixedX then 0 else nS - 1` in replaceable packages)
     if type_name == "Boolean"
         && let Some(val) = try_eval_const_boolean_with_scope(expr, ctx, prefix)
-        && (!preserve_existing || !ctx.boolean_parameter_values.contains_key(full_name))
+        && (!preserve_existing || !ctx.boolean_parameter_values.contains_key(full))
     {
-        insert_with_prefix(
-            &mut ctx.boolean_parameter_values,
-            prefix,
-            name,
-            full_name,
-            val,
-        );
+        insert_with_prefix(&mut ctx.boolean_parameter_values, prefix, local, full, val);
     }
     // Real constants (and constants of aliased Real-derived units).
     if let Some(val) = try_eval_const_real_with_scope(expr, ctx, prefix)
         && val.is_finite()
-        && (!preserve_existing || !ctx.real_parameter_values.contains_key(full_name))
+        && (!preserve_existing || !ctx.real_parameter_values.contains_key(full))
     {
-        insert_with_prefix(&mut ctx.real_parameter_values, prefix, name, full_name, val);
+        insert_with_prefix(&mut ctx.real_parameter_values, prefix, local, full, val);
     }
     if let Some(val) = try_eval_const_flat_expr_with_scope(expr, ctx, prefix)
-        && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
+        && (!preserve_existing || !ctx.constant_values.contains_key(full))
     {
         let val = canonicalize_constant_function_calls(val, function_scope);
-        insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
+        insert_with_prefix(&mut ctx.constant_values, prefix, local, full, val);
     }
     if let Some(val) = try_extract_constant_alias_expr(expr, ctx)
-        && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
+        && (!preserve_existing || !ctx.constant_values.contains_key(full))
     {
-        insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
+        insert_with_prefix(&mut ctx.constant_values, prefix, local, full, val);
     }
     // Enumeration constants (e.g., `ThermoStates = IndependentVariables.ph`)
-    if (!preserve_existing || !ctx.enum_parameter_values.contains_key(full_name))
+    if (!preserve_existing || !ctx.enum_parameter_values.contains_key(full))
         && let Some(val) = try_eval_const_enum_with_scope(expr, ctx, prefix)
     {
-        insert_with_prefix(&mut ctx.enum_parameter_values, prefix, name, full_name, val);
+        insert_with_prefix(&mut ctx.enum_parameter_values, prefix, local, full, val);
     }
     // Array dimensions from shape
-    if (!preserve_existing || !ctx.array_dimensions.contains_key(full_name))
-        && !comp.shape.is_empty()
-    {
+    if (!preserve_existing || !ctx.array_dimensions.contains_key(full)) && !comp.shape.is_empty() {
         let dims: Vec<i64> = comp.shape.iter().map(|&d| d as i64).collect();
-        insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
+        insert_with_prefix(&mut ctx.array_dimensions, prefix, local, full, dims);
     }
     // Array dimensions from binding (array literal length)
-    if (!preserve_existing || !ctx.array_dimensions.contains_key(full_name))
+    if (!preserve_existing || !ctx.array_dimensions.contains_key(full))
         && let Some(dims) = infer_dims_from_expr(expr, ctx, prefix)
     {
-        insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
+        insert_with_prefix(&mut ctx.array_dimensions, prefix, local, full, dims);
     }
 
-    record_exact_constant_value(comp, full_name, expr.span(), ctx);
+    record_exact_constant_value(comp, full, expr.span(), ctx);
 }
 
 fn record_exact_constant_value(

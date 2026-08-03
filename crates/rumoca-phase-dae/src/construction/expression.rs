@@ -1,3 +1,9 @@
+// SPEC_0021 file-size exception: expression construction still owns the shared
+// recursive lowering context for references, operators, temporal builtins, and
+// vectorized calls. split plan: extract temporal/builtin lowering into
+// `expression/temporal.rs` and call/vectorization lowering into
+// `expression/calls.rs` after their shared symbol context has a narrow API.
+
 use super::*;
 
 pub(super) fn lower_expression<'dae>(

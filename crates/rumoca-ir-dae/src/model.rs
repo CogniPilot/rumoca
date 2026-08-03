@@ -335,6 +335,11 @@ enum FunctionStatementWire {
     Assignment {
         definition: u32,
     },
+    Assertion {
+        condition: u32,
+        message: u32,
+        provenance: DaeProvenance,
+    },
     For {
         fold: u32,
         statements: Vec<FunctionStatementWire>,
@@ -1277,6 +1282,60 @@ impl<'dae> Functions<'_, 'dae> {
         check_provenance(self.source_map, provenance)?;
         check_function_value_owner(body.function, target, provenance)?;
         self.assign_after_owner_checks(body, target, value, provenance)
+    }
+
+    /// Append one default-level MLS §8.3.7 assertion to a Modelica function.
+    ///
+    /// The mutable top-level body capability makes the action call-scoped and
+    /// prevents it from being inserted into a loop without a loop-action owner.
+    /// Both expressions must belong to the exact current function-value state;
+    /// the constructor stores no untyped call or rendered-name surrogate.
+    pub fn assertion(
+        &mut self,
+        body: &mut FunctionBody<'dae>,
+        condition: ExprId<'dae>,
+        message: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        expect_function_body_expression(self.storage, body, condition, provenance)?;
+        expect_function_body_expression(self.storage, body, message, provenance)?;
+        validate_function_value_reads(self.storage, body, condition, provenance)?;
+        validate_function_value_reads(self.storage, body, message, provenance)?;
+        let condition_type = self.storage.expr_type(condition, provenance)?;
+        if !condition_type.is_scalar() {
+            return Err(DaeConstructionError::ExpectedScalar {
+                span: provenance.span(),
+            });
+        }
+        if condition_type.scalar_type() != ScalarType::Boolean {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected: ScalarType::Boolean,
+                found: condition_type.scalar_type(),
+                span: provenance.span(),
+            });
+        }
+        let message_type = self.storage.expr_type(message, provenance)?;
+        if !message_type.is_scalar() {
+            return Err(DaeConstructionError::ExpectedScalar {
+                span: provenance.span(),
+            });
+        }
+        if message_type.scalar_type() != ScalarType::String {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected: ScalarType::String,
+                found: message_type.scalar_type(),
+                span: provenance.span(),
+            });
+        }
+        function_build_state_mut(self.storage, body)
+            .statements
+            .push(FunctionStatementWire::Assertion {
+                condition: condition.index(),
+                message: message.index(),
+                provenance,
+            });
+        Ok(())
     }
 
     fn assign_after_owner_checks(

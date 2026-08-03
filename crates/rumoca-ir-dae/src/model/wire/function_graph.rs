@@ -240,6 +240,12 @@ fn push_statement_roots(statements: &[FunctionStatementInput], pending: &mut Vec
     for statement in statements {
         match statement {
             FunctionStatementInput::Assignment { rhs, .. } => pending.push(*rhs),
+            FunctionStatementInput::Assertion {
+                condition, message, ..
+            } => {
+                pending.push(*condition);
+                pending.push(*message);
+            }
             FunctionStatementInput::For { statements, .. } => {
                 push_statement_roots(statements, pending);
             }

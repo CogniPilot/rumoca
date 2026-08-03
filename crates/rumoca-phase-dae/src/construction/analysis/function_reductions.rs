@@ -147,6 +147,7 @@ fn validate_capped_for_sum(
     loop_roles.insert(binder.clone(), PlannedRole::Parameter);
     let loop_context = FunctionValidationContext {
         roles: &loop_roles,
+        call_scoped_actions: false,
         ..context
     };
     let update_plan =

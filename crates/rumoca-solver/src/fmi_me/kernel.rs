@@ -283,10 +283,10 @@ impl SolveMeKernel {
 
     /// Temporary phase-2 dual-run guard for the frozen Diffsol host.
     ///
-    /// The legacy driver still owns a full Solve vector during this migration
-    /// step. Compare it inside the component so the adapter does not gain
-    /// access to component-private algebraic storage. Delete this operation
-    /// with [`MeNumericsProfile::DiffsolFrozen`].
+    /// The frozen Diffsol driver still owns a full Solve vector during this
+    /// migration step. Compare it inside the component so the adapter does not
+    /// gain access to component-private algebraic storage. Delete this
+    /// operation with [`MeNumericsProfile::DiffsolFrozen`].
     pub fn verify_frozen_compatibility_state(
         &self,
         expected_solver_y: &[f64],
@@ -333,7 +333,7 @@ impl SolveMeKernel {
         Err(contract(format!(
             "frozen compatibility state diverged at {stage:?}: component_time={} \
              last_event={:?} component_solver_y={} \
-             legacy_solver_y={} component_parameters={} legacy_parameters={} \
+             expected_solver_y={} component_parameters={} expected_parameters={} \
              solver_mismatch={solver_mismatch:?} solver_name={solver_name:?} \
              parameter_mismatch={parameter_mismatch:?}",
             self.time,
@@ -1037,6 +1037,29 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    fn complete_coincident_root_right_limit(
+        &mut self,
+        entry: MeEventEntry,
+        event: RuntimeEventStop,
+        settled_right_limit: Option<f64>,
+        tolerance: f64,
+    ) -> Result<Option<f64>, MeError> {
+        let right_time =
+            runtime_root_event_application_time(entry.event_time, entry.horizon, tolerance);
+        if settled_right_limit.map(f64::to_bits) == Some(right_time.to_bits()) {
+            return Ok(settled_right_limit);
+        }
+        // The clock owner has completed at the semantic tick. The root's
+        // numerical right-limit transition starts from that settled superdense
+        // value and may execute only unowned rows; clock-owned rows cannot
+        // sample the post-event state a second time.
+        let event_pre_y = self.current_solver_y()?;
+        self.boundary_event_pre_y = Some(event_pre_y);
+        self.boundary_event_pre_p = Some(self.params.clone());
+        RuntimeEventBoundaryHandler::on_event_right_limit(self, right_time, event)?;
+        Ok(Some(right_time))
+    }
+
     fn refresh_frozen_event_observation(&mut self, time: f64) -> Result<(), MeError> {
         if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
             return Ok(());
@@ -1251,23 +1274,12 @@ impl SolveMeKernel {
                 if coincident_time_event.is_some()
                     && matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
                 {
-                    let right_time = runtime_root_event_application_time(
-                        entry.event_time,
-                        entry.horizon,
+                    right_limit_t = self.complete_coincident_root_right_limit(
+                        entry,
+                        event,
+                        outcome.right_limit_t,
                         tolerance,
-                    );
-                    if outcome.right_limit_t.map(f64::to_bits) != Some(right_time.to_bits()) {
-                        // The clock owner has completed at the semantic tick.
-                        // The root's numerical right-limit transition starts
-                        // from that settled superdense value and may execute
-                        // only unowned rows; clock-owned rows cannot sample the
-                        // post-event state a second time.
-                        let event_pre_y = self.current_solver_y()?;
-                        self.boundary_event_pre_y = Some(event_pre_y);
-                        self.boundary_event_pre_p = Some(self.params.clone());
-                        RuntimeEventBoundaryHandler::on_event_right_limit(self, right_time, event)?;
-                        right_limit_t = Some(right_time);
-                    }
+                    )?;
                 }
                 self.finish_frozen_runtime_event(entry.event_time)?;
                 if coincident_time_event.is_some() {
@@ -1671,7 +1683,7 @@ impl ModelExchangeKernel for SolveMeKernel {
             *indicators = cached;
             return Ok(());
         }
-        let values = self
+        let mut values = self
             .with_delay_evaluation_params(time, &self.states, |params| match self.root_profile {
                 MeRootProfile::Component => self
                     .runtime
@@ -1700,6 +1712,11 @@ impl ModelExchangeKernel for SolveMeKernel {
             })
             .map_err(|error| error.at_stage(MeStage::Integration))?
             .map_err(|error| error.at_stage(MeStage::Integration))?;
+        crate::orient_typed_root_zeros(
+            &mut values,
+            &self.runtime.model.problem.events.root_zero_domains,
+            self.tolerance,
+        );
         self.cache_root_conditions(time, &self.states, &values);
         *indicators = values;
         Ok(())
@@ -2256,9 +2273,10 @@ fn validate_event_entry(entry: MeEventEntry, tolerance: f64) -> Result<(), MeErr
         || !entry.horizon.is_finite()
         || (entry.horizon < entry.event_time && entry.event_time - entry.horizon > order_tolerance)
     {
-        return Err(contract(
-            "event entry requires finite values with horizon >= event_time",
-        ));
+        return Err(contract(format!(
+            "event entry requires finite values with horizon >= event_time; cause={:?} event_time={} horizon={}",
+            entry.cause, entry.event_time, entry.horizon
+        )));
     }
     Ok(())
 }

@@ -117,6 +117,32 @@ equation
 end NestedConditional;
 "#;
 
+/// `axesRotationsAngles` shape: one exact element is defined on every runtime
+/// branch and then read, while the remaining local aggregate stays undefined.
+const BRANCH_ELEMENT_MODEL: &str = r#"
+within;
+function branchElement
+  input Real u;
+  output Real y;
+protected
+  Real angles[3];
+algorithm
+  if u >= 0 then
+    angles[1] := u + 1;
+  else
+    angles[1] := 1 - u;
+  end if;
+  y := angles[1];
+end branchElement;
+model BranchElement
+  Real positive;
+  Real negative;
+equation
+  positive = branchElement(2);
+  negative = branchElement(-3);
+end BranchElement;
+"#;
+
 fn algebraic(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
     report
         .solver_y
@@ -204,6 +230,13 @@ fn nested_conditional_joins_branch_local_definitions() {
 }
 
 #[test]
+fn exact_element_defined_on_every_branch_is_readable() {
+    let report = evaluate(BRANCH_ELEMENT_MODEL, "BranchElement", "BranchElement.mo");
+    assert_eq!(algebraic(&report, "positive"), 3.0);
+    assert_eq!(algebraic(&report, "negative"), 4.0);
+}
+
+#[test]
 fn partial_element_coverage_is_rejected() {
     let source = SLICE_MODEL.replace("  y[3:4] := {3 * u, 4 * u};\n", "");
     let error = Compiler::new()
@@ -218,15 +251,39 @@ fn partial_element_coverage_is_rejected() {
 }
 
 #[test]
-fn reading_a_partially_defined_value_is_rejected() {
+fn defined_elements_of_a_partial_aggregate_are_readable() {
     let source = MATRIX_MODEL.replace("  m[2, 2] := 4 * u;\n", "  m[2, 2] := m[1, 1] + m[2, 1];\n");
+    let report = evaluate(&source, "MatrixElements", "PartialRead.mo");
+    assert_eq!(algebraic(&report, "a[1,1]"), 1.0);
+    assert_eq!(algebraic(&report, "a[1,2]"), 2.0);
+    assert_eq!(algebraic(&report, "a[2,1]"), 3.0);
+    assert_eq!(algebraic(&report, "a[2,2]"), 4.0);
+}
+
+#[test]
+fn reading_an_undefined_element_of_a_partial_aggregate_is_rejected() {
+    let source = MATRIX_MODEL.replace("  m[2, 2] := 4 * u;\n", "  m[2, 2] := m[1, 1] + m[2, 2];\n");
     let error = Compiler::new()
         .model("MatrixElements")
         .compile_str(&source, "PartialRead.mo")
-        .expect_err("reading a value before every element is defined has no checked DAE owner");
+        .expect_err("reading an undefined element has no checked DAE owner");
     let rendered = format!("{error:?}");
     assert!(
-        rendered.contains("before every element of"),
+        rendered.contains("elements of `m` that do not all have a definition"),
+        "unexpected diagnostic: {rendered}"
+    );
+}
+
+#[test]
+fn reading_a_whole_partial_aggregate_is_rejected() {
+    let source = MATRIX_MODEL.replace("  m[2, 2] := 4 * u;\n", "  m := m;\n");
+    let error = Compiler::new()
+        .model("MatrixElements")
+        .compile_str(&source, "PartialWholeRead.mo")
+        .expect_err("reading a partial aggregate has no checked DAE owner");
+    let rendered = format!("{error:?}");
+    assert!(
+        rendered.contains("elements of `m` that do not all have a definition"),
         "unexpected diagnostic: {rendered}"
     );
 }

@@ -5,6 +5,7 @@ use crate::{
 use rumoca_ir_solve as solve;
 
 use super::SolveRuntime;
+use super::discrete_rows::StructuredDiscreteRowEvalInput;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
 };
@@ -312,12 +313,14 @@ impl CoupledEventSystem<'_> {
         let value = self
             .runtime
             .eval_structured_discrete_row_for_pre_snapshot(
-                self.snapshot,
-                row,
-                y,
-                p,
-                self.t,
-                self.tol,
+                StructuredDiscreteRowEvalInput {
+                    snapshot: self.snapshot,
+                    row,
+                    eval_y: y,
+                    eval_p: p,
+                    t: self.t,
+                    tol: self.tol,
+                },
                 eval_p_cache,
             )?
             .ok_or_else(|| filtered_structured_discrete_row_error(row_index))?;

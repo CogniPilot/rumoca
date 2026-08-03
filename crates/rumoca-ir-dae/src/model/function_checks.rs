@@ -56,13 +56,19 @@ pub(super) fn validate_function_dependencies(
         }
     };
     let function = &storage.functions[body.function.index() as usize];
-    for definition in &function.definitions {
+    let mut roots = function
+        .definitions
+        .iter()
+        .map(|definition| definition.rhs)
+        .collect::<Vec<_>>();
+    push_function_statement_expressions(function_statements(function), &mut roots);
+    for expression in roots {
         let latest_call = storage
             .expressions
             .function_latest_calls
-            .get(definition.rhs as usize)
+            .get(expression as usize)
             .copied()
-            .ok_or_else(|| unknown("expression", definition.rhs, provenance))?;
+            .ok_or_else(|| unknown("expression", expression, provenance))?;
         let Some(call) = latest_call else {
             continue;
         };
@@ -125,6 +131,7 @@ fn collect_group_dependencies(
         .iter()
         .map(|definition| definition.rhs)
         .collect::<Vec<_>>();
+    push_function_statement_expressions(function_statements(entry), &mut pending);
     while let Some(expression) = pending.pop() {
         let index = expression as usize;
         if std::mem::replace(&mut seen[index], true) {
@@ -138,6 +145,37 @@ fn collect_group_dependencies(
     }
     dependencies.sort_unstable();
     Ok(())
+}
+
+fn function_statements(function: &FunctionEntry) -> &[FunctionStatementWire] {
+    if let Some(build) = function.build.as_ref() {
+        return &build.statements;
+    }
+    function
+        .definition
+        .as_ref()
+        .and_then(FunctionBodyEntry::modelica)
+        .map_or(&[], |definition| definition.statements.as_slice())
+}
+
+fn push_function_statement_expressions(
+    statements: &[FunctionStatementWire],
+    pending: &mut Vec<u32>,
+) {
+    for statement in statements {
+        match statement {
+            FunctionStatementWire::Assignment { .. } => {}
+            FunctionStatementWire::Assertion {
+                condition, message, ..
+            } => {
+                pending.push(*condition);
+                pending.push(*message);
+            }
+            FunctionStatementWire::For { statements, .. } => {
+                push_function_statement_expressions(statements, pending);
+            }
+        }
+    }
 }
 
 fn record_group_dependency(

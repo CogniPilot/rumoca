@@ -3,9 +3,11 @@ use super::*;
 pub(super) fn validate_structured_families(
     families: &[flat::StructuredEquationFamily],
     equation_count: usize,
-    roles: &HashMap<VarName, PlannedRole>,
+    runtime_roles: &HashMap<VarName, PlannedRole>,
+    expression_roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     record_array_fields: &RecordArrayFieldPlans,
+    model_values: &ShapeEnvironment,
 ) -> Result<HashSet<usize>, ToDaeError> {
     let mut covered = HashSet::new();
     for family in families {
@@ -44,9 +46,9 @@ pub(super) fn validate_structured_families(
             // derives exact declared-shape coverage and overlap evidence; the
             // template is only the compact second view of those same rows.
             if !family.interiors_materialized
-                || !structured_discrete_element_assignments(&template.body, roles)
+                || !structured_discrete_element_assignments(&template.body, runtime_roles)
             {
-                structured_discrete_assignments(&template.body, roles, family.span)?;
+                structured_discrete_assignments(&template.body, runtime_roles, family.span)?;
             }
         }
         let represented_rows = match &family.template {
@@ -54,9 +56,10 @@ pub(super) fn validate_structured_families(
                 template,
                 family,
                 domain_count,
-                roles,
+                expression_roles,
                 states,
                 record_array_fields,
+                model_values,
             )?,
             None => checked_materialized_rows(family, domain_count)?,
         };
@@ -91,6 +94,7 @@ fn represented_template_rows(
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     record_array_fields: &RecordArrayFieldPlans,
+    model_values: &ShapeEnvironment,
 ) -> Result<usize, ToDaeError> {
     if template.body.len() != family.equations_per_point {
         return Err(ToDaeError::unsupported_flat(
@@ -112,6 +116,7 @@ fn represented_template_rows(
             states,
             &binders,
             record_array_fields,
+            model_values,
         )?;
     }
     match template.scalar_view {
