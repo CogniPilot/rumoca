@@ -160,7 +160,7 @@ fn me_callbacks_observe_a_discrete_parameter_changed_by_a_root_event() {
             },
             solve::LinearOp::Compare {
                 dst: 2,
-                op: solve::CompareOp::Gt,
+                op: solve::CompareOp::Ge,
                 lhs: 0,
                 rhs: 1,
             },
@@ -192,6 +192,32 @@ fn me_callbacks_observe_a_discrete_parameter_changed_by_a_root_event() {
     assert!(
         final_x > 0.3,
         "der(x) must switch from 1 to 2 after the root event; x(0.2)={final_x}"
+    );
+}
+
+/// A located root ends one continuous mode and starts another at the exact
+/// event instant. Bracketing may inspect a state just to the right of the root,
+/// but that synthetic interval must use the post-event derivative. Otherwise
+/// an unrelated accumulator receives a small, deterministic pre-event drift.
+#[test]
+fn root_mode_switch_advances_untouched_state_with_post_event_derivative() {
+    let result = simulate(
+        two_state_root_derivative_switch(),
+        &SimOptions {
+            t_end: 0.1,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("a root derivative switch should restart both continuous states exactly");
+
+    let accumulator = result.data[1]
+        .last()
+        .copied()
+        .expect("the untouched accumulator should be recorded");
+    assert!(
+        accumulator.abs() <= 1.0e-8,
+        "equal pre/post intervals should cancel exactly; synthetic root drift={accumulator}"
     );
 }
 
@@ -534,6 +560,52 @@ fn clock_owned_sample_and_reinit_execute_on_every_periodic_tick() {
     assert!(
         (x - 0.01).abs() <= 1.0e-3,
         "the third tick must reinitialize x before the last 0.01 s interval, got x={x}"
+    );
+}
+
+/// Once a periodic tick has executed, a distinct root in its numerical
+/// neighbourhood is still only a state event. The consumed schedule must not
+/// be rediscovered globally and replay the sampled `Mean` row from the tiny
+/// post-tick accumulator interval.
+#[test]
+fn root_after_consumed_tick_does_not_replay_clock_owned_mean() {
+    const ROOT: f64 = 0.05 + 5.0e-13;
+    let mut model = clock_owned_sample_with_repeated_ticks();
+    model.problem.events.root_conditions = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadTime { dst: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: ROOT,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.06,
+            dt: Some(0.007),
+            ..Default::default()
+        },
+    )
+    .expect("a post-tick root must not reactivate the consumed periodic owner");
+
+    let y_last = result.data[1]
+        .last()
+        .copied()
+        .expect("the sampled mean should be recorded");
+    assert!(
+        (y_last - 5.0).abs() <= 1.0e-3,
+        "the nearby root replayed the consumed tick: y_last={y_last}"
     );
 }
 
@@ -921,6 +993,107 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
     ordinary_equation_row_metadata(&mut model);
     model.initial_y = vec![0.0];
     model.visible_names = vec!["x".to_string()];
+    model
+}
+
+fn two_state_root_derivative_switch() -> solve::SolveModel {
+    let rhs = scalar_program_block!(
+        vec![
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_span!(),
+    );
+    let zero = scalar_program_block!(
+        vec![
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_span!(),
+    );
+
+    let mut model = solve::SolveModel::default();
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(rhs.clone());
+    model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(rhs);
+    model.problem.continuous.implicit_row_targets =
+        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+    model.artifacts.continuous.mass_matrix = solve::MassMatrix::Identity;
+    model.artifacts.continuous.implicit_jacobian_v =
+        solve::ComputeBlock::from_scalar_program_block(zero.clone());
+    model.artifacts.continuous.full_jacobian_v = zero;
+    model.problem.solve_layout.state_scalar_count = 2;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.solver_maps.names =
+        vec!["trigger".to_string(), "accumulator".to_string()];
+    model.problem.solve_layout.solver_maps.name_to_idx =
+        IndexMap::from([("trigger".to_string(), 0), ("accumulator".to_string(), 1)]);
+    model.problem.solve_layout.solver_maps.base_to_indices = IndexMap::from([
+        ("trigger".to_string(), vec![0]),
+        ("accumulator".to_string(), vec![1]),
+    ]);
+    model.problem.events.root_conditions = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.discrete.rhs = scalar_program_block!(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.05,
+            },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Ge,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const {
+                dst: 3,
+                value: -1.0,
+            },
+            solve::LinearOp::LoadP { dst: 4, index: 0 },
+            solve::LinearOp::Select {
+                dst: 5,
+                cond: 2,
+                if_true: 3,
+                if_false: 4,
+            },
+            solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        fixture_span!(),
+    );
+    ordinary_equation_row_metadata(&mut model);
+    model.initial_y = vec![0.0, 0.0];
+    model.parameters = vec![1.0];
+    model.visible_names = vec!["trigger".to_string(), "accumulator".to_string()];
     model
 }
 

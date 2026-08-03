@@ -365,10 +365,18 @@ impl MeRuntimeHost {
         kernel.arm_state_event(&crossings)?;
         complete_integrator_step(&mut *kernel)?;
         let includes_scheduled_event = kernel.has_scheduled_event_at(root_time);
-        if includes_scheduled_event {
-            kernel.set_time(MeTime::at(root_time))?;
-            kernel.set_continuous_states(root_states)?;
-        }
+        // A forward right-limit belongs to the located root. A root that the
+        // numerical host snapped backward onto its horizon instead belongs to
+        // that host-owned time. In both cases typed relation-memory crossings
+        // carry strict post-side truth without changing the exact located
+        // state used by reinitialization.
+        let event_mode_time = if right_time > root_time {
+            root_time
+        } else {
+            right_time
+        };
+        kernel.set_time(MeTime::at(event_mode_time))?;
+        kernel.set_continuous_states(root_states)?;
         let entry = MeEventEntry {
             cause: MeEventCause::StateEvent,
             event_time: root_time,
@@ -378,6 +386,9 @@ impl MeRuntimeHost {
         let discrete = update_discrete_states_to_completion(&mut *kernel)?;
         let next_event_time = discrete.next_event_time;
         kernel.enter_continuous_time_mode()?;
+        if !includes_scheduled_event {
+            advance_post_event_state(&mut *kernel, root_time, right_time)?;
+        }
         // A located state event is an observable superdense instant even when
         // it does not coincide with a scheduled event. The numerical plugin
         // owns trace storage, while the ME host owns the settled right-limit
@@ -444,6 +455,28 @@ impl MeRuntimeHost {
             }
         }
     }
+}
+
+fn advance_post_event_state(
+    kernel: &mut impl ModelExchangeKernel,
+    event_time: f64,
+    continuation_time: f64,
+) -> Result<(), MeError> {
+    if continuation_time <= event_time || sample_time_match_with_tol(event_time, continuation_time)
+    {
+        return Ok(());
+    }
+    let state_count = kernel.model_description().continuous_state_count;
+    let mut states = vec![0.0; state_count];
+    let mut derivatives = vec![0.0; state_count];
+    kernel.get_continuous_states(&mut states)?;
+    kernel.get_continuous_state_derivatives(&mut derivatives)?;
+    let dt = continuation_time - event_time;
+    for (state, derivative) in states.iter_mut().zip(derivatives) {
+        *state += dt * derivative;
+    }
+    kernel.set_time(MeTime::at(continuation_time))?;
+    kernel.set_continuous_states(&states)
 }
 
 fn bracket_root_states(
