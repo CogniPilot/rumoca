@@ -64,20 +64,17 @@ fn lower_condition_tree<'dae>(
                 lower_condition_tree(construction, coordinates, functions, sample_lattices, rhs)?;
             (dae::ConditionInput::Not(condition), relations, None)
         }
-        Expression::Binary {
-            op,
-            lhs,
-            rhs,
-            ..
-        } if matches!(op, OpBinary::And | OpBinary::Or) => lower_binary_condition(
-            construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            (lhs, rhs),
-            matches!(op, OpBinary::Or),
-            provenance,
-        )?,
+        Expression::Binary { op, lhs, rhs, .. } if matches!(op, OpBinary::And | OpBinary::Or) => {
+            lower_binary_condition(
+                construction,
+                coordinates,
+                functions,
+                sample_lattices,
+                (lhs, rhs),
+                matches!(op, OpBinary::Or),
+                provenance,
+            )?
+        }
         Expression::Array { elements, .. } => {
             return lower_vector_condition(
                 construction,
