@@ -257,6 +257,14 @@
       "claims": ["ME-ERR-001"],
       "bound": { "kind": "finite_domain", "domain": "6 recorded-stage choices x 5 incoming stages" },
       "covers": 13
+    },
+    {
+      "package": "rumoca-solver",
+      "harness": "atomic_fixed_point_pre_advance_is_typed_and_transactional",
+      "source": "crates/rumoca-solver/src/verification/event_iteration.rs",
+      "claims": ["SIM-010"],
+      "bound": { "kind": "unwind", "value": 16, "domain": "exactly 3 typed event-history lanes with arbitrary fixed-point ownership and transactional invalid-input injection" },
+      "covers": 0
     }
   ]
 }

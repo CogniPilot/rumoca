@@ -31,6 +31,168 @@ fn fixture_provenance() -> rumoca_core::ProvenanceSpan {
         .expect("fixture span is source-backed")
 }
 
+fn event_iteration_contract_fixture() -> SolveProblem {
+    SolveProblem {
+        layout: VarLayout::from_parts(IndexMap::new(), 0, 2),
+        solve_layout: SolveLayout {
+            variable_storage_runs: vec![SolveVariableStorageRun {
+                base: scalar_slot_p(0),
+                scalar_count: 1,
+                role: SolveVariableStorageRole::DiscreteReal,
+                value_kind: SolveVariableValueKind::Real,
+            }],
+            variable_declarations: vec![SolveVariableDeclaration::new(
+                SolveVariableStorageRole::DiscreteReal,
+                SolveVariableValueKind::Real,
+            )],
+            compiled_parameter_len: 2,
+            discrete_real_scalar_names: vec!["z".to_string()],
+            pre_param_bindings: vec![PreParamBinding {
+                dest_p_index: 1,
+                source: PreParamSource::P { index: 0 },
+                clock_schedule: None,
+            }],
+            ..SolveLayout::default()
+        },
+        discrete: DiscreteSolveSystem {
+            event_iteration_plan: EventIterationPlan {
+                runs: vec![EventIterationRun {
+                    variable: 0,
+                    pre_binding_start: 0,
+                    owner: EventIterationOwner::ScalarRows { start_row: 0 },
+                }],
+            },
+            rhs: ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    LinearOp::Const { dst: 0, value: 1.0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ]],
+                fixture_provenance(),
+            )
+            .expect("event-iteration fixture program is computable"),
+            update_targets: vec![scalar_slot_p(0)],
+            row_roles: vec![DiscreteRowRole::Equation],
+            pre_modes: vec![DiscreteEventPreMode::FollowCurrent],
+            observation_refresh: vec![false],
+            integrator_history_effects: vec![IntegratorHistoryEffect::Preserve],
+            clock_owners: vec![None],
+            ..DiscreteSolveSystem::default()
+        },
+        ..SolveProblem::default()
+    }
+}
+
+#[test]
+fn event_iteration_contract_accepts_complete_typed_reverse_bijection() {
+    event_iteration_contract_fixture()
+        .validate_shape_contract()
+        .expect("complete typed producer, plan, and pre binding must validate");
+}
+
+#[test]
+fn event_iteration_contract_rejects_scalar_owner_relabelled_to_hold() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.discrete.event_iteration_plan.runs[0].owner = EventIterationOwner::Hold;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("a live scalar producer cannot be hidden by relabelling its owner Hold");
+    assert!(error.to_string().contains("equation producer"), "{error}");
+}
+
+#[test]
+fn event_iteration_contract_rejects_coordinated_storage_relabel_and_plan_deletion() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::Parameter;
+    problem.discrete.event_iteration_plan.runs.clear();
+    problem.solve_layout.pre_param_bindings.clear();
+    problem.discrete.row_roles[0] = DiscreteRowRole::EventAction;
+
+    let error = problem.validate_shape_contract().expect_err(
+        "an equation producer cannot escape reverse ownership by relabelling its storage role",
+    );
+    assert!(
+        error.to_string().contains("immutable declaration"),
+        "{error}"
+    );
+}
+
+#[test]
+fn variable_declaration_replay_rejects_boolean_to_integer_relabel() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::DiscreteValue;
+    problem.solve_layout.variable_storage_runs[0].value_kind = SolveVariableValueKind::Integer;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("storage metadata cannot relabel the canonical declared value kind");
+    assert!(
+        error.to_string().contains("immutable declaration"),
+        "{error}"
+    );
+}
+
+#[test]
+fn event_iteration_contract_rejects_deleted_run_and_pre_binding() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.discrete.event_iteration_plan.runs.clear();
+    problem.solve_layout.pre_param_bindings.clear();
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("canonical discrete storage requires both its plan run and pre binding");
+    assert!(error.to_string().contains("reverse bijection"), "{error}");
+}
+
+#[test]
+fn event_iteration_contract_rejects_short_clock_column_without_panicking() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.discrete.clock_owners.clear();
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("a truncated clock column must reject through the checked validator");
+    assert!(error.to_string().contains("clock range"), "{error}");
+}
+
+#[test]
+fn variable_storage_contract_rejects_external_input_producer() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::ExternalInput;
+    problem.solve_layout.variable_declarations[0] = SolveVariableDeclaration::new(
+        SolveVariableStorageRole::ExternalInput,
+        SolveVariableValueKind::Real,
+    );
+    problem.discrete.event_iteration_plan.runs.clear();
+    problem.solve_layout.pre_param_bindings.clear();
+    problem.discrete.row_roles[0] = DiscreteRowRole::EventAction;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("an external input is read-only even for an event-action producer");
+    assert!(
+        error
+            .to_string()
+            .contains("canonical non-discrete variable"),
+        "{error}"
+    );
+}
+
+#[test]
+fn variable_storage_contract_rejects_forged_discrete_value_kind() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::DiscreteValue;
+    problem.solve_layout.variable_storage_runs[0].value_kind = SolveVariableValueKind::String;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("a wire cannot relabel a discrete runtime coordinate as String");
+    assert!(
+        error.to_string().contains("immutable declaration"),
+        "{error}"
+    );
+}
+
 #[test]
 fn tensor_output_count_uses_compact_domain_bounds() {
     let domain = test_tensor_domain(1_000_000);
@@ -466,15 +628,20 @@ fn representative_initialization_system() -> InitializationSolveSystem {
 
 fn representative_discrete_system() -> DiscreteSolveSystem {
     DiscreteSolveSystem {
+        event_iteration_plan: EventIterationPlan::default(),
         runtime_assignment_rhs: ScalarProgramBlock::with_source_span(
             vec![vec![
-                LinearOp::LoadY { dst: 0, index: 2 },
+                LinearOp::LoadP { dst: 0, index: 1 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
             fixture_provenance(),
         )
         .expect("runtime assignment fixture is computable"),
         runtime_assignment_targets: vec![scalar_slot_p(1)],
+        runtime_assignment_roles: vec![RuntimeAssignmentRole::RelationEvaluating],
+        post_commit_assignment_rhs: ScalarProgramBlock::default(),
+        post_commit_assignment_targets: Vec::new(),
+        post_commit_assignment_runtime_rows: Vec::new(),
         rhs: ScalarProgramBlock::with_source_span(
             vec![vec![
                 LinearOp::LoadY { dst: 0, index: 1 },
@@ -491,7 +658,7 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
         )
         .expect("discrete scalar fixture is computable"),
         update_targets: vec![scalar_slot_y(2)],
-        row_roles: vec![DiscreteRowRole::Equation],
+        row_roles: vec![DiscreteRowRole::EventAction],
         pre_modes: vec![DiscreteEventPreMode::Fixed],
         observation_refresh: vec![true],
         integrator_history_effects: vec![IntegratorHistoryEffect::Restart],
@@ -521,7 +688,7 @@ fn structured_discrete_fixture(base: ScalarSlot) -> (ComputeBlock, StructuredDis
             base,
             map: TensorOutputMap::dense_contiguous(0, &domain).unwrap(),
         },
-        role: DiscreteRowRole::Equation,
+        role: DiscreteRowRole::EventAction,
         pre_mode: DiscreteEventPreMode::FollowCurrent,
         observation_refresh: false,
         integrator_history_effect: IntegratorHistoryEffect::Preserve,
@@ -547,8 +714,9 @@ fn representative_event_partition() -> SolveEventPartition {
             fixture_provenance(),
         )
         .expect("root scalar fixture is computable"),
-        root_relation_memory_targets: vec![None],
+        root_relation_memory_targets: vec![Some(scalar_slot_p(1))],
         root_zero_domains: vec![RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![RootRelationRefreshRole::Frozen],
         scheduled_time_events: vec![0.1],
         ..SolveEventPartition::default()
     }
@@ -956,6 +1124,78 @@ fn solve_problem_json_requires_integrator_history_effects() {
             .contains("missing field `integrator_history_effects`"),
         "unexpected omission error: {error}"
     );
+}
+
+#[test]
+fn solve_problem_json_requires_post_commit_certificates() {
+    let value =
+        serde_json::to_value(representative_solve_problem_fixture()).expect("serialize fixture");
+    for (section, field) in [
+        ("discrete", "runtime_assignment_roles"),
+        ("discrete", "post_commit_assignment_rhs"),
+        ("discrete", "post_commit_assignment_targets"),
+        ("discrete", "post_commit_assignment_runtime_rows"),
+        ("events", "root_relation_refresh_roles"),
+    ] {
+        let mut omitted = value.clone();
+        omitted[section]
+            .as_object_mut()
+            .expect("Solve section is an object")
+            .remove(field);
+        let error = serde_json::from_value::<SolveProblem>(omitted)
+            .expect_err("certificate fields must not default on the wire");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field `{field}`")),
+            "unexpected omission error for {field}: {error}"
+        );
+    }
+}
+
+#[test]
+fn solve_problem_shape_rejects_forged_runtime_assignment_role() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.discrete.runtime_assignment_roles[0] = RuntimeAssignmentRole::RelationFree;
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DiscreteCertificate {
+            context: "discrete.runtime_assignment_roles",
+            row: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn solve_problem_shape_rejects_relation_bearing_post_commit_owner() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.discrete.post_commit_assignment_rhs = problem.discrete.runtime_assignment_rhs.clone();
+    problem.discrete.post_commit_assignment_targets =
+        problem.discrete.runtime_assignment_targets.clone();
+    problem.discrete.post_commit_assignment_runtime_rows = vec![0];
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DiscreteCertificate {
+            context: "discrete.post_commit_assignment_runtime_rows",
+            row: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn solve_problem_shape_rejects_forged_root_refresh_role() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.events.root_relation_refresh_roles[0] = RootRelationRefreshRole::AlgebraicDependent;
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DiscreteCertificate {
+            context: "events.root_relation_refresh_roles",
+            row: 0,
+            ..
+        })
+    ));
 }
 
 #[test]

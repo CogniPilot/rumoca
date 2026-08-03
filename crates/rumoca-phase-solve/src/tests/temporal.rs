@@ -1,13 +1,14 @@
 //! History lanes: `pre`, `previous`, and `delay`.
 //!
 //! Each temporal operator owns storage distinct from the coordinate it reads, and
-//! that storage carries the schedule which refreshes it — event entry for `pre`,
-//! the owning clock for `previous`, and a runtime history buffer for `delay`.
+//! that storage carries the schedule which refreshes it — one fixed whole-equation
+//! event pass for `pre`, the owning clock for `previous`, and a runtime history
+//! buffer for `delay`.
 
 use super::*;
 
 #[test]
-fn pre_discrete_value_loads_a_distinct_bound_history_lane() {
+fn ordinary_pre_discrete_value_is_fixed_within_one_whole_event_pass() {
     let source = TestSource::new("discrete Integer count; count = pre(count);");
     let declaration = source.at(0, 22);
     let owner = source.at(24, 42);
@@ -59,7 +60,7 @@ fn pre_discrete_value_loads_a_distinct_bound_history_lane() {
     assert!(binding.clock_schedule.is_none());
     assert_eq!(
         solve.discrete.pre_modes,
-        [rumoca_ir_solve::DiscreteEventPreMode::EventEntry]
+        [rumoca_ir_solve::DiscreteEventPreMode::Fixed]
     );
     assert!(
         solve.discrete.rhs.programs()[0]

@@ -5,6 +5,7 @@
 //! directional-derivative tests run a real component, because the operation's
 //! whole point is that the *component* owns the derivative.
 
+use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 
 use super::kernel::{
@@ -477,12 +478,14 @@ fn post_pre_relation_cycle() -> solve::SolveModel {
             discrete: solve::DiscreteSolveSystem {
                 runtime_assignment_rhs: runtime_assignment,
                 runtime_assignment_targets: vec![solve::scalar_slot_p(1)],
+                runtime_assignment_roles: vec![solve::RuntimeAssignmentRole::RelationEvaluating],
                 ..Default::default()
             },
             events: solve::SolveEventPartition {
                 root_conditions: root,
                 root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
                 root_zero_domains: vec![solve::RootZeroDomain::Previous],
+                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
                 ..Default::default()
             },
             solve_layout: solve::SolveLayout {
@@ -500,6 +503,110 @@ fn post_pre_relation_cycle() -> solve::SolveModel {
         initial_y: vec![0.0],
         solver_nominals: vec![1.0],
         parameters: vec![0.0, 0.0],
+        visible_names: vec!["state".to_string()],
+        ..Default::default()
+    }
+}
+
+fn post_commit_alias_with_frozen_parameter_root() -> solve::SolveModel {
+    let derivative = block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_post_commit_frozen_root_derivative.mo",
+    );
+    let alias_program = vec![
+        solve::LinearOp::LoadP { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+    let alias = block(
+        vec![alias_program.clone()],
+        "fmi_me_post_commit_frozen_root_runtime.mo",
+    );
+    let runtime_assignments = block(
+        vec![
+            alias_program,
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::Const { dst: 1, value: 0.0 },
+                solve::LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Gt,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ],
+        "fmi_me_post_commit_frozen_root_runtime.mo",
+    );
+    let roots = block(
+        vec![
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 3 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        "fmi_me_post_commit_frozen_root_conditions.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 4),
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                runtime_assignment_rhs: runtime_assignments,
+                runtime_assignment_targets: vec![solve::scalar_slot_p(2), solve::scalar_slot_p(3)],
+                runtime_assignment_roles: vec![
+                    solve::RuntimeAssignmentRole::RelationFree,
+                    solve::RuntimeAssignmentRole::RelationEvaluating,
+                ],
+                post_commit_assignment_rhs: alias,
+                post_commit_assignment_targets: vec![solve::scalar_slot_p(2)],
+                post_commit_assignment_runtime_rows: vec![0],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: roots,
+                root_relation_memory_targets: vec![
+                    Some(solve::scalar_slot_p(0)),
+                    Some(solve::scalar_slot_p(1)),
+                ],
+                root_zero_domains: vec![
+                    solve::RootZeroDomain::Previous,
+                    solve::RootZeroDomain::Previous,
+                ],
+                root_relation_refresh_roles: vec![
+                    solve::RootRelationRefreshRole::Frozen,
+                    solve::RootRelationRefreshRole::Frozen,
+                ],
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["state".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                parameter_count: 4,
+                compiled_parameter_len: 4,
+                relation_memory_parameter_indices: vec![0, 1],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![1.0, 1.0, -1.0, -1.0],
         visible_names: vec!["state".to_string()],
         ..Default::default()
     }
@@ -878,7 +985,7 @@ fn diffsol_profile_retains_the_typed_post_side_of_a_strict_root() {
 }
 
 #[test]
-fn post_pre_canonicalization_refreshes_relation_memory_once_then_holds_it() {
+fn post_pre_canonicalization_holds_parameter_only_relation_memory() {
     let model = post_pre_relation_cycle();
     let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
     let mut solver_y = model.initial_y.clone();
@@ -889,13 +996,39 @@ fn post_pre_canonicalization_refreshes_relation_memory_once_then_holds_it() {
 
     assert_eq!(
         kernel.verification_observable_state().3,
-        vec![1.0f64.to_bits(), 1.0f64.to_bits()],
-        "the one relation refresh selects the negative-root side"
+        vec![0.0f64.to_bits(), 0.0f64.to_bits()],
+        "the RelationEvaluating owner is not replayed after pre commits"
     );
     assert_eq!(
         solver_y,
         vec![0.0],
         "derived settling observes the selected side without feeding back into relation memory"
+    );
+}
+
+#[test]
+fn post_commit_relation_free_alias_cannot_flip_a_parameter_only_root() {
+    let model = post_commit_alias_with_frozen_parameter_root();
+    model
+        .problem
+        .validate()
+        .expect("fixture certificates must satisfy the Solve shape contract");
+    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let mut solver_y = model.initial_y.clone();
+
+    kernel
+        .verification_canonicalize_committed_event_view(0.0, &mut solver_y)
+        .expect("relation-free alias should settle without reopening frozen roots");
+
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![
+            1.0f64.to_bits(),
+            1.0f64.to_bits(),
+            1.0f64.to_bits(),
+            (-1.0f64).to_bits(),
+        ],
+        "the alias changes P2, but the separate P2-root relation memory P1 stays frozen"
     );
 }
 

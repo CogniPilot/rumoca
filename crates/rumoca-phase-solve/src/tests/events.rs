@@ -352,6 +352,135 @@ fn exact_unconditional_b1c_relation_owns_the_root_post_side() {
 }
 
 #[test]
+fn root_refresh_excludes_relation_bearing_follow_current_owner() {
+    let source = TestSource::new(
+        "discrete Boolean fire, off, gated; equation fire = time > 0.5; off = time > 0.25 or not fire; gated = fire and true;",
+    );
+    let owner = source.at(0, 1);
+    let model = dae::Dae::construct(source.map, |model| {
+        let boolean = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Boolean),
+                owner,
+            )
+        })?;
+        let (fire, off, gated) = model.variables(|variables| {
+            Ok((
+                variables.discrete_value(
+                    VarName::new("fire"),
+                    boolean,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.discrete_value(
+                    VarName::new("off"),
+                    boolean,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.discrete_value(
+                    VarName::new("gated"),
+                    boolean,
+                    owner,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let (fire_relation, mode_relation, off_value, gated_value) =
+            model.expressions(|expressions| {
+                let time = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::Time)?;
+                let fire_threshold = expressions.at(owner).literal(dae::DaeLiteral::Real(0.5))?;
+                let fire_relation = expressions.at(owner).binary(
+                    dae::BinaryOperator::Greater,
+                    time,
+                    fire_threshold,
+                )?;
+                let mode_threshold = expressions.at(owner).literal(dae::DaeLiteral::Real(0.25))?;
+                let mode_relation = expressions.at(owner).binary(
+                    dae::BinaryOperator::Greater,
+                    time,
+                    mode_threshold,
+                )?;
+                let fire_value = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::DiscreteValue(fire))?;
+                let not_fire = expressions
+                    .at(owner)
+                    .unary(dae::UnaryOperator::Not, fire_value)?;
+                let off_value = expressions.at(owner).binary(
+                    dae::BinaryOperator::Or,
+                    mode_relation,
+                    not_fire,
+                )?;
+                let true_value = expressions
+                    .at(owner)
+                    .literal(dae::DaeLiteral::Boolean(true))?;
+                let gated_value = expressions.at(owner).binary(
+                    dae::BinaryOperator::And,
+                    fire_value,
+                    true_value,
+                )?;
+                Ok((fire_relation, mode_relation, off_value, gated_value))
+            })?;
+        let (fire_root, fire_activation, mode_root, mode_activation) =
+            model.conditions(|conditions| {
+                let fire_root = conditions.relation(fire_relation, owner)?;
+                let fire_activation = conditions.reserve(owner)?;
+                conditions.define(
+                    fire_activation,
+                    dae::ConditionInput::Relation(fire_root),
+                    owner,
+                )?;
+                let mode_root = conditions.relation(mode_relation, owner)?;
+                let mode_activation = conditions.reserve(owner)?;
+                conditions.define(
+                    mode_activation,
+                    dae::ConditionInput::Relation(mode_root),
+                    owner,
+                )?;
+                Ok((fire_root, fire_activation, mode_root, mode_activation))
+            })?;
+        model.conditions(|conditions| {
+            conditions.root(fire_root, fire_activation, owner)?;
+            conditions.root(mode_root, mode_activation, owner)
+        })?;
+        model.b1c([fire, off, gated], |topology| {
+            topology.owner(owner, [fire, off, gated], |owner_view| {
+                owner_view.always(
+                    owner,
+                    [
+                        (fire_relation, owner),
+                        (off_value, owner),
+                        (gated_value, owner),
+                    ],
+                )
+            })?;
+            Ok(())
+        })
+    })
+    .expect("relation-bearing and relation-free owners are valid checked DAE");
+
+    let solve = lower_solve_problem(&model).expect("typed root-refresh partition lowers");
+
+    assert_eq!(
+        solve.discrete.post_commit_assignment_targets,
+        [rumoca_ir_solve::scalar_slot_p(2)],
+        "the relation-free alias is root-refreshable, while the relation-bearing mode owner remains event-only"
+    );
+    assert_eq!(
+        solve.discrete.runtime_assignment_targets,
+        [
+            rumoca_ir_solve::scalar_slot_p(1),
+            rumoca_ir_solve::scalar_slot_p(2),
+        ],
+        "event iteration retains both root-driven owners while pre is frozen"
+    );
+}
+
+#[test]
 fn multiply_owned_relation_fails_closed_without_an_arbitrary_root_target() {
     let source = TestSource::new(
         "discrete Boolean a, b; equation a = time > 0.5; b = time > 0.5; when time > 0.5 then end when;",

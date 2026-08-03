@@ -15,6 +15,9 @@ use std::{
 };
 
 use crate::runtime::delay::{DelayRuntime, DelayRuntimeSnapshot};
+use crate::runtime::pre_params::{
+    advance_event_iteration_pre_params, event_iteration_plan_settled, seed_event_entry_pre_params,
+};
 use crate::runtime::solve_events::{
     apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
     next_runtime_event_stop, visible_values_with_context,
@@ -119,15 +122,6 @@ fn validate_discrete_event_rows(model: &solve::SolveModel) -> Result<(), Runtime
          pre_modes={pre_modes}, observation_refresh={observation}, \
          clock_owners={clock_owners}"
     )))
-}
-
-struct RuntimeAssignmentSettleInput<'a> {
-    y: &'a mut [f64],
-    p: &'a mut [f64],
-    event_pre_p: &'a [f64],
-    t: f64,
-    tol: f64,
-    max_iters: usize,
 }
 
 #[derive(Clone)]
@@ -1383,6 +1377,26 @@ impl SolveRuntime {
         .map_err(Into::into)
     }
 
+    pub fn apply_post_commit_assignments_until_stable(
+        &self,
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        _tol: f64,
+        max_iters: usize,
+    ) -> Result<bool, RuntimeSolveError> {
+        solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
+            block: &self.model.problem.discrete.post_commit_assignment_rhs,
+            targets: &self.model.problem.discrete.post_commit_assignment_targets,
+            y,
+            p,
+            t,
+            context: self.row_eval_context(),
+            max_iters,
+        })
+        .map_err(Into::into)
+    }
+
     pub fn settle_runtime_assignments_and_relation_memory(
         &self,
         y: &mut [f64],
@@ -1444,16 +1458,8 @@ impl SolveRuntime {
         if self.discrete_rhs.is_empty() && self.structured_discrete_rows.is_empty() {
             return Ok(());
         }
-        let event_pre_y = copy_runtime_values(y, "event pre y snapshot")?;
-        let event_pre_p = copy_runtime_values(p, "event pre p snapshot")?;
         for event_iteration in 0..max_iters {
-            let iter_pre_y = copy_runtime_values(y, "event iteration y snapshot")?;
-            let iter_pre_p = copy_runtime_values(p, "event iteration p snapshot")?;
             let snapshot = DiscretePreSnapshot {
-                event_pre_y: &event_pre_y,
-                event_pre_p: &event_pre_p,
-                iter_pre_y: iter_pre_y.as_slice(),
-                iter_pre_p: iter_pre_p.as_slice(),
                 row_filter: EventUpdateRowFilter::All,
                 root_relation_overrides: &[],
                 event_iteration,
@@ -1489,34 +1495,38 @@ impl SolveRuntime {
             row_filter,
             root_relation_overrides,
         } = input;
-        if self.discrete_rhs.is_empty() && self.structured_discrete_rows.is_empty() {
-            self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
-            return self.settle_runtime_assignments_and_projection(
-                RuntimeAssignmentSettleInput {
-                    y,
-                    p,
-                    event_pre_p,
-                    t,
-                    tol,
-                    max_iters,
-                },
-                &mut project_algebraics,
-            );
-        }
-
+        seed_event_entry_pre_params(&self.model, event_pre_y, event_pre_p, p)?;
         for event_iteration in 0..max_iters {
-            let mut changed =
+            // Appendix B fixes `pre` for one complete equation pass, then
+            // advances ordinary event history atomically from that pass before
+            // starting the next one.  Capture the source before any runtime
+            // owner or algebraic projection can mutate the live view.
+            let iter_pre_y = if event_iteration == 0 {
+                event_pre_y.to_vec()
+            } else {
+                copy_runtime_values(y, "projected event iteration y snapshot")?
+            };
+            let iter_pre_p = if event_iteration == 0 {
+                event_pre_p.to_vec()
+            } else {
+                copy_runtime_values(p, "projected event iteration p snapshot")?
+            };
+            let mut changed = if event_iteration == 0 {
+                false
+            } else {
+                advance_event_iteration_pre_params(
+                    &self.model,
+                    iter_pre_y.as_slice(),
+                    iter_pre_p.as_slice(),
+                    p,
+                )?
+            };
+            changed |=
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             changed |= project_algebraics(y, p)?;
             changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            let iter_pre_y = copy_runtime_values(y, "projected event iteration y snapshot")?;
-            let iter_pre_p = copy_runtime_values(p, "projected event iteration p snapshot")?;
             let snapshot = DiscretePreSnapshot {
-                event_pre_y,
-                event_pre_p,
-                iter_pre_y: iter_pre_y.as_slice(),
-                iter_pre_p: iter_pre_p.as_slice(),
                 row_filter,
                 root_relation_overrides,
                 event_iteration,
@@ -1546,7 +1556,7 @@ impl SolveRuntime {
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             changed |= project_algebraics(y, p)?;
             changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            if !changed {
+            if !changed && event_iteration_plan_settled(&self.model, y, p)? {
                 return self.eval_event_actions(y, p, event_pre_p, t);
             }
         }
@@ -1557,36 +1567,6 @@ impl SolveRuntime {
 
     fn validate_discrete_event_rows(&self) -> Result<(), RuntimeSolveError> {
         validate_discrete_event_rows(&self.model)
-    }
-
-    fn settle_runtime_assignments_and_projection<P>(
-        &self,
-        input: RuntimeAssignmentSettleInput<'_>,
-        project_algebraics: &mut P,
-    ) -> Result<EventActionOutcome, RuntimeSolveError>
-    where
-        P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
-    {
-        let RuntimeAssignmentSettleInput {
-            y,
-            p,
-            event_pre_p,
-            t,
-            tol,
-            max_iters,
-        } = input;
-        for _ in 0..max_iters {
-            let mut changed =
-                self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            changed |= project_algebraics(y, p)?;
-            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
-            if !changed {
-                return self.eval_event_actions(y, p, event_pre_p, t);
-            }
-        }
-        Err(RuntimeSolveError::solve_ir(format!(
-            "event runtime assignments did not converge at t={t}"
-        )))
     }
 
     fn override_relation_memory_row_values(
@@ -1670,18 +1650,62 @@ impl SolveRuntime {
         self.update_root_relation_memory_from_values(&roots, p, root_relation_overrides)
     }
 
+    pub(crate) fn update_algebraic_relation_memory_from_solver_y_except_overrides(
+        &self,
+        t: f64,
+        y: &[f64],
+        p: &mut [f64],
+        root_relation_overrides: &[(usize, f64)],
+    ) -> Result<bool, RuntimeSolveError> {
+        let roots = self.eval_root_conditions_from_solver_y(t, y, p)?;
+        self.update_root_relation_memory_from_values_where(
+            &roots,
+            p,
+            root_relation_overrides,
+            |root_index| {
+                self.model
+                    .problem
+                    .events
+                    .root_relation_refresh_roles
+                    .get(root_index)
+                    .is_some_and(|role| *role == solve::RootRelationRefreshRole::AlgebraicDependent)
+            },
+        )
+    }
+
     fn update_root_relation_memory_from_values(
         &self,
         roots: &[f64],
         p: &mut [f64],
         root_relation_overrides: &[(usize, f64)],
     ) -> Result<bool, RuntimeSolveError> {
+        self.update_root_relation_memory_from_values_where(
+            roots,
+            p,
+            root_relation_overrides,
+            |_| true,
+        )
+    }
+
+    fn update_root_relation_memory_from_values_where<F>(
+        &self,
+        roots: &[f64],
+        p: &mut [f64],
+        root_relation_overrides: &[(usize, f64)],
+        mut include: F,
+    ) -> Result<bool, RuntimeSolveError>
+    where
+        F: FnMut(usize) -> bool,
+    {
         let mut changed = false;
         for (root_index, (root, target)) in roots
             .iter()
             .zip(&self.model.problem.events.root_relation_memory_targets)
             .enumerate()
         {
+            if !include(root_index) {
+                continue;
+            }
             let Some(target) = *target else {
                 continue;
             };

@@ -1,5 +1,5 @@
 {
-  "schema_version": 27,
+  "schema_version": 31,
   "layout": {
     "bindings": {
       "x": {
@@ -104,7 +104,8 @@
         ]
       }
     },
-    "variable_base_slots": [],
+    "variable_storage_runs": [],
+    "variable_declarations": [],
     "state_scalar_count": 1,
     "algebraic_scalar_count": 1,
     "output_scalar_count": 1,
@@ -363,13 +364,16 @@
     "update_targets": []
   },
   "discrete": {
+    "event_iteration_plan": {
+      "runs": []
+    },
     "runtime_assignment_rhs": {
       "programs": [
         [
           {
-            "LoadY": {
+            "LoadP": {
               "dst": 0,
-              "index": 2
+              "index": 1
             }
           },
           {
@@ -398,6 +402,16 @@
         }
       }
     ],
+    "runtime_assignment_roles": [
+      "RelationEvaluating"
+    ],
+    "post_commit_assignment_rhs": {
+      "programs": [],
+      "program_spans": [],
+      "output_indices": []
+    },
+    "post_commit_assignment_targets": [],
+    "post_commit_assignment_runtime_rows": [],
     "rhs": {
       "programs": [
         [
@@ -448,7 +462,7 @@
       }
     ],
     "row_roles": [
-      "Equation"
+      "EventAction"
     ],
     "pre_modes": [
       "Fixed"
@@ -509,10 +523,18 @@
       ]
     },
     "root_relation_memory_targets": [
-      null
+      {
+        "P": {
+          "index": 1,
+          "byte_offset": 8
+        }
+      }
     ],
     "root_zero_domains": [
       "Previous"
+    ],
+    "root_relation_refresh_roles": [
+      "Frozen"
     ],
     "condition_memory_parameter_indices": [],
     "scheduled_root_conditions": [],

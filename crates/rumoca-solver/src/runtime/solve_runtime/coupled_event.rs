@@ -287,7 +287,6 @@ impl CoupledEventSystem<'_> {
                     eval_y: y,
                     eval_p: p,
                     t: self.t,
-                    tol: self.tol,
                 },
                 eval_p_cache,
             )?
@@ -319,7 +318,6 @@ impl CoupledEventSystem<'_> {
                     eval_y: y,
                     eval_p: p,
                     t: self.t,
-                    tol: self.tol,
                 },
                 eval_p_cache,
             )?

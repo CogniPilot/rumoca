@@ -17,7 +17,7 @@ fn decay_solve_layout() -> rumoca_ir_solve::SolveLayout {
             name_to_idx: IndexMap::from([("x".to_string(), 0)]),
             base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
         },
-        variable_base_slots: Vec::new(),
+        variable_storage_runs: Vec::new(),
         state_scalar_count: 1,
         algebraic_scalar_count: 0,
         output_scalar_count: 0,

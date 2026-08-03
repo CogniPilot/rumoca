@@ -1173,11 +1173,12 @@ impl SolveMeKernel {
         if !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
             return Ok(());
         }
-        let post_event_y = self.current_solver_y()?;
+        let mut post_event_y = self.current_solver_y()?;
         let root_overrides = std::mem::take(&mut self.frozen_event_root_crossings)
             .into_iter()
             .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
             .collect::<Vec<_>>();
+        self.settle_frozen_pre_commit_event_view(event_time, &mut post_event_y, &root_overrides)?;
         let history_changed = commit_pre_params_after_event_at(
             &self.runtime.model,
             &post_event_y,
@@ -1197,6 +1198,45 @@ impl SolveMeKernel {
         Ok(())
     }
 
+    /// Reconcile the reconstructed full solver view while event `pre` is
+    /// still frozen. Relation-evaluating B.1c owners may run only here; after
+    /// history commits, canonicalization consumes the certified post plan.
+    fn settle_frozen_pre_commit_event_view(
+        &mut self,
+        event_time: f64,
+        solver_y: &mut [f64],
+        root_relation_overrides: &[(usize, f64)],
+    ) -> Result<(), MeError> {
+        let runtime = Rc::clone(&self.runtime);
+        let policy = self.algebraic_projection_policy();
+        for _ in 0..policy.settle.max_iters {
+            let before_y = solver_y.to_vec();
+            let before_p = self.params.clone();
+            runtime.apply_runtime_assignments_until_stable(
+                solver_y,
+                &mut self.params,
+                event_time,
+                policy.settle.tol,
+                policy.settle.max_iters,
+            )?;
+            project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
+            runtime.update_algebraic_relation_memory_from_solver_y_except_overrides(
+                event_time,
+                solver_y,
+                &mut self.params,
+                root_relation_overrides,
+            )?;
+            if !runtime_values_changed(&before_y, solver_y, policy.settle.tol)
+                && !runtime_values_changed(&before_p, &self.params, policy.settle.tol)
+            {
+                return Ok(());
+            }
+        }
+        Err(contract(format!(
+            "pre-commit derived event view did not converge at t={event_time}"
+        )))
+    }
+
     /// Reconstruct the canonical post-event view after `pre` history advances.
     ///
     /// This deliberately settles runtime assignments, algebraic projection,
@@ -1210,13 +1250,13 @@ impl SolveMeKernel {
     ) -> Result<(), MeError> {
         let runtime = Rc::clone(&self.runtime);
         let policy = self.algebraic_projection_policy();
-        // The event iteration already selected the post-event relation sides,
-        // including at boundaries without a located-root override. Refresh
-        // relation memory exactly once while retaining any typed selections,
-        // then keep it fixed while derived values settle. Re-evaluating it in
-        // this loop would invent a new event iteration from exact-root numerics
-        // after `pre` was committed.
-        runtime.apply_runtime_assignments_until_stable(
+        // Relation-free derived values are safe after `pre` commits and remain
+        // the only discrete owners admitted to this coupled loop. Owners that
+        // evaluate relations already settled during event iteration while
+        // `pre` was frozen and must not be replayed here. Algebraic-dependent
+        // relation memory refreshes from the projected canonical view;
+        // parameter-only relation memory remains on its selected event side.
+        runtime.apply_post_commit_assignments_until_stable(
             solver_y,
             &mut self.params,
             event_time,
@@ -1224,18 +1264,17 @@ impl SolveMeKernel {
             policy.settle.max_iters,
         )?;
         project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
-        runtime.update_relation_memory_from_solver_y_except_overrides(
+        runtime.update_algebraic_relation_memory_from_solver_y_except_overrides(
             event_time,
             solver_y,
             &mut self.params,
-            policy.settle.tol,
             root_relation_overrides,
         )?;
         project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
         for _ in 0..policy.settle.max_iters {
             let before_y = solver_y.to_vec();
             let before_p = self.params.clone();
-            runtime.apply_runtime_assignments_until_stable(
+            runtime.apply_post_commit_assignments_until_stable(
                 solver_y,
                 &mut self.params,
                 event_time,
@@ -1243,6 +1282,12 @@ impl SolveMeKernel {
                 policy.settle.max_iters,
             )?;
             project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
+            runtime.update_algebraic_relation_memory_from_solver_y_except_overrides(
+                event_time,
+                solver_y,
+                &mut self.params,
+                root_relation_overrides,
+            )?;
             if !runtime_values_changed(&before_y, solver_y, policy.settle.tol)
                 && !runtime_values_changed(&before_p, &self.params, policy.settle.tol)
             {

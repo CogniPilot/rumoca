@@ -7,6 +7,43 @@
 use super::*;
 
 #[test]
+fn discrete_valued_input_is_external_and_excluded_from_event_iteration() {
+    let source = TestSource::new("input Integer m;");
+    let declaration = source.at(0, 16);
+    let model = dae::Dae::construct(source.map, |model| {
+        let integer = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Integer),
+                declaration,
+            )
+        })?;
+        model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("m"),
+                integer,
+                declaration,
+                dae::VariableAttributes {
+                    causality: dae::VariableCausality::Input,
+                    ..Default::default()
+                },
+            )
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    assert_eq!(
+        solve.solve_layout.variable_storage_runs[0].role,
+        rumoca_ir_solve::SolveVariableStorageRole::ExternalInput
+    );
+    assert_eq!(solve.solve_layout.input_scalar_names, ["m"]);
+    assert!(solve.solve_layout.discrete_valued_scalar_names.is_empty());
+    assert!(solve.discrete.event_iteration_plan.runs.is_empty());
+}
+
+#[test]
 fn unconditional_discrete_real_definition_does_not_require_a_clock() {
     let source = TestSource::new("discrete Real d; d=time;");
     let declaration = source.at(0, 15);

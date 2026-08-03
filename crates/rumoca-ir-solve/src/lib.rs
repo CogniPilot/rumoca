@@ -9,6 +9,9 @@
 //! scalar-program wire validation into `scalar_program.rs` and `SolveProblem`
 //! wire/shape validation into `solve_problem.rs`, retaining facade re-exports.
 
+mod certificate;
+#[cfg(test)]
+mod certificate_tests;
 #[cfg(test)]
 mod compute_block_tests;
 mod layout;
@@ -27,6 +30,10 @@ use rumoca_core::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+pub use certificate::{
+    derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,
+    derive_runtime_assignment_roles,
+};
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
     ComponentReferenceKeyPart, ComponentReferenceSubscriptKey, IndexedScalarSlot, ScalarSlot,
@@ -42,7 +49,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 27;
+pub const SOLVE_SCHEMA_VERSION: u16 = 31;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -677,6 +684,8 @@ impl SolveProblem {
         self.layout
             .validate_shape_contract()
             .map_err(SolveProblemShapeContractError::Layout)?;
+        validate_variable_storage_runs(self)?;
+        validate_event_iteration_plan(self)?;
         validate_continuous_system_shape(self)?;
         validate_initialization_system_shape(self)?;
         validate_discrete_system_shape(self)?;
@@ -687,6 +696,416 @@ impl SolveProblem {
     /// Validate the complete finalized Solve-IR stage contract.
     pub fn validate(&self) -> Result<(), SolveProblemShapeContractError> {
         self.validate_shape_contract()
+    }
+}
+
+fn validate_variable_storage_runs(
+    problem: &SolveProblem,
+) -> Result<(), SolveProblemShapeContractError> {
+    if problem.solve_layout.variable_storage_runs.len()
+        != problem.solve_layout.variable_declarations.len()
+    {
+        return Err(variable_storage_contract(
+            0,
+            "storage and declaration catalogs have different lengths",
+        ));
+    }
+    for (variable, storage) in problem
+        .solve_layout
+        .variable_storage_runs
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let declaration = problem.solve_layout.variable_declarations[variable];
+        if storage.role != declaration.role() || storage.value_kind != declaration.value_kind() {
+            return Err(variable_storage_contract(
+                variable,
+                "storage role or kind disagrees with its immutable declaration",
+            ));
+        }
+        let role_uses_p = matches!(
+            storage.role,
+            SolveVariableStorageRole::Parameter
+                | SolveVariableStorageRole::Constant
+                | SolveVariableStorageRole::ExternalInput
+                | SolveVariableStorageRole::DiscreteReal
+                | SolveVariableStorageRole::DiscreteValue
+        );
+        let (base, extent, base_uses_p) = match storage.base {
+            ScalarSlot::P { index, .. } => (index, problem.layout.p_scalars(), true),
+            ScalarSlot::Y { index, .. } => (index, problem.layout.y_scalars(), false),
+            ScalarSlot::Time | ScalarSlot::Constant(_) => {
+                return Err(variable_storage_contract(
+                    variable,
+                    "storage base is not a mutable Y/P coordinate",
+                ));
+            }
+        };
+        if role_uses_p != base_uses_p {
+            return Err(variable_storage_contract(
+                variable,
+                "storage column disagrees with its typed variable role",
+            ));
+        }
+        let kind_matches_role = match storage.role {
+            SolveVariableStorageRole::State
+            | SolveVariableStorageRole::Algebraic
+            | SolveVariableStorageRole::Output
+            | SolveVariableStorageRole::DiscreteReal => {
+                storage.value_kind == SolveVariableValueKind::Real
+            }
+            SolveVariableStorageRole::DiscreteValue => matches!(
+                storage.value_kind,
+                SolveVariableValueKind::Integer
+                    | SolveVariableValueKind::Boolean
+                    | SolveVariableValueKind::Enumeration
+            ),
+            SolveVariableStorageRole::Parameter
+            | SolveVariableStorageRole::Constant
+            | SolveVariableStorageRole::ExternalInput => true,
+        };
+        if !kind_matches_role {
+            return Err(variable_storage_contract(
+                variable,
+                "value kind disagrees with its typed variable role",
+            ));
+        }
+        let end = base.checked_add(storage.scalar_count).ok_or_else(|| {
+            variable_storage_contract(variable, "storage scalar range overflowed")
+        })?;
+        if end > extent {
+            return Err(variable_storage_contract(
+                variable,
+                "storage scalar range exceeds its Y/P column",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn variable_storage_contract(
+    variable: usize,
+    detail: &'static str,
+) -> SolveProblemShapeContractError {
+    SolveProblemShapeContractError::DiscreteCertificate {
+        context: "solve_layout.variable_storage_runs",
+        row: variable,
+        detail,
+        span: None,
+    }
+}
+
+fn validate_event_iteration_plan(
+    problem: &SolveProblem,
+) -> Result<(), SolveProblemShapeContractError> {
+    let layout = &problem.solve_layout;
+    let plan = &problem.discrete.event_iteration_plan;
+    let expected_variables = layout
+        .variable_storage_runs
+        .iter()
+        .enumerate()
+        .filter_map(|(variable, storage)| {
+            (storage.scalar_count != 0 && storage.event_iteration_kind().is_some())
+                .then_some(variable)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut covered_variables = BTreeSet::new();
+    let mut covered_bindings = BTreeSet::new();
+    let mut current_indices = BTreeSet::new();
+    let mut pre_indices = BTreeSet::new();
+    let mut claimed_scalar_rows = BTreeSet::new();
+    let mut claimed_structured_updates = BTreeSet::new();
+    for (row, run) in plan.runs.iter().enumerate() {
+        let storage = layout
+            .variable_storage_runs
+            .get(run.variable)
+            .ok_or_else(|| event_iteration_contract(row, "variable owner is out of bounds"))?;
+        if storage.event_iteration_kind().is_none() {
+            return Err(event_iteration_contract(
+                row,
+                "variable owner is not a typed discrete coordinate",
+            ));
+        }
+        if !covered_variables.insert(run.variable) {
+            return Err(event_iteration_contract(
+                row,
+                "variable owner is duplicated",
+            ));
+        }
+        if storage.scalar_count == 0 {
+            return Err(event_iteration_contract(row, "run is empty"));
+        }
+        let end = run
+            .pre_binding_start
+            .checked_add(storage.scalar_count)
+            .ok_or_else(|| event_iteration_contract(row, "binding range overflowed"))?;
+        let bindings = layout
+            .pre_param_bindings
+            .get(run.pre_binding_start..end)
+            .ok_or_else(|| event_iteration_contract(row, "binding range is out of bounds"))?;
+        let ScalarSlot::P {
+            index: current_base,
+            ..
+        } = storage.base
+        else {
+            return Err(event_iteration_contract(
+                row,
+                "typed discrete coordinate is not P-backed",
+            ));
+        };
+        let mut pre_base = None;
+        for (offset, binding) in bindings.iter().enumerate() {
+            let binding_index = run.pre_binding_start + offset;
+            if !covered_bindings.insert(binding_index) {
+                return Err(event_iteration_contract(row, "binding ranges overlap"));
+            }
+            if binding.clock_schedule.is_some() {
+                return Err(event_iteration_contract(
+                    row,
+                    "run contains a clocked previous binding",
+                ));
+            }
+            let PreParamSource::P { index: current } = binding.source else {
+                return Err(event_iteration_contract(
+                    row,
+                    "run source is not a discrete P slot",
+                ));
+            };
+            let expected_pre = pre_base
+                .get_or_insert(binding.dest_p_index)
+                .checked_add(offset);
+            if current_base.checked_add(offset) != Some(current)
+                || expected_pre != Some(binding.dest_p_index)
+            {
+                return Err(event_iteration_contract(
+                    row,
+                    "run bindings are not contiguous",
+                ));
+            }
+            validate_indices(
+                "discrete.event_iteration_plan.current",
+                &[current],
+                problem.layout.p_scalars(),
+            )?;
+            validate_indices(
+                "discrete.event_iteration_plan.pre",
+                &[binding.dest_p_index],
+                problem.layout.p_scalars(),
+            )?;
+            if !current_indices.insert(current) || !pre_indices.insert(binding.dest_p_index) {
+                return Err(event_iteration_contract(
+                    row,
+                    "current or pre lanes are duplicated",
+                ));
+            }
+        }
+        if current_indices
+            .iter()
+            .any(|index| pre_indices.contains(index))
+        {
+            return Err(event_iteration_contract(
+                row,
+                "current and pre lanes overlap",
+            ));
+        }
+        match run.owner {
+            EventIterationOwner::Hold => {
+                if storage.role != SolveVariableStorageRole::DiscreteReal {
+                    return Err(event_iteration_contract(
+                        row,
+                        "only ordinary discrete Real runs may hold",
+                    ));
+                }
+            }
+            EventIterationOwner::ScalarRows { start_row } => {
+                let row_end = start_row
+                    .checked_add(storage.scalar_count)
+                    .ok_or_else(|| event_iteration_contract(row, "owner row range overflowed"))?;
+                let targets = problem
+                    .discrete
+                    .update_targets
+                    .get(start_row..row_end)
+                    .ok_or_else(|| {
+                        event_iteration_contract(row, "owner row range is out of bounds")
+                    })?;
+                let clocks = problem
+                    .discrete
+                    .clock_owners
+                    .get(start_row..row_end)
+                    .ok_or_else(|| {
+                        event_iteration_contract(row, "owner clock range is out of bounds")
+                    })?;
+                let owner_clock = clocks.first().copied().flatten();
+                for (offset, target) in targets.iter().enumerate() {
+                    let expected_target = current_base.checked_add(offset).ok_or_else(|| {
+                        event_iteration_contract(row, "owner target range overflowed")
+                    })?;
+                    if *target != scalar_slot_p(expected_target) {
+                        return Err(event_iteration_contract(
+                            row,
+                            "owner rows do not define the run",
+                        ));
+                    }
+                    if clocks[offset] != owner_clock {
+                        return Err(event_iteration_contract(
+                            row,
+                            "owner rows disagree on their typed clock",
+                        ));
+                    }
+                    claimed_scalar_rows.insert(start_row + offset);
+                }
+            }
+            EventIterationOwner::StructuredUpdate { update_index } => {
+                let update = problem
+                    .discrete
+                    .structured_updates
+                    .get(update_index)
+                    .ok_or_else(|| {
+                        event_iteration_contract(row, "structured owner is out of bounds")
+                    })?;
+                let Some(ComputeNode::Map { domain, .. }) =
+                    problem.discrete.structured_rhs.nodes.get(update.node_index)
+                else {
+                    return Err(event_iteration_contract(
+                        row,
+                        "structured owner is not a compact Map",
+                    ));
+                };
+                let dense = TensorOutputMap::dense_contiguous(0, domain).map_err(|_| {
+                    event_iteration_contract(row, "structured owner domain is invalid")
+                })?;
+                if update.target.base != storage.base
+                    || update.target.map != dense
+                    || domain.scalar_count().ok() != Some(storage.scalar_count)
+                {
+                    return Err(event_iteration_contract(
+                        row,
+                        "structured owner does not define the run",
+                    ));
+                }
+                claimed_structured_updates.insert(update_index);
+            }
+        }
+    }
+    if covered_variables != expected_variables {
+        return Err(event_iteration_contract(
+            0,
+            "plan is not a reverse bijection over typed discrete variable owners",
+        ));
+    }
+    for (row, target) in problem.discrete.update_targets.iter().copied().enumerate() {
+        let storage_variable = storage_variable_for_slot(layout, target)
+            .map_err(|detail| event_iteration_contract(row, detail))?;
+        let is_discrete = storage_variable.is_some_and(|variable| {
+            layout.variable_storage_runs[variable]
+                .event_iteration_kind()
+                .is_some()
+        });
+        if storage_variable.is_some() && !is_discrete {
+            return Err(event_iteration_contract(
+                row,
+                "a producer targets a canonical non-discrete variable",
+            ));
+        }
+        if problem.discrete.row_roles.get(row) == Some(&DiscreteRowRole::Equation)
+            && (!is_discrete || !claimed_scalar_rows.contains(&row))
+        {
+            return Err(event_iteration_contract(
+                row,
+                "an equation producer is not owned by exactly one typed event-plan variable",
+            ));
+        }
+        if is_discrete && !claimed_scalar_rows.contains(&row) {
+            return Err(event_iteration_contract(
+                row,
+                "a scalar discrete producer is not owned by its plan run",
+            ));
+        }
+        if external_input_storage_contains(layout, target) {
+            return Err(event_iteration_contract(
+                row,
+                "an external input cannot have a discrete producer",
+            ));
+        }
+    }
+    for (update_index, update) in problem.discrete.structured_updates.iter().enumerate() {
+        let storage_variable = storage_variable_for_slot(layout, update.target.base)
+            .map_err(|detail| event_iteration_contract(update_index, detail))?;
+        let is_discrete = storage_variable.is_some_and(|variable| {
+            layout.variable_storage_runs[variable]
+                .event_iteration_kind()
+                .is_some()
+        });
+        if storage_variable.is_some() && !is_discrete {
+            return Err(event_iteration_contract(
+                update_index,
+                "a structured producer targets a canonical non-discrete variable",
+            ));
+        }
+        if update.role == DiscreteRowRole::Equation
+            && (!is_discrete || !claimed_structured_updates.contains(&update_index))
+        {
+            return Err(event_iteration_contract(
+                update_index,
+                "a structured equation producer is not owned by exactly one typed event-plan variable",
+            ));
+        }
+        if is_discrete && !claimed_structured_updates.contains(&update_index) {
+            return Err(event_iteration_contract(
+                update_index,
+                "a structured discrete producer is not owned by its plan run",
+            ));
+        }
+        if external_input_storage_contains(layout, update.target.base) {
+            return Err(event_iteration_contract(
+                update_index,
+                "an external input cannot have a structured producer",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn storage_variable_for_slot(
+    layout: &SolveLayout,
+    slot: ScalarSlot,
+) -> Result<Option<usize>, &'static str> {
+    let mut owners = layout
+        .variable_storage_runs
+        .iter()
+        .enumerate()
+        .filter_map(|(variable, storage)| storage_run_contains(*storage, slot).then_some(variable));
+    let first = owners.next();
+    if owners.next().is_some() {
+        return Err("one producer slot belongs to multiple variable-storage runs");
+    }
+    Ok(first)
+}
+
+fn external_input_storage_contains(layout: &SolveLayout, slot: ScalarSlot) -> bool {
+    layout.variable_storage_runs.iter().any(|storage| {
+        storage.role == SolveVariableStorageRole::ExternalInput
+            && storage_run_contains(*storage, slot)
+    })
+}
+
+fn storage_run_contains(storage: SolveVariableStorageRun, slot: ScalarSlot) -> bool {
+    match (storage.base, slot) {
+        (ScalarSlot::P { index: base, .. }, ScalarSlot::P { index, .. })
+        | (ScalarSlot::Y { index: base, .. }, ScalarSlot::Y { index, .. }) => base
+            .checked_add(storage.scalar_count)
+            .is_some_and(|end| (base..end).contains(&index)),
+        _ => false,
+    }
+}
+
+fn event_iteration_contract(row: usize, detail: &'static str) -> SolveProblemShapeContractError {
+    SolveProblemShapeContractError::DiscreteCertificate {
+        context: "discrete.event_iteration_plan",
+        row,
+        detail,
+        span: None,
     }
 }
 
@@ -781,14 +1200,15 @@ fn validate_discrete_system_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let system = &problem.discrete;
+    certificate::validate_discrete_certificate_shape(problem)?;
+    variable_bounds::validate_scalar_program_block_variable_bounds(
+        &system.rhs,
+        "discrete.rhs",
+        &problem.layout,
+    )?;
     system
         .structured_rhs
         .validate_shape_contract("discrete.structured_rhs")?;
-    validate_count(
-        "discrete.runtime_assignment_targets",
-        system.runtime_assignment_rhs.len(),
-        system.runtime_assignment_targets.len(),
-    )?;
     validate_count(
         "discrete.update_targets",
         system.rhs.len(),
@@ -919,6 +1339,7 @@ fn validate_event_partition_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let events = &problem.events;
+    certificate::validate_root_certificate_shape(problem)?;
     validate_count(
         "events.root_relation_memory_targets",
         events.root_conditions.len(),
@@ -1484,10 +1905,52 @@ pub enum InitializationCoordinateKind {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum EventIterationValueKind {
+    Real,
+    Integer,
+    Boolean,
+    /// Positive integral ordinal. The DAE currently erases the declared upper
+    /// literal bound; restoring that bound is a tracked upstream obligation.
+    Enumeration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum EventIterationOwner {
+    Hold,
+    ScalarRows { start_row: usize },
+    StructuredUpdate { update_index: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub struct EventIterationRun {
+    /// Canonical typed variable-storage owner.
+    pub variable: usize,
+    pub pre_binding_start: usize,
+    pub owner: EventIterationOwner,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct EventIterationPlan {
+    pub runs: Vec<EventIterationRun>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DiscreteSolveSystem {
+    /// Compact compiler-owned Appendix-B iteration catalog.
+    pub event_iteration_plan: EventIterationPlan,
     pub runtime_assignment_rhs: ScalarProgramBlock,
     pub runtime_assignment_targets: Vec<ScalarSlot>,
+    /// Compiler certificate for whether each runtime assignment evaluates a
+    /// relation (directly or through another runtime assignment).
+    pub runtime_assignment_roles: Vec<RuntimeAssignmentRole>,
+    /// Relation-free root-driven assignments that remain valid after event
+    /// `pre` history has committed.
+    pub post_commit_assignment_rhs: ScalarProgramBlock,
+    pub post_commit_assignment_targets: Vec<ScalarSlot>,
+    /// Runtime-row owner copied by each post-commit row. Shape validation
+    /// proves the copy is exact and the owner is relation-free.
+    pub post_commit_assignment_runtime_rows: Vec<usize>,
     pub rhs: ScalarProgramBlock,
     pub update_targets: Vec<ScalarSlot>,
     pub row_roles: Vec<DiscreteRowRole>,
@@ -1512,6 +1975,15 @@ pub struct DiscreteSolveSystem {
     pub structured_rhs: ComputeBlock,
     #[serde(default)]
     pub structured_updates: Vec<StructuredDiscreteUpdate>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum RuntimeAssignmentRole {
+    /// The row consumes already-selected values without evaluating a relation.
+    RelationFree,
+    /// The row evaluates a relation, depends on such a row, or writes relation memory.
+    #[default]
+    RelationEvaluating,
 }
 
 /// Compact target projection and row policy for one structured B.1c map node.
@@ -1627,6 +2099,9 @@ pub struct SolveEventPartition {
     pub root_conditions: ScalarProgramBlock,
     pub root_relation_memory_targets: Vec<Option<ScalarSlot>>,
     pub root_zero_domains: Vec<RootZeroDomain>,
+    /// Compiler certificate describing which root memories may participate in
+    /// post-commit algebraic coupling.
+    pub root_relation_refresh_roles: Vec<RootRelationRefreshRole>,
     /// Hidden P slots that retain the previous value of each DAE condition.
     ///
     /// Event-action programs read these slots to distinguish a rising edge
@@ -1640,6 +2115,13 @@ pub struct SolveEventPartition {
     pub actions: Vec<SolveEventAction>,
     pub has_terminal_event: bool,
     pub delays: SolveDelayPartition,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub enum RootRelationRefreshRole {
+    #[default]
+    Frozen,
+    AlgebraicDependent,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1940,6 +2422,76 @@ pub struct PreParamBinding {
     pub clock_schedule: Option<PeriodicEventSchedule>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum SolveVariableStorageRole {
+    Parameter,
+    Constant,
+    ExternalInput,
+    State,
+    Algebraic,
+    Output,
+    DiscreteReal,
+    DiscreteValue,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum SolveVariableValueKind {
+    Real,
+    Integer,
+    Boolean,
+    Enumeration,
+    String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub struct SolveVariableStorageRun {
+    pub base: ScalarSlot,
+    pub scalar_count: usize,
+    pub role: SolveVariableStorageRole,
+    pub value_kind: SolveVariableValueKind,
+}
+
+/// Immutable typed declaration replayed independently of storage projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SolveVariableDeclaration {
+    role: SolveVariableStorageRole,
+    value_kind: SolveVariableValueKind,
+}
+
+impl SolveVariableDeclaration {
+    pub const fn new(role: SolveVariableStorageRole, value_kind: SolveVariableValueKind) -> Self {
+        Self { role, value_kind }
+    }
+
+    pub const fn role(self) -> SolveVariableStorageRole {
+        self.role
+    }
+
+    pub const fn value_kind(self) -> SolveVariableValueKind {
+        self.value_kind
+    }
+}
+
+impl SolveVariableStorageRun {
+    pub fn event_iteration_kind(self) -> Option<EventIterationValueKind> {
+        match (self.role, self.value_kind) {
+            (SolveVariableStorageRole::DiscreteReal, SolveVariableValueKind::Real) => {
+                Some(EventIterationValueKind::Real)
+            }
+            (SolveVariableStorageRole::DiscreteValue, SolveVariableValueKind::Integer) => {
+                Some(EventIterationValueKind::Integer)
+            }
+            (SolveVariableStorageRole::DiscreteValue, SolveVariableValueKind::Boolean) => {
+                Some(EventIterationValueKind::Boolean)
+            }
+            (SolveVariableStorageRole::DiscreteValue, SolveVariableValueKind::Enumeration) => {
+                Some(EventIterationValueKind::Enumeration)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SolveLayout {
     pub solver_maps: SolverNameIndexMaps,
@@ -1948,7 +2500,9 @@ pub struct SolveLayout {
     /// Scalar `k` of a variable is stored at `base + k` in the same column.
     /// This is the canonical cross-phase coordinate map; display names are not
     /// used to recover compiler identity.
-    pub variable_base_slots: Vec<ScalarSlot>,
+    pub variable_storage_runs: Vec<SolveVariableStorageRun>,
+    /// Canonical typed DAE declarations in the same dense identity order.
+    pub variable_declarations: Vec<SolveVariableDeclaration>,
     pub state_scalar_count: usize,
     pub algebraic_scalar_count: usize,
     pub output_scalar_count: usize,
@@ -1979,7 +2533,11 @@ impl SolveLayout {
     }
 
     pub fn variable_scalar_slot(&self, variable: usize, scalar: usize) -> Option<ScalarSlot> {
-        match self.variable_base_slots.get(variable).copied()? {
+        let run = self.variable_storage_runs.get(variable)?;
+        if scalar >= run.scalar_count {
+            return None;
+        }
+        match run.base {
             ScalarSlot::Y { index, .. } => index.checked_add(scalar).map(scalar_slot_y),
             ScalarSlot::P { index, .. } => index.checked_add(scalar).map(scalar_slot_p),
             ScalarSlot::Time | ScalarSlot::Constant(_) => None,

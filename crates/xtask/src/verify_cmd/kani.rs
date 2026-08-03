@@ -25,6 +25,7 @@ const KNOWN_CLAIM_IDS: &[&str] = &[
     "ME-BUF-001",
     "ME-STATE-001",
     "ME-BRAND-001",
+    "SIM-010",
     "BEHAVIOR-PIN",
 ];
 

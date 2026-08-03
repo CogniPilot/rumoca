@@ -150,7 +150,8 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | `initial()` creates a typed activation, never a generic P load | Activation arena | Phase state cannot become a value |
 | A B.1c definition owns a target and either `Always` or ordered activated branches | Discrete system | Preserve source priority |
 | No active branch holds the current target | Discrete system | Hold cannot be omitted |
-| Each typed owner derives pre, observation, and clock policy | Solve construction | Parallel metadata cannot disagree |
+| Each typed owner derives pre, observation, clock, and `RuntimeAssignmentRole` policy; `RelationFree` may consume a frozen relation-memory result, while relation evaluation, transitive dependence on a relation-evaluating owner, and writes to relation memory construct `RelationEvaluating`. Construction issues `post_commit_assignment_runtime_rows` only as a bounded, unique, owner-order projection through `RelationFree` runtime-assignment rows reachable from typed root-relation-memory targets without crossing a `RelationEvaluating` row | Solve construction | Parallel metadata cannot disagree or authorize relation-evaluating post-commit replay |
+| Each lowered root-relation output derives exactly one row-aligned `RootRelationRefreshRole`; `Frozen` is issued only with a proof that its typed dependency closure contains no continuous algebraic coordinate, `AlgebraicDependent` only with a proof that one exists, and unsupported dependency forms fail construction | Solve event construction | Refresh ownership remains aligned with `root_conditions` and `root_relation_memory_targets` and is never recovered by runtime inspection |
 | Each typed discrete owner derives an integrator-history effect from the finalized dependency graph; only a proved non-continuous target constructs `Preserve` | Solve construction | Unknown, cyclic, ambiguous, unsupported, and state-affecting updates fail closed to `Restart` |
 | B.1b residuals, B.1c definitions, reinit, and condition memory are distinct owners | Solve construction | Tags cannot conflate semantics |
 | Definitions, branches, generated edges, and holds retain exact typed provenance | Construction scopes | No dummy source claims |
@@ -160,6 +161,8 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | Tests use production construction and cannot bypass provenance or activation | Solve tests | Evidence exercises the boundary |
 | Structured B.1c owners derive compact compute and target maps plus row/pre/observation/clock policy | Solve construction | Per-scalar metadata cannot become a parallel owner |
 | Structured B.1c wire decode replays the same checked owner operation | DAE/Solve serialization | Bytes cannot forge a family or its target coverage |
+| Canonical typed variable-storage runs derive the complete compact event-iteration plan; every non-input `z`/`m` run has exactly one scalar, structured, or hold owner, external inputs are explicitly excluded, value kind and clock participation are derived rather than accepted, and wire decode replays the same owner operations | Solve construction and serialization | Deleting or relabeling parallel fields cannot shrink or forge the Appendix-B convergence domain |
+| A complete event pass reads ordinary unclocked discrete history, continuous event-entry history, and clocked `previous()` from distinct owned lanes; only ordinary unclocked `z`/`m` lanes advance atomically between passes, and successful return requires exact typed current/history equality for every fixed-point run | Solve runtime | Mixed temporal expressions cannot collapse to one row-wide snapshot policy, and runtime success witnesses convergence |
 
 ### 7. Flat Aggregate Construction Catalog (SPEC_0036 §Flat Aggregate)
 

@@ -1,5 +1,4 @@
-use crate::{EventPreMode, EventPreSources, event_eval_params_for_row_pre_mode};
-use rumoca_ir_solve as solve;
+use crate::EventPreMode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventUpdateRowFilter {
@@ -53,25 +52,9 @@ pub struct ProjectedEventUpdateInput<'a> {
 }
 
 pub(super) struct DiscretePreSnapshot<'a> {
-    pub(super) event_pre_y: &'a [f64],
-    pub(super) event_pre_p: &'a [f64],
-    pub(super) iter_pre_y: &'a [f64],
-    pub(super) iter_pre_p: &'a [f64],
     pub(super) row_filter: EventUpdateRowFilter,
     pub(super) root_relation_overrides: &'a [(usize, f64)],
     pub(super) event_iteration: usize,
-}
-
-impl<'a> DiscretePreSnapshot<'a> {
-    pub(super) fn event_pre_sources(&self) -> EventPreSources<'a> {
-        EventPreSources {
-            event_pre_y: self.event_pre_y,
-            event_pre_p: self.event_pre_p,
-            iter_pre_y: self.iter_pre_y,
-            iter_pre_p: self.iter_pre_p,
-            event_iteration: self.event_iteration,
-        }
-    }
 }
 
 pub(super) struct DiscreteRowsSettleInput<'a> {
@@ -88,34 +71,17 @@ pub(super) struct DiscreteRowEvalInput<'a, 'snapshot> {
     pub(super) eval_y: &'a [f64],
     pub(super) eval_p: &'a [f64],
     pub(super) t: f64,
-    pub(super) tol: f64,
 }
 
 #[derive(Default)]
-pub(super) struct EventEvalParamCache {
-    event_entry: Option<Vec<f64>>,
-    fixed: Option<Vec<f64>>,
-    follow_current: Option<Vec<f64>>,
-}
+pub(super) struct EventEvalParamCache;
 
 impl EventEvalParamCache {
-    pub(super) fn params<'a>(
-        &'a mut self,
-        model: &solve::SolveModel,
-        base_p: &[f64],
-        mode: EventPreMode,
-        sources: &EventPreSources<'_>,
-        t: f64,
-        tol: f64,
-    ) -> &'a [f64] {
-        let slot = match mode {
-            EventPreMode::EventEntry => &mut self.event_entry,
-            EventPreMode::Fixed => &mut self.fixed,
-            EventPreMode::FollowCurrent => &mut self.follow_current,
-        };
-        slot.get_or_insert_with(|| {
-            event_eval_params_for_row_pre_mode(model, base_p, mode, sources, t, tol)
-        })
+    pub(super) fn params<'a>(&mut self, base_p: &'a [f64]) -> &'a [f64] {
+        // The live P vector is the canonical heterogeneous temporal view:
+        // ordinary z/m pre lanes advance only between whole passes, while
+        // continuous pre and clocked previous lanes remain at event entry.
+        base_p
     }
 }
 
