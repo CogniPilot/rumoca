@@ -3,7 +3,7 @@ use rumoca_ir_solve as solve;
 
 use super::{
     ProjectionBlockUpdate, RuntimeSolveError, algebraic_step_at_resolution, jacobian_row_scales,
-    scaled_newton_delta, scaled_residual_converged, scaled_residual_norm,
+    next_scaled_backtrack, scaled_newton_delta, scaled_residual_converged, scaled_residual_norm,
 };
 
 const MANIFOLD_PROJECTION_MAX_ITERS: usize = 16;
@@ -251,10 +251,11 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
         if at_resolution {
             break;
         }
-        let next_alpha = alpha * 0.5;
-        if next_alpha == 0.0 || next_alpha == alpha {
+        let Some(next_alpha) =
+            next_scaled_backtrack(alpha, delta.as_slice(), &variable_scales, tol)
+        else {
             break;
-        }
+        };
         alpha = next_alpha;
     }
     y.copy_from_slice(&snapshot);

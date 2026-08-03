@@ -1054,6 +1054,39 @@ fn algebraic_step_resolution_uses_actual_candidate_ulps() {
 }
 
 #[test]
+fn scaled_backtracking_is_strictly_monotone_and_finite() {
+    let delta = [4.0, 8.0];
+    let scales = [1.0, 2.0];
+    let mut alpha = 1.0;
+    let mut halvings = 0;
+    while let Some(next) = next_scaled_backtrack(alpha, &delta, &scales, 1.0e-6) {
+        assert!(next > 0.0 && next < alpha);
+        alpha = next;
+        halvings += 1;
+    }
+
+    assert!(halvings > 0);
+    assert!(halvings < 32);
+    assert!(
+        delta
+            .iter()
+            .copied()
+            .zip(scales)
+            .all(|(correction, scale)| (alpha * 0.5 * correction).abs()
+                <= scaled_tolerance(1.0e-6, scale))
+    );
+}
+
+#[test]
+fn scaled_backtracking_preserves_a_tiny_but_significant_trust_step() {
+    let initial_alpha = 1.0e-300;
+    assert_eq!(
+        next_scaled_backtrack(initial_alpha, &[1.0e300], &[1.0], 1.0e-6),
+        Some(initial_alpha * 0.5)
+    );
+}
+
+#[test]
 fn continuous_singleton_assignment_avoids_jacobian_projection() {
     let model = ContinuousCausalAssignmentModel {
         residual_calls: Cell::new(0),
