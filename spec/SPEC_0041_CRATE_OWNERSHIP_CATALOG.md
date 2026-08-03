@@ -42,6 +42,7 @@ import that path.
 | Solver pre-parameter snapshot helpers (`write_pre_params_from_sources`, `update_slot`, `commit_pre_params_after_event`) | `rumoca-solver::runtime::pre_params` | Shared `pre(...)` snapshot mechanics. |
 | Solver algebraic projection helpers (`project_algebraics`, `project_algebraics_and_detect_changes`, `project_initial_*`) | `rumoca-solver::runtime::projection` | Backends supply residual/JVP via `AlgebraicProjectionModel`; projection/change-detection policy stays shared. |
 | Solve runtime state machine and backend-neutral simulation driver (`SolveRuntime`, `simulate_state_targets`, event/discrete row application, algebraic settle, Jacobian/sensitivity reports) | `rumoca-solver::runtime::{solve_runtime,driver}` | Backends adapt via `SolverAdvanceBackend`; no backend-specific tracing namespaces. |
+| MSL parity observation-grid policy (`msl_sim_output_dt`, `MSL_SIM_OUTPUT_INTERVALS`) | `rumoca-worker` | A valid Modelica experiment interval owns the grid; otherwise Rumoca uses the same scale-invariant uniform base grid as the OMC oracle. Solver event instants remain additional output points. |
 
 ### 2. Session-Owned Source-Root And Class-Graph Catalog (SPEC_0029 §10)
 

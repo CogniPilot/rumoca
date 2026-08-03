@@ -24,16 +24,15 @@ use rumoca_sim::{
 use rumoca_worker::{
     MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT, MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE,
     MODEL_WORKER_PARTIAL_RESULT_FILE, MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE,
-    ModelFailureBucket, ModelFailureClassification, ModelWorkerCommand, ModelWorkerControlMessage,
-    ModelWorkerRequest, ModelWorkerResponse, WorkerMemorySnapshot, WorkerModelResult,
-    WorkerProgressEvent, WorkerProgressEventKind, WorkerProgressPhase, embedded_diagnostic_code,
-    pin_current_thread_to_cpu_core, read_model_worker_request_file, sim_error_diagnostic_code,
-    start_worker_memory_limit, strict_compile_failure_row, write_model_worker_response_file,
+    MSL_SIM_OUTPUT_INTERVALS, ModelFailureBucket, ModelFailureClassification, ModelWorkerCommand,
+    ModelWorkerControlMessage, ModelWorkerRequest, ModelWorkerResponse, WorkerMemorySnapshot,
+    WorkerModelResult, WorkerProgressEvent, WorkerProgressEventKind, WorkerProgressPhase,
+    embedded_diagnostic_code, pin_current_thread_to_cpu_core, read_model_worker_request_file,
+    sim_error_diagnostic_code, start_worker_memory_limit, strict_compile_failure_row,
+    write_model_worker_response_file,
 };
 
 const DEFAULT_SIM_END_TIME_SECS: f64 = 1.0;
-const SIM_OUTPUT_SAMPLES_DEFAULT: usize = 100;
-const SIM_OUTPUT_SAMPLES_NO_STATES: usize = 500;
 const DEFAULT_WORKER_STACK_MB: usize = 64;
 
 #[derive(Debug, Parser)]
@@ -807,26 +806,13 @@ fn should_simulate(
                 && !result.has_unbound_fixed_parameters))
 }
 
-fn output_samples_for_model(dae: &rumoca_compile::compile::Dae) -> usize {
-    let n_state_scalars = dae.inspect(|view| {
-        view.variables()
-            .filter(|(_, variable)| variable.role() == VariableRole::State)
-            .map(|(_, variable)| variable.scalar_count())
-            .sum::<usize>()
-    });
-    if n_state_scalars == 0 {
-        SIM_OUTPUT_SAMPLES_NO_STATES
-    } else {
-        SIM_OUTPUT_SAMPLES_DEFAULT
-    }
-}
-
 fn sim_options(settings: &SimSettings, output_samples: usize, max_wall_seconds: f64) -> SimOptions {
-    let span = (settings.t_end - settings.t_start).abs();
-    let dt = settings
-        .dt
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .or_else(|| (output_samples > 0).then_some((span / output_samples as f64).max(1e-6)));
+    let dt = rumoca_worker::msl_sim_output_dt(
+        settings.t_start,
+        settings.t_end,
+        settings.dt,
+        output_samples,
+    );
     let mut opts = SimOptions {
         t_start: settings.t_start,
         t_end: settings.t_end,
@@ -1240,7 +1226,7 @@ fn run_model_request(session: &mut Session, request: &ModelWorkerRequest) -> Wor
     let settings = simulation_settings(&result);
     let opts = sim_options(
         &settings,
-        output_samples_for_model(result.dae.as_ref()),
+        MSL_SIM_OUTPUT_INTERVALS,
         sim_timeout_secs(request),
     );
     run_and_classify_simulation(&mut row, request, &result, &opts, &progress);
@@ -1791,5 +1777,43 @@ mod tests {
             sim_timeout_secs(&request),
             rumoca_worker::MSL_SIM_TIMEOUT_SECS
         );
+    }
+
+    #[test]
+    fn fallback_output_grid_is_invariant_under_time_scaling() {
+        let settings = SimSettings {
+            t_start: 0.0,
+            t_end: 1.0,
+            dt: None,
+            rtol: None,
+            atol: None,
+            solver: "auto".to_string(),
+        };
+        let mut short = settings.clone();
+        short.t_end = 1.0e-7;
+
+        let ordinary_dt = sim_options(&settings, 100, 10.0)
+            .dt
+            .expect("ordinary output grid");
+        let short_dt = sim_options(&short, 100, 10.0)
+            .dt
+            .expect("short output grid");
+
+        assert!(((short_dt / ordinary_dt) - 1.0e-7).abs() <= 2.0 * f64::EPSILON * 1.0e-7);
+        assert!((short_dt - 1.0e-9).abs() <= f64::EPSILON * 1.0e-9);
+    }
+
+    #[test]
+    fn explicit_experiment_interval_owns_the_output_grid() {
+        let settings = SimSettings {
+            t_start: 0.0,
+            t_end: 1.0e-7,
+            dt: Some(2.5e-10),
+            rtol: None,
+            atol: None,
+            solver: "auto".to_string(),
+        };
+
+        assert_eq!(sim_options(&settings, 100, 10.0).dt, settings.dt);
     }
 }

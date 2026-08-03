@@ -252,9 +252,12 @@ fn build_sim_options(result: &CompilationResult, stop_time_override: Option<f64>
         sim_options.rtol = tolerance;
         sim_options.atol = tolerance;
     }
-    sim_options.dt = result
-        .experiment_interval
-        .filter(|value| value.is_finite() && *value > 0.0);
+    sim_options.dt = rumoca_worker::msl_sim_output_dt(
+        sim_options.t_start,
+        sim_options.t_end,
+        result.experiment_interval,
+        rumoca_worker::MSL_SIM_OUTPUT_INTERVALS,
+    );
     sim_options.solver_mode = result
         .experiment_solver
         .as_deref()
