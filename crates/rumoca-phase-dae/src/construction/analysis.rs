@@ -28,6 +28,7 @@ mod model_algorithms;
 mod model_roles;
 mod record_array_fields;
 mod record_equations;
+mod sample_aliases;
 mod source_balance;
 mod structured_families;
 mod unexecuted_branches;
@@ -113,6 +114,7 @@ use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
 };
 use record_equations::analyze_record_equations;
+use sample_aliases::analyze_sample_aliases;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
 use unexecuted_branches::check_unexecuted_branches;
@@ -130,6 +132,11 @@ pub(super) struct Analysis {
     pub(super) initial_discrete_equation_rows: HashSet<usize>,
     pub(super) sample_lattices: Vec<(Span, PeriodicClockSchedule)>,
     pub(super) expression_events: ExpressionEventPlans,
+    /// Exact scalar Boolean aliases of MLS §3.7.5 `sample(start, interval)`.
+    ///
+    /// Conditions consume this proof so a source `when sample_alias` retains
+    /// the typed periodic clock instead of buffering a held B.1c coordinate.
+    pub(super) sample_alias_schedules: HashMap<VarName, PeriodicClockSchedule>,
     pub(super) clock_plans: HashMap<InstanceId, ClockPlan>,
     pub(super) clock_equation_rows: HashSet<usize>,
     pub(super) clocked_equation_owners: HashMap<usize, ClockPlan>,
@@ -398,18 +405,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &record_array_fields,
         function_shapes.model_values(),
     )?;
-    let continuous_family_rows = validate_structured_families(
-        &flat.structured_equations,
-        flat.equations.len(),
-        &roles,
-        &expression_roles,
-        &states,
-        &record_array_fields,
-        function_shapes.model_values(),
-    )?;
-    let initialization_family_rows = validate_structured_families(
-        &flat.initial_structured_equations,
-        flat.initial_equations.len(),
+    let (continuous_family_rows, initialization_family_rows) = analyze_structured_family_rows(
+        flat,
         &roles,
         &expression_roles,
         &states,
@@ -433,7 +430,13 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &discrete_connection_ranks,
         &aggregate_discrete_connections,
     )?;
-    let expression_events = analyze_expression_events(flat, &roles, &constants)?;
+    let (expression_events, sample_alias_schedules) = analyze_expression_event_ownership(
+        flat,
+        &roles,
+        &constants,
+        &discrete_connection_ranks,
+        &aggregate_discrete_connections,
+    )?;
     Ok(Analysis {
         constants,
         delay_plans,
@@ -444,6 +447,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         initial_discrete_equation_rows,
         sample_lattices,
         expression_events,
+        sample_alias_schedules,
         clock_plans: clocks.plans,
         clock_equation_rows: clocks.equation_rows,
         clocked_equation_owners: clock_domains.equation_owners,
@@ -469,6 +473,59 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         assigned_discrete_targets: balance.assigned_discrete_targets,
         semi_linear_rules: SemiLinearRules::default(),
     })
+}
+
+fn analyze_structured_family_rows(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    expression_roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    record_array_fields: &RecordArrayFieldPlans,
+    values: &ShapeEnvironment,
+) -> Result<(HashSet<usize>, HashSet<usize>), ToDaeError> {
+    let continuous = validate_structured_families(
+        &flat.structured_equations,
+        flat.equations.len(),
+        roles,
+        expression_roles,
+        states,
+        record_array_fields,
+        values,
+    )?;
+    let initialization = validate_structured_families(
+        &flat.initial_structured_equations,
+        flat.initial_equations.len(),
+        roles,
+        expression_roles,
+        states,
+        record_array_fields,
+        values,
+    )?;
+    Ok((continuous, initialization))
+}
+
+fn analyze_expression_event_ownership(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    constants: &EvalContext,
+    connection_ranks: &HashMap<VarName, usize>,
+    aggregate_connections: &AggregateDiscreteConnections,
+) -> Result<
+    (
+        ExpressionEventPlans,
+        HashMap<VarName, PeriodicClockSchedule>,
+    ),
+    ToDaeError,
+> {
+    let events = analyze_expression_events(flat, roles, constants)?;
+    let aliases = analyze_sample_aliases(
+        flat,
+        roles,
+        &events,
+        connection_ranks,
+        aggregate_connections,
+    )?;
+    Ok((events, aliases))
 }
 
 type EventAlgorithmAnalysis = (Vec<(Span, PeriodicClockSchedule)>, Vec<ModelAlgorithmPlan>);

@@ -1114,7 +1114,7 @@ fn lower_sample_event_operator<'dae>(
     else {
         return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
     };
-    let clock = construction.clocks(|clocks| clocks.scheduled(schedule, provenance))?;
+    let clock = symbols.functions.clocks.sample_id(schedule, span)?;
     let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
     construction.conditions(|conditions| {
         conditions.define(
