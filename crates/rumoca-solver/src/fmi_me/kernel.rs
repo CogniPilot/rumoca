@@ -1019,21 +1019,17 @@ impl SolveMeKernel {
                 },
             )?;
         }
+        self.copy_states_from_solver_y(&solver_y);
+        *self.solver_y_guess.borrow_mut() = solver_y;
         if matches!(self.numerics_profile, MeNumericsProfile::Component) {
-            let history_changed = commit_pre_params_after_event_at(
+            let post_event_y = self.current_solver_y()?;
+            commit_pre_params_after_event_at(
                 &self.runtime.model,
-                &solver_y,
+                &post_event_y,
                 &mut self.params,
                 Some(event_time),
                 self.tolerance,
             );
-            if history_changed {
-                self.canonicalize_committed_event_view(event_time, &mut solver_y)?;
-            }
-        }
-        self.copy_states_from_solver_y(&solver_y);
-        *self.solver_y_guess.borrow_mut() = solver_y;
-        if matches!(self.numerics_profile, MeNumericsProfile::Component) {
             self.commit_delay_point()?;
         }
         self.record_event_action_outcome(outcome, event_time)?;
@@ -1046,74 +1042,19 @@ impl SolveMeKernel {
             return Ok(());
         }
         let post_event_y = self.current_solver_y()?;
-        let history_changed = commit_pre_params_after_event_at(
+        commit_pre_params_after_event_at(
             &self.runtime.model,
             &post_event_y,
             &mut self.params,
             Some(event_time),
             self.tolerance,
         );
-        if history_changed {
-            let mut canonical_y = post_event_y;
-            self.canonicalize_committed_event_view(event_time, &mut canonical_y)?;
-        }
         self.commit_delay_point()?;
         if let Some(accepted_seed) = self.frozen_event_accepted_seed.take() {
             *self.solver_y_guess.borrow_mut() = accepted_seed;
         }
         self.skip_next_enter_continuous_delay_commit = true;
         Ok(())
-    }
-
-    /// Reconstruct the canonical post-event view after `pre` history advances.
-    ///
-    /// This deliberately settles runtime assignments, algebraic projection,
-    /// and typed root relation memory. Discrete event rows are not replayed:
-    /// they already completed their one Appendix-B event iteration.
-    fn canonicalize_committed_event_view(
-        &mut self,
-        event_time: f64,
-        solver_y: &mut [f64],
-    ) -> Result<(), MeError> {
-        let runtime = Rc::clone(&self.runtime);
-        let policy = self.algebraic_projection_policy();
-        for _ in 0..policy.settle.max_iters {
-            let before_y = solver_y.to_vec();
-            let before_p = self.params.clone();
-            runtime.apply_runtime_assignments_until_stable(
-                solver_y,
-                &mut self.params,
-                event_time,
-                policy.settle.tol,
-                policy.settle.max_iters,
-            )?;
-            project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
-            let state_count = self.state_count.min(solver_y.len());
-            let state = solver_y[..state_count].to_vec();
-            runtime.update_relation_memory_from_state(
-                event_time,
-                &state,
-                &mut self.params,
-                policy.settle.tol,
-                policy.settle.max_iters,
-            )?;
-            project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
-            runtime.apply_runtime_assignments_until_stable(
-                solver_y,
-                &mut self.params,
-                event_time,
-                policy.settle.tol,
-                policy.settle.max_iters,
-            )?;
-            if !runtime_values_changed(&before_y, solver_y, policy.settle.tol)
-                && !runtime_values_changed(&before_p, &self.params, policy.settle.tol)
-            {
-                return Ok(());
-            }
-        }
-        Err(contract(format!(
-            "post-commit event view did not converge at t={event_time}"
-        )))
     }
 
     fn complete_coincident_root_right_limit(
