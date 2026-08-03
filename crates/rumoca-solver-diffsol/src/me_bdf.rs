@@ -560,8 +560,7 @@ fn empty_terminated_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_requires_integrator_restart, event_time_is_beyond_horizon,
-        integration_time_reached,
+        event_requires_integrator_restart, event_time_is_beyond_horizon, integration_time_reached,
     };
     use rumoca_solver::fmi_me::MeEventCause;
 
