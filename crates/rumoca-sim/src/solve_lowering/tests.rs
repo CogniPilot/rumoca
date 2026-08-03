@@ -3,6 +3,8 @@ use rumoca_compile::compile::{Session, SessionConfig};
 use super::entry::lower_dae_for_simulation;
 use crate::{SimOptions, simulate_dae};
 
+mod coincident_strict;
+
 fn compile(source: &str, model: &str) -> std::sync::Arc<rumoca_ir_dae::Dae> {
     let mut session = Session::new(SessionConfig::default());
     session
