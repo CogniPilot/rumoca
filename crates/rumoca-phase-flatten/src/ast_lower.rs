@@ -18,6 +18,7 @@ pub(crate) struct LoweringContext<'a> {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct PredefinedIntrinsicIds {
     identities: [Option<DefId>; rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED.len()],
+    assertion: Option<DefId>,
 }
 
 impl PredefinedIntrinsicIds {
@@ -29,6 +30,9 @@ impl PredefinedIntrinsicIds {
                         rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED[index].name(),
                     ))
             }),
+            assertion: tree
+                .scope_tree
+                .predefined_member(&rumoca_core::ComponentPath::from_flat_path("assert")),
         }
     }
 
@@ -38,6 +42,10 @@ impl PredefinedIntrinsicIds {
             .into_iter()
             .zip(rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED)
             .find_map(|(identity, intrinsic)| (identity == Some(target)).then_some(*intrinsic))
+    }
+
+    fn is_assertion(self, target: Option<DefId>) -> bool {
+        self.assertion.is_some() && self.assertion == target
     }
 }
 
@@ -280,18 +288,7 @@ fn statement_from_ast_with_span(
             comp,
             args,
             outputs,
-        } => Ok(rumoca_core::Statement::FunctionCall {
-            comp: function_component_ref_from_ast(comp, context)?,
-            args: args
-                .iter()
-                .map(|arg| expression_from_ast_with_context(arg, context))
-                .collect::<LowerResult<Vec<_>>>()?,
-            outputs: outputs
-                .iter()
-                .map(|output| output_component_reference_from_ast(output, context))
-                .collect::<LowerResult<Vec<_>>>()?,
-            span,
-        }),
+        } => lower_function_call_statement(comp, args, outputs, context, span),
         ast::Statement::Reinit { variable, value } => Ok(rumoca_core::Statement::Reinit {
             variable: component_reference_from_ast_with_context(variable, context)?,
             value: expression_from_ast_with_context(value, context)?,
@@ -312,6 +309,44 @@ fn statement_from_ast_with_span(
             span,
         }),
     }
+}
+
+fn lower_function_call_statement(
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    outputs: &[ast::Expression],
+    context: LoweringContext<'_>,
+    span: Span,
+) -> LowerResult<rumoca_core::Statement> {
+    if outputs.is_empty()
+        && context
+            .predefined_intrinsics
+            .is_assertion(comp.target_def_id())
+    {
+        let decoded = crate::equations::decode_assert_arguments(args, span)?;
+        return Ok(rumoca_core::Statement::Assert {
+            condition: expression_from_ast_with_context(decoded.condition, context)?,
+            message: Box::new(expression_from_ast_with_context(decoded.message, context)?),
+            level: decoded
+                .level
+                .map(|level| expression_from_ast_with_context(level, context))
+                .transpose()?
+                .map(Box::new),
+            span,
+        });
+    }
+    Ok(rumoca_core::Statement::FunctionCall {
+        comp: function_component_ref_from_ast(comp, context)?,
+        args: args
+            .iter()
+            .map(|arg| expression_from_ast_with_context(arg, context))
+            .collect::<LowerResult<Vec<_>>>()?,
+        outputs: outputs
+            .iter()
+            .map(|output| output_component_reference_from_ast(output, context))
+            .collect::<LowerResult<Vec<_>>>()?,
+        span,
+    })
 }
 
 fn if_statement_from_ast(
@@ -1284,6 +1319,17 @@ mod tests {
         }
     }
 
+    fn string(value: &str, span: Span) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::String,
+            token: rumoca_core::Token {
+                text: Arc::from(format!("\"{value}\"")),
+                ..rumoca_core::Token::default()
+            },
+            span,
+        }
+    }
+
     #[test]
     fn scalar_lowering_preserves_identity_and_each_source_span() {
         let reference_span = span_at(3, 4);
@@ -1545,7 +1591,10 @@ mod tests {
             .expect("Interval requires predefined identity");
         identities[interval] = Some(predefined_interval);
         let context = LoweringContext {
-            predefined_intrinsics: PredefinedIntrinsicIds { identities },
+            predefined_intrinsics: PredefinedIntrinsicIds {
+                identities,
+                assertion: None,
+            },
             ..LoweringContext::default()
         };
 
@@ -1608,6 +1657,46 @@ mod tests {
                         ..
                     }
                 )
+        ));
+    }
+
+    #[test]
+    fn algorithm_assert_requires_the_exact_predefined_declaration_identity() {
+        let predefined_assert = DefId::new(50);
+        let shadowed_assert = DefId::new(51);
+        let context = LoweringContext {
+            predefined_intrinsics: PredefinedIntrinsicIds {
+                assertion: Some(predefined_assert),
+                ..PredefinedIntrinsicIds::default()
+            },
+            ..LoweringContext::default()
+        };
+        let statement = |target| ast::Statement::FunctionCall {
+            comp: resolved_function_ref("assert", target),
+            args: vec![
+                ast_var("condition"),
+                string("assertion message", test_span()),
+            ],
+            outputs: Vec::new(),
+        };
+
+        let predefined = statement_from_ast_with_context_and_source_map(
+            &statement(predefined_assert),
+            context,
+            None,
+        )
+        .expect("predefined assert lowers as a typed statement");
+        assert!(matches!(predefined, rumoca_core::Statement::Assert { .. }));
+
+        let shadowed = statement_from_ast_with_context_and_source_map(
+            &statement(shadowed_assert),
+            context,
+            None,
+        )
+        .expect("same-spelling user call remains an ordinary call");
+        assert!(matches!(
+            shadowed,
+            rumoca_core::Statement::FunctionCall { ref outputs, .. } if outputs.is_empty()
         ));
     }
 
