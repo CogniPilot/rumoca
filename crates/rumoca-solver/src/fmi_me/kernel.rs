@@ -1136,14 +1136,11 @@ impl SolveMeKernel {
             policy.settle.max_iters,
         )?;
         project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;
-        let state_count = self.state_count.min(solver_y.len());
-        let state = solver_y[..state_count].to_vec();
-        runtime.update_relation_memory_from_state_except_overrides(
+        runtime.update_relation_memory_from_solver_y_except_overrides(
             event_time,
-            &state,
+            solver_y,
             &mut self.params,
             policy.settle.tol,
-            policy.settle.max_iters,
             root_relation_overrides,
         )?;
         project_algebraics(&runtime, solver_y, &mut self.params, event_time, policy)?;

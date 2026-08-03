@@ -1653,7 +1653,7 @@ impl SolveRuntime {
         self.update_relation_memory_from_solver_y_except_overrides(t, y, p, tol, &[])
     }
 
-    fn update_relation_memory_from_solver_y_except_overrides(
+    pub(crate) fn update_relation_memory_from_solver_y_except_overrides(
         &self,
         t: f64,
         y: &[f64],
