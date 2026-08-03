@@ -31,7 +31,14 @@ pub fn next_runtime_event_stop(
         let event = static_event
             .unwrap_or_else(RuntimeEventStop::dynamic_time_event)
             .merge_dynamic_time_event();
-        return Ok((static_stop, Some(event)));
+        // A periodic clock uses an exact rational lattice while a dynamic
+        // deadline may reach the same mathematical instant through floating-
+        // point arithmetic.  Enter the shared superdense event only after
+        // both owners' deadlines have actually been reached, except when the
+        // host target bounds this step. Returning the earlier value can leave
+        // the later relation false and replay the clock when that dynamic
+        // deadline is processed immediately after it.
+        return Ok((static_stop.max(dynamic_stop).min(target), Some(event)));
     }
     Ok((static_stop, static_event))
 }
@@ -193,11 +200,23 @@ fn next_dynamic_time_event(
         .dynamic_time_event_names
         .iter()
         .filter_map(|name| dynamic_time_event_value(model, params, name));
-    let row_events = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
-    Ok(named_events
-        .chain(row_events)
-        .filter(|event_t| event_time_in_window(*event_t, current_t, target))
-        .min_by(f64::total_cmp))
+    let mut candidates = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
+    candidates.extend(named_events);
+    candidates.retain(|event_t| event_time_in_window(*event_t, current_t, target));
+    Ok(canonical_dynamic_time_event(&candidates))
+}
+
+/// Return the reached instant for the earliest tolerance-coincident deadline
+/// cluster.  Dynamic owners can compute the same mathematical time through
+/// different floating-point expressions; choosing the cluster's earliest bit
+/// pattern would leave its slightly later owners armed for an immediate replay.
+fn canonical_dynamic_time_event(candidates: &[f64]) -> Option<f64> {
+    let earliest = candidates.iter().copied().min_by(f64::total_cmp)?;
+    candidates
+        .iter()
+        .copied()
+        .filter(|candidate| sample_time_match_with_tol(*candidate, earliest))
+        .max_by(f64::total_cmp)
 }
 
 fn dynamic_time_event_row_values(
@@ -264,6 +283,128 @@ fn runtime_event_vec_with_capacity<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn periodic(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
+        solve::PeriodicEventSchedule::new(
+            rumoca_core::ClockLattice::from_seconds(period, phase).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn coincident_periodic_and_dynamic_deadline_uses_reached_instant() {
+        let period = 0.001;
+        let dynamic_deadline = 9.0 * period;
+        let mut model = solve::SolveModel::default();
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
+        model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
+        model
+            .problem
+            .clocks
+            .periodic_event_schedules
+            .push(periodic(period, 0.0));
+        model.parameters = vec![dynamic_deadline];
+        let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, 0.02);
+
+        let (event_time, event) = next_runtime_event_stop(
+            &model,
+            &solve_eval::SimulationRuntimeState::new(),
+            &[],
+            &model.parameters,
+            &mut schedule,
+            0.008,
+            0.02,
+        )
+        .expect("coincident periodic and dynamic event should schedule");
+
+        assert!(sample_time_match_with_tol(event_time, 0.009));
+        assert_eq!(event_time.to_bits(), dynamic_deadline.to_bits());
+        assert!(event_time >= dynamic_deadline);
+        assert_eq!(
+            event,
+            Some(RuntimeEventStop {
+                pre_mode: super::super::solve_ops::EventPreMode::EventEntry,
+                observe_right_limit: true,
+                terminal: false,
+            })
+        );
+    }
+
+    #[test]
+    fn dynamic_deadline_cluster_is_order_independent_and_stops_at_its_latest_owner() {
+        let earliest = 0.009_f64;
+        let coincident = earliest.next_up();
+        let unrelated = earliest + 1.0e-5;
+        let permutations = [
+            [earliest, coincident, unrelated],
+            [earliest, unrelated, coincident],
+            [coincident, earliest, unrelated],
+            [coincident, unrelated, earliest],
+            [unrelated, earliest, coincident],
+            [unrelated, coincident, earliest],
+        ];
+
+        for candidates in permutations {
+            let stop = canonical_dynamic_time_event(&candidates)
+                .expect("non-empty dynamic deadline cluster should schedule");
+            assert_eq!(stop.to_bits(), coincident.to_bits());
+        }
+    }
+
+    #[test]
+    fn dynamic_deadline_cluster_does_not_merge_unrelated_future_event() {
+        let earliest = 0.009_f64;
+        let unrelated = earliest + 1.0e-5;
+
+        let first = canonical_dynamic_time_event(&[unrelated, earliest])
+            .expect("earliest dynamic deadline should schedule");
+
+        assert_eq!(first.to_bits(), earliest.to_bits());
+        assert!(!sample_time_match_with_tol(first, unrelated));
+    }
+
+    #[test]
+    fn dynamic_deadline_cluster_is_anchored_at_earliest_not_chained() {
+        let earliest = 0.009_f64;
+        let tolerance = rumoca_core::SCHEDULE_TIME_RELATIVE_TOLERANCE * (1.0 + earliest.abs());
+        let middle = earliest + 0.75 * tolerance;
+        let chained = earliest + 1.5 * tolerance;
+        assert!(sample_time_match_with_tol(earliest, middle));
+        assert!(sample_time_match_with_tol(middle, chained));
+        assert!(!sample_time_match_with_tol(earliest, chained));
+
+        let stop = canonical_dynamic_time_event(&[chained, middle, earliest])
+            .expect("anchored dynamic deadline cluster should schedule");
+
+        assert_eq!(stop.to_bits(), middle.to_bits());
+    }
+
+    #[test]
+    fn coincident_dynamic_deadline_does_not_move_terminal_horizon() {
+        let target = 1.0_f64;
+        let mut model = solve::SolveModel::default();
+        model.problem.solve_layout.compiled_parameter_len = 1;
+        model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
+        model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
+        model.problem.events.has_terminal_event = true;
+        model.parameters = vec![target.next_up()];
+        let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, target);
+
+        let (event_time, event) = next_runtime_event_stop(
+            &model,
+            &solve_eval::SimulationRuntimeState::new(),
+            &[],
+            &model.parameters,
+            &mut schedule,
+            0.9,
+            target,
+        )
+        .expect("terminal horizon and coincident dynamic deadline should schedule");
+
+        assert_eq!(event_time.to_bits(), target.to_bits());
+        assert!(event.is_some_and(|event| event.terminal));
+    }
 
     #[test]
     fn event_eval_params_with_relation_overrides_applies_p_targets() {
