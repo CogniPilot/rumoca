@@ -19,6 +19,8 @@ fn sampled_zero_hold_strict_equality_keeps_the_typed_false_side() {
             "  Real held;\n",
             "  Real saw(start=0, fixed=true);\n",
             "  output Boolean fire;\n",
+            "  Boolean gated;\n",
+            "  output Boolean switched;\n",
             "equation\n",
             "  der(saw) = 1;\n",
             "  when sample(1, 1) then\n",
@@ -31,6 +33,8 @@ fn sampled_zero_hold_strict_equality_keeps_the_typed_false_side() {
             "  end when;\n",
             "  held = pre(ySample);\n",
             "  fire = held > saw;\n",
+            "  gated = fire and true;\n",
+            "  switched = gated;\n",
             "end SampledStrictCoincidence;\n",
         ),
         "SampledStrictCoincidence",
@@ -47,6 +51,7 @@ fn sampled_zero_hold_strict_equality_keeps_the_typed_false_side() {
     .expect("the analytic sampled relation should simulate within its bounded gate");
 
     let fire = column(&result, "fire");
+    let switched = column(&result, "switched");
     let held = column(&result, "held");
     let saw = column(&result, "saw");
     let ticks = column(&result, "ticks");
@@ -60,6 +65,15 @@ fn sampled_zero_hold_strict_equality_keeps_the_typed_false_side() {
     assert!(
         at_or_after_tick.iter().all(|(_, value)| *value == 0.0),
         "strict equality owns the false side at and after the coincident tick: {at_or_after_tick:?}; held={held:?}; saw={saw:?}"
+    );
+    assert!(
+        result
+            .times
+            .iter()
+            .zip(switched)
+            .filter(|(time, _)| **time >= 1.0)
+            .all(|(_, value)| *value == 0.0),
+        "the strict relation's post-side must propagate through every unconditional current-value owner: {switched:?}"
     );
     assert!(
         result

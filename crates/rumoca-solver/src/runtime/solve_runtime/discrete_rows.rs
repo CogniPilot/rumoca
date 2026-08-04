@@ -35,7 +35,6 @@ pub(super) struct StructuredDiscreteRowEvalInput<'a, 'snapshot> {
     pub(super) eval_y: &'a [f64],
     pub(super) eval_p: &'a [f64],
     pub(super) t: f64,
-    pub(super) tol: f64,
 }
 
 impl PreparedStructuredDiscreteRows {
@@ -165,8 +164,10 @@ impl SolveRuntime {
             eval_y,
             eval_p,
             t,
-            tol,
         } = input;
+        if row.clock_owner.is_some() && snapshot.event_iteration != 0 {
+            return Ok(None);
+        }
         if !self.structured_discrete_row_active_at(row, t)? {
             return Ok(None);
         }
@@ -177,8 +178,7 @@ impl SolveRuntime {
         {
             return Ok(None);
         }
-        let sources = snapshot.event_pre_sources();
-        let row_p = eval_p_cache.params(&self.model, eval_p, pre_mode, &sources, t, tol);
+        let row_p = eval_p_cache.params(eval_p);
         let row_p_with_root_overrides;
         let row_p = if snapshot.root_relation_overrides.is_empty() {
             row_p
@@ -463,7 +463,7 @@ impl SolveRuntime {
         y: &mut [f64],
         p: &mut [f64],
         t: f64,
-        tol: f64,
+        _tol: f64,
         scope: DiscreteRowEvalScope,
     ) -> Result<bool, RuntimeSolveError> {
         self.validate_discrete_row_eval_scope(scope)?;
@@ -504,7 +504,6 @@ impl SolveRuntime {
                     eval_y: &eval_y,
                     eval_p: &eval_p,
                     t,
-                    tol,
                 },
                 &mut eval_p_cache,
             )?
@@ -532,7 +531,6 @@ impl SolveRuntime {
                     eval_y: &eval_y,
                     eval_p: &eval_p,
                     t,
-                    tol,
                 },
                 &mut eval_p_cache,
             )?
@@ -560,18 +558,19 @@ impl SolveRuntime {
             eval_y,
             eval_p,
             t,
-            tol,
         } = input;
         if !discrete_row_active_at(&self.model, row_idx, t)? {
             return Ok(None);
         }
         let row_pre_mode = discrete_row_pre_mode(&self.model, row_idx)?;
         let clock_owned = self.model.problem.discrete.clock_owners[row_idx].is_some();
+        if clock_owned && snapshot.event_iteration != 0 {
+            return Ok(None);
+        }
         if !snapshot.row_filter.accepts(row_pre_mode, clock_owned) {
             return Ok(None);
         }
-        let sources = snapshot.event_pre_sources();
-        let row_p = eval_p_cache.params(&self.model, eval_p, row_pre_mode, &sources, t, tol);
+        let row_p = eval_p_cache.params(eval_p);
         let row_p_with_root_overrides;
         let row_p = if snapshot.root_relation_overrides.is_empty() {
             row_p
@@ -607,17 +606,9 @@ impl SolveRuntime {
             return Ok(false);
         }
         self.validate_observation_refresh_rows()?;
-        let event_pre_y = copy_runtime_values(y, "observation event-pre y snapshot")?;
-        let event_pre_p = copy_runtime_values(p, "observation event-pre p snapshot")?;
         let mut changed_any = false;
         for _ in 0..max_iters {
-            let iter_pre_y = copy_runtime_values(y, "observation iteration y snapshot")?;
-            let iter_pre_p = copy_runtime_values(p, "observation iteration p snapshot")?;
             let snapshot = DiscretePreSnapshot {
-                event_pre_y: event_pre_y.as_slice(),
-                event_pre_p: event_pre_p.as_slice(),
-                iter_pre_y: iter_pre_y.as_slice(),
-                iter_pre_p: iter_pre_p.as_slice(),
                 row_filter: EventUpdateRowFilter::All,
                 root_relation_overrides: &[],
                 // Preserve the existing observation-refresh policy: fixed

@@ -518,23 +518,8 @@ fn parse_dae_json(mut reader: impl Read, source_label: &str) -> Result<Dae, Stri
     }
 }
 
-fn sample_grid_dt(args: &Args) -> Option<f64> {
-    if args.output_samples == 0 {
-        return None;
-    }
-    let span = (args.t_end - args.t_start).abs();
-    if !span.is_finite() || span <= 0.0 {
-        return None;
-    }
-    Some((span / args.output_samples as f64).max(1e-6))
-}
-
 fn effective_output_dt(args: &Args) -> Option<f64> {
-    // Honor explicit experiment Interval from the model/test settings.
-    // `output_samples` is only a fallback when no interval is provided.
-    args.dt
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .or_else(|| sample_grid_dt(args))
+    rumoca_worker::msl_sim_output_dt(args.t_start, args.t_end, args.dt, args.output_samples)
 }
 
 fn read_dae_from_args(args: &Args) -> Result<Dae, String> {
@@ -972,7 +957,7 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         Args, WorkerErrorPhase, classify_worker_error, effective_output_dt, parse_dae_json,
-        random_op_kind, sample_grid_dt,
+        random_op_kind,
     };
     use rumoca_compile::compile::{Session, SessionConfig};
     use rumoca_ir_solve::LinearOp;
@@ -1100,8 +1085,21 @@ mod tests {
     #[test]
     fn test_sample_grid_dt_uses_span_and_output_samples() {
         let args = test_args();
-        let dt = sample_grid_dt(&args).expect("sample dt should be present");
+        let dt = effective_output_dt(&args).expect("sample dt should be present");
         assert!((dt - 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_sample_grid_dt_is_invariant_under_time_scaling() {
+        let ordinary = test_args();
+        let mut short = test_args();
+        short.t_end = 1.0e-7;
+
+        let ordinary_dt = effective_output_dt(&ordinary).expect("ordinary sample dt");
+        let short_dt = effective_output_dt(&short).expect("short-horizon sample dt");
+
+        assert!(((short_dt / ordinary_dt) - 1.0e-7).abs() <= 2.0 * f64::EPSILON * 1.0e-7);
+        assert!((short_dt - 1.0e-9).abs() <= f64::EPSILON * 1.0e-9);
     }
 
     #[test]

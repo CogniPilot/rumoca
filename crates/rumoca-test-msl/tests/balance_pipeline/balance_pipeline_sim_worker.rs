@@ -19,14 +19,6 @@ pub(super) const SIM_TIMEOUT_SECS: f64 = rumoca_worker::MSL_SIM_TIMEOUT_SECS;
 pub(super) const SIM_WORKER_TIMEOUT_GRACE_SECS: f64 = 2.0;
 /// Default simulation horizon when model annotations do not specify StopTime.
 pub(super) const DEFAULT_SIM_END_TIME_SECS: f64 = 1.0;
-/// Output sample count per simulation horizon for stateful models.
-pub(super) const SIM_OUTPUT_SAMPLES_DEFAULT: usize = 100;
-/// Output sample count for no-state (pure algebraic/discrete) models.
-///
-/// These models still contain time-driven behavior (relations, sampled tables,
-/// delays). Coarse sampling can miss transition times and inflate trace
-/// deviation against OMC.
-pub(super) const SIM_OUTPUT_SAMPLES_NO_STATES: usize = 500;
 /// Emit in-flight simulation progress for models that exceed this wall time.
 pub(super) const SIM_PROGRESS_LOG_INTERVAL_SECS: u64 = 15;
 /// Poll interval while waiting on isolated simulation worker process.
@@ -1193,12 +1185,8 @@ pub(super) fn try_simulate_dae_with_settings(
     )
 }
 
-pub(super) fn output_samples_for_model(n_state_scalars: usize) -> usize {
-    if n_state_scalars == 0 {
-        SIM_OUTPUT_SAMPLES_NO_STATES
-    } else {
-        SIM_OUTPUT_SAMPLES_DEFAULT
-    }
+pub(super) fn output_samples_for_model(_n_state_scalars: usize) -> usize {
+    rumoca_worker::MSL_SIM_OUTPUT_INTERVALS
 }
 
 #[cfg(test)]

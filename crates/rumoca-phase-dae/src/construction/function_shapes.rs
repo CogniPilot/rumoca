@@ -1604,6 +1604,18 @@ fn resolve_declared_shape(
             ),
         ));
     }
+    // MLS §12.2: a later dimension of a formal may read an earlier axis of the
+    // *same* formal (`Real A[:, size(A, 1)]`). The call site pins that formal's
+    // shape, so bind its own name to the actual shape before evaluating any
+    // dependent extent; otherwise `size(A, 1)` reads an unbound name while `A`'s
+    // own shape is still being resolved. A non-square actual is still rejected by
+    // the per-axis call-site equality below.
+    let self_scope = actual.map(|actual| {
+        let mut scoped = values.clone();
+        scoped.insert(VarName::new(&value.name), actual.clone());
+        scoped
+    });
+    let scope = self_scope.as_ref().unwrap_or(values);
     let mut shape = Vec::with_capacity(value.dimensions().len());
     for (axis, declared) in value.dimensions().iter().copied().enumerate() {
         let source = value.shape_expr.get(axis);
@@ -1632,7 +1644,7 @@ fn resolve_declared_shape(
                     concrete_extent(*extent, value, axis)?
                 }
                 Some(Subscript::Expr { expr, .. }) => {
-                    let extent = evaluate_shape_integer(expr, values)?;
+                    let extent = evaluate_shape_integer(expr, scope)?;
                     concrete_extent(extent, value, axis)?
                 }
                 None => {

@@ -52,7 +52,7 @@ fn root_reinit_does_not_interpolate_from_mutated_diffsol_state() {
 #[test]
 fn located_root_right_limit_is_recorded_as_a_trace_observation() {
     let result = simulate(
-        &rising_state_with_root_reinit(),
+        rising_state_with_root_reinit(),
         &SimOptions {
             t_end: 0.2,
             dt: Some(0.1),
@@ -283,7 +283,7 @@ fn dynamic_time_event_deadline_survives_an_unrelated_state_root() {
     let deadline_index = result
         .times
         .iter()
-        .position(|time| (*time - DEADLINE).abs() <= 1.0e-12)
+        .rposition(|time| (*time - DEADLINE).abs() <= 1.0e-12)
         .expect("the dynamic time event should be announced after the root");
     assert!(deadline_index > root_index);
     assert_eq!(result.data[1][root_index], 0.0);
@@ -374,7 +374,7 @@ fn root_at_scheduled_stop_resumes_to_simulation_horizon() {
 #[test]
 fn root_at_simulation_horizon_finishes_event_iteration() {
     let result = simulate(
-        &rising_state_with_root_reinit(),
+        rising_state_with_root_reinit(),
         &SimOptions {
             t_end: 0.05,
             dt: Some(0.05),
@@ -491,7 +491,7 @@ fn state_only_bdf_uses_search_values_for_parameter_static_roots() {
 #[test]
 fn scheduled_sample_still_fires_when_a_root_lands_on_its_instant() {
     let result = simulate(
-        &sampled_mean_with_coincident_root(),
+        sampled_mean_with_coincident_root(),
         &SimOptions {
             t_end: 0.1,
             // The sample instant is deliberately off the output grid: an output
@@ -572,7 +572,7 @@ fn deferred_root_right_limit_does_not_skip_the_next_typed_tick() {
 #[test]
 fn mixed_clock_activation_lane_still_fires_at_a_coincident_root() {
     let result = simulate(
-        &sampled_mean_with_mixed_clock_activation(),
+        sampled_mean_with_mixed_clock_activation(),
         &SimOptions {
             t_end: 0.1,
             dt: Some(0.003),
@@ -601,7 +601,7 @@ fn mixed_clock_activation_lane_still_fires_at_a_coincident_root() {
 #[test]
 fn clock_owned_sample_is_not_replayed_at_coincident_root_right_limit() {
     let result = simulate(
-        &clock_owned_sample_with_coincident_root(),
+        clock_owned_sample_with_coincident_root(),
         &SimOptions {
             t_end: 0.1,
             dt: Some(0.003),
@@ -628,7 +628,7 @@ fn clock_owned_sample_is_not_replayed_at_coincident_root_right_limit() {
 #[test]
 fn clock_owned_sample_and_reinit_execute_on_every_periodic_tick() {
     let result = simulate(
-        &clock_owned_sample_with_repeated_ticks(),
+        clock_owned_sample_with_repeated_ticks(),
         &SimOptions {
             t_end: 0.16,
             // Keep all three ticks off the output grid so output stops cannot
@@ -752,7 +752,8 @@ fn clock_owned_counter_executes_once_at_every_coincident_root_tick() {
         .expect("the clock-owned counter should be recorded");
     assert_eq!(
         tick_count, 3.0,
-        "one execution is required for each typed tick"
+        "one execution is required for each typed tick; times={:?}, data={:?}",
+        result.times, result.data
     );
 }
 

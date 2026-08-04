@@ -608,6 +608,7 @@ fn builtin_shape(
         }
         BuiltinFunction::Identity => identity_shape(arguments, values, function_result, span),
         BuiltinFunction::Cross => cross_shape(arguments, values, function_result, span),
+        BuiltinFunction::Cat => cat_shape(arguments, values, function_result, span),
         BuiltinFunction::Skew => skew_shape(arguments, values, function_result, span),
         BuiltinFunction::Smooth => arguments
             .get(1)
@@ -675,6 +676,55 @@ fn builtin_shape(
             span,
         )),
     }
+}
+
+/// MLS §10.4.4: `cat(dim, A, B, …)` concatenates the operands along `dim`,
+/// summing their extent there while every other extent must match. The checked
+/// rule here settles `dim = 1`: the result extent along the first axis is the
+/// sum of the operands' first extents, and the trailing shape is shared.
+fn cat_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [dimension, operands @ ..] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "cat requires a dimension and at least one operand",
+            span,
+        ));
+    };
+    if evaluate_shape_integer(dimension, values)? != 1 || operands.is_empty() {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "cat has an exact checked shape only along dimension 1",
+            span,
+        ));
+    }
+    let mut result: Option<ValueShape> = None;
+    let mut extent: u32 = 0;
+    for operand in operands {
+        let shape = expression_shape(operand, values, function_result)?;
+        let Some((leading, trailing)) = shape.split_first() else {
+            return shape_mismatch(span);
+        };
+        extent = extent.checked_add(*leading).ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function shape proof",
+                "cat extent exceeds the DAE shape domain",
+                span,
+            )
+        })?;
+        match &result {
+            None => result = Some(shape.clone()),
+            Some(existing) if existing.get(1..) == Some(trailing) => {}
+            Some(_) => return shape_mismatch(span),
+        }
+    }
+    let mut result = result.expect("cat proved at least one operand");
+    result[0] = extent;
+    Ok(result)
 }
 
 /// MLS §10.3.2: one scalar or array with at most one non-unit dimension

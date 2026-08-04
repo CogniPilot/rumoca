@@ -68,11 +68,20 @@ pub(super) fn validate_functions(
         } else if let Some(plan) = validate_integer_reduction(function, context)? {
             plan
         } else {
+            // A data-dependent loop nest (e.g. Cholesky's `for column in 1:row`)
+            // has no rectangular structured domain; unroll it over its proven
+            // ranges into straight-line scalar work before the checked lowering.
+            // Construction lowers this same `source`, so plans stay aligned.
+            let source = unroll_data_dependent_function_loops(
+                &function.body,
+                context.static_integers,
+                context.shapes,
+                function.name.as_str(),
+            )?;
             let mut definitions = FunctionDefinitions::new(function);
-            let statements =
-                validate_function_statements(&function.body, context, &mut definitions)?;
+            let statements = validate_function_statements(&source, context, &mut definitions)?;
             require_total_outputs(function, &definitions)?;
-            FunctionPlan::Statements { statements }
+            FunctionPlan::Statements { source, statements }
         };
         plans.insert(certificate.key.clone(), plan);
     }

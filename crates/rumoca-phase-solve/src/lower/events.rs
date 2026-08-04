@@ -33,16 +33,29 @@ pub(super) fn lower_discrete_and_events<'dae>(
     let roots = lower_roots(view, layout, clocks, &discrete.relation_memory_owners)?;
     let (scheduled_time_events, dynamic_time_event_rhs) = lower_time_events(view, layout)?;
     let delays = lower_delays(view, layout)?;
-    let mut discrete = discrete.finish(&roots.relation_memory_targets)?;
+    let event_iteration_plan = build_event_iteration_plan(view, layout, &discrete)?;
+    let mut discrete = discrete.finish(
+        &roots.relation_memory_targets,
+        &layout.solve_layout.relation_memory_parameter_indices,
+    )?;
+    discrete.event_iteration_plan = event_iteration_plan;
     derive_integrator_history_effects(
         &mut discrete,
         continuous,
         layout.solve_layout.state_scalar_count,
     );
+    let root_relation_refresh_roles = solve::derive_root_relation_refresh_roles(
+        &roots.programs,
+        &discrete.runtime_assignment_rhs,
+        &discrete.runtime_assignment_targets,
+        layout.solve_layout.state_scalar_count,
+        layout.solve_layout.solver_scalar_count(),
+    )?;
     let events = solve::SolveEventPartition {
         root_conditions: roots.programs,
         root_relation_memory_targets: roots.relation_memory_targets,
         root_zero_domains: roots.zero_domains,
+        root_relation_refresh_roles,
         condition_memory_parameter_indices: layout.condition_memory.clone(),
         scheduled_time_events,
         dynamic_time_event_rhs,
@@ -53,6 +66,92 @@ pub(super) fn lower_discrete_and_events<'dae>(
         ..solve::SolveEventPartition::default()
     };
     Ok((discrete, events))
+}
+
+fn build_event_iteration_plan<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    discrete: &DiscreteRows<'dae>,
+) -> Result<solve::EventIterationPlan, LowerError> {
+    let mut runs = Vec::new();
+    for (id, variable) in view.variables().filter(|(_, variable)| {
+        variable.causality() != dae::VariableCausality::Input
+            && matches!(
+                variable.role(),
+                dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue
+            )
+    }) {
+        let scalar_count = variable.scalar_count();
+        if scalar_count == 0 {
+            continue;
+        }
+        let span = variable.declaration().span();
+        let current_base = variable_scalar_slot(layout, id.index(), 0, span)?;
+        let solve::ScalarSlot::P {
+            index: current_p_base,
+            ..
+        } = current_base
+        else {
+            return Err(LowerError::contract(
+                "event-iteration current lane is not P-backed",
+                span,
+            ));
+        };
+        let pre_p_base = layout
+            .pre_variables
+            .get(id.index() as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                LowerError::contract("event-iteration run has no ordinary pre lane", span)
+            })?;
+        if layout.solve_layout.variable_storage_runs[id.index() as usize]
+            .event_iteration_kind()
+            .is_none()
+        {
+            return Err(LowerError::non_computable(
+                "discrete event-iteration value is not runtime-representable",
+                span,
+            ));
+        }
+        let pre_binding_start = layout
+            .pre_binding_starts
+            .get(id.index() as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                LowerError::contract(
+                    "event-iteration run has no exact ordinary pre binding",
+                    span,
+                )
+            })?;
+        for scalar in 0..scalar_count {
+            let binding = layout
+                .solve_layout
+                .pre_param_bindings
+                .get(pre_binding_start + scalar)
+                .ok_or_else(|| {
+                    LowerError::contract("event-iteration binding run overflow", span)
+                })?;
+            if binding.dest_p_index != pre_p_base + scalar
+                || binding.clock_schedule.is_some()
+                || !matches!(binding.source, solve::PreParamSource::P { index } if index == current_p_base + scalar)
+            {
+                return Err(LowerError::contract(
+                    "event-iteration run does not own one contiguous ordinary pre-binding slice",
+                    span,
+                ));
+            }
+        }
+        let owner = discrete.event_iteration_owner(id, scalar_count, span)?;
+        runs.push(solve::EventIterationRun {
+            variable: id.index() as usize,
+            pre_binding_start,
+            owner,
+        });
+    }
+    runs.sort_by_key(|run| run.pre_binding_start);
+    Ok(solve::EventIterationPlan { runs })
 }
 
 fn derive_integrator_history_effects(
@@ -371,7 +470,9 @@ fn lower_delays<'dae>(
 struct DiscreteRows<'dae> {
     runtime_rows: ScalarRows,
     runtime_targets: Vec<solve::ScalarSlot>,
-    root_alias_candidates: Vec<RootAliasCandidate>,
+    post_commit_rows: ScalarRows,
+    post_commit_targets: Vec<solve::ScalarSlot>,
+    root_refresh_candidates: Vec<RootRefreshCandidate>,
     rows: ScalarRows,
     targets: Vec<solve::ScalarSlot>,
     roles: Vec<solve::DiscreteRowRole>,
@@ -381,13 +482,122 @@ struct DiscreteRows<'dae> {
     structured_updates: Vec<solve::StructuredDiscreteUpdate>,
     structured_output_cursor: usize,
     relation_memory_owners: RelationMemoryOwners<'dae>,
+    event_iteration_owners: Vec<Option<EventIterationOwnerClaim>>,
+}
+
+#[derive(Clone, Copy)]
+enum EventIterationOwnerClaim {
+    ScalarRows {
+        start_row: usize,
+        base: solve::ScalarSlot,
+        claimed: usize,
+    },
+    StructuredUpdate {
+        update_index: usize,
+    },
 }
 
 impl<'dae> DiscreteRows<'dae> {
     fn new(view: dae::DaeView<'dae>) -> Self {
         Self {
             relation_memory_owners: RelationMemoryOwners::new(view),
+            event_iteration_owners: vec![None; view.variable_count()],
             ..Self::default()
+        }
+    }
+
+    fn claim_scalar_event_owner(
+        &mut self,
+        variable: dae::VariableId<'dae>,
+        target: solve::ScalarSlot,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let variable_index = variable.index() as usize;
+        let row = self.targets.len();
+        let claim = self
+            .event_iteration_owners
+            .get_mut(variable_index)
+            .ok_or_else(|| LowerError::contract("event owner variable is out of bounds", span))?;
+        match claim {
+            None => {
+                *claim = Some(EventIterationOwnerClaim::ScalarRows {
+                    start_row: row,
+                    base: target,
+                    claimed: 1,
+                });
+            }
+            Some(EventIterationOwnerClaim::ScalarRows {
+                start_row,
+                base,
+                claimed,
+            }) => {
+                let expected_row = start_row.checked_add(*claimed).ok_or_else(|| {
+                    LowerError::contract("event owner scalar-row range overflow", span)
+                })?;
+                let expected_target = offset_runtime_slot(*base, *claimed, span)?;
+                if row != expected_row || target != expected_target {
+                    return Err(LowerError::contract(
+                        "event owner scalar rows are not one contiguous target run",
+                        span,
+                    ));
+                }
+                *claimed += 1;
+            }
+            Some(EventIterationOwnerClaim::StructuredUpdate { .. }) => {
+                return Err(LowerError::contract(
+                    "event coordinate has both scalar and structured owners",
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn claim_structured_event_owner(
+        &mut self,
+        variable: dae::VariableId<'dae>,
+        update_index: usize,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let claim = self
+            .event_iteration_owners
+            .get_mut(variable.index() as usize)
+            .ok_or_else(|| LowerError::contract("event owner variable is out of bounds", span))?;
+        if claim.is_some() {
+            return Err(LowerError::contract(
+                "event coordinate has more than one producer owner",
+                span,
+            ));
+        }
+        *claim = Some(EventIterationOwnerClaim::StructuredUpdate { update_index });
+        Ok(())
+    }
+
+    fn event_iteration_owner(
+        &self,
+        variable: dae::VariableId<'dae>,
+        scalar_count: usize,
+        span: Span,
+    ) -> Result<solve::EventIterationOwner, LowerError> {
+        match self
+            .event_iteration_owners
+            .get(variable.index() as usize)
+            .copied()
+            .flatten()
+        {
+            None => Ok(solve::EventIterationOwner::Hold),
+            Some(EventIterationOwnerClaim::ScalarRows {
+                start_row, claimed, ..
+            }) if claimed == scalar_count => {
+                Ok(solve::EventIterationOwner::ScalarRows { start_row })
+            }
+            Some(EventIterationOwnerClaim::ScalarRows { .. }) => Err(LowerError::contract(
+                "event owner does not cover the complete variable",
+                span,
+            )),
+            Some(EventIterationOwnerClaim::StructuredUpdate { update_index }) => {
+                Ok(solve::EventIterationOwner::StructuredUpdate { update_index })
+            }
         }
     }
 
@@ -408,13 +618,13 @@ impl<'dae> DiscreteRows<'dae> {
         self.clock_owners.push(clock_owner);
     }
 
-    fn push_root_alias_candidate(
+    fn push_root_refresh_candidate(
         &mut self,
         program: Vec<solve::LinearOp>,
         span: Span,
         target: solve::ScalarSlot,
     ) {
-        self.root_alias_candidates.push(RootAliasCandidate {
+        self.root_refresh_candidates.push(RootRefreshCandidate {
             program,
             span,
             target,
@@ -424,13 +634,55 @@ impl<'dae> DiscreteRows<'dae> {
     fn finish(
         mut self,
         root_relation_targets: &[Option<solve::ScalarSlot>],
+        relation_memory_parameter_indices: &[usize],
     ) -> Result<solve::DiscreteSolveSystem, LowerError> {
-        self.partition_root_relation_aliases(root_relation_targets);
+        self.partition_root_relation_refresh(root_relation_targets);
         let runtime_assignment_rhs = self.runtime_rows.into_scalar_block()?;
+        let runtime_assignment_roles = solve::derive_runtime_assignment_roles(
+            &runtime_assignment_rhs,
+            &self.runtime_targets,
+            relation_memory_parameter_indices,
+        )?;
+        let root_reachable = solve::derive_root_reachable_runtime_rows(
+            &runtime_assignment_rhs,
+            &self.runtime_targets,
+            root_relation_targets,
+            &runtime_assignment_roles,
+        )?;
+        let mut post_commit_assignment_runtime_rows = Vec::new();
+        for (runtime_row, (role, reachable)) in runtime_assignment_roles
+            .iter()
+            .zip(root_reachable)
+            .enumerate()
+        {
+            if *role != solve::RuntimeAssignmentRole::RelationFree || !reachable {
+                continue;
+            }
+            let output = self.post_commit_targets.len();
+            self.post_commit_rows.push(
+                runtime_assignment_rhs
+                    .program(runtime_row)
+                    .expect("runtime assignment certificate is row-aligned")
+                    .to_vec(),
+                runtime_assignment_rhs
+                    .program_span(runtime_row)
+                    .expect("runtime assignment provenance is checked"),
+                output,
+            );
+            self.post_commit_targets
+                .push(self.runtime_targets[runtime_row]);
+            post_commit_assignment_runtime_rows.push(runtime_row);
+        }
+        let post_commit_assignment_rhs = self.post_commit_rows.into_scalar_block()?;
         let rhs = self.rows.into_scalar_block()?;
         Ok(solve::DiscreteSolveSystem {
+            event_iteration_plan: solve::EventIterationPlan::default(),
             runtime_assignment_rhs,
             runtime_assignment_targets: self.runtime_targets,
+            runtime_assignment_roles,
+            post_commit_assignment_rhs,
+            post_commit_assignment_targets: self.post_commit_targets,
+            post_commit_assignment_runtime_rows,
             update_targets: self.targets,
             row_roles: self.roles,
             pre_modes: self.pre_modes,
@@ -443,51 +695,31 @@ impl<'dae> DiscreteRows<'dae> {
             structured_rhs: self.structured_rhs,
             structured_updates: self.structured_updates,
             rhs,
-            ..solve::DiscreteSolveSystem::default()
         })
     }
 
-    /// Derive the runtime refresh plan for aliases fed by root relation memory.
+    /// Derive the runtime refresh plan for combinational owners fed by root
+    /// relation memory.
     ///
     /// The source event rows remain authoritative and retain their original
-    /// order. A row is mirrored into the refresh plan only when typed DAE
-    /// provenance proves it is a generated connection equation and its scalar
-    /// program transitively reads an aligned root-memory target. Dependency
-    /// forms that the compact proof cannot read remain event-only.
-    fn partition_root_relation_aliases(
+    /// order. The event-iteration plan admits every unconditional, unclocked
+    /// `FollowCurrent` owner in the transitive scalar dependency closure of an
+    /// aligned root-memory target. The post-commit plan is constructed from the
+    /// same typed candidates. The checked post-commit projection is derived
+    /// later from the finalized runtime plan and its certified relation roles.
+    /// Dependency forms that the compact proof cannot read remain event-only.
+    fn partition_root_relation_refresh(
         &mut self,
         root_relation_targets: &[Option<solve::ScalarSlot>],
     ) {
-        let candidates = std::mem::take(&mut self.root_alias_candidates);
-        let mut reachable = root_relation_targets
+        let candidates = std::mem::take(&mut self.root_refresh_candidates);
+        let root_reachable = root_relation_targets
             .iter()
             .flatten()
             .copied()
             .filter_map(history_dependency_slot)
             .collect::<BTreeSet<_>>();
-        let mut selected = vec![false; candidates.len()];
-        loop {
-            let mut progress = false;
-            for (index, candidate) in candidates.iter().enumerate() {
-                if selected[index] {
-                    continue;
-                }
-                let mut dependencies = BTreeSet::new();
-                if collect_linear_op_dependencies(&candidate.program, &mut dependencies).is_none()
-                    || dependencies.is_disjoint(&reachable)
-                {
-                    continue;
-                }
-                let Some(target) = history_dependency_slot(candidate.target) else {
-                    continue;
-                };
-                selected[index] = true;
-                progress |= reachable.insert(target);
-            }
-            if !progress {
-                break;
-            }
-        }
+        let selected = select_root_refresh_candidates(&candidates, root_reachable);
         for (candidate, selected) in candidates.into_iter().zip(selected) {
             if selected {
                 let output = self.runtime_targets.len();
@@ -499,7 +731,58 @@ impl<'dae> DiscreteRows<'dae> {
     }
 }
 
-struct RootAliasCandidate {
+fn offset_runtime_slot(
+    base: solve::ScalarSlot,
+    offset: usize,
+    span: Span,
+) -> Result<solve::ScalarSlot, LowerError> {
+    match base {
+        solve::ScalarSlot::P { index, .. } => index
+            .checked_add(offset)
+            .map(solve::scalar_slot_p)
+            .ok_or_else(|| LowerError::contract("event owner P range overflow", span)),
+        solve::ScalarSlot::Y { index, .. } => index
+            .checked_add(offset)
+            .map(solve::scalar_slot_y)
+            .ok_or_else(|| LowerError::contract("event owner Y range overflow", span)),
+        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => Err(LowerError::contract(
+            "event owner is not runtime-backed",
+            span,
+        )),
+    }
+}
+
+fn select_root_refresh_candidates(
+    candidates: &[RootRefreshCandidate],
+    mut reachable: BTreeSet<HistoryDependencySlot>,
+) -> Vec<bool> {
+    let mut selected = vec![false; candidates.len()];
+    loop {
+        let mut progress = false;
+        for (index, candidate) in candidates.iter().enumerate() {
+            if selected[index] {
+                continue;
+            }
+            let mut dependencies = BTreeSet::new();
+            if collect_linear_op_dependencies(&candidate.program, &mut dependencies).is_none()
+                || dependencies.is_disjoint(&reachable)
+            {
+                continue;
+            }
+            let Some(target) = history_dependency_slot(candidate.target) else {
+                continue;
+            };
+            selected[index] = true;
+            progress |= reachable.insert(target);
+        }
+        if !progress {
+            break;
+        }
+    }
+    selected
+}
+
+struct RootRefreshCandidate {
     program: Vec<solve::LinearOp>,
     span: Span,
     target: solve::ScalarSlot,
@@ -592,7 +875,7 @@ fn lower_discrete_real_equations<'dae>(
                 conditional.push(EventUpdate {
                     trigger,
                     guard,
-                    variable: variable.index(),
+                    variable,
                     value,
                     span,
                     clock: checked_discrete_real_activation_clock(
@@ -668,6 +951,7 @@ fn lower_unconditional_discrete_real<'dae>(
             None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
         };
         let target = variable_scalar_slot(layout, variable.index(), scalar, span)?;
+        rows.claim_scalar_event_owner(variable, target, span)?;
         rows.push(
             program,
             span,
@@ -905,10 +1189,6 @@ fn lower_unconditional_discrete_value_owner<'dae>(
         .get(0)
         .expect("checked unconditional B.1c owner has one branch");
     debug_assert_eq!(owner.branches().len(), 1);
-    let is_connection_alias = matches!(
-        owner.provenance().origin(),
-        dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::ConnectionEquation)
-    );
     for (target, (value, provenance)) in owner.targets().iter().zip(branch.values().iter()) {
         let expression = view
             .expression(value)
@@ -931,11 +1211,12 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                     None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
                 };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
+            rows.claim_scalar_event_owner(variable, target, span)?;
             rows.relation_memory_owners
                 .claim_exact_expression(value, target);
             let pre_mode = expression_pre_mode(view, value, sampled);
-            if clock.is_none() && is_connection_alias {
-                rows.push_root_alias_candidate(program.clone(), span, target);
+            if clock.is_none() && pre_mode == solve::DiscreteEventPreMode::FollowCurrent {
+                rows.push_root_refresh_candidate(program.clone(), span, target);
             }
             rows.push(
                 program,
@@ -1017,6 +1298,7 @@ fn lower_structured_discrete_value_owner<'dae>(
         prove_contiguous_structured_target(layout, target.index(), base, point_count, span)?;
         let target_map = solve::TensorOutputMap::dense_contiguous(0, &domain)
             .map_err(|_| LowerError::contract("structured B.1c target map overflow", span))?;
+        let update_index = rows.structured_updates.len();
         rows.structured_updates
             .push(solve::StructuredDiscreteUpdate {
                 node_index,
@@ -1030,6 +1312,7 @@ fn lower_structured_discrete_value_owner<'dae>(
                 integrator_history_effect: solve::IntegratorHistoryEffect::Restart,
                 clock_owner: clock.map(|(_, solve)| solve),
             });
+        rows.claim_structured_event_owner(variable, update_index, span)?;
         rows.structured_output_cursor = rows
             .structured_output_cursor
             .checked_add(point_count)
@@ -1349,8 +1632,9 @@ fn lower_conditional_discrete_value_owner<'dae>(
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<(), LowerError> {
     for (target_ordinal, target) in owner.targets().iter().enumerate() {
+        let target_variable = dae::VariableId::from(target);
         let variable = view
-            .variable(dae::VariableId::from(target))
+            .variable(target_variable)
             .expect("checked B.1c target resolves");
         for scalar in 0..variable.scalar_count() {
             let mut lowered = Vec::new();
@@ -1366,10 +1650,11 @@ fn lower_conditional_discrete_value_owner<'dae>(
                 )?;
                 record_guarded_target(
                     &mut lowered,
+                    dae::VariableId::from(target),
                     branch.target,
                     branch.assignment,
                     branch.clock,
-                    branch.has_pre,
+                    branch.pre_mode,
                     branch.span,
                 )?;
             }
@@ -1390,6 +1675,7 @@ fn lower_conditional_discrete_value_owner<'dae>(
                     target.span,
                 )?,
             };
+            rows.claim_scalar_event_owner(target_variable, target.target, target.span)?;
             rows.push(
                 program,
                 target.span,
@@ -1407,7 +1693,7 @@ struct LoweredDiscreteValueBranch<'dae> {
     target: solve::ScalarSlot,
     assignment: GuardedAssignment<'dae>,
     clock: Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>,
-    has_pre: bool,
+    pre_mode: solve::DiscreteEventPreMode,
     span: Span,
 }
 
@@ -1433,14 +1719,18 @@ fn lower_checked_discrete_value_branch<'dae>(
         .map(|clock| clocks.clock(clock).map(|solve| (clock, solve)))
         .transpose()?;
     let trigger_memory = condition_memory(layout, trigger, span)?;
-    let has_pre = expression_contains_pre(view, value)
-        || condition_contains_pre(view, trigger)
-        || condition_contains_pre(view, guard);
+    let pre_mode = merge_pre_mode(
+        expression_pre_mode(view, value, false),
+        merge_pre_mode(
+            condition_pre_mode(view, trigger),
+            condition_pre_mode(view, guard),
+        ),
+    );
     Ok(LoweredDiscreteValueBranch {
         target,
         assignment: (trigger, guard, value, scalar, trigger_memory),
         clock,
-        has_pre,
+        pre_mode,
         span,
     })
 }
@@ -1506,7 +1796,7 @@ fn lower_event_actions<'dae>(
                 updates.push(EventUpdate {
                     trigger: action.trigger(),
                     guard: action.guard(),
-                    variable: state.index(),
+                    variable: dae::VariableId::from(state),
                     value,
                     span: action.provenance().span(),
                     clock: condition_clock_owner(view, action.guard()),
@@ -1657,7 +1947,7 @@ fn lower_message_option<'dae>(
 struct EventUpdate<'dae> {
     trigger: dae::ConditionId<'dae>,
     guard: dae::ConditionId<'dae>,
-    variable: u32,
+    variable: dae::VariableId<'dae>,
     value: dae::ExprId<'dae>,
     span: Span,
     clock: Option<dae::ClockId<'dae>>,
@@ -1672,6 +1962,7 @@ type GuardedAssignment<'dae> = (
 );
 
 struct GuardedTarget<'dae> {
+    variable: dae::VariableId<'dae>,
     target: solve::ScalarSlot,
     span: Span,
     branches: Vec<GuardedAssignment<'dae>>,
@@ -1692,15 +1983,20 @@ fn lower_guarded_updates<'dae>(
         let expression = view
             .expression(update.value)
             .expect("checked event update expression resolves");
-        let has_pre = expression_contains_pre(view, update.value)
-            || condition_contains_pre(view, update.trigger)
-            || condition_contains_pre(view, update.guard);
+        let pre_mode = merge_pre_mode(
+            expression_pre_mode(view, update.value, false),
+            merge_pre_mode(
+                condition_pre_mode(view, update.trigger),
+                condition_pre_mode(view, update.guard),
+            ),
+        );
         for scalar in 0..expression
             .value_type()
             .scalar_count()
             .expect("checked event update scalar capacity")
         {
-            let target = variable_scalar_slot(layout, update.variable, scalar, update.span)?;
+            let target =
+                variable_scalar_slot(layout, update.variable.index(), scalar, update.span)?;
             let clock = update
                 .clock
                 .map(|clock| clocks.clock(clock).map(|solve| (clock, solve)))
@@ -1713,7 +2009,15 @@ fn lower_guarded_updates<'dae>(
                 scalar,
                 trigger_memory,
             );
-            record_guarded_target(&mut targets, target, branch, clock, has_pre, update.span)?;
+            record_guarded_target(
+                &mut targets,
+                update.variable,
+                target,
+                branch,
+                clock,
+                pre_mode,
+                update.span,
+            )?;
         }
     }
     for target in targets {
@@ -1731,6 +2035,7 @@ fn lower_guarded_updates<'dae>(
                 target.span,
             )?,
         };
+        rows.claim_scalar_event_owner(target.variable, target.target, target.span)?;
         rows.push(
             program,
             target.span,
@@ -1745,10 +2050,11 @@ fn lower_guarded_updates<'dae>(
 
 fn record_guarded_target<'dae>(
     targets: &mut Vec<GuardedTarget<'dae>>,
+    variable: dae::VariableId<'dae>,
     target: solve::ScalarSlot,
     branch: GuardedAssignment<'dae>,
     clock: Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>,
-    has_pre: bool,
+    pre_mode: solve::DiscreteEventPreMode,
     span: Span,
 ) -> Result<(), LowerError> {
     let Some(group) = targets
@@ -1756,14 +2062,21 @@ fn record_guarded_target<'dae>(
         .find(|group| same_target(group.target, target))
     else {
         targets.push(GuardedTarget {
+            variable,
             target,
             span,
             branches: vec![branch],
-            pre_mode: event_update_pre_mode(has_pre),
+            pre_mode,
             clock,
         });
         return Ok(());
     };
+    if group.variable != variable {
+        return Err(LowerError::contract(
+            "one guarded storage target has multiple variable identities",
+            span,
+        ));
+    }
     if group.clock != clock {
         return Err(LowerError::non_computable(
             "one event target has incompatible clock activation owners",
@@ -1771,17 +2084,8 @@ fn record_guarded_target<'dae>(
         ));
     }
     group.branches.push(branch);
-    group.pre_mode =
-        event_update_pre_mode(has_pre || group.pre_mode == solve::DiscreteEventPreMode::EventEntry);
+    group.pre_mode = merge_pre_mode(group.pre_mode, pre_mode);
     Ok(())
-}
-
-fn event_update_pre_mode(has_pre: bool) -> solve::DiscreteEventPreMode {
-    if has_pre {
-        solve::DiscreteEventPreMode::EventEntry
-    } else {
-        solve::DiscreteEventPreMode::FollowCurrent
-    }
 }
 
 fn lower_condition_memory<'dae>(
@@ -2103,16 +2407,34 @@ fn expression_pre_mode<'dae>(
     expression: dae::ExprId<'dae>,
     sampled: bool,
 ) -> solve::DiscreteEventPreMode {
-    if sampled || expression_contains_pre(view, expression) {
-        solve::DiscreteEventPreMode::EventEntry
-    } else {
-        solve::DiscreteEventPreMode::FollowCurrent
+    if sampled {
+        return solve::DiscreteEventPreMode::EventEntry;
     }
+    let mut mode = solve::DiscreteEventPreMode::FollowCurrent;
+    dae::for_each_expression(view, expression, |_, expression| {
+        let found = match expression.operation() {
+            dae::ExpressionOperation::Coordinate(
+                dae::CoordinateView::PreDiscreteReal(_) | dae::CoordinateView::PreDiscreteValue(_),
+            ) => solve::DiscreteEventPreMode::Fixed,
+            dae::ExpressionOperation::Coordinate(
+                dae::CoordinateView::PreState(_)
+                | dae::CoordinateView::PreAlgebraic(_)
+                | dae::CoordinateView::Previous(_),
+            ) => solve::DiscreteEventPreMode::EventEntry,
+            _ => solve::DiscreteEventPreMode::FollowCurrent,
+        };
+        mode = merge_pre_mode(mode, found);
+    });
+    mode
 }
 
-fn condition_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ConditionId<'dae>) -> bool {
+fn condition_pre_mode<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ConditionId<'dae>,
+) -> solve::DiscreteEventPreMode {
     let mut pending = vec![root];
     let mut visited = vec![false; view.condition_count()];
+    let mut mode = solve::DiscreteEventPreMode::FollowCurrent;
     while let Some(condition) = pending.pop() {
         let index = condition.index() as usize;
         if visited[index] {
@@ -2129,14 +2451,10 @@ fn condition_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ConditionId
                     .relation(relation)
                     .expect("checked relation identity resolves")
                     .expression();
-                if expression_contains_pre(view, expression) {
-                    return true;
-                }
+                mode = merge_pre_mode(mode, expression_pre_mode(view, expression, false));
             }
             dae::ConditionOperation::Discrete(expression) => {
-                if expression_contains_pre(view, expression) {
-                    return true;
-                }
+                mode = merge_pre_mode(mode, expression_pre_mode(view, expression, false));
             }
             dae::ConditionOperation::Clock(_) | dae::ConditionOperation::Always => {}
             dae::ConditionOperation::Not(operand) => pending.push(operand),
@@ -2148,24 +2466,24 @@ fn condition_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ConditionId
             }
         }
     }
-    false
+    mode
 }
 
-fn expression_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'dae>) -> bool {
-    let mut found = false;
-    dae::for_each_expression(view, root, |_, expression| {
-        found |= matches!(
-            expression.operation(),
-            dae::ExpressionOperation::Coordinate(
-                dae::CoordinateView::PreDiscreteReal(_)
-                    | dae::CoordinateView::PreDiscreteValue(_)
-                    | dae::CoordinateView::PreState(_)
-                    | dae::CoordinateView::PreAlgebraic(_)
-                    | dae::CoordinateView::Previous(_)
-            )
-        );
-    });
-    found
+fn merge_pre_mode(
+    lhs: solve::DiscreteEventPreMode,
+    rhs: solve::DiscreteEventPreMode,
+) -> solve::DiscreteEventPreMode {
+    match (lhs, rhs) {
+        (solve::DiscreteEventPreMode::EventEntry, _)
+        | (_, solve::DiscreteEventPreMode::EventEntry) => solve::DiscreteEventPreMode::EventEntry,
+        (solve::DiscreteEventPreMode::Fixed, _) | (_, solve::DiscreteEventPreMode::Fixed) => {
+            solve::DiscreteEventPreMode::Fixed
+        }
+        (
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+        ) => solve::DiscreteEventPreMode::FollowCurrent,
+    }
 }
 
 #[cfg(test)]

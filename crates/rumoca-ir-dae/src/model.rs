@@ -1290,6 +1290,51 @@ impl<'dae> Functions<'_, 'dae> {
         self.assign_after_owner_checks(body, target, value, provenance)
     }
 
+    /// Commit several function-value assignments atomically against the shared
+    /// definition state that precedes them.
+    ///
+    /// A conditional lowers each target to `if … then <branch> else <fallback>`,
+    /// and a target's value may read a sibling target's pre-conditional
+    /// definition — mutual back-substitution reads `X[i] := value` while
+    /// `value := value - L·X[k]`. Advancing one target's definition before the
+    /// others are proven would make those reads stale, and no commit order avoids
+    /// it when the reads are mutual. Validating every value against the state
+    /// before any definition advances is the order-independent commit: each read
+    /// fact still names a current definition, and the definitions advance together
+    /// once all are proven.
+    pub fn assign_all(
+        &mut self,
+        body: &mut FunctionBody<'dae>,
+        assignments: &[(FunctionValueId<'dae>, ExprId<'dae>)],
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        for (target, value) in assignments {
+            check_function_value_owner(body.function, *target, provenance)?;
+            let entry = function_value_entry(self.storage, *target, provenance)?;
+            expect_function_body_expression(self.storage, body, *value, provenance)?;
+            validate_function_value_reads(self.storage, body, *value, provenance)?;
+            let found = self
+                .storage
+                .expressions
+                .value_types
+                .get(value.index() as usize)
+                .copied()
+                .ok_or_else(|| unknown("expression", value.index(), provenance))?;
+            self.storage
+                .expect_value_type_compatible(entry.value_type, found, provenance)?;
+        }
+        for (target, value) in assignments {
+            let definition = insert_function_definition(self.storage, *target, *value, provenance)?;
+            let build = function_build_state_mut(self.storage, body);
+            build.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+            build.statements.push(FunctionStatementWire::Assignment {
+                definition: definition.ordinal(),
+            });
+        }
+        Ok(())
+    }
+
     /// Append one default-level MLS §8.3.7 assertion to a Modelica function.
     ///
     /// The mutable top-level body capability makes the action call-scoped and

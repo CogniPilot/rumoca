@@ -733,6 +733,7 @@ fn is_supported_builtin(function: BuiltinFunction) -> bool {
             | BuiltinFunction::Linspace
             | BuiltinFunction::Identity
             | BuiltinFunction::Vector
+            | BuiltinFunction::Cat
             | BuiltinFunction::Transpose
             | BuiltinFunction::Diagonal
             | BuiltinFunction::OuterProduct

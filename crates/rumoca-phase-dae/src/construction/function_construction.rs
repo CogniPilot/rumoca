@@ -375,8 +375,8 @@ fn lower_function_plan<'dae>(
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match plan {
         FunctionPlan::External(_) => unreachable!("external bodies define through their interface"),
-        FunctionPlan::Statements { statements } => {
-            lower_function_statements(construction, symbols, body, &function.body, statements)
+        FunctionPlan::Statements { source, statements } => {
+            lower_function_statements(construction, symbols, body, source, statements)
         }
         FunctionPlan::GuardedReturn {
             branches,

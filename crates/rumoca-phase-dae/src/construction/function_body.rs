@@ -359,6 +359,12 @@ pub(super) fn lower_function_conditional<'dae>(
     };
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, input.span)?;
+    // Build every target's conditional value against the shared pre-conditional
+    // definitions, then commit them together. A target's branch value may read a
+    // sibling target's pre-conditional definition (`X[i] := value` while
+    // `value := value - L·X[k]`), and those reads can be mutual, so no per-target
+    // assignment order keeps every read fact current — only an atomic commit does.
+    let mut lowered = Vec::with_capacity(input.targets.len());
     for target in input.targets {
         let target_id = function_value_coordinate(input.symbols.coordinates, target);
         let mut values = Vec::with_capacity(branch_values.len());
@@ -382,8 +388,9 @@ pub(super) fn lower_function_conditional<'dae>(
         let value = construction.expressions(|expressions| {
             expressions.at(provenance).conditional(branches, fallback)
         })?;
-        construction.functions(|functions| functions.assign(body, target_id, value, provenance))?;
+        lowered.push((target_id, value));
     }
+    construction.functions(|functions| functions.assign_all(body, &lowered, provenance))?;
     Ok(())
 }
 

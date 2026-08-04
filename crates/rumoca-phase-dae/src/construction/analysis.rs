@@ -23,6 +23,7 @@ mod function_reductions;
 mod function_returns;
 mod function_value_types;
 mod initial_algorithms;
+mod loop_unroll;
 mod model_algorithm_statements;
 mod model_algorithms;
 mod model_roles;
@@ -88,6 +89,8 @@ use function_externals::validate_external_function;
 pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
 use function_impurity::validate_impure_call_contexts;
 use function_loops::{subscript_is_binder, validate_function_loop};
+use function_ranges::static_shape_integer_expression;
+use loop_unroll::unroll_data_dependent_function_loops;
 pub(super) use function_ranges::assigned_function_targets;
 use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
@@ -181,6 +184,11 @@ struct SourceBalanceAnalysis {
 
 pub(super) enum FunctionPlan {
     Statements {
+        /// The source statements the plans were built from. This is normally the
+        /// function body, but a data-dependent loop nest is unrolled over its
+        /// proven ranges first, so construction must lower these statements — not
+        /// the shared body — to stay aligned with `statements`.
+        source: Vec<rumoca_core::Statement>,
         statements: Vec<FunctionStatementPlan>,
     },
     GuardedReturn {

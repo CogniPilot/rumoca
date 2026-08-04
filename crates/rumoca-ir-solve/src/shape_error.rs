@@ -61,6 +61,12 @@ pub enum SolveProblemShapeContractError {
         actual: usize,
         span: Option<Span>,
     },
+    DiscreteCertificate {
+        context: &'static str,
+        row: usize,
+        detail: &'static str,
+        span: Option<Span>,
+    },
     StructuredDiscreteUpdate {
         update_index: usize,
         node_index: usize,
@@ -199,6 +205,7 @@ impl SolveProblemShapeContractError {
             | Self::ScalarProgramMissingOutput { span, .. }
             | Self::ScalarProgramRegisterFlow { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
+            | Self::DiscreteCertificate { span, .. }
             | Self::StructuredDiscreteUpdate { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
@@ -285,6 +292,15 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 actual,
                 ..
             } => write!(f, "{context} expected {expected} rows, got {actual}"),
+            Self::DiscreteCertificate {
+                context,
+                row,
+                detail,
+                ..
+            } => write!(
+                f,
+                "{context} row {row} has an invalid certificate: {detail}"
+            ),
             Self::StructuredDiscreteUpdate {
                 update_index,
                 node_index,

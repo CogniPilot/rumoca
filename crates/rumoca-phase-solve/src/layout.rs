@@ -20,6 +20,7 @@ pub(crate) struct VariableSlot {
 pub(crate) struct LoweredLayout<'dae> {
     pub(crate) variables: Vec<VariableSlot>,
     pub(crate) pre_variables: Vec<Option<usize>>,
+    pub(crate) pre_binding_starts: Vec<Option<usize>>,
     pub(crate) previous_values: Vec<usize>,
     pub(crate) condition_memory: Vec<usize>,
     pub(crate) clock_activations: Vec<usize>,
@@ -110,11 +111,28 @@ pub(crate) fn lower_layout<'dae>(
     };
     let solve_layout = solve::SolveLayout {
         solver_maps,
-        variable_base_slots: variables
-            .iter()
-            .map(|slot| match slot.storage {
-                StorageClass::Y => solve::scalar_slot_y(slot.base),
-                StorageClass::P => solve::scalar_slot_p(slot.base),
+        variable_storage_runs: view
+            .variables()
+            .map(|(id, variable)| {
+                let slot = variables[id.index() as usize];
+                solve::SolveVariableStorageRun {
+                    base: match slot.storage {
+                        StorageClass::Y => solve::scalar_slot_y(slot.base),
+                        StorageClass::P => solve::scalar_slot_p(slot.base),
+                    },
+                    scalar_count: slot.count,
+                    role: solve_variable_storage_role(variable),
+                    value_kind: solve_variable_value_kind(variable.value_type().scalar_type()),
+                }
+            })
+            .collect(),
+        variable_declarations: view
+            .variables()
+            .map(|(_, variable)| {
+                solve::SolveVariableDeclaration::new(
+                    solve_variable_storage_role(variable),
+                    solve_variable_value_kind(variable.value_type().scalar_type()),
+                )
             })
             .collect(),
         state_scalar_count: y.state_count,
@@ -134,6 +152,7 @@ pub(crate) fn lower_layout<'dae>(
     Ok(LoweredLayout {
         variables,
         pre_variables: pre.variables,
+        pre_binding_starts: pre.binding_starts,
         previous_values: pre.previous_values,
         condition_memory: runtime.condition_memory,
         clock_activations: runtime.clock_activations,
@@ -142,6 +161,35 @@ pub(crate) fn lower_layout<'dae>(
         solve_layout,
         marker: std::marker::PhantomData,
     })
+}
+
+fn solve_variable_storage_role(variable: dae::VariableView<'_>) -> solve::SolveVariableStorageRole {
+    if variable.causality() == dae::VariableCausality::Input {
+        return solve::SolveVariableStorageRole::ExternalInput;
+    }
+    match variable.role() {
+        dae::VariableRole::Parameter => solve::SolveVariableStorageRole::Parameter,
+        dae::VariableRole::Constant => solve::SolveVariableStorageRole::Constant,
+        dae::VariableRole::Input => solve::SolveVariableStorageRole::ExternalInput,
+        dae::VariableRole::State => solve::SolveVariableStorageRole::State,
+        dae::VariableRole::Algebraic => solve::SolveVariableStorageRole::Algebraic,
+        dae::VariableRole::Output => solve::SolveVariableStorageRole::Output,
+        dae::VariableRole::DiscreteReal => solve::SolveVariableStorageRole::DiscreteReal,
+        dae::VariableRole::DiscreteValue => solve::SolveVariableStorageRole::DiscreteValue,
+    }
+}
+
+fn solve_variable_value_kind(kind: dae::ScalarType) -> solve::SolveVariableValueKind {
+    match kind {
+        dae::ScalarType::Real => solve::SolveVariableValueKind::Real,
+        dae::ScalarType::Integer => solve::SolveVariableValueKind::Integer,
+        dae::ScalarType::Boolean => solve::SolveVariableValueKind::Boolean,
+        dae::ScalarType::Enumeration => solve::SolveVariableValueKind::Enumeration,
+        dae::ScalarType::String => solve::SolveVariableValueKind::String,
+        dae::ScalarType::Record => {
+            unreachable!("checked model variables use primitive rectangular storage")
+        }
+    }
 }
 
 fn append_runtime_layout(
@@ -254,6 +302,7 @@ fn append_runtime_flags(
 
 struct PreVariableLayout {
     variables: Vec<Option<usize>>,
+    binding_starts: Vec<Option<usize>>,
     previous_values: Vec<usize>,
     bindings: Vec<solve::PreParamBinding>,
     scalar_count: usize,
@@ -265,6 +314,7 @@ fn append_pre_variables(
     first_pre_index: usize,
 ) -> Result<PreVariableLayout, LowerError> {
     let mut pre_variables = vec![None; view.variable_count()];
+    let mut binding_starts = vec![None; view.variable_count()];
     let mut bindings = Vec::new();
     let mut scalar_count = 0usize;
     let continuous_pre = continuous_pre_variables(view);
@@ -279,6 +329,7 @@ fn append_pre_variables(
             LowerError::contract("pre-value layout overflow", variable.declaration().span())
         })?;
         pre_variables[id.index() as usize] = Some(pre_base);
+        binding_starts[id.index() as usize] = Some(bindings.len());
         for scalar in 0..current.count {
             let source = current.base.checked_add(scalar).ok_or_else(|| {
                 LowerError::contract(
@@ -358,6 +409,7 @@ fn append_pre_variables(
     }
     Ok(PreVariableLayout {
         variables: pre_variables,
+        binding_starts,
         previous_values,
         bindings,
         scalar_count,
@@ -627,6 +679,10 @@ fn append_parameter_role_names(
     variable: dae::VariableView<'_>,
 ) -> Result<(), LowerError> {
     let names = variable_scalar_names(variable)?;
+    if variable.causality() == dae::VariableCausality::Input {
+        columns.input_names.extend(names);
+        return Ok(());
+    }
     match variable.role() {
         dae::VariableRole::Parameter | dae::VariableRole::Constant => {
             columns.parameter_count += names.len();

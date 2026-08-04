@@ -1540,7 +1540,12 @@ fn interp_linear(times: &[f64], values: &[Option<f64>], t: f64) -> Option<f64> {
 
     match times.binary_search_by(|probe| probe.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Less))
     {
-        Ok(idx) => values.get(idx).copied().flatten(),
+        Ok(mut idx) => {
+            while idx + 1 < times.len() && (times[idx + 1] - t).abs() <= GRID_DEDUP_EPS {
+                idx += 1;
+            }
+            values.get(idx).copied().flatten()
+        }
         Err(right) => {
             if right == 0 {
                 return None;
@@ -1571,7 +1576,12 @@ fn interp_step_hold(times: &[f64], values: &[Option<f64>], t: f64) -> Option<f64
     }
     match times.binary_search_by(|probe| probe.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Less))
     {
-        Ok(idx) => values.get(idx).copied().flatten(),
+        Ok(mut idx) => {
+            while idx + 1 < times.len() && (times[idx + 1] - t).abs() <= GRID_DEDUP_EPS {
+                idx += 1;
+            }
+            values.get(idx).copied().flatten()
+        }
         Err(right) => {
             if right == 0 {
                 None

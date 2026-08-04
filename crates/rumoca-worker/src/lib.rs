@@ -25,6 +25,34 @@ pub use memory_limit::{
 /// rumoca sim worker and the OMC reference run use the *same* budget (a model is
 /// only fairly comparable when both tools are given identical time to simulate).
 pub const MSL_SIM_TIMEOUT_SECS: f64 = 10.0;
+/// Uniform output intervals used by the MSL parity oracle when a model has no
+/// explicit `experiment(Interval=...)` annotation.
+///
+/// The OMC side uses an unqualified `simulate(...)` call whose default is 500
+/// intervals. Solver event instants remain additional output points.
+pub const MSL_SIM_OUTPUT_INTERVALS: usize = 500;
+
+/// Select the observation interval for an MSL simulation.
+///
+/// A valid Modelica experiment interval owns the grid. Otherwise the grid is
+/// scale invariant and uses the caller-provided uniform interval count.
+pub fn msl_sim_output_dt(
+    t_start: f64,
+    t_end: f64,
+    experiment_interval: Option<f64>,
+    output_intervals: usize,
+) -> Option<f64> {
+    experiment_interval
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .or_else(|| {
+            if output_intervals == 0 {
+                return None;
+            }
+            let span = (t_end - t_start).abs();
+            let dt = span / output_intervals as f64;
+            (dt.is_finite() && dt > 0.0).then_some(dt)
+        })
+}
 
 pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 2;
 pub const MODEL_WORKER_RESULT_FILE: &str = "result.json";
@@ -979,5 +1007,22 @@ mod tests {
     fn cpu_core_plan_has_one_entry_per_worker() {
         assert_eq!(cpu_core_plan(0), Vec::<Option<usize>>::new());
         assert_eq!(cpu_core_plan(3).len(), 3);
+    }
+
+    #[test]
+    fn msl_output_grid_is_invariant_under_time_scaling() {
+        let ordinary = msl_sim_output_dt(0.0, 1.0, None, 500).expect("ordinary output grid");
+        let short = msl_sim_output_dt(0.0, 1.0e-7, None, 500).expect("short output grid");
+
+        assert!(((short / ordinary) - 1.0e-7).abs() <= 2.0 * f64::EPSILON * 1.0e-7);
+        assert!((short - 2.0e-10).abs() <= f64::EPSILON * 2.0e-10);
+    }
+
+    #[test]
+    fn explicit_experiment_interval_owns_the_msl_output_grid() {
+        assert_eq!(
+            msl_sim_output_dt(0.0, 1.0e-7, Some(2.5e-10), 500),
+            Some(2.5e-10)
+        );
     }
 }

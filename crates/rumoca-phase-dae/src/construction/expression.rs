@@ -425,6 +425,7 @@ fn lower_builtin_expression<'dae>(
         BuiltinFunction::SemiLinear => {
             lower_semi_linear(construction, symbols, binders, arguments, provenance)
         }
+        BuiltinFunction::Cat => lower_cat(construction, symbols, binders, arguments, provenance),
         _ => lower_builtin_call(
             construction,
             symbols,
@@ -434,6 +435,81 @@ fn lower_builtin_expression<'dae>(
             provenance,
         ),
     }
+}
+
+/// Lower MLS §10.4.4 `cat(dim, A, B, …)` as a checked array of element reads.
+///
+/// Concatenation along a settled dimension has an exact checked owner: every
+/// result element is a bounds-checked index into one operand, and the array node
+/// assembles them. The first argument is the concatenation dimension; the rest
+/// are the operands. This lowers concatenation along dimension 1 of rank-one
+/// operands — the vector assembly the geometric-control stack uses to build
+/// SE_2(3) tangents — which stays fully within checked index and array owners.
+fn lower_cat<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let [dimension, operands @ ..] = arguments else {
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 2,
+            found: arguments.len(),
+            span: provenance.span(),
+        });
+    };
+    if operands.is_empty() {
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 2,
+            found: 1,
+            span: provenance.span(),
+        });
+    }
+    // Only concatenation along the first axis has an element-index owner here.
+    if !matches!(
+        dimension,
+        Expression::Literal {
+            value: rumoca_core::Literal::Integer(1),
+            ..
+        }
+    ) {
+        return Err(dae::DaeConstructionError::ShapeMismatch {
+            span: provenance.span(),
+        });
+    }
+    let mut elements = Vec::new();
+    for operand in operands {
+        let base = lower_expression_scoped(construction, symbols, binders, operand, None)?;
+        let dimensions = construction
+            .expressions(|expressions| expressions.value_type(base, provenance))?
+            .dimensions()
+            .to_vec();
+        let [length] = dimensions.as_slice() else {
+            // Only rank-one operands assemble as a flat element index here.
+            return Err(dae::DaeConstructionError::ShapeMismatch {
+                span: provenance.span(),
+            });
+        };
+        for index in 1..=*length {
+            let subscript = construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .literal(dae::DaeLiteral::Integer(i64::from(index)))
+            })?;
+            let element = construction.expressions(|expressions| {
+                expressions.at(provenance).index(
+                    base,
+                    vec![dae::Subscript::Index {
+                        expression: subscript,
+                        provenance,
+                    }],
+                )
+            })?;
+            elements.push(element);
+        }
+    }
+    construction.expressions(|expressions| expressions.at(provenance).array(elements))
 }
 
 fn lower_clock_transfer<'dae>(

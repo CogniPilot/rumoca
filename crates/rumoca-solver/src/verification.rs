@@ -27,6 +27,8 @@
 #[cfg(any(test, kani))]
 mod condition_memory;
 #[cfg(any(test, kani))]
+mod event_iteration;
+#[cfg(any(test, kani))]
 mod kernel_lifecycle;
 #[cfg(any(test, kani))]
 mod me_lifecycle;

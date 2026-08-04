@@ -36,6 +36,9 @@ pub struct MeRuntimePostEventState {
     /// FMI `valuesOfContinuousStatesChanged` from the settled event iteration.
     pub values_of_continuous_states_changed: bool,
     pub observation: Option<MeRuntimeOutput>,
+    /// Left-limit observation for scheduled events. FMI/OMC traces preserve
+    /// both superdense values at a time-event boundary.
+    pub pre_observation: Option<MeRuntimeOutput>,
     pub termination: Option<SimTermination>,
 }
 
@@ -203,6 +206,9 @@ impl MeRuntimeHost {
         let mut kernel = self.kernel.borrow_mut();
         kernel.set_time(MeTime::at(time))?;
         kernel.set_continuous_states(states)?;
+        let mut projected = states.to_vec();
+        kernel.project_continuous_states(&mut projected)?;
+        kernel.set_continuous_states(&projected)?;
         runtime_output(&mut *kernel)
     }
 
@@ -334,10 +340,12 @@ impl MeRuntimeHost {
             horizon,
         };
         kernel.enter_event_mode(entry)?;
+        let pre_observation = runtime_output(&mut *kernel)?;
         let discrete = update_discrete_states_to_completion(&mut *kernel)?;
         let next_event_time = discrete.next_event_time;
         kernel.enter_continuous_time_mode()?;
-        let post = post_event_state(&mut *kernel, entry, event_time, discrete, true)?;
+        let mut post = post_event_state(&mut *kernel, entry, event_time, discrete, true)?;
+        post.pre_observation = Some(pre_observation);
         drop(kernel);
         *self.next_event_time.borrow_mut() = next_event_time;
         Ok(post)
@@ -378,11 +386,10 @@ impl MeRuntimeHost {
         // that host-owned time. In both cases typed relation-memory crossings
         // carry strict post-side truth without changing the exact located
         // state used by reinitialization.
-        let event_mode_time = if right_time > root_time {
-            root_time
-        } else {
-            right_time
-        };
+        // Commit relation updates at the semantic right-limit owned by the
+        // numerical host.  Keeping the update at the located root would make
+        // discontinuous relations visible one integration probe too early.
+        let event_mode_time = right_time;
         kernel.set_time(MeTime::at(event_mode_time))?;
         kernel.set_continuous_states(root_states)?;
         let entry = MeEventEntry {
@@ -391,9 +398,24 @@ impl MeRuntimeHost {
             horizon,
         };
         kernel.enter_event_mode(entry)?;
+        let pre_update_observation = runtime_output(&mut *kernel)?;
         let discrete = update_discrete_states_to_completion(&mut *kernel)?;
         let next_event_time = discrete.next_event_time;
         kernel.enter_continuous_time_mode()?;
+        // Observe at the semantic event instant, after discrete updates but
+        // before the numerical driver's right-limit probe advances continuous
+        // states.  This keeps discontinuous contact outputs at their
+        // zero-crossing value while still exposing event-updated discrete
+        // outputs (for example clocked assignments).
+        let event_entry_observation =
+            if !includes_scheduled_event && !discrete.values_of_continuous_states_changed {
+                MeRuntimeOutput {
+                    time: pre_update_observation.time,
+                    values: pre_update_observation.values.clone(),
+                }
+            } else {
+                runtime_output(&mut *kernel)?
+            };
         if !includes_scheduled_event {
             advance_post_event_state(&mut *kernel, root_time, right_time)?;
         }
@@ -401,7 +423,12 @@ impl MeRuntimeHost {
         // it does not coincide with a scheduled event. The numerical plugin
         // owns trace storage, while the ME host owns the settled right-limit
         // values handed to that storage.
-        let post = post_event_state(&mut *kernel, entry, right_time, discrete, true)?;
+        let mut post = post_event_state(&mut *kernel, entry, right_time, discrete, false)?;
+        post.observation = Some(event_entry_observation);
+        // Located roots are also FMI superdense event instants. Preserve the
+        // left-limit observation so the numerical trace can retain both sides
+        // of a discontinuity at the same timestamp (as OMC does).
+        post.pre_observation = Some(pre_update_observation);
         drop(kernel);
         *self.next_event_time.borrow_mut() = next_event_time;
         Ok(post)
@@ -413,9 +440,7 @@ impl MeRuntimeHost {
             let mut kernel = self.kernel.borrow_mut();
             kernel.set_time(MeTime::at(time))?;
             kernel.set_continuous_states(states)?;
-            let mut values = Vec::new();
-            kernel.get_continuous_state_derivatives(&mut values)?;
-            copy_callback_values("state derivative", &values, out)
+            kernel.continuous_state_derivatives_into(out)
         })();
         self.finish_callback(result, out);
     }
@@ -443,13 +468,11 @@ impl MeRuntimeHost {
             let mut kernel = self.kernel.borrow_mut();
             kernel.set_time(MeTime::at(time))?;
             kernel.set_continuous_states(states)?;
-            let mut values = Vec::new();
-            kernel.get_event_indicators(&mut values)?;
-            if values.is_empty() {
+            if kernel.model_description().event_indicator_count == 0 {
                 out.fill(1.0);
                 return Ok(());
             }
-            copy_callback_values("event indicator", &values, out)
+            kernel.event_indicators_into(out)
         })();
         self.finish_callback(result, out);
     }
@@ -552,6 +575,7 @@ fn post_event_state(
         entry,
         values_of_continuous_states_changed,
         observation,
+        pre_observation: None,
         termination: discrete.terminate_simulation,
     })
 }
@@ -590,20 +614,6 @@ fn complete_integrator_step(kernel: &mut impl ModelExchangeKernel) -> Result<(),
             ),
         });
     }
-    Ok(())
-}
-
-fn copy_callback_values(label: &str, values: &[f64], out: &mut [f64]) -> Result<(), MeError> {
-    if values.len() != out.len() {
-        return Err(MeError::Contract {
-            reason: format!(
-                "{label} callback produced {} values for {} integrator slots",
-                values.len(),
-                out.len()
-            ),
-        });
-    }
-    out.copy_from_slice(values);
     Ok(())
 }
 

@@ -293,6 +293,7 @@ pub fn walk_discrete_system<V: SolveVisitor + ?Sized>(
     system: &DiscreteSolveSystem,
 ) -> Result<(), V::Error> {
     visitor.visit_scalar_program_block(&system.runtime_assignment_rhs)?;
+    visitor.visit_scalar_program_block(&system.post_commit_assignment_rhs)?;
     visitor.visit_scalar_program_block(&system.rhs)
 }
 

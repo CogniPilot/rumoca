@@ -148,7 +148,7 @@ pub(super) fn static_function_range(
     Ok((step != 0).then_some((lower, step, upper)))
 }
 
-fn static_shape_integer_expression(
+pub(super) fn static_shape_integer_expression(
     expression: &Expression,
     values: &HashMap<VarName, i64>,
     shapes: &ShapeEnvironment,

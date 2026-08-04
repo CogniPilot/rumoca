@@ -384,6 +384,10 @@ fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
         &[
             "runtime_assignment_rhs",
             "runtime_assignment_targets",
+            "runtime_assignment_roles",
+            "post_commit_assignment_rhs",
+            "post_commit_assignment_targets",
+            "post_commit_assignment_runtime_rows",
             "rhs",
             "update_targets",
             "pre_modes",
@@ -399,6 +403,18 @@ fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
                 "runtime_assignment_targets" => {
                     Some(Value::from_serialize(&d.runtime_assignment_targets))
                 }
+                "runtime_assignment_roles" => {
+                    Some(Value::from_serialize(&d.runtime_assignment_roles))
+                }
+                "post_commit_assignment_rhs" => Some(scalar_program_block_value(Arc::new(
+                    d.post_commit_assignment_rhs.clone(),
+                ))),
+                "post_commit_assignment_targets" => {
+                    Some(Value::from_serialize(&d.post_commit_assignment_targets))
+                }
+                "post_commit_assignment_runtime_rows" => Some(Value::from_serialize(
+                    &d.post_commit_assignment_runtime_rows,
+                )),
                 "update_targets" => Some(Value::from_serialize(&d.update_targets)),
                 "pre_modes" => Some(Value::from_serialize(&d.pre_modes)),
                 "observation_refresh" => Some(Value::from_serialize(&d.observation_refresh)),
@@ -414,6 +430,7 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
             "root_conditions",
             "root_relation_memory_targets",
             "root_zero_domains",
+            "root_relation_refresh_roles",
             "scheduled_root_conditions",
             "scheduled_time_events",
             "dynamic_time_event_names",
@@ -437,6 +454,9 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
                     Some(Value::from_serialize(&e.root_relation_memory_targets))
                 }
                 "root_zero_domains" => Some(Value::from_serialize(&e.root_zero_domains)),
+                "root_relation_refresh_roles" => {
+                    Some(Value::from_serialize(&e.root_relation_refresh_roles))
+                }
                 "scheduled_root_conditions" => {
                     Some(Value::from_serialize(&e.scheduled_root_conditions))
                 }

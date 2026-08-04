@@ -142,8 +142,10 @@ Failure classifications:
 | A full Tier 2 quality gate MUST require `sim_ok == agreement_high` | harness gate | Every claimed execution must be certified |
 | Every compiled non-high model MUST be triaged as a counterexample to simulation refinement | dev/ ledger, issue/PR | Wrong traces falsify the candidate claim |
 | A counterexample MUST yield a general semantic fix or typed profile rejection | compiler/runtime owners | Model exceptions cannot establish correctness |
+| Discovery of an actionable counterexample is a stop-the-line event: merges, releases, and unrelated compiler/runtime capability work MUST remain blocked until the actionable count returns to zero | campaign planning, PR/release gates | A known false success invalidates the compiler's simulation claim and outranks breadth or schedule |
 | The actionable counterexample count MUST be zero before compile-frontier or unrelated capability work resumes | campaign planning, dev/ ledger | False success outranks breadth work |
 | Counterexample closure MUST be recorded model-by-model as strict-high after a general fix or as a producer-derived typed refusal | dev/ ledger, issue/PR | Aggregate improvement cannot close individual false success |
+| Every closed counterexample MUST retain a focused regression for the semantic defect, and the originating model MUST remain in the next complete Tier 2 comparison | focused suites, cohort sweep | A repaired proof obligation must not silently regress or disappear from evidence |
 | Tolerance changes, retries, and model-specific branches MUST NOT close a counterexample | compiler/runtime owners | Exceptions cannot establish semantic correctness |
 | Pointwise-nonidentifiable traces and independently demonstrated oracle discrepancies MUST be tallied separately and remain visible as uncertified | comparator reports, dev/ ledger | Separation must not manufacture certification |
 | No validity check that reads simulation outcomes may run before the comparator stage | harness gate flow | A gate that aborts first destroys the measurement it judges |

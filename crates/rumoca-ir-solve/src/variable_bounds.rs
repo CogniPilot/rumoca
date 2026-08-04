@@ -13,8 +13,8 @@
 use rumoca_core::Span;
 
 use crate::{
-    ComputeBlock, LinearOp, LinearOpSliceKind, SolveProblemShapeContractError, SolveVisitor,
-    VarLayout,
+    ComputeBlock, LinearOp, LinearOpSliceKind, ScalarProgramBlock, SolveProblemShapeContractError,
+    SolveVisitor, VarLayout,
 };
 
 /// Reject any `Y`/`P` load in `block` that the layout cannot address.
@@ -24,6 +24,14 @@ pub(crate) fn validate_compute_block_variable_bounds(
     layout: &VarLayout,
 ) -> Result<(), SolveProblemShapeContractError> {
     VariableBoundsVisitor { context, layout }.visit_compute_block(block)
+}
+
+pub(crate) fn validate_scalar_program_block_variable_bounds(
+    block: &ScalarProgramBlock,
+    context: &'static str,
+    layout: &VarLayout,
+) -> Result<(), SolveProblemShapeContractError> {
+    VariableBoundsVisitor { context, layout }.visit_scalar_program_block(block)
 }
 
 struct VariableBoundsVisitor<'layout> {
