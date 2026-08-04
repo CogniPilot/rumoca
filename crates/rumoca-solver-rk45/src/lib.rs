@@ -24,7 +24,7 @@ mod no_state;
 mod reset;
 mod trace;
 
-use no_state::NoStateSession;
+use no_state::{NoStateSession, simulate_no_state};
 use reset::Rk45ResetSnapshot;
 use trace::{
     record_derivative_eval_trace, record_root_eval_trace, reset_rk_eval_trace,
@@ -38,9 +38,6 @@ const ALGEBRAIC_REFRESH_TOL: f64 = 1.0e-10;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
-    #[error("empty system: no state equations to simulate")]
-    EmptySystem,
-
     #[error("rk45 backend does not support solver mode {requested:?}")]
     UnsupportedSolverMode { requested: SimSolverMode },
 
@@ -484,6 +481,10 @@ pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResul
         requested => return Err(SimError::UnsupportedSolverMode { requested }),
     }
 
+    if model.state_scalar_count() == 0 {
+        return simulate_no_state(model, opts);
+    }
+
     validate_explicit_solve_model(model)?;
     let model = SolveRuntime::new(model)?;
     let sample_dt = default_output_dt(opts);
@@ -532,9 +533,6 @@ pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResul
 
 fn validate_explicit_solve_model(model: &solve::SolveModel) -> Result<(), SimError> {
     let layout = &model.problem.solve_layout;
-    if layout.state_scalar_count == 0 {
-        return Err(SimError::EmptySystem);
-    }
     if model.initial_y.len() != model.solver_scalar_count() {
         return Err(SimError::SolveIr(format!(
             "initial vector length {} does not match solver layout {}",

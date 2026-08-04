@@ -883,6 +883,26 @@ fn rk45_session_runs_no_state_discrete_controller() {
 }
 
 #[test]
+fn rk45_batch_runs_no_state_discrete_controller() {
+    let model = no_state_input_accumulator_model();
+    let result = simulate(
+        &model,
+        &SimOptions {
+            t_end: 0.05,
+            dt: Some(0.01),
+            solver_mode: SimSolverMode::RkLike,
+            ..Default::default()
+        },
+    )
+    .expect("no-state batch simulation should succeed");
+
+    assert_eq!(result.times.len(), 6);
+    assert_eq!(result.names, ["y"]);
+    assert_eq!(result.data, [vec![0.0; 6]]);
+    assert_eq!(result.n_states, 0);
+}
+
+#[test]
 fn rk45_session_uses_adaptive_event_integration_for_stiff_contact() {
     let model = stiff_contact_model();
     let mut session = SimulationSession::new(

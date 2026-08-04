@@ -13,10 +13,52 @@ use rumoca_solver::{
     timeline::{event_left_limit_time, sample_time_match_with_tol},
 };
 
-use crate::{SessionState, SimError};
+use crate::{SessionState, SimError, checked_vec_with_capacity, default_output_dt};
 
 const NO_STATE_EVENT_UPDATE_MAX_ITERS: usize = 256;
 const ROOT_BISECTION_ITERS: usize = 64;
+
+pub(crate) fn simulate_no_state(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<rumoca_solver::SimResult, SimError> {
+    let sample_dt = default_output_dt(opts);
+    let sample_times =
+        rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, sample_dt);
+    let mut session = NoStateSession::new(model, opts.clone())?;
+    let mut times = checked_vec_with_capacity(sample_times.len(), "RK45 no-state output times")?;
+    let mut data =
+        checked_vec_with_capacity(model.visible_names.len(), "RK45 no-state output series")?;
+    for _ in &model.visible_names {
+        data.push(checked_vec_with_capacity(
+            sample_times.len(),
+            "RK45 no-state output samples",
+        )?);
+    }
+
+    for sample_time in sample_times {
+        session.advance_to(sample_time)?;
+        let values = session.runtime.runtime.visible_values(
+            &session.runtime.current_y,
+            &session.runtime.params,
+            session.runtime.current_t,
+        )?;
+        for (series, value) in data.iter_mut().zip(values) {
+            series.push(value);
+        }
+        times.push(session.runtime.current_t);
+        if session.runtime.termination.is_some() {
+            break;
+        }
+    }
+
+    Ok(rumoca_solver::build_sim_result_from_solve_model(
+        model,
+        times,
+        data,
+        session.runtime.termination,
+    ))
+}
 
 pub(crate) struct NoStateSession {
     model: solve::SolveModel,
