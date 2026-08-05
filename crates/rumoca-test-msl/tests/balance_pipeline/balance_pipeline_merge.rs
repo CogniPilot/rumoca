@@ -630,6 +630,8 @@ struct MergedTraceCounts {
     models_compared: usize,
     missing_trace: usize,
     skipped: usize,
+    policy_excluded: usize,
+    trace_nonidentifiable: usize,
     high: usize,
     minor: usize,
     deviation: usize,
@@ -675,6 +677,16 @@ fn collect_flat_trace_counts(trace_values: &[&Value]) -> Result<MergedTraceCount
             trace_values,
             &["skipped_models"],
             "trace_comparison.skipped_models",
+        )?,
+        policy_excluded: sum_required_usize(
+            trace_values,
+            &["policy_excluded_models"],
+            "trace_comparison.policy_excluded_models",
+        )?,
+        trace_nonidentifiable: sum_required_usize(
+            trace_values,
+            &["trace_nonidentifiable_models"],
+            "trace_comparison.trace_nonidentifiable_models",
         )?,
         high: sum_required_usize(
             trace_values,
@@ -745,6 +757,8 @@ fn build_base_flat_trace_summary(
         "models_compared": counts.models_compared,
         "missing_trace_models": counts.missing_trace,
         "skipped_models": counts.skipped,
+        "policy_excluded_models": counts.policy_excluded,
+        "trace_nonidentifiable_models": counts.trace_nonidentifiable,
         "agreement_high": counts.high,
         "agreement_high_percent": percent(counts.high, counts.models_compared),
         "agreement_near": counts.minor,
@@ -939,6 +953,14 @@ fn merge_trace_comparison_payloads(
     root.insert(
         "skipped_models".to_string(),
         json!(trace_summary_usize(summary, "skipped_models")),
+    );
+    root.insert(
+        "policy_excluded_models".to_string(),
+        json!(trace_summary_usize(summary, "policy_excluded_models")),
+    );
+    root.insert(
+        "trace_nonidentifiable_models".to_string(),
+        json!(trace_summary_usize(summary, "trace_nonidentifiable_models")),
     );
     root.insert(
         "agreement_bands".to_string(),
@@ -1272,6 +1294,8 @@ fn shard_flat_trace_summary_fixture() -> Value {
         "models_compared": 1,
         "missing_trace_models": 0,
         "skipped_models": 0,
+        "policy_excluded_models": 0,
+        "trace_nonidentifiable_models": 0,
         "agreement_high": 1,
         "agreement_minor": 0,
         "agreement_deviation": 0,
@@ -1286,6 +1310,21 @@ fn shard_flat_trace_summary_fixture() -> Value {
         "initial_condition": shard_trace_initial_condition_fixture(),
         "state_selection": shard_trace_state_selection_fixture()
     })
+}
+
+#[test]
+fn collect_flat_trace_counts_sums_typed_boundaries() {
+    let mut first = shard_flat_trace_summary_fixture();
+    first["policy_excluded_models"] = json!(3);
+    first["trace_nonidentifiable_models"] = json!(1);
+    let mut second = shard_flat_trace_summary_fixture();
+    second["policy_excluded_models"] = json!(2);
+    second["trace_nonidentifiable_models"] = json!(4);
+
+    let counts = collect_flat_trace_counts(&[&first, &second]).expect("merge trace counts");
+
+    assert_eq!(counts.policy_excluded, 5);
+    assert_eq!(counts.trace_nonidentifiable, 5);
 }
 
 fn shard_omc_model_fixture() -> Value {
@@ -1419,6 +1458,18 @@ fn merge_shard_parity_artifacts_writes_full_omc_and_trace_inputs() {
         Some(2)
     );
     assert_eq!(json_usize(&trace, &["models_compared"]), Some(2));
+    for field in ["policy_excluded_models", "trace_nonidentifiable_models"] {
+        assert_eq!(
+            json_usize(&omc, &["trace_comparison", field]),
+            Some(0),
+            "merged OMC summary must retain typed trace boundary `{field}`"
+        );
+        assert_eq!(
+            json_usize(&trace, &[field]),
+            Some(0),
+            "merged trace report must retain typed trace boundary `{field}`"
+        );
+    }
     assert_eq!(
         trace.get("models").and_then(Value::as_object).map(Map::len),
         Some(2)

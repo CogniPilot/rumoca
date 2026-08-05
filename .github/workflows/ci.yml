@@ -1084,11 +1084,11 @@ jobs:
             nix-store --import
           nix build .#msl-artifacts --out-link result-msl-artifacts
 
-      # The gate reports cohort movement against the previous certification, and
+      # The gate reports cohort movement against the previous full-cohort table, and
       # a full-scope run that cannot diff fails rather than passing with that
       # reading switched off (SPEC 0033 acceptance contract). Supply the
       # predecessor here; the gate is what judges its absence.
-      - name: Restore the previous certification's band table
+      - name: Restore the predecessor full-cohort band table
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1096,27 +1096,46 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/msl/results target/msl/predecessor
-          previous_run="$(gh run list \
-            --workflow "${WORKFLOW}" \
-            --branch "${GITHUB_BASE_REF:-main}" \
-            --status success \
-            --limit 20 \
-            --json databaseId \
-            --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID})] | .[0].databaseId" || true)"
-          if [[ -z "${previous_run:-}" || "${previous_run}" == "null" ]]; then
-            echo "::warning title=No predecessor certification::no earlier successful run was found; the quality gate will report cohort movement as unverified"
+          head_branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          base_branch="${GITHUB_BASE_REF:-main}"
+          mapfile -t candidate_runs < <(
+            {
+              gh run list \
+                --workflow "${WORKFLOW}" \
+                --branch "${head_branch}" \
+                --limit 20 \
+                --json databaseId \
+                --jq '.[].databaseId' || true
+              if [[ "${base_branch}" != "${head_branch}" ]]; then
+                gh run list \
+                  --workflow "${WORKFLOW}" \
+                  --branch "${base_branch}" \
+                  --limit 20 \
+                  --json databaseId \
+                  --jq '.[].databaseId' || true
+              fi
+            } | awk '!seen[$0]++'
+          )
+          for candidate_run in "${candidate_runs[@]}"; do
+            if [[ "${candidate_run}" == "${GITHUB_RUN_ID}" ]]; then
+              continue
+            fi
+            candidate_dir="target/msl/predecessor/run-${candidate_run}"
+            mkdir -p "${candidate_dir}"
+            if ! gh run download "${candidate_run}" \
+              --name msl-compatibility-report \
+              --dir "${candidate_dir}"; then
+              continue
+            fi
+            table="${candidate_dir}/msl_band_table.json"
+            if [[ ! -s "${table}" ]]; then
+              continue
+            fi
+            cp "${table}" target/msl/results/msl_band_table_previous.json
+            echo "Predecessor cohort table staged from run ${candidate_run}."
             exit 0
-          fi
-          gh run download "${previous_run}" \
-            --name msl-compatibility-report \
-            --dir target/msl/predecessor || true
-          table="target/msl/predecessor/msl_band_table.json"
-          if [[ -s "$table" ]]; then
-            cp "$table" target/msl/results/msl_band_table_previous.json
-            echo "Predecessor cohort table staged from run ${previous_run}."
-          else
-            echo "::warning title=No predecessor band table::run ${previous_run} published no msl_band_table.json; the quality gate will report cohort movement as unverified"
-          fi
+          done
+          echo "::warning title=No predecessor band table::no earlier CI run published msl_band_table.json; the quality gate will report cohort movement as unverified"
 
       - name: Merge shards + run quality gate
         run: |
