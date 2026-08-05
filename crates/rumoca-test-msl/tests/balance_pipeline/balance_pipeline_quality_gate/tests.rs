@@ -138,6 +138,7 @@ fn baseline_quality_template() -> MslQualityBaseline {
             preservation_percent: None,
         },
         metric_schema_migration: None,
+        compiler_contract_migration: None,
     }
 }
 
@@ -1606,9 +1607,7 @@ fn checked_quality_baseline_has_versioned_metric_migration_and_tensor_kpi() {
     let baseline =
         load_msl_quality_baseline(&msl_quality_baseline_path()).expect("load checked baseline");
     assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
-    assert_eq!(baseline.flatten_models, 555);
-    assert!(baseline.tensor_preservation.models_reported > 0);
-    assert!(baseline.tensor_preservation.family_bodies > 0);
+    assert_eq!(baseline.flatten_models, 444);
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
 
     let migration = baseline
@@ -1621,6 +1620,20 @@ fn checked_quality_baseline_has_versioned_metric_migration_and_tensor_kpi() {
     assert_eq!(migration.reattributed_error_code, "ER002");
     assert_eq!(migration.reattributed_models.len(), 10);
     assert!(!migration.tensor_preservation_source_git_commit.is_empty());
+
+    let contract = baseline
+        .compiler_contract_migration
+        .expect("checked baseline must document the checked-DAE contract cutover");
+    assert_eq!(contract.from_contract, "permissive-dae-v1");
+    assert_eq!(contract.to_contract, "checked-dae-v1");
+    assert_eq!(contract.sim_target_models, 566);
+    assert_eq!(contract.stage_counts_before.compiled_models, 545);
+    assert_eq!(contract.stage_counts_after.compiled_models, 228);
+    assert_eq!(
+        contract.phase_failure_counts_after.values().sum::<usize>()
+            + contract.stage_counts_after.compiled_models,
+        566
+    );
 }
 
 #[test]

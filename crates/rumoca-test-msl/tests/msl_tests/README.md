@@ -196,8 +196,14 @@ grows the list; never lower it to make a red gate green.
   fixed target count; only a declaration matching both baseline contexts is
   used until a successful main run promotes that context. Once both contexts
   match, the promoted baseline is authoritative and the declaration is inactive
-  provenance. Focused subsets and one-off explicit target files are not
-  baselines.
+  provenance. The checked-DAE construction cutover additionally carries a
+  one-shot `compiler_contract_migration`: it pins the permissive and checked
+  contract names, the full-run evidence commit, exact stage counts on both
+  sides, a phase-failure census covering every non-compiled target, and the
+  full typed diagnostic-code census. This records that old unchecked "compile"
+  claims are not comparable with typed checked-IR construction; it is not a
+  reusable waiver for later floor loss.
+  Focused subsets and one-off explicit target files are not baselines.
 - Baseline JSON also captures OMC parity distributions for this set (runtime
   speedup ratio + trace-accuracy min/median/mean/max), populated from
   `omc_simulation_reference.json`.

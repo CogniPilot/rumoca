@@ -69,6 +69,8 @@ Preferred ownership order for compiler bugs:
 | Focused or partial MSL snapshots MUST NOT be promoted | baseline workflow | Prevents baseline drift |
 | Commit-to-commit comparisons MUST use the same focused target list | regression triage | Makes deltas meaningful |
 | External compatibility corpora MUST pin an immutable revision and run as bounded parallel gates | CI workflows | Keeps evidence reproducible without creating a serial CI long pole |
+| A compiler-stage contract cutover MAY reset incomparable cumulative floors only through a one-shot migration naming both contracts, the immutable full-run evidence commit, exact before/after stage counts, fixed target count, and complete post-cutover phase-failure and diagnostic censuses; the resolver MUST fail closed if any field differs | baseline workflow | A stricter typed refusal is not a compile regression under the superseded contract, but an unaudited floor reset could hide one |
+| After a compiler-stage contract cutover, ordinary ratchets MUST compare against the reviewed post-cutover floor and MUST NOT reuse the migration to excuse later regressions | baseline workflow | Migration provenance cannot become a standing waiver |
 
 Failure classifications:
 

@@ -94,6 +94,90 @@ function approvedOmcMigration(from, to) {
   return checkedIn;
 }
 
+function exactCheckedDaeContractMigration() {
+  return {
+    from_contract: 'permissive-dae-v1',
+    to_contract: 'checked-dae-v1',
+    evidence_git_commit: '3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b',
+    sim_target_models: 566,
+    stage_counts_before: {
+      parse_models: 566,
+      flatten_models: 555,
+      dae_models: 545,
+      compiled_models: 545,
+      solve_models: 446,
+      balanced_models: 532,
+      unbalanced_models: 0,
+      partial_models: 13,
+      balance_denominator: 532,
+      initial_balanced_models: 532,
+      initial_unbalanced_models: 0,
+      sim_attempted: 496,
+      ic_attempted: 267,
+      ic_ok: 252,
+      ic_solver_fail: 15,
+      sim_ok: 207,
+    },
+    stage_counts_after: {
+      parse_models: 566,
+      flatten_models: 444,
+      dae_models: 228,
+      compiled_models: 228,
+      solve_models: 202,
+      balanced_models: 217,
+      unbalanced_models: 0,
+      partial_models: 11,
+      balance_denominator: 217,
+      initial_balanced_models: 217,
+      initial_unbalanced_models: 0,
+      sim_attempted: 210,
+      ic_attempted: 150,
+      ic_ok: 146,
+      ic_solver_fail: 4,
+      sim_ok: 122,
+    },
+    phase_failure_counts_after: {
+      Flatten: 82,
+      Instantiate: 9,
+      Resolve: 25,
+      ToDae: 216,
+      Typecheck: 6,
+    },
+    error_code_counts_after: {
+      ED001: 24,
+      ED008: 7,
+      ED009: 3,
+      ED010: 14,
+      ED013: 22,
+      ED018: 29,
+      ED019: 111,
+      ED020: 1,
+      ED021: 5,
+      EF004: 24,
+      EF005: 11,
+      EF016: 16,
+      EF020: 1,
+      EF024: 16,
+      EF025: 12,
+      EI007: 2,
+      EI012: 6,
+      EI027: 1,
+      EL005: 60,
+      EMSL_TIMEOUT_MODEL_ATTEMPT: 11,
+      ER066: 23,
+      ER130: 2,
+      ET000: 1,
+      ET004: 4,
+      EX001: 6,
+      EX002: 13,
+    },
+  };
+}
+
+function applyStageCounts(snapshot, counts) {
+  Object.assign(snapshot, counts);
+}
+
 test('promotable snapshot accepts full non-partial artifacts', () => {
   const snapshot = fullSnapshot();
   assert.doesNotThrow(() => ensurePromotableSnapshot(snapshot));
@@ -201,6 +285,50 @@ test('schema migration rejects an unrelated headline regression', () => {
   const decision = ratchetDecision(current, baseline);
   assert.equal(decision.promote, false);
   assert.match(decision.reason, /high trace agreement/);
+});
+
+test('ratchet accepts only the reviewed checked-DAE contract cutover', () => {
+  const contract = exactCheckedDaeContractMigration();
+  const baseline = fullSnapshot();
+  baseline.quality_gate_version = 1;
+  baseline.omc_version = 'OpenModelica old';
+  baseline.simulatable_attempted = 566;
+  baseline.sim_target_models = 566;
+  applyStageCounts(baseline, {
+    ...contract.stage_counts_before,
+    flatten_models: 565,
+    solve_models: 381,
+    sim_attempted: 413,
+    ic_attempted: 259,
+    ic_ok: 239,
+    ic_solver_fail: 20,
+    sim_ok: 170,
+  });
+
+  const checkedIn = fullSnapshot();
+  checkedIn.git_commit = contract.evidence_git_commit;
+  checkedIn.omc_version = 'OpenModelica new';
+  checkedIn.simulatable_attempted = 566;
+  checkedIn.sim_target_models = 566;
+  applyStageCounts(checkedIn, contract.stage_counts_after);
+  checkedIn.metric_schema_migration = exactV2Migration();
+  checkedIn.compiler_contract_migration = structuredClone(contract);
+  checkedIn.omc_context_migration = {
+    from_omc_version: baseline.omc_version,
+    to_omc_version: checkedIn.omc_version,
+    sim_target_models: 566,
+  };
+
+  const current = structuredClone(checkedIn);
+  const decision = ratchetDecision(current, baseline, checkedIn);
+  assert.equal(decision.promote, true);
+  assert.match(decision.improvements.join('\n'), /compiler contract/);
+
+  current.compiler_contract_migration.stage_counts_after.compiled_models += 1;
+  assert.throws(
+    () => ratchetDecision(current, baseline, checkedIn),
+    /differs from checked-in review/,
+  );
 });
 
 test('OMC migration compares independent metrics without cross-context trace rejection', () => {

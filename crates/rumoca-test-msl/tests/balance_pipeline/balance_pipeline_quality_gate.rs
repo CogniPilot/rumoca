@@ -1,14 +1,16 @@
-use super::*;
-use indexmap::{IndexMap, IndexSet};
-
 mod cache;
+mod compiler_contract_migration;
 mod parity_measurement;
 mod reference_stage;
 mod runtime_cohort;
 mod status;
 #[cfg(test)]
 mod tests;
+
+use super::*;
 use cache::*;
+use compiler_contract_migration::*;
+use indexmap::{IndexMap, IndexSet};
 pub(super) use parity_measurement::*;
 pub(super) use reference_stage::*;
 use runtime_cohort::*;
@@ -292,6 +294,8 @@ pub(super) struct MslQualityBaseline {
     tensor_preservation: MslTensorPreservationBaseline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metric_schema_migration: Option<MslMetricSchemaMigration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compiler_contract_migration: Option<MslCompilerContractMigration>,
 }
 
 fn default_msl_quality_run_scope() -> String {
@@ -1021,6 +1025,7 @@ pub(super) fn current_msl_quality_baseline(
             ),
         },
         metric_schema_migration: Some(quality_gate_v2_metric_schema_migration()),
+        compiler_contract_migration: Some(checked_dae_compiler_contract_migration()),
     }
 }
 

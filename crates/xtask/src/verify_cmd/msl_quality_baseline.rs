@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Deserializer};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -27,11 +28,15 @@ const V2_REATTRIBUTED_MODELS: [&str; 10] = [
     "Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings",
     "Modelica.Fluid.Examples.InverseParameterization",
 ];
+const CHECKED_DAE_CONTRACT_FROM: &str = "permissive-dae-v1";
+const CHECKED_DAE_CONTRACT_TO: &str = "checked-dae-v1";
+const CHECKED_DAE_EVIDENCE_COMMIT: &str = "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b";
 
 #[derive(Debug, Clone, Deserialize)]
 struct MslQualityBaselineHeader {
     quality_gate_version: u64,
     run_scope: String,
+    git_commit: String,
     #[serde(deserialize_with = "deserialize_omc_version")]
     omc_version: String,
     sim_target_models: usize,
@@ -39,6 +44,8 @@ struct MslQualityBaselineHeader {
     omc_context_migration: Option<OmcContextMigration>,
     #[serde(default)]
     metric_schema_migration: Option<MetricSchemaMigration>,
+    #[serde(default)]
+    compiler_contract_migration: Option<CompilerContractMigration>,
     simulatable_attempted: usize,
     parse_models: usize,
     flatten_models: usize,
@@ -77,6 +84,38 @@ struct MetricSchemaMigration {
     flatten_models_after: usize,
     reattributed_error_code: String,
     reattributed_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct CompilerContractMigration {
+    from_contract: String,
+    to_contract: String,
+    evidence_git_commit: String,
+    sim_target_models: usize,
+    stage_counts_before: CompilerContractStageCounts,
+    stage_counts_after: CompilerContractStageCounts,
+    phase_failure_counts_after: BTreeMap<String, usize>,
+    error_code_counts_after: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct CompilerContractStageCounts {
+    parse_models: usize,
+    flatten_models: usize,
+    dae_models: usize,
+    compiled_models: usize,
+    solve_models: usize,
+    balanced_models: usize,
+    unbalanced_models: usize,
+    partial_models: usize,
+    balance_denominator: usize,
+    initial_balanced_models: usize,
+    initial_unbalanced_models: usize,
+    sim_attempted: usize,
+    ic_attempted: usize,
+    ic_ok: usize,
+    ic_solver_fail: usize,
+    sim_ok: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -237,6 +276,10 @@ fn choose_baseline(
                 promoted.omc_version
             );
         }
+        if checked_in.compiler_contract_migration.is_some() {
+            validate_compiler_contract_migration(promoted, checked_in, omc_context_changed)?;
+            return Ok(BaselineChoice::CheckedInMigration);
+        }
         validate_migration_metric_integrity(promoted, checked_in, true, omc_context_changed)?;
         return Ok(BaselineChoice::CheckedInMigration);
     }
@@ -333,6 +376,211 @@ fn validate_metric_schema_migration(baseline: &MslQualityBaselineHeader) -> Resu
         "MSL metric schema migration model set differs from the reviewed correction"
     );
     Ok(())
+}
+
+fn validate_compiler_contract_migration(
+    promoted: &MslQualityBaselineHeader,
+    checked_in: &MslQualityBaselineHeader,
+    omc_context_changed: bool,
+) -> Result<()> {
+    let migration = checked_in
+        .compiler_contract_migration
+        .as_ref()
+        .expect("caller established compiler contract migration");
+    ensure!(
+        migration.from_contract == CHECKED_DAE_CONTRACT_FROM
+            && migration.to_contract == CHECKED_DAE_CONTRACT_TO,
+        "MSL compiler contract migration is not the reviewed checked-DAE cutover"
+    );
+    ensure!(
+        migration.evidence_git_commit == CHECKED_DAE_EVIDENCE_COMMIT
+            && checked_in.git_commit == CHECKED_DAE_EVIDENCE_COMMIT,
+        "MSL compiler contract migration evidence commit differs from the reviewed full run"
+    );
+    ensure!(
+        migration.sim_target_models == checked_in.sim_target_models,
+        "MSL compiler contract migration target set differs"
+    );
+    ensure!(
+        migration.stage_counts_before == reviewed_contract_counts_before()
+            && migration.stage_counts_after == reviewed_contract_counts_after(),
+        "MSL compiler contract migration stage counts differ from the reviewed cutover"
+    );
+    ensure!(
+        migration.phase_failure_counts_after == reviewed_phase_failure_counts_after(),
+        "MSL compiler contract migration failure census differs from the reviewed cutover"
+    );
+    ensure!(
+        migration.error_code_counts_after == reviewed_error_code_counts_after(),
+        "MSL compiler contract migration diagnostic census differs from the reviewed cutover"
+    );
+    ensure_contract_counts_match_header(&migration.stage_counts_after, checked_in)?;
+    ensure_contract_source_did_not_regress(
+        promoted,
+        &migration.stage_counts_before,
+        omc_context_changed,
+    )?;
+    let failed_models: usize = migration.phase_failure_counts_after.values().sum();
+    ensure!(
+        failed_models + migration.stage_counts_after.compiled_models == migration.sim_target_models,
+        "MSL compiler contract migration failure census does not cover the fixed target set"
+    );
+    Ok(())
+}
+
+fn ensure_contract_counts_match_header(
+    counts: &CompilerContractStageCounts,
+    header: &MslQualityBaselineHeader,
+) -> Result<()> {
+    ensure!(
+        counts == &contract_counts_from_header(header),
+        "MSL compiler contract migration target counts do not match the checked-in baseline"
+    );
+    Ok(())
+}
+
+fn ensure_contract_source_did_not_regress(
+    promoted: &MslQualityBaselineHeader,
+    before: &CompilerContractStageCounts,
+    omc_context_changed: bool,
+) -> Result<()> {
+    ensure!(
+        promoted.parse_models <= before.parse_models
+            && V2_FLATTEN_MODELS_AFTER == before.flatten_models
+            && promoted.dae_models <= before.dae_models
+            && promoted.compiled_models <= before.compiled_models
+            && promoted.solve_models <= before.solve_models
+            && promoted.balanced_models <= before.balanced_models
+            && promoted.balance_denominator <= before.balance_denominator
+            && promoted.initial_balanced_models <= before.initial_balanced_models
+            && promoted.sim_attempted <= before.sim_attempted
+            && promoted.ic_attempted <= before.ic_attempted
+            && promoted.ic_ok <= before.ic_ok
+            && promoted.sim_ok <= before.sim_ok,
+        "MSL checked-DAE cutover source does not dominate the promoted cumulative baseline"
+    );
+    ensure!(
+        promoted.partial_models >= before.partial_models
+            && promoted.unbalanced_models >= before.unbalanced_models
+            && promoted.initial_unbalanced_models >= before.initial_unbalanced_models
+            && promoted.ic_solver_fail >= before.ic_solver_fail,
+        "MSL checked-DAE cutover source regresses a lower-is-better baseline metric"
+    );
+    ensure!(
+        omc_context_changed,
+        "MSL checked-DAE cutover was reviewed together with its declared OMC context change"
+    );
+    Ok(())
+}
+
+fn contract_counts_from_header(header: &MslQualityBaselineHeader) -> CompilerContractStageCounts {
+    CompilerContractStageCounts {
+        parse_models: header.parse_models,
+        flatten_models: header.flatten_models,
+        dae_models: header.dae_models,
+        compiled_models: header.compiled_models,
+        solve_models: header.solve_models,
+        balanced_models: header.balanced_models,
+        unbalanced_models: header.unbalanced_models,
+        partial_models: header.partial_models,
+        balance_denominator: header.balance_denominator,
+        initial_balanced_models: header.initial_balanced_models,
+        initial_unbalanced_models: header.initial_unbalanced_models,
+        sim_attempted: header.sim_attempted,
+        ic_attempted: header.ic_attempted,
+        ic_ok: header.ic_ok,
+        ic_solver_fail: header.ic_solver_fail,
+        sim_ok: header.sim_ok,
+    }
+}
+
+fn reviewed_contract_counts_before() -> CompilerContractStageCounts {
+    CompilerContractStageCounts {
+        parse_models: 566,
+        flatten_models: 555,
+        dae_models: 545,
+        compiled_models: 545,
+        solve_models: 446,
+        balanced_models: 532,
+        unbalanced_models: 0,
+        partial_models: 13,
+        balance_denominator: 532,
+        initial_balanced_models: 532,
+        initial_unbalanced_models: 0,
+        sim_attempted: 496,
+        ic_attempted: 267,
+        ic_ok: 252,
+        ic_solver_fail: 15,
+        sim_ok: 207,
+    }
+}
+
+fn reviewed_contract_counts_after() -> CompilerContractStageCounts {
+    CompilerContractStageCounts {
+        parse_models: 566,
+        flatten_models: 444,
+        dae_models: 228,
+        compiled_models: 228,
+        solve_models: 202,
+        balanced_models: 217,
+        unbalanced_models: 0,
+        partial_models: 11,
+        balance_denominator: 217,
+        initial_balanced_models: 217,
+        initial_unbalanced_models: 0,
+        sim_attempted: 210,
+        ic_attempted: 150,
+        ic_ok: 146,
+        ic_solver_fail: 4,
+        sim_ok: 122,
+    }
+}
+
+fn reviewed_phase_failure_counts_after() -> BTreeMap<String, usize> {
+    [
+        ("Flatten", 82),
+        ("Instantiate", 9),
+        ("Resolve", 25),
+        ("ToDae", 216),
+        ("Typecheck", 6),
+    ]
+    .into_iter()
+    .map(|(phase, count)| (phase.to_string(), count))
+    .collect()
+}
+
+fn reviewed_error_code_counts_after() -> BTreeMap<String, usize> {
+    [
+        ("ED001", 24),
+        ("ED008", 7),
+        ("ED009", 3),
+        ("ED010", 14),
+        ("ED013", 22),
+        ("ED018", 29),
+        ("ED019", 111),
+        ("ED020", 1),
+        ("ED021", 5),
+        ("EF004", 24),
+        ("EF005", 11),
+        ("EF016", 16),
+        ("EF020", 1),
+        ("EF024", 16),
+        ("EF025", 12),
+        ("EI007", 2),
+        ("EI012", 6),
+        ("EI027", 1),
+        ("EL005", 60),
+        ("EMSL_TIMEOUT_MODEL_ATTEMPT", 11),
+        ("ER066", 23),
+        ("ER130", 2),
+        ("ET000", 1),
+        ("ET004", 4),
+        ("EX001", 6),
+        ("EX002", 13),
+    ]
+    .into_iter()
+    .map(|(code, count)| (code.to_string(), count))
+    .collect()
 }
 
 fn validate_migration_metric_integrity(

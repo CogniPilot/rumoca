@@ -1,8 +1,11 @@
 use super::{
-    super::VerifyMslParityArgs, BaselineChoice, DistributionMedian, InitialConditionStats,
-    MetricSchemaMigration, MslQualityBaselineHeader, OmcContextMigration, RuntimeRatioStats,
-    StateSelectionStats, TraceAccuracyStats, V2_REATTRIBUTED_MODELS, choose_baseline,
-    load_baseline_header, validate_context_migration, validate_metric_schema_migration,
+    super::VerifyMslParityArgs, BaselineChoice, CompilerContractMigration,
+    CompilerContractStageCounts, DistributionMedian, InitialConditionStats, MetricSchemaMigration,
+    MslQualityBaselineHeader, OmcContextMigration, RuntimeRatioStats, StateSelectionStats,
+    TraceAccuracyStats, V2_REATTRIBUTED_MODELS, choose_baseline, load_baseline_header,
+    reviewed_contract_counts_after, reviewed_contract_counts_before,
+    reviewed_error_code_counts_after, reviewed_phase_failure_counts_after,
+    validate_context_migration, validate_metric_schema_migration,
 };
 use serde_json::json;
 use std::{fs, path::PathBuf};
@@ -11,10 +14,12 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
     MslQualityBaselineHeader {
         quality_gate_version: 2,
         run_scope: "full".to_string(),
+        git_commit: "current".to_string(),
         omc_version: omc_version.to_string(),
         sim_target_models: 566,
         omc_context_migration: None,
         metric_schema_migration: None,
+        compiler_contract_migration: None,
         simulatable_attempted: 566,
         parse_models: 566,
         flatten_models: 565,
@@ -58,6 +63,38 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
             },
         },
     }
+}
+
+fn compiler_contract_migration() -> CompilerContractMigration {
+    CompilerContractMigration {
+        from_contract: "permissive-dae-v1".to_string(),
+        to_contract: "checked-dae-v1".to_string(),
+        evidence_git_commit: "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b".to_string(),
+        sim_target_models: 566,
+        stage_counts_before: reviewed_contract_counts_before(),
+        stage_counts_after: reviewed_contract_counts_after(),
+        phase_failure_counts_after: reviewed_phase_failure_counts_after(),
+        error_code_counts_after: reviewed_error_code_counts_after(),
+    }
+}
+
+fn apply_stage_counts(header: &mut MslQualityBaselineHeader, counts: &CompilerContractStageCounts) {
+    header.parse_models = counts.parse_models;
+    header.flatten_models = counts.flatten_models;
+    header.dae_models = counts.dae_models;
+    header.compiled_models = counts.compiled_models;
+    header.solve_models = counts.solve_models;
+    header.balanced_models = counts.balanced_models;
+    header.unbalanced_models = counts.unbalanced_models;
+    header.partial_models = counts.partial_models;
+    header.balance_denominator = counts.balance_denominator;
+    header.initial_balanced_models = counts.initial_balanced_models;
+    header.initial_unbalanced_models = counts.initial_unbalanced_models;
+    header.sim_attempted = counts.sim_attempted;
+    header.ic_attempted = counts.ic_attempted;
+    header.ic_ok = counts.ic_ok;
+    header.ic_solver_fail = counts.ic_solver_fail;
+    header.sim_ok = counts.sim_ok;
 }
 
 fn migration(from: &str, to: &str) -> OmcContextMigration {
@@ -230,6 +267,41 @@ fn combined_schema_and_omc_migration_accepts_exact_flatten_correction() {
 }
 
 #[test]
+fn reviewed_checked_dae_contract_cutover_selects_checked_baseline() {
+    let mut promoted = header("old");
+    promoted.quality_gate_version = 1;
+    promoted.flatten_models = 565;
+    promoted.solve_models = 381;
+    promoted.sim_attempted = 413;
+    promoted.ic_attempted = 259;
+    promoted.ic_ok = 239;
+    promoted.ic_solver_fail = 20;
+    promoted.sim_ok = 170;
+
+    let mut checked_in = header("new");
+    checked_in.git_commit = "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b".to_string();
+    apply_stage_counts(&mut checked_in, &reviewed_contract_counts_after());
+    checked_in.metric_schema_migration = Some(schema_migration());
+    checked_in.compiler_contract_migration = Some(compiler_contract_migration());
+    checked_in.omc_context_migration = Some(migration("old", "new"));
+
+    assert_eq!(
+        choose_baseline(&promoted, &checked_in).expect("reviewed contract cutover"),
+        BaselineChoice::CheckedInMigration
+    );
+
+    checked_in
+        .compiler_contract_migration
+        .as_mut()
+        .unwrap()
+        .stage_counts_after
+        .compiled_models += 1;
+    let error = choose_baseline(&promoted, &checked_in)
+        .expect_err("unreviewed contract count must fail closed");
+    assert!(error.to_string().contains("stage counts"), "{error}");
+}
+
+#[test]
 fn changed_omc_context_requires_exact_migration_declaration() {
     let promoted = header("old");
     let mut checked_in = header("new");
@@ -275,6 +347,7 @@ fn baseline_header_rejects_missing_or_invalid_omc_version() {
         let mut baseline = json!({
             "quality_gate_version": 2,
             "run_scope": "full",
+            "git_commit": "fixture",
             "sim_target_models": 566
         });
         if let Some(version) = version {
