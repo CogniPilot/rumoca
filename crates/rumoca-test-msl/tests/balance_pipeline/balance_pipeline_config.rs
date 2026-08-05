@@ -135,8 +135,9 @@ pub(crate) struct MslParityConfig {
     /// [`rumoca_test_msl::resource_budget::MODEL_COMPILE_WALL_LIMIT_SECS_DEFAULT`]
     /// and is raise-only.
     pub model_compile_wall_limit_secs: Option<f64>,
-    /// Per-model, per-phase wall budget in seconds. Defaults to 10 seconds and
-    /// is raise-only. Each model receives exactly one attempt.
+    /// Per-model, per-phase wall budget in seconds. Defaults to the shared MSL
+    /// simulation budget and is raise-only. Each model receives exactly one
+    /// attempt.
     pub model_attempt_timeout_secs: Option<f64>,
     /// Build the OMC reference for every simulation target instead of only the
     /// models rumoca already simulates. Needed by the long-budget event-cohort

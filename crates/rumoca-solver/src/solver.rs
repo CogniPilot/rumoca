@@ -201,7 +201,7 @@ pub enum StepUntilOutcome {
 ///
 /// SPEC_0038 §Internal Solver Boundary: a backend integrates; it does not own
 /// event semantics. Applying an event boundary is a separate capability
-/// ([`RuntimeEventBoundaryHandler`]), required only by hosts that drive the
+/// ([`crate::RuntimeEventBoundaryHandler`]), required only by hosts that drive the
 /// shared orchestration loop rather than an ME component's own event mode.
 pub trait SimulationBackend {
     type Error;

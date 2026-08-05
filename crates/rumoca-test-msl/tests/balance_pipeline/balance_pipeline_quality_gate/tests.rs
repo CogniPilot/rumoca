@@ -105,7 +105,7 @@ fn baseline_quality_template() -> MslQualityBaseline {
         git_commit: "baseline".to_string(),
         msl_version: "v4.1.0".to_string(),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
-        sim_timeout_seconds: 10.0,
+        sim_timeout_seconds: SIM_TIMEOUT_SECS,
         simulatable_attempted: 10,
         parse_models: 10,
         flatten_models: 10,
@@ -288,16 +288,19 @@ fn current_quality_snapshot_records_parity_omc_version() {
 }
 
 #[test]
-fn current_quality_snapshot_exposes_uncertified_simulation_debt() {
+fn current_quality_snapshot_separates_reviewed_exceptions_from_unclassified_debt() {
     let mut summary = valid_summary_template();
     summary.sim_ok = 10;
+    let mut trace = trace_accuracy_baseline();
+    trace.policy_excluded_models = 1;
+    trace.trace_nonidentifiable_models = 1;
     let parity = MslParityGateInput {
         total_models: Some(10),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         runtime_model_ratios: IndexMap::new(),
-        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        trace_accuracy_stats: Some(trace),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
     };
@@ -312,15 +315,21 @@ fn current_quality_snapshot_exposes_uncertified_simulation_debt() {
     );
     assert_eq!(
         snapshot
-            .pointer("/pipeline_progress/uncertified_simulations")
+            .pointer("/pipeline_progress/reviewed_trace_exceptions")
             .and_then(Value::as_u64),
         Some(2)
     );
     assert_eq!(
         snapshot
-            .pointer("/pipeline_progress/simulation_soundness_percent")
+            .pointer("/pipeline_progress/unclassified_simulations")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/pipeline_progress/classified_simulations_percent")
             .and_then(Value::as_f64),
-        Some(80.0)
+        Some(100.0)
     );
 }
 
@@ -994,6 +1003,8 @@ fn trace_accuracy_baseline() -> MslTraceAccuracyStatsBaseline {
         models_compared: 10,
         missing_trace_models: 0,
         skipped_models: 0,
+        policy_excluded_models: 0,
+        trace_nonidentifiable_models: 0,
         agreement_high: 8,
         agreement_high_percent: Some(80.0),
         agreement_minor: 1,
@@ -1294,8 +1305,8 @@ fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_excee
     assert!(
         reasons
             .iter()
-            .any(|reason| reason.contains("Trace acceptable pass count regressed")),
-        "expected acceptable trace count regression reason, got: {reasons:?}"
+            .any(|reason| reason.contains("Trace classified pass count regressed")),
+        "expected classified trace count regression reason, got: {reasons:?}"
     );
     assert!(
         reasons
@@ -1360,8 +1371,8 @@ fn trace_near_to_high_promotion_does_not_trigger_regression() {
     assert!(
         reasons
             .iter()
-            .all(|reason| !reason.contains("Trace acceptable pass count regressed")),
-        "unexpected acceptable-band regression reason: {reasons:?}"
+            .all(|reason| !reason.contains("Trace classified pass count regressed")),
+        "unexpected classified-count regression reason: {reasons:?}"
     );
 }
 
@@ -1391,7 +1402,7 @@ fn trace_deviation_to_near_migration_does_not_trigger_regression() {
 }
 
 #[test]
-fn trace_acceptable_band_regression_reason_triggers_on_real_drop() {
+fn trace_classified_count_regression_reason_triggers_on_real_drop() {
     let baseline = MslQualityBaseline {
         trace_accuracy_stats: Some(trace_accuracy_baseline()),
         ..baseline_quality_template()
@@ -1412,8 +1423,49 @@ fn trace_acceptable_band_regression_reason_triggers_on_real_drop() {
     assert!(
         reasons
             .iter()
-            .any(|reason| reason.contains("Trace acceptable pass count regressed")),
-        "expected acceptable-band regression reason, got: {reasons:?}"
+            .any(|reason| reason.contains("Trace classified pass count regressed")),
+        "expected classified-count regression reason, got: {reasons:?}"
+    );
+}
+
+#[test]
+fn reviewed_pointwise_exclusions_preserve_trace_accounting_ratchets() {
+    let baseline = MslQualityBaseline {
+        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        ..baseline_quality_template()
+    };
+    let reviewed = MslTraceAccuracyStatsBaseline {
+        models_compared: 8,
+        skipped_models: 2,
+        policy_excluded_models: 2,
+        agreement_high: 8,
+        agreement_high_percent: Some(100.0),
+        agreement_minor: 0,
+        agreement_minor_percent: Some(0.0),
+        agreement_deviation: 0,
+        agreement_deviation_percent: Some(0.0),
+        models_with_bad_channel: Some(0),
+        models_with_severe_channel: Some(0),
+        models_with_any_channel_deviation: Some(0),
+        models_with_any_channel_deviation_percent: Some(0.0),
+        ..trace_accuracy_baseline()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(10),
+        omc_version: Some("OpenModelica 1.26.1".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
+        trace_accuracy_stats: Some(reviewed),
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let mut reasons = Vec::new();
+    push_trace_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons.is_empty(),
+        "reviewed oracle boundaries must remain accounted without masquerading as strict-high: {reasons:?}"
     );
 }
 
@@ -1464,7 +1516,7 @@ fn trace_fixed_denominator_gate_accepts_current_ci_delta() {
 }
 
 #[test]
-fn simulation_soundness_rejects_raw_success_without_strict_high_parity() {
+fn simulation_soundness_rejects_unclassified_non_high_results() {
     let parity = MslParityGateInput {
         total_models: Some(10),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
@@ -1484,24 +1536,35 @@ fn simulation_soundness_rejects_raw_success_without_strict_high_parity() {
     );
 
     assert_eq!(reasons.len(), 1);
-    assert!(reasons[0].contains("sim_ok=10 strict_high=8 uncertified=2"));
+    assert!(
+        reasons[0].contains(
+            "sim_ok=10 strict_high=8 reviewed_exceptions=0 unclassified=2 overclassified=0"
+        )
+    );
 }
 
 #[test]
-fn simulation_soundness_accepts_only_when_every_completion_is_strict_high() {
+fn simulation_soundness_accepts_strict_high_and_reviewed_oracle_boundaries() {
+    let mut trace = trace_accuracy_baseline();
+    trace.policy_excluded_models = 1;
+    trace.trace_nonidentifiable_models = 1;
     let parity = MslParityGateInput {
         total_models: Some(10),
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
         runtime_model_ratios: IndexMap::new(),
-        trace_accuracy_stats: Some(trace_accuracy_baseline()),
+        trace_accuracy_stats: Some(trace),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
     };
     let mut reasons = Vec::new();
 
-    push_trace_soundness_reasons(&mut reasons, gate_input_with_sim_rate(8, 10), Some(&parity));
+    push_trace_soundness_reasons(
+        &mut reasons,
+        gate_input_with_sim_rate(10, 10),
+        Some(&parity),
+    );
 
     assert!(reasons.is_empty());
 }

@@ -15,6 +15,15 @@ pub(super) fn scaled_residual_converged(residual: &[f64], scales: &[f64], tol: f
             .all(|(value, scale)| value.is_finite() && value.abs() <= scaled_tolerance(tol, scale))
 }
 
+pub(super) fn scaled_correction_converged(correction: &[f64], scales: &[f64], tol: f64) -> bool {
+    correction.len() == scales.len()
+        && correction
+            .iter()
+            .copied()
+            .zip(scales.iter().copied())
+            .all(|(value, scale)| value.is_finite() && value.abs() <= scaled_tolerance(tol, scale))
+}
+
 pub(super) fn scaled_residual_norm(residual: &[f64], scales: &[f64]) -> f64 {
     if residual.len() != scales.len() {
         return f64::INFINITY;

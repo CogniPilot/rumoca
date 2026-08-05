@@ -4,6 +4,42 @@
 use super::*;
 
 #[test]
+fn duplicate_package_context_is_one_exact_selection() {
+    let package_def = DefId::new(1);
+    let function_def = DefId::new(2);
+    let mut function = class("f", ClassType::Function);
+    function.def_id = Some(function_def);
+    let mut package = class("P", ClassType::Package);
+    package.def_id = Some(package_def);
+    package.classes.insert("f".to_string(), function);
+    let mut tree = ClassTree::new();
+    tree.definitions.classes.insert("P".to_string(), package);
+    tree.def_map.insert(package_def, "P".to_string());
+    tree.def_map.insert(function_def, "P.f".to_string());
+    tree.name_map.insert("P".to_string(), package_def);
+    tree.name_map.insert("P.f".to_string(), function_def);
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let packages = vec![
+        override_target_with_active("P", package_def, ClassType::Package, false),
+        override_target_with_active("P", package_def, ClassType::Package, false),
+    ];
+    let functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &packages, &functions)
+        .with_lexical_package_def_id(Some(package_def));
+    let reference = rumoca_core::Reference::with_component_reference(
+        "P.f",
+        core_comp_ref(&[("P", package_def), ("f", function_def)]),
+    );
+
+    let selected =
+        exact_override_package_for_source_package(&reference, package_def, &ctx, test_span())
+            .expect("duplicate context is not ambiguous")
+            .expect("package selected");
+
+    assert_eq!(selected.def_id, package_def);
+}
+
+#[test]
 fn modifier_rewrite_rejects_missing_selection_with_call_site_provenance() {
     let implementation = DefId::new(160);
     let mut standard = class("Standard", ClassType::Function);

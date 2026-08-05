@@ -15,7 +15,16 @@ pub(in crate::construction) enum ModelAlgorithmPlan {
         domain: StructuredIndexDomain,
         binder_spans: Vec<Span>,
     },
-    Event,
+    Event {
+        tensor_loops: HashMap<Span, ModelEventTensorLoopPlan>,
+    },
+}
+
+#[derive(Clone)]
+pub(in crate::construction) struct ModelEventTensorLoopPlan {
+    pub(in crate::construction) targets: Vec<VarName>,
+    pub(in crate::construction) domain: StructuredIndexDomain,
+    pub(in crate::construction) binder_spans: Vec<Span>,
 }
 
 pub(super) fn analyze_model_algorithm(
@@ -37,7 +46,9 @@ pub(super) fn analyze_model_algorithm(
                 algorithm.span,
             ));
         }
-        return Ok(ModelAlgorithmPlan::Event);
+        let mut tensor_loops = HashMap::new();
+        analyze_event_tensor_loops(flat, &algorithm.statements, &mut tensor_loops)?;
+        return Ok(ModelAlgorithmPlan::Event { tensor_loops });
     }
     let targets = model_algorithm_targets(flat, algorithm);
     if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets, roles)? {
@@ -75,6 +86,249 @@ pub(super) fn analyze_model_algorithm(
     Ok(ModelAlgorithmPlan::Declarative {
         target: target.clone(),
     })
+}
+
+fn analyze_event_tensor_loops(
+    flat: &flat::Model,
+    statements: &[rumoca_core::Statement],
+    plans: &mut HashMap<Span, ModelEventTensorLoopPlan>,
+) -> Result<(), ToDaeError> {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::For { span, .. } => {
+                let plan = analyze_event_tensor_loop(flat, statement)?;
+                if plans.insert(*span, plan).is_some() {
+                    return Err(ToDaeError::unsupported_algorithm(
+                        "model",
+                        "event tensor loops require distinct source owners",
+                        *span,
+                    ));
+                }
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    analyze_event_tensor_loops(flat, &block.stmts, plans)?;
+                }
+                if let Some(fallback) = else_block {
+                    analyze_event_tensor_loops(flat, fallback, plans)?;
+                }
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    analyze_event_tensor_loops(flat, &block.stmts, plans)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn analyze_event_tensor_loop(
+    flat: &flat::Model,
+    statement: &rumoca_core::Statement,
+) -> Result<ModelEventTensorLoopPlan, ToDaeError> {
+    let rumoca_core::Statement::For {
+        indices,
+        equations,
+        span,
+    } = statement
+    else {
+        unreachable!("event tensor-loop analysis receives a for statement")
+    };
+    if equations.is_empty() {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "an event tensor loop requires total element assignments",
+            *span,
+        ));
+    }
+    let mut targets = Vec::with_capacity(equations.len());
+    let mut dimensions = None;
+    for equation in equations {
+        let rumoca_core::Statement::Assignment { comp, .. } = equation else {
+            return Err(ToDaeError::unsupported_algorithm(
+                "model",
+                "an event tensor loop requires only total element assignments",
+                required_statement_span(equation, "event tensor-loop statement")?,
+            ));
+        };
+        let target = assignment_target(comp);
+        if targets.contains(&target) {
+            return Err(ToDaeError::unsupported_algorithm(
+                "model",
+                format!("event tensor loop assigns `{target}` more than once"),
+                *span,
+            ));
+        }
+        let target_dimensions = &flat.variables[&target].dims;
+        validate_event_tensor_target(indices, comp, target_dimensions, *span)?;
+        match &dimensions {
+            Some(expected) if expected != target_dimensions => {
+                return Err(ToDaeError::unsupported_algorithm(
+                    "model",
+                    "event tensor-loop targets must share one exact domain",
+                    *span,
+                ));
+            }
+            None => dimensions = Some(target_dimensions.clone()),
+            _ => {}
+        }
+        targets.push(target);
+    }
+    let dimensions = dimensions.expect("a nonempty event tensor loop has one target shape");
+    let (domain, binder_spans) = event_tensor_domain(indices, &dimensions, *span)?;
+    let target_set = targets.iter().cloned().collect::<HashSet<_>>();
+    let mut available = HashSet::new();
+    for (target, equation) in targets.iter().zip(equations) {
+        let rumoca_core::Statement::Assignment { comp, value, .. } = equation else {
+            unreachable!("event tensor-loop grammar was checked above")
+        };
+        let subscripts = comp
+            .parts()
+            .last()
+            .expect("event tensor-loop target is nonempty")
+            .subs
+            .as_slice();
+        validate_tensor_target_reads(value, &target_set, &available, subscripts)?;
+        available.insert(target.clone());
+    }
+    Ok(ModelEventTensorLoopPlan {
+        targets,
+        domain,
+        binder_spans,
+    })
+}
+
+fn validate_event_tensor_target(
+    indices: &[rumoca_core::ForIndex],
+    component: &rumoca_core::ComponentReference,
+    dimensions: &[i64],
+    span: Span,
+) -> Result<(), ToDaeError> {
+    let Some(part) = component.parts().last() else {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "event tensor-loop assignment has no checked target",
+            span,
+        ));
+    };
+    if dimensions.is_empty()
+        || indices.len() != dimensions.len()
+        || part.subs.len() != dimensions.len()
+    {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "event tensor loop must cover every target axis exactly once",
+            span,
+        ));
+    }
+    for ((index, subscript), extent) in indices.iter().zip(&part.subs).zip(dimensions) {
+        validate_total_axis(index, subscript, *extent)?;
+    }
+    Ok(())
+}
+
+fn event_tensor_domain(
+    indices: &[rumoca_core::ForIndex],
+    dimensions: &[i64],
+    span: Span,
+) -> Result<(StructuredIndexDomain, Vec<Span>), ToDaeError> {
+    let mut binders = Vec::with_capacity(indices.len());
+    let mut binder_spans = Vec::with_capacity(indices.len());
+    for (ordinal, (index, extent)) in indices.iter().zip(dimensions).enumerate() {
+        binders.push(StructuredIndexBinder {
+            id: ordinal,
+            display_name: index.ident.clone(),
+            lower: 1,
+            upper: *extent,
+            step: 1,
+        });
+        binder_spans.push(expression_span(&index.range)?);
+    }
+    let domain = StructuredIndexDomain { binders };
+    domain.scalar_count().map_err(|error| {
+        ToDaeError::unsupported_algorithm(
+            "model",
+            format!("event tensor-loop domain is not computable: {error}"),
+            span,
+        )
+    })?;
+    Ok((domain, binder_spans))
+}
+
+fn validate_tensor_target_reads(
+    value: &Expression,
+    targets: &HashSet<VarName>,
+    available: &HashSet<VarName>,
+    expected_subscripts: &[Subscript],
+) -> Result<(), ToDaeError> {
+    struct CurrentTargetRead<'target> {
+        targets: &'target HashSet<VarName>,
+        available: &'target HashSet<VarName>,
+        expected_subscripts: &'target [Subscript],
+        invalid: Option<(VarName, bool)>,
+    }
+
+    impl rumoca_core::ExpressionVisitor for CurrentTargetRead<'_> {
+        fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+            if !self.targets.contains(name.var_name()) {
+                self.walk_var_ref(name, subscripts);
+                return;
+            }
+            let available = self.available.contains(name.var_name());
+            let same_element = same_tensor_element(subscripts, self.expected_subscripts);
+            if !available || !same_element {
+                self.invalid = Some((name.var_name().clone(), available));
+            }
+            self.walk_var_ref(name, subscripts);
+        }
+
+        fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+            if matches!(function, BuiltinFunction::Pre | BuiltinFunction::Previous) {
+                return;
+            }
+            self.walk_builtin_call(function, args);
+        }
+    }
+
+    let mut proof = CurrentTargetRead {
+        targets,
+        available,
+        expected_subscripts,
+        invalid: None,
+    };
+    rumoca_core::ExpressionVisitor::visit_expression(&mut proof, value);
+    if let Some((target, available)) = proof.invalid {
+        let detail = if available {
+            "reads a different tensor element"
+        } else {
+            "reads itself or a later tensor target"
+        };
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            format!("event tensor loop {detail} through `{target}`"),
+            expression_span(value)?,
+        ));
+    }
+    Ok(())
+}
+
+fn same_tensor_element(actual: &[Subscript], expected: &[Subscript]) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| match (actual, expected) {
+                (Subscript::Expr { expr: actual, .. }, Subscript::Expr { expr: expected, .. }) => {
+                    rumoca_core::expressions_semantically_equal(actual, expected)
+                }
+                _ => false,
+            })
 }
 
 fn analyze_separated_array_sum(
@@ -580,7 +834,7 @@ fn contains_event_control(statements: &[rumoca_core::Statement]) -> bool {
     })
 }
 
-fn is_event_condition(expression: &Expression) -> bool {
+pub(in crate::construction) fn is_event_condition(expression: &Expression) -> bool {
     match expression {
         Expression::BuiltinCall {
             function: BuiltinFunction::Change | BuiltinFunction::Sample,

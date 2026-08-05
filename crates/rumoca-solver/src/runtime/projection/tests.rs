@@ -603,7 +603,11 @@ fn coupled_projection_sensitivity_uses_selected_jacobian_rows() {
 
     assert_eq!(seed, vec![0.0, 0.0]);
     assert_eq!(model.full_jacobian_calls.get(), 0);
-    assert_eq!(model.jacobian_row_calls.get(), 8);
+    assert_eq!(
+        model.jacobian_row_calls.get(),
+        12,
+        "the selected rows are also evaluated to certify the residual in row-scaled units"
+    );
 }
 
 impl ImplicitProjectionModel for BlockProjectionModel {
@@ -1359,8 +1363,19 @@ fn project_algebraic_block_rejects_rectangular_inventory() {
     };
     let mut y = vec![0.0, 0.0];
 
-    let err = project_algebraic_block(&model, &mut y, &[], 0.0, &block, 1.0e-12, StepLimit::None)
-        .expect_err("rectangular projection inventory must be rejected");
+    let err = project_algebraic_block(
+        &model,
+        &mut y,
+        &[],
+        0.0,
+        &block,
+        AlgebraicBlockProjectionPolicy {
+            tolerance: 1.0e-12,
+            step_limit: StepLimit::None,
+            certify_coordinates: false,
+        },
+    )
+    .expect_err("rectangular projection inventory must be rejected");
 
     assert!(err.to_string().contains("1 residual rows but 2 unknowns"));
     assert_eq!(y, vec![0.0, 0.0]);
@@ -1378,8 +1393,19 @@ fn project_algebraic_block_rejects_row_outside_residual_vector() {
     };
     let mut y = vec![0.0, 0.0];
 
-    let err = project_algebraic_block(&model, &mut y, &[], 0.0, &block, 1.0e-12, StepLimit::None)
-        .expect_err("invalid projection row should bubble a runtime error");
+    let err = project_algebraic_block(
+        &model,
+        &mut y,
+        &[],
+        0.0,
+        &block,
+        AlgebraicBlockProjectionPolicy {
+            tolerance: 1.0e-12,
+            step_limit: StepLimit::None,
+            certify_coordinates: false,
+        },
+    )
+    .expect_err("invalid projection row should bubble a runtime error");
 
     assert!(
         err.to_string()
@@ -1940,6 +1966,9 @@ fn initial_singleton_assignment_writes_sub_tolerance_constant_divisor() {
 
 #[path = "tests/manifold.rs"]
 mod manifold;
+
+#[path = "tests/certification.rs"]
+mod certification;
 
 #[path = "tests/saturation.rs"]
 mod saturation;

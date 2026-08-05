@@ -166,11 +166,10 @@ fn collect_algorithm_owners(
         if target_names.is_empty() {
             continue;
         }
-        let control_dependencies = statement_control_dependencies(&algorithm.statements, roles);
         let targets = target_names
             .into_iter()
             .map(|name| {
-                let mut dependencies = control_dependencies.clone();
+                let mut dependencies = HashSet::new();
                 let occurrence = collect_statement_target_dependencies(
                     &algorithm.statements,
                     &name,
@@ -183,20 +182,139 @@ fn collect_algorithm_owners(
                     algorithm.span,
                     occurrence,
                 )?;
+                let ordered_scalar_self_dependencies = dependencies.contains(&name)
+                    && !algorithm_reads_target_before_definition(
+                        &algorithm.statements,
+                        &name,
+                        roles,
+                        false,
+                    )
+                    .0;
                 Ok(SourceTarget {
                     name,
                     dependencies,
                     span,
-                    ordered_scalar_self_dependencies: false,
+                    ordered_scalar_self_dependencies,
                 })
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
-        owners.push(SourceOwner {
-            targets,
+        owners.extend(targets.into_iter().map(|target| SourceOwner {
+            targets: vec![target],
             span: algorithm.span,
-        });
+        }));
     }
     Ok(())
+}
+
+/// Prove whether a model-algorithm target reads its entry value before an SSA
+/// definition dominates that read.
+///
+/// The returned pair is `(entry_read, definitely_written_on_exit)`.  Reads
+/// hidden beneath `pre`/`previous` are historical and therefore absent from
+/// `current_discrete_dependencies`.  Branch exits join with logical `and`, so
+/// a later read is admitted only when every path supplied a value.
+fn algorithm_reads_target_before_definition(
+    statements: &[rumoca_core::Statement],
+    target: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+    mut written: bool,
+) -> (bool, bool) {
+    let mut entry_read = false;
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::Assignment { comp, value, .. } => {
+                entry_read |= !written && expression_reads_current_target(value, target, roles);
+                if rumoca_core::component_ref_to_base_reference(comp).var_name() == target {
+                    written = true;
+                }
+            }
+            rumoca_core::Statement::FunctionCall { args, outputs, .. } => {
+                entry_read |= !written
+                    && args
+                        .iter()
+                        .any(|argument| expression_reads_current_target(argument, target, roles));
+                if outputs.iter().flatten().any(|output| {
+                    rumoca_core::component_ref_to_base_reference(output).var_name() == target
+                }) {
+                    written = true;
+                }
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                entry_read |= !written
+                    && cond_blocks
+                        .iter()
+                        .any(|block| expression_reads_current_target(&block.cond, target, roles));
+                let mut exits = cond_blocks
+                    .iter()
+                    .map(|block| {
+                        let (branch_read, branch_written) =
+                            algorithm_reads_target_before_definition(
+                                &block.stmts,
+                                target,
+                                roles,
+                                written,
+                            );
+                        entry_read |= branch_read;
+                        branch_written
+                    })
+                    .collect::<Vec<_>>();
+                match else_block {
+                    Some(branch) => {
+                        let (branch_read, branch_written) =
+                            algorithm_reads_target_before_definition(
+                                branch, target, roles, written,
+                            );
+                        entry_read |= branch_read;
+                        exits.push(branch_written);
+                    }
+                    None => exits.push(written),
+                }
+                written = exits.into_iter().all(|branch| branch);
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                entry_read |= !written
+                    && blocks
+                        .iter()
+                        .any(|block| expression_reads_current_target(&block.cond, target, roles));
+                for block in blocks {
+                    let (branch_read, _) = algorithm_reads_target_before_definition(
+                        &block.stmts,
+                        target,
+                        roles,
+                        written,
+                    );
+                    entry_read |= branch_read;
+                }
+                // A when-body is atomic and its SSA values do not escape the
+                // event occurrence into the surrounding statement sequence.
+            }
+            rumoca_core::Statement::For {
+                indices, equations, ..
+            } => {
+                entry_read |= !written
+                    && indices
+                        .iter()
+                        .any(|index| expression_reads_current_target(&index.range, target, roles));
+                let (loop_read, _) =
+                    algorithm_reads_target_before_definition(equations, target, roles, written);
+                entry_read |= loop_read;
+            }
+            _ => {}
+        }
+    }
+    (entry_read, written)
+}
+
+fn expression_reads_current_target(
+    expression: &Expression,
+    target: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> bool {
+    current_discrete_dependencies(expression, roles).contains(target)
 }
 
 fn collect_when_owners(
@@ -526,135 +644,145 @@ fn collect_current_discrete_dependencies(
     }
 }
 
-fn statement_control_dependencies(
-    statements: &[rumoca_core::Statement],
-    roles: &HashMap<VarName, PlannedRole>,
-) -> HashSet<VarName> {
-    let mut dependencies = HashSet::new();
-    collect_statement_control_dependencies(statements, roles, &mut dependencies);
-    dependencies
-}
-
-fn collect_statement_control_dependencies(
-    statements: &[rumoca_core::Statement],
-    roles: &HashMap<VarName, PlannedRole>,
-    dependencies: &mut HashSet<VarName>,
-) {
-    for statement in statements {
-        match statement {
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            } => {
-                for block in cond_blocks {
-                    collect_current_discrete_dependencies(&block.cond, roles, dependencies);
-                    collect_statement_control_dependencies(&block.stmts, roles, dependencies);
-                }
-                if let Some(fallback) = else_block {
-                    collect_statement_control_dependencies(fallback, roles, dependencies);
-                }
-            }
-            rumoca_core::Statement::When { blocks, .. } => {
-                for block in blocks {
-                    collect_current_discrete_dependencies(&block.cond, roles, dependencies);
-                    collect_statement_control_dependencies(&block.stmts, roles, dependencies);
-                }
-            }
-            rumoca_core::Statement::For { equations, .. } => {
-                collect_statement_control_dependencies(equations, roles, dependencies);
-            }
-            rumoca_core::Statement::While { block, .. } => {
-                collect_current_discrete_dependencies(&block.cond, roles, dependencies);
-                collect_statement_control_dependencies(&block.stmts, roles, dependencies);
-            }
-            _ => {}
-        }
-    }
-}
-
 fn collect_statement_target_dependencies(
     statements: &[rumoca_core::Statement],
     target: &VarName,
     roles: &HashMap<VarName, PlannedRole>,
     dependencies: &mut HashSet<VarName>,
 ) -> Option<Span> {
-    let mut first_action = None;
-    for statement in statements {
-        let action = match statement {
-            rumoca_core::Statement::Assignment {
-                comp, value, span, ..
-            } => {
-                let written = rumoca_core::component_ref_to_base_reference(comp)
-                    .var_name()
-                    .clone();
-                source_target_contains(&written, target).then(|| {
-                    collect_current_discrete_dependencies(value, roles, dependencies);
-                    *span
-                })
-            }
-            rumoca_core::Statement::FunctionCall {
-                args,
-                outputs,
-                span,
-                ..
-            } => outputs
-                .iter()
-                .flatten()
-                .any(|output| source_target_contains(&output.to_var_name(), target))
-                .then(|| {
-                    for argument in args {
-                        collect_current_discrete_dependencies(argument, roles, dependencies);
-                    }
-                    *span
-                }),
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            } => {
-                let mut nested = None;
-                for block in cond_blocks {
-                    nested = nested.or(collect_statement_target_dependencies(
-                        &block.stmts,
-                        target,
-                        roles,
-                        dependencies,
-                    ));
+    statements.iter().fold(None, |first_action, statement| {
+        let action = collect_statement_target_dependency(statement, target, roles, dependencies);
+        first_action.or(action)
+    })
+}
+
+fn collect_statement_target_dependency(
+    statement: &rumoca_core::Statement,
+    target: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+    dependencies: &mut HashSet<VarName>,
+) -> Option<Span> {
+    match statement {
+        rumoca_core::Statement::Assignment {
+            comp, value, span, ..
+        } => {
+            let written = rumoca_core::component_ref_to_base_reference(comp)
+                .var_name()
+                .clone();
+            source_target_contains(&written, target).then(|| {
+                collect_current_discrete_dependencies(value, roles, dependencies);
+                *span
+            })
+        }
+        rumoca_core::Statement::FunctionCall {
+            args,
+            outputs,
+            span,
+            ..
+        } => outputs
+            .iter()
+            .flatten()
+            .any(|output| source_target_contains(&output.to_var_name(), target))
+            .then(|| {
+                for argument in args {
+                    collect_current_discrete_dependencies(argument, roles, dependencies);
                 }
-                if let Some(fallback) = else_block {
-                    nested = nested.or(collect_statement_target_dependencies(
-                        fallback,
-                        target,
-                        roles,
-                        dependencies,
-                    ));
-                }
-                nested
-            }
-            rumoca_core::Statement::When { blocks, .. } => {
-                let mut nested = None;
-                for block in blocks {
-                    nested = nested.or(collect_statement_target_dependencies(
-                        &block.stmts,
-                        target,
-                        roles,
-                        dependencies,
-                    ));
-                }
-                nested
-            }
-            rumoca_core::Statement::For { equations, .. } => {
-                collect_statement_target_dependencies(equations, target, roles, dependencies)
-            }
-            rumoca_core::Statement::While { block, .. } => {
-                collect_statement_target_dependencies(&block.stmts, target, roles, dependencies)
-            }
-            _ => None,
-        };
-        first_action = first_action.or(action);
+                *span
+            }),
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => collect_conditional_target_dependencies(
+            cond_blocks,
+            else_block.as_deref(),
+            target,
+            roles,
+            dependencies,
+        ),
+        rumoca_core::Statement::When { blocks, .. } => {
+            collect_conditional_target_dependencies(blocks, None, target, roles, dependencies)
+        }
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => collect_loop_target_dependencies(
+            equations,
+            indices.iter().map(|index| &index.range),
+            target,
+            roles,
+            dependencies,
+        ),
+        rumoca_core::Statement::While { block, .. } => collect_loop_target_dependencies(
+            &block.stmts,
+            std::iter::once(&block.cond),
+            target,
+            roles,
+            dependencies,
+        ),
+        _ => None,
     }
-    first_action
+}
+
+fn collect_conditional_target_dependencies(
+    blocks: &[rumoca_core::StatementBlock],
+    fallback: Option<&[rumoca_core::Statement]>,
+    target: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+    dependencies: &mut HashSet<VarName>,
+) -> Option<Span> {
+    let mut first_action = None;
+    let mut prior_conditions = Vec::new();
+    for block in blocks {
+        let branch = collect_branch_target_dependencies(
+            &block.stmts,
+            prior_conditions
+                .iter()
+                .copied()
+                .chain(std::iter::once(&block.cond)),
+            target,
+            roles,
+            dependencies,
+        );
+        first_action = first_action.or(branch);
+        prior_conditions.push(&block.cond);
+    }
+    let fallback = fallback.and_then(|statements| {
+        collect_branch_target_dependencies(
+            statements,
+            prior_conditions.iter().copied(),
+            target,
+            roles,
+            dependencies,
+        )
+    });
+    first_action.or(fallback)
+}
+
+fn collect_branch_target_dependencies<'a>(
+    statements: &[rumoca_core::Statement],
+    conditions: impl Iterator<Item = &'a Expression>,
+    target: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+    dependencies: &mut HashSet<VarName>,
+) -> Option<Span> {
+    let mut branch_dependencies = HashSet::new();
+    let action =
+        collect_statement_target_dependencies(statements, target, roles, &mut branch_dependencies)?;
+    for condition in conditions {
+        collect_current_discrete_dependencies(condition, roles, dependencies);
+    }
+    dependencies.extend(branch_dependencies);
+    Some(action)
+}
+
+fn collect_loop_target_dependencies<'a>(
+    statements: &[rumoca_core::Statement],
+    controls: impl Iterator<Item = &'a Expression>,
+    target: &VarName,
+    roles: &HashMap<VarName, PlannedRole>,
+    dependencies: &mut HashSet<VarName>,
+) -> Option<Span> {
+    collect_branch_target_dependencies(statements, controls, target, roles, dependencies)
 }
 
 fn source_target_contains(source: &VarName, concrete: &VarName) -> bool {

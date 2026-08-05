@@ -226,6 +226,8 @@ pub(crate) fn collect_functions(
             continue;
         };
 
+        retain_constructor_record_type(flat, &flat_func)?;
+
         if !expanded.insert_function(&flat_func) {
             continue;
         }
@@ -242,6 +244,83 @@ pub(crate) fn collect_functions(
         flat.add_function(flat_func);
     }
 
+    // Precollection can seed constructors before the reachability worklist.
+    // Reconcile the complete retained function set at the phase boundary so
+    // every constructor, independent of discovery route, contributes its
+    // compact aggregate layout.
+    retain_discovered_constructor_types(flat)
+}
+
+fn retain_discovered_constructor_types(flat: &mut flat::Model) -> Result<(), FlattenError> {
+    let constructors = flat
+        .functions
+        .values()
+        .filter(|function| function.is_constructor)
+        .cloned()
+        .collect::<Vec<_>>();
+    for constructor in &constructors {
+        retain_constructor_record_type(flat, constructor)?;
+    }
+    Ok(())
+}
+
+/// Retain the compact record layout whenever function reachability discovers
+/// its constructor, even if the model has no record-valued component instance.
+///
+/// Calls can return and immediately project a record (for example
+/// `bodyTwist(state).bodyLinearVelocity`).  Such a value never passes through
+/// component-instance flattening, so its constructor signature is the Flat
+/// producer that owns the downstream field-layout proof.
+fn retain_constructor_record_type(
+    flat: &mut flat::Model,
+    function: &rumoca_core::Function,
+) -> Result<(), FlattenError> {
+    if !function.is_constructor {
+        return Ok(());
+    }
+    let record = function.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            function.name.as_str(),
+            "record constructor identity",
+            function.span,
+        )
+    })?;
+    let fields = function
+        .inputs
+        .iter()
+        .map(|field| {
+            let def_id = field.def_id.ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    format!("{}.{}", function.name, field.name),
+                    "record field identity",
+                    field.span,
+                )
+            })?;
+            Ok(flat::RecordField {
+                name: field.name.clone(),
+                def_id,
+                dims: field.dimensions().to_vec(),
+            })
+        })
+        .collect::<Result<Vec<_>, FlattenError>>()?;
+
+    if let Some(existing) = flat.record_types.get(&record) {
+        if existing.fields != fields {
+            return Err(FlattenError::missing_resolved_class_metadata(
+                function.name.as_str(),
+                "one exact record layout for the constructor declaration",
+                function.span,
+            ));
+        }
+        return Ok(());
+    }
+    flat.record_types.insert(
+        record,
+        flat::RecordType {
+            name: function.name.as_str().to_string(),
+            fields,
+        },
+    );
     Ok(())
 }
 
@@ -439,10 +518,13 @@ fn lookup_function_request_with_scope_uncertified<'tree>(
         && is_callable_class_candidate(&class_def.class_type)
         && !class_def.partial
     {
-        let exposed_name = class_index
-            .qualified_name(def_id)
-            .unwrap_or(request.name.as_str())
-            .to_string();
+        let exposed_name =
+            request_exposed_qualified_name(class_index, request).unwrap_or_else(|| {
+                class_index
+                    .qualified_name(def_id)
+                    .unwrap_or(request.name.as_str())
+                    .to_string()
+            });
         if let Some(flat_func) = convert_callable(
             tree,
             class_index,
@@ -465,6 +547,17 @@ fn lookup_function_request_with_scope_uncertified<'tree>(
         member_cache,
         type_catalog,
     )
+}
+
+fn request_exposed_qualified_name(
+    class_index: &ast::ClassDefIndex<'_>,
+    request: &FunctionRequest,
+) -> Option<String> {
+    let reference = request.component_ref.as_ref()?;
+    let scope = reference.component_scope();
+    let owner = scope.prefix_parts().last()?;
+    let owner_name = class_index.qualified_name(owner.def_id)?;
+    Some(format!("{owner_name}.{}", scope.leaf_ident()?))
 }
 
 fn request_proves_transitive_non_replaceability(
@@ -543,9 +636,9 @@ pub(crate) fn lookup_function_request(
     )
 }
 
-struct FunctionClassResolution<'a> {
-    exposed_name: String,
-    class_def: &'a ast::ClassDef,
+pub(crate) struct FunctionClassResolution<'a> {
+    pub(crate) exposed_name: String,
+    pub(crate) class_def: &'a ast::ClassDef,
 }
 
 /// Resolve alias-style function names (e.g. `Medium.dynamicViscosity`) by
@@ -613,7 +706,7 @@ fn lookup_function_in_known_packages<'tree>(
     Ok(Some((qualified_name, flat_func)))
 }
 
-fn resolve_function_class_with_scope<'a>(
+pub(crate) fn resolve_function_class_with_scope<'a>(
     tree: &'a ast::ClassTree,
     class_index: &ast::ClassDefIndex<'a>,
     func_name: &str,
@@ -1015,7 +1108,9 @@ fn convert_function<'tree>(
     // instantiated, so the member tails Resolve deferred across replaceable
     // class edges are proved here before lowering demands exact identity.
     deferred_members::prove_deferred_members_in_algorithms(
+        tree,
         class_index,
+        qualified_name,
         &context.components,
         &mut context.algorithms,
     );
@@ -1103,6 +1198,8 @@ fn convert_function<'tree>(
 
     rewrite_function_extends_aliases_in_function(&mut func, tree, class_index)?;
     contextualize_record_param_type_names(tree, class_index, qualified_name, &mut func)?;
+    crate::function_lowering::coalesce_proven_record_output_assignments(&mut func);
+    crate::function_lowering::inline_proven_loop_scratch_assignments(&mut func);
     if !class_def.partial && is_executable_flat_function(&func) {
         validate_function_outputs_assigned(&func)?;
     }
@@ -1116,7 +1213,7 @@ fn convert_function<'tree>(
 /// Downstream record decomposition and output projection perform exact
 /// constructor lookups keyed by these names, so a record param must carry the
 /// concrete resolved type name rather than source-relative text.
-fn contextualize_record_param_type_names(
+pub(crate) fn contextualize_record_param_type_names(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     exposed_name: &str,
@@ -1131,12 +1228,20 @@ fn contextualize_record_param_type_names(
         if param.type_class != Some(rumoca_core::ClassType::Record) {
             continue;
         }
-        let resolution = resolve_function_class_with_scope(
+        let resolution = resolve_record_class_in_exposed_package(
             tree,
             class_index,
             &param.type_name,
-            Some(exposed_name),
+            exposed_name,
         )
+        .or_else(|| {
+            resolve_function_class_with_scope(
+                tree,
+                class_index,
+                &param.type_name,
+                Some(exposed_name),
+            )
+        })
         .or_else(|| {
             let type_def_id = param.type_def_id?;
             let class_def = class_index.get(type_def_id)?;
@@ -1165,4 +1270,32 @@ fn contextualize_record_param_type_names(
         param.type_def_id = resolution.class_def.def_id;
     }
     Ok(())
+}
+
+fn resolve_record_class_in_exposed_package<'a>(
+    tree: &'a ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'a>,
+    type_name: &str,
+    exposed_callable: &str,
+) -> Option<FunctionClassResolution<'a>> {
+    let canonical = resolve_function_class_with_scope(tree, class_index, type_name, None)?;
+    let canonical_owner = canonical
+        .class_def
+        .def_id
+        .and_then(|def_id| class_index.parent_def_id(def_id))?;
+    let exposed_package = path_utils::enclosing_scope(exposed_callable)?;
+    let mut package_chain = Vec::new();
+    crate::pipeline::collect_package_chain(
+        tree,
+        class_index,
+        exposed_package,
+        &mut package_chain,
+        &mut FxHashSet::default(),
+    );
+    if !package_chain.contains(&canonical_owner) {
+        return None;
+    }
+    let leaf = path_utils::leaf_segment(type_name);
+    let exposed = resolve_function_in_caller_packages(tree, class_index, exposed_callable, leaf)?;
+    resolve_function_class_with_scope(tree, class_index, &exposed, Some(exposed_callable))
 }

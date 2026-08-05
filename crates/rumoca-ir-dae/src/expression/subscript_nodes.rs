@@ -42,10 +42,9 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             subscripts.into_iter().collect(),
             self.provenance,
         )?;
-        let ty = self.storage.intern_type(
-            ValueType::array(selection.scalar_type, selection.dimensions),
-            self.provenance,
-        )?;
+        let ty = self
+            .storage
+            .intern_type(selection.value_type, self.provenance)?;
         self.insert(
             ExprNode::Index {
                 base: base.index(),
@@ -77,10 +76,9 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             subscripts.into_iter().collect(),
             self.provenance,
         )?;
-        let selected_type = self.storage.intern_type(
-            ValueType::array(selection.scalar_type, selection.dimensions),
-            self.provenance,
-        )?;
+        let selected_type = self
+            .storage
+            .intern_type(selection.value_type, self.provenance)?;
         let value_type = definition_type(self.storage, value, self.provenance)?;
         self.storage.expect_value_type_compatible(
             selected_type.index(),
@@ -110,8 +108,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
 }
 
 struct PackedSelection {
-    scalar_type: ScalarType,
-    dimensions: Vec<u32>,
+    value_type: ValueType,
     range: OperandRange,
     variability: ExpressionVariability,
     binder_domain: Option<u32>,
@@ -191,8 +188,7 @@ fn pack_subscripts(
     )?;
     dimensions.extend_from_slice(&base_type.dimensions()[range.len as usize..]);
     Ok(PackedSelection {
-        scalar_type: base_type.scalar_type(),
-        dimensions,
+        value_type: base_type.with_dimensions(dimensions),
         range,
         variability,
         binder_domain,

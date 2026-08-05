@@ -118,6 +118,63 @@ fn resolved_tree(source: &str) -> ast::ClassTree {
         .into_inner()
 }
 
+#[test]
+fn qualified_type_exposure_keeps_each_package_redeclare_instance_local() {
+    let source = r"
+partial package PartialRotation
+  replaceable record Orientation
+    Real marker[0];
+  end Orientation;
+end PartialRotation;
+
+package Quaternion
+  extends PartialRotation;
+  redeclare record extends Orientation
+    Real q[4];
+  end Orientation;
+end Quaternion;
+
+package Mrp
+  extends PartialRotation;
+  redeclare record extends Orientation
+    Real r[3];
+  end Orientation;
+end Mrp;
+
+package Generic
+  replaceable package Rotation = Quaternion constrainedby PartialRotation;
+  record Element
+    Rotation.Orientation rotation;
+  end Element;
+end Generic;
+
+package WithQuaternion
+  extends Generic(redeclare package Rotation = Quaternion);
+end WithQuaternion;
+
+package WithMrp
+  extends Generic(redeclare package Rotation = Mrp);
+end WithMrp;
+
+model Root
+  WithQuaternion.Element quaternion;
+  WithMrp.Element mrp;
+end Root;
+";
+    let tree = resolved_tree(source);
+    let overlay = crate::instantiate_model(&tree, "Root").expect("fixture instantiates");
+    let paths = overlay
+        .components
+        .values()
+        .map(|component| component.qualified_name.to_flat_string())
+        .collect::<std::collections::HashSet<_>>();
+
+    assert!(paths.contains("quaternion.rotation.q"));
+    assert!(!paths.contains("quaternion.rotation.r"));
+    assert!(paths.contains("mrp.rotation.r"));
+    assert!(!paths.contains("mrp.rotation.q"));
+}
+
 fn instantiate_component_redeclare_error(model: &str) -> Box<crate::InstantiateError> {
     crate::instantiate_model(&resolved_component_redeclare_tree(), model)
         .expect_err("component redeclare fixture should fail")

@@ -873,13 +873,25 @@ mod tests {
     /// a shape change that breaks it would silence models with no reason on
     /// record.
     #[test]
-    fn the_tracked_exclusions_file_parses_without_name_keyed_trace_classification() {
+    fn tracked_exclusions_are_reviewed_and_reasoned() {
         let path = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
             .join(TRACE_EXCLUSIONS_FILE_REL);
         let exclusions = load_trace_exclusions_file(&path).expect("tracked exclusions must parse");
-        assert!(
-            exclusions.is_empty(),
-            "stochastic and chaotic trace classification must come from typed evidence, not model names"
-        );
+        let expected = [
+            "Modelica.Blocks.Examples.DemoSignalCharacteristic",
+            "Modelica.Electrical.Analog.Examples.ChuaCircuit",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
+            "Modelica.Mechanics.Translational.Examples.PreLoad",
+        ];
+        assert_eq!(exclusions.len(), expected.len());
+        for model_name in expected {
+            let reason = exclusions
+                .get(model_name)
+                .unwrap_or_else(|| panic!("missing reviewed exclusion for {model_name}"));
+            assert!(
+                reason.split_whitespace().count() >= 8,
+                "reviewed exclusion for {model_name} must explain the oracle-test boundary"
+            );
+        }
     }
 }

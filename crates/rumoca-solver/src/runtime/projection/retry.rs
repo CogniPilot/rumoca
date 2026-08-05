@@ -32,11 +32,18 @@ pub(super) fn project_with_step_limited_retry<M: ImplicitProjectionModel>(
     y: &mut [f64],
     args: AlgebraicProjectionArgs<'_>,
     max_iters: usize,
+    certify_coordinates: bool,
 ) -> Result<(), RuntimeSolveError> {
     let snapshot = projection_unknown_values(plan, y);
-    let Err(unlimited) =
-        project_algebraics_with_plan_inner(model, plan, y, args, max_iters, StepLimit::None)
-    else {
+    let Err(unlimited) = project_algebraics_with_plan_inner(
+        model,
+        plan,
+        y,
+        args,
+        max_iters,
+        StepLimit::None,
+        certify_coordinates,
+    ) else {
         return Ok(());
     };
     restore_projection_unknown_values(plan, y, &snapshot);
@@ -48,6 +55,7 @@ pub(super) fn project_with_step_limited_retry<M: ImplicitProjectionModel>(
         args,
         retry_iters,
         StepLimit::Fraction(ALGEBRAIC_PROJECTION_TRUST_FRACTION),
+        certify_coordinates,
     ) {
         Ok(()) => Ok(()),
         Err(limited) => {

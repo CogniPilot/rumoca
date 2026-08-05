@@ -1,5 +1,40 @@
 use super::*;
 
+trait DeclaredEntry {
+    fn declaration(&self) -> DaeProvenance;
+    fn is_complete(&self) -> bool;
+}
+
+impl DeclaredEntry for VariableEntry {
+    fn declaration(&self) -> DaeProvenance {
+        self.declaration
+    }
+
+    fn is_complete(&self) -> bool {
+        self.attributes.is_some()
+    }
+}
+
+impl DeclaredEntry for FunctionEntry {
+    fn declaration(&self) -> DaeProvenance {
+        self.declaration
+    }
+
+    fn is_complete(&self) -> bool {
+        self.definition.is_some()
+    }
+}
+
+impl DeclaredEntry for ConditionEntry {
+    fn declaration(&self) -> DaeProvenance {
+        self.provenance
+    }
+
+    fn is_complete(&self) -> bool {
+        self.node.is_some()
+    }
+}
+
 impl Storage {
     pub(super) fn freeze(self) -> FrozenStorage {
         FrozenStorage {

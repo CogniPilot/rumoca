@@ -1364,7 +1364,7 @@ fn normalize_solver(raw: Option<&str>) -> Option<String> {
     Some(rumoca_core::canonical_solver_name(raw).map_or_else(|_| raw.to_string(), str::to_string))
 }
 
-/// Owned variant of [`normalize_solver`]; see it for why an unrunnable name is
+/// Owned variant of `normalize_solver`; see it for why an unrunnable name is
 /// preserved rather than dropped.
 pub fn normalize_solver_opt(value: Option<String>) -> Option<String> {
     normalize_solver(value.as_deref())

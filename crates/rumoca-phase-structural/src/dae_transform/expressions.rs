@@ -90,7 +90,18 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expect("finalized expression identity resolves");
         let provenance = source.provenance();
         let value_type = self.types[source.value_type_id().index() as usize];
-        let rebuilt = match source.operation() {
+        let rebuilt = self.rebuild_operation(source.operation(), provenance, value_type)?;
+        self.rebuilt[index] = Some(rebuilt);
+        Ok(rebuilt)
+    }
+
+    fn rebuild_operation(
+        &mut self,
+        operation: dae::ExpressionOperation<'source>,
+        provenance: dae::DaeProvenance,
+        value_type: dae::ValueTypeId<'target>,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        Ok(match operation {
             dae::ExpressionOperation::Literal(literal) => {
                 self.rebuild_literal(literal, provenance)?
             }
@@ -189,9 +200,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     self.clocks[target_clock.index() as usize].clock_id(),
                 )?
             }
-        };
-        self.rebuilt[index] = Some(rebuilt);
-        Ok(rebuilt)
+        })
     }
 
     /// Replay one source literal through the constructor that checks it.

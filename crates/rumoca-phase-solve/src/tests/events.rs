@@ -351,13 +351,12 @@ fn exact_unconditional_b1c_relation_owns_the_root_post_side() {
     );
 }
 
-#[test]
-fn root_refresh_excludes_relation_bearing_follow_current_owner() {
+fn relation_bearing_follow_current_model() -> dae::Dae {
     let source = TestSource::new(
         "discrete Boolean fire, off, gated; equation fire = time > 0.5; off = time > 0.25 or not fire; gated = fire and true;",
     );
     let owner = source.at(0, 1);
-    let model = dae::Dae::construct(source.map, |model| {
+    dae::Dae::construct(source.map, |model| {
         let boolean = model.types(|types| {
             types.intern(
                 TypeId::new(0),
@@ -425,28 +424,7 @@ fn root_refresh_excludes_relation_bearing_follow_current_owner() {
                 )?;
                 Ok((fire_relation, mode_relation, off_value, gated_value))
             })?;
-        let (fire_root, fire_activation, mode_root, mode_activation) =
-            model.conditions(|conditions| {
-                let fire_root = conditions.relation(fire_relation, owner)?;
-                let fire_activation = conditions.reserve(owner)?;
-                conditions.define(
-                    fire_activation,
-                    dae::ConditionInput::Relation(fire_root),
-                    owner,
-                )?;
-                let mode_root = conditions.relation(mode_relation, owner)?;
-                let mode_activation = conditions.reserve(owner)?;
-                conditions.define(
-                    mode_activation,
-                    dae::ConditionInput::Relation(mode_root),
-                    owner,
-                )?;
-                Ok((fire_root, fire_activation, mode_root, mode_activation))
-            })?;
-        model.conditions(|conditions| {
-            conditions.root(fire_root, fire_activation, owner)?;
-            conditions.root(mode_root, mode_activation, owner)
-        })?;
+        add_two_root_conditions(model, fire_relation, mode_relation, owner)?;
         model.b1c([fire, off, gated], |topology| {
             topology.owner(owner, [fire, off, gated], |owner_view| {
                 owner_view.always(
@@ -461,7 +439,43 @@ fn root_refresh_excludes_relation_bearing_follow_current_owner() {
             Ok(())
         })
     })
-    .expect("relation-bearing and relation-free owners are valid checked DAE");
+    .expect("relation-bearing and relation-free owners are valid checked DAE")
+}
+
+fn add_two_root_conditions<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    fire_relation: dae::ExprId<'dae>,
+    mode_relation: dae::ExprId<'dae>,
+    owner: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let (fire_root, fire_activation, mode_root, mode_activation) =
+        model.conditions(|conditions| {
+            let fire_root = conditions.relation(fire_relation, owner)?;
+            let fire_activation = conditions.reserve(owner)?;
+            conditions.define(
+                fire_activation,
+                dae::ConditionInput::Relation(fire_root),
+                owner,
+            )?;
+            let mode_root = conditions.relation(mode_relation, owner)?;
+            let mode_activation = conditions.reserve(owner)?;
+            conditions.define(
+                mode_activation,
+                dae::ConditionInput::Relation(mode_root),
+                owner,
+            )?;
+            Ok((fire_root, fire_activation, mode_root, mode_activation))
+        })?;
+    model.conditions(|conditions| {
+        conditions.root(fire_root, fire_activation, owner)?;
+        conditions.root(mode_root, mode_activation, owner)
+    })?;
+    Ok(())
+}
+
+#[test]
+fn root_refresh_excludes_relation_bearing_follow_current_owner() {
+    let model = relation_bearing_follow_current_model();
 
     let solve = lower_solve_problem(&model).expect("typed root-refresh partition lowers");
 

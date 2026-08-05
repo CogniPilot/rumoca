@@ -277,6 +277,10 @@ impl SolveRuntime {
             },
             |y, p| project_algebraics(y, p, post_t),
         )?;
+        // The phase-zero clock pass above is the final superdense value of the
+        // initial event. Its settled values become `previous()`/`pre()` for
+        // the first later event, just like every other completed event.
+        commit_pre_params_after_event(&self.model, y, p, tol);
         let post_observation = InitialEventObservation::snapshot(post_t, y, p);
         if !self.initial_event_observations_match_trace(&observations[0], &post_observation, tol)? {
             // This can be a synthetic right-limit point or the second

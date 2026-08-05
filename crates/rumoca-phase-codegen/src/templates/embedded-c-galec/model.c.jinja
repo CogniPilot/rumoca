@@ -187,6 +187,11 @@ static inline double rumoca_galec_max(double u1, double u2) {
 
 void {{ c_model }}_startup({{ c_model }}State *self) {
     (void)self;
+    /* Keep target runtime helpers valid under strict toolchains even when this
+     * particular block does not call them. The address expressions emit no
+     * runtime work and preserve single-evaluation min/max semantics. */
+    (void)rumoca_galec_min;
+    (void)rumoca_galec_max;
 {{ local_declarations(algorithm_code.package.block.startup.locals) }}{{ statements(algorithm_code.package.block.startup.statements) }}}
 
 void {{ c_model }}_recalibrate({{ c_model }}State *self) {

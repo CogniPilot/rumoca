@@ -169,10 +169,10 @@ pub use model::{
     FunctionDefinitionView, FunctionFoldView, FunctionLoop, FunctionParameterView, FunctionPurity,
     FunctionReservation, FunctionSignature, FunctionStatementView, FunctionStatements,
     FunctionValueRole, FunctionValueView, FunctionView, Functions, InitializationOwnerView,
-    InputVariability, RangeBoundView, RangeView, ResidualEquationView, StringConversionFormatView,
-    StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes,
-    VariableAttributes, VariableCausality, VariableIdentity, VariableOrigin, VariableReservation,
-    VariableRole, VariableView, Variables,
+    InputVariability, RangeBoundView, RangeView, RecordFieldLayout, ResidualEquationView,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
+    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

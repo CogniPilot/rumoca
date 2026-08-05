@@ -140,6 +140,55 @@ fn assert_record_round_trip(view: DaeView<'_>) {
 }
 
 #[test]
+fn record_array_field_layout_preserves_outer_and_field_dimensions() {
+    let source = TestSource::new(
+        "record Samples Real scalar; Real values[3]; end Samples; Samples batch[2];",
+    );
+    let scalar_at = source.source("Real scalar", 0);
+    let values_at = source.source("Real values[3]", 0);
+    let record_at = source.source("record Samples Real scalar; Real values[3]; end Samples", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let scalar =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), scalar_at))?;
+        let values =
+            dae.types(|types| types.derived(ValueType::array(ScalarType::Real, [3]), values_at))?;
+        dae.types(|types| {
+            types.record_array(
+                VarName::new("Samples"),
+                [
+                    (VarName::new("scalar"), scalar),
+                    (VarName::new("values"), values),
+                ],
+                [2],
+                record_at,
+            )
+        })?;
+        Ok(())
+    })
+    .expect("record-array layout constructs from one typed owner");
+
+    dae.inspect(|view| {
+        let record = view
+            .value_type_id(2)
+            .expect("record-array type remains dense");
+        let scalar = view
+            .record_field_layout(record, 0)
+            .expect("scalar field has a finite layout");
+        assert_eq!(scalar.outer_count(), 2);
+        assert_eq!(scalar.record_width(), 4);
+        assert_eq!(scalar.field_offset(), 0);
+        assert_eq!(scalar.field_width(), 1);
+        let values = view
+            .record_field_layout(record, 1)
+            .expect("array field has a finite layout");
+        assert_eq!(values.outer_count(), 2);
+        assert_eq!(values.record_width(), 4);
+        assert_eq!(values.field_offset(), 1);
+        assert_eq!(values.field_width(), 3);
+    });
+}
+
+#[test]
 fn record_type_rejects_unknown_provenance_before_insertion() {
     let source = TestSource::new("record Pair Real left; end Pair");
     let real_at = source.source("Real left", 0);

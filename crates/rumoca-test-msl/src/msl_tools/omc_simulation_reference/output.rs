@@ -67,6 +67,11 @@ pub(super) fn compute_trace_output_summary(
         models_compared: model_count,
         missing_trace_models: trace_report.missing_trace.len(),
         skipped_models: trace_report.skipped.len(),
+        policy_excluded_models: trace_report
+            .skipped
+            .values()
+            .filter(|exit| exit.kind == TraceExitKind::PolicyExcluded)
+            .count(),
         trace_nonidentifiable_models: trace_report.trace_nonidentifiable.len(),
         agreement_high: agreement.high_agreement,
         agreement_minor: agreement.minor_agreement,
@@ -303,6 +308,7 @@ fn build_trace_report_payload(
         "models_compared": trace_summary.models_compared,
         "missing_trace_models": trace_summary.missing_trace_models,
         "skipped_models": trace_summary.skipped_models,
+        "policy_excluded_models": trace_summary.policy_excluded_models,
         "trace_nonidentifiable_models": trace_summary.trace_nonidentifiable_models,
         "agreement_bands": {
             "high_agreement": trace_summary.agreement_high,
@@ -452,6 +458,8 @@ fn build_trace_comparison_payload(paths: &MslPaths, trace_summary: &TraceOutputS
         "models_compared": trace_summary.models_compared,
         "missing_trace_models": trace_summary.missing_trace_models,
         "skipped_models": trace_summary.skipped_models,
+        "policy_excluded_models": trace_summary.policy_excluded_models,
+        "trace_nonidentifiable_models": trace_summary.trace_nonidentifiable_models,
         "agreement_high": trace_summary.agreement_high,
         "agreement_high_percent": trace_summary.agreement_high_percent,
         "agreement_near": trace_summary.agreement_minor,

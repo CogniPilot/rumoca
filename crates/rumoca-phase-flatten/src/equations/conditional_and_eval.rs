@@ -129,7 +129,36 @@ pub(super) fn create_conditional_equation_from_simple(
     else_simple_eqs: &[SimpleEquation],
     eq_idx: usize,
     context: &ConditionalEquationContext<'_>,
-) -> Result<flat::Equation, FlattenError> {
+) -> Result<FlattenedEquations, FlattenError> {
+    let first = &expanded_branches[0].1[eq_idx];
+    let scalar_count =
+        infer_simple_equation_scalar_count(&first.lhs, &first.rhs, context.prefix, context.ctx);
+    let counts_match = expanded_branches.iter().all(|(_, equations)| {
+        let equation = &equations[eq_idx];
+        infer_simple_equation_scalar_count(
+            &equation.lhs,
+            &equation.rhs,
+            context.prefix,
+            context.ctx,
+        ) == scalar_count
+    }) && {
+        let equation = &else_simple_eqs[eq_idx];
+        infer_simple_equation_scalar_count(
+            &equation.lhs,
+            &equation.rhs,
+            context.prefix,
+            context.ctx,
+        ) == scalar_count
+    };
+    if !counts_match {
+        return Err(FlattenError::unsupported_equation(
+            "dynamic if-equation branches have different scalar row counts",
+            context.span,
+        ));
+    }
+    if scalar_count == 0 {
+        return Ok(FlattenedEquations::default());
+    }
     // Build a conditional residual directly:
     // if c1 then (lhs1-rhs1) elseif c2 then (lhs2-rhs2) else (lhsN-rhsN)
     // This preserves MLS semantics even when branch equations do not share the same lhs.
@@ -147,11 +176,30 @@ pub(super) fn create_conditional_equation_from_simple(
         context.ctx,
         None,
     )?;
-    Ok(flat::Equation::new(
-        residual,
-        context.span,
-        context.origin.clone(),
-    ))
+    let equation = if scalar_count == 1 {
+        flat::Equation::new(residual, context.span, context.origin.clone())
+    } else {
+        flat::Equation::new_array(residual, context.span, context.origin.clone(), scalar_count)
+    };
+    let dimensions = infer_simple_equation_dims(
+        &first.lhs,
+        &first.rhs,
+        context.prefix,
+        context.ctx,
+        scalar_count,
+    );
+    let structured_equations = if is_tuple_receiver_equation_lhs(&first.lhs) {
+        Vec::new()
+    } else {
+        array_family::structured_array_equation_family(0, &equation, dimensions.as_deref())?
+            .into_iter()
+            .collect()
+    };
+    Ok(FlattenedEquations {
+        equations: vec![equation],
+        structured_equations,
+        ..Default::default()
+    })
 }
 
 fn build_simple_equation_residual(eq: &SimpleEquation) -> ast::Expression {
@@ -237,10 +285,13 @@ fn flatten_simple_in_list(
     } else {
         flat::Equation::new_array(residual, span, origin.clone(), scalar_count)
     };
-    let structured_equations =
+    let structured_equations = if is_tuple_receiver_equation_lhs(&lhs) {
+        Vec::new()
+    } else {
         array_family::structured_array_equation_family(0, &equation, equation_dims.as_deref())?
             .into_iter()
-            .collect();
+            .collect()
+    };
     Ok(FlattenedEquations {
         equations: vec![equation],
         structured_equations,

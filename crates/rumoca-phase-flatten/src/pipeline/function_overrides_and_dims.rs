@@ -38,17 +38,21 @@ use exact_identity_queries::{
     exact_prefix_owner_def_id, function_alias_requires_exact_selection,
     resolve_function_extends_target_def_id,
 };
+#[cfg(test)]
+use expression_rewrite::retarget_function_reference;
 use expression_rewrite::{
     FunctionOverrideExpressionRewriter, expression_contains_function_call, function_local_def_ids,
-    rewritten_function_reference,
+    retarget_exposed_function_reference,
 };
 pub(crate) use flat_rewrite::*;
+#[cfg(test)]
+use function_selection::exact_override_package_for_source_package;
 use function_selection::{
     CallOccurrenceIdentity, FunctionSelection, ResolvedFunctionRewrite,
     resolve_exact_function_rewrite,
 };
 pub(crate) use member_calls::*;
-use member_references::{reference_source_package_def_id_from_index, resolve_override_member_name};
+use member_references::resolve_override_member_name;
 use named_args::{named_function_arg, named_function_arg_names};
 pub(crate) use override_map::build_component_override_map;
 #[cfg(test)]

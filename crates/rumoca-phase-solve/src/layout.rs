@@ -109,32 +109,12 @@ pub(crate) fn lower_layout<'dae>(
         base_to_indices: solver_base_indices(view, &variables),
         names: y.names,
     };
+    let (variable_storage_runs, variable_declarations) =
+        solve_variable_declarations(view, &variables);
     let solve_layout = solve::SolveLayout {
         solver_maps,
-        variable_storage_runs: view
-            .variables()
-            .map(|(id, variable)| {
-                let slot = variables[id.index() as usize];
-                solve::SolveVariableStorageRun {
-                    base: match slot.storage {
-                        StorageClass::Y => solve::scalar_slot_y(slot.base),
-                        StorageClass::P => solve::scalar_slot_p(slot.base),
-                    },
-                    scalar_count: slot.count,
-                    role: solve_variable_storage_role(variable),
-                    value_kind: solve_variable_value_kind(variable.value_type().scalar_type()),
-                }
-            })
-            .collect(),
-        variable_declarations: view
-            .variables()
-            .map(|(_, variable)| {
-                solve::SolveVariableDeclaration::new(
-                    solve_variable_storage_role(variable),
-                    solve_variable_value_kind(variable.value_type().scalar_type()),
-                )
-            })
-            .collect(),
+        variable_storage_runs,
+        variable_declarations,
         state_scalar_count: y.state_count,
         algebraic_scalar_count: y.algebraic_count,
         output_scalar_count: y.output_count,
@@ -161,6 +141,34 @@ pub(crate) fn lower_layout<'dae>(
         solve_layout,
         marker: std::marker::PhantomData,
     })
+}
+
+fn solve_variable_declarations(
+    view: dae::DaeView<'_>,
+    variables: &[VariableSlot],
+) -> (
+    Vec<solve::SolveVariableStorageRun>,
+    Vec<solve::SolveVariableDeclaration>,
+) {
+    view.variables()
+        .map(|(id, variable)| {
+            let slot = variables[id.index() as usize];
+            let role = solve_variable_storage_role(variable);
+            let value_kind = solve_variable_value_kind(variable.value_type().scalar_type());
+            (
+                solve::SolveVariableStorageRun {
+                    base: match slot.storage {
+                        StorageClass::Y => solve::scalar_slot_y(slot.base),
+                        StorageClass::P => solve::scalar_slot_p(slot.base),
+                    },
+                    scalar_count: slot.count,
+                    role,
+                    value_kind,
+                },
+                solve::SolveVariableDeclaration::new(role, value_kind),
+            )
+        })
+        .unzip()
 }
 
 fn solve_variable_storage_role(variable: dae::VariableView<'_>) -> solve::SolveVariableStorageRole {

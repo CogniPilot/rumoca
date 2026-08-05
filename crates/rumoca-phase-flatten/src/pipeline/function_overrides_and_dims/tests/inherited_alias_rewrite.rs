@@ -24,6 +24,40 @@ fn inherited_function_body_rewrites_self_package_calls_to_exposed_package() {
     assert_eq!(name.as_str(), "ConcreteMedium.setState_pTX");
 }
 
+#[test]
+fn inherited_function_body_keeps_identity_for_synthesized_exposed_name() {
+    let (mut tree, mut function) = inherited_function_alias_rewrite_fixture();
+    tree.name_map
+        .shift_remove("ConcreteMedium.specificEnthalpy");
+    tree.name_map.shift_remove("ConcreteMedium.setState_pTX");
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+
+    rewrite_function_extends_aliases_in_function(&mut function, &tree, &class_index)
+        .expect("function alias rewrite");
+
+    let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+        panic!("expected assignment");
+    };
+    let Expression::FunctionCall { name, args, .. } = value else {
+        panic!("expected outer function call");
+    };
+    assert_eq!(name.as_str(), "ConcreteMedium.specificEnthalpy");
+    assert_eq!(name.target_def_id(), Some(DefId::new(6)));
+    assert_eq!(
+        name.component_ref().map(|path| path.to_var_name()),
+        Some(rumoca_core::VarName::new("ConcreteMedium.specificEnthalpy"))
+    );
+    let Expression::FunctionCall { name, .. } = &args[0] else {
+        panic!("expected nested function call");
+    };
+    assert_eq!(name.as_str(), "ConcreteMedium.setState_pTX");
+    assert_eq!(name.target_def_id(), Some(DefId::new(7)));
+    assert_eq!(
+        name.component_ref().map(|path| path.to_var_name()),
+        Some(rumoca_core::VarName::new("ConcreteMedium.setState_pTX"))
+    );
+}
+
 fn inherited_function_alias_rewrite_fixture() -> (ClassTree, rumoca_core::Function) {
     let ids = InheritedAliasIds::new();
     (

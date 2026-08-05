@@ -310,7 +310,8 @@ fn const_flat_expr_accepts_enum_literal_component_ref() {
     let component_ref = comp_ref(path);
     let expected_reference = rumoca_core::Reference::with_component_reference(
         path,
-        super::core_component_reference_from_ast(&component_ref),
+        super::core_component_reference_from_ast(&component_ref)
+            .expect("the fixture gives every path segment a declaration identity"),
     );
     let expr = ast::Expression::ComponentReference(component_ref.clone());
 
@@ -334,6 +335,20 @@ fn const_flat_expr_accepts_enum_literal_component_ref() {
         component_ref
             .target_def_id()
             .expect("resolved fixture enum literal has an exact target")
+    );
+}
+
+#[test]
+fn unresolved_enum_literal_is_not_fabricated_during_constant_folding() {
+    let path = "Modelica.Electrical.Digital.Interfaces.Logic.'U'";
+    let mut component_ref = comp_ref(path);
+    component_ref.parts[1].def_id = None;
+    let expr = ast::Expression::ComponentReference(component_ref);
+
+    assert_eq!(
+        try_eval_const_flat_expr_with_scope(&expr, &Context::new(), ""),
+        None,
+        "constant folding must defer an unresolved reference to the semantic pipeline"
     );
 }
 

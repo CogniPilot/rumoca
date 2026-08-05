@@ -1,3 +1,6 @@
+mod missing_provenance;
+mod value_proven_shapes;
+
 use rumoca_core::{
     DefId, EffectiveType, FunctionInstanceId, Reference, ResolvedFunctionReference, SourceMap,
     Subscript, TypeId,
@@ -20,6 +23,63 @@ fn array(extent: usize, span: Span) -> Expression {
         is_matrix: false,
         span,
     }
+}
+
+#[test]
+fn ones_shape_is_constructed_from_exact_extents() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("ones_shape.mo", "ones(3, 1);");
+    let span = Span::from_offsets(source, 0, 11);
+    let expression = Expression::BuiltinCall {
+        function: BuiltinFunction::Ones,
+        args: vec![
+            Expression::Literal {
+                value: Literal::Integer(3),
+                span,
+            },
+            Expression::Literal {
+                value: Literal::Integer(1),
+                span,
+            },
+        ],
+        span,
+    };
+    let model = flat::Model::new();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+        .expect("the empty model has a valid shape environment");
+
+    assert_eq!(
+        analysis
+            .expression_shape(&expression, analysis.model_values())
+            .expect("ones with exact nonnegative extents has an exact tensor shape"),
+        vec![3, 1]
+    );
+}
+
+#[test]
+fn size_of_specialized_array_is_one_proven_extent() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("size_extent.mo", "size(element, 1)");
+    let span = Span::from_offsets(source, 0, 16);
+    let mut values = ShapeEnvironment::with_capacity(1);
+    values.insert(VarName::new("element"), vec![4]);
+    let expression = Expression::BuiltinCall {
+        function: BuiltinFunction::Size,
+        args: vec![
+            Expression::VarRef {
+                name: Reference::new("element"),
+                subscripts: Vec::new(),
+                span,
+            },
+            Expression::Literal {
+                value: Literal::Integer(1),
+                span,
+            },
+        ],
+        span,
+    };
+
+    assert_eq!(values.proven_extent(&expression), Some(4));
 }
 
 fn real_param(name: &str, dimensions: Vec<i64>, span: Span) -> rumoca_core::FunctionParam {

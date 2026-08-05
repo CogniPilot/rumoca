@@ -402,20 +402,11 @@ impl MeRuntimeHost {
         let discrete = update_discrete_states_to_completion(&mut *kernel)?;
         let next_event_time = discrete.next_event_time;
         kernel.enter_continuous_time_mode()?;
-        // Observe at the semantic event instant, after discrete updates but
-        // before the numerical driver's right-limit probe advances continuous
-        // states.  This keeps discontinuous contact outputs at their
-        // zero-crossing value while still exposing event-updated discrete
-        // outputs (for example clocked assignments).
-        let event_entry_observation =
-            if !includes_scheduled_event && !discrete.values_of_continuous_states_changed {
-                MeRuntimeOutput {
-                    time: pre_update_observation.time,
-                    values: pre_update_observation.values.clone(),
-                }
-            } else {
-                runtime_output(&mut *kernel)?
-            };
+        // Observe the settled event state before the numerical driver's
+        // right-limit probe advances continuous states. The separately owned
+        // pre-update observation preserves the left limit; replaying it here
+        // would erase the discrete right limit from this superdense instant.
+        let event_entry_observation = runtime_output(&mut *kernel)?;
         if !includes_scheduled_event {
             advance_post_event_state(&mut *kernel, root_time, right_time)?;
         }

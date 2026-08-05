@@ -3,6 +3,94 @@
 use super::super::*;
 
 #[test]
+fn test_production_sources_use_real_module_paths() {
+    let root = workspace_root();
+    let mut sources = Vec::new();
+    for crate_entry in fs::read_dir(root.join("crates")).expect("read crates directory") {
+        let source_root = crate_entry.expect("read crate entry").path().join("src");
+        if source_root.is_dir() {
+            collect_rs_files(&source_root, &mut sources);
+        }
+    }
+    let mut offenders = Vec::new();
+    for path in sources {
+        if is_test_only_source(&path) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read production Rust source");
+        let lines = source.lines().collect::<Vec<_>>();
+        for (line_index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            let path_bypass =
+                trimmed.starts_with("#[path") && !preceded_by_test_cfg(&lines, line_index);
+            let non_generated_include =
+                trimmed.starts_with("include!(") && !trimmed.contains("OUT_DIR");
+            if path_bypass || non_generated_include {
+                offenders.push(format!("{}:{}", path.display(), line_index + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "production modules must use real content-based module layout; \
+`#[path]` and non-generated `include!` bypasses are forbidden: {offenders:#?}"
+    );
+}
+
+fn is_test_only_source(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str() == "tests")
+        || path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name == "tests.rs" || name.ends_with("_tests.rs")
+        })
+}
+
+fn preceded_by_test_cfg(lines: &[&str], line_index: usize) -> bool {
+    lines[line_index.saturating_sub(3)..line_index]
+        .iter()
+        .any(|line| line.contains("cfg(test)"))
+}
+
+#[test]
+fn test_content_split_module_roots_declare_submodules_before_imports() {
+    let root = workspace_root();
+    let module_roots = [
+        "crates/rumoca/src/cli.rs",
+        "crates/rumoca-phase-dae/src/construction/function_shapes/mod.rs",
+        "crates/rumoca-phase-dae/src/construction/analysis/loop_compaction/mod.rs",
+        "crates/rumoca-phase-flatten/src/postprocess.rs",
+        "crates/rumoca-phase-resolve/src/semantic_checks/restrictions.rs",
+        "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
+    ];
+    for relative in module_roots {
+        let source = fs::read_to_string(root.join(relative)).expect("read module root");
+        let first_import = source
+            .lines()
+            .position(|line| line.trim_start().starts_with("use "))
+            .expect("content-split module root has imports");
+        let lines = source.lines().collect::<Vec<_>>();
+        let misplaced = lines.iter().enumerate().find(|(line_index, line)| {
+            *line_index > first_import
+                && external_module_declaration(line)
+                && !preceded_by_test_cfg(&lines, *line_index)
+        });
+        assert!(
+            misplaced.is_none(),
+            "{relative} must declare external submodules before imports: {misplaced:?}"
+        );
+    }
+}
+
+fn external_module_declaration(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(mod_index) = trimmed.find("mod ") else {
+        return false;
+    };
+    let prefix = &trimmed[..mod_index];
+    (prefix.is_empty() || prefix.starts_with("pub")) && trimmed.ends_with(';')
+}
+
+#[test]
 fn test_ir_crates_have_no_public_scalarize_functions() {
     // SPEC_0007 keeps scalarization out of IR crates; backend/evaluator
     // fallback helpers live in rumoca-eval-solve.

@@ -99,6 +99,7 @@ pub use config::SessionConfig;
 use config::init_rayon_pool;
 mod structural_overrides;
 pub use structural_overrides::StructuralOverride;
+use structural_overrides::StructuralOverrideSource;
 mod namespace_completion;
 use namespace_completion::NamespaceCompletionCache;
 mod compile_phase_timing;
@@ -1929,6 +1930,7 @@ impl CompilationSummary {
 #[derive(Debug, Clone)]
 pub struct Session {
     instantiation_options: InstantiateOptions,
+    structural_override_sources: Vec<StructuralOverrideSource>,
     documents: IndexMap<String, Arc<Document>>,
     detached_document_uris: IndexSet<String>,
     detached_source_root_documents: IndexMap<FileId, DetachedSourceRootDocument>,

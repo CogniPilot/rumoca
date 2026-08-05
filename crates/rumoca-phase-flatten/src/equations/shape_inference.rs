@@ -379,6 +379,12 @@ pub(crate) fn infer_simple_equation_scalar_count(
     prefix: &ast::QualifiedName,
     ctx: &Context,
 ) -> usize {
+    if let Some(elements) = tuple_receiver_elements(lhs)
+        && matches!(rhs, ast::Expression::FunctionCall { .. })
+        && let Some(count) = tuple_receiver_scalar_count(elements, prefix, ctx)
+    {
+        return count;
+    }
     let lhs_shape = infer_expression_shape(lhs, prefix, ctx);
     let rhs_shape = infer_expression_shape(rhs, prefix, ctx);
 
@@ -418,6 +424,43 @@ pub(crate) fn infer_simple_equation_scalar_count(
         return dims_scalar_size(&array_ref.dims);
     }
     1
+}
+
+pub(crate) fn is_tuple_receiver_equation_lhs(expression: &ast::Expression) -> bool {
+    tuple_receiver_elements(expression).is_some()
+}
+
+fn tuple_receiver_elements(expression: &ast::Expression) -> Option<&[ast::Expression]> {
+    match expression {
+        ast::Expression::Tuple { elements, .. } => Some(elements),
+        ast::Expression::Parenthesized { inner, .. } => tuple_receiver_elements(inner),
+        _ => None,
+    }
+}
+
+/// Count the individual receiving values of an MLS §12.4.3 tuple equation.
+///
+/// A result tuple has no tensor shape of its own: its scalar equation count is
+/// the sum of the declared shapes of its retained receivers. Omitted slots add
+/// no equation. The DAE phase separately proves that each shape agrees with
+/// the corresponding function result before constructing result projections.
+fn tuple_receiver_scalar_count(
+    elements: &[ast::Expression],
+    prefix: &ast::QualifiedName,
+    ctx: &Context,
+) -> Option<usize> {
+    elements.iter().try_fold(0usize, |count, element| {
+        if matches!(element, ast::Expression::Empty { .. }) {
+            return Some(count);
+        }
+        let size =
+            shape_scalar_size(infer_expression_shape(element, prefix, ctx)).or_else(|| {
+                find_array_refs_needing_expansion(element, prefix, ctx)
+                    .first()
+                    .map(|reference| dims_scalar_size(&reference.dims))
+            })?;
+        count.checked_add(size)
+    })
 }
 
 pub(crate) fn infer_simple_equation_dims(

@@ -27,12 +27,16 @@ const MAX_EXTENDS_DEPTH: usize = 32;
 /// `components` are the callable's own effective components, which own the
 /// declared type of a reference rooted in a formal parameter or local.
 pub(super) fn prove_deferred_members_in_algorithms(
+    tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    exposed_function_name: &str,
     components: &IndexMap<String, ast::Component>,
     algorithms: &mut [Vec<ast::Statement>],
 ) {
     let mut prover = DeferredMemberProver {
+        tree,
         class_index,
+        exposed_function_name,
         components,
     };
     for section in algorithms.iter_mut() {
@@ -44,7 +48,9 @@ pub(super) fn prove_deferred_members_in_algorithms(
 }
 
 struct DeferredMemberProver<'a, 'tree> {
+    tree: &'a ast::ClassTree,
     class_index: &'a ast::ClassDefIndex<'tree>,
+    exposed_function_name: &'a str,
     components: &'a IndexMap<String, ast::Component>,
 }
 
@@ -78,12 +84,20 @@ impl DeferredMemberProver<'_, '_> {
         };
         // A class segment continues in itself; a component segment continues in
         // its declared type.
-        let mut owner = if self.class_index.get(root_def_id).is_some() {
-            Some(root_def_id)
+        // Callable components are the lexical declarations of a single-part
+        // root and shadow class names. Their copied effective declarations may
+        // not retain the occurrence DefId carried by the body reference, so
+        // name ownership is the authoritative discriminator here.
+        let component = self.components.get(root.ident.text.as_ref());
+        let (mut owner, reprove_members) = if let Some(component) = component {
+            let contextual_owner = self.contextual_component_type(component);
+            let declared_owner = component.type_def_id;
+            (contextual_owner, contextual_owner != declared_owner)
         } else {
-            self.components
-                .get(root.ident.text.as_ref())
-                .and_then(|component| component.type_def_id)
+            (
+                self.class_index.get(root_def_id).map(|_| root_def_id),
+                false,
+            )
         };
         for part in reference.parts.iter_mut().skip(1) {
             let Some(owner_def_id) = owner else {
@@ -96,11 +110,26 @@ impl DeferredMemberProver<'_, '_> {
             else {
                 return;
             };
-            if part.def_id.is_none() {
+            if reprove_members || part.def_id.is_none() {
                 part.def_id = Some(member.declaration);
             }
             owner = member.continues_in;
         }
+    }
+
+    /// Resolve a formal/local type in the exposed callable scope before using
+    /// its members. The stored `type_def_id` belongs to the generic declaration
+    /// and can cross a replaceable edge; the exposed scope owns the concrete
+    /// redeclaration that proves the member identity.
+    fn contextual_component_type(&self, component: &ast::Component) -> Option<DefId> {
+        super::resolve_function_class_with_scope(
+            self.tree,
+            self.class_index,
+            &component.type_name.to_string(),
+            Some(self.exposed_function_name),
+        )
+        .and_then(|resolution| resolution.class_def.def_id)
+        .or(component.type_def_id)
     }
 
     fn prove_statement(&mut self, statement: ast::Statement) -> ast::Statement {

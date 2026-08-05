@@ -175,6 +175,14 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
     let source = out_dir.join(format!("{MODEL}.c"));
     assert!(header.is_file(), "missing {}", header.display());
     assert!(source.is_file(), "missing {}", source.display());
+    for generated in [&header, &source] {
+        let bytes = fs::read(generated).expect("read generated C artifact");
+        assert!(
+            bytes.ends_with(b"\n"),
+            "{} must end with a newline for strict C toolchains",
+            generated.display()
+        );
+    }
 
     let driver = out_dir.join("main.c");
     fs::write(&driver, DRIVER_MAIN).expect("write driver");

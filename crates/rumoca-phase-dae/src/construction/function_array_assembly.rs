@@ -23,14 +23,16 @@ pub(super) fn lower_function_array_assembly<'dae>(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let loop_elements = lower_array_assembly_loop(
-        construction,
-        symbols,
-        body,
-        &source[plan.direct_count],
-        plan,
-    )?;
-    elements.extend(loop_elements);
+    if plan.loop_plan.is_some() {
+        let loop_elements = lower_array_assembly_loop(
+            construction,
+            symbols,
+            body,
+            &source[plan.direct_count],
+            plan,
+        )?;
+        elements.extend(loop_elements);
+    }
 
     let owner_span = source[0]
         .source_span()
@@ -55,14 +57,14 @@ fn lower_array_assembly_loop<'dae>(
             equations,
             span,
         },
-        FunctionStatementPlan::For {
+        Some(FunctionStatementPlan::For {
             domain,
             binder_spans,
             statements,
             source_depth: 1,
             ..
-        },
-    ) = (source, plan.loop_plan.as_ref())
+        }),
+    ) = (source, plan.loop_plan.as_deref())
     else {
         unreachable!("analysis proves a rank-one suffix loop")
     };

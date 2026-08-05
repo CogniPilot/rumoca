@@ -20,7 +20,7 @@ use rumoca_solver::{
     fmi_me::{
         MeError, MeEventCause, MeEventEntry, MeEventStop, MeIndicatorCrossing, MeInstanceConfig,
         MeModelSource, MeObservation, MeOutputSeries, MeRootProfile, MeTime, ModelExchangeKernel,
-        SolveMeKernel, event_indicator_crossed,
+        SolveMeKernel, advance_states_to_event_probe, event_indicator_crossed,
     },
     timeline,
 };
@@ -465,6 +465,7 @@ pub(crate) struct Rk45Backend {
     t_end: f64,
     budget: TimeoutBudget,
     pub(crate) termination: Option<SimTermination>,
+    located_event_state: Option<Vec<f64>>,
 }
 
 struct TrialStep {
@@ -677,6 +678,7 @@ impl Rk45Backend {
             t_end: opts.t_end,
             budget: TimeoutBudget::new(opts.max_wall_seconds),
             termination: None,
+            located_event_state: None,
         })
     }
 
@@ -951,6 +953,15 @@ impl Rk45Backend {
             self.kernel.set_continuous_states(&root.pre_state)?;
             self.kernel.capture_pre_event_state()?;
             self.kernel.arm_state_event(&simultaneous_crossings)?;
+            // A residual-tolerant root coordinate may still lie on the
+            // pre-event side. Classify the event with the shared ME right
+            // probe, using the component derivative rather than extrapolating
+            // the dense polynomial beyond its accepted step.
+            let derivatives =
+                self.derivatives_at(root.time, &root.state, context.event_boundary)?;
+            self.located_event_state = Some(root.state.clone());
+            let right_time = timeline::event_right_probe_time(root.time, root.time_tolerance);
+            advance_states_to_event_probe(&mut root.state, &derivatives, root.time, right_time);
             self.time = root.time;
             self.state = root.state;
             self.kernel.set_time(MeTime::at(self.time))?;
@@ -1098,9 +1109,11 @@ impl Rk45Backend {
     fn apply_event_mode_and_continue_or_finish(
         &mut self,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
+        let mut continuous_states_changed = false;
         loop {
             let discrete = self.kernel.update_discrete_states()?;
             if discrete.values_of_continuous_states_changed {
+                continuous_states_changed = true;
                 self.kernel.get_continuous_states(&mut self.state)?;
             }
             if let Some(termination) = discrete.terminate_simulation {
@@ -1109,6 +1122,16 @@ impl Rk45Backend {
             if !discrete.discrete_states_need_update {
                 break;
             }
+        }
+        if let Some(located_state) = self.located_event_state.take()
+            && !continuous_states_changed
+        {
+            // The widened state existed only to classify the event's right
+            // side. Unless `fmi3UpdateDiscreteStates` reinitialized a
+            // continuous state, resume integration from the mathematical
+            // located state so the probe width never enters the trajectory.
+            self.state = located_state;
+            self.kernel.set_continuous_states(&self.state)?;
         }
         if self.termination.is_none() {
             self.kernel.enter_continuous_time_mode()?;

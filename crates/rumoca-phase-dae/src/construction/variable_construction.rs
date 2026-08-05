@@ -41,6 +41,7 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
             let coordinate = insert_complete_variable(
                 construction,
                 VariableDefinitionContext {
+                    flat,
                     coordinates: &coordinates,
                     functions,
                     assigned_discrete_targets: &analysis.assigned_discrete_targets,
@@ -156,6 +157,7 @@ pub(super) fn define_reserved_variables<'dae>(
 /// Everything a variable definition reads besides the variable itself.
 #[derive(Clone, Copy)]
 pub(super) struct VariableDefinitionContext<'scope, 'dae> {
+    pub(super) flat: &'scope flat::Model,
     pub(super) coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
     pub(super) functions: &'scope FunctionRegistry<'scope, 'dae>,
     pub(super) assigned_discrete_targets: &'scope HashSet<VarName>,
@@ -317,7 +319,7 @@ fn lower_variable_attributes<'dae>(
     let causality = if derived_parameter {
         dae::VariableCausality::CalculatedParameter
     } else {
-        variable_causality(variable.flat, variable.role)
+        variable_causality(variable.flat, variable.role, context.flat)
     };
     Ok(dae::VariableAttributes {
         component_ref: variable.flat.component_ref.clone(),
@@ -461,11 +463,18 @@ fn lower_derived_parameter_binding<'dae>(
     construction.expressions(|expressions| expressions.at(generated).comprehension(domain, body))
 }
 
-fn variable_causality(variable: &flat::Variable, role: PlannedRole) -> dae::VariableCausality {
-    let top_level_port = variable
-        .component_ref
-        .as_ref()
-        .is_some_and(|reference| reference.parts().len() == 1);
+fn variable_causality(
+    variable: &flat::Variable,
+    role: PlannedRole,
+    model: &flat::Model,
+) -> dae::VariableCausality {
+    let top_level_port = variable.component_ref.as_ref().is_some_and(|reference| {
+        reference.parts().len() == 1
+            || reference
+                .parts()
+                .first()
+                .is_some_and(|root| model.top_level_connectors.contains(&root.ident))
+    });
     match (&variable.causality, role, top_level_port) {
         (Causality::Input(_), PlannedRole::Input, true) => dae::VariableCausality::Input,
         (Causality::Output(_), _, true) => dae::VariableCausality::Output,

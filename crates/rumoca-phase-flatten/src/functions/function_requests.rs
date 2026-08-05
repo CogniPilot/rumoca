@@ -14,7 +14,7 @@ pub(crate) struct FunctionRequest {
 
 impl FunctionRequest {
     pub(crate) fn from_resolved_ast_reference(
-        name: String,
+        _resolved_name: String,
         reference: &rumoca_ir_ast::ComponentReference,
     ) -> Self {
         let parts = reference
@@ -33,7 +33,7 @@ impl FunctionRequest {
             rumoca_core::ComponentReference::construct(reference.local, reference.span, parts)
                 .expect("resolved AST references satisfy the checked component-reference contract");
         Self {
-            name,
+            name: component_ref_name(&component_ref),
             target_def_id: Some(component_ref.target_def_id()),
             target_instance_id: None,
             component_ref: Some(component_ref),
@@ -42,10 +42,17 @@ impl FunctionRequest {
 
     pub(super) fn from_reference(reference: &rumoca_core::Reference) -> Self {
         let component_ref = reference.component_ref().cloned();
-        let name = component_ref
-            .as_ref()
-            .map(component_ref_name)
-            .unwrap_or_else(|| reference.as_str().to_string());
+        let name = if reference.resolved_function().is_some() {
+            // Canonicalization has certified the callable-table key. The
+            // structured path remains source/exposure evidence and may retain
+            // its relative spelling.
+            reference.as_str().to_string()
+        } else {
+            component_ref
+                .as_ref()
+                .map(component_ref_name)
+                .unwrap_or_else(|| reference.as_str().to_string())
+        };
         Self {
             name,
             target_def_id: reference.target_def_id(),
@@ -175,7 +182,7 @@ fn same_function_identity(
     right_name: &str,
 ) -> bool {
     if let (Some(left_id), Some(right_id)) = (left.instance_id, right_instance_id) {
-        return left_id == right_id;
+        return left_id == right_id && left.name == right_name;
     }
     match (left.def_id, right_def_id) {
         (Some(left_id), Some(right_id)) => left_id == right_id && left.name == right_name,
@@ -185,7 +192,7 @@ fn same_function_identity(
 
 pub(super) fn same_function_request(left: &FunctionRequest, right: &FunctionRequest) -> bool {
     if let (Some(left_id), Some(right_id)) = (left.target_instance_id, right.target_instance_id) {
-        return left_id == right_id;
+        return left_id == right_id && left.name == right.name;
     }
     if let (Some(left_ref), Some(right_ref)) = (&left.component_ref, &right.component_ref)
         && left_ref == right_ref
@@ -204,4 +211,48 @@ fn component_ref_name(comp: &rumoca_core::ComponentReference) -> String {
         .map(|part| part.ident.as_str())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn resolved_ast_request_keeps_the_exposed_structured_path() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("request.mo"),
+            0,
+            1,
+        );
+        let reference = rumoca_ir_ast::ComponentReference {
+            local: false,
+            parts: vec![
+                rumoca_ir_ast::ComponentRefPart {
+                    ident: rumoca_core::Token {
+                        text: Arc::from("Local"),
+                        ..Default::default()
+                    },
+                    subs: None,
+                    def_id: Some(rumoca_core::DefId::new(1)),
+                },
+                rumoca_ir_ast::ComponentRefPart {
+                    ident: rumoca_core::Token {
+                        text: Arc::from("f"),
+                        ..Default::default()
+                    },
+                    subs: None,
+                    def_id: Some(rumoca_core::DefId::new(2)),
+                },
+            ],
+            span,
+            qualified_display_name: Some(rumoca_core::VarName::new("Lib.Generic.f")),
+        };
+
+        let request =
+            FunctionRequest::from_resolved_ast_reference("Lib.Generic.f".to_string(), &reference);
+
+        assert_eq!(request.name, "Local.f");
+        assert_eq!(request.target_def_id, Some(rumoca_core::DefId::new(2)));
+    }
 }

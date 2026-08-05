@@ -34,6 +34,16 @@ impl<'dae> ValueTypes<'_, 'dae> {
         fields: impl IntoIterator<Item = (VarName, ValueTypeId<'dae>)>,
         provenance: DaeProvenance,
     ) -> Result<ValueTypeId<'dae>, DaeConstructionError> {
+        self.record_array(name, fields, Vec::<u32>::new(), provenance)
+    }
+
+    pub fn record_array(
+        &mut self,
+        name: VarName,
+        fields: impl IntoIterator<Item = (VarName, ValueTypeId<'dae>)>,
+        dimensions: impl Into<Box<[u32]>>,
+        provenance: DaeProvenance,
+    ) -> Result<ValueTypeId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         let mut names = HashSet::new();
         let fields = fields
@@ -56,8 +66,10 @@ impl<'dae> ValueTypes<'_, 'dae> {
         if fields.is_empty() {
             return Err(invalid_arity(1, 0, provenance));
         }
-        self.storage
-            .intern_type(ValueType::record(name, fields), provenance)
+        self.storage.intern_type(
+            ValueType::record_array(name, fields, dimensions),
+            provenance,
+        )
     }
 
     pub fn expect_record_layout(

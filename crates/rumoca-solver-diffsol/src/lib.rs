@@ -268,14 +268,13 @@ pub fn simulate(
 fn simulate_prepared(prepared: &PreparedSimulation) -> Result<SimResult, SimError> {
     let model = &prepared.model;
     let opts = &prepared.opts;
-    let result = match &prepared.state {
+    match &prepared.state {
         PreparedSimulationState::NoState => {
             rumoca_solver::fmi_me::MeNoStateSession::simulate(model.source(), opts.clone())
                 .map_err(Into::into)
         }
         PreparedSimulationState::StateOnly => me_bdf::simulate(model.source(), opts),
-    };
-    result
+    }
 }
 
 /// Owned trajectory buffers + context needed to turn a `simulate_state_targets`

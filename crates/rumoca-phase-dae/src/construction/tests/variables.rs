@@ -153,6 +153,69 @@ fn input_ownership_requires_resolved_component_identity() {
 }
 
 #[test]
+fn top_level_connector_fields_retain_external_causality() {
+    let source = TestSource::new(
+        "connector Port input Real u; output Real y; end Port; model M Port port; end M;",
+    );
+    let mut model = test_model();
+    model.is_partial = true;
+    model.top_level_connectors.insert("port".to_string());
+
+    for (field, causality, type_id) in [
+        ("u", Causality::Input(Default::default()), 18),
+        ("y", Causality::Output(Default::default()), 19),
+    ] {
+        let name = format!("port.{field}");
+        add_primitive_variable(
+            &mut model,
+            &source,
+            &name,
+            &format!("Real {field}"),
+            type_id,
+            Vec::new(),
+            false,
+        );
+        let declaration = source.span(&format!("Real {field}"), 0);
+        let variable = model.variables.get_mut(&VarName::new(&name)).unwrap();
+        variable.causality = causality;
+        variable.component_ref = Some(
+            rumoca_core::ComponentReference::construct(
+                false,
+                declaration,
+                ["port", field]
+                    .into_iter()
+                    .map(|ident| rumoca_core::ComponentRefPart {
+                        ident: ident.to_string(),
+                        span: declaration,
+                        subs: Vec::new(),
+                        def_id: rumoca_core::DefId::new(test_instance_id(ident).index().max(1)),
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+        );
+    }
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let causalities = view
+            .variables()
+            .map(|(_, variable)| (variable.name().to_string(), variable.causality()))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            causalities["port.u"],
+            dae::VariableCausality::Input,
+            "a connector field is part of the top-level input interface"
+        );
+        assert_eq!(
+            causalities["port.y"],
+            dae::VariableCausality::Output,
+            "a connector field is part of the top-level output interface"
+        );
+    });
+}
+
+#[test]
 fn unused_expandable_member_is_not_a_runtime_coordinate() {
     let source = TestSource::new("model M Real x; equation x - 1.0; Real unused; end M;");
     let mut model = scalar_real_model(&source);

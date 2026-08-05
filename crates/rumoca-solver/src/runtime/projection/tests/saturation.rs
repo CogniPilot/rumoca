@@ -179,6 +179,7 @@ fn unlimited_newton_leaves_the_physical_branch_of_a_saturating_reluctance() {
         saturation_knee_args(),
         ALGEBRAIC_PROJECTION_MAX_ITERS,
         StepLimit::None,
+        false,
     );
 
     // Documents why the retry exists: the unlimited pass ends off the branch it

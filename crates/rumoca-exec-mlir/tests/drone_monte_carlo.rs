@@ -203,6 +203,7 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                         .map(|(i, n)| (n, vec![i]))
                         .collect(),
                 },
+                variable_declarations: Vec::new(),
                 variable_storage_runs: Vec::new(),
                 state_scalar_count: 6,
                 algebraic_scalar_count: 0,

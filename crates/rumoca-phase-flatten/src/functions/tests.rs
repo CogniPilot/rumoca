@@ -286,6 +286,34 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
 }
 
 #[test]
+fn reachable_constructor_retains_record_layout_without_component_instance() {
+    let record_def_id = rumoca_core::DefId::new(42);
+    let field_def_id = rumoca_core::DefId::new(43);
+    let mut constructor = rumoca_core::Function::new("Pkg.ReturnOnlyRecord", test_span());
+    constructor.def_id = Some(record_def_id);
+    constructor.is_constructor = true;
+    constructor.add_input(
+        crate::test_support::real_param("values", vec![3], test_span()).with_def_id(field_def_id),
+    );
+    let mut flat = flat::Model::new();
+
+    retain_constructor_record_type(&mut flat, &constructor)
+        .expect("constructor signature owns its compact record layout");
+
+    assert_eq!(
+        flat.record_types.get(&record_def_id),
+        Some(&flat::RecordType {
+            name: "Pkg.ReturnOnlyRecord".to_string(),
+            fields: vec![flat::RecordField {
+                name: "values".to_string(),
+                def_id: field_def_id,
+                dims: vec![3],
+            }],
+        })
+    );
+}
+
+#[test]
 fn exact_instance_completes_valid_nested_constructor_field_projection() {
     let mut flat = flat::Model::new();
     let field_def_id = rumoca_core::DefId::new(45);
@@ -874,7 +902,10 @@ fn canonicalize_collected_function_calls_distinguishes_duplicate_inherited_def_i
         Some(rumoca_core::ResolvedFunctionReference {
             instance_id: expected_instance,
             base_part_count: 3,
-            transitively_non_replaceable: true,
+            // This identity-only fixture intentionally supplies no class tree.
+            // Canonicalization may distinguish the inherited exposures, but it
+            // must not fabricate the separate MLS §6.4 certificate.
+            transitively_non_replaceable: false,
         })
     );
 }

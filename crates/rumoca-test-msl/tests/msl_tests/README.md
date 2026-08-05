@@ -22,7 +22,7 @@ This directory contains helper includes for `tests/msl_tests.rs`.
 | Subset filter / cap | `--sim-match PAT`, `--sim-limit N` | `sim_match`, `sim_limit` |
 | Solver wall budget | `--sim-timeout-secs SECS` | `sim_timeout_secs` |
 | Solve-IR lowering budget | `--ir-solve-timeout-secs SECS` | `ir_solve_timeout_secs` |
-| Per-phase attempt budget (10s default) | `--model-attempt-timeout-secs SECS` | `model_attempt_timeout_secs` |
+| Per-phase attempt budget (12s default) | `--model-attempt-timeout-secs SECS` | `model_attempt_timeout_secs` |
 | Total compile wall ceiling (40s default) | — (config only) | `model_compile_wall_limit_secs` |
 | Solve-IR serialized-size ceiling (32 MB default) | — (config only) | `solve_ir_size_limit_mb` |
 | OMC baseline for every target | `--all-omc-targets` | `all_omc_targets` |
@@ -45,8 +45,8 @@ message-matched:
 
 | Ceiling | Default | Overrun bucket | Error code |
 |---|---|---|---|
-| per-phase compile/sim wall | 10 s | `Timeout` | `EMSL_TIMEOUT_MODEL_ATTEMPT` |
-| solver wall | 10 s | `Timeout` | `EMSL_TIMEOUT_MODEL_ATTEMPT` |
+| per-phase compile wall | 12 s | `Timeout` | `EMSL_TIMEOUT_MODEL_ATTEMPT` |
+| simulation/solver wall | 12 s | `Timeout` | `EMSL_TIMEOUT_MODEL_ATTEMPT` |
 | worker resident+swap | 6 GiB | `MemoryLimit` | `EMSL_MODEL_WORKER_MEMORY_LIMIT` |
 | total compile wall | 40 s | `ResourceBudget` | `EMSL_BUDGET_COMPILE_WALL` |
 | Solve-IR serialized size | 32 MB | `ResourceBudget` | `EMSL_BUDGET_SOLVE_IR_SIZE` |
@@ -244,7 +244,7 @@ grows the list; never lower it to make a red gate green.
   - no unbound fixed-parameter scalars (zero-sized parameters are allowed)
 - Worker timeout semantics are two-tiered:
   - DAE-to-Solve-IR lowering budget: `IR_SOLVE_TIMEOUT_SECS` (currently 10s)
-  - solver budget: `SIM_TIMEOUT_SECS` (currently 10s)
+  - solver budget: `SIM_TIMEOUT_SECS` (currently 12s)
   - parent process budget: lowering budget + solver budget +
     `SIM_WORKER_TIMEOUT_GRACE_SECS`
     (currently +2s)

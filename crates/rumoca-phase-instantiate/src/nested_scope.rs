@@ -1,7 +1,7 @@
 use super::type_overrides::{
-    TypeOverrideMap, class_redeclare_modifier_args, extract_component_class_overrides,
-    find_nested_class_in_hierarchy, resolve_class_override_modifier_targets,
-    validate_component_class_redeclare_target,
+    TypeOverrideMap, build_type_override_map, class_redeclare_modifier_args,
+    extract_component_class_overrides, find_nested_class_in_hierarchy,
+    resolve_class_override_modifier_targets, validate_component_class_redeclare_target,
 };
 use super::{InstantiateContext, InstantiateError, InstantiateResult, location_to_span};
 use rumoca_ir_ast as ast;
@@ -299,6 +299,10 @@ pub(super) fn resolve_component_nested_type_overrides(
     }
 
     let mut nested_type_overrides = type_overrides.clone();
+    if let Some(exposed_package) = exposed_type_package(tree, comp) {
+        let exposure_overrides = build_type_override_map(tree, exposed_package, Some(mod_env));
+        nested_type_overrides.extend_from(&exposure_overrides);
+    }
     if let Some(type_prefix) = comp.type_name.name.first()
         && comp.type_name.name.len() > 1
         && let Some(effective_package_def_id) =
@@ -315,6 +319,19 @@ pub(super) fn resolve_component_nested_type_overrides(
         has_forwarding_class_redeclare,
         nested_type_overrides,
     ))
+}
+
+fn exposed_type_package<'a>(
+    tree: &'a ast::ClassTree,
+    comp: &ast::Component,
+) -> Option<&'a ast::ClassDef> {
+    let package_parts = comp
+        .type_name
+        .name
+        .get(..comp.type_name.name.len().checked_sub(1)?)?;
+    let package_path =
+        rumoca_core::ComponentPath::from_parts(package_parts.iter().map(|part| part.text.as_ref()));
+    tree.get_class_by_qualified_name(&package_path.to_flat_string())
 }
 
 fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::ComponentReference> {

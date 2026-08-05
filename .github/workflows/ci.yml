@@ -205,9 +205,13 @@ jobs:
             .#checks.x86_64-linux.mlir-cpu
 
   kani:
-    name: Kani bounded proofs (Linux)
+    name: Kani semantic/runtime contracts (${{ matrix.shard }}/16)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     env:
       CARGO_BUILD_JOBS: 4
       RUST_TEST_THREADS: 4
@@ -229,15 +233,17 @@ jobs:
           use-flakehub: false
           diagnostic-endpoint: ''
 
-      - name: Prove required solver harnesses with pinned Kani
-        run: nix develop .#kani --command cargo xtask verify kani
+      - name: Prove bounded semantic and runtime contracts with pinned Kani
+        run: |
+          nix develop .#kani --command cargo kani --version
+          nix develop .#kani --command cargo xtask verify kani --shard ${{ matrix.shard }}/16
 
       - name: Upload Kani proof summary
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: kani-proof-summary
-          path: target/verification/kani-summary.json
+          name: kani-proof-summary-${{ matrix.shard }}-of-16
+          path: target/verification/kani-summary-shard-${{ matrix.shard }}-of-16.json
           if-no-files-found: warn
 
   test:
@@ -301,6 +307,11 @@ jobs:
           rustup default "$toolchain"
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       - name: Rust cache (native)
         uses: Swatinem/rust-cache@v2
@@ -2094,7 +2105,7 @@ jobs:
       - name: Build wheels (Nix)
         if: runner.os != 'Windows'
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.default" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
             set -euo pipefail
             maturin build \
               --release \
@@ -2117,7 +2128,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          nix develop ".#devShells.${{ matrix.nix_system }}.default" --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
             set -euo pipefail
             python -m venv target/python-wheel-smoke-venv
             . target/python-wheel-smoke-venv/bin/activate

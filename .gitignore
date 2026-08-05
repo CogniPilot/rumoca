@@ -15,6 +15,7 @@ dist/
 _native.cpython*
 *.so
 .claude/
+.codex/
 .vscode/
 dev/
 gh-pages/

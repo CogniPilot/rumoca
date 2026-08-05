@@ -31,10 +31,9 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             self.provenance,
         )?);
         dimensions.extend_from_slice(element_ty.dimensions());
-        let ty = self.storage.intern_type(
-            ValueType::array(element_ty.scalar_type(), dimensions),
-            self.provenance,
-        )?;
+        let ty = self
+            .storage
+            .intern_type(element_ty.with_dimensions(dimensions), self.provenance)?;
         let operands = self
             .storage
             .expressions
@@ -120,10 +119,9 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         let mut dimensions = Vec::with_capacity(body_ty.dimensions().len() + domain_extents.len());
         dimensions.extend_from_slice(domain_extents);
         dimensions.extend_from_slice(body_ty.dimensions());
-        let ty = self.storage.intern_type(
-            ValueType::array(body_ty.scalar_type(), dimensions),
-            self.provenance,
-        )?;
+        let ty = self
+            .storage
+            .intern_type(body_ty.with_dimensions(dimensions), self.provenance)?;
         let binder_domain = self.storage.domain_parent(domain, self.provenance)?;
         self.insert(
             ExprNode::Comprehension {

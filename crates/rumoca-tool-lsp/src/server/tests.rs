@@ -115,8 +115,6 @@ struct LoggedCompletionTimingSummary {
     #[serde(default)]
     semantic_layer: String,
     #[serde(default)]
-    namespace_completion_prime_ms: u64,
-    #[serde(default)]
     needs_resolved_session: bool,
     #[serde(default)]
     ast_fast_path_matched: bool,

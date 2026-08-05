@@ -86,6 +86,23 @@ fn generated_zero_real_expr_uses_owner_span() {
     assert_eq!(zero_real_expr(span).span(), span);
 }
 
+#[test]
+fn named_array_assignment_remains_one_tensor_owner() {
+    let lhs = ast::Expression::ComponentReference(make_comp_ref("x"));
+    let rhs = ast::Expression::Array {
+        elements: vec![make_int(1), make_int(2)],
+        is_matrix: false,
+        span: test_span(),
+    };
+    let expanded = expand_array_assignment(&lhs, &rhs);
+    assert_eq!(expanded.len(), 1);
+    assert!(matches!(
+        expanded[0].lhs,
+        ast::Expression::ComponentReference(_)
+    ));
+    assert!(matches!(expanded[0].rhs, ast::Expression::Array { .. }));
+}
+
 fn simple_index_for_equation(start: i64, end: i64) -> InstanceEquation {
     InstanceEquation {
         equation: ast::Equation::For {

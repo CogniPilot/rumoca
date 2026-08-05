@@ -27,6 +27,57 @@ pub(super) fn lower_condition<'dae>(
     Ok((condition, owner_clock))
 }
 
+/// Recover the exact periodic owner already certified for an event condition.
+///
+/// Clocked algorithm targets are claimed before any algorithm body is lowered,
+/// so construction cannot depend on whether a producer or consumer appeared
+/// first in Flat order. This mirrors [`lower_condition_tree`] without minting
+/// condition nodes: sample occurrences consume their occurrence-keyed analysis
+/// certificate, and compound conditions use the same clock merge contract.
+pub(super) fn condition_owner_clock<'dae>(
+    functions: &FunctionRegistry<'_, 'dae>,
+    expression: &Expression,
+) -> Result<Option<dae::PeriodicClockId<'dae>>, dae::DaeConstructionError> {
+    let span = expression
+        .span()
+        .expect("analysis proves condition provenance");
+    let provenance = dae::DaeProvenance::source(span)?;
+    match expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Sample,
+            args,
+            ..
+        } => lower_sample_condition(functions, args, provenance).map(|(_, _, clock)| clock),
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty()
+            && functions
+                .sample_alias_schedules
+                .contains_key(name.var_name()) =>
+        {
+            lower_sample_alias_condition(functions, name.var_name(), provenance)
+                .map(|(_, _, clock)| clock)
+        }
+        Expression::Unary {
+            op: OpUnary::Not, ..
+        } => Ok(None),
+        Expression::Binary { op, lhs, rhs, .. } if matches!(op, OpBinary::And | OpBinary::Or) => {
+            let lhs = condition_owner_clock(functions, lhs)?;
+            let rhs = condition_owner_clock(functions, rhs)?;
+            merge_condition_clock(lhs, rhs, matches!(op, OpBinary::Or), provenance)
+        }
+        Expression::Array { elements, .. } => {
+            let mut owner = None;
+            for element in elements {
+                let next = condition_owner_clock(functions, element)?;
+                owner = merge_condition_clock(owner, next, true, provenance)?;
+            }
+            Ok(owner)
+        }
+        _ => Ok(None),
+    }
+}
+
 type LoweredCondition<'dae> = (
     dae::ConditionId<'dae>,
     Vec<dae::RelationId<'dae>>,

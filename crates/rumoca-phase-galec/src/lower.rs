@@ -5,7 +5,7 @@
 //! by their current-tick dependencies; `pre(x)` becomes a protected
 //! `'previous(x)'` state committed after all assignments.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use rumoca_core::Span;
 use rumoca_eval_dae::NumericEvaluator;
@@ -17,11 +17,15 @@ use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
 use rumoca_ir_galec::package::AlgorithmCodePackage;
 
+mod causal_outputs;
 mod clocked_assignments;
 mod expression_helpers;
+mod pre_references;
 mod start;
+use causal_outputs::append_causal_output_assignments;
 use clocked_assignments::lower_clocked_assignments;
 use expression_helpers::*;
+use pre_references::referenced_pre_variables;
 use start::{StartShape, StartValues};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +101,8 @@ fn lower_view<'dae>(
 
     let mut do_step =
         lower_clocked_assignments(view, clock_id, &by_id, &pre_names).map_err(single)?;
+    append_causal_output_assignments(view, &classified, &by_id, &pre_names, &mut do_step)
+        .map_err(single)?;
     append_pre_commits(&referenced_pre, &by_id, &pre_names, &mut do_step)?;
 
     let block_name = crate::mangle::galec_variable_name(
@@ -266,7 +272,9 @@ fn classify_variables<'dae>(
     let mut variables = Vec::new();
     let mut errors = Vec::new();
     for (id, variable) in view.variables() {
-        if definitions.definition_for_variable(id).is_some() {
+        let causally_defined = definitions.definition_for_variable(id).is_some()
+            || definitions.fully_defines_variable(id);
+        if causally_defined && variable.causality() != dae::VariableCausality::Output {
             continue;
         }
         match classify_variable(id, variable) {
@@ -468,69 +476,6 @@ const fn default_scalar(scalar: gast::ScalarType) -> f64 {
     }
 }
 
-fn exact_integer(value: f64, span: Span) -> Result<i64, GalecTargetError> {
-    if value.is_finite()
-        && value.fract() == 0.0
-        && value >= i64::MIN as f64
-        && value <= i64::MAX as f64
-    {
-        Ok(value as i64)
-    } else {
-        Err(GalecTargetError::AttributeTypeMismatch {
-            variable: "<checked Integer>".to_owned(),
-            attribute: "value",
-            expected: "Integer",
-            found: "non-integral or out-of-range Real",
-            span: Some(span),
-        })
-    }
-}
-
-fn optional_real<'dae>(
-    evaluator: &mut NumericEvaluator<'dae>,
-    expression: Option<dae::ExprId<'dae>>,
-) -> Result<Option<f64>, GalecTargetError> {
-    expression
-        .map(|expression| scalar_numeric(evaluator, expression))
-        .transpose()
-}
-
-fn optional_integer<'dae>(
-    view: dae::DaeView<'dae>,
-    evaluator: &mut NumericEvaluator<'dae>,
-    expression: Option<dae::ExprId<'dae>>,
-) -> Result<Option<i64>, GalecTargetError> {
-    expression
-        .map(|expression| {
-            let span = expression_span(view, expression);
-            exact_integer(scalar_numeric(evaluator, expression)?, span)
-        })
-        .transpose()
-}
-
-fn scalar_numeric<'dae>(
-    evaluator: &mut NumericEvaluator<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> Result<f64, GalecTargetError> {
-    let values = evaluator.expression(expression).map_err(|error| {
-        GalecTargetError::AttributeNotEvaluable {
-            variable: "<checked variable>".to_owned(),
-            attribute: "bound",
-            reason: error.to_string(),
-            span: Some(error.span()),
-        }
-    })?;
-    match values.as_slice() {
-        [value] => Ok(*value),
-        _ => Err(GalecTargetError::AttributeNotEvaluable {
-            variable: "<checked variable>".to_owned(),
-            attribute: "bound",
-            reason: "attribute is not scalar".to_owned(),
-            span: None,
-        }),
-    }
-}
-
 fn declaration(
     classified: &ClassifiedVariable<'_>,
     range: gast::RangeAttributes,
@@ -604,129 +549,6 @@ fn dependent_assignment<'dae>(
         },
         expression_span(view, expression),
     ))
-}
-
-fn referenced_pre_variables<'dae>(
-    view: dae::DaeView<'dae>,
-) -> Result<Vec<dae::VariableId<'dae>>, Vec<GalecTargetError>> {
-    let mut ids = Vec::new();
-    let mut seen = HashSet::new();
-    for index in 0..view.discrete_real_equation_count() {
-        let equation = view
-            .discrete_real_equation(index)
-            .expect("dense checked discrete Real equation resolves");
-        collect_pre(view, equation.residual(), &mut seen, &mut ids)?;
-        if let dae::DiscreteRealActivation::When { trigger, guard } = equation.activation() {
-            collect_condition_pre(view, trigger, &mut seen, &mut ids)?;
-            collect_condition_pre(view, guard, &mut seen, &mut ids)?;
-        }
-    }
-    for index in 0..view.event_action_count() {
-        let action = view
-            .event_action(
-                view.event_action_id(index)
-                    .expect("dense checked action identity"),
-            )
-            .expect("checked action resolves");
-        collect_condition_pre(view, action.trigger(), &mut seen, &mut ids)?;
-        collect_condition_pre(view, action.guard(), &mut seen, &mut ids)?;
-        let value = match action.operation() {
-            dae::EventActionOperation::Reinitialize { value, .. } => Some(value),
-            dae::EventActionOperation::Assert { message, level } => {
-                collect_pre(view, message, &mut seen, &mut ids)?;
-                level
-            }
-            dae::EventActionOperation::Terminate { message } => Some(message),
-        };
-        if let Some(value) = value {
-            collect_pre(view, value, &mut seen, &mut ids)?;
-        }
-    }
-    for index in 0..view.discrete_value_owner_count() {
-        let owner = view
-            .discrete_value_owner(
-                view.discrete_value_owner_id(index)
-                    .expect("dense checked B.1c owner identity"),
-            )
-            .expect("checked B.1c owner resolves");
-        for branch in owner.branches().iter() {
-            if let dae::DiscreteBranchActivation::When { trigger, guard } = branch.activation() {
-                collect_condition_pre(view, trigger, &mut seen, &mut ids)?;
-                collect_condition_pre(view, guard, &mut seen, &mut ids)?;
-            }
-            for (value, _) in branch.values().iter() {
-                collect_pre(view, value, &mut seen, &mut ids)?;
-            }
-        }
-    }
-    Ok(ids)
-}
-
-fn collect_condition_pre<'dae>(
-    view: dae::DaeView<'dae>,
-    root: dae::ConditionId<'dae>,
-    seen_variables: &mut HashSet<u32>,
-    ids: &mut Vec<dae::VariableId<'dae>>,
-) -> Result<(), Vec<GalecTargetError>> {
-    let mut pending = vec![root];
-    let mut seen_conditions = HashSet::new();
-    while let Some(condition) = pending.pop() {
-        if !seen_conditions.insert(condition.index()) {
-            continue;
-        }
-        match view
-            .condition(condition)
-            .expect("checked condition identity resolves")
-            .operation()
-        {
-            dae::ConditionOperation::Initial
-            | dae::ConditionOperation::Always
-            | dae::ConditionOperation::Clock(_) => {}
-            dae::ConditionOperation::Relation(relation) => {
-                let expression = view
-                    .relation(relation)
-                    .expect("checked relation identity resolves")
-                    .expression();
-                collect_pre(view, expression, seen_variables, ids)?;
-            }
-            dae::ConditionOperation::Discrete(expression) => {
-                collect_pre(view, expression, seen_variables, ids)?;
-            }
-            dae::ConditionOperation::Not(inner) => pending.push(inner),
-            dae::ConditionOperation::And(lhs, rhs)
-            | dae::ConditionOperation::Or(lhs, rhs)
-            | dae::ConditionOperation::AnyRise(lhs, rhs) => {
-                pending.extend([lhs, rhs]);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn collect_pre<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-    seen: &mut HashSet<u32>,
-    ids: &mut Vec<dae::VariableId<'dae>>,
-) -> Result<(), Vec<GalecTargetError>> {
-    dae::for_each_expression(view, expression, |id, node| {
-        let variable = match node.operation() {
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::PreDiscreteReal(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::PreDiscreteValue(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            _ => None,
-        };
-        if let Some(variable) = variable
-            && seen.insert(variable.index())
-        {
-            ids.push(variable);
-        }
-        let _ = id;
-    });
-    Ok(())
 }
 
 fn build_pre_names<'dae>(
@@ -969,6 +791,7 @@ struct ExpressionLowerer<'a, 'dae> {
     pre_names: &'a HashMap<u32, gast::Name>,
     definitions: rumoca_phase_structural::CausalDefinitions<'dae>,
     call_frames: Vec<CallFrame<'dae>>,
+    comprehension_frames: Vec<ComprehensionFrame>,
 }
 
 struct CallFrame<'dae> {
@@ -977,9 +800,20 @@ struct CallFrame<'dae> {
     arguments: Vec<dae::ExprId<'dae>>,
 }
 
+struct ComprehensionFrame {
+    domain: u32,
+    binders: Vec<gast::Expression>,
+}
+
 struct TypedExpression {
     expression: gast::Expression,
     scalar_type: gast::ScalarType,
+}
+
+enum ArrayUpdateAxis {
+    UpdatedIndex,
+    UpdatedValue(gast::Expression),
+    Historical,
 }
 
 impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
@@ -994,6 +828,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             pre_names,
             definitions: rumoca_phase_structural::CausalDefinitions::derive(view),
             call_frames: Vec::new(),
+            comprehension_frames: Vec::new(),
         }
     }
 
@@ -1079,6 +914,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 self.lower_conditional_at(operands, indices, scalar_type, node.provenance().span())?
             }
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
+                if matches!(builtin, dae::PureBuiltin::Sum | dae::PureBuiltin::Product) {
+                    return self.lower_reduction(builtin, arguments, scalar_type);
+                }
                 if !indices.is_empty() {
                     return self.lower_elementwise_builtin(
                         builtin,
@@ -1099,51 +937,70 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             dae::ExpressionOperation::Array(elements) => {
                 return self.lower_array_at(elements, indices, node.provenance().span());
             }
-            dae::ExpressionOperation::Range(range) => {
-                return lower_range_at(
-                    range.start().value(),
-                    range.effective_step(),
-                    range.stop().value(),
-                    indices,
-                    scalar_type,
-                    node.provenance().span(),
-                );
-            }
-            dae::ExpressionOperation::Call {
-                function,
-                output,
-                arguments,
-            } => {
-                return self.lower_call_at(
-                    id,
-                    function,
-                    output,
-                    arguments,
-                    indices,
-                    node.provenance().span(),
-                );
-            }
-            dae::ExpressionOperation::ArrayUpdate { .. }
-            | dae::ExpressionOperation::Comprehension { .. }
-            | dae::ExpressionOperation::Record(_)
-            | dae::ExpressionOperation::Field { .. }
-            | dae::ExpressionOperation::StringConversion { .. }
-            | dae::ExpressionOperation::FunctionFoldParameter { .. }
-            | dae::ExpressionOperation::FunctionFoldOutput { .. } => {
-                return Err(unsupported(
-                    "expression-form",
-                    format!(
-                        "checked expression form {:?} is outside the scalar GALEC projection",
-                        node.kind()
-                    ),
-                    node.provenance().span(),
-                ));
-            }
+            _ => return self.lower_aggregate_operation(id, node, indices, scalar_type),
         };
         Ok(TypedExpression {
             expression,
             scalar_type,
         })
+    }
+
+    fn lower_aggregate_operation(
+        &mut self,
+        id: dae::ExprId<'dae>,
+        node: dae::ExpressionView<'dae>,
+        indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        match node.operation() {
+            dae::ExpressionOperation::Range(range) => lower_range_at(
+                range.start().value(),
+                range.effective_step(),
+                range.stop().value(),
+                indices,
+                scalar_type,
+                node.provenance().span(),
+            ),
+            dae::ExpressionOperation::Call {
+                function,
+                output,
+                arguments,
+            } => self.lower_call_at(
+                id,
+                function,
+                output,
+                arguments,
+                indices,
+                node.provenance().span(),
+            ),
+            dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } => self.lower_array_update_at(
+                base,
+                value,
+                subscripts,
+                indices,
+                node.provenance().span(),
+            ),
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                self.lower_comprehension_at(domain, body, indices, node.provenance().span())
+            }
+            dae::ExpressionOperation::Record(_)
+            | dae::ExpressionOperation::Field { .. }
+            | dae::ExpressionOperation::StringConversion { .. }
+            | dae::ExpressionOperation::FunctionFoldParameter { .. }
+            | dae::ExpressionOperation::FunctionFoldOutput { .. } => Err(unsupported(
+                "expression-form",
+                format!(
+                    "checked expression form {:?} is outside the scalar GALEC projection",
+                    node.kind()
+                ),
+                node.provenance().span(),
+            )),
+            _ => unreachable!("ordinary scalar operation was lowered before aggregate dispatch"),
+        }
     }
 
     fn lower_unary_at(
@@ -1247,6 +1104,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 language: external.language().as_str().to_owned(),
                 span: function_view.declaration().span(),
             });
+        }
+        if let Some(assertion) = first_function_assertion(function_view.statements()) {
+            return Err(unsupported(
+                "function-assertion",
+                format!(
+                    "function `{}` contains an assertion, whose error signal is not yet \
+                     represented by the Rumoca GALEC projection",
+                    function_view.name()
+                ),
+                assertion,
+            ));
         }
         let result = function_view
             .result_values()
@@ -1373,6 +1241,135 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self.lower_at(element, rest)
     }
 
+    /// Project one scalar from a checked tensor SSA update.
+    ///
+    /// GALEC exposes scalar assignments, while DAE deliberately retains an
+    /// indexed Modelica assignment as `ArrayUpdate(base, value, subscripts)`.
+    /// Row-major target expansion supplies literal coordinates here. Those
+    /// coordinates select either the updated value or the historical base;
+    /// the aggregate owner itself remains compact in DAE.
+    fn lower_array_update_at(
+        &mut self,
+        base: dae::ExprId<'dae>,
+        value: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        indices: &[gast::Expression],
+        span: Span,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        let projected = indices
+            .iter()
+            .map(|index| match index {
+                gast::Expression::Integer(value) if *value >= 1 => Ok(*value),
+                _ => Err(unsupported(
+                    "dynamic-array-update-projection",
+                    "array-update projection requires constructor-proven literal coordinates"
+                        .to_owned(),
+                    span,
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let base_dimensions = self
+            .view
+            .expression(base)
+            .expect("checked array-update base resolves")
+            .value_type()
+            .dimensions();
+        let Some(value_indices) =
+            self.array_update_value_indices(subscripts, &projected, base_dimensions, span)?
+        else {
+            return self.lower_at(base, indices);
+        };
+        self.lower_at(value, &value_indices)
+    }
+
+    fn array_update_value_indices(
+        &mut self,
+        subscripts: dae::SubscriptsView<'dae>,
+        projected: &[i64],
+        base_dimensions: &[u32],
+        span: Span,
+    ) -> Result<Option<Vec<gast::Expression>>, GalecTargetError> {
+        let mut value_indices = Vec::new();
+        for (axis, (&coordinate, &extent)) in projected.iter().zip(base_dimensions).enumerate() {
+            match self.array_update_axis(subscripts.get(axis), coordinate, extent, span)? {
+                ArrayUpdateAxis::UpdatedIndex => {}
+                ArrayUpdateAxis::UpdatedValue(index) => value_indices.push(index),
+                ArrayUpdateAxis::Historical => return Ok(None),
+            }
+        }
+        Ok(Some(value_indices))
+    }
+
+    fn array_update_axis(
+        &mut self,
+        subscript: Option<dae::SubscriptView<'dae>>,
+        coordinate: i64,
+        extent: u32,
+        span: Span,
+    ) -> Result<ArrayUpdateAxis, GalecTargetError> {
+        match subscript {
+            Some(dae::SubscriptView::Index { expression, .. }) => {
+                let selected = self.lower(expression)?;
+                let gast::Expression::Integer(selected) = selected.expression else {
+                    return Err(unsupported(
+                        "dynamic-array-update-subscript",
+                        "array-update index is not a constructor-proven Integer".to_owned(),
+                        span,
+                    ));
+                };
+                Ok(if selected == coordinate {
+                    ArrayUpdateAxis::UpdatedIndex
+                } else {
+                    ArrayUpdateAxis::Historical
+                })
+            }
+            Some(dae::SubscriptView::Whole { .. }) | None => Ok(ArrayUpdateAxis::UpdatedValue(
+                gast::Expression::Integer(coordinate),
+            )),
+            Some(dae::SubscriptView::Slice { expression, .. }) => Ok(self
+                .static_slice_ordinal(expression, coordinate, extent)?
+                .map_or(ArrayUpdateAxis::Historical, |ordinal| {
+                    ArrayUpdateAxis::UpdatedValue(gast::Expression::Integer(ordinal))
+                })),
+        }
+    }
+
+    fn static_slice_ordinal(
+        &mut self,
+        slice: dae::ExprId<'dae>,
+        coordinate: i64,
+        extent: u32,
+    ) -> Result<Option<i64>, GalecTargetError> {
+        let node = self
+            .view
+            .expression(slice)
+            .expect("checked array-update slice resolves");
+        let dae::ExpressionOperation::Range(range) = node.operation() else {
+            return Err(unsupported(
+                "dynamic-array-update-slice",
+                "array-update slice requires a constructor-proven range".to_owned(),
+                node.provenance().span(),
+            ));
+        };
+        let start = range.start().value();
+        let stop = range.stop().value();
+        let step = range.effective_step();
+        let in_direction = if step > 0 {
+            coordinate >= start && coordinate <= stop
+        } else {
+            coordinate <= start && coordinate >= stop
+        };
+        let delta = coordinate - start;
+        if !in_direction || step == 0 || delta % step != 0 {
+            return Ok(None);
+        }
+        let ordinal = delta / step + 1;
+        if coordinate > i64::from(extent) || ordinal < 1 {
+            return Ok(None);
+        }
+        Ok(Some(ordinal))
+    }
+
     fn lower_elementwise_builtin(
         &mut self,
         builtin: dae::PureBuiltin,
@@ -1445,6 +1442,42 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             lowered.push(self.lower_at(argument, &projection)?);
         }
         let expression = lower_builtin_arguments(builtin, lowered, span)?;
+        Ok(TypedExpression {
+            expression,
+            scalar_type,
+        })
+    }
+
+    fn lower_reduction(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar_type: gast::ScalarType,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        let operand = arguments.get(0).expect("checked reduction operand");
+        let dimensions = self
+            .view
+            .expression(operand)
+            .expect("checked reduction operand resolves")
+            .value_type()
+            .dimensions();
+        let operator = if builtin == dae::PureBuiltin::Sum {
+            gast::BinaryOp::Add
+        } else {
+            gast::BinaryOp::Mul
+        };
+        let mut values = Vec::new();
+        for indices in row_major_indices(dimensions) {
+            let indices = indices
+                .into_iter()
+                .map(|index| gast::Expression::Integer(i64::from(index)))
+                .collect::<Vec<_>>();
+            values.push(self.lower_at(operand, &indices)?.expression);
+        }
+        let expression = values
+            .into_iter()
+            .reduce(|lhs, rhs| gast::Expression::binary(operator, lhs, rhs))
+            .unwrap_or_else(|| reduction_identity(builtin, scalar_type));
         Ok(TypedExpression {
             expression,
             scalar_type,
@@ -1586,10 +1619,42 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 scalar_type: gast::ScalarType::Real,
             });
         }
+        if let dae::CoordinateView::Binder(binder) = coordinate {
+            let expression = self
+                .comprehension_frames
+                .iter()
+                .rev()
+                .find(|frame| frame.domain == binder.domain().index())
+                .and_then(|frame| frame.binders.get(binder.ordinal() as usize))
+                .cloned()
+                .ok_or_else(|| GalecTargetError::LoweringInternal {
+                    detail: "domain binder used without its checked comprehension frame".to_owned(),
+                })?;
+            return Ok(TypedExpression {
+                expression,
+                scalar_type: gast::ScalarType::Integer,
+            });
+        }
         if let dae::CoordinateView::Algebraic(variable) = coordinate
             && let Some(definition) = self.definitions.definition(variable)
         {
             return self.lower_at(definition, indices);
+        }
+        if let dae::CoordinateView::Algebraic(variable) = coordinate {
+            let variable_id = dae::VariableId::from(variable);
+            let dimensions = self
+                .view
+                .variable(variable_id)
+                .expect("checked algebraic variable resolves")
+                .value_type()
+                .dimensions();
+            if let Some(scalar) = literal_scalar_index(dimensions, indices)
+                && let Some(definition) = self
+                    .definitions
+                    .scalar_definition_for_variable(variable_id, scalar)
+            {
+                return self.lower_at(definition, &[]);
+            }
         }
         if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
             let argument = self
@@ -1642,6 +1707,41 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         })
     }
 
+    fn lower_comprehension_at(
+        &mut self,
+        domain: dae::DomainId<'dae>,
+        body: dae::ExprId<'dae>,
+        indices: &[gast::Expression],
+        span: Span,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        let domain_view = self
+            .view
+            .domain(domain)
+            .expect("checked comprehension domain resolves");
+        let binder_count = domain_view.extents().len();
+        let (ordinals, body_indices) = indices.split_at_checked(binder_count).ok_or_else(|| {
+            unsupported(
+                "comprehension-projection",
+                "comprehension projection lacks one ordinal per checked binder".to_owned(),
+                span,
+            )
+        })?;
+        let binders = domain_view
+            .structured()
+            .binders
+            .iter()
+            .zip(ordinals)
+            .map(|(binder, ordinal)| comprehension_binder_value(binder, ordinal.clone()))
+            .collect();
+        self.comprehension_frames.push(ComprehensionFrame {
+            domain: domain.index(),
+            binders,
+        });
+        let result = self.lower_at(body, body_indices);
+        self.comprehension_frames.pop();
+        result
+    }
+
     fn lower_dynamic_reference(
         &self,
         classified: &ClassifiedVariable<'dae>,
@@ -1650,12 +1750,28 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         span: Span,
     ) -> Result<gast::Expression, GalecTargetError> {
         let dimensions = classified.variable.value_type().dimensions();
+        let indices = indices
+            .iter()
+            .map(|index| {
+                constant_integer(index)
+                    .map(gast::Expression::Integer)
+                    .unwrap_or_else(|| index.clone())
+            })
+            .collect::<Vec<_>>();
         if dimensions.len() != indices.len() {
             return Err(unsupported(
                 "dynamic-array-index",
                 "dynamic reference does not have one index per checked dimension".to_owned(),
                 span,
             ));
+        }
+        if indices
+            .iter()
+            .all(|index| matches!(index, gast::Expression::Integer(_)))
+        {
+            return Ok(gast::Expression::Ref(state_reference_with_subscripts(
+                name, indices, span,
+            )));
         }
         for (index, extent) in indices.iter().zip(dimensions) {
             if !matches!(index, gast::Expression::Integer(_)) {
@@ -1716,7 +1832,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let gast::Expression::Ref(gast::Reference::State(parts)) = index else {
             return Err(unsupported(
                 "dynamic-array-index",
-                "dynamic index needs a directly bounded checked coordinate".to_owned(),
+                format!("dynamic index `{index:?}` needs a directly bounded checked coordinate"),
                 span,
             ));
         };
@@ -1794,113 +1910,22 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     }
 }
 
-fn vector_operand_projection(
-    dimensions: &[u32],
-    result_indices: &[gast::Expression],
-) -> Vec<gast::Expression> {
-    let [index] = result_indices else {
-        unreachable!("checked vector result has rank one")
-    };
-    dimensions
-        .iter()
-        .map(|extent| {
-            if *extent > 1 {
-                index.clone()
-            } else {
-                gast::Expression::Integer(1)
+fn first_function_assertion(statements: dae::FunctionStatements<'_>) -> Option<Span> {
+    for statement in statements {
+        match statement {
+            dae::FunctionStatementView::Assertion { provenance, .. } => {
+                return Some(provenance.span());
             }
-        })
-        .collect()
-}
-
-fn lower_identity_element(indices: &[gast::Expression]) -> TypedExpression {
-    let [row, column] = indices else {
-        unreachable!("checked identity result has rank two")
-    };
-    let expression = match (row, column) {
-        (gast::Expression::Integer(row), gast::Expression::Integer(column)) => {
-            gast::Expression::Integer(i64::from(row == column))
+            dae::FunctionStatementView::For { statements, .. } => {
+                if let Some(span) = first_function_assertion(statements) {
+                    return Some(span);
+                }
+            }
+            dae::FunctionStatementView::Assignment { .. } => {}
         }
-        _ => gast::Expression::If(gast::IfExpression {
-            branches: vec![(
-                gast::Expression::binary(gast::BinaryOp::Eq, row.clone(), column.clone()),
-                gast::Expression::Integer(1),
-            )],
-            else_value: Box::new(gast::Expression::Integer(0)),
-        }),
-    };
-    TypedExpression {
-        expression,
-        scalar_type: gast::ScalarType::Integer,
     }
-}
-
-const fn causality_name(causality: dae::VariableCausality) -> &'static str {
-    match causality {
-        dae::VariableCausality::Input => "input",
-        dae::VariableCausality::Output => "output",
-        dae::VariableCausality::Parameter => "parameter",
-        dae::VariableCausality::CalculatedParameter => "calculatedParameter",
-        dae::VariableCausality::Independent => "independent",
-        dae::VariableCausality::Local => "local",
-    }
-}
-
-const fn role_name(role: dae::VariableRole) -> &'static str {
-    match role {
-        dae::VariableRole::Parameter => "parameter",
-        dae::VariableRole::Constant => "constant",
-        dae::VariableRole::Input => "input",
-        dae::VariableRole::State => "state",
-        dae::VariableRole::Algebraic => "algebraic",
-        dae::VariableRole::Output => "output",
-        dae::VariableRole::DiscreteReal => "discrete Real",
-        dae::VariableRole::DiscreteValue => "discrete value",
-    }
-}
-
-const fn origin_name(origin: dae::VariableOrigin) -> &'static str {
-    match origin {
-        dae::VariableOrigin::Source => "source",
-        dae::VariableOrigin::Generated => "generated",
-    }
-}
-
-const fn event_name(operation: dae::EventActionOperation<'_>) -> &'static str {
-    match operation {
-        dae::EventActionOperation::Assert { .. } => "assert",
-        dae::EventActionOperation::Terminate { .. } => "terminate",
-        dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
-    }
+    None
 }
 
 #[cfg(test)]
-mod identity_tests {
-    use super::*;
-
-    #[test]
-    fn identity_element_is_integer_and_diagonal_by_index_equality() {
-        let diagonal =
-            lower_identity_element(&[gast::Expression::Integer(2), gast::Expression::Integer(2)]);
-        assert_eq!(diagonal.scalar_type, gast::ScalarType::Integer);
-        assert_eq!(diagonal.expression, gast::Expression::Integer(1));
-
-        let off_diagonal =
-            lower_identity_element(&[gast::Expression::Integer(1), gast::Expression::Integer(2)]);
-        assert_eq!(off_diagonal.expression, gast::Expression::Integer(0));
-    }
-
-    #[test]
-    fn vector_projection_preserves_the_unique_non_unit_dimension() {
-        let index = gast::Expression::Integer(2);
-        assert_eq!(
-            vector_operand_projection(&[1, 3, 1], std::slice::from_ref(&index)),
-            [
-                gast::Expression::Integer(1),
-                index,
-                gast::Expression::Integer(1)
-            ]
-        );
-        assert!(vector_operand_projection(&[], &[gast::Expression::Integer(1)]).is_empty());
-    }
-}
+mod tests;

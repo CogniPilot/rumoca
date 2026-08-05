@@ -1,5 +1,7 @@
 //! Checked B.1c and clocked discrete-Real projection into GALEC `DoStep`.
 
+use std::collections::HashSet;
+
 use super::*;
 
 struct PendingAssignment<'dae> {
@@ -140,6 +142,42 @@ fn explicit_discrete_real_definition<'dae>(
         (None, Some(target)) if !reads_current_target(view, lhs, target) => {
             Ok((dae::VariableId::from(target), lhs))
         }
+        (Some(lhs_target), Some(rhs_target)) => {
+            explicit_direct_alias(view, lhs_target, rhs_target, lhs, rhs, span)
+        }
+        _ => Err(coupled_discrete_real_equation(span)),
+    }
+}
+
+/// Solve an exact coordinate alias without pretending an arbitrary B.1b row is solved.
+///
+/// A top-level output causality is an exact semantic direction retained by DAE.
+/// When exactly one side has that causality, the residual defines that output
+/// from the other clocked coordinate. Otherwise `lhs - rhs = 0` is exactly
+/// solved for `lhs`; unique-target and acyclic current-tick checks below must
+/// still prove that all selected aliases form one executable assignment graph.
+fn explicit_direct_alias<'dae>(
+    view: dae::DaeView<'dae>,
+    lhs_target: dae::DiscreteRealId<'dae>,
+    rhs_target: dae::DiscreteRealId<'dae>,
+    lhs: dae::ExprId<'dae>,
+    rhs: dae::ExprId<'dae>,
+    span: Span,
+) -> Result<(dae::VariableId<'dae>, dae::ExprId<'dae>), GalecTargetError> {
+    let lhs_output = view
+        .variable(dae::VariableId::from(lhs_target))
+        .expect("checked B.1b lhs variable resolves")
+        .causality()
+        == dae::VariableCausality::Output;
+    let rhs_output = view
+        .variable(dae::VariableId::from(rhs_target))
+        .expect("checked B.1b rhs variable resolves")
+        .causality()
+        == dae::VariableCausality::Output;
+    match (lhs_output, rhs_output) {
+        (true, false) => Ok((dae::VariableId::from(lhs_target), rhs)),
+        (false, true) => Ok((dae::VariableId::from(rhs_target), lhs)),
+        _ if lhs_target != rhs_target => Ok((dae::VariableId::from(lhs_target), rhs)),
         _ => Err(coupled_discrete_real_equation(span)),
     }
 }
@@ -1238,13 +1276,113 @@ mod tests {
     }
 
     #[test]
+    fn clocked_local_to_output_alias_is_oriented_and_ordered() {
+        let text = "discrete Real source; discrete Real filtered; output discrete Real y; when sample(0, 1) then source = 1.0; filtered = source; y = filtered; end when;";
+        let mut sources = SourceMap::new();
+        let source = sources.add("output-alias.mo", text);
+        let source_declaration = at(source, text, "discrete Real source");
+        let filtered_declaration = at(source, text, "discrete Real filtered");
+        let output_declaration = at(source, text, "output discrete Real y");
+        let clock_at = at(source, text, "sample(0, 1)");
+        let source_assignment = at(source, text, "source = 1.0");
+        let filtered_assignment = at(source, text, "filtered = source");
+        let output_assignment = at(source, text, "y = filtered");
+        let model = dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    source_declaration,
+                )
+            })?;
+            let (source_value, filtered, output) = dae.variables(|variables| {
+                let source_value = variables.discrete_real(
+                    VarName::new("source"),
+                    real,
+                    source_declaration,
+                    dae::VariableAttributes::default(),
+                )?;
+                let filtered = variables.discrete_real(
+                    VarName::new("filtered"),
+                    real,
+                    filtered_declaration,
+                    dae::VariableAttributes::default(),
+                )?;
+                let output = variables.discrete_real(
+                    VarName::new("y"),
+                    real,
+                    output_declaration,
+                    dae::VariableAttributes {
+                        causality: dae::VariableCausality::Output,
+                        ..dae::VariableAttributes::default()
+                    },
+                )?;
+                Ok((source_value, filtered, output))
+            })?;
+            let (source_lhs, one, filtered_lhs, filtered_rhs, output_lhs, output_rhs) = dae
+                .expressions(|expressions| {
+                    Ok((
+                        expressions
+                            .at(source_assignment)
+                            .coordinate(dae::CoordinateInput::DiscreteReal(source_value))?,
+                        expressions
+                            .at(source_assignment)
+                            .literal(dae::DaeLiteral::Real(1.0))?,
+                        expressions
+                            .at(filtered_assignment)
+                            .coordinate(dae::CoordinateInput::DiscreteReal(filtered))?,
+                        expressions
+                            .at(filtered_assignment)
+                            .coordinate(dae::CoordinateInput::DiscreteReal(source_value))?,
+                        expressions
+                            .at(output_assignment)
+                            .coordinate(dae::CoordinateInput::DiscreteReal(output))?,
+                        expressions
+                            .at(output_assignment)
+                            .coordinate(dae::CoordinateInput::DiscreteReal(filtered))?,
+                    ))
+                })?;
+            let clock = periodic_clock(dae, clock_at)?;
+            dae.clocks(|clocks| {
+                clocks.own_discrete_real(clock, source_value, source_declaration)?;
+                clocks.own_discrete_real(clock, filtered, filtered_declaration)?;
+                clocks.own_discrete_real(clock, output, output_declaration)?;
+                Ok(())
+            })?;
+            let tick = dae.conditions(|conditions| {
+                let tick = conditions.reserve(clock_at)?;
+                conditions.define(tick, dae::ConditionInput::Clock(clock), clock_at)?;
+                Ok(tick)
+            })?;
+            define_when_real_equation(dae, tick, tick, source_assignment, source_lhs, one)?;
+            define_when_real_equation(
+                dae,
+                tick,
+                tick,
+                filtered_assignment,
+                filtered_lhs,
+                filtered_rhs,
+            )?;
+            define_when_real_equation(dae, tick, tick, output_assignment, output_lhs, output_rhs)?;
+            Ok(())
+        })
+        .expect("checked output alias fixture");
+
+        let statements = project(&model).expect("output causality orients the boundary alias");
+        assert_eq!(
+            statements.iter().map(assignment_target).collect::<Vec<_>>(),
+            ["source", "filtered", "y"]
+        );
+    }
+
+    #[test]
     fn coupled_b1b_residual_fails_closed_at_equation_provenance() {
-        let text = "discrete Real z; discrete Real w; z = w; sample(0, 1);";
+        let text = "discrete Real z; discrete Real w; z + w = 1.0; sample(0, 1);";
         let mut sources = SourceMap::new();
         let source = sources.add("coupled-real.mo", text);
         let z_declaration = at(source, text, "discrete Real z");
         let w_declaration = at(source, text, "discrete Real w");
-        let equation_at = at(source, text, "z = w");
+        let equation_at = at(source, text, "z + w = 1.0");
         let clock_at = at(source, text, "sample(0, 1)");
         let model = dae::Dae::construct(sources, |dae| {
             let real = dae.types(|types| {
@@ -1271,13 +1409,19 @@ mod tests {
                 ))
             })?;
             let (lhs, rhs) = dae.expressions(|expressions| {
+                let z = expressions
+                    .at(equation_at)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(z))?;
+                let w = expressions
+                    .at(equation_at)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(w))?;
                 Ok((
                     expressions
                         .at(equation_at)
-                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                        .binary(dae::BinaryOperator::Add, z, w)?,
                     expressions
                         .at(equation_at)
-                        .coordinate(dae::CoordinateInput::DiscreteReal(w))?,
+                        .literal(dae::DaeLiteral::Real(1.0))?,
                 ))
             })?;
             periodic_clock(dae, clock_at)?;

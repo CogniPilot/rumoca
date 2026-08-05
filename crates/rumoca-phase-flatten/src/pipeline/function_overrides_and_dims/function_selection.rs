@@ -20,6 +20,7 @@ pub(super) struct ResolvedFunctionRewrite {
     pub(super) display_name: String,
     pub(super) selection: FunctionSelection,
     pub(super) occurrence_identity: CallOccurrenceIdentity,
+    pub(super) exposed_package: Option<(String, rumoca_core::DefId)>,
 }
 
 /// True when the callable is a class kind that never selects a function
@@ -193,10 +194,11 @@ fn resolved_function_rewrite(
         display_name: display_name.unwrap_or_else(|| reference.as_str().to_string()),
         selection,
         occurrence_identity: CallOccurrenceIdentity::SelectedImplementation,
+        exposed_package: None,
     })
 }
 
-fn exact_override_package_for_source_package<'a>(
+pub(super) fn exact_override_package_for_source_package<'a>(
     reference: &rumoca_core::Reference,
     source_package: rumoca_core::DefId,
     ctx: &'a FunctionOverrideRewriteContext<'a>,
@@ -221,7 +223,18 @@ fn exact_override_package_for_source_package<'a>(
             }
         }
     }
-    let candidates = if active.is_empty() { inherited } else { active };
+    let has_active = !active.is_empty();
+    let mut candidates = if has_active { active } else { inherited };
+    let mut seen = FxHashSet::default();
+    candidates.retain(|package| seen.insert(package.def_id));
+    if !has_active
+        && let Some(lexical_package) = ctx.lexical_package_def_id
+        && candidates
+            .iter()
+            .any(|package| package.def_id == lexical_package)
+    {
+        candidates.retain(|package| package.def_id == lexical_package);
+    }
     match candidates.as_slice() {
         [] => Ok(None),
         [package] => Ok(Some(*package)),
@@ -285,15 +298,16 @@ fn exact_package_function_rewrite(
     if projected == selection {
         return Ok(None);
     }
-    resolved_function_rewrite(
+    let mut rewrite = resolved_function_rewrite(
         reference,
         projected,
         Some(format!("{}.{}", package.name, member)),
         ctx,
         span,
         "selected package implementation has no canonical display entry",
-    )
-    .map(Some)
+    )?;
+    rewrite.exposed_package = Some((package.name.clone(), package.def_id));
+    Ok(Some(rewrite))
 }
 
 pub(super) fn resolve_exact_function_rewrite(

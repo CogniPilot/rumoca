@@ -61,9 +61,9 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 13,750 | SPEC_0036 cutover: ranked non-wire reductions |
+| `dae-core-loc` | 11,000 | 14,500 | SPEC_0036 cutover: ranked non-wire reductions |
 | `dae-wire-loc` | 3,250 | 4,000 | SPEC_0036 cutover: operation-shaped wire |
-| `dae-total-loc` | 14,250 | 17,500 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 18,250 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -117,6 +117,12 @@ exists. Every other object inserts complete values in proven order.
 | Discrete Real equations own activated Real residual IDs | Discrete system | B.1b may be coupled; trigger/guard ownership is explicit |
 | B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
 | Runtime binding equations contribute event owners by expression occurrence | Event analysis | MLS §4.4 binding syntax and equation-section syntax have the same MLS §8.5 event surface |
+| Whole-record equality derives leaf owners only from exact record/field identities and equal complete layouts; each array field remains one tensor equation | Flat-to-DAE record-equation analysis | Aggregate routing cannot depend on rendered names or source scalarization |
+| Straight-line function-loop scratch elimination substitutes only scalar call-locals whose definitions dominate their uses and whose final values are not read after the loop; unresolved self-reads remain explicit transitions | Flat-to-DAE function-loop analysis | Compact loop owners cannot erase loop-carried state or escaping values |
+| A function loop with call-scoped actions and no carried values constructs one zero-carried compact fold over the checked domain | Flat-to-DAE function-loop analysis | Scratch substitution may expose assertion-only loops without erasing or scalarizing their per-point actions |
+| An ordered unit-step first-match loop compacts only from a zero seed, an exact `found == 0` guard, and an update to the current binder; its tensor reduction appends an out-of-range sentinel before `min` and maps the sentinel back to zero | Flat-to-DAE function-loop normalization | The compact form is total for empty/no-match domains and preserves the source loop's first-match semantics without scalar expansion |
+| A direct `x := x + term`, `x := x - term`, or `x := x * term` loop over a binder-dependent range compacts to the corresponding `sum` or `product` comprehension joined with its exact seed | Flat-to-DAE function-loop normalization | Additive and multiplicative identities preserve empty-domain behavior while dependent scalar iteration never enters DAE IR |
+| Conditional target certificates inside a compact function domain resolve the selected nested branch before collection and union monotonically across all domain points | Flat-to-DAE function-loop definedness analysis | A later point or an outer guard cannot erase a tensor update owned by an earlier point or nested branch |
 | Every non-input B.1c target has one definition | Discrete system | Missing or duplicate is impossible |
 | Input `m` capabilities are read-only | Variable/discrete systems | Inputs cannot be assigned |
 | B.1c dependencies use issued-order capabilities | Discrete system | Topology is incremental |

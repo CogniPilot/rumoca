@@ -1,5 +1,191 @@
 use super::*;
 
+pub(super) fn exact_integer(value: f64, span: Span) -> Result<i64, GalecTargetError> {
+    if value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
+    {
+        Ok(value as i64)
+    } else {
+        Err(GalecTargetError::AttributeTypeMismatch {
+            variable: "<checked Integer>".to_owned(),
+            attribute: "value",
+            expected: "Integer",
+            found: "non-integral or out-of-range Real",
+            span: Some(span),
+        })
+    }
+}
+
+pub(super) fn optional_real<'dae>(
+    evaluator: &mut NumericEvaluator<'dae>,
+    expression: Option<dae::ExprId<'dae>>,
+) -> Result<Option<f64>, GalecTargetError> {
+    expression
+        .map(|expression| scalar_numeric(evaluator, expression))
+        .transpose()
+}
+
+pub(super) fn optional_integer<'dae>(
+    view: dae::DaeView<'dae>,
+    evaluator: &mut NumericEvaluator<'dae>,
+    expression: Option<dae::ExprId<'dae>>,
+) -> Result<Option<i64>, GalecTargetError> {
+    expression
+        .map(|expression| {
+            let span = expression_span(view, expression);
+            exact_integer(scalar_numeric(evaluator, expression)?, span)
+        })
+        .transpose()
+}
+
+fn scalar_numeric<'dae>(
+    evaluator: &mut NumericEvaluator<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Result<f64, GalecTargetError> {
+    let values = evaluator.expression(expression).map_err(|error| {
+        GalecTargetError::AttributeNotEvaluable {
+            variable: "<checked variable>".to_owned(),
+            attribute: "bound",
+            reason: error.to_string(),
+            span: Some(error.span()),
+        }
+    })?;
+    match values.as_slice() {
+        [value] => Ok(*value),
+        _ => Err(GalecTargetError::AttributeNotEvaluable {
+            variable: "<checked variable>".to_owned(),
+            attribute: "bound",
+            reason: "attribute is not scalar".to_owned(),
+            span: None,
+        }),
+    }
+}
+
+pub(super) fn literal_scalar_index(
+    dimensions: &[u32],
+    indices: &[gast::Expression],
+) -> Option<u32> {
+    if dimensions.len() != indices.len() {
+        return None;
+    }
+    dimensions
+        .iter()
+        .zip(indices)
+        .try_fold(0_u32, |scalar, (extent, index)| {
+            let gast::Expression::Integer(index) = index else {
+                return None;
+            };
+            let coordinate = u32::try_from(*index).ok()?.checked_sub(1)?;
+            if coordinate >= *extent {
+                return None;
+            }
+            scalar.checked_mul(*extent)?.checked_add(coordinate)
+        })
+}
+
+pub(super) fn comprehension_binder_value(
+    binder: &rumoca_core::StructuredIndexBinder,
+    ordinal: gast::Expression,
+) -> gast::Expression {
+    if let gast::Expression::Integer(ordinal) = ordinal {
+        return gast::Expression::Integer(binder.lower + (ordinal - 1).saturating_mul(binder.step));
+    }
+    let zero_based =
+        gast::Expression::binary(gast::BinaryOp::Sub, ordinal, gast::Expression::Integer(1));
+    let offset = gast::Expression::binary(
+        gast::BinaryOp::Mul,
+        zero_based,
+        gast::Expression::Integer(binder.step),
+    );
+    gast::Expression::binary(
+        gast::BinaryOp::Add,
+        gast::Expression::Integer(binder.lower),
+        offset,
+    )
+}
+
+pub(super) fn vector_operand_projection(
+    dimensions: &[u32],
+    result_indices: &[gast::Expression],
+) -> Vec<gast::Expression> {
+    let [index] = result_indices else {
+        unreachable!("checked vector result has rank one")
+    };
+    dimensions
+        .iter()
+        .map(|extent| {
+            if *extent > 1 {
+                index.clone()
+            } else {
+                gast::Expression::Integer(1)
+            }
+        })
+        .collect()
+}
+
+pub(super) fn lower_identity_element(indices: &[gast::Expression]) -> TypedExpression {
+    let [row, column] = indices else {
+        unreachable!("checked identity result has rank two")
+    };
+    let expression = match (row, column) {
+        (gast::Expression::Integer(row), gast::Expression::Integer(column)) => {
+            gast::Expression::Integer(i64::from(row == column))
+        }
+        _ => gast::Expression::If(gast::IfExpression {
+            branches: vec![(
+                gast::Expression::binary(gast::BinaryOp::Eq, row.clone(), column.clone()),
+                gast::Expression::Integer(1),
+            )],
+            else_value: Box::new(gast::Expression::Integer(0)),
+        }),
+    };
+    TypedExpression {
+        expression,
+        scalar_type: gast::ScalarType::Integer,
+    }
+}
+
+pub(super) const fn causality_name(causality: dae::VariableCausality) -> &'static str {
+    match causality {
+        dae::VariableCausality::Input => "input",
+        dae::VariableCausality::Output => "output",
+        dae::VariableCausality::Parameter => "parameter",
+        dae::VariableCausality::CalculatedParameter => "calculatedParameter",
+        dae::VariableCausality::Independent => "independent",
+        dae::VariableCausality::Local => "local",
+    }
+}
+
+pub(super) const fn role_name(role: dae::VariableRole) -> &'static str {
+    match role {
+        dae::VariableRole::Parameter => "parameter",
+        dae::VariableRole::Constant => "constant",
+        dae::VariableRole::Input => "input",
+        dae::VariableRole::State => "state",
+        dae::VariableRole::Algebraic => "algebraic",
+        dae::VariableRole::Output => "output",
+        dae::VariableRole::DiscreteReal => "discrete Real",
+        dae::VariableRole::DiscreteValue => "discrete value",
+    }
+}
+
+pub(super) const fn origin_name(origin: dae::VariableOrigin) -> &'static str {
+    match origin {
+        dae::VariableOrigin::Source => "source",
+        dae::VariableOrigin::Generated => "generated",
+    }
+}
+
+pub(super) const fn event_name(operation: dae::EventActionOperation<'_>) -> &'static str {
+    match operation {
+        dae::EventActionOperation::Assert { .. } => "assert",
+        dae::EventActionOperation::Terminate { .. } => "terminate",
+        dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
+    }
+}
+
 pub(super) fn state_reference(name: gast::Name, span: Span) -> gast::Reference {
     state_reference_with_subscripts(name, Vec::new(), span)
 }
@@ -59,6 +245,38 @@ pub(super) fn row_major_indices(dimensions: &[u32]) -> Vec<Vec<u32>> {
         indices = expanded;
     }
     indices
+}
+
+pub(super) fn constant_integer(expression: &gast::Expression) -> Option<i64> {
+    match expression {
+        gast::Expression::Integer(value) => Some(*value),
+        gast::Expression::Paren(value) => constant_integer(value),
+        gast::Expression::Binary { op, lhs, rhs } => {
+            let lhs = constant_integer(lhs)?;
+            let rhs = constant_integer(rhs)?;
+            match op {
+                gast::BinaryOp::Add => lhs.checked_add(rhs),
+                gast::BinaryOp::Sub => lhs.checked_sub(rhs),
+                gast::BinaryOp::Mul => lhs.checked_mul(rhs),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn reduction_identity(
+    builtin: dae::PureBuiltin,
+    scalar_type: gast::ScalarType,
+) -> gast::Expression {
+    let value = i64::from(builtin == dae::PureBuiltin::Product);
+    match scalar_type {
+        gast::ScalarType::Real => gast::Expression::Real(value as f64),
+        gast::ScalarType::Integer => gast::Expression::Integer(value),
+        gast::ScalarType::Boolean => {
+            unreachable!("checked sum/product reductions are numeric")
+        }
+    }
 }
 
 pub(super) fn expression_span<'dae>(

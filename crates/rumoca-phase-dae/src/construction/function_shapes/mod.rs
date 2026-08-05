@@ -1,22 +1,18 @@
-use super::*;
-
-#[path = "function_shapes/expression_rules.rs"]
 mod expression_rules;
-#[path = "function_shapes/value_relevance.rs"]
+mod integer_bounds;
+#[cfg(test)]
+mod tests;
 mod value_relevance;
+
+use super::*;
 pub(in crate::construction) use expression_rules::{
     call_free_expression_shape, call_free_target_shape,
 };
 use expression_rules::{expression_shape, reject_shape_call};
+pub(in crate::construction) use integer_bounds::infer_function_integer_bounds;
 use rumoca_core::{DefId, FunctionInstanceId};
 use value_relevance::ValueReadInputs;
-
-#[cfg(test)]
-#[path = "function_shapes/tests/missing_provenance.rs"]
-mod provenance_tests;
-#[cfg(test)]
-#[path = "function_shapes/tests/value_proven_shapes.rs"]
-mod value_proven_shape_tests;
+pub(super) use value_relevance::function_expressions;
 
 pub(super) type ValueShape = Vec<u32>;
 
@@ -93,6 +89,9 @@ const SPECIALIZATION_DEPTH_LIMIT: usize = 256;
 #[derive(Clone, Debug, Default)]
 pub(super) struct ShapeEnvironment {
     shapes: HashMap<VarName, ValueShape>,
+    /// Conservative finite bounds for scalar Integer values whose exact value
+    /// is not fixed at translation time (most notably compact loop binders).
+    integer_bounds: HashMap<VarName, (i64, i64)>,
     /// Flat literal names paired with the declaration identities proven to be
     /// enumeration types. Both sets are required before shape analysis treats
     /// a reference as an enumeration scalar; rendered spelling alone grants no
@@ -129,6 +128,7 @@ impl ShapeEnvironment {
     pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
             shapes: HashMap::with_capacity(capacity),
+            integer_bounds: HashMap::with_capacity(capacity),
             enumeration_literals: Arc::default(),
             enumeration_type_declarations: Arc::default(),
             record_array_fields: None,
@@ -177,6 +177,7 @@ impl ShapeEnvironment {
     /// exactly what the shape proof must then reject on.
     pub(super) fn insert(&mut self, name: VarName, shape: ValueShape) {
         self.values.remove_parameter(name.as_str());
+        self.integer_bounds.remove(&name);
         self.shapes.insert(name, shape);
     }
 
@@ -186,8 +187,29 @@ impl ShapeEnvironment {
     /// a value only for a scalar, so a bound value that disagreed with a
     /// non-scalar shape would be unrepresentable rather than merely wrong.
     pub(super) fn bind_scalar_value(&mut self, name: VarName, value: EvalValue) {
+        self.integer_bounds.remove(&name);
         self.shapes.insert(name.clone(), Vec::new());
         self.values.add_parameter(name.to_string(), value);
+    }
+
+    /// Bind a scalar Integer to a proved finite interval without pretending it
+    /// has one translation-time value.
+    pub(super) fn bind_integer_bounds(&mut self, name: VarName, lower: i64, upper: i64) {
+        self.values.remove_parameter(name.as_str());
+        self.shapes.insert(name.clone(), Vec::new());
+        self.integer_bounds
+            .insert(name, (lower.min(upper), lower.max(upper)));
+    }
+
+    pub(super) fn merge_integer_bounds(&mut self, name: VarName, lower: i64, upper: i64) {
+        let (lower, upper) = (lower.min(upper), lower.max(upper));
+        let merged = self
+            .integer_bounds
+            .get(&name)
+            .map_or((lower, upper), |(owned_lower, owned_upper)| {
+                ((*owned_lower).min(lower), (*owned_upper).max(upper))
+            });
+        self.bind_integer_bounds(name, merged.0, merged.1);
     }
 
     /// The proven translation-time value of an expression, if it has one.
@@ -197,7 +219,15 @@ impl ShapeEnvironment {
     /// decides whether the missing value is fatal for the dimension or the
     /// specialization it is proving.
     pub(super) fn proven_value(&self, expression: &Expression) -> Option<ProvenValue> {
-        ProvenValue::from_settled(&eval_expr(expression, &self.values).ok()?)
+        if let Some(value) = eval_expr(expression, &self.values)
+            .ok()
+            .as_ref()
+            .and_then(ProvenValue::from_settled)
+        {
+            return Some(value);
+        }
+        let (lower, upper) = self.proven_integer_bounds(expression)?;
+        Some(ProvenValue::IntegerRange { lower, upper })
     }
 
     /// The exact Integer extent this scope proves for `expression`, if any.
@@ -207,7 +237,7 @@ impl ShapeEnvironment {
     /// and the lowering that folds its bounds, so the two can never disagree
     /// about which ranges are static.
     pub(in crate::construction) fn proven_extent(&self, expression: &Expression) -> Option<i64> {
-        self.proven_value(expression).and_then(ProvenValue::extent)
+        evaluate_shape_integer(expression, self).ok()
     }
 }
 
@@ -221,6 +251,12 @@ pub(super) enum ProvenValue {
     /// An Integer, or an enumeration literal read through its MLS §4.8.5.2
     /// ordinal.
     Integer(i64),
+    /// One finite interval carried by a compact Integer domain. It keys a
+    /// bounded specialization but is never mistaken for an exact value.
+    IntegerRange {
+        lower: i64,
+        upper: i64,
+    },
     Boolean(bool),
 }
 
@@ -236,6 +272,9 @@ impl ProvenValue {
     fn into_settled(self) -> EvalValue {
         match self {
             Self::Integer(value) => EvalValue::Integer(value),
+            Self::IntegerRange { .. } => {
+                unreachable!("an Integer interval is not one settled value")
+            }
             Self::Boolean(value) => EvalValue::Bool(value),
         }
     }
@@ -247,7 +286,7 @@ impl ProvenValue {
     pub(in crate::construction) fn extent(self) -> Option<i64> {
         match self {
             Self::Integer(value) => Some(value),
-            Self::Boolean(_) => None,
+            Self::IntegerRange { .. } | Self::Boolean(_) => None,
         }
     }
 }
@@ -275,7 +314,7 @@ pub(in crate::construction) fn proven_conditional_branch(
             ProvenValue::Boolean(false) => {}
             // MLS §11.5 requires a Boolean condition; a scope that folded one to
             // an Integer proves nothing about which branch runs.
-            ProvenValue::Integer(_) => return None,
+            ProvenValue::Integer(_) | ProvenValue::IntegerRange { .. } => return None,
         }
     }
     Some(None)
@@ -545,16 +584,17 @@ impl FunctionShapeAnalysis {
             inputs,
             input_values,
         };
-        self.call_certificates.get(&occurrence).ok_or_else(|| {
-            ToDaeError::unsupported_flat(
-                "function shape specialization",
-                format!(
-                    "`{}` has no constructor-proven call-shape certificate",
-                    name.as_str()
-                ),
-                span,
-            )
-        })
+        if let Some(call) = self.call_certificates.get(&occurrence) {
+            return Ok(call);
+        }
+        Err(ToDaeError::unsupported_flat(
+            "function shape specialization",
+            format!(
+                "`{}` has no constructor-proven call-shape certificate",
+                name.as_str()
+            ),
+            span,
+        ))
     }
 
     pub(super) fn expression_shape(
@@ -1072,7 +1112,7 @@ impl ShapeAnalyzer<'_> {
                 let mut loop_values = values.clone();
                 for index in indices {
                     self.discover_calls(&index.range, &loop_values)?;
-                    loop_values.insert(VarName::new(&index.ident), Vec::new());
+                    bind_discovered_loop_index(&mut loop_values, index);
                 }
                 self.discover_statements(equations, &loop_values)
             }
@@ -1240,6 +1280,14 @@ impl ShapeAnalyzer<'_> {
                 self.discover_calls(function, values)
             }
         }
+    }
+}
+
+fn bind_discovered_loop_index(values: &mut ShapeEnvironment, index: &rumoca_core::ForIndex) {
+    let binder = VarName::new(&index.ident);
+    match values.proven_range_bounds(&index.range) {
+        Some((lower, upper)) => values.bind_integer_bounds(binder, lower, upper),
+        None => values.insert(binder, Vec::new()),
     }
 }
 
@@ -1521,6 +1569,9 @@ fn resolve_certificate(
         let shape = resolve_declared_shape(parameter, Some(actual), &values)?;
         let name = VarName::new(&parameter.name);
         match key.input_values.get(ordinal).copied().flatten() {
+            Some(ProvenValue::IntegerRange { lower, upper }) if shape.is_empty() => {
+                values.bind_integer_bounds(name, lower, upper);
+            }
             Some(value) if shape.is_empty() => {
                 values.bind_scalar_value(name, value.into_settled());
             }
@@ -1574,11 +1625,19 @@ fn resolve_certificate(
         .chain(&function.outputs)
         .chain(&function.locals)
     {
-        for (path, field) in record_field_projections(value, flat) {
-            let shape = resolve_declared_shape(field, None, &values)?;
+        for (path, parent, field) in record_field_projections(value, flat) {
+            let mut shape = values.get(&parent).cloned().ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "function shape proof",
+                    format!("record field `{path}` has no proven parent shape"),
+                    field.span,
+                )
+            })?;
+            shape.extend(resolve_declared_shape(field, None, &values)?);
             values.insert(path, shape);
         }
     }
+    infer_function_integer_bounds(&function.body, &mut values);
     Ok(FunctionShapeCertificate {
         key,
         parameters,
@@ -1865,7 +1924,3 @@ fn checked_shape_arithmetic(
         )
     })
 }
-
-#[cfg(test)]
-#[path = "function_shapes/tests.rs"]
-mod tests;

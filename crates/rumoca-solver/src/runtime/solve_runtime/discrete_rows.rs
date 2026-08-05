@@ -469,7 +469,7 @@ impl SolveRuntime {
         self.validate_discrete_row_eval_scope(scope)?;
         let eval_y = copy_runtime_values(y, "discrete row eval y snapshot")?;
         let eval_p = copy_runtime_values(p, "discrete row eval p snapshot")?;
-        let mut eval_p_cache = EventEvalParamCache::default();
+        let mut eval_p_cache = EventEvalParamCache;
         let mut row_values = Vec::new();
         reserve_runtime_vec_capacity(
             &mut row_values,

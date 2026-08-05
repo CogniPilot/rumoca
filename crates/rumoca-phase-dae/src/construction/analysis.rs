@@ -23,10 +23,11 @@ mod function_reductions;
 mod function_returns;
 mod function_value_types;
 mod initial_algorithms;
-mod loop_unroll;
+mod loop_compaction;
 mod model_algorithm_statements;
 mod model_algorithms;
 mod model_roles;
+mod multi_output_equations;
 mod record_array_fields;
 mod record_equations;
 mod sample_aliases;
@@ -88,16 +89,20 @@ pub(super) use function_definitions::FunctionValueSeed;
 use function_externals::validate_external_function;
 pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
 use function_impurity::validate_impure_call_contexts;
-use function_loops::{subscript_is_binder, validate_function_loop};
-use function_ranges::static_shape_integer_expression;
-use loop_unroll::unroll_data_dependent_function_loops;
+use function_loops::{flattened_function_loop_source, subscript_is_binder, validate_function_loop};
 pub(super) use function_ranges::assigned_function_targets;
+use function_ranges::static_shape_integer_expression;
 use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
-use function_record_assemblies::validate_record_output_assembly;
+use function_record_assemblies::{
+    plan_staged_record_assemblies, record_constructor, validate_record_output_assembly,
+};
 use function_reductions::validate_integer_reduction;
-use function_returns::validate_guarded_function_return;
+use function_returns::{
+    certify_nonleading_return_branches, nonreturn_path, normalize_function_returns,
+    validate_guarded_function_return,
+};
 pub(super) use function_value_types::record_field_projections;
 use function_value_types::validate_function_value_type;
 pub(super) use initial_algorithms::InitialDiscreteValue;
@@ -105,24 +110,28 @@ use initial_algorithms::{
     InitialAlgorithmAnalysis, analyze_initial_algorithms, claim_initial_discrete_equations,
     reject_unsupported_initial_algorithm_statements,
 };
+use loop_compaction::compact_function_loops;
 use model_algorithm_statements::validate_model_algorithm;
-pub(super) use model_algorithms::ModelAlgorithmPlan;
 use model_algorithms::analyze_model_algorithm;
+pub(super) use model_algorithms::{ModelAlgorithmPlan, ModelEventTensorLoopPlan};
 pub(super) use model_algorithms::{
-    algorithm_targets, event_targets, model_algorithm_targets, when_chain_targets,
+    algorithm_targets, event_targets, is_event_condition, model_algorithm_targets,
+    when_chain_targets,
 };
 use model_roles::{
     ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
 };
+pub(in crate::construction) use multi_output_equations::MultiOutputEquationPlan;
+use multi_output_equations::analyze_multi_output_equations;
 pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
 use record_array_fields::{
     analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
 };
 use record_equations::analyze_record_equations;
 use sample_aliases::analyze_sample_aliases;
-use source_balance::source_balance;
+use source_balance::{SourceBalanceInput, source_balance};
 use structured_families::validate_structured_families;
-use unexecuted_branches::check_unexecuted_branches;
+use unexecuted_branches::{check_function_assignment_shapes, check_unexecuted_branches};
 use when_chains::validate_when_chains;
 
 pub(super) struct Analysis {
@@ -166,6 +175,8 @@ pub(super) struct Analysis {
     pub(super) derived_parameter_families: HashSet<usize>,
     pub(super) derived_parameter_rows: HashSet<usize>,
     pub(super) record_equations: HashMap<usize, RecordEquationPlan>,
+    /// Continuous MLS §12.4.3 tuple equations lowered by result ordinal.
+    pub(super) multi_output_equations: HashMap<usize, MultiOutputEquationPlan>,
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) discrete_value_topology: DiscreteValueTopologyPlan,
     pub(super) discrete_connection_ranks: HashMap<VarName, usize>,
@@ -184,12 +195,13 @@ struct SourceBalanceAnalysis {
 
 pub(super) enum FunctionPlan {
     Statements {
-        /// The source statements the plans were built from. This is normally the
-        /// function body, but a data-dependent loop nest is unrolled over its
-        /// proven ranges first, so construction must lower these statements — not
-        /// the shared body — to stay aligned with `statements`.
+        /// The source statements the plans were built from. Exact tensor-native
+        /// loop rewrites may replace the shared body, so construction lowers this
+        /// aligned sequence rather than rediscovering those rewrites.
         source: Vec<rumoca_core::Statement>,
         statements: Vec<FunctionStatementPlan>,
+        generated_booleans: Vec<(VarName, Span)>,
+        certified_output_seeds: Vec<(VarName, FunctionValueSeed)>,
     },
     GuardedReturn {
         branches: Vec<Vec<FunctionStatementPlan>>,
@@ -222,6 +234,13 @@ pub(super) enum FunctionStatementPlan {
     /// A default-level MLS §8.3.7 assertion owned by the top-level function
     /// statement sequence and evaluated once for every call.
     RuntimeAssertion,
+    /// One compiler-owned immutable Boolean that captures a return predicate
+    /// at its source statement before later mutable values can change.
+    GeneratedBooleanAssignment {
+        target: VarName,
+        value: Expression,
+        span: Span,
+    },
     For {
         domain: StructuredIndexDomain,
         binder_spans: Vec<Span>,
@@ -252,10 +271,17 @@ pub(super) enum FunctionStatementPlan {
     MultiOutputCall {
         outputs: Vec<Option<FunctionAssignmentPlan>>,
     },
+    /// A pure multi-result call whose receiving list defines every field of
+    /// one record-valued function output or local.
+    RecordMultiOutputAssembly(FunctionRecordCallAssemblyPlan),
     ArrayAssembly(FunctionArrayAssemblyPlan),
     ArrayAssemblyMember,
     RecordAssembly(FunctionRecordAssemblyPlan),
     RecordAssemblyMember,
+    /// One field of a record result assembled at its source position and
+    /// stored independently until every field has a checked value.
+    RecordFieldAssembly(FunctionRecordFieldAssemblyPlan),
+    RecordFieldAssemblyMember,
 }
 
 pub(super) struct FunctionAssignmentPlan {
@@ -287,24 +313,53 @@ impl FunctionAssignmentPlan {
 pub(super) struct FunctionArrayAssemblyPlan {
     pub(super) target: VarName,
     pub(super) direct_count: usize,
-    pub(super) loop_plan: Box<FunctionStatementPlan>,
+    pub(super) loop_plan: Option<Box<FunctionStatementPlan>>,
+    pub(super) seed: Option<FunctionValueSeed>,
 }
 
 pub(super) struct FunctionRecordAssemblyPlan {
     pub(super) target: VarName,
     pub(super) statement_count: usize,
     pub(super) fields: Vec<FunctionRecordFieldAssembly>,
+    pub(super) seed: Option<FunctionValueSeed>,
+}
+
+pub(super) struct FunctionRecordFieldAssemblyPlan {
+    pub(super) target: VarName,
+    pub(super) statement_count: usize,
+    pub(super) field: FunctionRecordFieldAssembly,
+    /// Earlier field definitions this field's expressions may read directly.
+    pub(super) available_fields: Vec<VarName>,
+    /// Constructor-order field names when this field completes the record.
+    pub(super) finalize_fields: Option<Vec<VarName>>,
+}
+
+pub(super) fn function_record_field_name(target: &VarName, field: &VarName) -> VarName {
+    VarName::new(format!("{target}.{field}"))
 }
 
 pub(super) struct FunctionRecordFieldAssembly {
     pub(super) name: VarName,
+    pub(super) scalar_type: Option<dae::ScalarType>,
     pub(super) dimensions: Vec<u32>,
     pub(super) scalars: Vec<FunctionRecordScalarSource>,
+    pub(super) aggregate_statement: Option<usize>,
+}
+
+pub(super) struct FunctionRecordCallAssemblyPlan {
+    pub(super) target: VarName,
+    pub(super) fields: Vec<FunctionRecordCallField>,
+}
+
+pub(super) struct FunctionRecordCallField {
+    pub(super) name: VarName,
+    pub(super) result_ordinal: usize,
 }
 
 #[derive(Clone)]
 pub(super) struct FunctionRecordScalarSource {
     pub(super) statement_offset: usize,
+    pub(super) value_field: Option<VarName>,
     pub(super) value_coordinates: Vec<u32>,
 }
 
@@ -321,6 +376,7 @@ struct FunctionValidationContext<'scope> {
     static_integers: &'scope HashMap<VarName, i64>,
     shapes: &'scope ShapeEnvironment,
     shape_analysis: &'scope FunctionShapeAnalysis,
+    generated_booleans: &'scope [function_returns::GeneratedBooleanDefinition],
     /// Whether this source sequence maps directly to the call-scoped action
     /// sequence rather than a loop or runtime-conditional value owner.
     call_scoped_actions: bool,
@@ -378,8 +434,13 @@ pub(super) struct RecordEquationPlan {
 }
 
 pub(super) struct RecordEquationFieldPlan {
-    pub(super) coordinate: VarName,
-    pub(super) ordinal: usize,
+    pub(super) target: VarName,
+    pub(super) value: RecordEquationFieldValue,
+}
+
+pub(super) enum RecordEquationFieldValue {
+    AggregateProjection(Box<[usize]>),
+    Coordinate(VarName),
 }
 
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
@@ -402,18 +463,20 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         variables: mut roles,
         expressions: mut expression_roles,
     } = analyze_model_roles(flat, &clocks.sampled_targets)?;
-    validate_runtime_coordinate_instances(flat, &roles)?;
-    validate_record_array_field_runtime_coordinates(flat, &record_array_fields, &roles)?;
+    validate_runtime_coordinates(flat, &roles, &record_array_fields)?;
     let derived_parameters = analyze_derived_parameters(flat, &roles)?;
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
     let clock_domains =
         analyze_clocked_partitions(flat, &clocks, &constants, &mut roles, &mut expression_roles)?;
+    let multi_output_equations =
+        analyze_multi_output_equations(flat, &expression_roles, &states, &function_shapes)?;
     validate_model_expressions(
         flat,
         &expression_roles,
         &states,
         &record_array_fields,
         function_shapes.model_values(),
+        &multi_output_equations,
     )?;
     let (continuous_family_rows, initialization_family_rows) = analyze_structured_family_rows(
         flat,
@@ -431,15 +494,16 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         analyze_initial_algorithm_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
     let initial_discrete_equation_rows =
         claim_initial_discrete_equations(flat, &roles, &mut initial_algorithms.discrete_values)?;
-    let balance = analyze_source_balance(
+    let balance = analyze_source_balance(SourceBalanceAnalysisInput {
         flat,
-        &roles,
-        &clocks.equation_rows,
-        &derived_parameters.rows,
-        &record_equations,
-        &discrete_connection_ranks,
-        &aggregate_discrete_connections,
-    )?;
+        roles: &roles,
+        clock_equation_rows: &clocks.equation_rows,
+        derived_parameter_rows: &derived_parameters.rows,
+        record_equations: &record_equations,
+        multi_output_equations: &multi_output_equations,
+        connection_ranks: &discrete_connection_ranks,
+        aggregate_connections: &aggregate_discrete_connections,
+    })?;
     let (expression_events, sample_alias_schedules) = analyze_expression_event_ownership(
         flat,
         &roles,
@@ -476,6 +540,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         derived_parameter_families: derived_parameters.families,
         derived_parameter_rows: derived_parameters.rows,
         record_equations,
+        multi_output_equations,
         initial_record_equations,
         discrete_value_topology,
         discrete_connection_ranks,
@@ -483,6 +548,15 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         assigned_discrete_targets: balance.assigned_discrete_targets,
         semi_linear_rules: SemiLinearRules::default(),
     })
+}
+
+fn validate_runtime_coordinates(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    record_array_fields: &RecordArrayFieldPlans,
+) -> Result<(), ToDaeError> {
+    validate_runtime_coordinate_instances(flat, roles)?;
+    validate_record_array_field_runtime_coordinates(flat, record_array_fields, roles)
 }
 
 fn analyze_structured_family_rows(
@@ -730,6 +804,7 @@ fn validate_model_expressions(
     states: &HashSet<VarName>,
     record_array_fields: &RecordArrayFieldPlans,
     model_values: &ShapeEnvironment,
+    multi_output_equations: &HashMap<usize, MultiOutputEquationPlan>,
 ) -> Result<(), ToDaeError> {
     for variable in flat.variables.values() {
         for expression in variable_attribute_expressions(variable) {
@@ -749,12 +824,22 @@ fn validate_model_expressions(
             validate_known_function_calls(expression, flat)?;
         }
     }
-    for expression in flat
-        .equations
-        .iter()
-        .chain(flat.initial_equations.iter())
-        .map(|equation| &equation.residual)
-    {
+    for (row, equation) in flat.equations.iter().enumerate() {
+        if multi_output_equations.contains_key(&row) {
+            continue;
+        }
+        let expression = &equation.residual;
+        validate_model_expression_with_record_array_fields(
+            expression,
+            roles,
+            states,
+            record_array_fields,
+            model_values,
+        )?;
+        validate_known_function_calls(expression, flat)?;
+    }
+    for equation in &flat.initial_equations {
+        let expression = &equation.residual;
         validate_model_expression_with_record_array_fields(
             expression,
             roles,
@@ -792,28 +877,44 @@ fn validate_flat_shape(flat: &flat::Model) -> Result<(), ToDaeError> {
     })
 }
 
+struct SourceBalanceAnalysisInput<'scope> {
+    flat: &'scope flat::Model,
+    roles: &'scope HashMap<VarName, PlannedRole>,
+    clock_equation_rows: &'scope HashSet<usize>,
+    derived_parameter_rows: &'scope HashSet<usize>,
+    record_equations: &'scope HashMap<usize, RecordEquationPlan>,
+    multi_output_equations: &'scope HashMap<usize, MultiOutputEquationPlan>,
+    connection_ranks: &'scope HashMap<VarName, usize>,
+    aggregate_connections: &'scope AggregateDiscreteConnections,
+}
+
 fn analyze_source_balance(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    clock_equation_rows: &HashSet<usize>,
-    derived_parameter_rows: &HashSet<usize>,
-    record_equations: &HashMap<usize, RecordEquationPlan>,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
+    input: SourceBalanceAnalysisInput<'_>,
 ) -> Result<SourceBalanceAnalysis, ToDaeError> {
+    let SourceBalanceAnalysisInput {
+        flat,
+        roles,
+        clock_equation_rows,
+        derived_parameter_rows,
+        record_equations,
+        multi_output_equations,
+        connection_ranks,
+        aggregate_connections,
+    } = input;
     let assigned_discrete_targets =
         defined_discrete_targets(flat, roles, connection_ranks, aggregate_connections)?;
     let mut non_runtime_rows = clock_equation_rows.clone();
     non_runtime_rows.extend(derived_parameter_rows);
-    let detail = source_balance(
+    let detail = source_balance(SourceBalanceInput {
         flat,
         roles,
-        &assigned_discrete_targets,
-        &non_runtime_rows,
+        assigned_targets: &assigned_discrete_targets,
+        excluded_equation_rows: &non_runtime_rows,
         record_equations,
+        multi_output_equations,
         connection_ranks,
         aggregate_connections,
-    )?;
+    })?;
     Ok(SourceBalanceAnalysis {
         detail,
         assigned_discrete_targets,
@@ -877,7 +978,12 @@ pub(super) fn analyze_record_array_field_plans(
             .chain(structured_template_expressions(&flat.structured_equations))
             .chain(structured_template_expressions(
                 &flat.initial_structured_equations,
-            )),
+            ))
+            .chain(
+                flat.functions
+                    .values()
+                    .flat_map(function_shapes::function_expressions),
+            ),
     )
 }
 

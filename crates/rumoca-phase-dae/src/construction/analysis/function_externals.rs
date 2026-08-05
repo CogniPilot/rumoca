@@ -181,7 +181,7 @@ fn external_input_roles(
         roles.extend(
             record_field_projections(value, flat)
                 .into_iter()
-                .map(|(path, _)| (path, PlannedRole::Parameter)),
+                .map(|(path, _, _)| (path, PlannedRole::Parameter)),
         );
     }
     for literal in flat.enum_literal_ordinals.keys() {

@@ -54,7 +54,7 @@ fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
         steps,
         vec![
             vec!["verify", "lint"],
-            vec!["verify", "msl-parity"],
+            vec!["verify", "msl-parity", "--no-remote-quality-baseline"],
             vec!["verify", "architecture"],
             vec!["verify", "workspace"],
         ]
@@ -72,7 +72,14 @@ fn quick_suite_runs_format_tests_architecture_and_msl_parity() {
 #[test]
 fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
     let steps = step_argvs(VerifySuite::Full);
-    assert_eq!(steps.get(1), Some(&vec!["verify", "msl-parity"]));
+    assert_eq!(
+        steps.get(1),
+        Some(&vec![
+            "verify",
+            "msl-parity",
+            "--no-remote-quality-baseline"
+        ])
+    );
     assert!(steps.contains(&vec!["verify", "architecture"]));
     assert!(steps.contains(&vec!["verify", "workspace"]));
     assert!(steps.contains(&vec!["verify", "examples"]));
@@ -81,7 +88,11 @@ fn full_suite_runs_msl_parity_before_lower_signal_heavy_gates() {
     assert!(steps.contains(&vec!["coverage", "run"]));
     assert!(steps.contains(&vec!["playground", "test"]));
     assert!(steps.contains(&vec!["verify", "lsp-msl-completion-timings"]));
-    assert!(steps.contains(&vec!["verify", "msl-parity"]));
+    assert!(steps.contains(&vec![
+        "verify",
+        "msl-parity",
+        "--no-remote-quality-baseline"
+    ]));
 }
 
 #[test]

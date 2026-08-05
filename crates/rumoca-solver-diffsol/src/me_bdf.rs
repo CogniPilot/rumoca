@@ -269,10 +269,10 @@ where
         });
     }
     if let Some(observation) = event.pre_observation {
-        context.trace.record_preserving_duplicate(observation)?;
+        context.trace.record(observation)?;
     }
     if let Some(observation) = event.observation {
-        context.trace.record_preserving_duplicate(observation)?;
+        context.trace.record(observation)?;
     }
     resume_after_event(
         context.host,
@@ -312,10 +312,10 @@ where
         });
     }
     if let Some(observation) = event.pre_observation {
-        context.trace.record_preserving_duplicate(observation)?;
+        context.trace.record(observation)?;
     }
     if let Some(observation) = event.observation {
-        context.trace.record_preserving_duplicate(observation)?;
+        context.trace.record(observation)?;
     }
     resume_after_event(
         context.host,
@@ -392,10 +392,10 @@ where
         });
     }
     if let Some(observation) = event.pre_observation {
-        trace.record_preserving_duplicate(observation)?;
+        trace.record(observation)?;
     }
     if let Some(observation) = event.observation {
-        trace.record_preserving_duplicate(observation)?;
+        trace.record(observation)?;
     }
     resume_after_event(
         host,
@@ -593,26 +593,6 @@ impl TraceRecorder {
             .is_some_and(|last| sample_time_match_with_tol(*last, observation.time))
         {
             return self.replace_latest(observation);
-        }
-        self.times.push(observation.time);
-        for (column, value) in self.data.iter_mut().zip(observation.values) {
-            column.push(value);
-        }
-        Ok(())
-    }
-
-    fn record_preserving_duplicate(
-        &mut self,
-        observation: MeRuntimeOutput,
-    ) -> Result<(), SimError> {
-        if observation.values.len() != self.data.len() {
-            return Err(SimError::RuntimeContract {
-                reason: format!(
-                    "ME output width {} does not match trace width {}",
-                    observation.values.len(),
-                    self.data.len()
-                ),
-            });
         }
         self.times.push(observation.time);
         for (column, value) in self.data.iter_mut().zip(observation.values) {

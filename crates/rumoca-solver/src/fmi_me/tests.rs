@@ -509,13 +509,7 @@ fn post_pre_relation_cycle() -> solve::SolveModel {
 }
 
 fn post_commit_alias_with_frozen_parameter_root() -> solve::SolveModel {
-    let derivative = block(
-        vec![vec![
-            solve::LinearOp::Const { dst: 0, value: 0.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]],
-        "fmi_me_post_commit_frozen_root_derivative.mo",
-    );
+    let derivative = zero_derivative("fmi_me_post_commit_frozen_root_derivative.mo");
     let alias_program = vec![
         solve::LinearOp::LoadP { dst: 0, index: 0 },
         solve::LinearOp::StoreOutput { src: 0 },
@@ -610,6 +604,16 @@ fn post_commit_alias_with_frozen_parameter_root() -> solve::SolveModel {
         visible_names: vec!["state".to_string()],
         ..Default::default()
     }
+}
+
+fn zero_derivative(name: &'static str) -> solve::ScalarProgramBlock {
+    block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        name,
+    )
 }
 
 fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarProgramBlock {

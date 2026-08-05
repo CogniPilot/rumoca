@@ -65,6 +65,26 @@ impl<'dae> Domains<'_, 'dae> {
             .domain_binder(domain.index(), ordinal, provenance)?;
         Ok(DomainBinderId::from_raw(domain.index(), ordinal))
     }
+
+    /// Return the checked finite interval owned by one compact-domain binder.
+    ///
+    /// Consumers use this proof when reconstructing the lexical environment
+    /// of expressions lowered inside the domain. The bounds remain owned by
+    /// the domain rather than being copied into scalar loop statements.
+    pub fn binder_bounds(
+        &self,
+        binder: DomainBinderId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(i64, i64), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        let binder =
+            self.storage
+                .domain_binder(binder.domain().index(), binder.ordinal(), provenance)?;
+        Ok((
+            binder.lower.min(binder.upper),
+            binder.lower.max(binder.upper),
+        ))
+    }
 }
 
 fn innermost_domain<'dae>(

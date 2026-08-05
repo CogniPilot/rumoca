@@ -6,6 +6,43 @@ pub struct DaeView<'dae> {
     pub(super) marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+/// Exact packed layout of one field projected from a record value.
+///
+/// Record arrays remain compact typed values in DAE-IR. Consumers that must
+/// cross a scalar execution boundary use this layout to gather the selected
+/// field from each record without inventing a second packing convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordFieldLayout {
+    outer_count: usize,
+    record_width: usize,
+    field_offset: usize,
+    field_width: usize,
+}
+
+impl RecordFieldLayout {
+    pub const fn outer_count(self) -> usize {
+        self.outer_count
+    }
+
+    pub const fn record_width(self) -> usize {
+        self.record_width
+    }
+
+    pub const fn field_offset(self) -> usize {
+        self.field_offset
+    }
+
+    pub const fn field_width(self) -> usize {
+        self.field_width
+    }
+}
+
+fn checked_extent_product(extents: &[u32]) -> Option<usize> {
+    extents
+        .iter()
+        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+}
+
 macro_rules! storage_count_accessors {
     ($($name:ident => $($field:ident).+),+ $(,)?) => {
         $(pub fn $name(self) -> usize {
@@ -179,6 +216,52 @@ impl<'dae> DaeView<'dae> {
             value_type.record_field_name(ordinal)?,
             ValueTypeId::from_raw(value_type.record_field_type(ordinal)?),
         ))
+    }
+
+    /// Return the one certified element-major packing layout for a record
+    /// field, including compact outer record-array dimensions.
+    pub fn record_field_layout(
+        self,
+        id: ValueTypeId<'dae>,
+        ordinal: usize,
+    ) -> Option<RecordFieldLayout> {
+        let record = self.value_type(id)?;
+        if !record.is_record() {
+            return None;
+        }
+        let outer_count = checked_extent_product(record.dimensions())?;
+        let field_offset = (0..ordinal).try_fold(0usize, |offset, field| {
+            let (_, value_type) = self.record_field(id, field)?;
+            offset.checked_add(self.packed_value_count(value_type)?)
+        })?;
+        let (_, selected) = self.record_field(id, ordinal)?;
+        let field_width = self.packed_value_count(selected)?;
+        let record_width = (0..record.record_field_count()).try_fold(0usize, |width, field| {
+            let (_, value_type) = self.record_field(id, field)?;
+            width.checked_add(self.packed_value_count(value_type)?)
+        })?;
+        outer_count.checked_mul(record_width)?;
+        outer_count.checked_mul(field_width)?;
+        Some(RecordFieldLayout {
+            outer_count,
+            record_width,
+            field_offset,
+            field_width,
+        })
+    }
+
+    fn packed_value_count(self, id: ValueTypeId<'dae>) -> Option<usize> {
+        let value_type = self.value_type(id)?;
+        if !value_type.is_record() {
+            return value_type.scalar_count();
+        }
+        let outer_count = checked_extent_product(value_type.dimensions())?;
+        let record_width =
+            (0..value_type.record_field_count()).try_fold(0usize, |width, ordinal| {
+                let (_, field) = self.record_field(id, ordinal)?;
+                width.checked_add(self.packed_value_count(field)?)
+            })?;
+        outer_count.checked_mul(record_width)
     }
 
     pub fn value_type_provenance(self, id: ValueTypeId<'dae>) -> Option<DaeProvenance> {

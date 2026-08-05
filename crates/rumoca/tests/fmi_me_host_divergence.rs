@@ -1,16 +1,8 @@
-//! SPEC_0038 phase 2: what the two solver paths still disagree about.
+//! SPEC_0038 phase 2: event-observation parity across the two ME hosts.
 //!
-//! `rumoca-solver-rk45` is already an FMI 3 ME host over `SolveMeKernel`
-//! (phase 1); `rumoca-solver-diffsol` still drives its own event loop over the
-//! private runtime. Phase 2 puts both on the one kernel, so the size and shape
-//! of the remaining disagreement is the thing that decides whether that move
-//! can be behaviour-freezing.
-//!
-//! These tests characterize one **pinned divergence**. They assert the tree is
-//! currently inconsistent and that the difference is confined to event-boundary
-//! observations; the migration rewrites them to state the settled semantics.
-//! Without that pin, the migration could change every event-carrying model's
-//! output rows and nothing in the tree would notice.
+//! Both solver plugins drive the shared FMI 3 ME kernel. These tests pin the
+//! canonical settled observation at a scheduled event boundary and the
+//! continuous trajectory away from that boundary.
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
@@ -76,37 +68,18 @@ fn samples_at_the_event(result: &SimResult) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// RECORDED DIVERGENCE (SPEC_0038 phase 2).
-///
-/// At a scheduled time-event instant the diffsol path emits **two** observation
-/// rows — the left limit at the instant and the right limit at the next
-/// representable time — while the ME kernel host emits **one**, already
-/// carrying the right limit. Both are defensible readings of MLS §8.5, and
-/// exactly one of them can survive a single shared event loop.
-///
-/// This is why SPEC_0038 phase 2 cannot be behaviour-freezing on the state
-/// path: the difference is O(1) in the reported value at the instant, and it
-/// shifts the row index of the entire remaining trace.
+/// A sample exactly on a scheduled event observes the single settled
+/// superdense value, independent of the numerical solver plugin.
 #[test]
-fn the_two_hosts_disagree_on_the_observations_at_a_scheduled_event_instant() {
+fn the_two_hosts_agree_on_the_observation_at_a_scheduled_event_instant() {
     let diffsol = run(SimSolverMode::Bdf);
     let me_kernel = run(SimSolverMode::RkLike);
 
     let diffsol_rows = samples_at_the_event(&diffsol);
     let me_kernel_rows = samples_at_the_event(&me_kernel);
 
-    assert_eq!(
-        diffsol_rows.len(),
-        2,
-        "the diffsol path records the event instant's left and right limits, \
-         got {diffsol_rows:?}"
-    );
-    assert_eq!(
-        me_kernel_rows.len(),
-        1,
-        "the ME kernel host records one observation at the event instant, got \
-         {me_kernel_rows:?}"
-    );
+    assert_eq!(diffsol_rows, vec![(0.5, 24.0)]);
+    assert_eq!(me_kernel_rows, diffsol_rows);
 
     assert!(
         diffsol_rows
@@ -117,37 +90,15 @@ fn the_two_hosts_disagree_on_the_observations_at_a_scheduled_event_instant() {
          kernel={me_kernel_rows:?}"
     );
 
-    // The left-limit row is the whole difference: 0 versus the full step.
     assert_eq!(
-        diffsol_rows[0].1, 0.0,
-        "the diffsol path's first row at the instant is the left limit"
-    );
-    assert_eq!(
-        diffsol_rows[1].1, 24.0,
-        "the diffsol path's second row at the instant is the full right limit"
-    );
-    assert!(
-        diffsol_rows[1].0 > diffsol_rows[0].0,
-        "the diffsol right-limit probe must follow its left-limit observation, \
-         got {diffsol_rows:?}"
-    );
-    assert_eq!(
-        me_kernel_rows[0].1, 24.0,
-        "the ME kernel host's single row at the instant is the full right limit"
-    );
-
-    assert_ne!(
         diffsol.times.len(),
         me_kernel.times.len(),
-        "the extra left-limit row must change the trace length, or this \
-         divergence would be invisible to a row-indexed comparator"
+        "solver plugins must preserve the shared kernel's trace shape"
     );
 }
 
-/// The complement, and the reason the divergence above is a *sampling*
-/// divergence rather than an integration one: away from the event instant the
-/// two hosts agree on the trajectory to integrator truncation. A migration that
-/// moved the trajectory itself would be a different, much larger finding.
+/// Away from the event instant the two hosts agree on the trajectory to
+/// integrator truncation.
 #[test]
 fn away_from_the_event_instant_the_two_hosts_agree_to_integrator_truncation() {
     let diffsol = run(SimSolverMode::Bdf);

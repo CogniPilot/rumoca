@@ -135,7 +135,7 @@ pub(crate) fn resolve_function_in_package_chain_exposed(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     package: &OverrideTarget,
     function_leaf: &str,
-) -> Option<String> {
+) -> Option<(String, rumoca_core::DefId)> {
     fn resolve_inner(
         tree: &ClassTree,
         class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
@@ -143,7 +143,7 @@ pub(crate) fn resolve_function_in_package_chain_exposed(
         exposed_package_name: &str,
         function_leaf: &str,
         visited: &mut FxHashSet<String>,
-    ) -> Option<String> {
+    ) -> Option<(String, rumoca_core::DefId)> {
         let package_name = class_def
             .def_id
             .and_then(|def_id| tree.def_map.get(&def_id))
@@ -157,7 +157,7 @@ pub(crate) fn resolve_function_in_package_chain_exposed(
         if let Some(function_def) = class_index.get_by_qualified_name(&direct)
             && function_def.class_type == rumoca_core::ClassType::Function
         {
-            return Some(exposed);
+            return Some((exposed, function_def.def_id?));
         }
 
         for ext in &class_def.extends {
@@ -170,7 +170,7 @@ pub(crate) fn resolve_function_in_package_chain_exposed(
                 continue;
             };
             if let Some(base_class) = class_index.get(base_def_id)
-                && resolve_inner(
+                && let Some(found) = resolve_inner(
                     tree,
                     class_index,
                     base_class,
@@ -178,9 +178,8 @@ pub(crate) fn resolve_function_in_package_chain_exposed(
                     function_leaf,
                     visited,
                 )
-                .is_some()
             {
-                return Some(exposed);
+                return Some(found);
             }
         }
 

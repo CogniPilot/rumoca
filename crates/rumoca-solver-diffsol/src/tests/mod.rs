@@ -687,6 +687,23 @@ fn simulate_initial_event_iterates_pre_to_current_runtime_tail() {
         source: solve::PreParamSource::P { index: 0 },
         clock_schedule: None,
     }];
+    model.problem.solve_layout.variable_storage_runs = vec![solve::SolveVariableStorageRun {
+        base: solve::scalar_slot_p(0),
+        scalar_count: 1,
+        role: solve::SolveVariableStorageRole::DiscreteValue,
+        value_kind: solve::SolveVariableValueKind::Integer,
+    }];
+    model.problem.solve_layout.variable_declarations = vec![solve::SolveVariableDeclaration::new(
+        solve::SolveVariableStorageRole::DiscreteValue,
+        solve::SolveVariableValueKind::Integer,
+    )];
+    model.problem.discrete.event_iteration_plan = solve::EventIterationPlan {
+        runs: vec![solve::EventIterationRun {
+            variable: 0,
+            pre_binding_start: 0,
+            owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+        }],
+    };
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
     model.problem.discrete.rhs = scalar_program_block!(
         vec![
@@ -731,6 +748,23 @@ fn fixed_static_event_keeps_follow_current_pre_rows_iterating() {
         source: solve::PreParamSource::P { index: 0 },
         clock_schedule: None,
     }];
+    model.problem.solve_layout.variable_storage_runs = vec![solve::SolveVariableStorageRun {
+        base: solve::scalar_slot_p(0),
+        scalar_count: 1,
+        role: solve::SolveVariableStorageRole::DiscreteValue,
+        value_kind: solve::SolveVariableValueKind::Integer,
+    }];
+    model.problem.solve_layout.variable_declarations = vec![solve::SolveVariableDeclaration::new(
+        solve::SolveVariableStorageRole::DiscreteValue,
+        solve::SolveVariableValueKind::Integer,
+    )];
+    model.problem.discrete.event_iteration_plan = solve::EventIterationPlan {
+        runs: vec![solve::EventIterationRun {
+            variable: 0,
+            pre_binding_start: 0,
+            owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+        }],
+    };
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
     model.problem.discrete.rhs = scalar_program_block!(
         vec![

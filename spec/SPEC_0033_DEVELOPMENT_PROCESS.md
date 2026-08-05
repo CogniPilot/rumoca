@@ -8,12 +8,6 @@ Development work MUST be grounded in the governing spec/MLS rule, trace
 bugs to the first owning layer, and verify the smallest behavior-proving path
 before broader review gates.
 
-## Motivation
-
-- Keep semantic fixes spec-backed instead of model-by-model guesswork.
-- Prevent downstream symptom patches from hiding upstream compiler bugs.
-- Give humans and AI agents one compact workflow contract before PR review.
-
 ## Specification
 
 ### 1. Applicability
@@ -52,11 +46,6 @@ Preferred ownership order for compiler bugs:
 | Namespace aliases and component instances MUST stay distinct unless spec-backed | resolver/flattening | Prevents false symbol merges |
 | Before/after artifacts MUST prove producer changes for non-trivial semantic fixes | IR/DAE/trace outputs | Verifies root-cause ownership |
 
-For compiler/simulation triage, prefer flattened, DAE, Solve-IR, OMC
-instantiated output, or focused trace artifacts over aggregate pass/fail
-counts. Solver failures are upstream suspects until emitted equations,
-variable selection, and runtime-bound function names are checked.
-
 ### 4. Compatibility And Strictness
 
 | Rule | Owner/Where | Brief Justification |
@@ -69,10 +58,6 @@ variable selection, and runtime-bound function names are checked.
 | Source-language compatibility docs MUST name the requiring library/model and default | deviation docs | Makes exceptions reviewable |
 | Validators/checkers MUST NOT be weakened just to pass failing models | validation layers | Hides producer bugs |
 | Temporary debug probes MUST be removed before finalization | all changes | Keeps tree clean |
-
-“Compatibility” in the source-language rows concerns intentionally
-non-standard source behavior. It does not authorize support for superseded
-compiler-owned representations.
 
 ### 5. MSL-Backed Work
 
@@ -131,23 +116,23 @@ Failure classifications:
 | `trace_nonidentifiable` MUST be reported separately, excluded from the pointwise-comparison denominator, and MUST NOT count as strict-high, passing, supported, or certified | comparator and all consumers | Inapplicable pointwise evidence cannot become affirmative evidence |
 | Stochastic non-identifiability MUST be derived from typed random operations in compiler IR; deterministic-chaotic non-identifiability MUST carry a positive finite Lyapunov lower bound plus the sample count and digest of its analysis artifact | trace producer | Classification is machine-readable evidence, not a model-name exception |
 | A non-identifiability profile MUST record its outstanding replacement proof obligations; malformed or incomplete evidence MUST fail closed as a comparator failure | trace producer/comparator | Classification narrows the proof method but never discharges the proof |
-| Trace classification MUST NOT branch on model name, OMC output, or an observed comparison band | trace producer/comparator | Corpus-specific exceptions cannot establish correctness |
+| Automatic trace classification MUST NOT branch on model name, OMC output, or an observed comparison band | trace producer/comparator | Corpus-specific heuristics cannot establish correctness |
 | A run whose comparator stage did not execute, or compared zero models, reports "parity unmeasured", not a number | harness gate, `verify msl-parity` | Missing comparison must be visible, not defaulted |
 | A quoted number MUST state `models_compared` and the skipped/missing counts beside it | reports, dev/ ledger | Partial coverage is part of the claim |
-| Comparator exclusions MUST stay a tracked list, and each excluded model MUST record its reason | `msl_trace_compare_exclusions.json` | Silencing a model must be reviewable |
+| Tracked comparator exclusions MUST explain why pointwise OMC comparison is non-identifying; they remain visible and non-strict-high but are not refinement counterexamples | comparator | Oracle-test boundaries must be auditable |
 | An unmeasured cohort run MUST fail its quality gate, not pass with `sim_ok` | harness gate, `verify msl-parity` | A run nobody could check must not read as a green run |
 | The cohort ratchet MUST be the strict-high agreement band | harness gate | Only strict-high is parity |
 | `sim_ok` MUST remain a raw execution count and MUST NOT be called supported, certified, or passing | reports, PRs, specs | Solver completion does not prove semantics |
 | A package or stage simulation pass MUST require a comparable strict-high OMC trace | package pass-rate report | Near, deviation, and absent bands are unsupported |
-| A full Tier 2 quality gate MUST require `sim_ok == agreement_high` | harness gate | Every claimed execution must be certified |
-| Every compiled non-high model MUST be triaged as a counterexample to simulation refinement | dev/ ledger, issue/PR | Wrong traces falsify the candidate claim |
+| A full Tier 2 gate MUST classify every `sim_ok` as strict-high, tracked exclusion, or typed `trace_nonidentifiable` | harness gate | Every completion needs parity or a reviewed boundary |
+| Every non-high result without such a boundary MUST be triaged as a refinement counterexample or harness defect | dev/ ledger, issue/PR | Wrong traces falsify the claim |
 | A counterexample MUST yield a general semantic fix or typed profile rejection | compiler/runtime owners | Model exceptions cannot establish correctness |
 | Discovery of an actionable counterexample is a stop-the-line event: merges, releases, and unrelated compiler/runtime capability work MUST remain blocked until the actionable count returns to zero | campaign planning, PR/release gates | A known false success invalidates the compiler's simulation claim and outranks breadth or schedule |
 | The actionable counterexample count MUST be zero before compile-frontier or unrelated capability work resumes | campaign planning, dev/ ledger | False success outranks breadth work |
-| Counterexample closure MUST be recorded model-by-model as strict-high after a general fix or as a producer-derived typed refusal | dev/ ledger, issue/PR | Aggregate improvement cannot close individual false success |
+| Counterexample closure MUST be recorded per model as strict-high, typed refusal, or reasoned comparator exclusion | dev/ ledger, issue/PR | Aggregates cannot close false success |
 | Every closed counterexample MUST retain a focused regression for the semantic defect, and the originating model MUST remain in the next complete Tier 2 comparison | focused suites, cohort sweep | A repaired proof obligation must not silently regress or disappear from evidence |
-| Tolerance changes, retries, and model-specific branches MUST NOT close a counterexample | compiler/runtime owners | Exceptions cannot establish semantic correctness |
-| Pointwise-nonidentifiable traces and independently demonstrated oracle discrepancies MUST be tallied separately and remain visible as uncertified | comparator reports, dev/ ledger | Separation must not manufacture certification |
+| Tolerance changes, retries, and model-specific compiler/runtime branches MUST NOT close a counterexample | compiler/runtime owners | Exceptions in implementation cannot establish semantic correctness |
+| Pointwise-nonidentifiable traces and oracle-test limitations MUST be tallied separately as non-strict-high | comparator reports, dev/ ledger | Separation manufactures neither proof nor falsification |
 | No validity check that reads simulation outcomes may run before the comparator stage | harness gate flow | A gate that aborts first destroys the measurement it judges |
 | Every quoted parity number MUST name the Tier 2 run and commit it came from | reports, PRs, specs | An unsourced number cannot be rechecked |
 | Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
@@ -162,26 +147,24 @@ CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify ms
 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo xtask verify msl-parity
 ```
 
-#### Acceptance contract: what a Tier 2 run must contain to emit a parity number
+#### Tier 2 parity-number acceptance contract
 
-A run emits a parity number only when ALL of the following are true. Anything
-less is reported as `parity unmeasured: comparator did not run`, and the
-quality gate fails rather than falling back to `sim_ok`.
+All rows are mandatory; otherwise the gate reports `parity unmeasured`.
 
 | Requirement | Enforced by |
 |---|---|
-| The comparator stage executed, or its bands were merged from shards that ran it | `MslParityStageOutcome` (`Ran` / `MergedShardArtifacts`) |
-| `omc_simulation_reference.json` exists in the results directory and carries `omc_version` | `MslParityMeasurement::measured`, `check_comparator_evidence` |
-| `sim_trace_comparison.json` exists and is non-empty | `check_comparator_evidence` |
-| `trace_comparison.models_compared > 0` | `MslParityMeasurement::measured`, `check_comparator_evidence`, nightly `Verify the merged sweep measured parity` |
-| Every `sim_ok` candidate is compared or carries a recorded typed boundary | `quantify_trace_differences` (`skipped`, `missing_trace`, `trace_nonidentifiable`) |
-| The run persisted a per-model band table with one row per cohort target, bound to its own comparator output | `read_cohort` / `measure_msl_parity` (`BandTableAbsent`), `band_table::ensure_comparable` |
-| That table declares counts and a row digest matching its own rows | `band_table::ensure_comparable` |
-| That table's compared, strict-high, near, and deviation counts equal the reference's | `band_table_disagreement` (`BandTableInconsistent`), nightly `Verify the merged sweep pinned its cohort` (compared count) |
-| A full-cohort run can diff against its predecessor certification's band table | `cohort_movement_unverified_reason`; CI restores it as `msl_band_table_previous.json` before the gate |
-| No model that held the strict-high band left the compared set | `departed_strict_high_reason` |
-| The reference's `total_models` equals the run's `sim_target_models` (not stale) | `load_current_msl_parity_gate_input_required` |
-| The reference records no OMC Modelica assertion failures | `load_current_msl_parity_gate_input_required` |
+| Comparator ran, or shard bands were merged | `MslParityStageOutcome` |
+| Reference exists and names `omc_version` | `MslParityMeasurement::measured` |
+| Trace comparison exists and is non-empty | `check_comparator_evidence` |
+| `models_compared > 0` | `MslParityMeasurement::measured` |
+| Every `sim_ok` is compared or has a typed boundary | `quantify_trace_differences` |
+| Band table has one row per target and binds its comparator output | `band_table::ensure_comparable` |
+| Table counts and digest match its rows | `band_table::ensure_comparable` |
+| Table bands equal the reference bands | `band_table_disagreement` |
+| Full cohort can diff its predecessor table | `cohort_movement_unverified_reason` |
+| No actionable strict-high departure occurred | `departed_strict_high_reason` |
+| Reference `total_models` equals `sim_target_models` | `load_current_msl_parity_gate_input_required` |
+| Reference has no OMC assertion failures | `load_current_msl_parity_gate_input_required` |
 
 ## References
 

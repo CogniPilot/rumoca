@@ -628,7 +628,14 @@ pub fn validate_dae_target_capabilities(
             view.continuous_family_count(),
         )
     });
-    if capabilities.structured_equation_families != Some(true) && continuous_family_count != 0 {
+    // DAE templates must explicitly consume compact families. Algorithm Code
+    // targets own a stronger, target-specific projection proof and re-check
+    // every family before lowering; the generic renderer must not reject that
+    // canonical input before the projection can inspect it.
+    if manifest.ir == TargetTemplateIr::Dae
+        && capabilities.structured_equation_families != Some(true)
+        && continuous_family_count != 0
+    {
         unsupported_feature(
             manifest,
             "structured_equation_families",

@@ -101,6 +101,7 @@
         ciPython = pkgs.python312.withPackages (ps: [
           ps.casadi
           ps.ipython
+          (ps.jax.overridePythonAttrs (_: { doCheck = false; }))
           ps.numpy
           ps.pandas
           ps.pip
@@ -355,6 +356,10 @@
               openModelicaCli
             ]
             ++ [
+              # Keep both compilers directly runnable from the reproducible
+              # development shell. `inputsFrom` supplies Rumoca's build
+              # inputs, but does not put the built CLI on PATH.
+              rumoca
               ciPython
               pkgs.binaryen
               pkgs.cargo-expand
@@ -376,6 +381,25 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
             [
               pkgs.gfortran.cc.lib
+              pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
+          );
+        };
+        # Python wheel packaging must depend only on the build and smoke-test
+        # toolchain.  In particular, it must not inherit optional template
+        # runtimes such as JAX, whose platform support is narrower than the
+        # wheel matrix (currently excluding x86_64-darwin).
+        devShells.ci-python-wheel = craneLib.devShell {
+          inputsFrom = [ rumoca ];
+          packages = [
+            pkgs.maturin
+            pkgs.python312
+          ];
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+            [
               pkgs.stdenv.cc.cc.lib
               pkgs.zlib
             ]

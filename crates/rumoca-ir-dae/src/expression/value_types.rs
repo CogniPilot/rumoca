@@ -75,16 +75,33 @@ impl ValueType {
         }
     }
 
-    pub(crate) fn record(
+    pub(crate) fn record_array(
         name: rumoca_core::VarName,
         fields: impl Into<Box<[RecordFieldType]>>,
+        dimensions: impl Into<Box<[u32]>>,
     ) -> Self {
         Self {
             scalar: ScalarType::Record,
-            dimensions: Box::new([]),
+            dimensions: dimensions.into(),
             record_name: Some(name),
             record_fields: fields.into(),
         }
+    }
+
+    pub(crate) fn with_dimensions(&self, dimensions: impl Into<Box<[u32]>>) -> Self {
+        Self {
+            scalar: self.scalar,
+            dimensions: dimensions.into(),
+            record_name: self.record_name.clone(),
+            record_fields: self.record_fields.clone(),
+        }
+    }
+
+    pub(crate) fn with_prefixed_dimensions(&self, prefix: &[u32]) -> Self {
+        let mut dimensions = Vec::with_capacity(prefix.len() + self.dimensions.len());
+        dimensions.extend_from_slice(prefix);
+        dimensions.extend_from_slice(&self.dimensions);
+        self.with_dimensions(dimensions)
     }
 
     pub const fn scalar_type(&self) -> ScalarType {

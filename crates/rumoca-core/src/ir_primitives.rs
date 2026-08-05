@@ -697,6 +697,12 @@ impl Reference {
         self
     }
 
+    /// Invalidate callable-instance evidence after changing the semantic target.
+    pub fn without_resolved_function(mut self) -> Self {
+        self.resolved_function = None;
+        self
+    }
+
     pub fn instance_id(&self) -> Option<InstanceId> {
         self.instance_id
     }
@@ -1116,6 +1122,8 @@ impl BuiltinFunction {
         Self::ShiftSample,
         Self::BackSample,
         Self::NoClock,
+        Self::Sum,
+        Self::Product,
     ];
 
     /// Builtin variants that are represented as `Expression::BuiltinCall`.
@@ -1202,10 +1210,12 @@ impl BuiltinFunction {
                 | Self::ShiftSample
                 | Self::BackSample
                 | Self::NoClock
+                | Self::Sum
+                | Self::Product
         )
     }
 
-    /// Try to parse an unshadowable function name as a builtin.
+    /// Try to parse a builtin spelling that needs no declaration check.
     ///
     /// Synchronous intrinsics are intentionally absent: they must be minted
     /// from their exact predefined `DefId` after Resolve.
@@ -1253,9 +1263,6 @@ impl BuiltinFunction {
             "semiLinear" => Some(Self::SemiLinear),
             "delay" => Some(Self::Delay),
             "integer" | "Integer" => Some(Self::Integer),
-            // Reduction
-            "sum" => Some(Self::Sum),
-            "product" => Some(Self::Product),
             // Array
             "ndims" => Some(Self::Ndims),
             "size" => Some(Self::Size),

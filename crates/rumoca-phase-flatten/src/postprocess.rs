@@ -6,21 +6,18 @@
 //! owns and then substitute the known constants, walking each place the model
 //! stores an expression exactly once.
 
-use super::*;
-
 mod constant_expansion;
 mod constant_lookup;
 mod constant_substituter;
 mod constructor_calls;
+mod field_access;
 mod function_shape_constants;
 mod index_collapse;
 mod indexed_dimension_recovery;
 mod occurrence_graph;
-
-#[path = "postprocess_field_access.rs"]
-mod field_access;
-#[path = "postprocess_record_alias.rs"]
 mod record_alias;
+
+use super::*;
 
 pub(crate) use constant_substituter::substitute_known_constants_expr;
 pub(crate) use constructor_calls::mark_record_constructor_calls;

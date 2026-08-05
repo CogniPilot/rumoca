@@ -10,6 +10,9 @@
 //! live in `main.rs` (binary-only); the error-*report builders* live here so they
 //! can be unit-tested alongside the dispatch logic and reused by `main.rs`.
 
+mod model_resolution;
+mod value;
+
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -42,8 +45,6 @@ use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, PartialLintOptions};
 
-#[path = "cli/model_resolution.rs"]
-mod model_resolution;
 pub(crate) use model_resolution::{
     collect_modelica_files, compiler_for_source, ensure_model_file_readable, first_path_config_dir,
     infer_model_name, merged_source_root_paths, normalize_target_paths, parent_dir_or_current,
@@ -1874,7 +1875,6 @@ pub(crate) fn validate_solver_label(solver_label: &str) -> Result<()> {
 // `simulate_to_value`) for the Python `cli` binding live in a child module so
 // `cli.rs` stays focused on argument parsing + the binary's print/write
 // dispatch. The child reuses this module's private compute helpers via `super::`.
-mod value;
 pub use value::{compile_to_value, simulate_to_value};
 
 #[cfg(test)]

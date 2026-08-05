@@ -44,13 +44,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             Err(LowerError::NonComputable { reason, .. })
                 if reason == "array subscript is not compile-time computable" =>
             {
-                self.dynamic_vector_index(base, subscripts, dimensions, scalar)
+                self.dynamic_scalar_index(base, subscripts, dimensions, scalar)
             }
             Err(error) => Err(error),
         }
     }
 
-    fn dynamic_vector_index(
+    fn dynamic_scalar_index(
         &mut self,
         base: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
@@ -58,44 +58,145 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         result_scalar: usize,
     ) -> Result<solve::Reg, LowerError> {
         let span = self.node(base).provenance().span();
-        let [extent] = self.node(base).value_type().dimensions() else {
+        let base_dimensions = self.node(base).value_type().dimensions().to_vec();
+        if !result_dimensions.is_empty()
+            || result_scalar != 0
+            || subscripts.len() != base_dimensions.len()
+        {
             return Err(LowerError::non_computable(
-                "runtime indexing currently requires a rank-one array",
-                span,
-            ));
-        };
-        if !result_dimensions.is_empty() || result_scalar != 0 || subscripts.len() != 1 {
-            return Err(LowerError::non_computable(
-                "runtime indexing currently requires one scalar index and one scalar result",
+                "runtime indexing requires one scalar index per base axis and one scalar result",
                 span,
             ));
         }
-        let Some(dae::SubscriptView::Index {
-            expression,
-            provenance,
-        }) = subscripts.get(0)
-        else {
-            return Err(LowerError::non_computable(
-                "runtime slices do not yet have a computable Solve owner",
+        let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
+        let zero = self.constant(0.0, span)?;
+        let mut selected = self.binary(dae::BinaryOperator::Divide, zero, zero, span)?;
+        let count = base_dimensions
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
+        let Some(count) = count else {
+            return Err(LowerError::contract(
+                "runtime indexed base scalar count overflow",
                 span,
             ));
         };
-        let span = provenance.span();
-        let runtime_index = self.expression(expression, 0)?;
-        let zero = self.constant(0.0, span)?;
-        let mut selected = self.binary(dae::BinaryOperator::Divide, zero, zero, span)?;
-        for ordinal in 0..*extent as usize {
+        for ordinal in 0..count {
+            let coordinates = row_major_coordinates(&base_dimensions, ordinal)
+                .expect("checked base scalar has one row-major coordinate");
+            let matches = self.dynamic_coordinate_match(&runtime_indices, &coordinates, span)?;
             let candidate = self.expression(base, ordinal)?;
-            let modelica_index = self.constant((ordinal + 1) as f64, span)?;
-            let matches = self.binary(
+            selected = self.select(matches, candidate, selected, span)?;
+        }
+        Ok(selected)
+    }
+
+    fn dynamic_scalar_indices(
+        &mut self,
+        subscripts: dae::SubscriptsView<'dae>,
+        span: Span,
+    ) -> Result<Vec<solve::Reg>, LowerError> {
+        let mut indices = Vec::with_capacity(subscripts.len());
+        for axis in 0..subscripts.len() {
+            let Some(dae::SubscriptView::Index { expression, .. }) = subscripts.get(axis) else {
+                return Err(LowerError::non_computable(
+                    "runtime slices do not yet have a computable Solve owner",
+                    span,
+                ));
+            };
+            indices.push(self.expression(expression, 0)?);
+        }
+        Ok(indices)
+    }
+
+    fn dynamic_coordinate_match(
+        &mut self,
+        runtime_indices: &[solve::Reg],
+        coordinates: &[u32],
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let mut matches = self.constant(1.0, span)?;
+        for (&runtime_index, &coordinate) in runtime_indices.iter().zip(coordinates) {
+            let modelica_index = self.constant(f64::from(coordinate + 1), span)?;
+            let axis_matches = self.binary(
                 dae::BinaryOperator::Equal,
                 runtime_index,
                 modelica_index,
                 span,
             )?;
-            selected = self.select(matches, candidate, selected, span)?;
+            matches = self.binary(dae::BinaryOperator::And, matches, axis_matches, span)?;
         }
-        Ok(selected)
+        Ok(matches)
+    }
+
+    pub(super) fn dynamic_scalar_array_update(
+        &mut self,
+        base: dae::ExprId<'dae>,
+        value: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        base_scalar: usize,
+    ) -> Result<solve::Reg, LowerError> {
+        let span = self.node(base).provenance().span();
+        let base_dimensions = self.node(base).value_type().dimensions().to_vec();
+        if !self.node(value).value_type().dimensions().is_empty()
+            || subscripts.len() != base_dimensions.len()
+        {
+            return Err(LowerError::non_computable(
+                "runtime array update requires one scalar index per base axis and one scalar value",
+                span,
+            ));
+        }
+        let coordinates =
+            row_major_coordinates(&base_dimensions, base_scalar).ok_or_else(|| {
+                LowerError::contract(
+                    "runtime array update scalar is outside its checked base shape",
+                    span,
+                )
+            })?;
+        let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
+        let matches = self.dynamic_coordinate_match(&runtime_indices, &coordinates, span)?;
+        let updated = self.expression(value, 0)?;
+        let unchanged = self.expression(base, base_scalar)?;
+        self.select(matches, updated, unchanged, span)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn dynamic_record_field_array_update(
+        &mut self,
+        base: dae::ExprId<'dae>,
+        value: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        field: usize,
+        base_record: usize,
+        field_scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let base_dimensions = self.node(base).value_type().dimensions().to_vec();
+        if !self.node(value).value_type().dimensions().is_empty()
+            || subscripts.len() != base_dimensions.len()
+        {
+            return Err(LowerError::non_computable(
+                "runtime record-array update requires one scalar index per base axis and one record value",
+                span,
+            ));
+        }
+        let coordinates =
+            row_major_coordinates(&base_dimensions, base_record).ok_or_else(|| {
+                LowerError::contract(
+                    "runtime record-array update selects outside its checked base shape",
+                    span,
+                )
+            })?;
+        let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
+        let matches = self.dynamic_coordinate_match(&runtime_indices, &coordinates, span)?;
+        let updated = self.record_field(value, field, field_scalar, span)?;
+        let field_width = self
+            .view
+            .record_field_layout(self.node(base).value_type_id(), field)
+            .expect("checked record projection has a finite field layout")
+            .field_width();
+        let unchanged =
+            self.record_field(base, field, base_record * field_width + field_scalar, span)?;
+        self.select(matches, updated, unchanged, span)
     }
 
     pub(super) fn select_array(

@@ -346,9 +346,11 @@ fn assess_structure(workload: Workload, measurements: &[Measurement]) -> Structu
         match workload {
             Workload::WholeArrayFirstOrder => {
                 require_structure(
-                    measurement.equations == 1,
+                    measurement.equations == 0,
                     &mut failures,
-                    format!("N={size}: expected one aggregate DAE equation"),
+                    format!(
+                        "N={size}: compact DAE family must have no parallel scalar equation owner"
+                    ),
                 );
                 require_structure(
                     measurement.structured_families == 1
@@ -360,16 +362,18 @@ fn assess_structure(workload: Workload, measurements: &[Measurement]) -> Structu
                     ),
                 );
                 require_structure(
-                    measurement.dae_scalar_residual_view_available,
+                    !measurement.dae_scalar_residual_view_available,
                     &mut failures,
-                    format!("N={size}: aggregate DAE equation must be directly consumable"),
+                    format!(
+                        "N={size}: authoritative DAE family must require an explicit scalar view"
+                    ),
                 );
                 require_structure(
                     measurement.solve_map_nodes >= 1,
                     &mut failures,
                     format!("N={size}: expected a native Solve Map node"),
                 );
-                compact_storage &= measurement.equations == 1;
+                compact_storage &= measurement.equations == 0;
             }
             Workload::CascadedFirstOrder => {
                 let expected_points = size.saturating_sub(1);
@@ -396,11 +400,12 @@ fn assess_structure(workload: Workload, measurements: &[Measurement]) -> Structu
                     &mut failures,
                     format!("N={size}: expected a native Solve AffineStencil node"),
                 );
-                // One boundary row plus one compact family owner is the largest
-                // O(1) DAE equation inventory this workload may claim. The current
-                // pipeline stores N placeholder rows, so this intentionally reports
-                // and gates the remaining SPEC_0032 violation.
-                compact_storage &= measurement.equations <= 2;
+                require_structure(
+                    measurement.equations == 1,
+                    &mut failures,
+                    format!("N={size}: expected exactly one scalar boundary equation"),
+                );
+                compact_storage &= measurement.equations == 1;
             }
         }
     }

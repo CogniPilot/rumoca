@@ -808,6 +808,7 @@ impl<T> StateOdeEquations for T where
 {
 }
 
+#[doc(hidden)] // Work around rustdoc ICE while synthesizing Diffsol auto traits.
 pub(crate) struct MeOdeProblemBuild<Eqn: StateOdeEquations> {
     pub(crate) problem: OdeSolverProblem<Eqn>,
     pub(crate) eval_counters: Option<Arc<BdfEvalCounters>>,

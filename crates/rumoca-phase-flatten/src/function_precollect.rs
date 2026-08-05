@@ -116,13 +116,37 @@ fn add_function_to_context(
     if !ctx.functions.contains_key(&resolved_name) {
         ctx.functions.insert(resolved_name.clone(), func.clone());
     }
-    if !ctx.functions.contains_key(&request.name) {
-        ctx.functions.insert(request.name.clone(), func.clone());
+    if ctx
+        .functions
+        .get(&request.name)
+        .is_none_or(|existing| existing.name.as_str() != request.name)
+    {
+        insert_requested_exposure(&mut ctx.functions, &request.name, &func, tree, class_index)?;
     }
     add_function_short_name(&request.name, &func, ctx);
     add_function_short_name(&resolved_name, &func, ctx);
     add_function_short_name(&qualified_name, &func, ctx);
     Ok(Some(func))
+}
+
+fn insert_requested_exposure(
+    functions: &mut rustc_hash::FxHashMap<String, rumoca_core::Function>,
+    requested_name: &str,
+    function: &rumoca_core::Function,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> Result<(), FlattenError> {
+    let mut exposed = function.clone();
+    exposed.name = rumoca_core::VarName::new(requested_name);
+    crate::functions::contextualize_record_param_type_names(
+        tree,
+        class_index,
+        requested_name,
+        &mut exposed,
+    )?;
+    crate::pipeline::rewrite_function_extends_aliases_in_function(&mut exposed, tree, class_index)?;
+    functions.insert(requested_name.to_string(), exposed);
+    Ok(())
 }
 
 fn add_function_short_name(func_name: &str, func: &rumoca_core::Function, ctx: &mut Context) {
@@ -155,5 +179,31 @@ pub(crate) fn extract_simple_path(expr: &ast::Expression) -> Option<String> {
             Some(format!("{}.{}", base_path, field))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requested_package_exposure_owns_its_flat_name() {
+        let mut functions = rustc_hash::FxHashMap::default();
+        let generic = rumoca_core::Function::new(
+            "Lib.Generic.f",
+            rumoca_core::Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("exposure.mo"),
+                0,
+                1,
+            ),
+        );
+
+        let tree = ast::ClassTree::new();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        insert_requested_exposure(&mut functions, "Local.f", &generic, &tree, &class_index)
+            .expect("exposure rewrite");
+
+        assert_eq!(functions["Local.f"].name.as_str(), "Local.f");
+        assert_eq!(generic.name.as_str(), "Lib.Generic.f");
     }
 }

@@ -76,6 +76,7 @@ fn rendering_borrows_the_checked_dae_without_copy_adapters() {
 fn read(root: &std::path::Path, relative: &str) -> String {
     fs::read_to_string(root.join(relative))
         .unwrap_or_else(|error| panic!("read {relative}: {error}"))
+        .replace("\r\n", "\n")
 }
 
 fn declaration_prefix<'a>(source: &'a str, declaration: &str) -> &'a str {

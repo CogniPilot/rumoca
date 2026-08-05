@@ -67,6 +67,37 @@ pub(crate) struct VerifySuiteArgs {
     pub(crate) early_exit: bool,
 }
 
+#[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
+pub(crate) struct VerifyKaniArgs {
+    /// Prove only deterministic manifest stripe `m` of `n` (`--shard m/n`,
+    /// 1-based). CI runs every stripe as a required matrix job.
+    #[arg(long, value_name = "M/N")]
+    shard: Option<String>,
+}
+
+impl VerifyKaniArgs {
+    fn parse_shard(&self) -> Result<Option<(usize, usize)>> {
+        let Some(raw) = self.shard.as_deref() else {
+            return Ok(None);
+        };
+        let (index, count) = raw
+            .split_once('/')
+            .with_context(|| format!("invalid Kani shard `{raw}`; expected m/n"))?;
+        let index = index
+            .parse::<usize>()
+            .with_context(|| format!("invalid Kani shard index `{index}`"))?;
+        let count = count
+            .parse::<usize>()
+            .with_context(|| format!("invalid Kani shard count `{count}`"))?;
+        ensure!(count > 0, "Kani shard count must be greater than zero");
+        ensure!(
+            (1..=count).contains(&index),
+            "Kani shard index must be in 1..={count}, found {index}"
+        );
+        Ok(Some((index, count)))
+    }
+}
+
 #[derive(Debug, Args, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct VerifyTemplateRuntimeArgs {
     /// Template backend group to verify. The default runs all backend groups.
@@ -376,7 +407,7 @@ pub(crate) enum VerifyCommand {
     /// Rust formatting, traversal policy, and clippy
     Lint,
     /// Required bounded proofs under the repository-pinned Kani toolchain
-    Kani,
+    Kani(VerifyKaniArgs),
     /// Workspace tests that mirror the main test matrix
     Workspace(test_cmd::WorkspaceArgs),
     /// Environment-dependent example template runtime checks
@@ -428,7 +459,7 @@ const VERIFY_SUITE_STEPS: &[VerifyStep] = &[
     // it runs before lower-risk heavyweight surfaces.
     VerifyStep {
         label: "MSL parity",
-        args: &["verify", "msl-parity"],
+        args: &["verify", "msl-parity", "--no-remote-quality-baseline"],
         include_in_full: true,
         include_in_quick: true,
     },
@@ -543,7 +574,7 @@ impl VerifySuite {
 pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
     match args.command {
         VerifyCommand::Lint => run_lint_job(root),
-        VerifyCommand::Kani => kani::run(root),
+        VerifyCommand::Kani(args) => kani::run(root, &args),
         VerifyCommand::Workspace(args) => args.run(root),
         VerifyCommand::TemplateRuntimes(args) => run_template_runtime_checks(root, args),
         VerifyCommand::Examples => run_examples_smoke(root),

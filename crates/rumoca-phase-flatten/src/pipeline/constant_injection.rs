@@ -903,7 +903,7 @@ fn extract_named_record_constructor_fields(
             let ctor_name = QualifiedName::from_component_reference(comp).to_flat_string();
             let constructor = rumoca_core::Reference::with_component_reference(
                 ctor_name,
-                core_component_reference_from_ast(comp),
+                core_component_reference_from_ast(comp)?,
             );
             let mut named_fields = Vec::new();
             for arg in args {
@@ -925,7 +925,7 @@ fn extract_named_record_constructor_fields(
             let ctor_name = target.to_string();
             let constructor = rumoca_core::Reference::with_component_reference(
                 ctor_name,
-                core_component_reference_from_ast(target),
+                core_component_reference_from_ast(target)?,
             );
             let mut named_fields = Vec::new();
             for modification in modifications {
@@ -1089,11 +1089,9 @@ pub(crate) fn try_eval_const_component_ref_expr(
     if let Some(enum_name) =
         lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
+        let component = core_component_reference_from_ast(cr)?;
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::with_component_reference(
-                enum_name,
-                core_component_reference_from_ast(cr),
-            ),
+            name: rumoca_core::Reference::with_component_reference(enum_name, component),
             subscripts: vec![],
             span: owner_span,
         });
@@ -1101,11 +1099,12 @@ pub(crate) fn try_eval_const_component_ref_expr(
     let resolved = resolve_component_ref_through_constant_aliases(&name, ctx, scope);
     let resolved_text = resolved.as_ref().unwrap_or(&name).to_flat_string();
     try_eval_resolved_const_ref(&resolved_text, ctx, owner_span).or_else(|| {
-        looks_like_enum_literal_path(&resolved_text).then(|| rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::with_component_reference(
-                &resolved_text,
-                core_component_reference_from_ast(cr),
-            ),
+        if !looks_like_enum_literal_path(&resolved_text) {
+            return None;
+        }
+        let component = core_component_reference_from_ast(cr)?;
+        Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(&resolved_text, component),
             subscripts: vec![],
             span: owner_span,
         })
@@ -1275,7 +1274,7 @@ fn try_eval_const_function_call_expr(
     Some(rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             textual_name,
-            core_component_reference_from_ast(comp),
+            core_component_reference_from_ast(comp)?,
         ),
         args: evaluated_args,
         is_constructor: false,
@@ -1285,21 +1284,20 @@ fn try_eval_const_function_call_expr(
 
 fn core_component_reference_from_ast(
     comp: &rumoca_ir_ast::ComponentReference,
-) -> rumoca_core::ComponentReference {
+) -> Option<rumoca_core::ComponentReference> {
     let parts = comp
         .parts
         .iter()
-        .map(|part| rumoca_core::ComponentRefPart {
-            ident: part.ident.text.to_string(),
-            span: comp.span,
-            subs: Vec::new(),
-            def_id: part
-                .def_id
-                .expect("constant folding receives only resolved component references"),
+        .map(|part| {
+            Some(rumoca_core::ComponentRefPart {
+                ident: part.ident.text.to_string(),
+                span: comp.span,
+                subs: Vec::new(),
+                def_id: part.def_id?,
+            })
         })
-        .collect();
-    rumoca_core::ComponentReference::construct(comp.local, comp.span, parts)
-        .expect("resolved AST references satisfy the checked component-reference contract")
+        .collect::<Option<Vec<_>>>()?;
+    rumoca_core::ComponentReference::construct(comp.local, comp.span, parts).ok()
 }
 
 pub(crate) fn try_eval_const_array_expr(

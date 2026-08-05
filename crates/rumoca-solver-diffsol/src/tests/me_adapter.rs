@@ -284,6 +284,24 @@ fn frozen_me_state_event_uses_snapped_host_time_for_discrete_rows() {
     let event = host
         .process_state_event(LOCATED_ROOT, 0, &[LOCATED_ROOT], right_time, HORIZON)
         .expect("snapped state event should settle at the host-owned time");
+    let pre_flag = event
+        .pre_observation
+        .as_ref()
+        .expect("state event should preserve its left limit")
+        .values[1];
+    let post_flag = event
+        .observation
+        .as_ref()
+        .expect("state event should expose its settled right limit")
+        .values[1];
+    assert_eq!(
+        pre_flag, 0.0,
+        "left-limit observation must precede the update"
+    );
+    assert_eq!(
+        post_flag, 1.0,
+        "right-limit observation must include the update"
+    );
 
     let expected_params = [1.0];
     let mut frozen_solver_y = accepted_y;
@@ -310,7 +328,9 @@ fn frozen_me_state_event_uses_snapped_host_time_for_discrete_rows() {
 fn snapped_time_condition_memory_model(horizon: f64, located_root: f64) -> solve::SolveModel {
     let mut model = unit_integrator_model();
     model.problem.solve_layout.compiled_parameter_len = 1;
-    model.parameters = vec![1.0];
+    model.problem.solve_layout.discrete_valued_scalar_names = vec!["flag".to_string()];
+    model.parameters = vec![0.0];
+    model.visible_names.push("flag".to_string());
     model.problem.events.root_conditions = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
@@ -338,7 +358,7 @@ fn snapped_time_condition_memory_model(horizon: f64, located_root: f64) -> solve
             },
             solve::LinearOp::Compare {
                 dst: 2,
-                op: solve::CompareOp::Le,
+                op: solve::CompareOp::Ge,
                 lhs: 0,
                 rhs: 1,
             },
@@ -499,6 +519,41 @@ fn frozen_coincident_clock_root_preserves_the_exact_post_clock_state() {
         event.states[0].to_bits(),
         0.0_f64.to_bits(),
         "the right-limit ordering coordinate must not Euler-advance the post-reinit state"
+    );
+}
+
+/// The root-classification probe is wider than the semantic event boundary.
+/// When a located root coincides with a typed tick, that probe may classify
+/// relation memory but cannot replace the continuous state owned by the shared
+/// event entry.
+#[test]
+fn frozen_clock_root_samples_event_entry_state() {
+    const ROOT_TIME: f64 = 0.05;
+    const HORIZON: f64 = 0.1;
+
+    let model = super::root_events::clock_owned_sample_with_coincident_root();
+    let opts = SimOptions {
+        t_start: 0.0,
+        t_end: HORIZON,
+        atol: CALLBACK_TOLERANCE,
+        ..Default::default()
+    };
+    let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
+        .expect("ME host should instantiate");
+    host.initialize_component()
+        .expect("ME component should initialize");
+    let right_time = runtime_root_event_application_time(ROOT_TIME, HORIZON, CALLBACK_TOLERANCE);
+    let event = host
+        .process_state_event(ROOT_TIME, 0, &[ROOT_TIME], right_time, HORIZON)
+        .expect("nearby clock/root transition should settle");
+    let y_last = event
+        .observation
+        .expect("event should be observable")
+        .values[1];
+    let expected = 100.0 * ROOT_TIME;
+    assert!(
+        (y_last - expected).abs() <= 1.0e-7,
+        "clock pre-state widened to the numerical root probe: expected {expected}, got {y_last}"
     );
 }
 

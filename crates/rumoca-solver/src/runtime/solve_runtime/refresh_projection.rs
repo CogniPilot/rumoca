@@ -6,6 +6,7 @@ pub(super) struct RefreshSlotArgs<'a> {
     pub(super) params: &'a [f64],
     pub(super) tol: f64,
     pub(super) max_iters: usize,
+    pub(super) certify_coordinates: bool,
 }
 
 #[derive(Clone, Default)]

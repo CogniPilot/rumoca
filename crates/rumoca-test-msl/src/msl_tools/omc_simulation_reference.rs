@@ -251,6 +251,7 @@ struct TraceOutputSummary {
     models_compared: usize,
     missing_trace_models: usize,
     skipped_models: usize,
+    policy_excluded_models: usize,
     trace_nonidentifiable_models: usize,
     agreement_high: usize,
     agreement_minor: usize,

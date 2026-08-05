@@ -824,8 +824,8 @@ fn arr_033_matrix_power_non_square_rejected() {
 // `b.sig` is neither declared in `Bus` nor added by any `connect`, so per MLS
 // 3.7 §9.1.3 the expandable connector has no such member and the reference is
 // an error; `size` then has no array to measure (MLS 3.7 §10.3.1). Type
-// checking rejects the reference directly (`ET001` unknown member), so the
-// model never reaches ToDae -- the earlier, named diagnostic supersedes the
+// instantiation rejects the reference directly (`EI007` unknown member), so
+// the model never reaches Typecheck or ToDae -- the earlier, named diagnostic supersedes the
 // downstream `ED008` "unresolved reference" this case used to expect. The phase
 // also emits a cascading `ET009`, making the summary code the `ET000`
 // multi-code sentinel, so this case asserts on the reported diagnostics.
@@ -841,8 +841,8 @@ fn arr_013_size_of_undeclared_expandable_member_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::Typecheck,
-        "ET001",
+        FailedPhase::Instantiate,
+        "EI007",
     );
 }
 
@@ -1346,23 +1346,12 @@ fn arr_026_a_member_array_is_still_bounds_checked() {
 }
 
 #[test]
-fn arr_026_redeclared_record_member_array_still_reports_zero_dimensions() {
-    // PINS A DIVERGENCE, not a rule. omc accepts this model; rumoca rejects it.
-    //
-    // This is the shape of
-    // `Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge`
-    // (`CellRCStack` redeclares `cellData` to a record carrying `rcData[nRC]`,
-    // and the binding is distributed over `resistor[cellData.nRC]`).
-    //
-    // It is *not* reached by the absence rule FS-ARR-008 pins: the prefix
-    // shape lookup answers `Found(Some([]))` here, a positive "known scalar"
-    // for a declaration the model gave a dimension, so no abstention is
-    // reachable. Deleting the redeclare makes the same model answer `Missing`
-    // and pass (`arr_026_record_array_member_with_a_parameter_extent_is_subscriptable`
-    // is that control). The defect is wrong-instance resolution, tracked
-    // separately; this test exists so that work has a witness and so the
-    // `has 0 dimension(s)` class is not mistaken for closed.
-    expect_failure_in_phase_with_detail(
+fn arr_026_redeclared_record_member_array_uses_its_redeclared_extent() {
+    // The redeclared record instance owns the member-array extent. This is the
+    // shape of `Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge`:
+    // `CellRCStack` redeclares `cellData` to a record carrying `rcData[nRC]`,
+    // and the binding is distributed over `resistor[cellData.nRC]`.
+    expect_success(
         r#"
         package P
             record RCData
@@ -1396,9 +1385,6 @@ fn arr_026_redeclared_record_member_array_still_reports_zero_dimensions() {
         end P;
     "#,
         "P.M",
-        FailedPhase::Typecheck,
-        "ET009",
-        "`cellData.rcData` has 0 dimension(s) but is subscripted with 1 subscript(s)",
     );
 }
 

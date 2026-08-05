@@ -645,12 +645,11 @@ end BareClockedPartition;
     });
 }
 
-/// MLS §16.5.2: the clock-conversion operators also have a *value* form that
-/// moves the value to a derived clock. The canonical DAE owns one clock per
-/// discrete coordinate, so that form is rejected at its own occurrence with the
-/// section it comes from rather than as an opaque lowering failure.
+/// MLS §16.5.2: the value form moves a clocked value to a derived clock. The
+/// canonical DAE must assign the source and result to their distinct typed
+/// clock owners rather than rejecting or erasing the conversion.
 #[test]
-fn value_clock_conversion_is_rejected_at_its_own_occurrence() {
+fn value_clock_conversion_has_distinct_typed_clock_owners() {
     let source = r#"
 model ValueShiftSample
   Clock c = Clock(0.1);
@@ -663,15 +662,32 @@ equation
   held = hold(y);
 end ValueShiftSample;
 "#;
-    let error = rumoca::Compiler::new()
+    let compiled = rumoca::Compiler::new()
         .model("ValueShiftSample")
         .compile_str(source, "value_shift_sample.mo")
-        .expect_err("a value-level shiftSample has no checked canonical owner");
-    let message = error.to_string();
-    assert!(
-        message.contains("16.5.2") && message.contains("shiftSample"),
-        "the rejection must name the operator and its MLS section: {message}"
-    );
+        .expect("a value-level shiftSample has a checked canonical owner");
+    compiled.dae.inspect(|view| {
+        assert_eq!(
+            view.clock_count(),
+            2,
+            "shiftSample derives one target clock"
+        );
+        let owned = (0..view.clock_ownership_count())
+            .map(|index| {
+                let ownership = view
+                    .clock_ownership(
+                        view.clock_ownership_id(index)
+                            .expect("dense clock ownership identity resolves"),
+                    )
+                    .expect("checked clock ownership resolves");
+                let variable = view
+                    .variable(ownership.variable())
+                    .expect("clock-owned coordinate resolves");
+                (variable.name().to_string(), ownership.clock())
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_ne!(owned["u"], owned["y"]);
+    });
 }
 
 /// A connection row between two clocked coordinates defines *both* of them.

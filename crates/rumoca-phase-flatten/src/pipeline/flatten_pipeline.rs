@@ -1009,11 +1009,17 @@ pub(crate) fn finalize_flat_model(
         collapse_index_refs_to_known_varrefs(flat);
     }
     functions::canonicalize_collected_function_calls(flat, class_index)?;
+    // Materialize source-level defaults while record inputs still have their
+    // source signatures. Record-field bindings belong to the constructor and
+    // must not be copied onto the scalar ABI parameters created below.
+    functions::materialize_flat_function_call_args(flat)?;
     // Record parameter signatures and every call site must change together.
     // Run this only after the rewrite fixed point: earlier lowering allowed a
     // later rewrite to reintroduce source-shaped record arguments against an
     // already decomposed signature.
     functions::lower_record_function_params(flat)?;
+    // Recheck the decomposed ABI and materialize defaults of any scalar calls
+    // introduced by record projection.
     functions::materialize_flat_function_call_args(flat)?;
     // Late collection and default-argument materialization can each make a
     // qualified constant newly reachable.

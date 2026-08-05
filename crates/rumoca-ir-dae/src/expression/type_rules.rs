@@ -229,7 +229,9 @@ fn multiplication_result(
         ([rows, inner], [rhs_inner, columns]) if inner == rhs_inner => {
             vec![*rows, *columns]
         }
-        _ => return Err(DaeConstructionError::ShapeMismatch { span: at.span() }),
+        _ => {
+            return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+        }
     };
     Ok(ValueType::array(
         promoted_numeric_scalar(lhs.scalar_type(), rhs.scalar_type(), false),
@@ -303,8 +305,14 @@ pub(super) fn common_value_type(
     rhs: &ValueType,
     at: DaeProvenance,
 ) -> Result<ValueType, DaeConstructionError> {
+    if lhs == rhs {
+        return Ok(lhs.clone());
+    }
     if lhs.dimensions() != rhs.dimensions() {
         return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    if lhs.is_record() || rhs.is_record() {
+        return Err(type_mismatch(lhs.scalar_type(), rhs.scalar_type(), at));
     }
     let scalar = if lhs.scalar_type() == rhs.scalar_type() {
         lhs.scalar_type()

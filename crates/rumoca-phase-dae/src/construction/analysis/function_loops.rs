@@ -26,7 +26,7 @@ pub(super) fn validate_function_loop(
     {
         return Ok(plan);
     }
-    validate_function_loop_body(indices, equations, *span, context, validated)
+    validate_function_loop_body(indices, equations, context, validated)
 }
 
 #[derive(Clone)]
@@ -85,8 +85,9 @@ fn validate_function_loop_domain(
             step,
         });
         binder_spans.push(range_span);
-        loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
-        loop_shapes.insert(VarName::new(&index.ident), Vec::new());
+        let binder = VarName::new(&index.ident);
+        loop_roles.insert(binder.clone(), PlannedRole::Parameter);
+        loop_shapes.bind_integer_bounds(binder, lower.min(upper), lower.max(upper));
     }
     let domain = StructuredIndexDomain { binders };
     domain.scalar_count().map_err(|error| {
@@ -121,14 +122,10 @@ fn validate_nested_function_loop(
         return Ok(None);
     }
     let [nested @ rumoca_core::Statement::For { .. }] = equations else {
-        return Err(ToDaeError::unsupported_flat(
-            "nested function loop",
-            format!(
-                "`{}` needs a perfect loop nest before product-domain lowering",
-                context.function.name
-            ),
-            span,
-        ));
+        // A non-perfect nest is a sequence inside the outer transition. Keep
+        // the child as its own lexically nested fold; only a perfect nest can
+        // collapse to one Cartesian product domain.
+        return Ok(None);
     };
     let nested_context = FunctionValidationContext {
         roles: &validated.roles,
@@ -188,14 +185,13 @@ fn validate_nested_function_loop(
 fn validate_function_loop_body(
     indices: &[rumoca_core::ForIndex],
     equations: &[rumoca_core::Statement],
-    span: Span,
     context: FunctionValidationContext<'_>,
     validated: ValidatedFunctionLoop,
 ) -> Result<FunctionStatementPlan, ToDaeError> {
     let body_context = FunctionValidationContext {
         roles: &validated.roles,
         shapes: &validated.shapes,
-        call_scoped_actions: false,
+        call_scoped_actions: true,
         ..context
     };
     let statements = plan_function_statements(equations, body_context)?;
@@ -203,30 +199,35 @@ fn validate_function_loop_body(
     // loop or conditional inside the body would need its own owner, which the
     // fold has no place for, so reject it here instead of at lowering.
     for (statement, plan) in equations.iter().zip(&statements) {
-        if matches!(plan, FunctionStatementPlan::Assignment(_)) {
+        if matches!(
+            plan,
+            FunctionStatementPlan::Assignment(_)
+                | FunctionStatementPlan::RecordAssembly(_)
+                | FunctionStatementPlan::RecordAssemblyMember
+                | FunctionStatementPlan::ProvenAssertion
+                | FunctionStatementPlan::RuntimeAssertion
+                | FunctionStatementPlan::MultiOutputCall { .. }
+                | FunctionStatementPlan::For { .. }
+                | FunctionStatementPlan::If { .. }
+                | FunctionStatementPlan::ProvenBranch { .. }
+        ) {
             continue;
         }
         let statement_span = required_statement_span(statement, "function loop body statement")?;
         return Err(ToDaeError::unsupported_flat(
             "function loop transition",
             format!(
-                "`{}` requires direct value assignments in a loop body",
+                "`{}` requires direct value assignments or assertions in a loop body",
                 context.function.name
             ),
             statement_span,
         ));
     }
-    let targets = function_loop_targets(&statements);
-    if targets.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "function loop transition",
-            format!(
-                "`{}` has no loop-carried function value",
-                context.function.name
-            ),
-            span,
-        ));
-    }
+    // An assertion-only loop has no value transition, but it still owns one
+    // checked call-scoped action per domain point. The DAE fold represents
+    // that exact zero-carried transition; requiring a target here would reject
+    // the valid result of substituting an unobserved loop-local scratch value
+    // into its trailing assertion.
     let loop_indices = indices.iter().collect::<Vec<_>>();
     let lowering = classify_function_loop(
         &validated.domain,
@@ -272,11 +273,27 @@ fn loop_is_ordered_total_array_definitions(
     shapes: &ShapeEnvironment,
     targets: &[VarName],
 ) -> bool {
-    if plans.is_empty() || targets.len() != plans.len() {
+    let assignment_count = plans
+        .iter()
+        .filter(|plan| matches!(plan, FunctionStatementPlan::Assignment(_)))
+        .count();
+    if assignment_count == 0 || targets.len() != assignment_count {
         return false;
     }
     let mut defined_targets = Vec::with_capacity(targets.len());
     statements.iter().zip(plans).all(|(statement, plan)| {
+        if matches!(plan, FunctionStatementPlan::ProvenAssertion) {
+            return assertion_expressions(statement)
+                .first()
+                .is_some_and(|condition| {
+                    expression_reads_only_prior_loop_elements(condition, targets, &[], indices)
+                });
+        }
+        if matches!(plan, FunctionStatementPlan::RuntimeAssertion) {
+            return assertion_expressions(statement).iter().all(|expression| {
+                expression_reads_only_prior_loop_elements(expression, targets, &[], indices)
+            });
+        }
         let (
             rumoca_core::Statement::Assignment { value, .. },
             FunctionStatementPlan::Assignment(assignment),
@@ -292,6 +309,16 @@ fn loop_is_ordered_total_array_definitions(
         defined_targets.push(assignment.target().clone());
         valid
     })
+}
+
+fn assertion_expressions(statement: &rumoca_core::Statement) -> Vec<&Expression> {
+    match statement {
+        rumoca_core::Statement::Assert {
+            condition, message, ..
+        } => vec![condition, message],
+        rumoca_core::Statement::FunctionCall { args, .. } => args.iter().take(2).collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn declared_function_value(function: &rumoca_core::Function, target: &VarName) -> bool {
@@ -318,25 +345,29 @@ fn assignment_covers_loop_domain(
         .iter()
         .map(|dimension| usize::try_from(*dimension))
         .collect::<Result<Vec<_>, _>>();
-    let exact_unit_domain = dimensions.as_ref().is_ok_and(|dimensions| {
-        dimensions == &extents
+    let subscripts = assignment.subscripts();
+    dimensions.as_ref().is_ok_and(|dimensions| {
+        dimensions.get(..extents.len()) == Some(extents.as_slice())
             && domain
                 .binders
                 .iter()
-                .zip(dimensions)
+                .zip(&extents)
                 .all(|(binder, dimension)| {
                     binder.lower == 1
                         && binder.step == 1
                         && usize::try_from(binder.upper).ok() == Some(*dimension)
                 })
-    });
-    let subscripts = assignment.subscripts();
-    exact_unit_domain
-        && subscripts.len() == indices.len()
-        && subscripts
-            .iter()
-            .zip(indices)
-            .all(|(subscript, index)| subscript_is_binder(subscript, &index.ident))
+            && subscripts.len() == dimensions.len()
+            && subscripts
+                .iter()
+                .take(indices.len())
+                .zip(indices)
+                .all(|(subscript, index)| subscript_is_binder(subscript, &index.ident))
+            && subscripts
+                .iter()
+                .skip(indices.len())
+                .all(|subscript| matches!(subscript, Subscript::Colon { .. }))
+    })
 }
 
 fn expression_reads_only_prior_loop_elements(
@@ -431,7 +462,7 @@ pub(super) fn subscript_is_binder(subscript: &rumoca_core::Subscript, binder: &s
     )
 }
 
-fn flattened_function_loop_source<'statement>(
+pub(super) fn flattened_function_loop_source<'statement>(
     indices: &'statement [rumoca_core::ForIndex],
     equations: &'statement [rumoca_core::Statement],
     source_depth: usize,
@@ -459,13 +490,50 @@ fn flattened_function_loop_source<'statement>(
 fn function_loop_targets(plans: &[FunctionStatementPlan]) -> Vec<VarName> {
     let mut targets = Vec::new();
     for plan in plans {
-        let FunctionStatementPlan::Assignment(assignment) = plan else {
-            continue;
-        };
-        let target = assignment.target();
-        if !targets.contains(target) {
-            targets.push(target.clone());
+        match plan {
+            FunctionStatementPlan::Assignment(assignment) => {
+                extend_unique_targets(&mut targets, [assignment.target().clone()]);
+            }
+            FunctionStatementPlan::RecordAssembly(assembly) => {
+                extend_unique_targets(&mut targets, [assembly.target.clone()]);
+            }
+            FunctionStatementPlan::MultiOutputCall { outputs } => {
+                extend_unique_targets(
+                    &mut targets,
+                    outputs
+                        .iter()
+                        .flatten()
+                        .map(|output| output.target().clone()),
+                );
+            }
+            FunctionStatementPlan::If {
+                branches, fallback, ..
+            } => {
+                let mut branch_targets = branches
+                    .iter()
+                    .flat_map(|branch| function_loop_targets(branch))
+                    .collect::<Vec<_>>();
+                if let Some(fallback) = fallback {
+                    branch_targets.extend(function_loop_targets(fallback));
+                }
+                extend_unique_targets(&mut targets, branch_targets);
+            }
+            FunctionStatementPlan::ProvenBranch { statements, .. } => {
+                extend_unique_targets(&mut targets, function_loop_targets(statements));
+            }
+            FunctionStatementPlan::For { statements, .. } => {
+                extend_unique_targets(&mut targets, function_loop_targets(statements));
+            }
+            _ => {}
         }
     }
     targets
+}
+
+fn extend_unique_targets(targets: &mut Vec<VarName>, additions: impl IntoIterator<Item = VarName>) {
+    for target in additions {
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
 }

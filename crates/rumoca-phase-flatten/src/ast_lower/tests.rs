@@ -420,6 +420,24 @@ fn interval_requires_the_exact_predefined_declaration_identity() {
 }
 
 #[test]
+fn resolved_product_declaration_is_not_lowered_as_reduction_builtin() {
+    let product = DefId::new(42);
+    let lowered = convert_function_call_with_context(
+        &resolved_function_ref("product", product),
+        &[ast_var("left"), ast_var("right")],
+        test_span(),
+        LoweringContext::default(),
+    )
+    .expect("resolved package-local product is a user function");
+
+    assert!(matches!(
+        lowered,
+        rumoca_core::Expression::FunctionCall { name, args, .. }
+            if name.target_def_id() == Some(product) && args.len() == 2
+    ));
+}
+
+#[test]
 fn algorithm_assert_requires_the_exact_predefined_declaration_identity() {
     let predefined_assert = DefId::new(50);
     let shadowed_assert = DefId::new(51);

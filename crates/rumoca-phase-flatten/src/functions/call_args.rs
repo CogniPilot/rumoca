@@ -143,6 +143,35 @@ impl CallArgumentMaterializer {
         else {
             return self.walk_expression(expression);
         };
+        // Record constructors are aggregate construction rather than runtime
+        // function execution, but their certified Flat signature still owns
+        // declaration-order slots and defaults. Materialize those slots before
+        // DAE construction so compact record assembly is total by construction.
+        if *is_constructor {
+            if name.resolved_function().is_none() {
+                return Ok(rumoca_core::Expression::FunctionCall {
+                    name: name.clone(),
+                    args: self.rewrite_expressions(args)?,
+                    is_constructor: true,
+                    span: *span,
+                });
+            }
+            let Some(signature) = self.catalog.for_reference(name)? else {
+                return Ok(rumoca_core::Expression::FunctionCall {
+                    name: name.clone(),
+                    args: self.rewrite_expressions(args)?,
+                    is_constructor: true,
+                    span: *span,
+                });
+            };
+            let args = self.arguments_for_call(&signature, args, CallUse::Executable, *span)?;
+            return Ok(rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor: true,
+                span: *span,
+            });
+        }
         let Some(signature) = self.catalog.for_reference(name)? else {
             return Ok(rumoca_core::Expression::FunctionCall {
                 name: name.clone(),
@@ -862,6 +891,44 @@ mod tests {
             panic!("expected call");
         };
         assert_eq!(args, &vec![literal(4.0), literal(9.0)]);
+    }
+
+    #[test]
+    fn record_constructor_keeps_aggregate_identity_and_materializes_nested_calls() {
+        let (mut model, instance_id) = model_with_function();
+        let constructor = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(component_reference(&[
+                ("Pkg", PACKAGE_DEF_ID),
+                ("Record", FUNCTION_DEF_ID),
+            ])),
+            args: vec![resolved_call(instance_id, vec![literal(4.0)])],
+            is_constructor: true,
+            span: span(),
+        };
+        model.add_equation(flat::Equation::new(
+            constructor,
+            span(),
+            flat::EquationOrigin::ComponentEquation {
+                component: "recordValue".to_string(),
+            },
+        ));
+
+        materialize_flat_function_call_args(&mut model).expect("materialize nested call");
+
+        let rumoca_core::Expression::FunctionCall {
+            args: constructor_args,
+            is_constructor,
+            ..
+        } = &model.equations[0].residual
+        else {
+            panic!("expected constructor");
+        };
+        assert!(*is_constructor);
+        let rumoca_core::Expression::FunctionCall { args, .. } = &constructor_args[0] else {
+            panic!("expected nested executable call");
+        };
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], literal(4.0));
     }
 
     #[test]

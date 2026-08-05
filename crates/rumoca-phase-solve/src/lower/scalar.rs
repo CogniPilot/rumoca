@@ -312,19 +312,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 base,
                 value,
                 subscripts,
-            } => {
-                let selected = ScalarSelector::from_points(self.view, &self.domain_points)
-                    .array_update_value_scalar(
-                        base,
-                        subscripts,
-                        self.node(value).value_type().dimensions(),
-                        scalar,
-                    )?;
-                match selected {
-                    Some(value_scalar) => self.expression(value, value_scalar),
-                    None => self.expression(base, scalar),
-                }
-            }
+            } => self.array_update(base, value, subscripts, scalar),
             dae::ExpressionOperation::Builtin { builtin, arguments } => self.builtin(
                 builtin,
                 arguments,
@@ -368,6 +356,35 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 scalar,
                 node.provenance().span(),
             ),
+        }
+    }
+
+    fn array_update(
+        &mut self,
+        base: dae::ExprId<'dae>,
+        value: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        scalar: usize,
+    ) -> Result<solve::Reg, LowerError> {
+        let selected = ScalarSelector::from_points(self.view, &self.domain_points)
+            .array_update_value_scalar(
+                base,
+                subscripts,
+                self.node(value).value_type().dimensions(),
+                scalar,
+            );
+        let selected = match selected {
+            Ok(selected) => selected,
+            Err(LowerError::NonComputable { reason, .. })
+                if reason == "array subscript is not compile-time computable" =>
+            {
+                return self.dynamic_scalar_array_update(base, value, subscripts, scalar);
+            }
+            Err(error) => return Err(error),
+        };
+        match selected {
+            Some(value_scalar) => self.expression(value, value_scalar),
+            None => self.expression(base, scalar),
         }
     }
 

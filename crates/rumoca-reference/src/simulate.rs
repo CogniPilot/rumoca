@@ -8,7 +8,7 @@
 //! point before `pre` advances. Slice 1's equations are already in Appendix
 //! B.1c's almost-solved form, so the outer loop propagates values on its own —
 //! and some inner systems have no fixed point to find, which an inner loop
-//! would spin on rather than report. [`event_iteration`] carries the argument.
+//! would spin on rather than report. `event_iteration` carries the argument.
 //!
 //! The loop is bounded and reports non-convergence as an error. A reference
 //! that spun forever would be useless as an oracle.

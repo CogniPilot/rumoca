@@ -152,39 +152,18 @@ fn function_retarget_defers_display_canonicalization_until_instance_selection() 
 
 #[test]
 fn redeclared_function_retarget_preserves_occurrence_path_and_instance_identity() {
-    let package_def = DefId::new(20);
     let concrete_def = DefId::new(21);
     let world_def = DefId::new(22);
     let replaceable_def = DefId::new(23);
     let occurrence = rumoca_core::InstanceId::new(24);
-
-    let mut concrete = class("StandardGravity", ClassType::Function);
-    concrete.def_id = Some(concrete_def);
-    let mut package = class("P", ClassType::Package);
-    package.def_id = Some(package_def);
-    package
-        .classes
-        .insert("StandardGravity".to_string(), concrete);
-    let mut tree = ClassTree::new();
-    tree.definitions.classes.insert("P".to_string(), package);
-    tree.def_map.insert(package_def, "P".to_string());
-    tree.def_map
-        .insert(concrete_def, "P.StandardGravity".to_string());
-    tree.name_map
-        .insert("P.StandardGravity".to_string(), concrete_def);
-    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
 
     let original = rumoca_core::Reference::with_component_reference(
         "world.gravity",
         core_comp_ref(&[("world", world_def), ("gravity", replaceable_def)]),
     )
     .with_instance_id(occurrence);
-    let rewritten = rewritten_function_reference(
-        &original,
-        "P.StandardGravity".to_string(),
-        &tree,
-        &class_index,
-    );
+    let rewritten =
+        retarget_function_reference(&original, "P.StandardGravity".to_string(), concrete_def);
 
     assert_eq!(rewritten.as_str(), "P.StandardGravity");
     assert_eq!(rewritten.instance_id(), Some(occurrence));

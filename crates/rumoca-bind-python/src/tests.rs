@@ -6,35 +6,16 @@ use super::*;
 use rumoca_compile::SessionConfig;
 use rumoca_compile::codegen::targets::RenderedTargetFile;
 
+// Keep this dispatch-parity fixture inside the currently checked GALEC
+// projection. Coupled discrete Real equations have their own fail-closed
+// EGT017 coverage in the GALEC phase and CLI suites.
 const FIXED_WING_OUTER_LOOP_SOURCE: &str = r#"
-record CubEstimate
-  Real flightPathAngle;
-  Real speedChange;
-end CubEstimate;
-
-record CubGuidance
-  CubEstimate estimate;
-end CubGuidance;
-
 model FixedWingOuterLoop
   constant Real samplePeriod = 0.02;
-  parameter Real courseDeadband = 0.01;
-  parameter Real courseErrorGain = 2.0;
-  discrete CubEstimate estimator;
-  discrete CubGuidance guidance;
   discrete Real course(start = 0.0);
-  discrete Real courseError(start = 0.0);
-  discrete Real desiredCourseRate(start = 0.0);
 algorithm
   when sample(0.0, samplePeriod) then
-    estimator.flightPathAngle := 0.5;
-    estimator.speedChange := 1.0;
-    guidance.estimate := estimator;
-    courseError := 0.5 - pre(course);
-    if abs(courseError) < courseDeadband then
-      courseError := 0.0;
-    end if;
-    desiredCourseRate := courseErrorGain * courseError;
+    course := pre(course) + 0.5;
   end when;
 end FixedWingOuterLoop;
 "#;

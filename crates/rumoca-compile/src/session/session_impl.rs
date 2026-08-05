@@ -1455,6 +1455,7 @@ impl Session {
         for doc in self.documents.values() {
             source_map.add_shared(&doc.uri, source_map_content_for_doc(doc));
         }
+        self.register_structural_override_sources(&mut source_map);
         source_map
     }
 

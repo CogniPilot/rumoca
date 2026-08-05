@@ -2,7 +2,10 @@ use super::*;
 use std::collections::hash_map::Entry;
 
 #[derive(Clone, Copy)]
-pub(super) struct DiscreteValueOwnerHandle(usize);
+pub(super) struct DiscreteValueOwnerHandle {
+    first: usize,
+    end: usize,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum BranchActivation<'dae> {
@@ -121,42 +124,49 @@ impl<'dae> DiscreteValueStaging<'dae> {
         }
         targets.sort_by_key(|(_, order)| (order.owner, order.target));
         targets.dedup_by_key(|(target, _)| target.index());
-        let rank = targets[0].1.owner;
-        if targets.iter().any(|(_, order)| order.owner != rank) {
-            return Err(dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
-                target: targets[0].0.index(),
-                span: provenance.span(),
+        let first = self.owners.len();
+        let mut start = 0usize;
+        while start < targets.len() {
+            let rank = targets[start].1.owner;
+            let end = targets[start..]
+                .iter()
+                .position(|(_, order)| order.owner != rank)
+                .map_or(targets.len(), |offset| start + offset);
+            let group = &targets[start..end];
+            if !plan.matches_owner_targets(
+                rank,
+                group.len(),
+                group.iter().map(|(_, order)| order.target),
+            ) {
+                return Err(dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
+                    target: group[0].0.index(),
+                    span: provenance.span(),
+                });
+            }
+            let owner_index = self.owners.len();
+            if let Err(target) =
+                register_owner_targets(&mut self.owner_by_target, group, owner_index)
+            {
+                return Err(dae::DaeConstructionError::DuplicateDefinition {
+                    kind: "B.1c semantic owner",
+                    index: target.index(),
+                    span: provenance.span(),
+                });
+            }
+            self.owners.push(StagedOwner {
+                targets: group.iter().map(|(target, _)| *target).collect(),
+                branches: Vec::new(),
+                structure,
+                provenance,
+                rank,
+                parents: HashMap::new(),
             });
+            start = end;
         }
-        if !plan.matches_owner_targets(
-            rank,
-            targets.len(),
-            targets.iter().map(|(_, order)| order.target),
-        ) {
-            return Err(dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
-                target: targets[0].0.index(),
-                span: provenance.span(),
-            });
-        }
-        let owner_index = self.owners.len();
-        if let Err(target) =
-            register_owner_targets(&mut self.owner_by_target, &targets, owner_index)
-        {
-            return Err(dae::DaeConstructionError::DuplicateDefinition {
-                kind: "B.1c semantic owner",
-                index: target.index(),
-                span: provenance.span(),
-            });
-        }
-        self.owners.push(StagedOwner {
-            targets: targets.into_iter().map(|(target, _)| target).collect(),
-            branches: Vec::new(),
-            structure,
-            provenance,
-            rank,
-            parents: HashMap::new(),
-        });
-        Ok(Some(DiscreteValueOwnerHandle(owner_index)))
+        Ok(Some(DiscreteValueOwnerHandle {
+            first,
+            end: self.owners.len(),
+        }))
     }
 
     pub(super) fn always(
@@ -216,7 +226,19 @@ impl<'dae> DiscreteValueStaging<'dae> {
             branch_provenance,
             action_provenance,
         } = assignment;
-        let owner = &mut self.owners[owner.0];
+        let owner_index = self.owner_by_target.get(&target).copied().ok_or(
+            dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
+                target: target.index(),
+                span: action_provenance.span(),
+            },
+        )?;
+        if !(owner.first..owner.end).contains(&owner_index) {
+            return Err(dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
+                target: target.index(),
+                span: action_provenance.span(),
+            });
+        }
+        let owner = &mut self.owners[owner_index];
         let Some(target_ordinal) = owner
             .targets
             .iter()

@@ -636,6 +636,9 @@ pub fn render_ast_template_with_name(
 /// Create a minijinja environment with all custom filters and functions.
 fn create_environment() -> Environment<'static> {
     let mut env = Environment::new();
+    // Artifact bytes are target-owned. Preserve an explicit final newline so
+    // strict text and compiler formats can state their EOF policy in templates.
+    env.set_keep_trailing_newline(true);
     // Preserve template source on ordinary render failures in release builds.
     // MiniJinja clones this debug context only when constructing an error.
     env.set_debug(true);

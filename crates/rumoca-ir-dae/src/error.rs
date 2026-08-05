@@ -92,6 +92,8 @@ pub enum DaeConstructionError {
     InvalidStringFormatSource { found: ScalarType, span: Span },
     #[error("expression shape mismatch")]
     ShapeMismatch { span: Span },
+    #[error("function call `{function}` has no checked call-shape certificate")]
+    MissingFunctionCallCertificate { function: VarName, span: Span },
     #[error("expected a scalar expression")]
     ExpectedScalar { span: Span },
     #[error("expected a numeric expression, found {found:?}")]
@@ -312,6 +314,7 @@ impl DaeConstructionError {
             | Self::InvalidSignificantDigitsSource { span, .. }
             | Self::InvalidStringFormatSource { span, .. }
             | Self::ShapeMismatch { span }
+            | Self::MissingFunctionCallCertificate { span, .. }
             | Self::ExpectedScalar { span }
             | Self::ExpectedNumeric { span, .. }
             | Self::ExpectedPrimitiveRelation { span }

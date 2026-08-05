@@ -15,6 +15,7 @@ tracing = ["dep:tracing"]
 
 [dependencies]
 rumoca-core = { workspace = true }
+rumoca-eval-dae = { workspace = true }
 rumoca-eval-flat = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }

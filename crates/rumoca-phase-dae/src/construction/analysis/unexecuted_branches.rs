@@ -68,6 +68,20 @@ pub(super) fn check_unexecuted_branches(
     Ok(())
 }
 
+/// Check assignment compatibility before semantics-preserving normalization.
+///
+/// Loop and scratch compaction may remove a source statement whose value is
+/// dead, but MLS §11.2.1 well-formedness is a property of that statement, not
+/// of its liveness. Running this call-free proof before normalization retains
+/// every mismatch the specialization can establish without minting a callee
+/// certificate for an unexecuted path.
+pub(super) fn check_function_assignment_shapes(
+    statements: &[rumoca_core::Statement],
+    context: FunctionValidationContext<'_>,
+) -> Result<(), ToDaeError> {
+    check_statements(statements, context, context.shapes)
+}
+
 fn check_statements(
     statements: &[rumoca_core::Statement],
     context: FunctionValidationContext<'_>,

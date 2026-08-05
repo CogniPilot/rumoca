@@ -246,11 +246,28 @@ impl ConnectionEndpointIndex {
     }
 
     pub(super) fn needs_expandable_augmentation(&self, endpoint: &ast::QualifiedName) -> bool {
-        let endpoint = endpoint.to_component_path();
-        if self.declared.contains_key(&endpoint) {
+        let endpoint_path = endpoint.to_component_path();
+        if self.declared.contains_key(&endpoint_path) {
             return false;
         }
-        let mut owner = endpoint.parent();
+        // An indexed leaf of a declared array member is not a new expandable
+        // member. Its declaration owns the array shape; the connection merely
+        // selects one element (MLS §10.5). Keep the structured endpoint for
+        // all parent lookup below so an actually absent member still requires
+        // §9.1.3 augmentation.
+        let mut declared_leaf = endpoint.clone();
+        if let Some((_, subscripts)) = declared_leaf.parts.last_mut()
+            && !subscripts.is_empty()
+        {
+            subscripts.clear();
+            if self
+                .declared
+                .contains_key(&declared_leaf.to_component_path())
+            {
+                return false;
+            }
+        }
+        let mut owner = endpoint_path.parent();
         while let Some(candidate) = owner {
             if self.expandable_owners.contains_key(&candidate) {
                 return true;
@@ -258,5 +275,36 @@ impl ConnectionEndpointIndex {
             owner = candidate.parent();
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexed_declared_expandable_member_needs_no_augmentation() {
+        let mut overlay = ast::InstanceOverlay::new();
+        overlay.add_component(ast::InstanceData {
+            instance_id: rumoca_core::InstanceId(1),
+            qualified_name: ast::QualifiedName::from_ident("telemetry"),
+            is_expandable_connector_type: true,
+            ..Default::default()
+        });
+        overlay.add_component(ast::InstanceData {
+            instance_id: rumoca_core::InstanceId(2),
+            owner_class_id: Some(rumoca_core::InstanceId(1)),
+            qualified_name: ast::QualifiedName::from_dotted("telemetry.motor"),
+            dims: vec![4],
+            ..Default::default()
+        });
+        let index = ConnectionEndpointIndex::new(&overlay);
+        let mut element = ast::QualifiedName::from_ident("telemetry");
+        element.push("motor".to_owned(), vec![1]);
+
+        assert!(!index.needs_expandable_augmentation(&element));
+
+        let absent = ast::QualifiedName::from_dotted("telemetry.absent");
+        assert!(index.needs_expandable_augmentation(&absent));
     }
 }

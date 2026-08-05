@@ -15,7 +15,7 @@ use crate::errors::FlattenError;
 use crate::functions;
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
 use crate::source_spans::required_location_span;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct VariableImportContext {
@@ -260,8 +260,18 @@ pub(crate) fn create_record_instance(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     effective_type_id: TypeId,
+    canonical_type_id: TypeId,
 ) -> Result<Option<flat::RecordInstance>, FlattenError> {
-    let Some(type_def_id) = instance.type_def_id else {
+    let declared_type_def_id = instance.type_def_id;
+    let candidate = match tree.type_table.get(canonical_type_id) {
+        Some(ast::Type::Class(class_type)) if class_type.kind == ast::ClassKind::Record => {
+            Some(class_type.def_id)
+        }
+        _ => declared_type_def_id,
+    };
+    let Some(type_def_id) = candidate
+        .and_then(|def_id| record_base_def_id(class_index, def_id, &mut FxHashSet::default()))
+    else {
         return Ok(None);
     };
     let Some(class_def) = class_index.get(type_def_id) else {
@@ -282,10 +292,37 @@ pub(crate) fn create_record_instance(
         component_ref,
         source_span,
         effective_type_id,
-        type_name: instance.type_name.clone(),
+        type_name: class_index
+            .qualified_name(type_def_id)
+            .unwrap_or(class_def.name.text.as_ref())
+            .to_string(),
         type_def_id,
         dims: instance.dims.clone(),
     }))
+}
+
+/// Resolve the record denoted by a short class definition using only exact
+/// Resolve identities.  MLS short connector declarations such as
+/// `connector Input = input Sample` are represented as one inheritance edge;
+/// the connector occurrence is therefore a record container even though its
+/// declaration's specialized-class keyword is `connector`.
+fn record_base_def_id(
+    class_index: &ast::ClassDefIndex<'_>,
+    def_id: rumoca_core::DefId,
+    active: &mut FxHashSet<rumoca_core::DefId>,
+) -> Option<rumoca_core::DefId> {
+    if !active.insert(def_id) {
+        return None;
+    }
+    let class = class_index.get(def_id)?;
+    if class.class_type == rumoca_core::ClassType::Record {
+        return Some(def_id);
+    }
+    if class.end_name_token.is_some() || class.extends.len() != 1 {
+        return None;
+    }
+    let base = class.extends[0].base_def_id?;
+    record_base_def_id(class_index, base, active)
 }
 
 pub(crate) fn create_record_type(
@@ -366,12 +403,18 @@ fn qualify_variable_attribute(
         return Ok(None);
     };
     let attr_prefix = attribute_prefix(ctx.instance, attr_name, ctx.prefix.clone());
-    let qualified = qualify_expression_with_imports(
-        expr,
-        &attr_prefix,
-        ctx.opts,
+    let source_scope = ctx
+        .instance
+        .attribute_source_scopes
+        .get(attr_name)
+        .or(ctx.instance.declaration_source_scope.as_ref());
+    let imports = imports_without_component_shadowing(
         ctx.imports.attribute_imports(attr_name),
+        source_scope,
+        ctx.class_index,
+        expr,
     );
+    let qualified = qualify_expression_with_imports(expr, &attr_prefix, ctx.opts, &imports);
     let source_scope = ctx
         .imports
         .attribute_function_scopes
@@ -407,10 +450,61 @@ fn qualify_variable_binding(
     else {
         return Ok(None);
     };
-    if ctx.instance.binding_from_modification {
+    if ctx.instance.binding_from_modification
+        && !references_declaration_component(ctx.instance, ctx.class_index, expr)
+    {
         return qualify_modification_binding(ctx, expr).map(Some);
     }
     qualify_declaration_binding(ctx, expr).map(Some)
+}
+
+fn references_declaration_component(
+    instance: &ast::InstanceData,
+    class_index: &ast::ClassDefIndex<'_>,
+    expression: &ast::Expression,
+) -> bool {
+    let Some(scope) = instance.declaration_source_scope.as_ref() else {
+        return false;
+    };
+    let scope = scope.to_flat_string();
+    let Some(class_def) = class_index.get_by_qualified_name(&scope) else {
+        return false;
+    };
+    let declarations = class_def
+        .components
+        .values()
+        .filter_map(|component| component.def_id)
+        .collect::<FxHashSet<_>>();
+    let mut finder = DeclarationComponentReferenceFinder {
+        declarations: &declarations,
+        found: false,
+    };
+    let _ = rumoca_ir_ast::Visitor::visit_expression(&mut finder, expression);
+    finder.found
+}
+
+struct DeclarationComponentReferenceFinder<'declaration> {
+    declarations: &'declaration FxHashSet<rumoca_core::DefId>,
+    found: bool,
+}
+
+impl rumoca_ir_ast::Visitor for DeclarationComponentReferenceFinder<'_> {
+    fn visit_component_reference_ctx(
+        &mut self,
+        reference: &ast::ComponentReference,
+        _context: rumoca_ir_ast::ComponentReferenceContext,
+    ) -> std::ops::ControlFlow<()> {
+        if reference
+            .parts
+            .first()
+            .and_then(|part| part.def_id)
+            .is_some_and(|definition| self.declarations.contains(&definition))
+        {
+            self.found = true;
+            return std::ops::ControlFlow::Break(());
+        }
+        self.visit_component_reference(reference)
+    }
 }
 
 fn qualify_modification_binding(
@@ -418,8 +512,13 @@ fn qualify_modification_binding(
     expr: &ast::Expression,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     let mod_prefix = modification_binding_prefix(ctx.instance, ctx.tree)?;
-    let qualified =
-        qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, ctx.imports.binding_imports());
+    let imports = imports_without_component_shadowing(
+        ctx.imports.binding_imports(),
+        ctx.instance.binding_source_scope.as_ref(),
+        ctx.class_index,
+        expr,
+    );
+    let qualified = qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, &imports);
     Ok(canonicalize_function_calls(
         ast_lower::expression_from_ast_with_context(
             &qualified,
@@ -442,8 +541,13 @@ fn qualify_declaration_binding(
     ctx: VariableQualifyContext<'_, '_>,
     expr: &ast::Expression,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    let qualified =
-        qualify_expression_with_imports(expr, ctx.prefix, ctx.opts, &ctx.imports.declaration);
+    let imports = imports_without_component_shadowing(
+        &ctx.imports.declaration,
+        ctx.instance.declaration_source_scope.as_ref(),
+        ctx.class_index,
+        expr,
+    );
+    let qualified = qualify_expression_with_imports(expr, ctx.prefix, ctx.opts, &imports);
     let source_scope = ctx
         .imports
         .binding_function_scope
@@ -465,6 +569,63 @@ fn qualify_declaration_binding(
         ctx.tree,
         ctx.class_index,
     ))
+}
+
+/// Imported names never outrank a component declared in the expression's
+/// lexical class.  Instance expansion may contribute identity aliases such as
+/// `mass -> mass`; retaining one while qualifying `vehicle.weight = mass*g`
+/// loses the concrete `vehicle` scope and manufactures an unresolved Flat
+/// reference.  Remove only proven component names and leave class/package
+/// aliases available for constructors and qualified constants.
+fn imports_without_component_shadowing(
+    imports: &ImportMap,
+    source_scope: Option<&ast::QualifiedName>,
+    class_index: &ast::ClassDefIndex<'_>,
+    expression: &ast::Expression,
+) -> ImportMap {
+    let mut filtered = imports.clone();
+    if let Some(class_def) = source_scope
+        .map(ast::QualifiedName::to_flat_string)
+        .as_deref()
+        .and_then(|scope| class_index.get_by_qualified_name(scope))
+    {
+        for component in class_def.components.keys() {
+            filtered.remove(component);
+        }
+    }
+    let mut collector = ValueComponentImportShadows {
+        class_index,
+        names: FxHashSet::default(),
+    };
+    let _ = rumoca_ir_ast::Visitor::visit_expression(&mut collector, expression);
+    for name in collector.names {
+        if filtered.get(&name).is_some_and(|target| target == &name) {
+            filtered.remove(&name);
+        }
+    }
+    filtered
+}
+
+struct ValueComponentImportShadows<'tree, 'index> {
+    class_index: &'index ast::ClassDefIndex<'tree>,
+    names: FxHashSet<String>,
+}
+
+impl rumoca_ir_ast::Visitor for ValueComponentImportShadows<'_, '_> {
+    fn visit_component_reference_ctx(
+        &mut self,
+        reference: &ast::ComponentReference,
+        _context: rumoca_ir_ast::ComponentReferenceContext,
+    ) -> std::ops::ControlFlow<()> {
+        if let Some(part) = reference.parts.first()
+            && part
+                .def_id
+                .is_some_and(|definition| self.class_index.get(definition).is_none())
+        {
+            self.names.insert(part.ident.text.to_string());
+        }
+        self.visit_component_reference(reference)
+    }
 }
 
 #[cfg(test)]

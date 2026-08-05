@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use rumoca_ir_solve as solve;
 
-use crate::runtime::event::advance_state_across_event_right_limit;
+use crate::fmi_me::advance_states_to_event_probe;
 use crate::runtime::solve_events::next_runtime_event_stop;
 use crate::runtime::solve_runtime::{
     EventUpdateRowFilter, ProjectedEventUpdateInput, SolveRuntime,
@@ -26,7 +26,7 @@ use crate::{
     SolveStopSchedule, TimeoutBudget, TimeoutExceeded, coincident_scheduled_event,
     commit_pre_params_after_event_at, process_runtime_event_boundary, runtime_event_horizon,
     runtime_root_event_application_time, stop_time_reached_with_tol,
-    timeline::{event_left_probe_time, sample_time_match_with_tol},
+    timeline::{event_left_limit_time, event_left_probe_time, sample_time_match_with_tol},
 };
 use rumoca_eval_solve::SimulationRuntimeState;
 
@@ -577,7 +577,7 @@ fn bracket_event_limits_kernel<St: SolverAdvanceBackend + ?Sized>(
     for (slot, d) in event_pre_y.iter_mut().zip(dy.iter().copied()) {
         *slot -= dt * d;
     }
-    advance_state_across_event_right_limit(y, &dy, root_t, right_t);
+    advance_states_to_event_probe(y, &dy, root_t, right_t);
     Ok(())
 }
 
@@ -613,7 +613,7 @@ fn advance_state_to_right_limit_kernel<St: SolverAdvanceBackend + ?Sized>(
         return Ok(());
     }
     let dy = backend.derivative_guess(y, p, event_t)?;
-    advance_state_across_event_right_limit(y, &dy, event_t, right_t);
+    advance_states_to_event_probe(y, &dy, event_t, right_t);
     Ok(())
 }
 
@@ -678,8 +678,13 @@ impl<St: SolverAdvanceBackend + ?Sized> RuntimeEventBoundaryHandler for EventBou
                 event.pre_mode,
                 EventPreMode::EventEntry | EventPreMode::Fixed
             ) {
-                let left_t = event_left_probe_time(event_t, self.tol);
-                self.backend.refresh_observation(self.y, self.p, left_t)?;
+                // The left limit is a superdense boundary, not a physical
+                // integration interval. Use the adjacent representable time;
+                // widening by the solver tolerance corrupts `sample(time)` by
+                // a finite 2*atol displacement.
+                let probe_t = event_left_probe_time(event_t, self.tol);
+                self.backend.refresh_observation(self.y, self.p, probe_t)?;
+                let left_t = event_left_limit_time(event_t);
                 self.backend
                     .project_algebraics(self.y, self.p, left_t, self.tol)?;
             }

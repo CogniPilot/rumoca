@@ -29,7 +29,9 @@ const KNOWN_CLAIM_IDS: &[&str] = &[
     "BEHAVIOR-PIN",
 ];
 
-#[derive(Debug, Deserialize)]
+use super::VerifyKaniArgs;
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KaniProofManifest {
     schema_version: u32,
@@ -37,7 +39,7 @@ struct KaniProofManifest {
     proofs: Vec<KaniProof>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KaniProof {
     package: String,
@@ -48,26 +50,57 @@ struct KaniProof {
     covers: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ProofBound {
     Unwind { value: u32, domain: String },
     FiniteDomain { domain: String },
 }
 
-pub(super) fn run(root: &Path) -> Result<()> {
+pub(super) fn run(root: &Path, args: &VerifyKaniArgs) -> Result<()> {
     let manifest = load_manifest(root)?;
     verify_installed_version(root, &manifest.kani_version)?;
+    let shard = args.parse_shard()?;
+    let selected = select_manifest_shard(&manifest, shard)?;
     println!(
-        "Running {} required Kani {} proof harnesses from {}",
+        "Running {} of {} required Kani {} proof harnesses from {}{}",
+        selected.proofs.len(),
         manifest.proofs.len(),
-        manifest.kani_version,
-        MANIFEST_PATH
+        selected.kani_version,
+        MANIFEST_PATH,
+        shard.map_or_else(String::new, |(index, count)| format!(
+            " (shard {index}/{count})"
+        ))
     );
-    for proof in &manifest.proofs {
+    for proof in &selected.proofs {
         println!("  {} [{}]", proof.harness, proof.claims.join(", "));
     }
-    run_solver_proofs(root, &manifest)
+    run_solver_proofs(root, &selected, manifest.proofs.len(), shard)
+}
+
+fn select_manifest_shard(
+    manifest: &KaniProofManifest,
+    shard: Option<(usize, usize)>,
+) -> Result<KaniProofManifest> {
+    let Some((index, count)) = shard else {
+        return Ok(manifest.clone());
+    };
+    let proofs = manifest
+        .proofs
+        .iter()
+        .enumerate()
+        .filter(|(proof_index, _)| proof_index % count == index - 1)
+        .map(|(_, proof)| proof.clone())
+        .collect::<Vec<_>>();
+    ensure!(
+        !proofs.is_empty(),
+        "Kani shard {index}/{count} selects no proof harnesses"
+    );
+    Ok(KaniProofManifest {
+        schema_version: manifest.schema_version,
+        kani_version: manifest.kani_version.clone(),
+        proofs,
+    })
 }
 
 fn load_manifest(root: &Path) -> Result<KaniProofManifest> {
@@ -253,7 +286,22 @@ struct ParsedHarnessResult {
     covers_total: Option<u32>,
 }
 
-fn run_solver_proofs(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
+struct KaniRunSummary<'a> {
+    parsed: &'a [ParsedHarnessResult],
+    kani_summary: &'a [String],
+    package_elapsed_seconds: f64,
+    command_success: bool,
+    cover_obligations_satisfied: bool,
+    manifest_proof_count: usize,
+    shard: Option<(usize, usize)>,
+}
+
+fn run_solver_proofs(
+    root: &Path,
+    manifest: &KaniProofManifest,
+    manifest_proof_count: usize,
+    shard: Option<(usize, usize)>,
+) -> Result<()> {
     let mut command = Command::new("cargo");
     command
         // Kani 0.67's parallel text output does not identify the harness on
@@ -262,6 +310,11 @@ fn run_solver_proofs(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
         // CBMC processes can also consume most of a verification host's RAM.
         .args(["kani", "--package", SOLVER_PACKAGE, "--jobs", "1"])
         .current_dir(root);
+    if shard.is_some() {
+        for proof in &manifest.proofs {
+            command.args(["--harness", &proof.harness]);
+        }
+    }
     crate::resource_budget::apply_to_child(&mut command);
     let started = Instant::now();
     let output = command
@@ -295,11 +348,15 @@ fn run_solver_proofs(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
     write_summary(
         root,
         manifest,
-        &parsed,
-        &kani_summary,
-        package_elapsed_seconds,
-        output.status.success(),
-        cover_obligations_satisfied,
+        KaniRunSummary {
+            parsed: &parsed,
+            kani_summary: &kani_summary,
+            package_elapsed_seconds,
+            command_success: output.status.success(),
+            cover_obligations_satisfied,
+            manifest_proof_count,
+            shard,
+        },
     )?;
     ensure!(
         output.status.success(),
@@ -362,23 +419,24 @@ fn covers_match(expected: u32, result: ParsedHarnessResult) -> bool {
     }
 }
 
-fn write_summary(
-    root: &Path,
-    manifest: &KaniProofManifest,
-    parsed: &[ParsedHarnessResult],
-    kani_summary: &[String],
-    package_elapsed_seconds: f64,
-    command_success: bool,
-    cover_obligations_satisfied: bool,
-) -> Result<()> {
-    let path = root.join(SUMMARY_PATH);
+fn write_summary(root: &Path, manifest: &KaniProofManifest, run: KaniRunSummary<'_>) -> Result<()> {
+    let path = run.shard.map_or_else(
+        || root.join(SUMMARY_PATH),
+        |(index, count)| {
+            root.join(format!(
+                "target/verification/kani-summary-shard-{index}-of-{count}.json"
+            ))
+        },
+    );
     fs::create_dir_all(path.parent().expect("summary path has a parent"))?;
     let proofs: Vec<_> = manifest
         .proofs
         .iter()
-        .zip(parsed)
+        .zip(run.parsed)
         .map(|(proof, result)| {
-            let elapsed_seconds = result.elapsed_seconds.unwrap_or(package_elapsed_seconds);
+            let elapsed_seconds = result
+                .elapsed_seconds
+                .unwrap_or(run.package_elapsed_seconds);
             let elapsed_source = if result.elapsed_seconds.is_some() {
                 "kani_harness"
             } else {
@@ -399,9 +457,10 @@ fn write_summary(
             })
         })
         .collect();
-    let success = command_success
-        && cover_obligations_satisfied
-        && parsed
+    let success = run.command_success
+        && run.cover_obligations_satisfied
+        && run
+            .parsed
             .iter()
             .all(|result| result.success == Some(true) && result.elapsed_seconds.is_some());
     let summary = serde_json::json!({
@@ -409,11 +468,16 @@ fn write_summary(
         "verifier": "kani",
         "kani_version": manifest.kani_version,
         "package": SOLVER_PACKAGE,
+        "manifest_proof_count": run.manifest_proof_count,
         "proof_count": proofs.len(),
+        "shard": run.shard.map(|(index, count)| serde_json::json!({
+            "index": index,
+            "count": count,
+        })),
         "proofs": proofs,
-        "package_elapsed_seconds": package_elapsed_seconds,
-        "cover_obligations_satisfied": cover_obligations_satisfied,
-        "kani_summary": kani_summary,
+        "package_elapsed_seconds": run.package_elapsed_seconds,
+        "cover_obligations_satisfied": run.cover_obligations_satisfied,
+        "kani_summary": run.kani_summary,
         "success": success
     });
     fs::write(&path, serde_json::to_string_pretty(&summary)?)
@@ -450,7 +514,7 @@ fn verify_installed_version(root: &Path, expected: &str) -> Result<()> {
 mod tests {
     use super::{
         ParsedHarnessResult, REQUIRED_KANI_VERSION, covers_match, discover_solver_proofs,
-        load_manifest, parse_kani_results,
+        load_manifest, parse_kani_results, select_manifest_shard,
     };
     use std::collections::BTreeSet;
     use std::path::Path;
@@ -471,6 +535,29 @@ mod tests {
             .map(|harness| ("rumoca-solver".to_string(), harness))
             .collect::<BTreeSet<_>>();
         assert_eq!(listed, discovered, "manifest must list every solver proof");
+    }
+
+    #[test]
+    fn deterministic_shards_partition_the_complete_manifest() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest = load_manifest(&root).expect("checked-in Kani manifest should be valid");
+        let expected = manifest
+            .proofs
+            .iter()
+            .map(|proof| proof.harness.clone())
+            .collect::<BTreeSet<_>>();
+        let mut selected = BTreeSet::new();
+        for index in 1..=16 {
+            let shard = select_manifest_shard(&manifest, Some((index, 16)))
+                .expect("every CI shard should select proofs");
+            for proof in shard.proofs {
+                assert!(
+                    selected.insert(proof.harness),
+                    "a proof must occur in exactly one deterministic shard"
+                );
+            }
+        }
+        assert_eq!(selected, expected);
     }
 
     #[test]

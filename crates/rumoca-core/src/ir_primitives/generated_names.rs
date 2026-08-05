@@ -63,3 +63,23 @@ pub fn pre_slot_base(name: &str) -> Option<&str> {
 pub fn is_pre_slot(name: &str) -> bool {
     pre_slot_base(name).is_some()
 }
+
+/// Boolean snapshot inserted at one non-leading function return.
+pub fn function_return_guard_name(source_start: usize) -> VarName {
+    VarName::new(format!("__rumoca_return_guard_{source_start}"))
+}
+
+/// Boolean snapshot inserted for a return-bearing conditional branch.
+pub fn function_branch_guard_name(source_start: usize) -> VarName {
+    VarName::new(format!("__rumoca_branch_guard_{source_start}"))
+}
+
+/// Compact binder introduced while rectangularizing one affine slice.
+pub fn affine_slice_binder_name(source_start: usize) -> String {
+    format!("__rumoca_affine_slice_{source_start}")
+}
+
+/// Compact binder introduced for one axis of a tensor-valued reduction.
+pub fn tensor_reduction_binder_name(source_start: usize, axis: usize) -> String {
+    format!("__rumoca_tensor_reduce_{source_start}_{axis}")
+}

@@ -170,39 +170,20 @@ fn hand_written_models_agree_between_reference_and_pipeline() {
 
 /// Comparisons this harness skips, and why each one is skipped.
 ///
-/// Both entries are the diffsol session. The rk-like session agrees with the
-/// reference on every case, which is what makes these session divergences
-/// rather than semantics disagreements.
+/// The remaining entry is the diffsol session. The rk-like session agrees with
+/// the reference, which makes this a session divergence rather than a
+/// semantics disagreement.
 ///
 /// * `LiteralWhenNeverFires` — registry row **FS-SIM-010**
 ///   (`RecordedDivergence`), whose latitude note states it directly: "omc
 ///   leaves `when true then y = pre(y) + 1` at 0; the diffsol session applies
 ///   its initial-event update two or three times."
-/// * `SelfReschedulingCounter` — registry row **FS-SIM-016**
-///   (`RecordedDivergence`), filed by this wave. The diffsol session never
-///   fires the dynamic time event at all: `count` stays 0 and `nextTime` stays
-///   at its start value for the whole run, where the rk-like session and the
-///   reference both count 1, 2, 3, 4. This is not FS-SIM-009, which covers a
-///   guard *already met at the start* and whose own note says a guard not met
-///   at the start "counts normally"; here the first threshold (0.2) is not met
-///   at t = 0. It is not FS-SIM-011 either, which is about the accuracy of a
-///   located state crossing, not about a dynamic time event failing to occur.
-///   The row is filed `SpecSourced` against §8.3.5.1 rather than
-///   `OracleImplied`, because no omc measurement was taken through the parity
-///   tooling and naming an oracle that was never run would be worse than
-///   naming none.
-const EXPECTED_DIVERGENCES: &[(&str, SimSolverMode)] = &[
-    ("LiteralWhenNeverFires", SimSolverMode::Bdf),
-    ("SelfReschedulingCounter", SimSolverMode::Bdf),
-];
+const EXPECTED_DIVERGENCES: &[(&str, SimSolverMode)] =
+    &[("LiteralWhenNeverFires", SimSolverMode::Bdf)];
 
-/// Pins the unregistered dynamic-time-event divergence described above.
-///
-/// Asserts what the diffsol session *does*, so it fails when the divergence is
-/// fixed. Until then it keeps the skip above from reading as a claim that the
-/// two sessions agree.
+/// Pins the shared dynamic-time-event behavior on both numerical plugins.
 #[test]
-fn the_diffsol_session_never_fires_a_self_rescheduling_time_event() {
+fn the_diffsol_session_fires_a_self_rescheduling_time_event() {
     let case = cases()
         .into_iter()
         .find(|entry| entry.name == "SelfReschedulingCounter")
@@ -222,10 +203,8 @@ fn the_diffsol_session_never_fires_a_self_rescheduling_time_event() {
     );
     let bdf = pipeline_trace(&case, SimSolverMode::Bdf);
     assert!(
-        pipeline_value_at(&bdf, "count", 0.9).abs() <= VALUE_TOLERANCE,
-        "the diffsol session never fires the guard. When this assertion fails \
-         the divergence has been fixed — remove it and the EXPECTED_DIVERGENCES \
-         row together."
+        (pipeline_value_at(&bdf, "count", 0.9) - 4.0).abs() <= VALUE_TOLERANCE,
+        "the diffsol plugin agrees with the ME runtime and the reference"
     );
 }
 

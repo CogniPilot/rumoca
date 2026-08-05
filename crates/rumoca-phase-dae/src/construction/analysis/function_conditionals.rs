@@ -146,11 +146,26 @@ pub(super) fn resolve_function_conditional(
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<Vec<VarName>, ToDaeError> {
+    if let Some(selected) = statically_selected_branch(blocks, fallback_statements, context)? {
+        return resolve_static_loop_branch(
+            StaticLoopBranch {
+                blocks,
+                fallback_statements,
+                branches,
+                fallback_plans,
+                selected,
+                span,
+            },
+            context,
+            definitions,
+        );
+    }
     let mut branch_states = Vec::with_capacity(branches.len() + 1);
     let mut ordered = Vec::new();
     for (block, plans) in blocks.iter().zip(branches.iter_mut()) {
         definitions.require_readable(&block.cond, context, span)?;
         let mut state = definitions.clone();
+        state.enter_guard(&block.cond, context);
         resolve_conditional_branch(&block.stmts, plans, context, &mut state)?;
         collect_branch_targets(plans, &mut ordered);
         branch_states.push(state);
@@ -176,7 +191,180 @@ pub(super) fn resolve_function_conditional(
             span,
         ));
     }
-    definitions.join_branches(&branch_states, exhaustive, &ordered, context, span)
+    let joined = definitions.join_branches(&branch_states, exhaustive, &ordered, context, span)?;
+    if !exhaustive && blocks.len() == 1 && is_immutable_guard(&blocks[0].cond, context) {
+        definitions.remember_guarded_branch(&blocks[0].cond, &branch_states[0], &ordered, span);
+    }
+    Ok(joined)
+}
+
+fn statically_selected_branch(
+    blocks: &[rumoca_core::StatementBlock],
+    _fallback: Option<&[rumoca_core::Statement]>,
+    context: FunctionValidationContext<'_>,
+) -> Result<Option<Option<usize>>, ToDaeError> {
+    for (ordinal, block) in blocks.iter().enumerate() {
+        match static_boolean_expression(&block.cond, context)? {
+            Some(true) => return Ok(Some(Some(ordinal))),
+            Some(false) => {}
+            // MLS §11.5 reaches a later arm only after every earlier condition
+            // evaluates to false. An unknown earlier condition therefore
+            // makes the whole selection unknown, even if a later condition is
+            // statically true.
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(None))
+}
+
+struct StaticLoopBranch<'source, 'plan> {
+    blocks: &'source [rumoca_core::StatementBlock],
+    fallback_statements: Option<&'source [rumoca_core::Statement]>,
+    branches: &'plan mut [Vec<FunctionStatementPlan>],
+    fallback_plans: Option<&'plan mut Vec<FunctionStatementPlan>>,
+    selected: Option<usize>,
+    span: Span,
+}
+
+fn resolve_static_loop_branch(
+    input: StaticLoopBranch<'_, '_>,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<Vec<VarName>, ToDaeError> {
+    let StaticLoopBranch {
+        blocks,
+        fallback_statements,
+        branches,
+        mut fallback_plans,
+        selected,
+        span,
+    } = input;
+    // Resolution-time folding is subject to the same well-formedness rule as
+    // specialization-time folding: MLS §11.5 selects execution, but it does
+    // not make malformed statements in the other arms legal.
+    check_unexecuted_branches(blocks, fallback_statements, selected, context)?;
+    for block in blocks {
+        definitions.require_readable(&block.cond, context, span)?;
+    }
+    match selected {
+        Some(ordinal) => resolve_conditional_branch(
+            &blocks[ordinal].stmts,
+            &mut branches[ordinal],
+            context,
+            definitions,
+        )?,
+        None => {
+            if let (Some(statements), Some(plans)) =
+                (fallback_statements, fallback_plans.as_deref_mut())
+            {
+                resolve_conditional_branch(statements, plans, context, definitions)?;
+            }
+        }
+    }
+    // Resolving the selected branch may populate a nested conditional's target
+    // certificate. Collect afterwards so this point contributes every value
+    // its executed nested statements define; fold analysis unions those point
+    // certificates over the compact domain.
+    let mut ordered = Vec::new();
+    for branch in branches.iter() {
+        collect_branch_targets(branch, &mut ordered);
+    }
+    if let Some(fallback) = fallback_plans.as_deref() {
+        collect_branch_targets(fallback, &mut ordered);
+    }
+    Ok(ordered)
+}
+
+fn static_boolean_expression(
+    expression: &Expression,
+    context: FunctionValidationContext<'_>,
+) -> Result<Option<bool>, ToDaeError> {
+    match expression {
+        Expression::Literal {
+            value: Literal::Boolean(value),
+            ..
+        } => Ok(Some(*value)),
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => Ok(static_boolean_expression(rhs, context)?.map(|value| !value)),
+        Expression::Binary {
+            op: OpBinary::And,
+            lhs,
+            rhs,
+            ..
+        } => Ok(
+            match (
+                static_boolean_expression(lhs, context)?,
+                static_boolean_expression(rhs, context)?,
+            ) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            },
+        ),
+        Expression::Binary {
+            op: OpBinary::Or,
+            lhs,
+            rhs,
+            ..
+        } => Ok(
+            match (
+                static_boolean_expression(lhs, context)?,
+                static_boolean_expression(rhs, context)?,
+            ) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+        ),
+        Expression::Binary { op, lhs, rhs, .. }
+            if matches!(
+                op,
+                OpBinary::Eq
+                    | OpBinary::Neq
+                    | OpBinary::Lt
+                    | OpBinary::Le
+                    | OpBinary::Gt
+                    | OpBinary::Ge
+            ) =>
+        {
+            let Some(lhs) =
+                static_shape_integer_expression(lhs, context.static_integers, context.shapes)?
+            else {
+                return Ok(None);
+            };
+            let Some(rhs) =
+                static_shape_integer_expression(rhs, context.static_integers, context.shapes)?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(match op {
+                OpBinary::Eq => lhs == rhs,
+                OpBinary::Neq => lhs != rhs,
+                OpBinary::Lt => lhs < rhs,
+                OpBinary::Le => lhs <= rhs,
+                OpBinary::Gt => lhs > rhs,
+                OpBinary::Ge => lhs >= rhs,
+                _ => unreachable!("guard admits relational operators"),
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn is_immutable_guard(condition: &Expression, context: FunctionValidationContext<'_>) -> bool {
+    let mut references = Vec::new();
+    condition.collect_var_refs(&mut references);
+    !references.is_empty()
+        && references.iter().all(|target| {
+            context.static_integers.contains_key(target)
+                || context
+                    .generated_booleans
+                    .iter()
+                    .any(|definition| &definition.target == target)
+        })
 }
 
 /// Prove that every statement in a runtime branch has an expression owner.
@@ -207,6 +395,9 @@ fn validate_conditional_branch_shape(
                 unreachable!("runtime conditional assertions are rejected during planning")
             }
             (_, FunctionStatementPlan::Assignment(_)) => continue,
+            (_, FunctionStatementPlan::RecordAssembly(_))
+            | (_, FunctionStatementPlan::RecordAssemblyMember) => continue,
+            (_, FunctionStatementPlan::MultiOutputCall { .. }) => continue,
             (
                 rumoca_core::Statement::If {
                     cond_blocks,
@@ -261,6 +452,14 @@ fn collect_branch_targets(plans: &[FunctionStatementPlan], ordered: &mut Vec<Var
         match plan {
             FunctionStatementPlan::Assignment(assignment) => {
                 collect_branch_target(assignment.target(), ordered);
+            }
+            FunctionStatementPlan::RecordAssembly(assembly) => {
+                collect_branch_target(&assembly.target, ordered);
+            }
+            FunctionStatementPlan::MultiOutputCall { outputs } => {
+                for output in outputs.iter().flatten() {
+                    collect_branch_target(output.target(), ordered);
+                }
             }
             FunctionStatementPlan::If { targets, .. } => {
                 for target in targets {

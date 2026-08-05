@@ -32,11 +32,6 @@ pub(in crate::construction) struct StructuralRecordFieldPlan {
     pub(in crate::construction) ordinal: usize,
     pub(in crate::construction) name: VarName,
     shape: Box<[i64]>,
-    /// Ordered field declarations of the complete record layout. More than one
-    /// retained record owner may name the same underlying record type (for
-    /// example a unit type alias), but only an identical declaration layout
-    /// may join this certificate.
-    layout: Box<[rumoca_core::DefId]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -219,12 +214,6 @@ fn declared_record_fields(
 ) -> Result<HashMap<rumoca_core::DefId, StructuralRecordFieldPlan>, ToDaeError> {
     let mut fields = HashMap::new();
     for (owner, record) in &flat.record_types {
-        let layout = record
-            .fields
-            .iter()
-            .map(|field| field.def_id)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
         for (ordinal, field) in record.fields.iter().enumerate() {
             let plan = StructuralRecordFieldPlan {
                 owners: vec![*owner].into_boxed_slice(),
@@ -232,14 +221,13 @@ fn declared_record_fields(
                 ordinal,
                 name: VarName::new(&field.name),
                 shape: field.dims.clone().into_boxed_slice(),
-                layout: layout.clone(),
             };
             match fields.entry(field.def_id) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(plan);
                 }
                 std::collections::hash_map::Entry::Occupied(mut entry)
-                    if same_structural_layout(entry.get(), &plan) =>
+                    if same_structural_projection(entry.get(), &plan) =>
                 {
                     merge_structural_owner(entry.get_mut(), *owner);
                 }
@@ -267,7 +255,7 @@ fn merge_structural_owner(plan: &mut StructuralRecordFieldPlan, owner: rumoca_co
     plan.owners = owners.into_boxed_slice();
 }
 
-fn same_structural_layout(
+fn same_structural_projection(
     lhs: &StructuralRecordFieldPlan,
     rhs: &StructuralRecordFieldPlan,
 ) -> bool {
@@ -275,7 +263,6 @@ fn same_structural_layout(
         && lhs.ordinal == rhs.ordinal
         && lhs.name == rhs.name
         && lhs.shape == rhs.shape
-        && lhs.layout == rhs.layout
 }
 
 fn collect_plans(
@@ -428,9 +415,12 @@ fn plan_materialized_coordinate(
     };
     let semantic = expression_reference(expression)
         .ok_or_else(|| ToDaeError::unresolved_reference(reference.to_var_name().as_str(), span))?;
-    let scope = semantic
-        .instance_id()
-        .ok_or_else(|| ToDaeError::unresolved_reference(semantic.as_str(), span))?;
+    // Function-local aggregates have exact declaration identity but no model
+    // occurrence identity. They are lowered structurally from their function
+    // value, not through the materialized model-coordinate catalog.
+    let Some(scope) = semantic.instance_id() else {
+        return Ok(None);
+    };
     let root = reference.root_def_id();
     let target = reference.target_def_id();
     let exact_indices = reference_indices(&reference).ok_or_else(|| {

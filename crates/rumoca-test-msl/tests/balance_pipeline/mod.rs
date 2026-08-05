@@ -175,7 +175,7 @@ pub(super) const STAGE_WATCHDOG_LOG_INTERVAL_SECS: u64 = 15;
 ///
 /// A model gets exactly one attempt. Exceeding this budget is a stable harness
 /// failure, not a reason to re-run the compiler with different limits.
-pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 10.0;
+pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = rumoca_worker::MSL_SIM_TIMEOUT_SECS;
 
 pub(super) fn model_attempt_timeout_secs() -> f64 {
     // Raise-only: a config may extend the budget for a long-running diagnostic

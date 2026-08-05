@@ -312,8 +312,8 @@ fn in_process_compile_failures_are_classified_from_the_typed_phase() {
 }
 
 #[test]
-fn model_attempt_default_is_ten_seconds() {
-    assert_eq!(MODEL_ATTEMPT_TIMEOUT_SECS, 10.0);
+fn model_attempt_default_matches_the_shared_simulation_budget() {
+    assert_eq!(MODEL_ATTEMPT_TIMEOUT_SECS, SIM_TIMEOUT_SECS);
 }
 
 #[test]

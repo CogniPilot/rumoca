@@ -600,7 +600,8 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
     ) -> Result<(), dae::DaeConstructionError> {
         for statement in statements {
             let dae::FunctionStatementView::Assignment { definition } = statement else {
-                unreachable!("checked function loops contain only assignments")
+                self.rebuild_loop_assertion(target, loop_body, statement)?;
+                continue;
             };
             let source_target = definition.target();
             let source_rhs = definition.rhs();
@@ -623,6 +624,27 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             )?;
         }
         Ok(())
+    }
+
+    fn rebuild_loop_assertion(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        loop_body: &mut dae::FunctionLoop<'target>,
+        statement: dae::FunctionStatementView<'source>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let dae::FunctionStatementView::Assertion {
+            condition,
+            message,
+            provenance,
+        } = statement
+        else {
+            unreachable!("checked function loops cannot contain nested loops")
+        };
+        let condition = self.rebuild_expression(target, loop_body.body(), condition)?;
+        let message = self.rebuild_expression(target, loop_body.body(), message)?;
+        target.functions(|functions| {
+            functions.assertion_loop(loop_body, condition, message, provenance)
+        })
     }
 
     fn rebuild_expression(

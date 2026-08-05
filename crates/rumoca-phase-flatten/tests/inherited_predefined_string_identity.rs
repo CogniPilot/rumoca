@@ -30,16 +30,25 @@ fn instanced_tree(source: &str, model_name: &str) -> ast::InstancedTree {
 }
 
 fn sole_initial_assert(model: &rumoca_ir_flat::Model) -> (&Expression, &Expression) {
+    if let [assertion] = model.initial_assert_equations.as_slice() {
+        return (&assertion.condition, &assertion.message);
+    }
     let [algorithm] = model.initial_algorithms.as_slice() else {
-        panic!("expected one inherited initial algorithm");
+        panic!(
+            "expected one inherited initial assertion ({} equation owners, {} algorithms)",
+            model.initial_assert_equations.len(),
+            model.initial_algorithms.len()
+        );
     };
-    let [Statement::FunctionCall { args, .. }] = algorithm.statements.as_slice() else {
-        panic!("expected one inherited initial assert call");
+    let [
+        Statement::Assert {
+            condition, message, ..
+        },
+    ] = algorithm.statements.as_slice()
+    else {
+        panic!("expected one typed inherited initial assertion");
     };
-    let [condition, message] = args.as_slice() else {
-        panic!("expected assert condition and message");
-    };
-    (condition, message)
+    (condition, message.as_ref())
 }
 
 #[test]
@@ -47,7 +56,7 @@ fn inherited_initial_assert_lowers_exact_predefined_string_conversion() {
     let source = r#"
 package P
   partial model Base
-    parameter Integer m = 3;
+    input Integer m;
   initial algorithm
     assert(m > 0, String(m) + " phases");
   end Base;
@@ -83,7 +92,7 @@ package P
   end String;
 
   partial model Base
-    parameter Integer m = 3;
+    input Integer m;
   initial algorithm
     assert(String(m) > 0, "positive");
   end Base;

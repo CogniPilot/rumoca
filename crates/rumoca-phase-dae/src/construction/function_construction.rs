@@ -26,8 +26,8 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
         arguments: &[Expression],
         values: &ShapeEnvironment,
         span: Span,
-    ) -> dae::FunctionId<'dae> {
-        self.select_with_key(name, arguments, values, span).1
+    ) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
+        Ok(self.select_with_key(name, arguments, values, span)?.1)
     }
 
     pub(super) fn select_with_key(
@@ -36,13 +36,18 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
         arguments: &[Expression],
         values: &ShapeEnvironment,
         span: Span,
-    ) -> (FunctionSpecializationKey, dae::FunctionId<'dae>) {
+    ) -> Result<(FunctionSpecializationKey, dae::FunctionId<'dae>), dae::DaeConstructionError> {
         let key = self
             .shapes
             .call_key(name, arguments, values, span)
-            .expect("analysis supplies a concrete specialization for every accepted call");
+            .map_err(
+                |_| dae::DaeConstructionError::MissingFunctionCallCertificate {
+                    function: name.var_name().clone(),
+                    span,
+                },
+            )?;
         let id = self.ids[&key];
-        (key, id)
+        Ok((key, id))
     }
 
     pub(super) fn select_with_call_certificate(
@@ -51,13 +56,19 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
         arguments: &[Expression],
         values: &ShapeEnvironment,
         span: Span,
-    ) -> (&FunctionCallShapeCertificate, dae::FunctionId<'dae>) {
+    ) -> Result<(&FunctionCallShapeCertificate, dae::FunctionId<'dae>), dae::DaeConstructionError>
+    {
         let call = self
             .shapes
             .call_certificate(name, arguments, values, span)
-            .expect("analysis supplies a checked call-shape certificate");
+            .map_err(
+                |_| dae::DaeConstructionError::MissingFunctionCallCertificate {
+                    function: name.var_name().clone(),
+                    span,
+                },
+            )?;
         let id = self.ids[&call.specialization];
-        (call, id)
+        Ok((call, id))
     }
 
     pub(super) fn primitive_parameter_scalar(
@@ -262,7 +273,13 @@ pub(super) fn function_value_type<'dae>(
         fields.push((VarName::new(&field.name), value_type));
     }
     active_records.remove(&type_def_id);
-    construction.types(|types| types.record(constructor.name.clone(), fields, provenance))
+    let record_name = flat
+        .record_types
+        .get(&type_def_id)
+        .map(|record| VarName::new(&record.name))
+        .expect("Flat construction retains every reachable constructor layout");
+    construction
+        .types(|types| types.record_array(record_name, fields, dimensions.clone(), provenance))
 }
 
 fn define_function<'dae>(
@@ -275,22 +292,9 @@ fn define_function<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let certificate = &functions.shapes.certificates()[specialization];
     let function = &functions.flat.functions[&certificate.key.function];
-    let mut coordinates = global_coordinates.clone();
-    for (ordinal, parameter) in function.inputs.iter().enumerate() {
-        let provenance = dae::DaeProvenance::source(parameter.span)?;
-        let parameter_id = construction.functions(|owner| {
-            owner.parameter(
-                &reservation,
-                VarName::new(&parameter.name),
-                ordinal,
-                provenance,
-            )
-        })?;
-        coordinates.insert(
-            VarName::new(&parameter.name),
-            Coordinate::FunctionParameter(parameter_id),
-        );
-    }
+    let plan = &plans[&certificate.key];
+    let mut coordinates =
+        register_function_inputs(construction, global_coordinates, &reservation, function)?;
     let mut mutable_values = Vec::with_capacity(function.outputs.len() + function.locals.len());
     for (ordinal, output) in function.outputs.iter().enumerate() {
         let provenance = dae::DaeProvenance::source(output.span)?;
@@ -326,7 +330,15 @@ fn define_function<'dae>(
         coordinates.insert(VarName::new(&local.name), Coordinate::FunctionValue(value));
         mutable_values.push((value, local));
     }
-    let plan = &plans[&certificate.key];
+    register_generated_boolean_values(construction, &reservation, plan, &mut coordinates)?;
+    register_record_staging_fields(
+        construction,
+        &functions,
+        &reservation,
+        function,
+        plan,
+        &mut coordinates,
+    )?;
     if let FunctionPlan::External(external) = plan {
         return define_external_function(
             construction,
@@ -356,14 +368,171 @@ fn define_function<'dae>(
         construction
             .functions(|functions| functions.assign(&mut body, value, expression, assignment))?;
     }
+    let mut plan_shapes = certificate.values.clone();
+    for (name, _) in generated_boolean_values(plan) {
+        plan_shapes.insert(name.clone(), Vec::new());
+    }
     let symbols = FunctionSymbols {
         coordinates: &coordinates,
         functions: &functions,
-        shapes: &certificate.values,
+        shapes: &plan_shapes,
     };
     body = lower_function_plan(construction, symbols, body, function, plan)?;
     construction.functions(|owner| owner.define(body, provenance))?;
     Ok(())
+}
+
+fn register_function_inputs<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    globals: &HashMap<VarName, Coordinate<'dae>>,
+    reservation: &dae::FunctionReservation<'_, 'dae>,
+    function: &rumoca_core::Function,
+) -> Result<HashMap<VarName, Coordinate<'dae>>, dae::DaeConstructionError> {
+    let mut coordinates = globals.clone();
+    for (ordinal, parameter) in function.inputs.iter().enumerate() {
+        let provenance = dae::DaeProvenance::source(parameter.span)?;
+        let parameter_id = construction.functions(|owner| {
+            owner.parameter(
+                reservation,
+                VarName::new(&parameter.name),
+                ordinal,
+                provenance,
+            )
+        })?;
+        coordinates.insert(
+            VarName::new(&parameter.name),
+            Coordinate::FunctionParameter(parameter_id),
+        );
+    }
+    Ok(coordinates)
+}
+
+fn register_generated_boolean_values<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    reservation: &dae::FunctionReservation<'_, 'dae>,
+    plan: &FunctionPlan,
+    coordinates: &mut HashMap<VarName, Coordinate<'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
+    for (name, span) in generated_boolean_values(plan) {
+        let provenance = dae::DaeProvenance::source(*span)?;
+        let value_type = construction.types(|types| {
+            types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), provenance)
+        })?;
+        let value = construction.functions(|functions| {
+            functions.local(reservation, name.clone(), value_type, provenance)
+        })?;
+        coordinates.insert(name.clone(), Coordinate::FunctionValue(value));
+    }
+    Ok(())
+}
+
+fn generated_boolean_values(plan: &FunctionPlan) -> &[(VarName, Span)] {
+    match plan {
+        FunctionPlan::Statements {
+            generated_booleans, ..
+        } => generated_booleans,
+        _ => &[],
+    }
+}
+
+fn register_record_staging_fields<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    reservation: &dae::FunctionReservation<'_, 'dae>,
+    function: &rumoca_core::Function,
+    plan: &FunctionPlan,
+    coordinates: &mut HashMap<VarName, Coordinate<'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
+    for (target, field) in record_staging_fields(plan) {
+        let declaration = function
+            .outputs
+            .iter()
+            .chain(&function.locals)
+            .find(|value| value.name == target.as_str())
+            .expect("record staging target resolves its declaration");
+        let constructor = rumoca_core::resolve_record_constructor(
+            functions.flat.functions.values(),
+            &declaration.type_name,
+            declaration
+                .type_def_id
+                .expect("record staging target has exact type identity"),
+        )
+        .expect("record staging target has a constructor layout");
+        let field_declaration = constructor
+            .inputs
+            .iter()
+            .find(|candidate| candidate.name == field.as_str())
+            .expect("record staging field belongs to the constructor");
+        let shape = field_declaration
+            .dimensions()
+            .iter()
+            .map(|extent| u32::try_from(*extent).expect("analysis proves field extents"))
+            .collect::<Vec<_>>();
+        let value_type = function_value_type(
+            construction,
+            functions.flat,
+            field_declaration,
+            &shape,
+            &mut HashSet::new(),
+        )?;
+        let staging_name = function_record_field_name(&target, &field);
+        let provenance = dae::DaeProvenance::source(field_declaration.span)?;
+        let value = construction.functions(|owner| {
+            owner.local(reservation, staging_name.clone(), value_type, provenance)
+        })?;
+        coordinates.insert(staging_name, Coordinate::FunctionValue(value));
+    }
+    Ok(())
+}
+
+fn record_staging_fields(plan: &FunctionPlan) -> Vec<(VarName, VarName)> {
+    let mut fields = Vec::new();
+    match plan {
+        FunctionPlan::Statements { statements, .. } => {
+            collect_record_staging_fields(statements, &mut fields)
+        }
+        FunctionPlan::GuardedReturn { branches, tail, .. } => {
+            for branch in branches {
+                collect_record_staging_fields(branch, &mut fields);
+            }
+            collect_record_staging_fields(tail, &mut fields);
+        }
+        FunctionPlan::IntegerReduction { initial, .. } => {
+            collect_record_staging_fields(initial, &mut fields)
+        }
+        FunctionPlan::External(_) => {}
+    }
+    fields.sort();
+    fields.dedup();
+    fields
+}
+
+fn collect_record_staging_fields(
+    plans: &[FunctionStatementPlan],
+    fields: &mut Vec<(VarName, VarName)>,
+) {
+    for plan in plans {
+        match plan {
+            FunctionStatementPlan::RecordFieldAssembly(assembly) => {
+                fields.push((assembly.target.clone(), assembly.field.name.clone()));
+            }
+            FunctionStatementPlan::For { statements, .. }
+            | FunctionStatementPlan::ProvenBranch { statements, .. } => {
+                collect_record_staging_fields(statements, fields)
+            }
+            FunctionStatementPlan::If {
+                branches, fallback, ..
+            } => {
+                for branch in branches {
+                    collect_record_staging_fields(branch, fields);
+                }
+                if let Some(fallback) = fallback {
+                    collect_record_staging_fields(fallback, fields);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn lower_function_plan<'dae>(
@@ -375,7 +544,26 @@ fn lower_function_plan<'dae>(
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match plan {
         FunctionPlan::External(_) => unreachable!("external bodies define through their interface"),
-        FunctionPlan::Statements { source, statements } => {
+        FunctionPlan::Statements {
+            source,
+            statements,
+            certified_output_seeds,
+            ..
+        } => {
+            let body = lower_named_function_seeds(
+                construction,
+                symbols,
+                body,
+                certified_output_seeds,
+                function.span,
+            )?;
+            let body = lower_function_sequence_seeds(
+                construction,
+                symbols,
+                body,
+                statements,
+                function.span,
+            )?;
             lower_function_statements(construction, symbols, body, source, statements)
         }
         FunctionPlan::GuardedReturn {

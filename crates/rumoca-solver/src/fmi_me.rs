@@ -784,3 +784,25 @@ pub trait ModelExchangeKernel {
 pub fn event_indicator_crossed(before: f64, after: f64, tolerance: f64) -> bool {
     crate::runtime::solve_ops::root_value_crossed(before, after, tolerance)
 }
+
+/// Advance an integrator-owned state vector to an internal event-side probe.
+///
+/// The probe classifies the post side of a located event; it is not a trace
+/// observation or a replacement for the semantic event time. Keeping this
+/// arithmetic on the FMI-ME boundary gives every integrator one path without
+/// exposing component-private runtime objects.
+pub fn advance_states_to_event_probe(
+    states: &mut [f64],
+    derivatives: &[f64],
+    event_time: f64,
+    probe_time: f64,
+) {
+    let dt = probe_time - event_time;
+    if dt <= 0.0 || crate::timeline::sample_time_match_with_tol(event_time, probe_time) {
+        return;
+    }
+    debug_assert_eq!(states.len(), derivatives.len());
+    for (state, derivative) in states.iter_mut().zip(derivatives.iter().copied()) {
+        *state += dt * derivative;
+    }
+}

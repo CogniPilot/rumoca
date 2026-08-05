@@ -79,8 +79,12 @@ mod function_output_shadow_state_test;
 mod function_projection_array_shape_test;
 #[path = "function_proven_branch_test.rs"]
 mod function_proven_branch_test;
+#[path = "function_record_array_test.rs"]
+mod function_record_array_test;
 #[path = "function_return_checked.rs"]
 mod function_return_checked;
+#[path = "function_spd_loop_compaction.rs"]
+mod function_spd_loop_compaction;
 #[path = "galec_equivalence.rs"]
 mod galec_equivalence;
 #[path = "gear_loop_regression.rs"]
@@ -133,6 +137,8 @@ mod semi_linear_zero_flow;
 // scalarized IR for minutes instead of failing fast.
 #[path = "record_array_member_slice_test.rs"]
 mod record_array_member_slice_test;
+#[path = "record_connector_equation_test.rs"]
+mod record_connector_equation_test;
 #[path = "reverse_vjp_test.rs"]
 mod reverse_vjp_test;
 #[path = "scoped_import_flatten.rs"]

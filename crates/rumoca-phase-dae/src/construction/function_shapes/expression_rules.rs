@@ -575,31 +575,10 @@ fn builtin_shape(
     function_result: &mut FunctionResultShape<'_>,
     span: Span,
 ) -> Result<ValueShape, ToDaeError> {
+    if let Some(shape) = basic_builtin_shape(function, arguments, values, function_result, span) {
+        return shape;
+    }
     match function {
-        BuiltinFunction::Size if arguments.len() == 1 => {
-            let rank = expression_shape(&arguments[0], values, function_result)?.len();
-            Ok(vec![u32::try_from(rank).map_err(|_| {
-                ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "rank exceeds the DAE shape domain",
-                    span,
-                )
-            })?])
-        }
-        BuiltinFunction::Size | BuiltinFunction::Sum | BuiltinFunction::Product => Ok(Vec::new()),
-        BuiltinFunction::Zeros => arguments
-            .iter()
-            .map(|argument| {
-                let extent = evaluate_shape_integer(argument, values)?;
-                u32::try_from(extent).ok().ok_or_else(|| {
-                    ToDaeError::unsupported_flat(
-                        "function shape proof",
-                        format!("zeros extent `{extent}` is invalid"),
-                        span,
-                    )
-                })
-            })
-            .collect(),
         BuiltinFunction::Vector => vector_shape(arguments, values, function_result, span),
         BuiltinFunction::Transpose => transpose_shape(arguments, values, function_result, span),
         BuiltinFunction::Diagonal => diagonal_shape(arguments, values, function_result, span),
@@ -607,6 +586,7 @@ fn builtin_shape(
             outer_product_shape(arguments, values, function_result, span)
         }
         BuiltinFunction::Identity => identity_shape(arguments, values, function_result, span),
+        BuiltinFunction::Fill => fill_shape(arguments, values, function_result, span),
         BuiltinFunction::Cross => cross_shape(arguments, values, function_result, span),
         BuiltinFunction::Cat => cat_shape(arguments, values, function_result, span),
         BuiltinFunction::Skew => skew_shape(arguments, values, function_result, span),
@@ -676,6 +656,148 @@ fn builtin_shape(
             span,
         )),
     }
+}
+
+fn fill_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [value, extents @ ..] = arguments else {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "fill requires a value and at least one extent",
+            span,
+        ));
+    };
+    if extents.is_empty() {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "fill requires a value and at least one extent",
+            span,
+        ));
+    }
+    if !expression_shape(value, values, function_result)?.is_empty() {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "fill requires a scalar value",
+            span,
+        ));
+    }
+    extents
+        .iter()
+        .map(|extent| checked_builtin_extent(BuiltinFunction::Fill, extent, values, span))
+        .collect()
+}
+
+fn basic_builtin_shape(
+    function: BuiltinFunction,
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Option<Result<ValueShape, ToDaeError>> {
+    let result = match function {
+        BuiltinFunction::Size if arguments.len() == 1 => {
+            let rank = expression_shape(&arguments[0], values, function_result).map(|s| s.len());
+            rank.and_then(|rank| {
+                u32::try_from(rank).map(|rank| vec![rank]).map_err(|_| {
+                    ToDaeError::unsupported_flat(
+                        "function shape proof",
+                        "rank exceeds the DAE shape domain",
+                        span,
+                    )
+                })
+            })
+        }
+        BuiltinFunction::Size if arguments.len() == 2 => arguments
+            .iter()
+            .try_for_each(|argument| {
+                expression_shape(argument, values, function_result).map(|_| ())
+            })
+            .map(|()| Vec::new()),
+        BuiltinFunction::Sum | BuiltinFunction::Product if arguments.len() == 1 => {
+            reduction_operand_shape(&arguments[0], values, function_result, span)
+                .map(|_| Vec::new())
+        }
+        BuiltinFunction::Size | BuiltinFunction::Sum | BuiltinFunction::Product => {
+            Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                format!(
+                    "{function:?} has invalid argument count {}",
+                    arguments.len()
+                ),
+                span,
+            ))
+        }
+        BuiltinFunction::Zeros | BuiltinFunction::Ones => arguments
+            .iter()
+            .map(|argument| checked_builtin_extent(function, argument, values, span))
+            .collect(),
+        _ => return None,
+    };
+    Some(result)
+}
+
+/// A scalar reduction does not expose its operand's leading comprehension
+/// extent. Validate the iterator expressions and body in lexical scope without
+/// demanding a translation-time length here; function-loop normalization must
+/// still prove and construct one fixed compact domain before DAE insertion.
+fn reduction_operand_shape(
+    argument: &Expression,
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let Expression::ArrayComprehension {
+        expr,
+        indices,
+        filter,
+        ..
+    } = argument
+    else {
+        return expression_shape(argument, values, function_result);
+    };
+    let mut scoped = values.clone();
+    for index in indices {
+        let Expression::Range {
+            start, step, end, ..
+        } = &index.range
+        else {
+            return Err(unshaped_expression_form(&index.range, span));
+        };
+        expression_shape(start, &scoped, function_result)?;
+        if let Some(step) = step {
+            expression_shape(step, &scoped, function_result)?;
+        }
+        expression_shape(end, &scoped, function_result)?;
+        if let Some((lower, upper)) = scoped.proven_range_bounds(&index.range) {
+            scoped.bind_integer_bounds(VarName::new(&index.name), lower, upper);
+        } else {
+            scoped.insert(VarName::new(&index.name), Vec::new());
+        }
+    }
+    if let Some(filter) = filter {
+        expression_shape(filter, &scoped, function_result)?;
+    }
+    expression_shape(expr, &scoped, function_result)
+}
+
+fn checked_builtin_extent(
+    function: BuiltinFunction,
+    argument: &Expression,
+    values: &ShapeEnvironment,
+    span: Span,
+) -> Result<u32, ToDaeError> {
+    let extent = evaluate_shape_integer(argument, values)?;
+    u32::try_from(extent).map_err(|_| {
+        ToDaeError::unsupported_flat(
+            "function shape proof",
+            format!("{} extent `{extent}` is invalid", function.name()),
+            span,
+        )
+    })
 }
 
 /// MLS §10.4.4: `cat(dim, A, B, …)` concatenates the operands along `dim`,

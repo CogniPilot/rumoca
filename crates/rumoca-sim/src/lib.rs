@@ -462,7 +462,7 @@ pub fn build_tunable_parameter_meta(
     solve_model: &solve::SolveModel,
 ) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
     dae_model.inspect(|view| {
-        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
+        let mut evaluator = rumoca_phase_dae::numeric::NumericDaeContext::new(view);
         let mut result = Vec::new();
         for (_, variable) in view.variables().filter(|(_, variable)| {
             variable.role() == dae::VariableRole::Parameter && variable.is_tunable()
@@ -483,7 +483,7 @@ fn tunable_variable_meta<'dae>(
     dae_model: &dae::Dae,
     view: dae::DaeView<'dae>,
     solve_model: &solve::SolveModel,
-    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    evaluator: &mut rumoca_phase_dae::numeric::NumericDaeContext<'dae>,
     variable: dae::VariableView<'dae>,
 ) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
     let minimum = evaluated_attribute(evaluator, variable, variable.minimum())?;
@@ -526,7 +526,7 @@ fn tunable_variable_meta<'dae>(
 }
 
 fn evaluated_attribute<'dae>(
-    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    evaluator: &mut rumoca_phase_dae::numeric::NumericDaeContext<'dae>,
     variable: dae::VariableView<'dae>,
     expression: Option<dae::ExprId<'dae>>,
 ) -> Result<Option<Vec<f64>>, SimulationDiagnosticError> {
@@ -568,7 +568,7 @@ fn parameter_slot(
 }
 
 fn numeric_evaluation_error(
-    error: rumoca_eval_dae::NumericEvaluationError,
+    error: rumoca_phase_dae::numeric::NumericDaeError,
 ) -> SimulationDiagnosticError {
     runtime_preparation(error.to_string(), error.span())
 }

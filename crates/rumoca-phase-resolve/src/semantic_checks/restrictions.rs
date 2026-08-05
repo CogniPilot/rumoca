@@ -2,7 +2,10 @@
 //! (MLS §8.3), function purity/default rules (MLS §12), and declaration /
 //! inheritance restrictions (MLS §4, §5, §7).
 
+mod decl;
+
 use super::*;
+use decl::*;
 
 pub(super) const ER083_CONNECT_EVALUABLE_CONTEXT: &str = "ER083";
 pub(super) const ER084_WHEN_EVALUABLE_CONTEXT: &str = "ER084";
@@ -867,7 +870,3 @@ fn check_function_input_defaults(class: &ClassDef, diags: &mut Vec<Diagnostic>) 
 fn is_input(comp: &ast::Component) -> bool {
     matches!(comp.causality, Causality::Input(_))
 }
-
-#[path = "restrictions_decl.rs"]
-mod decl;
-use decl::*;

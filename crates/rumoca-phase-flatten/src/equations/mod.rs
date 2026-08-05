@@ -8,7 +8,7 @@ use std::{collections::HashSet, sync::Arc};
 mod shape_inference;
 pub(crate) use shape_inference::{
     ExpressionShape, infer_component_ref_shape, infer_simple_equation_dims,
-    infer_simple_equation_scalar_count,
+    infer_simple_equation_scalar_count, is_tuple_receiver_equation_lhs,
 };
 
 // Conditional tracing support (SPEC_0008)
@@ -480,13 +480,17 @@ pub(crate) fn flatten_equation_with_def_map(
             } else {
                 flat::Equation::new_array(residual, span, origin, scalar_count)
             };
-            let structured_equations = array_family::structured_array_equation_family(
-                0,
-                &equation,
-                equation_dims.as_deref(),
-            )?
-            .into_iter()
-            .collect();
+            let structured_equations = if is_tuple_receiver_equation_lhs(&lhs) {
+                Vec::new()
+            } else {
+                array_family::structured_array_equation_family(
+                    0,
+                    &equation,
+                    equation_dims.as_deref(),
+                )?
+                .into_iter()
+                .collect()
+            };
             Ok(FlattenedEquations {
                 equations: vec![equation],
                 structured_equations,
@@ -1042,19 +1046,15 @@ fn expand_for_equation(
     if indices.is_empty() {
         return flatten_equations_list(ctx, equations, prefix, span, origin, def_map);
     }
+    if equations.len() > 1 {
+        return expand_independent_for_bodies(
+            ctx, indices, equations, prefix, span, origin, def_map,
+        );
+    }
 
     // Classify regularity from the still-symbolic body BEFORE materializing, so the
     // decision to cheapen interior cells is available to `collect_for_iterations`.
-    let regular = {
-        let resolve = |cr: &ast::ComponentReference| {
-            try_eval_integer_with_ctx(
-                ctx,
-                &ast::Expression::ComponentReference(cr.clone()),
-                prefix,
-            )
-        };
-        affine::classify_regular_for_family(indices, equations, &resolve)
-    };
+    let regular = classify_regular_for_body(ctx, indices, equations, prefix);
     // Capture the comprehension body from the ORIGINAL (un-substituted) loop body, so
     // every binder -- including the outer one when this is a nested `for i for j` --
     // stays symbolic. Needed BEFORE the cheapen decision: a parameter-variability
@@ -1147,6 +1147,12 @@ fn expand_for_equation(
     // attach a misleading template to the family: downstream code must fall
     // back to the materialized rows rather than rendering the wrong kernel.
     let template = template.filter(|candidate| candidate.body.len() == equations_per_point);
+    if !result.structured_equations.is_empty() {
+        // A child family that could not be lifted already owns part of this
+        // row interval.  Keep its proven domain and leave uncovered rows as
+        // ordinary residual owners; never add an overlapping parent view.
+        return Ok(result);
+    }
     result
         .structured_equations
         .push(flat::StructuredEquationFamily {
@@ -1160,6 +1166,48 @@ fn expand_for_equation(
             interiors_materialized,
         });
 
+    Ok(result)
+}
+
+fn classify_regular_for_body(
+    ctx: &Context,
+    indices: &[ast::ForIndex],
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+) -> Option<rumoca_core::RegularForFamily> {
+    let resolve = |reference: &ast::ComponentReference| {
+        try_eval_integer_with_ctx(
+            ctx,
+            &ast::Expression::ComponentReference(reference.clone()),
+            prefix,
+        )
+    };
+    affine::classify_regular_for_family(indices, equations, &resolve)
+}
+
+/// Give each declarative source body its own compact family. A slice body can
+/// lift an extra tensor axis without duplicating a scalar sibling over it.
+fn expand_independent_for_bodies(
+    ctx: &Context,
+    indices: &[ast::ForIndex],
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+    origin: &rumoca_ir_flat::EquationOrigin,
+    def_map: Option<&crate::ResolveDefMap>,
+) -> Result<FlattenedEquations, FlattenError> {
+    let mut result = FlattenedEquations::default();
+    for equation in equations {
+        result.append(expand_for_equation(
+            ctx,
+            indices,
+            std::slice::from_ref(equation),
+            prefix,
+            span,
+            origin,
+            def_map,
+        )?);
+    }
     Ok(result)
 }
 
@@ -1454,13 +1502,13 @@ fn expand_if_equation(
             def_map,
         };
         for eq_idx in 0..num_equations {
-            let flat_eq = create_conditional_equation_from_simple(
+            let flattened = create_conditional_equation_from_simple(
                 &expanded_branches,
                 &else_simple_eqs,
                 eq_idx,
                 &eq_context,
             )?;
-            result.equations.push(flat_eq);
+            result.append(flattened);
         }
         Ok(result)
     } else {
@@ -1737,6 +1785,15 @@ fn expand_to_simple_equations(
 /// Handles nested arrays recursively for multi-dimensional cases.
 /// Falls back to a single equation when the RHS is not an array.
 fn expand_array_assignment(lhs: &ast::Expression, rhs: &ast::Expression) -> Vec<SimpleEquation> {
+    // A named aggregate is one authoritative tensor equation. Preserve it so
+    // conditional branches such as `x = zeros(2)` and `x = {a, b}` have the
+    // same owner cardinality; scalar rows derive from that owner downstream.
+    if matches!(lhs, ast::Expression::ComponentReference(_)) {
+        return vec![SimpleEquation {
+            lhs: lhs.clone(),
+            rhs: rhs.clone(),
+        }];
+    }
     let rhs_elements = match rhs {
         ast::Expression::Array { elements, .. } if !elements.is_empty() => elements,
         _ => {
@@ -1756,7 +1813,6 @@ fn expand_array_lhs_elements(
     rhs_elements: &[ast::Expression],
 ) -> Vec<SimpleEquation> {
     match lhs {
-        ast::Expression::ComponentReference(cr) => expand_array_cr(cr, rhs_elements),
         ast::Expression::Array {
             elements: lhs_elements,
             ..
@@ -1770,47 +1826,6 @@ fn expand_array_lhs_elements(
             rhs: rhs.clone(),
         }],
     }
-}
-
-/// Expand a ast::ComponentReference LHS with per-element subscripts for each RHS element.
-fn expand_array_cr(
-    cr: &ast::ComponentReference,
-    rhs_elements: &[ast::Expression],
-) -> Vec<SimpleEquation> {
-    rhs_elements
-        .iter()
-        .enumerate()
-        .flat_map(|(i, elem)| {
-            let new_cr = add_subscript_to_component_ref(cr, (i as i64) + 1);
-            let new_lhs = ast::Expression::ComponentReference(new_cr);
-            expand_array_assignment(&new_lhs, elem)
-        })
-        .collect()
-}
-
-/// Add an integer subscript to the last part of a ast::ComponentReference.
-///
-/// `x` becomes `x[index]`, `x[1]` becomes `x[1, index]`.
-fn add_subscript_to_component_ref(
-    cr: &ast::ComponentReference,
-    index: i64,
-) -> ast::ComponentReference {
-    let mut new_cr = cr.clone();
-    if let Some(last) = new_cr.parts.last_mut() {
-        let sub = ast::Subscript::Expression(ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token: rumoca_core::Token {
-                text: std::sync::Arc::from(index.to_string()),
-                ..Default::default()
-            },
-            span: cr.span,
-        });
-        match &mut last.subs {
-            Some(subs) => subs.push(sub),
-            None => last.subs = Some(vec![sub]),
-        }
-    }
-    new_cr
 }
 
 /// Expand a for-equation to simple equations.

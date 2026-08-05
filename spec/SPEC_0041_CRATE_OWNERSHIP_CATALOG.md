@@ -36,6 +36,7 @@ import that path.
 | `expr_contains_var` | `rumoca-ir-dae::expr_query` | Handles every `Expression` variant |
 | `expr_refers_to_var` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
 | `expr_contains_der_of` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
+| `DaeView::record_field_layout`, `RecordFieldLayout` | `rumoca-ir-dae::model::view` | Read-only element-major packing query shared by explicit DAE evaluation and Solve scalar-projection boundaries; compact record arrays remain owned by DAE-IR. |
 | Solver runtime time-event helpers (`event_right_limit_time`, scheduled/periodic time-event filtering, dynamic time-event parameter lookup) | `rumoca-solver::timeline` | Shared time-grid rules. |
 | Solver runtime event-boundary helpers (`process_runtime_event_boundary`, `runtime_event_horizon`, `runtime_root_event_application_time`, `RuntimeEventBoundaryHandler`) | `rumoca-solver::runtime::event` | Backends hook row application/state reset; MLS event-boundary policy stays shared. |
 | Solver zero-state orchestration helpers (`run_no_state_output_schedule`, `NoStateOrchestrationBackend`, `NoStateEventStep`) | `rumoca-solver::runtime::no_state` | Backends hook row/root/event; output/event-loop policy stays shared. |

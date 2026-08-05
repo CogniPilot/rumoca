@@ -11,7 +11,10 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             .storage
             .value_type_at(value_type.index(), self.provenance)?
             .clone();
-        if !record.is_record() || fields.len() != record.record_field_count() {
+        if !record.is_record()
+            || !record.dimensions().is_empty()
+            || fields.len() != record.record_field_count()
+        {
             return Err(invalid_arity(
                 record.record_field_count(),
                 fields.len(),
@@ -48,10 +51,15 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         base: ExprId<'dae>,
         field: usize,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
-        let record = self.storage.expr_type(base, self.provenance)?;
+        let record = self.storage.expr_type(base, self.provenance)?.clone();
         let field_type = record.record_field_type(field).ok_or_else(|| {
             invalid_arity(record.record_field_count(), field + 1, self.provenance)
         })?;
+        let field_type = self
+            .storage
+            .value_type_at(field_type, self.provenance)?
+            .with_prefixed_dimensions(record.dimensions());
+        let field_type = self.storage.intern_type(field_type, self.provenance)?;
         let variability = self.storage.expr_variability(base, self.provenance)?;
         let binder_domain = self.storage.expr_binder_domain(base, self.provenance)?;
         let field = checked_u32(field, "record field", self.provenance)?;
@@ -60,7 +68,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                 base: base.index(),
                 field,
             },
-            ValueTypeId::from_raw(field_type),
+            field_type,
             variability,
             binder_domain,
         )

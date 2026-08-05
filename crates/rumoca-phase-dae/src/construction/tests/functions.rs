@@ -495,7 +495,7 @@ fn add_integer_assertion_call(model: &mut flat::Model, source: &TestSource, argu
 }
 
 #[test]
-fn proven_true_function_assertion_is_elided_by_its_exact_specialization() {
+fn assertion_only_input_retains_its_call_scoped_action() {
     let source = TestSource::new(
         "function positive input Integer i; output Integer y; algorithm assert(i >= 1, \"i must be positive\"); y := i; end positive; 1.0 * positive(3);",
     );
@@ -514,11 +514,16 @@ fn proven_true_function_assertion_is_elided_by_its_exact_specialization() {
     let dae = construct(&model, source.map).expect("the exact input proves the assertion true");
     dae.inspect(|view| {
         let function = view.function(view.function_id(0).unwrap()).unwrap();
-        assert_eq!(
-            function.statements().count(),
-            1,
-            "only the value assignment reaches the pure DAE function body"
-        );
+        let statements = function.statements().collect::<Vec<_>>();
+        assert_eq!(statements.len(), 2);
+        assert!(matches!(
+            statements[0],
+            dae::FunctionStatementView::Assertion { .. }
+        ));
+        assert!(matches!(
+            statements[1],
+            dae::FunctionStatementView::Assignment { .. }
+        ));
     });
 }
 
@@ -874,14 +879,18 @@ fn dynamic_quotient_fails_at_its_runtime_operator_owner() {
 fn production_lowering_constructs_a_compact_checked_function_loop() {
     let source = TestSource::new(
         "function sum3 output Integer y; protected Integer n = 3; algorithm \
-         y := 0; for k in 1:n loop y := y + k; end for; end sum3; 1.0 * sum3();",
+         y := 0; for k in 1:n loop assert(k > 0, \"positive\"); y := y + k; end for; end sum3; 1.0 * sum3();",
     );
     let function_span = source.span("function sum3", 0);
     let output_span = source.span("output Integer y", 0);
     let local_span = source.span("Integer n = 3", 0);
     let initial_span = source.span("y := 0", 0);
-    let loop_span = source.span("for k in 1:n loop y := y + k; end for", 0);
+    let loop_span = source.span(
+        "for k in 1:n loop assert(k > 0, \"positive\"); y := y + k; end for",
+        0,
+    );
     let range_span = source.span("1:n", 0);
+    let assertion_span = source.span("assert(k > 0, \"positive\")", 0);
     let update_span = source.span("y := y + k", 0);
     let mut function = rumoca_core::Function::new("sum3", function_span);
     function.add_output(integer_function_param("y", Vec::new(), output_span));
@@ -917,30 +926,60 @@ fn production_lowering_constructs_a_compact_checked_function_loop() {
                     span: range_span,
                 },
             }],
-            equations: vec![rumoca_core::Statement::Assignment {
-                comp: test_component_reference("y", update_span),
-                value: Expression::Binary {
-                    op: OpBinary::Add,
-                    lhs: Box::new(Expression::VarRef {
-                        name: Reference::new("y"),
-                        subscripts: Vec::new(),
-                        span: source.span("y", 3),
+            equations: vec![
+                rumoca_core::Statement::Assert {
+                    condition: Expression::Binary {
+                        op: OpBinary::Gt,
+                        lhs: Box::new(Expression::VarRef {
+                            name: Reference::new("k"),
+                            subscripts: Vec::new(),
+                            span: source.span("k", 1),
+                        }),
+                        rhs: Box::new(Expression::Literal {
+                            value: Literal::Integer(0),
+                            span: source.span("0", 1),
+                        }),
+                        span: source.span("k > 0", 0),
+                    },
+                    message: Box::new(Expression::Literal {
+                        value: Literal::String("positive".to_owned()),
+                        span: source.span("\"positive\"", 0),
                     }),
-                    rhs: Box::new(Expression::VarRef {
-                        name: Reference::new("k"),
-                        subscripts: Vec::new(),
-                        span: source.span("k", 1),
-                    }),
-                    span: source.span("y + k", 0),
+                    level: None,
+                    span: assertion_span,
                 },
-                span: update_span,
-            }],
+                rumoca_core::Statement::Assignment {
+                    comp: test_component_reference("y", update_span),
+                    value: Expression::Binary {
+                        op: OpBinary::Add,
+                        lhs: Box::new(Expression::VarRef {
+                            name: Reference::new("y"),
+                            subscripts: Vec::new(),
+                            span: source.span("y", 3),
+                        }),
+                        rhs: Box::new(Expression::VarRef {
+                            name: Reference::new("k"),
+                            subscripts: Vec::new(),
+                            span: source.span("k", 2),
+                        }),
+                        span: source.span("y + k", 0),
+                    },
+                    span: update_span,
+                },
+            ],
             span: loop_span,
         },
     ];
     let mut model = test_model();
     model.add_function(function);
     model.is_partial = true;
+    add_sum3_call_equation(&mut model, &source);
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| assert_production_sum3_loop(view, loop_span));
+}
+
+fn add_sum3_call_equation(model: &mut flat::Model, source: &TestSource) {
     let call_span = source.span("sum3()", 0);
     let equation_span = source.span("1.0 * sum3()", 0);
     model.add_equation(flat::Equation::new(
@@ -963,9 +1002,6 @@ fn production_lowering_constructs_a_compact_checked_function_loop() {
             component: String::new(),
         },
     ));
-
-    let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| assert_production_sum3_loop(view, loop_span));
 }
 
 fn assert_production_sum3_loop(view: dae::DaeView<'_>, loop_span: Span) {
@@ -980,7 +1016,7 @@ fn assert_production_sum3_loop(view: dae::DaeView<'_>, loop_span: Span) {
     assert_eq!(view.source_text(domain.provenance()), Some("1:n"));
     assert_eq!(
         view.source_text(fold.provenance()),
-        Some("for k in 1:n loop y := y + k; end for")
+        Some("for k in 1:n loop assert(k > 0, \"positive\"); y := y + k; end for")
     );
     let parameter = view
         .expression(fold.parameter_values().rhs(0).unwrap())
@@ -1095,23 +1131,28 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
     ));
 
     let error = construct(&model, source.map).unwrap_err();
-    assert!(matches!(
-        error,
-        ToDaeError::UnsupportedFlatSemantics {
-            feature,
-            span,
-            ..
-        } if feature == "function loop domain" && span == range_span
-    ));
+    assert!(
+        matches!(
+            &error,
+            ToDaeError::UnsupportedFlatSemantics {
+                feature,
+                span,
+                ..
+            } if feature == "function loop domain" && *span == range_span
+        ),
+        "unexpected error: {error:?}"
+    );
 }
 
 /// A loop bound written over an input is settled by the specialization.
 ///
 /// MLS §11.2.2 requires the range to be evaluable and MLS §12.2 lets a function
 /// body be written over its inputs, so `for k in 1:n` under a call that proves
-/// `n = 3` is the same three-element compact domain a literal `1:3` gives.
+/// `n = 3` is the same three-element compact domain a literal `1:3` gives. A
+/// direct accumulator owns that domain as a tensor reduction, not as a carried
+/// scalar fold.
 #[test]
-fn reachable_function_loop_over_a_proven_input_lowers_to_its_static_domain() {
+fn reachable_function_loop_over_a_proven_input_lowers_to_a_tensor_reduction() {
     let source = TestSource::new(
         "function sumN input Integer n; output Integer y; algorithm \
          y := 0; for k in 1:n loop y := y + k; end for; end sumN; 1.0 * sumN(3);",
@@ -1203,15 +1244,39 @@ fn reachable_function_loop_over_a_proven_input_lowers_to_its_static_domain() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
-        let function = view.function(view.function_id(0).unwrap()).unwrap();
-        let fold = view
-            .function_fold(function.fold_id(0).unwrap())
-            .expect("the proven range owns a compact fold");
-        let domain = view.domain(fold.domain()).unwrap();
-        assert_eq!(domain.scalar_count(), 3);
-        assert_eq!(view.source_text(domain.provenance()), Some("1:n"));
-    });
+    dae.inspect(assert_proven_input_tensor_reduction);
+}
+
+fn assert_proven_input_tensor_reduction(view: dae::DaeView<'_>) {
+    let function = view.function(view.function_id(0).unwrap()).unwrap();
+    assert_eq!(function.fold_count(), 0);
+    let mut statements = function.statements();
+    let Some(dae::FunctionStatementView::Assignment { definition }) = statements.next() else {
+        panic!("the accumulator must lower to one tensor assignment")
+    };
+    assert!(statements.next().is_none());
+    let dae::ExpressionOperation::Binary { rhs, .. } =
+        view.expression(definition.rhs()).unwrap().operation()
+    else {
+        panic!("the seed and tensor reduction must retain their source operator")
+    };
+    let dae::ExpressionOperation::Builtin {
+        builtin: dae::PureBuiltin::Sum,
+        arguments,
+    } = view.expression(rhs).unwrap().operation()
+    else {
+        panic!("the loop must own a tensor-native sum")
+    };
+    let dae::ExpressionOperation::Comprehension { domain, .. } = view
+        .expression(arguments.get(0).unwrap())
+        .unwrap()
+        .operation()
+    else {
+        panic!("the sum operand must retain its compact comprehension")
+    };
+    let domain = view.domain(domain).unwrap();
+    assert_eq!(domain.scalar_count(), 3);
+    assert_eq!(view.source_text(domain.provenance()), Some("1:n"));
 }
 
 /// The MLS §12.3 purity prefix the fixture's external declaration writes.

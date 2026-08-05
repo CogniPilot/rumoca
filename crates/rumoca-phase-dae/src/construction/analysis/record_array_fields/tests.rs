@@ -148,6 +148,57 @@ fn add_record_layout(
     );
 }
 
+#[test]
+fn inherited_field_projection_accepts_distinct_sibling_layouts() {
+    let inherited = DefId::new(20);
+    let first_owner = DefId::new(21);
+    let second_owner = DefId::new(22);
+    let mut model = flat::Model::new();
+    model.record_types.insert(
+        first_owner,
+        flat::RecordType {
+            name: "First".to_string(),
+            fields: vec![
+                flat::RecordField {
+                    name: "marker".to_string(),
+                    def_id: inherited,
+                    dims: vec![0],
+                },
+                flat::RecordField {
+                    name: "a".to_string(),
+                    def_id: DefId::new(23),
+                    dims: vec![4],
+                },
+            ],
+        },
+    );
+    model.record_types.insert(
+        second_owner,
+        flat::RecordType {
+            name: "Second".to_string(),
+            fields: vec![
+                flat::RecordField {
+                    name: "marker".to_string(),
+                    def_id: inherited,
+                    dims: vec![0],
+                },
+                flat::RecordField {
+                    name: "b".to_string(),
+                    def_id: DefId::new(24),
+                    dims: vec![3],
+                },
+            ],
+        },
+    );
+
+    let fields = declared_record_fields(&model).expect("shared inherited field is unambiguous");
+    let marker = &fields[&inherited];
+
+    assert_eq!(marker.ordinal, 0);
+    assert_eq!(marker.shape.as_ref(), [0]);
+    assert_eq!(marker.owners.as_ref(), [first_owner, second_owner]);
+}
+
 fn member_access(
     base: ComponentReference,
     subscript: Subscript,
@@ -771,6 +822,39 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
         panic!("one call must own one specialization certificate");
     };
     assert_eq!(certificate.parameters, vec![vec![3]]);
+}
+
+#[test]
+fn function_local_record_reference_uses_structural_layout_without_model_instance() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("function_local_record.mo", "localRecord.samples");
+    let span = Span::from_offsets(source, 0, 19);
+    let record = DefId::new(150);
+    let local = DefId::new(151);
+    let samples = DefId::new(152);
+    let mut model = flat::Model::new();
+    add_record_layout(&mut model, record, "SampleRecord", samples, "samples", &[3]);
+    let field = Expression::FieldAccess {
+        base: Box::new(Expression::VarRef {
+            name: Reference::from_component_reference(component_reference(
+                &[("localRecord", &[], local)],
+                span,
+            )),
+            subscripts: Vec::new(),
+            span,
+        }),
+        field: "samples".to_string(),
+        field_def_id: samples,
+        span,
+    };
+
+    let plans = analyze_record_array_fields(&model, [&field])
+        .expect("function-local aggregate abstains from model-coordinate planning");
+    let plan = plans
+        .structural(&field)
+        .expect("retained record layout proves the structural field");
+    assert_eq!(plan.owners.as_ref(), [record]);
+    assert_eq!(plan.shape.as_ref(), [3]);
 }
 
 /// Two sibling instances of one class spell the same nested slice, and both

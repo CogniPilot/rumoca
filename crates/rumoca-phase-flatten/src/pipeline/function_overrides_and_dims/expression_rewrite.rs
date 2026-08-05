@@ -185,7 +185,7 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
             }
         };
         function_call(
-            rewritten_selected_function_reference(name, rewrite),
+            rewritten_selected_function_reference(name, rewrite, self.ctx.class_index),
             args,
             is_constructor,
             span,
@@ -264,7 +264,12 @@ fn reference_targets_function_local_def(
     reference: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> bool {
-    reference
+    reference.component_ref().is_some_and(|component_ref| {
+        component_ref
+            .parts()
+            .iter()
+            .any(|part| ctx.local_def_ids.contains(&part.def_id))
+    }) || reference
         .target_def_id()
         .is_some_and(|def_id| ctx.local_def_ids.contains(&def_id))
 }
@@ -276,37 +281,29 @@ fn rewritten_value_reference(
     original.with_var_name(rumoca_core::VarName::new(resolved_name))
 }
 
-pub(super) fn rewritten_function_reference(
-    original: &rumoca_core::Reference,
-    resolved_name: String,
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> rumoca_core::Reference {
-    let target_def_id = tree
-        .name_map
-        .get(&resolved_name)
-        .copied()
-        .or_else(|| {
-            class_index
-                .get_by_qualified_name(&resolved_name)
-                .and_then(|class_def| class_def.def_id)
-        })
-        .expect("resolved function rewrite requires an exact target DefId");
-    retarget_function_reference(original, resolved_name, target_def_id)
-}
-
 fn rewritten_selected_function_reference(
     original: &rumoca_core::Reference,
     rewrite: &ResolvedFunctionRewrite,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> rumoca_core::Reference {
     let target_def_id = match rewrite.occurrence_identity {
         CallOccurrenceIdentity::SelectedImplementation => rewrite.selection.implementation,
         CallOccurrenceIdentity::ExposedDeclaration => rewrite.selection.exposure,
     };
+    if let Some((package_name, package_def_id)) = &rewrite.exposed_package {
+        return retarget_exposed_function_reference(
+            original,
+            rewrite.display_name.clone(),
+            package_name,
+            *package_def_id,
+            target_def_id,
+            class_index,
+        );
+    }
     retarget_function_reference(original, rewrite.display_name.clone(), target_def_id)
 }
 
-fn retarget_function_reference(
+pub(super) fn retarget_function_reference(
     original: &rumoca_core::Reference,
     resolved_name: String,
     target_def_id: rumoca_core::DefId,
@@ -322,5 +319,67 @@ fn retarget_function_reference(
     let component_ref = component_ref
         .with_replaced_parts(parts)
         .expect("rewriting one exact target preserves a checked component reference");
-    original.with_rewritten_component_reference(resolved_name, component_ref)
+    original
+        .with_rewritten_component_reference(resolved_name, component_ref)
+        .without_resolved_function()
+}
+
+pub(super) fn retarget_exposed_function_reference(
+    original: &rumoca_core::Reference,
+    resolved_name: String,
+    exposed_package_name: &str,
+    exposed_package_def_id: rumoca_core::DefId,
+    target_def_id: rumoca_core::DefId,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+) -> rumoca_core::Reference {
+    let Some(original_ref) = original.component_ref() else {
+        return original.with_var_name(rumoca_core::VarName::new(resolved_name));
+    };
+    let Some(source_leaf) = original_ref.parts().last() else {
+        return retarget_function_reference(original, resolved_name, target_def_id);
+    };
+    let Some(exposed_package) = class_index.get_by_qualified_name(exposed_package_name) else {
+        return retarget_function_reference(original, resolved_name, target_def_id);
+    };
+    let mut package_parts = vec![rumoca_core::ComponentRefPart {
+        ident: exposed_package.name.text.to_string(),
+        span: source_leaf.span,
+        subs: Vec::new(),
+        def_id: exposed_package_def_id,
+    }];
+    let mut package_chain = Vec::new();
+    let mut parent = class_index.parent_def_id(exposed_package_def_id);
+    while let Some(parent_def_id) = parent {
+        package_chain.push(parent_def_id);
+        parent = class_index.parent_def_id(parent_def_id);
+    }
+    package_chain.reverse();
+    for package_def_id in package_chain {
+        let Some(package) = class_index.get(package_def_id) else {
+            return retarget_function_reference(original, resolved_name, target_def_id);
+        };
+        package_parts.insert(
+            package_parts.len() - 1,
+            rumoca_core::ComponentRefPart {
+                ident: package.name.text.to_string(),
+                span: source_leaf.span,
+                subs: Vec::new(),
+                def_id: package_def_id,
+            },
+        );
+    }
+    let mut leaf = source_leaf.clone();
+    leaf.def_id = target_def_id;
+    for start in 0..package_parts.len() {
+        let mut parts = package_parts[start..].to_vec();
+        parts.push(leaf.clone());
+        if let Ok(component_ref) = original_ref.with_replaced_parts(parts.clone())
+            && component_ref.to_var_name().as_str() == resolved_name
+        {
+            return original
+                .with_rewritten_component_reference(resolved_name, component_ref)
+                .without_resolved_function();
+        }
+    }
+    retarget_function_reference(original, resolved_name, target_def_id)
 }

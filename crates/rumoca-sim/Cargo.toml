@@ -45,7 +45,6 @@ process-control = ["dep:signal-hook"]
 [dependencies]
 rumoca-core = { workspace = true }
 indexmap = { workspace = true }
-rumoca-eval-dae = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }

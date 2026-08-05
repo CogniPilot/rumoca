@@ -12,7 +12,7 @@ pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 5;
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
     #[error("{0}")]
-    Numeric(#[from] rumoca_eval_dae::NumericEvaluationError),
+    Numeric(#[from] rumoca_phase_dae::numeric::NumericDaeError),
     #[error(
         "numeric attribute `{attribute}` for `{variable}` contains {actual} scalars; expected one or {expected}"
     )]
@@ -83,7 +83,7 @@ fn project_value_types(view: dae::DaeView<'_>) -> Vec<Value> {
 }
 
 fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendError> {
-    let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
+    let mut evaluator = rumoca_phase_dae::numeric::NumericDaeContext::new(view);
     let mut projected = Vec::with_capacity(view.variable_count());
     for (id, variable) in view.variables() {
         let scalar_count = variable.value_type().scalar_count();
@@ -144,7 +144,7 @@ fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendErr
 }
 
 fn numeric_values<'dae>(
-    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    evaluator: &mut rumoca_phase_dae::numeric::NumericDaeContext<'dae>,
     variable: dae::VariableView<'dae>,
     attribute: &'static str,
     expression: Option<dae::ExprId<'dae>>,

@@ -18,13 +18,13 @@
 //! fallback run is never reported as a proof. Because both drivers call the
 //! same function, a property cannot drift between what is proved and sampled.
 //!
-//! Every submodule below is `cfg(any(test, kani))`, so no production build
-//! carries one and the SPEC_0038 FMI-boundary hardening test never sees them.
+//! Every submodule below is test- or Kani-only, so no production build carries
+//! one and the SPEC_0038 FMI-boundary hardening test never sees them.
 //! `kani` is declared to `check-cfg` in the workspace lints table (root
 //! `Cargo.toml`), so the harnesses need no lint suppression here and a genuine
 //! cfg typo anywhere in this crate still warns.
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 mod condition_memory;
 #[cfg(any(test, kani))]
 mod event_iteration;

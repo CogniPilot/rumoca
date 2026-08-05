@@ -83,6 +83,7 @@ pub(crate) fn process_component_instance(
             request.tree,
             request.class_index,
             request.effective_type_id,
+            request.canonical_type_id,
         )? {
             if !request.flat.record_types.contains_key(&record.type_def_id) {
                 let record_type = variables::create_record_type(

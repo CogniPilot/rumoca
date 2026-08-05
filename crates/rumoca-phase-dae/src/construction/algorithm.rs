@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct AlgorithmStatementContext<'scope, 'shape, 'dae> {
     pub(super) coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
     pub(super) functions: &'scope FunctionRegistry<'shape, 'dae>,
+    pub(super) values: &'scope HashMap<VarName, dae::ExprId<'dae>>,
     pub(super) parent: Option<EventGuard<'dae>>,
     pub(super) owner_span: Span,
 }
@@ -46,13 +47,50 @@ pub(super) fn lower_algorithm_assignment<'dae>(
     component: &rumoca_core::ComponentReference,
     value: &Expression,
     span: Span,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
     let guard = statement_guard(construction, context)?;
-    let target = component.to_var_name();
+    let target = rumoca_core::component_ref_to_base_reference(component)
+        .var_name()
+        .clone();
     let provenance = dae::DaeProvenance::source(span)?;
     if let Some(&target_coordinate) = context.coordinates.get(&target) {
         let value = lower_algorithm_expression(construction, context, value)?;
-        return lower_when_assignment(
+        let subscripts = component
+            .parts()
+            .iter()
+            .flat_map(|part| part.subs.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let value = if subscripts.is_empty() {
+            value
+        } else {
+            let base = algorithm_assignment_base(
+                construction,
+                context,
+                &target,
+                target_coordinate,
+                provenance,
+                span,
+            )?;
+            let symbols = LoweringSymbols {
+                coordinates: context.coordinates,
+                functions: context.functions,
+                shapes: context.functions.shapes.model_values(),
+                function_body: None,
+                values: Some(context.values),
+                owner_clock: guard.owner_clock,
+            };
+            lower_array_update(
+                construction,
+                symbols,
+                &HashMap::new(),
+                base,
+                &subscripts,
+                value,
+                provenance,
+            )?
+        };
+        lower_when_assignment(
             construction,
             discrete_values,
             discrete_owner,
@@ -60,21 +98,27 @@ pub(super) fn lower_algorithm_assignment<'dae>(
             guard,
             value,
             provenance,
-        );
+        )?;
+        return Ok(vec![(target, value)]);
     }
     let pairs = structured_assignment_names(&target, value, context.coordinates.keys())
         .expect("algorithm analysis proves structured assignment leaves");
     let value_span = value
         .span()
         .expect("algorithm analysis proves assignment-value provenance");
+    let mut updates = Vec::with_capacity(pairs.len());
     for (target_leaf, source_leaf) in pairs {
         let source_provenance =
             dae::DaeProvenance::generated(dae::DaeGeneration::DiscreteUpdate, value_span)?;
         let source = construction.expressions(|expressions| {
-            expressions
-                .at(source_provenance)
-                .coordinate(context.coordinates[&source_leaf].current())
+            match context.values.get(&source_leaf).copied() {
+                Some(value) => Ok(value),
+                None => expressions
+                    .at(source_provenance)
+                    .coordinate(context.coordinates[&source_leaf].current()),
+            }
         })?;
+        updates.push((target_leaf.clone(), source));
         lower_when_assignment(
             construction,
             discrete_values,
@@ -85,7 +129,24 @@ pub(super) fn lower_algorithm_assignment<'dae>(
             provenance,
         )?;
     }
-    Ok(())
+    Ok(updates)
+}
+
+fn algorithm_assignment_base<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    context: AlgorithmStatementContext<'_, '_, 'dae>,
+    target: &VarName,
+    coordinate: Coordinate<'dae>,
+    provenance: dae::DaeProvenance,
+    span: Span,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if let Some(value) = context.values.get(target).copied() {
+        return Ok(value);
+    }
+    let previous = coordinate
+        .previous(span)
+        .expect("event analysis accepts only historical discrete tensor targets");
+    construction.expressions(|expressions| expressions.at(provenance).coordinate(previous))
 }
 
 pub(super) fn lower_algorithm_function_call<'dae>(
@@ -94,7 +155,7 @@ pub(super) fn lower_algorithm_function_call<'dae>(
     discrete_owner: Option<DiscreteValueOwnerHandle>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
     call: AlgorithmFunctionCall<'_>,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
     let guard = statement_guard(construction, context)?;
     let function_reference =
         rumoca_core::Reference::from_component_reference(call.component.clone());
@@ -103,13 +164,14 @@ pub(super) fn lower_algorithm_function_call<'dae>(
         call.arguments,
         context.functions.shapes.model_values(),
         call.span,
-    );
+    )?;
     let arguments = call
         .arguments
         .iter()
         .map(|argument| lower_algorithm_expression(construction, context, argument))
         .collect::<Result<Vec<_>, _>>()?;
     let provenance = dae::DaeProvenance::source(call.span)?;
+    let mut updates = Vec::new();
     for (ordinal, output) in call.outputs.iter().enumerate() {
         let Some(output) = output else {
             continue;
@@ -119,6 +181,7 @@ pub(super) fn lower_algorithm_function_call<'dae>(
                 .at(provenance)
                 .call(function, ordinal, arguments.iter().copied())
         })?;
+        updates.push((output.to_var_name(), value));
         lower_when_assignment(
             construction,
             discrete_values,
@@ -129,7 +192,73 @@ pub(super) fn lower_algorithm_function_call<'dae>(
             provenance,
         )?;
     }
-    Ok(())
+    Ok(updates)
+}
+
+pub(super) fn lower_algorithm_tensor_loop<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    discrete_owner: Option<DiscreteValueOwnerHandle>,
+    context: AlgorithmStatementContext<'_, '_, 'dae>,
+    plan: &ModelEventTensorLoopPlan,
+    statements: &[rumoca_core::Statement],
+    span: Span,
+) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
+    let owner = dae::DaeProvenance::source(span)?;
+    let domain = construction.domains(|domains| domains.structured(plan.domain.clone(), owner))?;
+    let mut binders = HashMap::with_capacity(plan.binder_spans.len());
+    for (ordinal, (binder, binder_span)) in plan
+        .domain
+        .binders
+        .iter()
+        .zip(&plan.binder_spans)
+        .enumerate()
+    {
+        let provenance = dae::DaeProvenance::source(*binder_span)?;
+        let id = construction.domains(|domains| domains.binder(domain, ordinal, provenance))?;
+        binders.insert(VarName::new(&binder.display_name), id);
+    }
+    let guard = statement_guard(construction, context)?;
+    let mut updates = Vec::with_capacity(plan.targets.len());
+    let mut loop_values = context.values.clone();
+    for (target, statement) in plan.targets.iter().zip(statements) {
+        let rumoca_core::Statement::Assignment {
+            value,
+            span: assignment_span,
+            ..
+        } = statement
+        else {
+            unreachable!("event analysis proves tensor-loop assignments")
+        };
+        let body = lower_scoped_model_algorithm_expression(
+            construction,
+            context.coordinates,
+            context.functions,
+            &loop_values,
+            guard.owner_clock,
+            &binders,
+            value,
+        )?;
+        let value_span = value
+            .span()
+            .expect("event analysis proves tensor-loop value provenance");
+        let value_provenance = dae::DaeProvenance::source(value_span)?;
+        let tensor = construction.expressions(|expressions| {
+            expressions.at(value_provenance).comprehension(domain, body)
+        })?;
+        lower_when_assignment(
+            construction,
+            discrete_values,
+            discrete_owner,
+            context.coordinates[target],
+            guard,
+            tensor,
+            dae::DaeProvenance::source(*assignment_span)?,
+        )?;
+        loop_values.insert(target.clone(), tensor);
+        updates.push((target.clone(), tensor));
+    }
+    Ok(updates)
 }
 
 fn lower_algorithm_expression<'dae>(
@@ -138,20 +267,20 @@ fn lower_algorithm_expression<'dae>(
     expression: &Expression,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     match context.parent.and_then(|guard| guard.owner_clock) {
-        Some(clock) => lower_clocked_expression(
+        Some(clock) => lower_clocked_model_algorithm_expression(
             construction,
             context.coordinates,
             context.functions,
+            context.values,
             clock,
             expression,
-            None,
         ),
-        None => lower_expression(
+        None => lower_model_algorithm_expression(
             construction,
             context.coordinates,
             context.functions,
+            context.values,
             expression,
-            None,
         ),
     }
 }
@@ -165,7 +294,9 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, value, span } => {
-                let target = comp.to_var_name();
+                let target = rumoca_core::component_ref_to_base_reference(comp)
+                    .var_name()
+                    .clone();
                 if let Some(&coordinate) = coordinates.get(&target) {
                     own_clocked_coordinate(construction, clock, coordinate, *span)?;
                     continue;

@@ -9,6 +9,7 @@ use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 mod clocks;
+mod continuous_tensor;
 mod events;
 mod initial_discrete;
 mod initial_parameters;
@@ -611,6 +612,18 @@ fn lower_continuous_family<'dae>(
     let domain = view
         .domain(family.domain())
         .expect("checked family domain resolves");
+    if let Some(group) =
+        continuous_tensor::lower_explicit_tensor_derivative_family(context, row, family)?
+    {
+        row = checked_ordinal_add(
+            row,
+            group.rows,
+            "continuous row ordinal overflow",
+            family.provenance().span(),
+        )?;
+        output.derivative.push_tensor(group);
+        return Ok(row);
+    }
     if family.scalar_view() == ComprehensionScalarView::RowMajorProjection
         && family.bodies().len() == 1
     {
@@ -954,6 +967,37 @@ fn contiguous_state_output<'dae>(
         ) {
             return Err(LowerError::contract(
                 "implicit derivative vector does not occupy contiguous Solve state slots",
+                span,
+            ));
+        }
+    }
+    Ok(output_start)
+}
+
+fn contiguous_state_output_range<'dae>(
+    layout: &LoweredLayout<'dae>,
+    state: dae::StateId<'dae>,
+    first_scalar: usize,
+    rows: usize,
+    span: Span,
+) -> Result<usize, LowerError> {
+    let output_start = match variable_scalar_slot(layout, state.index(), first_scalar, span)? {
+        solve::ScalarSlot::Y { index, .. } => index,
+        _ => unreachable!("state declarations are Y slots"),
+    };
+    for offset in 1..rows {
+        let scalar = first_scalar
+            .checked_add(offset)
+            .ok_or_else(|| LowerError::contract("tensor derivative scalar overflow", span))?;
+        let expected = output_start
+            .checked_add(offset)
+            .ok_or_else(|| LowerError::contract("tensor derivative slot overflow", span))?;
+        if !matches!(
+            variable_scalar_slot(layout, state.index(), scalar, span)?,
+            solve::ScalarSlot::Y { index, .. } if index == expected
+        ) {
+            return Err(LowerError::contract(
+                "tensor derivative range does not occupy contiguous Solve state slots",
                 span,
             ));
         }

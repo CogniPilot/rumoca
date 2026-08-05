@@ -17,17 +17,40 @@ pub(super) fn lower_record_equation<'dae>(
     else {
         unreachable!("record equation certificate has a subtraction residual")
     };
-    let record = lower_expression(construction, coordinates, functions, rhs, None)?;
+    let aggregate = plan
+        .fields
+        .iter()
+        .any(|field| {
+            matches!(
+                field.value,
+                RecordEquationFieldValue::AggregateProjection(_)
+            )
+        })
+        .then(|| lower_expression(construction, coordinates, functions, rhs, None))
+        .transpose()?;
     let generated =
         dae::DaeProvenance::generated(dae::DaeGeneration::RecordEquationProjection, equation.span)?;
     for field in &plan.fields {
         let lhs = construction.expressions(|expressions| {
             expressions
                 .at(generated)
-                .coordinate(coordinates[&field.coordinate].current())
+                .coordinate(coordinates[&field.target].current())
         })?;
-        let rhs = construction
-            .expressions(|expressions| expressions.at(generated).field(record, field.ordinal))?;
+        let rhs = match &field.value {
+            RecordEquationFieldValue::AggregateProjection(projection) => lower_record_projection(
+                construction,
+                aggregate.expect("an aggregate record equation lowers one aggregate value"),
+                projection,
+                generated,
+            )?,
+            RecordEquationFieldValue::Coordinate(source) => {
+                construction.expressions(|expressions| {
+                    expressions
+                        .at(generated)
+                        .coordinate(coordinates[source].current())
+                })?
+            }
+        };
         let residual = construction.expressions(|expressions| {
             expressions
                 .at(generated)
@@ -40,4 +63,17 @@ pub(super) fn lower_record_equation<'dae>(
         }
     }
     Ok(())
+}
+
+fn lower_record_projection<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    mut value: dae::ExprId<'dae>,
+    projection: &[usize],
+    generated: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    for ordinal in projection {
+        value = construction
+            .expressions(|expressions| expressions.at(generated).field(value, *ordinal))?;
+    }
+    Ok(value)
 }

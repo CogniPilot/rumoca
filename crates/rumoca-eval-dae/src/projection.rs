@@ -139,18 +139,7 @@ where
             }
             dae::ExpressionOperation::FunctionFoldParameter { .. } => Ok(()),
             dae::ExpressionOperation::FunctionFoldOutput { fold, .. } => {
-                let fold = self
-                    .view
-                    .function_fold(fold)
-                    .expect("checked function fold identity resolves");
-                for expression in fold
-                    .initial_values()
-                    .rhs_iter()
-                    .chain(fold.update_values().rhs_iter())
-                {
-                    self.all_scalars(expression)?;
-                }
-                Ok(())
+                self.function_fold_output(fold)
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 match self.indexed_base_scalar(
@@ -197,6 +186,24 @@ where
                 self.expression(source, scalar_index)
             }
         }
+    }
+
+    fn function_fold_output(
+        &mut self,
+        fold: dae::FunctionFoldId<'dae>,
+    ) -> Result<(), ProjectionError> {
+        let fold = self
+            .view
+            .function_fold(fold)
+            .expect("checked function fold identity resolves");
+        for expression in fold
+            .initial_values()
+            .rhs_iter()
+            .chain(fold.update_values().rhs_iter())
+        {
+            self.all_scalars(expression)?;
+        }
+        Ok(())
     }
 
     fn string_conversion_dependencies(
@@ -316,6 +323,14 @@ where
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.record_field(definition.rhs(), field, scalar_index)
             }
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
+                parameter,
+            )) => self.function_parameter_field(
+                parameter,
+                field,
+                scalar_index,
+                node.provenance().span(),
+            ),
             dae::ExpressionOperation::Conditional(operands) => {
                 let fallback = operands
                     .get(operands.len() - 1)
@@ -337,10 +352,132 @@ where
                 }
                 self.record_field(fallback, field, scalar_index)
             }
+            dae::ExpressionOperation::Array(elements) => {
+                self.record_array_field(elements, field, scalar_index)
+            }
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                self.record_comprehension_field(domain, body, field, scalar_index)
+            }
+            dae::ExpressionOperation::Index { base, subscripts } => {
+                self.indexed_record_field(expression, base, subscripts, field, scalar_index)
+            }
+            dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } => {
+                self.record_field(base, field, scalar_index)?;
+                self.all_record_field_scalars(value, field)?;
+                self.subscripts(subscripts)
+            }
             _ => Err(ProjectionError::UnsupportedRecordOperation {
                 span: node.provenance().span(),
             }),
         }
+    }
+
+    fn function_parameter_field(
+        &mut self,
+        parameter: dae::FunctionParameterId<'dae>,
+        field: usize,
+        scalar_index: usize,
+        span: Span,
+    ) -> Result<(), ProjectionError> {
+        let Some((function, arguments)) = self.function_arguments.pop() else {
+            return Err(ProjectionError::FunctionRecursion { span });
+        };
+        let argument = (function == parameter.function())
+            .then(|| arguments.get(parameter.ordinal() as usize).copied())
+            .flatten();
+        let projected = argument
+            .ok_or(ProjectionError::FunctionRecursion { span })
+            .and_then(|argument| self.record_field(argument, field, scalar_index));
+        self.function_arguments.push((function, arguments));
+        projected
+    }
+
+    fn record_array_field(
+        &mut self,
+        elements: dae::ExpressionOperands<'dae>,
+        field: usize,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let first = elements.get(0).expect("checked record array is nonempty");
+        let element_count = self.record_field_scalar_count(first, field);
+        let element = elements
+            .get(scalar_index / element_count)
+            .expect("checked record field scalar selects an array element");
+        self.record_field(element, field, scalar_index % element_count)
+    }
+
+    fn record_comprehension_field(
+        &mut self,
+        domain: dae::DomainId<'dae>,
+        body: dae::ExprId<'dae>,
+        field: usize,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let body_count = self.record_field_scalar_count(body, field);
+        let point_index = scalar_index / body_count;
+        let point = self
+            .view
+            .domain(domain)
+            .expect("checked comprehension domain resolves")
+            .structured()
+            .index_tuple_at(point_index)
+            .expect("checked comprehension domain remains valid")
+            .expect("checked record field scalar selects its domain");
+        self.domain_points.push((domain, point));
+        let result = self.record_field(body, field, scalar_index % body_count);
+        self.domain_points.pop();
+        result
+    }
+
+    fn indexed_record_field(
+        &mut self,
+        indexed: dae::ExprId<'dae>,
+        base: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        field: usize,
+        scalar_index: usize,
+    ) -> Result<(), ProjectionError> {
+        let field_width = self.record_field_width(indexed, field);
+        let record_index = scalar_index / field_width;
+        let field_index = scalar_index % field_width;
+        let base_record = self.indexed_base_scalar(
+            base,
+            subscripts,
+            self.node(indexed).value_type().dimensions(),
+            record_index,
+        )?;
+        self.record_field(base, field, base_record * field_width + field_index)
+    }
+
+    fn all_record_field_scalars(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        field: usize,
+    ) -> Result<(), ProjectionError> {
+        for scalar in 0..self.record_field_scalar_count(expression, field) {
+            self.record_field(expression, field, scalar)?;
+        }
+        Ok(())
+    }
+
+    fn record_field_scalar_count(&self, expression: dae::ExprId<'dae>, field: usize) -> usize {
+        let layout = self.record_layout(expression, field);
+        layout.outer_count() * layout.field_width()
+    }
+
+    fn record_field_width(&self, expression: dae::ExprId<'dae>, field: usize) -> usize {
+        self.record_layout(expression, field).field_width()
+    }
+
+    fn record_layout(&self, expression: dae::ExprId<'dae>, field: usize) -> dae::RecordFieldLayout {
+        let node = self.node(expression);
+        self.view
+            .record_field_layout(node.value_type_id(), field)
+            .expect("checked record projection has a finite field layout")
     }
 
     fn conditional(

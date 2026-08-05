@@ -3,22 +3,6 @@
 
 use super::*;
 
-pub(super) fn reference_source_package_def_id_from_index(
-    reference: &rumoca_core::Reference,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> Option<rumoca_core::DefId> {
-    if let Some(source_package_def_id) = reference
-        .target_def_id()
-        .and_then(|def_id| class_index.parent_def_id(def_id))
-    {
-        return Some(source_package_def_id);
-    }
-    let package_name = enclosing_scope(reference.as_str())?;
-    class_index
-        .get_by_qualified_name(package_name)
-        .and_then(|class_def| class_def.def_id)
-}
-
 pub(super) fn resolve_override_member_name(
     reference: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,

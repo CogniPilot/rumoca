@@ -385,6 +385,54 @@ fn when_discrete_real_lowers_to_condition_owned_b1b_residual() {
 }
 
 #[test]
+fn array_discrete_real_binding_keeps_one_target_shaped_b1b_owner() {
+    let source = TestSource::new("model M discrete Real z[3] = {1.0, 2.0, 3.0}; end M;");
+    let declaration_span = source.span("discrete Real z[3]", 0);
+    let binding_span = source.span("{1.0, 2.0, 3.0}", 0);
+    let mut model = test_model();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "z",
+        "discrete Real z[3]",
+        8,
+        vec![3],
+        false,
+    );
+    let variable = model.variables.get_mut(&VarName::new("z")).unwrap();
+    variable.variability = Variability::Discrete(Default::default());
+    variable.binding = Some(Expression::Array {
+        elements: [1.0, 2.0, 3.0]
+            .into_iter()
+            .map(|value| Expression::Literal {
+                value: Literal::Real(value),
+                span: binding_span,
+            })
+            .collect(),
+        is_matrix: false,
+        span: binding_span,
+    });
+    variable.source_span = declaration_span;
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_real_equation_count(), 1);
+        let equation = view.discrete_real_equation(0).unwrap();
+        assert!(matches!(
+            equation.activation(),
+            dae::DiscreteRealActivation::Always
+        ));
+        assert_eq!(
+            view.expression(equation.residual())
+                .unwrap()
+                .value_type()
+                .dimensions(),
+            &[3]
+        );
+    });
+}
+
+#[test]
 fn b1c_topology_orders_producers_before_declaration_order_consumers() {
     let source =
         TestSource::new("model M discrete Boolean a = z; discrete Boolean z = true; end M;");

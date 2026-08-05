@@ -67,6 +67,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.record_field(definition.rhs(), field, scalar, span)
             }
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
+                parameter,
+            )) => self.function_parameter_record_field(parameter, field, scalar, span),
             dae::ExpressionOperation::Conditional(operands) => {
                 let fallback = operands
                     .get(operands.len() - 1)
@@ -91,11 +94,160 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 }
                 Ok(selected)
             }
+            dae::ExpressionOperation::Array(elements) => {
+                let first = elements.get(0).expect("checked record array is nonempty");
+                let element_count = self.record_field_scalar_count(first, field);
+                let element = elements
+                    .get(scalar / element_count)
+                    .expect("checked record field scalar selects an array element");
+                self.record_field(element, field, scalar % element_count, span)
+            }
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                self.record_comprehension_field(domain, body, field, scalar, span)
+            }
+            dae::ExpressionOperation::Index { base, subscripts } => {
+                self.indexed_record_field(expression, base, subscripts, field, scalar, span)
+            }
+            dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } => self.record_array_update_field(
+                expression, base, value, subscripts, field, scalar, span,
+            ),
             _ => Err(LowerError::contract(
                 "record field has no checked aggregate definition",
                 span,
             )),
         }
+    }
+
+    fn function_parameter_record_field(
+        &mut self,
+        parameter: dae::FunctionParameterId<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let Some((function, arguments)) = self.function_arguments.pop() else {
+            return Err(LowerError::contract(
+                "record function parameter escaped its checked call",
+                span,
+            ));
+        };
+        let argument = (function == parameter.function())
+            .then(|| arguments.get(parameter.ordinal() as usize).copied())
+            .flatten();
+        let lowered = argument
+            .ok_or_else(|| {
+                LowerError::contract("record function parameter has no checked argument", span)
+            })
+            .and_then(|argument| self.record_field(argument, field, scalar, span));
+        self.function_arguments.push((function, arguments));
+        lowered
+    }
+
+    fn record_comprehension_field(
+        &mut self,
+        domain: dae::DomainId<'dae>,
+        body: dae::ExprId<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let body_count = self.record_field_scalar_count(body, field);
+        let point = scalar / body_count;
+        let values = self
+            .view
+            .domain(domain)
+            .expect("checked comprehension domain resolves")
+            .structured()
+            .index_tuple_at(point)
+            .expect("checked comprehension domain remains valid")
+            .expect("checked record field scalar selects a domain point");
+        self.domain_points.push((domain, values));
+        let result = self.record_field(body, field, scalar % body_count, span);
+        self.domain_points.pop();
+        result
+    }
+
+    fn indexed_record_field(
+        &mut self,
+        indexed: dae::ExprId<'dae>,
+        base: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let field_width = self.record_layout(indexed, field).field_width();
+        let record_scalar = scalar / field_width;
+        let field_scalar = scalar % field_width;
+        let selected = ScalarSelector::from_points(self.view, &self.domain_points)
+            .indexed_base_scalar(
+                base,
+                subscripts,
+                self.node(indexed).value_type().dimensions(),
+                record_scalar,
+            )?;
+        self.record_field(base, field, selected * field_width + field_scalar, span)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_array_update_field(
+        &mut self,
+        updated: dae::ExprId<'dae>,
+        base: dae::ExprId<'dae>,
+        value: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let field_width = self.record_layout(updated, field).field_width();
+        let base_record = scalar / field_width;
+        let field_scalar = scalar % field_width;
+        let selected = ScalarSelector::from_points(self.view, &self.domain_points)
+            .array_update_value_scalar(
+                base,
+                subscripts,
+                self.node(value).value_type().dimensions(),
+                base_record,
+            );
+        match selected {
+            Ok(Some(value_record)) => self.record_field(
+                value,
+                field,
+                value_record * field_width + field_scalar,
+                span,
+            ),
+            Ok(None) => self.record_field(base, field, scalar, span),
+            Err(LowerError::NonComputable { reason, .. })
+                if reason == "array subscript is not compile-time computable" =>
+            {
+                self.dynamic_record_field_array_update(
+                    base,
+                    value,
+                    subscripts,
+                    field,
+                    base_record,
+                    field_scalar,
+                    span,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn record_field_scalar_count(&self, expression: dae::ExprId<'dae>, field: usize) -> usize {
+        let layout = self.record_layout(expression, field);
+        layout.outer_count() * layout.field_width()
+    }
+
+    fn record_layout(&self, expression: dae::ExprId<'dae>, field: usize) -> dae::RecordFieldLayout {
+        self.view
+            .record_field_layout(self.node(expression).value_type_id(), field)
+            .expect("checked record projection has a finite field layout")
     }
 
     pub(super) fn function_fold_output(
@@ -241,9 +393,28 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
+        if function_has_call_scoped_actions(definition.statements()) {
+            return Err(LowerError::non_computable(
+                format!(
+                    "function `{}` owns call-scoped assertions, which Solve cannot yet schedule",
+                    definition.name()
+                ),
+                span,
+            ));
+        }
         definition
             .result_values()
             .rhs(output as usize)
             .ok_or_else(|| LowerError::contract("function result ordinal is out of range", span))
     }
+}
+
+fn function_has_call_scoped_actions(statements: dae::FunctionStatements<'_>) -> bool {
+    statements.into_iter().any(|statement| match statement {
+        dae::FunctionStatementView::Assignment { .. } => false,
+        dae::FunctionStatementView::Assertion { .. } => true,
+        dae::FunctionStatementView::For { statements, .. } => {
+            function_has_call_scoped_actions(statements)
+        }
+    })
 }

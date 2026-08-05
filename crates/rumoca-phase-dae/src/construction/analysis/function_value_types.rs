@@ -12,16 +12,6 @@ pub(super) fn validate_function_value_type(
     if value.type_class != Some(rumoca_core::ClassType::Record) {
         return Err(unsupported_type(value, function));
     }
-    if !value.dimensions().is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "function value type",
-            format!(
-                "`{}.{}` is an array of records; aggregate arrays require a compact typed owner",
-                function.name, value.name
-            ),
-            value.span,
-        ));
-    }
     let type_def_id = value.type_def_id.ok_or_else(|| {
         ToDaeError::unsupported_flat(
             "function value type",
@@ -94,7 +84,7 @@ fn unsupported_type(
 pub(in crate::construction) fn record_field_projections<'flat>(
     value: &rumoca_core::FunctionParam,
     flat: &'flat flat::Model,
-) -> Vec<(VarName, &'flat rumoca_core::FunctionParam)> {
+) -> Vec<(VarName, VarName, &'flat rumoca_core::FunctionParam)> {
     let mut projections = Vec::new();
     collect_record_field_projections(value, value.name.as_str(), flat, &mut projections);
     projections
@@ -104,7 +94,7 @@ fn collect_record_field_projections<'flat>(
     value: &rumoca_core::FunctionParam,
     path: &str,
     flat: &'flat flat::Model,
-    projections: &mut Vec<(VarName, &'flat rumoca_core::FunctionParam)>,
+    projections: &mut Vec<(VarName, VarName, &'flat rumoca_core::FunctionParam)>,
 ) {
     if value.type_class != Some(rumoca_core::ClassType::Record) {
         return;
@@ -121,7 +111,7 @@ fn collect_record_field_projections<'flat>(
     };
     for field in &constructor.inputs {
         let field_path = format!("{path}.{}", field.name);
-        projections.push((VarName::new(&field_path), field));
+        projections.push((VarName::new(&field_path), VarName::new(path), field));
         collect_record_field_projections(field, &field_path, flat, projections);
     }
 }

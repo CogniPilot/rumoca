@@ -77,7 +77,9 @@
 //!   above silently inert. CI restores the predecessor before the gate runs.
 
 use super::*;
-use rumoca_test_msl::msl_tools::band_table::{self, BandTable, BandTableRunScope, BandTransitions};
+use rumoca_test_msl::msl_tools::band_table::{
+    self, BandTable, BandTableRunScope, BandTransitions, ExitReason,
+};
 use std::sync::OnceLock;
 
 /// Fixed prefix every "no parity reading" line starts with. Operators and the
@@ -437,10 +439,21 @@ impl MslParityMeasurement {
     /// The aggregate band count cannot catch this: one model leaving and another
     /// entering leaves `agreement_high` flat while the population behind the
     /// number changes. A strict-high model that stops being compared is a
-    /// regression in the only band the project quotes, so it fails the run by
-    /// name rather than being visible only to a reader diffing two artifacts.
+    /// regression unless it moved to a reviewed pointwise-oracle boundary, so
+    /// actionable departures fail the run by name rather than being visible
+    /// only to a reader diffing two artifacts.
     pub(crate) fn departed_strict_high_reason(&self) -> Option<String> {
-        let departed = self.cohort()?.departed_strict_high();
+        let departed = self
+            .cohort()?
+            .departed_strict_high()
+            .into_iter()
+            .filter(|left| {
+                !matches!(
+                    left.exit_reason,
+                    ExitReason::Excluded | ExitReason::TraceNonidentifiable
+                )
+            })
+            .collect::<Vec<_>>();
         if departed.is_empty() {
             return None;
         }
@@ -746,6 +759,8 @@ mod tests {
             models_compared,
             missing_trace_models: 0,
             skipped_models: 0,
+            policy_excluded_models: 0,
+            trace_nonidentifiable_models: 0,
             agreement_high,
             agreement_high_percent: None,
             agreement_minor: models_compared - agreement_high,

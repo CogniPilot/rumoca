@@ -11,13 +11,13 @@ indexmap = { workspace = true }
 minijinja = { workspace = true }
 miette = { workspace = true }
 rumoca-core = { workspace = true }
-rumoca-eval-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+rumoca-phase-dae = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

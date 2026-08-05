@@ -5,8 +5,8 @@
 //! this covers: its body is a nested conditional over the phase count `m`, one
 //! arm of which is an array constructor with an iterator whose range is written
 //! over `m`. Before the fix `ToDae` rejected the whole function with ED019
-//! `function conditional` — "requires direct value assignments in every checked
-//! branch" — because the checked-branch rule reads every arm as a runtime
+//! `function conditional` — "requires assignments or nested conditionals in
+//! every checked branch" — because the checked-branch rule reads every arm as a runtime
 //! branch, and it had no shape rule for the constructor at all.
 //!
 //! A specialization that proves `m` proves which arm MLS §11.5 executes, so the
@@ -181,7 +181,7 @@ end UnprovenBranch;
         .expect_err("a runtime branch still owns only direct value assignments");
     let rendered = format!("{error:?}");
     assert!(
-        rendered.contains("requires direct value assignments in every checked branch"),
+        rendered.contains("requires assignments or nested conditionals in every checked branch"),
         "unexpected diagnostic: {rendered}"
     );
 }
@@ -417,7 +417,7 @@ function ramp
 protected
   Integer n;
 algorithm
-  n := 3;
+  n := integer(u);
   y := {u*k for k in 1:n};
 end ramp;
 model UnprovenComprehension
@@ -432,8 +432,8 @@ end UnprovenComprehension;
         .expect_err("a constructor extent this scope does not settle has no checked domain");
     let rendered = format!("{error:?}");
     // The rejection must name the unsettled *bound*, not merely the construct:
-    // `n` is reassigned by the body, so MLS §12.4.4 gives it no entry value this
-    // specialization can read.
+    // `n` depends on the runtime input value, so this specialization cannot
+    // prove a compact constructor domain from the declared output shape alone.
     assert!(
         rendered.contains("range end is not an exact Integer this function specialization settles"),
         "unexpected diagnostic: {rendered}"

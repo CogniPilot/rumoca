@@ -565,6 +565,62 @@ fn record_array_param_lowering_rewrites_indexed_field_access() {
 }
 
 #[test]
+fn record_param_lowering_preserves_index_on_array_field() {
+    let mut flat = flat::Model::new();
+    flat.add_function(record_constructor());
+
+    let mut function = function_with_record_input();
+    function.name = VarName::new("Pkg.firstB");
+    function.body[0] = assignment_to(
+        "y",
+        OUTPUT_DEF_ID,
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "r.b",
+                rumoca_core::ComponentReference::construct(
+                    false,
+                    test_span(),
+                    vec![
+                        rumoca_core::ComponentRefPart {
+                            ident: "r".to_string(),
+                            span: test_span(),
+                            subs: Vec::new(),
+                            def_id: RECORD_PARAM_DEF_ID,
+                        },
+                        rumoca_core::ComponentRefPart {
+                            ident: "b".to_string(),
+                            span: test_span(),
+                            subs: Vec::new(),
+                            def_id: FIELD_B_DEF_ID,
+                        },
+                    ],
+                )
+                .expect("record field reference is resolved"),
+            ),
+            subscripts: vec![rumoca_core::Subscript::index(1, test_span())],
+            span: test_span(),
+        },
+    );
+    flat.add_function(function);
+
+    lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+    let function = flat
+        .functions
+        .get(&VarName::new("Pkg.firstB"))
+        .expect("function remains");
+    let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
+        panic!("expected assignment");
+    };
+    assert!(matches!(
+        value,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "r_b"
+                && matches!(subscripts.as_slice(), [rumoca_core::Subscript::Index { value: 1, .. }])
+    ));
+}
+
+#[test]
 fn record_array_param_lowering_rewrites_size_of_original_record_param() {
     let mut flat = flat::Model::new();
     flat.add_function(record_constructor());
@@ -813,6 +869,55 @@ fn nested_record_param_call_uses_decomposed_caller_locals() {
 }
 
 #[test]
+fn record_local_call_argument_remains_structural_field_access() {
+    let mut flat = flat::Model::new();
+    flat.add_function(record_constructor());
+    flat.add_function(function_with_record_input());
+
+    let mut caller = rumoca_core::Function::new("Pkg.caller", test_span());
+    caller.add_local(
+        crate::test_support::aggregate_param("localRecord", "Pkg.Record", Vec::new(), test_span())
+            .with_def_id(RECORD_VALUE_DEF_ID)
+            .with_type_class(ClassType::Record)
+            .with_type_def_id(RECORD_DEF_ID),
+    );
+    caller.add_output(
+        crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+    );
+    caller.body.push(assignment_to(
+        "y",
+        OUTPUT_DEF_ID,
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Pkg.f"),
+            args: vec![var_ref("localRecord", RECORD_VALUE_DEF_ID)],
+            is_constructor: false,
+            span: test_span(),
+        },
+    ));
+    flat.add_function(caller);
+
+    lower_record_function_params(&mut flat).expect("record parameter lowering should pass");
+
+    let caller = &flat.functions[&VarName::new("Pkg.caller")];
+    let rumoca_core::Statement::Assignment { value, .. } = &caller.body[0] else {
+        panic!("expected assignment");
+    };
+    let rumoca_core::Expression::FunctionCall { args, .. } = value else {
+        panic!("expected function call");
+    };
+    assert_eq!(args.len(), 2);
+    for (argument, expected_field) in args.iter().zip(["a", "b"]) {
+        assert!(matches!(
+            argument,
+            rumoca_core::Expression::FieldAccess { base, field, .. }
+                if field == expected_field
+                    && matches!(base.as_ref(), rumoca_core::Expression::VarRef { name, .. }
+                        if name.as_str() == "localRecord")
+        ));
+    }
+}
+
+#[test]
 fn nested_record_param_with_qualified_type_is_decomposed_to_fixpoint() {
     let mut flat = flat::Model::new();
 
@@ -863,6 +968,14 @@ fn nested_record_param_with_qualified_type_is_decomposed_to_fixpoint() {
             .inputs
             .iter()
             .all(|input| input.type_class.is_none())
+    );
+    let outer_constructor = &flat.functions[&VarName::new("Pkg.Outer")];
+    assert_eq!(outer_constructor.inputs.len(), 1);
+    assert_eq!(outer_constructor.inputs[0].name, "inner");
+    assert_eq!(
+        outer_constructor.inputs[0].type_class,
+        Some(ClassType::Record),
+        "constructors retain the compact nested aggregate layout"
     );
 }
 

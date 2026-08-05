@@ -124,19 +124,23 @@ fn check_expr(&mut self, expr: &ResolvedExpr) -> TypedExpr {
 
 **Exceptions:** Generated code (parser files) and cohesive modules are exempt.
 
-### Module Decomposition (No `include!` Complexity Bypass)
+### Module Decomposition (No Source-Path Complexity Bypass)
 
-`include!(...)` MUST NOT be used as a workaround to bypass max-file-length or complexity checks.
+`include!(...)` and `#[path = "..."]` MUST NOT be used as workarounds to bypass
+max-file-length or complexity checks in production modules.
 
 Required approach:
 - Split large code into real Rust modules (`mod ...;`) with explicit boundaries.
+- Declare external submodules at the top of their owning source file, before
+  imports and implementation items.
 - Keep each module responsible for one concern so clippy/file-size checks remain meaningful.
 
 Allowed exception:
 - Generated code include patterns are allowed when generation tooling requires it.
 
 Maintenance rule:
-- Existing `include!(...)` usage in touched areas should be treated as cleanup debt and removed during maintainability work.
+- Existing source-path bypasses in touched areas should be treated as cleanup
+  debt and removed during maintainability work.
 
 ### Files Per Directory (Guideline)
 

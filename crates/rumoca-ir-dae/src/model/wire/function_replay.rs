@@ -422,7 +422,10 @@ fn push_fold_operations<'wire>(
             FunctionStatementInput::Assignment { .. } => {
                 operations.push(ReplayOp::Assign(assignment(statement)?));
             }
-            FunctionStatementInput::Assertion { .. } | FunctionStatementInput::For { .. } => {
+            FunctionStatementInput::Assertion { .. } => {
+                operations.push(ReplayOp::Assert(assertion(statement)?));
+            }
+            FunctionStatementInput::For { .. } => {
                 return Err(malformed("functions.statements.nesting"));
             }
         }
@@ -614,7 +617,9 @@ fn apply_assertion<'dae>(
         ReplayCapability::Body(body) => {
             functions.assertion(body, condition, message, input.provenance)
         }
-        ReplayCapability::Fold(_) => Err(malformed("functions.statements.nesting")),
+        ReplayCapability::Fold(loop_body) => {
+            functions.assertion_loop(loop_body, condition, message, input.provenance)
+        }
         ReplayCapability::External(_) => Err(malformed("functions.external")),
     })
 }

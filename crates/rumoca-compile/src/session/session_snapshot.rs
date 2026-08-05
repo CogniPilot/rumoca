@@ -83,6 +83,7 @@ impl Session {
             fresh_session_snapshot_caches();
         Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents,
             detached_document_uris,
             detached_source_root_documents,
@@ -279,6 +280,7 @@ impl Session {
             fresh_session_snapshot_caches();
         let snapshot = Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents: self.documents.clone(),
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: self.detached_source_root_documents.clone(),
@@ -367,6 +369,7 @@ impl Session {
             fresh_session_snapshot_caches();
         let snapshot = Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents: detached_documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),
@@ -434,6 +437,7 @@ impl Session {
             fresh_session_snapshot_caches();
         let snapshot = Session {
             instantiation_options: self.instantiation_options.clone(),
+            structural_override_sources: self.structural_override_sources.clone(),
             documents,
             detached_document_uris: self.detached_document_uris.clone(),
             detached_source_root_documents: IndexMap::new(),

@@ -194,7 +194,9 @@ where
             .view
             .expression(base)
             .expect("checked record base resolves");
-        let (start, count) = record_field_bounds(self.view, base_node.value_type_id(), field)
+        let layout = self
+            .view
+            .record_field_layout(base_node.value_type_id(), field)
             .ok_or_else(|| {
                 failure(
                     NumericEvaluationErrorKind::UnsupportedOperation,
@@ -202,16 +204,23 @@ where
                     span,
                 )
             })?;
-        self.expression(base)?
-            .get(start..start + count)
-            .ok_or_else(|| {
-                failure(
-                    NumericEvaluationErrorKind::UnsupportedOperation,
-                    "record value does not match its checked field layout",
-                    span,
-                )
-            })
-            .map(<[f64]>::to_vec)
+        let value = self.expression(base)?;
+        let expected = layout
+            .outer_count()
+            .checked_mul(layout.record_width())
+            .ok_or_else(|| invalid_record_layout(span))?;
+        if value.len() != expected {
+            return Err(invalid_record_layout(span));
+        }
+        if layout.record_width() == 0 {
+            return Ok(Vec::new());
+        }
+        let mut projected = Vec::with_capacity(layout.outer_count() * layout.field_width());
+        for record in value.chunks_exact(layout.record_width()) {
+            let end = layout.field_offset() + layout.field_width();
+            projected.extend_from_slice(&record[layout.field_offset()..end]);
+        }
+        Ok(projected)
     }
 
     fn coordinate_value(
@@ -1297,31 +1306,12 @@ fn promoted_concatenation_value(
     unreachable!("checked concatenation operands cover the result")
 }
 
-fn value_type_scalar_count<'dae>(
-    view: dae::DaeView<'dae>,
-    value_type: dae::ValueTypeId<'dae>,
-) -> Option<usize> {
-    let ty = view.value_type(value_type)?;
-    if let Some(count) = ty.scalar_count() {
-        return Some(count);
-    }
-    (0..ty.record_field_count()).try_fold(0usize, |count, ordinal| {
-        let (_, field) = view.record_field(value_type, ordinal)?;
-        count.checked_add(value_type_scalar_count(view, field)?)
-    })
-}
-
-fn record_field_bounds<'dae>(
-    view: dae::DaeView<'dae>,
-    record: dae::ValueTypeId<'dae>,
-    field: usize,
-) -> Option<(usize, usize)> {
-    let (_, selected) = view.record_field(record, field)?;
-    let start = (0..field).try_fold(0usize, |offset, ordinal| {
-        let (_, value_type) = view.record_field(record, ordinal)?;
-        offset.checked_add(value_type_scalar_count(view, value_type)?)
-    })?;
-    Some((start, value_type_scalar_count(view, selected)?))
+fn invalid_record_layout(span: Span) -> NumericEvaluationError {
+    failure(
+        NumericEvaluationErrorKind::UnsupportedOperation,
+        "record value does not match its checked field layout",
+        span,
+    )
 }
 
 fn apply_quotient(

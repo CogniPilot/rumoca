@@ -488,6 +488,10 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
         "a policy exclusion must be recorded as one, so it is never read back as a \
          comparator failure"
     );
+    let summary = compute_trace_output_summary(&report);
+    assert_eq!(summary.skipped_models, 1);
+    assert_eq!(summary.policy_excluded_models, 1);
+    assert_eq!(summary.trace_nonidentifiable_models, 0);
 }
 
 #[test]

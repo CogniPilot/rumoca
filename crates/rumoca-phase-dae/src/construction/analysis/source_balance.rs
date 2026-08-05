@@ -1,14 +1,27 @@
 use super::*;
 
-pub(super) fn source_balance(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    assigned_targets: &HashSet<VarName>,
-    clock_equation_rows: &HashSet<usize>,
-    record_equations: &HashMap<usize, RecordEquationPlan>,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
-) -> Result<BalanceDetail, ToDaeError> {
+pub(super) struct SourceBalanceInput<'scope> {
+    pub(super) flat: &'scope flat::Model,
+    pub(super) roles: &'scope HashMap<VarName, PlannedRole>,
+    pub(super) assigned_targets: &'scope HashSet<VarName>,
+    pub(super) excluded_equation_rows: &'scope HashSet<usize>,
+    pub(super) record_equations: &'scope HashMap<usize, RecordEquationPlan>,
+    pub(super) multi_output_equations: &'scope HashMap<usize, MultiOutputEquationPlan>,
+    pub(super) connection_ranks: &'scope HashMap<VarName, usize>,
+    pub(super) aggregate_connections: &'scope AggregateDiscreteConnections,
+}
+
+pub(super) fn source_balance(input: SourceBalanceInput<'_>) -> Result<BalanceDetail, ToDaeError> {
+    let SourceBalanceInput {
+        flat,
+        roles,
+        assigned_targets,
+        excluded_equation_rows,
+        record_equations,
+        multi_output_equations,
+        connection_ranks,
+        aggregate_connections,
+    } = input;
     let mut detail = BalanceDetail::default();
     for (name, role) in roles {
         let variable = &flat.variables[name];
@@ -32,7 +45,7 @@ pub(super) fn source_balance(
         }
     }
     for (row, equation) in flat.equations.iter().enumerate() {
-        if clock_equation_rows.contains(&row) {
+        if excluded_equation_rows.contains(&row) {
             continue;
         }
         match equation_partition(
@@ -44,7 +57,10 @@ pub(super) fn source_balance(
             aggregate_connections,
         )? {
             EquationPartition::Continuous => {
-                detail.continuous_equations += if let Some(plan) = record_equations.get(&row) {
+                detail.continuous_equations += if let Some(plan) = multi_output_equations.get(&row)
+                {
+                    multi_output_equation_scalar_count(flat, equation, plan)?
+                } else if let Some(plan) = record_equations.get(&row) {
                     record_equation_scalar_count(flat, equation, plan)?
                 } else {
                     equation.scalar_count
@@ -92,6 +108,27 @@ pub(super) fn source_balance(
     Ok(detail)
 }
 
+fn multi_output_equation_scalar_count(
+    flat: &flat::Model,
+    equation: &flat::Equation,
+    plan: &MultiOutputEquationPlan,
+) -> Result<usize, ToDaeError> {
+    plan.outputs
+        .iter()
+        .flatten()
+        .try_fold(0usize, |count, target| {
+            count
+                .checked_add(checked_shape_size(target, &flat.variables[target])?)
+                .ok_or_else(|| {
+                    ToDaeError::unsupported_flat(
+                        "multi-output equation",
+                        "receiving tuple scalar count overflowed",
+                        equation.span,
+                    )
+                })
+        })
+}
+
 fn add_algorithm_target(
     detail: &mut BalanceDetail,
     flat: &flat::Model,
@@ -124,8 +161,8 @@ fn record_equation_scalar_count(
     plan.fields.iter().try_fold(0usize, |count, field| {
         count
             .checked_add(checked_shape_size(
-                &field.coordinate,
-                &flat.variables[&field.coordinate],
+                &field.target,
+                &flat.variables[&field.target],
             )?)
             .ok_or_else(|| {
                 ToDaeError::unsupported_flat(

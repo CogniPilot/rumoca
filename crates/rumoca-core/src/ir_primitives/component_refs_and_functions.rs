@@ -895,6 +895,21 @@ pub fn resolve_record_constructor<'a>(
     {
         return Ok(*constructor);
     }
+    if exact.is_empty()
+        && let Some(first) = candidates.first().copied()
+        && candidates
+            .iter()
+            .copied()
+            .all(|candidate| same_record_layout(first, candidate))
+    {
+        return candidates
+            .into_iter()
+            .min_by_key(|function| function.name.as_str())
+            .ok_or_else(|| RecordConstructorLookupError::Missing {
+                type_name: type_name.to_string(),
+                type_def_id,
+            });
+    }
     if candidates.is_empty() {
         return Err(RecordConstructorLookupError::Missing {
             type_name: type_name.to_string(),
@@ -909,6 +924,16 @@ pub fn resolve_record_constructor<'a>(
             .map(|function| function.name.clone())
             .collect(),
     })
+}
+
+fn same_record_layout(lhs: &Function, rhs: &Function) -> bool {
+    lhs.inputs.len() == rhs.inputs.len()
+        && lhs.inputs.iter().zip(&rhs.inputs).all(|(lhs, rhs)| {
+            lhs.name == rhs.name
+                && lhs.type_def_id == rhs.type_def_id
+                && lhs.effective_type == rhs.effective_type
+                && lhs.type_class == rhs.type_class
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1311,6 +1336,58 @@ mod tests {
             .expect("exposure name disambiguates a shared declaration");
 
         assert_eq!(resolved.name.as_str(), "Second.State");
+    }
+
+    #[test]
+    fn record_constructor_lookup_accepts_equivalent_shared_exposures() {
+        let def_id = DefId::new(78);
+        let field_type = EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap();
+        let mut first = Function::new("First.State", Span::DUMMY);
+        first.def_id = Some(def_id);
+        first.is_constructor = true;
+        first.add_input(FunctionParam::new(
+            "x",
+            "Real",
+            field_type.clone(),
+            Span::DUMMY,
+        ));
+        let mut second = Function::new("Second.State", Span::DUMMY);
+        second.def_id = Some(def_id);
+        second.is_constructor = true;
+        second.add_input(FunctionParam::new("x", "Real", field_type, Span::DUMMY));
+
+        let resolved = resolve_record_constructor([&second, &first], "Canonical.State", def_id)
+            .expect("one declaration may have equivalent flattened exposures");
+
+        assert_eq!(resolved.name.as_str(), "First.State");
+    }
+
+    #[test]
+    fn record_constructor_lookup_rejects_distinct_shared_layouts() {
+        let def_id = DefId::new(79);
+        let mut first = Function::new("First.State", Span::DUMMY);
+        first.def_id = Some(def_id);
+        first.is_constructor = true;
+        first.add_input(FunctionParam::new(
+            "x",
+            "Real",
+            EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap(),
+            Span::DUMMY,
+        ));
+        let mut second = Function::new("Second.State", Span::DUMMY);
+        second.def_id = Some(def_id);
+        second.is_constructor = true;
+        second.add_input(FunctionParam::new(
+            "y",
+            "Real",
+            EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap(),
+            Span::DUMMY,
+        ));
+
+        assert!(matches!(
+            resolve_record_constructor([&first, &second], "Canonical.State", def_id),
+            Err(RecordConstructorLookupError::Ambiguous { .. })
+        ));
     }
 
     #[test]

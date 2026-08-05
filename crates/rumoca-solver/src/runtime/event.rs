@@ -76,28 +76,6 @@ pub fn runtime_root_event_application_time(root_t: f64, target_t: f64, tolerance
     }
 }
 
-/// Advance continuous state across a numerical event right-limit interval.
-///
-/// Both the solver driver and the linked ME component use this operation so a
-/// located root is advanced with one arithmetic path.  In particular, the
-/// interval is anchored to the located root rather than to a nearby canonical
-/// scheduled-clock instant when those two instants are coincident.
-pub(crate) fn advance_state_across_event_right_limit(
-    state: &mut [f64],
-    derivatives: &[f64],
-    root_t: f64,
-    right_t: f64,
-) {
-    let dt = right_t - root_t;
-    if dt <= 0.0 || sample_time_match_with_tol(root_t, right_t) {
-        return;
-    }
-    debug_assert_eq!(state.len(), derivatives.len());
-    for (slot, derivative) in state.iter_mut().zip(derivatives.iter().copied()) {
-        *slot += dt * derivative;
-    }
-}
-
 fn runtime_event_final_time(event: RuntimeEventStop, event_t: f64, right_t: f64) -> f64 {
     if event.observe_right_limit {
         right_t

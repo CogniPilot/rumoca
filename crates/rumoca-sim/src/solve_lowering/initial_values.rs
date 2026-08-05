@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use rumoca_core::Span;
-use rumoca_eval_dae::{NumericEvaluationError, NumericEvaluationErrorKind, NumericEvaluator};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
+use rumoca_phase_dae::numeric::{NumericDaeContext, NumericDaeError};
 
 use super::diagnostics::SimulationDiagnosticError;
 
@@ -22,7 +22,7 @@ pub(super) fn runtime_vectors(
     overrides: &HashMap<String, f64>,
 ) -> Result<RuntimeVectors, SimulationDiagnosticError> {
     model.inspect(|view| {
-        let evaluator = NumericEvaluator::with_overrides(view, |variable, scalar| {
+        let evaluator = NumericDaeContext::with_overrides(view, |variable, scalar| {
             variable
                 .scalar_name(scalar)
                 .and_then(|name| overrides.get(&name).copied())
@@ -41,7 +41,7 @@ struct RuntimeVectorBuilder<'model, 'dae, F> {
     model: &'model dae::Dae,
     view: dae::DaeView<'dae>,
     problem: &'model solve::SolveProblem,
-    evaluator: NumericEvaluator<'dae, F>,
+    evaluator: NumericDaeContext<'dae, F>,
 }
 
 impl<'dae, F> RuntimeVectorBuilder<'_, 'dae, F>
@@ -341,8 +341,8 @@ fn variable_slot(
     })
 }
 
-pub(super) fn evaluation_error(error: NumericEvaluationError) -> SimulationDiagnosticError {
-    if error.kind() == NumericEvaluationErrorKind::InvalidOverride {
+pub(super) fn evaluation_error(error: NumericDaeError) -> SimulationDiagnosticError {
+    if error.is_invalid_override() {
         SimulationDiagnosticError::InvalidOverride {
             message: error.to_string(),
         }

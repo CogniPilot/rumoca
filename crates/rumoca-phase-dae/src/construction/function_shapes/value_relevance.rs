@@ -4,9 +4,10 @@
 //! inputs, and MLS §4.4.2 restricts a dimension to a scalar evaluable
 //! Integer/enumeration/Boolean expression. Only an input whose *value* one of
 //! those translation-time constructs actually reads can change a
-//! specialization's shapes. A function assertion additionally needs an exact
-//! value key when proof of its success is what permits the pure DAE function to
-//! erase that flow action. Only those inputs belong in
+//! specialization's shapes. A function assertion is a checked call-scoped
+//! action when the shape key does not independently prove it; assertion-only
+//! values therefore do not multiply shape specializations. Only shape-driving
+//! inputs belong in
 //! [`FunctionSpecializationKey::input_values`].
 //!
 //! Keying on any more than that is not merely wasteful. `g(1) … g(10)` would
@@ -36,7 +37,7 @@ impl ValueReadInputs {
         let mut reads: HashMap<VarName, HashSet<VarName>> = flat
             .functions
             .iter()
-            .map(|(name, function)| (name.clone(), declared_value_reads(function, flat)))
+            .map(|(name, function)| (name.clone(), declared_value_reads(function)))
             .collect();
         let mut masks = build_masks(flat, dimension_typed, &reads);
         // A call argument is a value read exactly when the callee keys on that
@@ -116,12 +117,10 @@ fn build_masks(
 /// Names whose value a translation-time construct of `function` reads.
 ///
 /// The translation-time constructs are the ones that reach
-/// `evaluate_shape_integer` / `ShapeEnvironment::proven_extent`, plus a
-/// function assertion whose proven-success certificate permits semantic
-/// erasure: a declared dimension (MLS §12.2), a compact range bound (MLS
-/// §10.4.1, §11.2.2), a `zeros`/`ones`/`fill` extent (MLS §10.3), and an
-/// MLS §8.3.7 assertion condition.
-fn declared_value_reads(function: &rumoca_core::Function, flat: &flat::Model) -> HashSet<VarName> {
+/// `evaluate_shape_integer` / `ShapeEnvironment::proven_extent`: a declared
+/// dimension (MLS §12.2), a compact range bound (MLS §10.4.1, §11.2.2), and a
+/// `zeros`/`ones`/`fill` extent (MLS §10.3).
+fn declared_value_reads(function: &rumoca_core::Function) -> HashSet<VarName> {
     let mut reads = HashSet::new();
     for value in function
         .inputs
@@ -156,11 +155,6 @@ fn declared_value_reads(function: &rumoca_core::Function, flat: &flat::Model) ->
         }
         _ => {}
     });
-    for_each_statement(&function.body, &mut |statement| {
-        if let Some(condition) = assertion_condition(statement, flat) {
-            collect_read_names(condition, &mut reads);
-        }
-    });
     // MLS §12.4.4: a local's declaration equation settles the value a later
     // dimension reads, so a read of the local is a read of everything that
     // equation is written over.
@@ -184,30 +178,6 @@ fn declared_value_reads(function: &rumoca_core::Function, flat: &flat::Model) ->
         }
     }
     reads
-}
-
-/// The condition of a predefined assertion statement, in either Flat shape.
-fn assertion_condition<'statement>(
-    statement: &'statement rumoca_core::Statement,
-    flat: &flat::Model,
-) -> Option<&'statement Expression> {
-    match statement {
-        rumoca_core::Statement::Assert { condition, .. } => Some(condition),
-        rumoca_core::Statement::FunctionCall {
-            comp,
-            args,
-            outputs,
-            ..
-        } if outputs.iter().all(Option::is_none) => {
-            let name = comp.to_var_name();
-            (!flat.functions.contains_key(&name)
-                && rumoca_core::runtime_flow_action_function_short_name(name.as_str())
-                    == Some("assert"))
-            .then(|| args.first())
-            .flatten()
-        }
-        _ => None,
-    }
 }
 
 /// Every free reference name in `expression`.
@@ -258,6 +228,81 @@ fn for_each_expression(function: &rumoca_core::Function, visit: &mut impl FnMut(
             visit_expression_tree(expression, visit);
         }
     });
+}
+
+/// Root expressions owned by a Flat function declaration and all nested flow
+/// statements. Expression-tree recursion remains the responsibility of the
+/// consuming analysis, matching `all_model_expressions`.
+pub(in crate::construction) fn function_expressions(
+    function: &rumoca_core::Function,
+) -> Vec<&Expression> {
+    let mut expressions = Vec::new();
+    for parameter in function
+        .inputs
+        .iter()
+        .chain(&function.outputs)
+        .chain(&function.locals)
+    {
+        expressions.extend(
+            [
+                parameter.default.as_ref(),
+                parameter.min.as_ref(),
+                parameter.max.as_ref(),
+            ]
+            .into_iter()
+            .flatten(),
+        );
+        expressions.extend(parameter.shape_expr.iter().filter_map(|subscript| {
+            let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
+                return None;
+            };
+            Some(expr.as_ref())
+        }));
+    }
+    collect_statement_expression_roots(&function.body, &mut expressions);
+    expressions
+}
+
+fn collect_statement_expression_roots<'function>(
+    statements: &'function [rumoca_core::Statement],
+    expressions: &mut Vec<&'function Expression>,
+) {
+    for statement in statements {
+        expressions.extend(statement_expressions(statement));
+        match statement {
+            rumoca_core::Statement::For { equations, .. } => {
+                collect_statement_expression_roots(equations, expressions);
+            }
+            rumoca_core::Statement::While { block, .. } => {
+                collect_statement_expression_roots(&block.stmts, expressions);
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_statement_expression_roots(&block.stmts, expressions);
+                }
+                collect_statement_expression_roots(
+                    else_block.as_deref().unwrap_or_default(),
+                    expressions,
+                );
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    collect_statement_expression_roots(&block.stmts, expressions);
+                }
+            }
+            rumoca_core::Statement::Assignment { .. }
+            | rumoca_core::Statement::FunctionCall { .. }
+            | rumoca_core::Statement::Reinit { .. }
+            | rumoca_core::Statement::Assert { .. }
+            | rumoca_core::Statement::Empty { .. }
+            | rumoca_core::Statement::Return { .. }
+            | rumoca_core::Statement::Break { .. } => {}
+        }
+    }
 }
 
 fn visit_expression_tree(expression: &Expression, visit: &mut impl FnMut(&Expression)) {

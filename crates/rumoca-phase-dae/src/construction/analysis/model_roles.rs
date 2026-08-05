@@ -405,15 +405,5 @@ fn validate_variable_role(
             variable.source_span,
         ));
     }
-    if matches!(role, PlannedRole::DiscreteReal)
-        && !variable.dims.is_empty()
-        && variable.binding.is_some()
-    {
-        return Err(ToDaeError::unsupported_flat(
-            "array discrete-Real definition",
-            "B.1b structured families are not yet part of the canonical DAE grammar",
-            variable.source_span,
-        ));
-    }
     Ok(())
 }

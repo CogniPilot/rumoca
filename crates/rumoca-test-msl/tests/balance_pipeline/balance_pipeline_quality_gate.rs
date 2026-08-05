@@ -103,6 +103,10 @@ pub(super) struct MslTraceAccuracyStatsBaseline {
     models_compared: usize,
     missing_trace_models: usize,
     skipped_models: usize,
+    #[serde(default)]
+    policy_excluded_models: usize,
+    #[serde(default)]
+    trace_nonidentifiable_models: usize,
     agreement_high: usize,
     #[serde(default)]
     agreement_high_percent: Option<f64>,
@@ -659,6 +663,9 @@ fn parse_trace_accuracy_stats(
         models_compared,
         missing_trace_models: json_usize_field(trace, "missing_trace_models")?,
         skipped_models: json_usize_field(trace, "skipped_models")?,
+        policy_excluded_models: json_usize_field(trace, "policy_excluded_models").unwrap_or(0),
+        trace_nonidentifiable_models: json_usize_field(trace, "trace_nonidentifiable_models")
+            .unwrap_or(0),
         agreement_high: json_usize_field(trace, "agreement_high")?,
         agreement_high_percent: json_f64_field(trace, "agreement_high_percent"),
         agreement_minor: json_usize_field(trace, "agreement_near")
@@ -1026,11 +1033,17 @@ fn current_msl_quality_snapshot_json(
     let certified_simulations = parity_input
         .and_then(|parity| parity.trace_accuracy_stats.as_ref())
         .map_or(0, |trace| trace.agreement_high);
-    let uncertified_simulations = summary.sim_ok.saturating_sub(certified_simulations);
-    let simulation_soundness_percent = if summary.sim_ok == 0 {
+    let reviewed_trace_exceptions = parity_input
+        .and_then(|parity| parity.trace_accuracy_stats.as_ref())
+        .map_or(0, |trace| {
+            trace.policy_excluded_models + trace.trace_nonidentifiable_models
+        });
+    let classified_simulations = certified_simulations + reviewed_trace_exceptions;
+    let unclassified_simulations = summary.sim_ok.saturating_sub(classified_simulations);
+    let classified_simulations_percent = if summary.sim_ok == 0 {
         100.0
     } else {
-        100.0 * certified_simulations as f64 / summary.sim_ok as f64
+        100.0 * classified_simulations as f64 / summary.sim_ok as f64
     };
     let mut value = serde_json::to_value(&baseline).map_err(|error| {
         io::Error::other(format!("failed to serialize baseline JSON value: {error}"))
@@ -1077,8 +1090,9 @@ fn current_msl_quality_snapshot_json(
             "ic_solver_fail": summary.ic_solver_fail,
             "sim_ok": summary.sim_ok,
             "certified_simulations_strict_high": certified_simulations,
-            "uncertified_simulations": uncertified_simulations,
-            "simulation_soundness_percent": simulation_soundness_percent,
+            "reviewed_trace_exceptions": reviewed_trace_exceptions,
+            "unclassified_simulations": unclassified_simulations,
+            "classified_simulations_percent": classified_simulations_percent,
             "sim_nan": summary.sim_nan,
             "sim_solver_fail": summary.sim_solver_fail,
             "sim_timeout": summary.sim_timeout,
@@ -1560,20 +1574,30 @@ fn trace_model_bucket_percentages(
     })
 }
 
-fn trace_acceptable_agreement_models(stats: &MslTraceAccuracyStatsBaseline) -> usize {
-    stats.agreement_high + stats.agreement_minor
+fn trace_classified_models(stats: &MslTraceAccuracyStatsBaseline) -> usize {
+    stats.agreement_high + stats.policy_excluded_models + stats.trace_nonidentifiable_models
 }
 
 fn trace_no_severe_models(stats: &MslTraceAccuracyStatsBaseline) -> Option<usize> {
+    let reviewed_boundaries = stats.policy_excluded_models + stats.trace_nonidentifiable_models;
     stats
         .models_with_severe_channel
-        .map(|count| stats.models_compared.saturating_sub(count))
+        .map(|count| {
+            stats
+                .models_compared
+                .saturating_sub(count)
+                .saturating_add(reviewed_boundaries)
+        })
         .or_else(|| {
             stats
                 .severe_channels_total
                 .filter(|count| *count == 0)
-                .map(|_| stats.models_compared)
+                .map(|_| stats.models_compared + reviewed_boundaries)
         })
+}
+
+fn trace_accounted_models(stats: &MslTraceAccuracyStatsBaseline) -> usize {
+    stats.models_compared + stats.policy_excluded_models + stats.trace_nonidentifiable_models
 }
 
 fn trace_models_with_any_channel_deviation_percent(
@@ -1617,13 +1641,13 @@ pub(super) fn push_trace_regression_reasons(
             baseline_trace.agreement_high,
             baseline.sim_target_models,
         );
-        let current_acceptable = trace_acceptable_agreement_models(current_trace);
-        let baseline_acceptable = trace_acceptable_agreement_models(baseline_trace);
+        let current_classified = trace_classified_models(current_trace);
+        let baseline_classified = trace_classified_models(baseline_trace);
         push_stage_count_regression_reason(
             reasons,
-            "Trace acceptable",
-            current_acceptable,
-            baseline_acceptable,
+            "Trace classified",
+            current_classified,
+            baseline_classified,
             baseline.sim_target_models,
         );
 
@@ -1640,23 +1664,19 @@ pub(super) fn push_trace_regression_reasons(
             );
         }
 
-        if current_trace.models_compared + TRACE_MODELS_COMPARED_ALLOWED_DROP
-            < baseline_trace.models_compared
-        {
+        let current_accounted = trace_accounted_models(current_trace);
+        let baseline_accounted = trace_accounted_models(baseline_trace);
+        if current_accounted + TRACE_MODELS_COMPARED_ALLOWED_DROP < baseline_accounted {
             reasons.push(format!(
-                "trace model coverage regressed: current models_compared={} < baseline={} (allowed_drop={})",
-                current_trace.models_compared,
-                baseline_trace.models_compared,
-                TRACE_MODELS_COMPARED_ALLOWED_DROP
+                "trace model accounting regressed: current={} < baseline={} (allowed_drop={})",
+                current_accounted, baseline_accounted, TRACE_MODELS_COMPARED_ALLOWED_DROP
             ));
         }
     }
 }
 
-/// Fail closed when the runtime completes a model whose semantics the OMC
-/// comparator did not place in the strict-high band. `sim_ok` is useful
-/// execution telemetry, but support is the intersection of completion and
-/// independently checked trace parity.
+/// Fail closed when a completed simulation has neither strict-high OMC parity
+/// nor a reviewed reason that pointwise comparison is non-identifying.
 pub(super) fn push_trace_soundness_reasons(
     reasons: &mut Vec<String>,
     gate_input: MslQualityGateInput<'_>,
@@ -1665,12 +1685,16 @@ pub(super) fn push_trace_soundness_reasons(
     let Some(trace) = parity_input.and_then(|parity| parity.trace_accuracy_stats.as_ref()) else {
         return;
     };
-    if gate_input.sim_ok != trace.agreement_high {
+    let reviewed_boundaries = trace.policy_excluded_models + trace.trace_nonidentifiable_models;
+    let classified = trace.agreement_high + reviewed_boundaries;
+    if gate_input.sim_ok != classified {
         reasons.push(format!(
-            "simulation soundness requires every sim_ok model to be strict-high: sim_ok={} strict_high={} uncertified={}",
+            "simulation soundness requires every sim_ok model to be strict-high or carry a reviewed pointwise-oracle boundary: sim_ok={} strict_high={} reviewed_exceptions={} unclassified={} overclassified={}",
             gate_input.sim_ok,
             trace.agreement_high,
-            gate_input.sim_ok.saturating_sub(trace.agreement_high),
+            reviewed_boundaries,
+            gate_input.sim_ok.saturating_sub(classified),
+            classified.saturating_sub(gate_input.sim_ok),
         ));
     }
 }

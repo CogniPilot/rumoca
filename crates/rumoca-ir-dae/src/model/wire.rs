@@ -786,7 +786,7 @@ fn reconstruct_types<'dae>(
         .enumerate()
     {
         let id = if ty.scalar == ScalarType::Record {
-            if flat_type.is_some() || !ty.dimensions.is_empty() {
+            if flat_type.is_some() {
                 return Err(DaeConstructionError::MalformedWire {
                     column: "value_types",
                 });
@@ -811,7 +811,7 @@ fn reconstruct_types<'dae>(
                     ))
                 })
                 .collect::<Result<Vec<_>, DaeConstructionError>>()?;
-            dae.types(|types| types.record(name, fields, *provenance))?
+            dae.types(|types| types.record_array(name, fields, ty.dimensions.clone(), *provenance))?
         } else {
             let value_type = ty.as_primitive_value_type()?;
             dae.types(|types| match flat_type {

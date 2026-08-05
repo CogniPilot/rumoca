@@ -33,7 +33,7 @@ use crate::runtime::solve_runtime::{
     EventUpdateRowFilter, ProjectedEventUpdateInput, ProjectedInitialEventInput, SolveRuntime,
 };
 use crate::solver::{SimOptions, SimResult, SimTermination};
-use crate::timeline::{event_left_probe_time, sample_time_match_with_tol};
+use crate::timeline::{event_left_limit_time, event_left_probe_time, sample_time_match_with_tol};
 
 const NO_STATE_EVENT_UPDATE_MAX_ITERS: usize = 256;
 
@@ -50,6 +50,7 @@ struct NoStateRuntime {
     current_y: Vec<f64>,
     current_t: f64,
     last_event_t: Option<f64>,
+    last_event_was_root: bool,
     termination: Option<SimTermination>,
     stop_schedule: SolveStopSchedule,
     root_params_scratch: Vec<f64>,
@@ -314,6 +315,24 @@ impl NoStateOrchestrationBackend for NoStateOrchestration<'_> {
     }
 
     fn record_output(&mut self) -> Result<(), Self::Error> {
+        // Event Mode already records the settled post-event value at its
+        // semantic timestamp. Re-evaluating an output at the same instant can
+        // select the pre-side of a strict relation and overwrite that accepted
+        // observation, even though the relation-memory override correctly
+        // selected the post-root branch during event iteration.
+        if self.runtime.last_event_was_root
+            && self
+                .runtime
+                .last_event_t
+                .is_some_and(|event_t| sample_time_match_with_tol(event_t, self.runtime.current_t))
+        {
+            if let Some(recorded_t) = self.runtime.recorded_times.last_mut()
+                && sample_time_match_with_tol(*recorded_t, self.runtime.current_t)
+            {
+                *recorded_t = self.runtime.current_t;
+            }
+            return Ok(());
+        }
         record_no_state_observation(self.runtime, self.runtime.current_t, false)
     }
 }
@@ -402,6 +421,7 @@ fn initialize_no_state_runtime(
         current_y,
         current_t,
         last_event_t: None,
+        last_event_was_root: false,
         termination,
         stop_schedule,
         root_params_scratch: vec![0.0; model.parameters.len()],
@@ -433,6 +453,7 @@ fn apply_no_state_event_step(
         Vec::new()
     };
     runtime.last_event_t = Some(event_t);
+    runtime.last_event_was_root = step.root_event;
     let event = if step.root_event {
         RuntimeEventStop::static_event(EventPreMode::EventEntry)
     } else {
@@ -525,14 +546,20 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
                 EventPreMode::EventEntry | EventPreMode::Fixed
             );
         if prepared_left_limit {
-            let left_t = event_left_probe_time(event_t, self.tol);
+            let probe_t = event_left_probe_time(event_t, self.tol);
             refresh_observation_rows_and_relation_memory(
                 self.runtime,
                 self.y,
                 self.p,
-                left_t,
+                probe_t,
                 self.tol,
             )?;
+            let left_t = event_left_limit_time(event_t);
+            // The widened probe establishes the inactive pre-clock discrete
+            // side. Re-project at the adjacent representable time so a
+            // continuous expression such as `sample(time)` retains the exact
+            // event-left value rather than a finite 2*atol displacement.
+            settle_algebraics_and_relation_memory(self.runtime, self.y, self.p, left_t, self.tol)?;
         } else {
             refresh_observation_rows_and_relation_memory(
                 self.runtime,
@@ -548,7 +575,7 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
         if prepared_left_limit {
             self.runtime.commit_delay_history_evaluated_at(
                 event_t,
-                event_left_probe_time(event_t, self.tol),
+                event_left_limit_time(event_t),
                 self.y,
                 self.p,
             )?;
@@ -565,6 +592,18 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
             event_t,
             self.tol,
         )?;
+        if self.root_event {
+            // Observation refresh may reevaluate a numerically rounded strict
+            // relation at the boundary. The typed crossing side accepted by
+            // root localization remains authoritative for that superdense
+            // instant.
+            self.runtime.apply_root_relation_memory_overrides(
+                self.root_relation_overrides,
+                self.y,
+                self.p,
+                self.tol,
+            )?;
+        }
         if !self.root_event {
             self.runtime.record_visible_sample_if_new(
                 self.recorded_times,

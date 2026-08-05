@@ -137,7 +137,7 @@ fn pair_value_expression<'dae>(
     })
 }
 
-fn lower_pair_branches<'dae>(
+fn pair_branch_expressions<'dae>(
     dae: &mut DaeConstruction<'dae>,
     order: [PairTarget; 2],
     branches: &[PairBranch],
@@ -224,7 +224,7 @@ fn construct_pair_owner(order: [PairTarget; 2], branches: &[PairBranch]) -> Pair
             PairTarget::B => variables[1],
         });
         let lowered_branches =
-            lower_pair_branches(dae, order, &branches, variables, action_provenance)?;
+            pair_branch_expressions(dae, order, &branches, variables, action_provenance)?;
         dae.b1c(ordered_targets, |topology| {
             define_pair_owner(
                 topology,

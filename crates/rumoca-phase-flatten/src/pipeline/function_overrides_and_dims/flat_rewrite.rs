@@ -520,6 +520,7 @@ pub(super) fn rewrite_function_self_package_calls(
     let ctx = FunctionSelfPackageRewriteContext {
         tree,
         class_index,
+        caller_scope: format!("{}.{}", package.name, leaf_segment(function.name.as_str())),
         package,
     };
     for param in function
@@ -543,6 +544,7 @@ pub(super) struct FunctionSelfPackageRewriteContext<'a> {
     tree: &'a ClassTree,
     class_index: &'a rumoca_ir_ast::ClassDefIndex<'a>,
     package: OverrideTarget,
+    caller_scope: String,
 }
 
 pub(super) struct FunctionSelfPackageRewriter<'a> {
@@ -569,22 +571,7 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
                 span: *span,
             };
         }
-        let Some(source_package_def_id) =
-            reference_source_package_def_id_from_index(name, self.ctx.class_index)
-        else {
-            return Expression::FunctionCall {
-                name: name.clone(),
-                args: rewritten_args,
-                is_constructor: *is_constructor,
-                span: *span,
-            };
-        };
-        if !package_chain_contains_def_id(
-            self.ctx.tree,
-            self.ctx.class_index,
-            &self.ctx.package,
-            source_package_def_id,
-        ) {
+        if !self.reference_belongs_to_override_tree(name) {
             return Expression::FunctionCall {
                 name: name.clone(),
                 args: rewritten_args,
@@ -592,13 +579,29 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
                 span: *span,
             };
         }
-        let Some(resolved_name) = resolve_function_in_package_chain_exposed(
+        if let Some(rewritten_name) = self.rewrite_nested_package_call(name) {
+            return Expression::FunctionCall {
+                name: rewritten_name,
+                args: rewritten_args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
+        }
+        if !self.reference_is_direct_override_member(name) {
+            return Expression::FunctionCall {
+                name: name.clone(),
+                args: rewritten_args,
+                is_constructor: *is_constructor,
+                span: *span,
+            };
+        }
+        let Some((resolved_name, target_def_id)) = resolve_function_in_package_chain_exposed(
             self.ctx.tree,
             self.ctx.class_index,
             &self.ctx.package,
             name.last_segment(),
         )
-        .filter(|resolved| resolved != name.as_str()) else {
+        .filter(|(resolved_name, _)| resolved_name != name.as_str()) else {
             return Expression::FunctionCall {
                 name: name.clone(),
                 args: rewritten_args,
@@ -607,16 +610,134 @@ impl ExpressionRewriter for FunctionSelfPackageRewriter<'_> {
             };
         };
         Expression::FunctionCall {
-            name: rewritten_function_reference(
+            name: retarget_exposed_function_reference(
                 name,
                 resolved_name,
-                self.ctx.tree,
+                &self.ctx.package.name,
+                self.ctx.package.def_id,
+                target_def_id,
                 self.ctx.class_index,
             ),
             args: rewritten_args,
             is_constructor: *is_constructor,
             span: *span,
         }
+    }
+}
+
+impl FunctionSelfPackageRewriter<'_> {
+    fn reference_belongs_to_override_tree(&self, name: &rumoca_core::Reference) -> bool {
+        name.component_ref().is_some_and(|reference| {
+            reference
+                .component_scope()
+                .prefix_parts()
+                .iter()
+                .any(|part| {
+                    package_chain_contains_def_id(
+                        self.ctx.tree,
+                        self.ctx.class_index,
+                        &self.ctx.package,
+                        part.def_id,
+                    )
+                })
+        })
+    }
+
+    fn reference_is_direct_override_member(&self, name: &rumoca_core::Reference) -> bool {
+        name.component_ref()
+            .and_then(|reference| reference.component_scope().prefix_parts().last())
+            .is_some_and(|owner| {
+                package_chain_contains_def_id(
+                    self.ctx.tree,
+                    self.ctx.class_index,
+                    &self.ctx.package,
+                    owner.def_id,
+                )
+            })
+    }
+
+    fn rewrite_nested_package_call(
+        &self,
+        name: &rumoca_core::Reference,
+    ) -> Option<rumoca_core::Reference> {
+        let component_ref = name.component_ref()?;
+        let parts = component_ref.parts();
+        for suffix_len in 2..parts.len() {
+            let start = parts.len() - suffix_len;
+            let relative = rumoca_core::ComponentPath::from_parts(
+                parts[start..].iter().map(|part| part.ident.as_str()),
+            )
+            .to_flat_string();
+            let Some(resolution) = crate::functions::resolve_function_class_with_scope(
+                self.ctx.tree,
+                self.ctx.class_index,
+                &relative,
+                Some(&self.ctx.caller_scope),
+            ) else {
+                continue;
+            };
+            let target_def_id = resolution.class_def.def_id?;
+            let exposed_name = format!("{}.{}", self.ctx.package.name, relative);
+            if exposed_name == name.as_str() {
+                continue;
+            }
+            let package_slot = start.checked_sub(1)?;
+            if !package_chain_contains_def_id(
+                self.ctx.tree,
+                self.ctx.class_index,
+                &self.ctx.package,
+                parts[package_slot].def_id,
+            ) {
+                continue;
+            }
+            let nested_package_count = suffix_len - 1;
+            let mut selected_owners = Vec::with_capacity(nested_package_count);
+            let mut owner = self.ctx.class_index.parent_def_id(target_def_id);
+            while selected_owners.len() < nested_package_count {
+                let owner_def_id = owner?;
+                selected_owners.push(owner_def_id);
+                owner = self.ctx.class_index.parent_def_id(owner_def_id);
+            }
+            selected_owners.reverse();
+
+            let source_leaf = parts.last().expect("a callable reference has a leaf");
+            let mut rewritten_parts = self
+                .ctx
+                .class_index
+                .def_ancestry(self.ctx.package.def_id)
+                .into_iter()
+                .map(|def_id| {
+                    Some(rumoca_core::ComponentRefPart {
+                        ident: self.ctx.class_index.local_name(def_id)?.to_string(),
+                        span: source_leaf.span,
+                        subs: Vec::new(),
+                        def_id,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            rewritten_parts.extend(
+                parts[start..parts.len() - 1]
+                    .iter()
+                    .cloned()
+                    .zip(selected_owners)
+                    .map(|(mut part, owner_def_id)| {
+                        part.def_id = owner_def_id;
+                        part
+                    }),
+            );
+            let mut leaf = source_leaf.clone();
+            leaf.def_id = target_def_id;
+            rewritten_parts.push(leaf);
+            let rewritten = component_ref.with_replaced_parts(rewritten_parts).ok()?;
+            if rewritten.to_var_name().as_str() != exposed_name {
+                continue;
+            }
+            return Some(
+                name.with_rewritten_component_reference(exposed_name, rewritten)
+                    .without_resolved_function(),
+            );
+        }
+        None
     }
 }
 
@@ -630,7 +751,7 @@ pub(super) fn function_lexical_package_def_id(
     let Some(package_name) = enclosing_scope(function_name) else {
         return Ok(None);
     };
-    let Some(class_def) = class_index.get_by_qualified_name(package_name) else {
+    let Some(class_def) = class_by_exposed_scope_name(class_index, package_name) else {
         return Ok(None);
     };
     class_def.def_id.map(Some).ok_or_else(|| {
@@ -651,7 +772,7 @@ pub(super) fn function_package_override_chain(
     let Some(package_name) = enclosing_scope(function_name) else {
         return Ok(Vec::new());
     };
-    let Some(class_def) = class_index.get_by_qualified_name(package_name) else {
+    let Some(class_def) = class_by_exposed_scope_name(class_index, package_name) else {
         return Ok(Vec::new());
     };
     let def_id = class_def.def_id.ok_or_else(|| {
@@ -678,6 +799,25 @@ pub(super) fn function_package_override_chain(
         active: false,
         modifier_args: Vec::new(),
     }])
+}
+
+fn class_by_exposed_scope_name<'tree>(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'tree>,
+    exposed_name: &str,
+) -> Option<&'tree rumoca_ir_ast::ClassDef> {
+    if let Some(class_def) = class_index.get_by_qualified_name(exposed_name) {
+        return Some(class_def);
+    }
+    let suffix = format!(".{exposed_name}");
+    let mut matches = class_index.def_ids().filter_map(|def_id| {
+        class_index
+            .qualified_name(def_id)
+            .is_some_and(|name| name.ends_with(&suffix))
+            .then(|| class_index.get(def_id))
+            .flatten()
+    });
+    let selected = matches.next()?;
+    matches.next().is_none().then_some(selected)
 }
 
 fn missing_resolved_class_metadata_for_class(

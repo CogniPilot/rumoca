@@ -18,8 +18,8 @@
 //!
 //! | ceiling | default | override | overrun bucket |
 //! |---|---|---|---|
-//! | per-phase compile/sim wall | 10 s | `model_attempt_timeout_secs` | `Timeout` |
-//! | solver wall | 10 s | `sim_timeout_secs` | `Timeout` |
+//! | per-phase compile wall | 10 s | `model_attempt_timeout_secs` | `Timeout` |
+//! | simulation/solver wall | 12 s | `sim_timeout_secs` | `Timeout` |
 //! | worker resident+swap | 6 GiB | `model_worker_memory_mb` | `MemoryLimit` |
 //! | total compile wall | 40 s | `model_compile_wall_limit_secs` | `ResourceBudget` |
 //! | Solve-IR serialized size | 32 MB | `solve_ir_size_limit_mb` | `ResourceBudget` |

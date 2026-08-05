@@ -1,4 +1,3 @@
-use super::function_ranges::static_integer_expression;
 use super::*;
 use rumoca_core::FallibleExpressionVisitor;
 
@@ -15,7 +14,14 @@ pub(super) struct FunctionDefinitions {
     values: HashMap<VarName, ValueCoverage>,
     /// Values only some conditional branches define, keyed to the conditional
     /// that left them without a total owner.
-    branch_only: HashMap<VarName, Span>,
+    branch_only: HashMap<VarName, BranchOnlyCoverage>,
+}
+
+#[derive(Clone)]
+struct BranchOnlyCoverage {
+    span: Span,
+    guard: Option<Expression>,
+    coverage: Option<ValueCoverage>,
 }
 
 #[derive(Clone)]
@@ -72,10 +78,17 @@ impl ValueCoverage {
     }
 }
 
-/// Shape and scalar type of the generated aggregate seed one element write needs.
-pub(in crate::construction) struct FunctionValueSeed {
-    pub(in crate::construction) dimensions: Vec<u32>,
-    pub(in crate::construction) scalar: dae::ScalarType,
+/// Exact type tree of a generated aggregate seed whose value is proven dead.
+pub(in crate::construction) enum FunctionValueSeed {
+    Scalar {
+        dimensions: Vec<u32>,
+        scalar: dae::ScalarType,
+    },
+    Record {
+        name: VarName,
+        dimensions: Vec<u32>,
+        fields: Vec<(VarName, FunctionValueSeed)>,
+    },
 }
 
 impl FunctionDefinitions {
@@ -98,6 +111,81 @@ impl FunctionDefinitions {
         self.values.contains_key(name)
     }
 
+    pub(super) fn has_total_guarded_definition(&self, name: &VarName) -> bool {
+        self.branch_only
+            .get(name)
+            .and_then(|definition| definition.coverage.as_ref())
+            .is_some_and(ValueCoverage::is_total)
+    }
+
+    pub(super) fn enter_guard(
+        &mut self,
+        condition: &Expression,
+        context: FunctionValidationContext<'_>,
+    ) {
+        let admitted = self
+            .branch_only
+            .iter()
+            .filter_map(|(name, definition)| {
+                let guard = definition.guard.as_ref()?;
+                let coverage = definition.coverage.clone()?;
+                condition_implies_guard(condition, guard, context, 0)
+                    .then(|| (name.clone(), coverage))
+            })
+            .collect::<Vec<_>>();
+        for (name, coverage) in admitted {
+            self.branch_only.remove(&name);
+            self.values.insert(name, coverage);
+        }
+    }
+
+    pub(super) fn remember_guarded_branch(
+        &mut self,
+        condition: &Expression,
+        branch: &Self,
+        targets: &[VarName],
+        span: Span,
+    ) {
+        for target in targets {
+            if self.values.contains_key(target) {
+                continue;
+            }
+            let Some(coverage) = branch.values.get(target) else {
+                continue;
+            };
+            self.branch_only.insert(
+                target.clone(),
+                BranchOnlyCoverage {
+                    span,
+                    guard: Some(condition.clone()),
+                    coverage: Some(coverage.clone()),
+                },
+            );
+        }
+    }
+
+    pub(super) fn forget_varying_guard_paths(
+        &mut self,
+        generated: &[function_returns::GeneratedBooleanDefinition],
+    ) {
+        for definition in self.branch_only.values_mut() {
+            let Some(guard) = &definition.guard else {
+                continue;
+            };
+            let mut references = Vec::new();
+            guard.collect_var_refs(&mut references);
+            let invariant = references.iter().all(|target| {
+                generated
+                    .iter()
+                    .any(|generated| &generated.target == target)
+            });
+            if !invariant {
+                definition.guard = None;
+                definition.coverage = None;
+            }
+        }
+    }
+
     pub(super) fn is_total(&self, name: &VarName) -> bool {
         self.values.get(name).is_some_and(ValueCoverage::is_total)
     }
@@ -105,6 +193,41 @@ impl FunctionDefinitions {
     pub(super) fn define_whole(&mut self, name: &VarName) {
         self.branch_only.remove(name);
         self.values.insert(name.clone(), ValueCoverage::Whole);
+    }
+
+    /// Install the output totality already proven by a disjoint early-return
+    /// path certificate. The normalized guard sequence uses these as its join
+    /// bases; it does not infer totality from these synthetic definitions.
+    pub(super) fn assume_certified_outputs(&mut self, function: &rumoca_core::Function) {
+        for output in &function.outputs {
+            self.define_whole(&VarName::new(&output.name));
+        }
+    }
+
+    /// Describe the dead initial slot a loop-carried value needs when its first
+    /// iteration defines the whole value before any read.
+    pub(super) fn whole_loop_seed(
+        &self,
+        target: &VarName,
+        context: FunctionValidationContext<'_>,
+        span: Span,
+    ) -> Result<FunctionValueSeed, ToDaeError> {
+        let declaration = declared_value(target, context).ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "function aggregate seed",
+                format!(
+                    "`{}.{target}` is not a declared mutable function value",
+                    context.function.name
+                ),
+                span,
+            )
+        })?;
+        function_value_seed(
+            declaration,
+            declared_dimensions(target, context, span)?,
+            context,
+            span,
+        )
     }
 
     /// Record one element write and report the seed it needs, if any.
@@ -139,7 +262,16 @@ impl FunctionDefinitions {
                         span,
                     ));
                 };
-                let scalar = seed_scalar_type(target, context, span)?;
+                let declaration = declared_value(target, context).ok_or_else(|| {
+                    ToDaeError::unsupported_flat(
+                        "function aggregate seed",
+                        format!(
+                            "`{}.{target}` is not a declared mutable function value",
+                            context.function.name
+                        ),
+                        span,
+                    )
+                })?;
                 let scalars = declared_scalar_count(&dimensions, target, context, span)?;
                 self.branch_only.remove(target);
                 self.values.insert(
@@ -150,7 +282,12 @@ impl FunctionDefinitions {
                         proven: true,
                     },
                 );
-                Ok(Some(FunctionValueSeed { dimensions, scalar }))
+                Ok(Some(function_value_seed(
+                    declaration,
+                    dimensions,
+                    context,
+                    span,
+                )?))
             }
         }
     }
@@ -183,7 +320,7 @@ impl FunctionDefinitions {
                 "function conditional",
                 format!(
                     "`{}` reads `{name}`, which only some branches of the conditional at byte {} define",
-                    context.function.name, conditional.start.0
+                    context.function.name, conditional.span.start.0
                 ),
                 span,
             ));
@@ -232,7 +369,14 @@ impl FunctionDefinitions {
             if !self.is_defined(target) && !defines_everywhere {
                 require_definable_branch_local(target, context, span)?;
                 self.values.remove(target);
-                self.branch_only.insert(target.clone(), span);
+                self.branch_only.insert(
+                    target.clone(),
+                    BranchOnlyCoverage {
+                        span,
+                        guard: None,
+                        coverage: None,
+                    },
+                );
                 continue;
             }
             let prior = self.values.get(target).cloned();
@@ -263,6 +407,85 @@ impl FunctionDefinitions {
         }
         Ok(joined)
     }
+}
+
+fn condition_implies_guard(
+    condition: &Expression,
+    guard: &Expression,
+    context: FunctionValidationContext<'_>,
+    depth: usize,
+) -> bool {
+    if rumoca_core::expressions_semantically_equal(condition, guard) {
+        return true;
+    }
+    if depth >= 16 {
+        return false;
+    }
+    if let Some(expanded) = generated_boolean_value(condition, context) {
+        return condition_implies_guard(expanded, guard, context, depth + 1);
+    }
+    if let Some(expanded) = generated_boolean_value(guard, context) {
+        return condition_implies_guard(condition, expanded, context, depth + 1);
+    }
+    match condition {
+        Expression::Binary {
+            op: OpBinary::And,
+            lhs,
+            rhs,
+            ..
+        } => {
+            condition_implies_guard(lhs, guard, context, depth + 1)
+                || condition_implies_guard(rhs, guard, context, depth + 1)
+                || matches!(
+                    guard,
+                    Expression::Binary {
+                        op: OpBinary::And,
+                        lhs: guard_lhs,
+                        rhs: guard_rhs,
+                        ..
+                    } if condition_implies_guard(condition, guard_lhs, context, depth + 1)
+                        && condition_implies_guard(condition, guard_rhs, context, depth + 1)
+                )
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } if is_boolean_false(else_branch) => branches.iter().all(|(branch_condition, _)| {
+            condition_implies_guard(branch_condition, guard, context, depth + 1)
+        }),
+        _ => false,
+    }
+}
+
+fn is_boolean_false(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Literal {
+            value: Literal::Boolean(false),
+            ..
+        }
+    )
+}
+
+fn generated_boolean_value<'expression>(
+    expression: &Expression,
+    context: FunctionValidationContext<'expression>,
+) -> Option<&'expression Expression> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expression
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() {
+        return None;
+    }
+    context
+        .generated_booleans
+        .iter()
+        .find(|definition| definition.target == *name.var_name())
+        .map(|definition| &definition.value)
 }
 
 struct DefinedValueReadChecker<'scope> {
@@ -425,36 +648,96 @@ fn declared_scalar_count(
         })
 }
 
-fn seed_scalar_type(
-    target: &VarName,
+fn function_value_seed(
+    declaration: &rumoca_core::FunctionParam,
+    dimensions: Vec<u32>,
     context: FunctionValidationContext<'_>,
     span: Span,
-) -> Result<dae::ScalarType, ToDaeError> {
-    let declaration = declared_value(target, context).ok_or_else(|| {
+) -> Result<FunctionValueSeed, ToDaeError> {
+    if declaration.type_class != Some(rumoca_core::ClassType::Record) {
+        let scalar =
+            effective_function_scalar_type(context.flat, declaration).ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "function aggregate seed",
+                    format!(
+                        "`{}.{}` has no checked scalar seed type",
+                        context.function.name, declaration.name
+                    ),
+                    span,
+                )
+            })?;
+        return Ok(FunctionValueSeed::Scalar { dimensions, scalar });
+    }
+    let type_id = declaration.type_def_id.ok_or_else(|| {
         ToDaeError::unsupported_flat(
-            "function element assignment",
+            "function aggregate seed",
             format!(
-                "`{}.{target}` is not a declared mutable function value",
-                context.function.name
+                "`{}.{}` has no exact record type identity",
+                context.function.name, declaration.name
             ),
             span,
         )
     })?;
-    match effective_function_scalar_type(context.flat, declaration) {
-        // A numeric or Boolean seed is a total, finite aggregate whose every
-        // element the totality certificate proves the algorithm overwrites.
-        Some(
-            scalar @ (dae::ScalarType::Real | dae::ScalarType::Integer | dae::ScalarType::Boolean),
-        ) => Ok(scalar),
-        _ => Err(ToDaeError::unsupported_flat(
-            "function element assignment",
-            format!(
-                "`{}` writes elements of `{target}`, whose value type has no checked aggregate seed",
-                context.function.name
-            ),
-            span,
-        )),
+    let constructor = record_constructor(declaration, context)?;
+    let mut seen = HashSet::new();
+    seen.insert(type_id);
+    function_record_seed(declaration, dimensions, constructor, context, &mut seen)
+}
+
+fn function_record_seed(
+    declaration: &rumoca_core::FunctionParam,
+    dimensions: Vec<u32>,
+    constructor: &rumoca_core::Function,
+    context: FunctionValidationContext<'_>,
+    seen: &mut HashSet<rumoca_core::DefId>,
+) -> Result<FunctionValueSeed, ToDaeError> {
+    let mut fields = Vec::with_capacity(constructor.inputs.len());
+    for field in &constructor.inputs {
+        let field_dimensions = field
+            .dimensions()
+            .iter()
+            .map(|extent| {
+                u32::try_from(*extent).map_err(|_| {
+                    ToDaeError::unsupported_flat(
+                        "function aggregate seed",
+                        format!(
+                            "record field `{}` has invalid extent `{extent}`",
+                            field.name
+                        ),
+                        field.span,
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let seed = if field.type_class == Some(rumoca_core::ClassType::Record) {
+            let type_id = field.type_def_id.ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "function aggregate seed",
+                    format!("record field `{}` has no exact type identity", field.name),
+                    field.span,
+                )
+            })?;
+            if !seen.insert(type_id) {
+                return Err(ToDaeError::unsupported_flat(
+                    "function aggregate seed",
+                    format!("record field `{}` has a recursive layout", field.name),
+                    field.span,
+                ));
+            }
+            let nested = record_constructor(field, context)?;
+            let seed = function_record_seed(field, field_dimensions, nested, context, seen)?;
+            seen.remove(&type_id);
+            seed
+        } else {
+            function_value_seed(field, field_dimensions, context, field.span)?
+        };
+        fields.push((VarName::new(&field.name), seed));
     }
+    Ok(FunctionValueSeed::Record {
+        name: VarName::new(&declaration.type_name),
+        dimensions,
+        fields,
+    })
 }
 
 /// Enumerate the exact element indices one subscripted write covers.
@@ -505,10 +788,10 @@ fn static_subscript_indices(
         start, step, end, ..
     } = expression
     {
-        let lower = static_integer_expression(start, context.static_integers)?;
-        let upper = static_integer_expression(end, context.static_integers)?;
+        let lower = settled_subscript_integer(start, context)?;
+        let upper = settled_subscript_integer(end, context)?;
         let stride = match step {
-            Some(step) => static_integer_expression(step, context.static_integers)?,
+            Some(step) => settled_subscript_integer(step, context)?,
             None => 1,
         };
         if stride <= 0 {
@@ -522,5 +805,14 @@ fn static_subscript_indices(
         }
         return Some(indices);
     }
-    static_integer_expression(expression, context.static_integers).map(|index| vec![index])
+    settled_subscript_integer(expression, context).map(|index| vec![index])
+}
+
+fn settled_subscript_integer(
+    expression: &Expression,
+    context: FunctionValidationContext<'_>,
+) -> Option<i64> {
+    static_shape_integer_expression(expression, context.static_integers, context.shapes)
+        .ok()
+        .flatten()
 }

@@ -256,7 +256,7 @@ impl CoupledEventSystem<'_> {
             self.runtime.row_eval_context(),
             &mut implicit,
         )?;
-        let mut eval_p_cache = EventEvalParamCache::default();
+        let mut eval_p_cache = EventEvalParamCache;
         for (slot, row) in residual.iter_mut().zip(&self.inventory.residuals) {
             *slot = match *row {
                 CoupledEventResidual::Implicit { row } => implicit_row_value(&implicit, row)?,

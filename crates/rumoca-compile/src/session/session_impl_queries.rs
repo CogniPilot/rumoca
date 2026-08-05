@@ -52,6 +52,7 @@ impl Session {
             fresh_session_snapshot_caches();
         Self {
             instantiation_options: config.instantiate_options(),
+            structural_override_sources: Vec::new(),
             documents: IndexMap::new(),
             detached_document_uris: IndexSet::new(),
             detached_source_root_documents: IndexMap::new(),

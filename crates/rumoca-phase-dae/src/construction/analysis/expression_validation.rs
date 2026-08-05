@@ -119,7 +119,7 @@ pub(super) fn validate_specialized_expression(
         roles,
         states: &states,
         binders: &binders,
-        record_array_fields: None,
+        record_array_fields: values.record_array_fields(),
         enumeration_literals: Some(values),
         values: Some(values),
         when_clause: PreContext::Continuous,
@@ -349,7 +349,7 @@ impl<'a> ExpressionValidator<'a> {
 
     fn validate_field_access(self, expression: &Expression, span: Span) -> Result<(), ToDaeError> {
         let Some(fields) = self.record_array_fields else {
-            return Err(unsupported_record_field(span));
+            return Err(unsupported_record_field(expression, span));
         };
         if let Some(plan) = fields.get(expression) {
             return match plan {
@@ -365,17 +365,24 @@ impl<'a> ExpressionValidator<'a> {
             };
             self.validate(base)
         } else {
-            Err(unsupported_record_field(span))
+            Err(unsupported_record_field(expression, span))
         }
     }
 }
 
-fn unsupported_record_field(span: Span) -> ToDaeError {
-    ToDaeError::unsupported_flat(
-        "aggregate expression",
-        "record-field lowering requires its typed semantic owner",
-        span,
-    )
+fn unsupported_record_field(expression: &Expression, span: Span) -> ToDaeError {
+    let detail = match expression {
+        Expression::FieldAccess {
+            field,
+            field_def_id,
+            ..
+        } => format!(
+            "record-field `{field}` declaration {} requires its typed semantic owner",
+            field_def_id.index()
+        ),
+        _ => "record-field lowering requires its typed semantic owner".to_string(),
+    };
+    ToDaeError::unsupported_flat("aggregate expression", detail, span)
 }
 
 pub(super) fn validate_binary_operator(op: &OpBinary, span: Span) -> Result<(), ToDaeError> {

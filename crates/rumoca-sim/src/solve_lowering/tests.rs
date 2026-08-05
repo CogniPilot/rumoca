@@ -580,12 +580,18 @@ fn checked_when_elsewhen_later_branch_executes_after_first_becomes_false() {
 
     assert!(
         result.data[y].contains(&1.0),
-        "the trace must show the first branch executing before its condition becomes false"
+        "the trace must show the first branch executing before its condition becomes false; \
+         times={:?}, y={:?}",
+        result.times,
+        result.data[y]
     );
     assert_eq!(
         result.data[y].last().copied(),
         Some(2.0),
-        "the same chain's later branch must execute after the first condition becomes false"
+        "the same chain's later branch must execute after the first condition becomes false; \
+         times={:?}, y={:?}",
+        result.times,
+        result.data[y]
     );
 }
 

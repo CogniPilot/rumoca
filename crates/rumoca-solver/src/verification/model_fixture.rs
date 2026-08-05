@@ -1,24 +1,19 @@
 //! Bounded `SolveModel` fixtures the verification harnesses drive.
 //!
-//! Every model here is small enough for a model checker to unwind: at most
-//! three activation conditions, at most one continuous state. They are built
-//! from Solve IR directly rather than compiled from Modelica so a harness can
-//! vary one dimension — the number of conditions, a start value, a divergence
-//! step — without a compiler in the loop.
+//! Every model here is deliberately small: at most three activation conditions
+//! or one continuous state. They are built from Solve IR directly rather than
+//! compiled from Modelica so a test can vary one dimension without putting the
+//! compiler itself inside a runtime-contract check.
 
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 
-/// The largest condition count the bounded condition-memory harnesses explore.
-///
-/// The bound is a model-checking budget rather than a minimum: it has to stay
-/// inside `kani::unwind(8)` while still admitting a model whose conditions are
-/// not all true at the initialization instant, and whose seed walks several
-/// threshold rows ahead of the `initial()` row instead of one special case.
-#[cfg(not(kani))]
+/// The largest condition count the exhaustive condition-memory test explores.
+#[cfg(test)]
 pub(super) const MAX_CONDITIONS: usize = 3;
 
 /// The constant every generated activation condition is compared against.
+#[cfg(test)]
 pub(super) const CONDITION_THRESHOLD: f64 = 2.0;
 
 /// Parameter layout of [`condition_memory_model`] as a function of its
@@ -31,10 +26,12 @@ pub(super) const CONDITION_THRESHOLD: f64 = 2.0;
 /// p[2n + 1]        the `initial()` activation buffer
 /// ```
 #[derive(Clone, Copy)]
+#[cfg(test)]
 pub(super) struct ConditionLayout {
     count: usize,
 }
 
+#[cfg(test)]
 impl ConditionLayout {
     pub(super) fn new(count: usize) -> Self {
         Self { count }
@@ -80,6 +77,7 @@ fn fixture_block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::
 }
 
 /// A condition-memory row reading `p[source] > CONDITION_THRESHOLD`.
+#[cfg(test)]
 fn threshold_row(source: usize) -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::LoadP {
@@ -101,6 +99,7 @@ fn threshold_row(source: usize) -> Vec<solve::LinearOp> {
 }
 
 /// A condition-memory row reading the `initial()` flag.
+#[cfg(test)]
 fn initial_row(flag: usize) -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::LoadP {
@@ -117,6 +116,7 @@ fn initial_row(flag: usize) -> Vec<solve::LinearOp> {
 /// Every condition is `s_i > CONDITION_THRESHOLD` over its own start value, so
 /// a caller picks which conditions are already true at the initialization
 /// instant purely by choosing `starts`.
+#[cfg(test)]
 pub(super) fn condition_memory_model(starts: &[f64]) -> solve::SolveModel {
     let layout = ConditionLayout::new(starts.len());
     let mut rows = (0..layout.count())
@@ -150,7 +150,7 @@ pub(super) fn condition_memory_model(starts: &[f64]) -> solve::SolveModel {
                 ..Default::default()
             },
             discrete: solve::DiscreteSolveSystem {
-                rhs: fixture_block(rows, "condition_memory_verification.mo"),
+                rhs: fixture_block(rows, "cm.mo"),
                 update_targets: targets,
                 row_roles: vec![solve::DiscreteRowRole::ConditionMemory; row_count],
                 pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; row_count],
@@ -188,8 +188,7 @@ pub(super) fn single_state_model() -> solve::SolveModel {
             },
             continuous: solve::ContinuousSolveSystem {
                 derivative_rhs: solve::ComputeBlock::from_scalar_program_block(fixture_block(
-                    derivative,
-                    "single_state_verification.mo",
+                    derivative, "ss.mo",
                 )),
                 ..Default::default()
             },
@@ -203,7 +202,7 @@ pub(super) fn single_state_model() -> solve::SolveModel {
                 solve::LinearOp::LoadY { dst: 0, index: 0 },
                 solve::LinearOp::StoreOutput { src: 0 },
             ]],
-            "single_state_verification.mo",
+            "ss.mo",
         ),
         ..Default::default()
     }
@@ -237,7 +236,7 @@ pub(super) fn single_state_indicator_model() -> solve::SolveModel {
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]],
-        "single_state_indicator_verification.mo",
+        "si.mo",
     );
     model.problem.events.root_relation_memory_targets = vec![None];
     model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Previous];
@@ -269,7 +268,7 @@ pub(super) fn divergent_initialization_model(increment: f64) -> solve::SolveMode
             },
             solve::LinearOp::StoreOutput { src: 2 },
         ]],
-        "divergent_initialization_verification.mo",
+        "di.mo",
     );
     model.problem.initialization.update_targets = vec![solve::scalar_slot_p(0)];
     model
@@ -307,7 +306,7 @@ pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel
                 },
                 solve::LinearOp::StoreOutput { src: 4 },
             ]],
-            "divergent_runtime_event_verification.mo",
+            "dre.mo",
         ),
         update_targets: vec![solve::scalar_slot_p(0)],
         row_roles: vec![solve::DiscreteRowRole::Equation],

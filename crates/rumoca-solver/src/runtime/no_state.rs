@@ -149,7 +149,18 @@ impl NoStateEventStep {
 
     pub fn root_boundary(self) -> Option<NoStateRootBoundary> {
         self.root_event.then(|| {
-            let event_time = self.root_event_time.unwrap_or(self.stop_time);
+            let located_time = self.root_event_time.unwrap_or(self.stop_time);
+            // A root located within the output timestamp's representational
+            // tolerance is the same semantic instant. Canonicalize it before
+            // selecting the adjacent post side so a rounded-down bisection
+            // result cannot leave a strict relation exactly on its boundary.
+            let event_time = if self.target.is_finite()
+                && sample_time_match_with_tol(located_time, self.target)
+            {
+                self.target
+            } else {
+                located_time
+            };
             NoStateRootBoundary {
                 event_time,
                 evaluation_time: event_time.next_up(),
@@ -480,6 +491,25 @@ mod tests {
         .root_boundary()
         .unwrap();
         assert_eq!(boundary, tight_value_tolerance);
+    }
+
+    #[test]
+    fn root_boundary_canonicalizes_an_adjacent_located_time_to_the_output_target() {
+        let target = 0.5;
+        let boundary = NoStateEventStep {
+            target,
+            stop_time: target,
+            event_stop: None,
+            root_event_time: Some(target.next_down()),
+            root_event: true,
+            tol: 1.0e-10,
+        }
+        .root_boundary()
+        .unwrap();
+
+        assert_eq!(boundary.observation_time(), target);
+        assert_eq!(boundary.evaluation_time(), target.next_up());
+        assert_eq!(boundary.continuation_time(), target);
     }
 
     struct OscillatoryBackend {

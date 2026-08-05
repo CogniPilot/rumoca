@@ -1,5 +1,27 @@
 use super::*;
 
+pub(super) fn lower_generated_boolean_assignment<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    mut body: dae::FunctionBody<'dae>,
+    target: &VarName,
+    value: &Expression,
+    span: Span,
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    let lowered = lower_function_expression(
+        construction,
+        symbols.coordinates,
+        symbols.functions,
+        symbols.shapes,
+        &body,
+        value,
+    )?;
+    let target = function_value_coordinate(symbols.coordinates, target);
+    let provenance = dae::DaeProvenance::source(span)?;
+    construction.functions(|functions| functions.assign(&mut body, target, lowered, provenance))?;
+    Ok(body)
+}
+
 pub(super) fn lower_integer_reduction<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
@@ -298,6 +320,7 @@ fn lower_guarded_return_value<'dae>(
 
 pub(super) struct FunctionConditional<'scope, 'statement, 'dae> {
     pub(super) symbols: FunctionSymbols<'scope, 'dae>,
+    pub(super) binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
     pub(super) blocks: &'statement [rumoca_core::StatementBlock],
     pub(super) fallback: Option<&'statement [rumoca_core::Statement]>,
     pub(super) branch_plans: &'statement [Vec<FunctionStatementPlan>],
@@ -318,16 +341,28 @@ pub(super) fn lower_function_conditional<'dae>(
     body: &mut dae::FunctionBody<'dae>,
     input: FunctionConditional<'_, '_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
+    let provenance =
+        dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, input.span)?;
+    let lowered = lower_function_conditional_values(construction, body, input)?;
+    construction.functions(|functions| functions.assign_all(body, &lowered, provenance))
+}
+
+fn lower_function_conditional_values<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    input: FunctionConditional<'_, '_, 'dae>,
+) -> Result<Vec<(dae::FunctionValueId<'dae>, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
     let conditions = input
         .blocks
         .iter()
         .map(|block| {
-            lower_function_expression(
+            lower_function_expression_scoped(
                 construction,
                 input.symbols.coordinates,
                 input.symbols.functions,
                 input.symbols.shapes,
                 body,
+                input.binders,
                 &block.cond,
             )
         })
@@ -339,6 +374,7 @@ pub(super) fn lower_function_conditional<'dae>(
             body,
             ConditionalBranch {
                 symbols: input.symbols,
+                binders: input.binders,
                 statements: &block.stmts,
                 plans,
             },
@@ -350,6 +386,7 @@ pub(super) fn lower_function_conditional<'dae>(
             body,
             ConditionalBranch {
                 symbols: input.symbols,
+                binders: input.binders,
                 statements,
                 plans,
             },
@@ -390,12 +427,12 @@ pub(super) fn lower_function_conditional<'dae>(
         })?;
         lowered.push((target_id, value));
     }
-    construction.functions(|functions| functions.assign_all(body, &lowered, provenance))?;
-    Ok(())
+    Ok(lowered)
 }
 
 struct ConditionalBranch<'scope, 'statement, 'dae> {
     symbols: FunctionSymbols<'scope, 'dae>,
+    binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
     statements: &'statement [rumoca_core::Statement],
     plans: &'statement [FunctionStatementPlan],
 }
@@ -409,112 +446,284 @@ struct ConditionalBranch<'scope, 'statement, 'dae> {
 /// conditional that owns it.
 fn lower_conditional_branch<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    body: &dae::FunctionBody<'dae>,
     input: ConditionalBranch<'_, '_, 'dae>,
 ) -> Result<HashMap<VarName, dae::ExprId<'dae>>, dae::DaeConstructionError> {
     let ConditionalBranch {
         symbols,
+        binders,
         statements,
         plans,
     } = input;
     debug_assert_eq!(statements.len(), plans.len());
     let mut values = HashMap::new();
-    lower_conditional_statements(construction, body, symbols, statements, plans, &mut values)?;
+    lower_conditional_statements(
+        construction,
+        body,
+        symbols,
+        binders,
+        statements,
+        plans,
+        &mut values,
+    )?;
     Ok(values)
 }
 
 fn lower_conditional_statements<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    body: &dae::FunctionBody<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
     debug_assert_eq!(statements.len(), plans.len());
-    for (statement, plan) in statements.iter().zip(plans) {
-        match (statement, plan) {
-            (_, FunctionStatementPlan::ProvenAssertion) => {}
-            (_, FunctionStatementPlan::RuntimeAssertion) => {
-                unreachable!("runtime conditional assertions are rejected during planning")
-            }
-            (
-                rumoca_core::Statement::Assignment { value, span, .. },
-                FunctionStatementPlan::Assignment(assignment),
-            ) => lower_conditional_assignment(
-                construction,
-                body,
-                symbols,
-                assignment,
-                value,
-                *span,
-                values,
-            )?,
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    span,
-                },
-                FunctionStatementPlan::If {
-                    branches,
-                    fallback,
-                    targets,
-                },
-            ) => lower_nested_conditional(
-                construction,
-                body,
-                NestedFunctionConditional {
-                    symbols,
-                    blocks: cond_blocks,
-                    fallback: else_block.as_deref(),
-                    branch_plans: branches,
-                    fallback_plans: fallback.as_deref(),
-                    targets,
-                    span: *span,
-                },
-                values,
-            )?,
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    ..
-                },
-                FunctionStatementPlan::ProvenBranch {
-                    selected,
-                    statements,
-                },
-            ) => {
-                let source =
-                    selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
-                lower_conditional_statements(
-                    construction,
-                    body,
-                    symbols,
-                    source,
-                    statements,
-                    values,
-                )?;
-            }
-            _ => unreachable!(
-                "analysis accepts only expression-owned statements in a function branch"
-            ),
+    let mut index = 0usize;
+    while index < statements.len() {
+        if let Some(count) = lower_conditional_record_assembly(
+            construction,
+            body,
+            symbols,
+            &statements[index..],
+            &plans[index],
+            values,
+        )? {
+            index += count;
+            continue;
         }
+        let statement = &statements[index];
+        let plan = &plans[index];
+        lower_one_conditional_statement(
+            construction,
+            body,
+            symbols,
+            binders,
+            statement,
+            plan,
+            values,
+        )?;
+        index += 1;
     }
     Ok(())
+}
+
+fn lower_one_conditional_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
+    match (statement, plan) {
+        (_, FunctionStatementPlan::ProvenAssertion) => Ok(()),
+        (_, FunctionStatementPlan::RuntimeAssertion) => {
+            unreachable!("runtime conditional assertions are rejected during planning")
+        }
+        (
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(assignment),
+        ) => lower_conditional_assignment(
+            construction,
+            body,
+            ConditionalAssignment {
+                symbols,
+                binders,
+                assignment,
+                value,
+                span: *span,
+            },
+            values,
+        ),
+        (
+            rumoca_core::Statement::FunctionCall {
+                comp, args, span, ..
+            },
+            FunctionStatementPlan::MultiOutputCall { outputs },
+        ) => lower_conditional_multi_output_call(
+            construction,
+            body,
+            symbols,
+            binders,
+            FunctionMultiOutputCall {
+                callee: comp,
+                args,
+                span: *span,
+                outputs,
+            },
+            values,
+        ),
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                span,
+            },
+            FunctionStatementPlan::If {
+                branches,
+                fallback,
+                targets,
+            },
+        ) => lower_nested_conditional(
+            construction,
+            body,
+            NestedFunctionConditional {
+                symbols,
+                binders,
+                blocks: cond_blocks,
+                fallback: else_block.as_deref(),
+                branch_plans: branches,
+                fallback_plans: fallback.as_deref(),
+                targets,
+                span: *span,
+            },
+            values,
+        ),
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            },
+            FunctionStatementPlan::ProvenBranch {
+                selected,
+                statements,
+            },
+        ) => lower_selected_conditional(
+            construction,
+            body,
+            symbols,
+            binders,
+            (cond_blocks, else_block.as_deref(), *selected),
+            statements,
+            values,
+        ),
+        _ => unreachable!("analysis accepts only expression-owned statements in a function branch"),
+    }
+}
+
+fn lower_conditional_record_assembly<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    statements: &[rumoca_core::Statement],
+    plan: &FunctionStatementPlan,
+    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+) -> Result<Option<usize>, dae::DaeConstructionError> {
+    let FunctionStatementPlan::RecordAssembly(assembly) = plan else {
+        return Ok(None);
+    };
+    let count = assembly.statement_count;
+    let (_, record, _) =
+        lower_function_record_value(construction, symbols, body, &statements[..count], assembly)?;
+    values.insert(assembly.target.clone(), record);
+    Ok(Some(count))
+}
+
+fn lower_selected_conditional<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    conditional: (
+        &[rumoca_core::StatementBlock],
+        Option<&[rumoca_core::Statement]>,
+        Option<usize>,
+    ),
+    plans: &[FunctionStatementPlan],
+    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
+    let source = selected_conditional_statements(conditional.0, conditional.1, conditional.2);
+    lower_conditional_statements(construction, body, symbols, binders, source, plans, values)
+}
+
+fn lower_conditional_multi_output_call<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &dae::FunctionBody<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    call: FunctionMultiOutputCall<'_>,
+    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::source(call.span)?;
+    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
+    let operands = lower_call_operands(
+        construction,
+        LoweringSymbols {
+            coordinates: symbols.coordinates,
+            functions: symbols.functions,
+            shapes: symbols.shapes,
+            function_body: Some(body),
+            values: Some(values),
+            owner_clock: None,
+        },
+        binders,
+        &reference,
+        call.args,
+        provenance,
+    )?;
+    for (ordinal, output) in call.outputs.iter().enumerate() {
+        let Some(output) = output else {
+            continue;
+        };
+        let target = function_value_coordinate(symbols.coordinates, output.target());
+        let mut value = operands.result(construction, ordinal, provenance)?;
+        if !output.subscripts().is_empty() {
+            let base = match values.get(output.target()).copied() {
+                Some(value) => Some(value),
+                None => output
+                    .seed()
+                    .map(|seed| lower_function_value_seed(construction, seed, call.span))
+                    .transpose()?,
+            };
+            value = lower_function_array_update(
+                construction,
+                FunctionArrayUpdate {
+                    symbols: LoweringSymbols {
+                        coordinates: symbols.coordinates,
+                        functions: symbols.functions,
+                        shapes: symbols.shapes,
+                        function_body: Some(body),
+                        values: Some(values),
+                        owner_clock: None,
+                    },
+                    binders,
+                    base,
+                    target,
+                    subscripts: output.subscripts(),
+                    value,
+                    provenance,
+                },
+            )?;
+        }
+        values.insert(output.target().clone(), value);
+    }
+    Ok(())
+}
+
+struct ConditionalAssignment<'scope, 'statement, 'dae> {
+    symbols: FunctionSymbols<'scope, 'dae>,
+    binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
+    assignment: &'statement FunctionAssignmentPlan,
+    value: &'statement Expression,
+    span: Span,
 }
 
 fn lower_conditional_assignment<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &dae::FunctionBody<'dae>,
-    symbols: FunctionSymbols<'_, 'dae>,
-    assignment: &FunctionAssignmentPlan,
-    value: &Expression,
-    span: Span,
+    input: ConditionalAssignment<'_, '_, 'dae>,
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let binders = HashMap::new();
+    let ConditionalAssignment {
+        symbols,
+        binders,
+        assignment,
+        value,
+        span,
+    } = input;
     let target = function_value_coordinate(symbols.coordinates, assignment.target());
     let provenance = dae::DaeProvenance::source(span)?;
     let mut lowered = lower_expression_scoped(
@@ -527,7 +736,7 @@ fn lower_conditional_assignment<'dae>(
             values: Some(values),
             owner_clock: None,
         },
-        &binders,
+        binders,
         value,
         None,
     )?;
@@ -545,7 +754,7 @@ fn lower_conditional_assignment<'dae>(
                     values: Some(values),
                     owner_clock: None,
                 },
-                binders: &binders,
+                binders,
                 base,
                 target,
                 subscripts,
@@ -576,6 +785,7 @@ fn conditional_assignment_base<'dae>(
 
 struct NestedFunctionConditional<'scope, 'statement, 'dae> {
     symbols: FunctionSymbols<'scope, 'dae>,
+    binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
     blocks: &'statement [rumoca_core::StatementBlock],
     fallback: Option<&'statement [rumoca_core::Statement]>,
     branch_plans: &'statement [Vec<FunctionStatementPlan>],
@@ -586,11 +796,10 @@ struct NestedFunctionConditional<'scope, 'statement, 'dae> {
 
 fn lower_nested_conditional<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    body: &dae::FunctionBody<'dae>,
     input: NestedFunctionConditional<'_, '_, 'dae>,
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let binders = HashMap::new();
     let mut conditions = Vec::with_capacity(input.blocks.len());
     for block in input.blocks {
         conditions.push(lower_expression_scoped(
@@ -603,7 +812,7 @@ fn lower_nested_conditional<'dae>(
                 values: Some(values),
                 owner_clock: None,
             },
-            &binders,
+            input.binders,
             &block.cond,
             None,
         )?);
@@ -616,6 +825,7 @@ fn lower_nested_conditional<'dae>(
             construction,
             body,
             input.symbols,
+            input.binders,
             &block.stmts,
             plans,
             &mut branch,
@@ -629,6 +839,7 @@ fn lower_nested_conditional<'dae>(
                 construction,
                 body,
                 input.symbols,
+                input.binders,
                 statements,
                 plans,
                 &mut branch,
@@ -705,8 +916,104 @@ pub(super) fn lower_function_value_seed<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionAggregateLowering, span)?;
-    let binders = seed
-        .dimensions
+    lower_seed_value(construction, seed, provenance).map(|(_, value)| value)
+}
+
+fn lower_seed_value<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    seed: &FunctionValueSeed,
+    provenance: dae::DaeProvenance,
+) -> Result<(dae::ValueTypeId<'dae>, dae::ExprId<'dae>), dae::DaeConstructionError> {
+    match seed {
+        FunctionValueSeed::Scalar { dimensions, scalar } => {
+            let value_type = construction.types(|types| {
+                types.derived(
+                    dae::ValueType::array(*scalar, dimensions.clone()),
+                    provenance,
+                )
+            })?;
+            let element = match scalar {
+                dae::ScalarType::Real => construction.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Real(0.0))
+                })?,
+                dae::ScalarType::Integer => construction.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Integer(0))
+                })?,
+                dae::ScalarType::Enumeration => construction
+                    .expressions(|expressions| expressions.at(provenance).enumeration_literal(1))?,
+                dae::ScalarType::Boolean => construction.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Boolean(false))
+                })?,
+                dae::ScalarType::String => construction.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::String(String::new()))
+                })?,
+                dae::ScalarType::Record => {
+                    unreachable!("record seeds own a recursive field tree")
+                }
+            };
+            let value = lower_seed_array(construction, dimensions, element, provenance)?;
+            Ok((value_type, value))
+        }
+        FunctionValueSeed::Record {
+            name,
+            dimensions,
+            fields,
+        } => {
+            let fields = fields
+                .iter()
+                .map(|(name, seed)| {
+                    lower_seed_value(construction, seed, provenance)
+                        .map(|(value_type, value)| (name.clone(), value_type, value))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let scalar_type = construction.types(|types| {
+                types.record(
+                    name.clone(),
+                    fields
+                        .iter()
+                        .map(|(name, value_type, _)| (name.clone(), *value_type)),
+                    provenance,
+                )
+            })?;
+            let record = construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .record(scalar_type, fields.iter().map(|(_, _, value)| *value))
+            })?;
+            let value = lower_seed_array(construction, dimensions, record, provenance)?;
+            let value_type = construction.types(|types| {
+                types.record_array(
+                    name.clone(),
+                    fields
+                        .iter()
+                        .map(|(name, value_type, _)| (name.clone(), *value_type)),
+                    dimensions.clone(),
+                    provenance,
+                )
+            })?;
+            Ok((value_type, value))
+        }
+    }
+}
+
+fn lower_seed_array<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    dimensions: &[u32],
+    element: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if dimensions.is_empty() {
+        return Ok(element);
+    }
+    let binders = dimensions
         .iter()
         .enumerate()
         .map(|(ordinal, extent)| StructuredIndexBinder {
@@ -719,16 +1026,6 @@ pub(super) fn lower_function_value_seed<'dae>(
         .collect::<Vec<_>>();
     let domain = construction
         .domains(|domains| domains.structured(StructuredIndexDomain { binders }, provenance))?;
-    let literal = match seed.scalar {
-        dae::ScalarType::Real => dae::DaeLiteral::Real(0.0),
-        dae::ScalarType::Integer => dae::DaeLiteral::Integer(0),
-        dae::ScalarType::Boolean => dae::DaeLiteral::Boolean(false),
-        dae::ScalarType::String | dae::ScalarType::Enumeration | dae::ScalarType::Record => {
-            unreachable!("analysis seeds only numeric and Boolean aggregates")
-        }
-    };
-    let element =
-        construction.expressions(|expressions| expressions.at(provenance).literal(literal))?;
     construction
         .expressions(|expressions| expressions.at(provenance).comprehension(domain, element))
 }
@@ -744,11 +1041,67 @@ pub(super) struct TotalArrayDefinition<'scope, 'statement, 'dae> {
 
 pub(super) fn lower_total_function_array_definition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    mut body: dae::FunctionBody<'dae>,
     input: TotalArrayDefinition<'_, '_, 'dae>,
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    if input
+        .plans
+        .iter()
+        .any(|plan| matches!(plan, FunctionStatementPlan::RuntimeAssertion))
+    {
+        let mut loop_body = construction
+            .functions(|functions| functions.begin_loop(body, input.domain, [], input.owner))?;
+        lower_total_function_assertions(construction, &input, &mut loop_body)?;
+        body = construction.functions(|functions| functions.finish_loop(loop_body, input.owner))?;
+    }
+    for (statement, plan) in input.statements.iter().zip(input.plans) {
+        if matches!(plan, FunctionStatementPlan::Assignment(_)) {
+            lower_one_total_function_array_definition(
+                construction,
+                &mut body,
+                &input,
+                statement,
+                plan,
+            )?;
+        }
+    }
+    Ok(body)
+}
+
+fn lower_total_function_assertions<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    input: &TotalArrayDefinition<'_, '_, 'dae>,
+    loop_body: &mut dae::FunctionLoop<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     for (statement, plan) in input.statements.iter().zip(input.plans) {
-        lower_one_total_function_array_definition(construction, body, &input, statement, plan)?;
+        if !matches!(plan, FunctionStatementPlan::RuntimeAssertion) {
+            continue;
+        }
+        let assertion = function_assertion(statement, input.symbols.functions.flat)
+            .expect("analysis already validates the total-definition assertion")
+            .expect("a runtime assertion plan owns an assertion statement");
+        let condition = lower_function_expression_scoped(
+            construction,
+            input.symbols.coordinates,
+            input.symbols.functions,
+            input.symbols.shapes,
+            loop_body.body(),
+            input.binders,
+            assertion.condition,
+        )?;
+        let message = lower_function_expression_scoped(
+            construction,
+            input.symbols.coordinates,
+            input.symbols.functions,
+            input.symbols.shapes,
+            loop_body.body(),
+            input.binders,
+            assertion.message,
+        )?;
+        let provenance = dae::DaeProvenance::source(assertion.span)?;
+        construction.functions(|functions| {
+            functions.assertion_loop(loop_body, condition, message, provenance)
+        })?;
     }
     Ok(())
 }
@@ -802,9 +1155,21 @@ pub(super) struct FunctionFold<'scope, 'statement, 'dae> {
 pub(super) fn lower_function_fold<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: dae::FunctionBody<'dae>,
+    mut body: dae::FunctionBody<'dae>,
     input: FunctionFold<'_, '_, 'dae>,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    let mut seeds = Vec::new();
+    collect_function_sequence_seeds(input.plans, &mut seeds);
+    let provenance = dae::DaeProvenance::generated(
+        dae::DaeGeneration::FunctionAggregateLowering,
+        input.owner.span(),
+    )?;
+    for (target, seed) in seeds {
+        let seeded = lower_function_value_seed(construction, seed, input.owner.span())?;
+        let target = function_value_coordinate(symbols.coordinates, target);
+        construction
+            .functions(|functions| functions.assign(&mut body, target, seeded, provenance))?;
+    }
     let target_ids = input
         .targets
         .iter()
@@ -812,10 +1177,10 @@ pub(super) fn lower_function_fold<'dae>(
         .collect::<Vec<_>>();
     let mut loop_body = construction
         .functions(|functions| functions.begin_loop(body, input.domain, target_ids, input.owner))?;
-    lower_function_loop_statements(
+    loop_body = lower_function_loop_statements(
         construction,
         symbols,
-        &mut loop_body,
+        loop_body,
         input.binders,
         input.statements,
         input.plans,
@@ -826,33 +1191,229 @@ pub(super) fn lower_function_fold<'dae>(
 fn lower_function_loop_statements<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    loop_body: &mut dae::FunctionLoop<'dae>,
+    mut loop_body: dae::FunctionLoop<'dae>,
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionLoop<'dae>, dae::DaeConstructionError> {
     debug_assert_eq!(statements.len(), plans.len());
-    for (statement, plan) in statements.iter().zip(plans) {
-        let (
-            rumoca_core::Statement::Assignment { value, span, .. },
-            FunctionStatementPlan::Assignment(assignment),
-        ) = (statement, plan)
-        else {
-            unreachable!("nested function loops are rejected during analysis")
-        };
-        let target = function_value_coordinate(symbols.coordinates, assignment.target());
-        let mut value = lower_function_expression_scoped(
+    let mut index = 0usize;
+    while index < statements.len() {
+        if let FunctionStatementPlan::RecordAssembly(assembly) = &plans[index] {
+            let count = assembly.statement_count;
+            lower_function_loop_record_assembly(
+                construction,
+                symbols,
+                &mut loop_body,
+                &statements[index..index + count],
+                assembly,
+            )?;
+            index += count;
+            continue;
+        }
+        loop_body = lower_one_function_loop_statement(
             construction,
-            symbols.coordinates,
-            symbols.functions,
-            symbols.shapes,
-            loop_body.body(),
+            symbols,
+            loop_body,
             binders,
-            value,
+            &statements[index],
+            &plans[index],
         )?;
-        let provenance = dae::DaeProvenance::source(*span)?;
-        let subscripts = assignment.subscripts();
-        if !subscripts.is_empty() {
+        index += 1;
+    }
+    Ok(loop_body)
+}
+
+fn lower_one_function_loop_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    mut loop_body: dae::FunctionLoop<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<dae::FunctionLoop<'dae>, dae::DaeConstructionError> {
+    if matches!(plan, FunctionStatementPlan::ProvenAssertion) {
+        return Ok(loop_body);
+    }
+    if matches!(plan, FunctionStatementPlan::RuntimeAssertion) {
+        lower_function_loop_assertion(construction, symbols, &mut loop_body, binders, statement)?;
+        return Ok(loop_body);
+    }
+    if lower_loop_multi_output_statement(
+        construction,
+        symbols,
+        &mut loop_body,
+        binders,
+        statement,
+        plan,
+    )? {
+        return Ok(loop_body);
+    }
+    if matches!(
+        (statement, plan),
+        (
+            rumoca_core::Statement::For { .. },
+            FunctionStatementPlan::For { .. }
+        )
+    ) {
+        return lower_nested_function_loop(
+            construction,
+            symbols,
+            loop_body,
+            binders,
+            statement,
+            plan,
+        );
+    }
+    if let (
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            span,
+        },
+        FunctionStatementPlan::If {
+            branches,
+            fallback,
+            targets,
+        },
+    ) = (statement, plan)
+    {
+        return lower_loop_conditional(
+            construction,
+            symbols,
+            loop_body,
+            FunctionConditional {
+                symbols,
+                binders,
+                blocks: cond_blocks,
+                fallback: else_block.as_deref(),
+                branch_plans: branches,
+                fallback_plans: fallback.as_deref(),
+                targets,
+                span: *span,
+            },
+        );
+    }
+    if let (
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        },
+        FunctionStatementPlan::ProvenBranch {
+            selected,
+            statements: selected_plans,
+        },
+    ) = (statement, plan)
+    {
+        let selected_statements =
+            selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+        return lower_function_loop_statements(
+            construction,
+            symbols,
+            loop_body,
+            binders,
+            selected_statements,
+            selected_plans,
+        );
+    }
+    lower_function_loop_assignment(
+        construction,
+        symbols,
+        &mut loop_body,
+        binders,
+        statement,
+        plan,
+    )?;
+    Ok(loop_body)
+}
+
+fn lower_loop_multi_output_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    loop_body: &mut dae::FunctionLoop<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<bool, dae::DaeConstructionError> {
+    let (
+        rumoca_core::Statement::FunctionCall {
+            comp, args, span, ..
+        },
+        FunctionStatementPlan::MultiOutputCall { outputs },
+    ) = (statement, plan)
+    else {
+        return Ok(false);
+    };
+    lower_function_loop_multi_output_call(
+        construction,
+        symbols,
+        loop_body,
+        binders,
+        FunctionMultiOutputCall {
+            callee: comp,
+            args,
+            span: *span,
+            outputs,
+        },
+    )?;
+    Ok(true)
+}
+
+fn lower_loop_conditional<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    mut loop_body: dae::FunctionLoop<'dae>,
+    conditional: FunctionConditional<'_, '_, 'dae>,
+) -> Result<dae::FunctionLoop<'dae>, dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::generated(
+        dae::DaeGeneration::FunctionConditionLowering,
+        conditional.span,
+    )?;
+    let lowered = lower_function_conditional_values(
+        construction,
+        loop_body.body(),
+        FunctionConditional {
+            symbols,
+            ..conditional
+        },
+    )?;
+    construction
+        .functions(|functions| functions.assign_all_loop(&mut loop_body, &lowered, provenance))?;
+    Ok(loop_body)
+}
+
+fn lower_function_loop_multi_output_call<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    loop_body: &mut dae::FunctionLoop<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    call: FunctionMultiOutputCall<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::source(call.span)?;
+    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
+    let operands = lower_call_operands(
+        construction,
+        LoweringSymbols {
+            coordinates: symbols.coordinates,
+            functions: symbols.functions,
+            shapes: symbols.shapes,
+            function_body: Some(loop_body.body()),
+            values: None,
+            owner_clock: None,
+        },
+        binders,
+        &reference,
+        call.args,
+        provenance,
+    )?;
+    for (ordinal, output) in call.outputs.iter().enumerate() {
+        let Some(output) = output else {
+            continue;
+        };
+        let target = function_value_coordinate(symbols.coordinates, output.target());
+        let mut value = operands.result(construction, ordinal, provenance)?;
+        if !output.subscripts().is_empty() {
             value = lower_function_array_update(
                 construction,
                 FunctionArrayUpdate {
@@ -865,11 +1426,9 @@ fn lower_function_loop_statements<'dae>(
                         owner_clock: None,
                     },
                     binders,
-                    // Analysis proves a loop-carried value already owns every
-                    // element, so the transition updates its current value.
                     base: None,
                     target,
-                    subscripts,
+                    subscripts: output.subscripts(),
                     value,
                     provenance,
                 },
@@ -879,6 +1438,164 @@ fn lower_function_loop_statements<'dae>(
             .functions(|functions| functions.assign_loop(loop_body, target, value, provenance))?;
     }
     Ok(())
+}
+
+fn lower_nested_function_loop<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    parent: dae::FunctionLoop<'dae>,
+    enclosing_binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<dae::FunctionLoop<'dae>, dae::DaeConstructionError> {
+    let (
+        rumoca_core::Statement::For {
+            indices,
+            equations,
+            span,
+        },
+        FunctionStatementPlan::For {
+            domain,
+            binder_spans,
+            lowering,
+            statements,
+            source_depth,
+        },
+    ) = (statement, plan)
+    else {
+        unreachable!("a nested function-loop plan owns a for statement")
+    };
+    let owner = dae::DaeProvenance::source(*span)?;
+    let domain_provenance = match binder_spans.as_slice() {
+        [span] => dae::DaeProvenance::source(*span)?,
+        _ => owner,
+    };
+    let child_domain = construction
+        .domains(|domains| domains.nested(parent.domain(), domain.clone(), domain_provenance))?;
+    let (child_indices, child_statements) =
+        flattened_function_loop(indices, equations, *source_depth);
+    let child_binders =
+        lower_function_binders(construction, child_domain, &child_indices, binder_spans)?;
+    let mut binders = enclosing_binders.clone();
+    binders.extend(child_binders);
+    let mut child_shapes = symbols.shapes.clone();
+    for binder in &domain.binders {
+        child_shapes.bind_integer_bounds(
+            VarName::new(&binder.display_name),
+            binder.lower.min(binder.upper),
+            binder.lower.max(binder.upper),
+        );
+    }
+    let child_symbols = FunctionSymbols {
+        coordinates: symbols.coordinates,
+        functions: symbols.functions,
+        shapes: &child_shapes,
+    };
+    let FunctionLoopLowering::Fold { targets } = lowering else {
+        unreachable!("a nested total definition is compacted before fold lowering")
+    };
+    let target_ids = targets
+        .iter()
+        .map(|target| function_value_coordinate(symbols.coordinates, target))
+        .collect::<Vec<_>>();
+    let child = construction.functions(|functions| {
+        functions.begin_nested_loop(parent, child_domain, target_ids, owner)
+    })?;
+    let child = lower_function_loop_statements(
+        construction,
+        child_symbols,
+        child,
+        &binders,
+        child_statements,
+        statements,
+    )?;
+    construction.functions(|functions| functions.finish_nested_loop(child, owner))
+}
+
+fn lower_function_loop_assertion<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    loop_body: &mut dae::FunctionLoop<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    statement: &rumoca_core::Statement,
+) -> Result<(), dae::DaeConstructionError> {
+    let assertion = function_assertion(statement, symbols.functions.flat)
+        .expect("analysis already validates the loop assertion")
+        .expect("a runtime assertion plan owns an assertion statement");
+    let condition = lower_function_expression_scoped(
+        construction,
+        symbols.coordinates,
+        symbols.functions,
+        symbols.shapes,
+        loop_body.body(),
+        binders,
+        assertion.condition,
+    )?;
+    let message = lower_function_expression_scoped(
+        construction,
+        symbols.coordinates,
+        symbols.functions,
+        symbols.shapes,
+        loop_body.body(),
+        binders,
+        assertion.message,
+    )?;
+    let provenance = dae::DaeProvenance::source(assertion.span)?;
+    construction
+        .functions(|functions| functions.assertion_loop(loop_body, condition, message, provenance))
+}
+
+fn lower_function_loop_assignment<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    loop_body: &mut dae::FunctionLoop<'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    statement: &rumoca_core::Statement,
+    plan: &FunctionStatementPlan,
+) -> Result<(), dae::DaeConstructionError> {
+    let (
+        rumoca_core::Statement::Assignment { value, span, .. },
+        FunctionStatementPlan::Assignment(assignment),
+    ) = (statement, plan)
+    else {
+        unreachable!("function loop analysis admits only checked transition statements")
+    };
+    let target = function_value_coordinate(symbols.coordinates, assignment.target());
+    let mut value = lower_function_expression_scoped(
+        construction,
+        symbols.coordinates,
+        symbols.functions,
+        symbols.shapes,
+        loop_body.body(),
+        binders,
+        value,
+    )?;
+    let provenance = dae::DaeProvenance::source(*span)?;
+    let subscripts = assignment.subscripts();
+    if !subscripts.is_empty() {
+        value = lower_function_array_update(
+            construction,
+            FunctionArrayUpdate {
+                symbols: LoweringSymbols {
+                    coordinates: symbols.coordinates,
+                    functions: symbols.functions,
+                    shapes: symbols.shapes,
+                    function_body: Some(loop_body.body()),
+                    values: None,
+                    owner_clock: None,
+                },
+                binders,
+                // Analysis proves a loop-carried value already owns every
+                // element, so the transition updates its current value.
+                base: None,
+                target,
+                subscripts,
+                value,
+                provenance,
+            },
+        )?;
+    }
+    construction.functions(|functions| functions.assign_loop(loop_body, target, value, provenance))
 }
 
 pub(super) fn flattened_function_loop<'statement>(

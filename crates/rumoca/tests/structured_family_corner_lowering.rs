@@ -117,3 +117,100 @@ fn regular_family_still_evaluates_correctly() {
     let derivatives = evaluated_derivatives(REGULAR_FAMILY, "RegularFamily", "RegularFamily.mo");
     assert_eq!(derivatives, vec![-2.0; 5]);
 }
+
+#[test]
+fn partial_state_range_with_neighbor_reads_is_a_native_stencil() {
+    let source = r#"
+model CascadedFirstOrder
+  constant Integer N = 8;
+  Real x[N](each start = 1.0);
+equation
+  der(x[1]) = 1.0 - x[1];
+  for i in 2:N loop
+    der(x[i]) = x[i - 1] - x[i];
+  end for;
+end CascadedFirstOrder;
+"#;
+    let compiled = Compiler::new()
+        .model("CascadedFirstOrder")
+        .compile_str(source, "CascadedFirstOrder.mo")
+        .expect("the compact partial derivative family should compile");
+    let solve = rumoca_sim::lower_solve_problem(&compiled.dae)
+        .expect("the partial derivative family should lower to Solve IR");
+    let counts = solve.compute_node_counts();
+    assert_eq!(
+        counts.affine_stencil, 1,
+        "the i=2:N neighbor relation must remain one native AffineStencil"
+    );
+}
+
+#[test]
+fn structured_family_binder_is_a_scalar_function_argument() {
+    let source = r#"
+function selectElement
+  input Real values[:];
+  input Integer index;
+  output Real selected;
+algorithm
+  selected := values[index];
+end selectElement;
+
+model StructuredCall
+  Real y[3];
+equation
+  for i in 1:3 loop
+    y[i] = selectElement({10.0, 20.0, 30.0}, i);
+  end for;
+end StructuredCall;
+"#;
+    let compiled = Compiler::new()
+        .model("StructuredCall")
+        .compile_str(source, "StructuredCall.mo")
+        .expect("a compact domain binder carries scalar shape evidence into call selection");
+    compiled.dae.inspect(|view| {
+        assert_eq!(view.continuous_family_count(), 1);
+        let family = view
+            .continuous_family(0)
+            .expect("the source for-equation remains one tensor-native owner");
+        assert_eq!(
+            view.domain(family.domain())
+                .expect("the family domain resolves")
+                .scalar_count(),
+            3
+        );
+    });
+}
+
+#[test]
+fn mixed_slice_and_scalar_loop_has_one_authoritative_family() {
+    let source = r#"
+model MixedFamily
+  Real source[3];
+  Real matrix[3, 2];
+  Real scalar[2];
+equation
+  source = {1.0, 2.0, 3.0};
+  for i in 1:2 loop
+    matrix[:, i] = source;
+    scalar[i] = i;
+  end for;
+end MixedFamily;
+"#;
+    let compiled = Compiler::new()
+        .model("MixedFamily")
+        .compile_str(source, "MixedFamily.mo")
+        .expect("the source loop supersedes child array views instead of overlapping them");
+    compiled.dae.inspect(|view| {
+        let mut row_counts = view
+            .continuous_owners()
+            .filter_map(|owner| match owner {
+                rumoca_ir_dae::ContinuousOwnerView::Structured { family, .. } => {
+                    Some(family.scalar_rows())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        row_counts.sort_unstable();
+        assert_eq!(row_counts, vec![2, 3, 6]);
+    });
+}

@@ -82,7 +82,7 @@ pub fn refresh_prepared_vectors(
     })?;
     let settle = |message: String| PreparedVectorError::Settle { message };
     runtime
-        .apply_initialization_updates(&mut y, &mut params, t_start, SETTLE_TOL, SETTLE_MAX_ITERS)
+        .settle_initialization_system(&mut y, &mut params, t_start, SETTLE_TOL, SETTLE_MAX_ITERS)
         .map_err(|e| settle(e.to_string()))?;
     let state_count = model.state_scalar_count();
     let state = y[..state_count.min(y.len())].to_vec();

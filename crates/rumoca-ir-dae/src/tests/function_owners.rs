@@ -1725,7 +1725,7 @@ fn function_assertion_is_a_checked_call_scoped_statement_and_round_trips() {
 #[test]
 fn function_for_loop_is_a_compact_checked_transition() {
     let source = TestSource::new(
-        "function sum3\n output Real y;\n protected Real scratch;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",
+        "function sum3\n output Real y;\n protected Real scratch;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  assert(k > 0, \"positive index\");\n  y := y + k;\n end for;\nend sum3;",
     );
     let function_at = source.source("function sum3", 0);
     let output_at = source.source("output Real y", 0);
@@ -1733,6 +1733,10 @@ fn function_for_loop_is_a_compact_checked_transition() {
     let initial_at = source.source("y := 0", 0);
     let zero_at = source.source("0", 0);
     let loop_at = source.source("for k in 1:3 loop", 0);
+    let assertion_at = source.source("assert(k > 0, \"positive index\")", 0);
+    let condition_at = source.source("k > 0", 0);
+    let assertion_zero_at = source.source("0", 1);
+    let message_at = source.source("\"positive index\"", 0);
     let update_at = source.source("y := y + k", 0);
     let y_use_at = source.source("y", 3);
     let k_use_at = source.source("k", 1);
@@ -1775,6 +1779,24 @@ fn function_for_loop_is_a_compact_checked_transition() {
                 let current =
                     dae.functions(|functions| functions.read(loop_body.body(), output, y_use_at))?;
                 let k = dae.expressions(|expressions| expressions.at(k_use_at).binder(binder))?;
+                let assertion_zero = dae.expressions(|expressions| {
+                    expressions
+                        .at(assertion_zero_at)
+                        .literal(DaeLiteral::Integer(0))
+                })?;
+                let condition = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_at)
+                        .binary(BinaryOperator::Greater, k, assertion_zero)
+                })?;
+                let message = dae.expressions(|expressions| {
+                    expressions
+                        .at(message_at)
+                        .literal(DaeLiteral::String("positive index".to_owned()))
+                })?;
+                dae.functions(|functions| {
+                    functions.assertion_loop(&mut loop_body, condition, message, assertion_at)
+                })?;
                 let update = dae.expressions(|expressions| {
                     expressions
                         .at(update_value_at)
@@ -1801,6 +1823,10 @@ fn function_for_loop_is_a_compact_checked_transition() {
     })
     .expect("loop-carried function state constructs as a checked fold");
 
+    assert_sum3_loop_roundtrip(dae);
+}
+
+fn assert_sum3_loop_roundtrip(dae: Dae) {
     dae.inspect(assert_sum3_loop);
     let encoded = serde_json::to_string(&dae).unwrap();
     let decoded: Dae = serde_json::from_str(&encoded).unwrap();
@@ -1849,7 +1875,12 @@ fn assert_sum3_loop(view: DaeView<'_>) {
         panic!("second function statement is the compact source loop");
     };
     assert_eq!(view.source_text(provenance), Some("for k in 1:3 loop"));
-    assert_eq!(statements.count(), 1);
+    let statements = statements.collect::<Vec<_>>();
+    assert_eq!(statements.len(), 2);
+    assert!(matches!(
+        statements[0],
+        FunctionStatementView::Assertion { .. }
+    ));
     let fold = view.function_fold(fold).unwrap();
     assert_eq!(fold.targets().count(), 1);
     assert_eq!(fold.initial_values().len(), 1);

@@ -495,20 +495,22 @@ fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscr
 
     let source = r#"
     model DiscreteController
-      input Real u;
+      input Real u = 0.0;
       parameter Real table[2] = {2.0, 4.0};
       discrete output Real y(start = 0.0);
       discrete Integer k(start = 1);
     protected
       discrete Real prev(start = 0.0);
     algorithm
-      if pre(k) == 1 then
-        prev := 0.0;
-      else
-        prev := table[pre(k) - 1];
-      end if;
-      y := u + prev;
-      k := if pre(k) >= 2 then 1 else pre(k) + 1;
+      when sample(0.02, 0.02) then
+        if pre(k) == 1 then
+          prev := 0.0;
+        else
+          prev := table[pre(k) - 1];
+        end if;
+        y := u + prev;
+        k := if pre(k) >= 2 then 1 else pre(k) + 1;
+      end when;
     end DiscreteController;
     "#;
 

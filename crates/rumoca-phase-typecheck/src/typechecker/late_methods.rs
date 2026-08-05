@@ -5,16 +5,10 @@
 //! This module owns the traversal callbacks, the class/component entry
 //! points, and the instance-scope naming helpers; the individual checks live
 //! in the sibling modules declared below.
-use super::traversal_adapter::{
-    TypeCheckTraversalCallbacks, walk_equations, walk_expression, walk_statements,
-};
-use super::*;
-use rumoca_core::ComponentPath;
 
 mod component_modifiers;
 mod component_refs;
 mod dimensions;
-#[path = "equation_shape.rs"]
 mod equation_shape;
 mod expression_types;
 mod modifier_spans;
@@ -22,6 +16,12 @@ mod operator_checks;
 mod parameter_branches;
 mod type_resolution;
 mod variability;
+
+use super::traversal_adapter::{
+    TypeCheckTraversalCallbacks, walk_equations, walk_expression, walk_statements,
+};
+use super::*;
+use rumoca_core::ComponentPath;
 
 #[derive(Clone, Copy)]
 pub(crate) enum BuiltinModifierExpectedType {

@@ -313,15 +313,15 @@ fn ordered_three_array_definitions_preserve_same_element_dependencies() {
 }
 
 #[test]
-fn cross_dependent_array_loop_requires_a_transition_owner() {
+fn cross_dependent_array_loop_is_rejected_before_construction() {
     let source = INDEPENDENT_ARRAY_LOOP_MODEL
         .replace("doubled[i] := 2 * u[i];", "doubled[i] := shifted[i] + 1;");
     let error = Compiler::new()
         .model("IndependentArrayLoop")
         .compile_str(&source, "DependentArrayLoop.mo")
-        .expect_err("an inter-target loop dependency needs an ordered transition owner");
+        .expect_err("the first cross-target read has no established function value");
     assert!(
-        format!("{error:?}").contains("function loop transition"),
+        format!("{error:?}").contains("do not all have a definition"),
         "unexpected diagnostic: {error:?}"
     );
 }
@@ -448,7 +448,7 @@ end PartialOutput;
 }
 
 #[test]
-fn a_conditional_inside_a_loop_body_is_reported_not_panicked() {
+fn a_conditional_inside_a_loop_body_is_a_checked_fold_transition() {
     let source = r#"
 within;
 model LoopConditional
@@ -468,16 +468,9 @@ model LoopConditional
   end accumulate;
   Real z;
 equation
-  z = accumulate(time);
+  z = accumulate(time + 1);
 end LoopConditional;
 "#;
-    let error = Compiler::new()
-        .model("LoopConditional")
-        .compile_str(source, "LoopConditional.mo")
-        .expect_err("a compact loop transition owns no nested conditional");
-    let rendered = format!("{error:?}");
-    assert!(
-        rendered.contains("requires direct value assignments in a loop body"),
-        "unexpected diagnostic: {rendered}"
-    );
+    let report = evaluate(source, "LoopConditional", "LoopConditional.mo");
+    assert_eq!(algebraic(&report, "z"), 3.0);
 }

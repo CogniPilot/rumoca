@@ -3,11 +3,8 @@
 ## Status
 DRAFT
 
-> **This spec does not claim that Rumoca or any compiler phase is formally
-> verified, and moving it out of `archive/deferred/` does not change that.** It
-> became active because work under it started (see Phasing); acceptance still
-> requires a reviewed formalization and machine-checked evidence, and every
-> Promotion Criterion below is still open.
+> **Rumoca and its phases are not formally verified.** This draft records work
+> in progress; promotion still requires reviewed, machine-checked evidence.
 
 ## Summary
 
@@ -64,23 +61,23 @@ discrete updates, assertions, termination, external observations, and permitted
 resource failures. Equality may replace subset refinement only where source and
 target semantics are deterministic and total.
 
-Pointwise comparison against one reference trajectory is an executable
-refinement check only when that trajectory is identifiable under the experiment.
-A typed `trace_nonidentifiable` profile records that this particular proof
-method is inapplicable; it is not a refinement certificate. Stochastic and
-deterministic-chaotic reasons are distinct. Stochastic evidence is the canonical
-set of typed random operations found by Solve-IR traversal. Deterministic-chaotic
-evidence requires a positive finite maximum-Lyapunov-exponent lower bound, the
-sample count, and a content digest binding the analysis artifact. Neither reason
-may be inferred from model identity, OMC output, or a failed comparison.
+Pointwise reference comparison checks refinement only for an identifiable
+trajectory. A typed `trace_nonidentifiable` profile marks the method inapplicable,
+not certified. Stochastic evidence names typed Solve-IR random operations;
+deterministic-chaotic evidence supplies a positive finite Lyapunov lower bound,
+sample count, and artifact digest. Model identity, OMC output, and failed bands
+cannot derive either classification.
 
-Every such profile records outstanding replacement obligations. Stochastic
-traces require generator-and-seed parity and statistical refinement;
-deterministic-chaotic traces require invariant and statistical refinement. Until
-those obligations are discharged by accepted machine-checked evidence, the model
-remains uncertified: it is excluded from the pointwise denominator, reported
-separately, and never contributes to strict-high/pass counts. Missing or malformed
-evidence fails closed and does not remove a trace from certification scope.
+Profiles list replacement obligations: generator/seed parity and statistical
+refinement for stochastic traces; invariant and statistical refinement for
+chaotic traces. Until machine-checked discharge, they remain visible,
+non-strict-high, and outside the pointwise denominator. Invalid evidence fails
+closed.
+
+A reviewed model-specific exclusion may identify a limitation of the OMC
+pointwise test, never an exception to compiler refinement. It stays visible and
+non-strict-high but is not a counterexample; unreviewed misses are. SPEC_0033
+§6a owns reasons and accounting.
 
 ### Phase Proof Obligations
 
@@ -262,9 +259,12 @@ present in the same revision:
 - the Kani release and its Rust toolchain are pinned by the repository;
 - `cargo xtask verify kani` is the canonical local and CI entry point;
 - CI runs every required harness named by a checked-in proof manifest;
-- the Kani 0.67 driver verifies one harness at a time, because its parallel
+- the Kani 0.67 driver verifies one harness at a time within each deterministic
+  manifest stripe, because its parallel
   text stream does not bind each result block to its harness and therefore
   cannot support fail-closed per-harness timing and cover attribution;
+- CI MAY run fixed manifest stripes as required matrix jobs, provided the
+  stripe function is deterministic and their union is the complete manifest;
 - unwinding checks remain enabled and incomplete proofs fail the command;
 - the result records the Kani version, harness name, declared bound, elapsed
   time, and success or failure; and

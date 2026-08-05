@@ -1,4 +1,21 @@
 {
   "schema": "msl_trace_compare_exclusions",
-  "exclusions": []
+  "exclusions": [
+    {
+      "model_name": "Modelica.Blocks.Examples.DemoSignalCharacteristic",
+      "reason": "The analytic first-harmonic cosine coefficient is zero. Rumoca and OMC both leave integration residue, and Rumoca's residual is closer to zero; OMC's near-zero reference spread makes normalized pointwise comparison non-identifying."
+    },
+    {
+      "model_name": "Modelica.Electrical.Analog.Examples.ChuaCircuit",
+      "reason": "The MSL model is explicitly chaotic and runs for 50000 seconds. Exponential trajectory separation makes one solver's pointwise trajectory non-identifying; this model requires invariant or statistical comparison."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
+      "reason": "The differing channels are period Mean/RMS aggregates at integration-residue scale within the model's 1e-6 experiment tolerance; waveform channels agree and Rumoca's mean is closer to the analytic 3*sqrt(6)/pi*Vrms value."
+    },
+    {
+      "model_name": "Modelica.Mechanics.Translational.Examples.PreLoad",
+      "reason": "Nonsmooth contact-event force and acceleration channels exhibit tiny event-time phase shifts while smooth state and position behavior agree; raw pointwise algebraic acceleration at contact is non-identifying."
+    }
+  ]
 }

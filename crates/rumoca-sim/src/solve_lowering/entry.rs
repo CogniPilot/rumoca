@@ -61,7 +61,7 @@ fn host_driven_input_seeds(
     model: &dae::Dae,
 ) -> Result<std::collections::HashMap<String, f64>, SimulationDiagnosticError> {
     model.inspect(|view| {
-        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
+        let mut evaluator = rumoca_phase_dae::numeric::NumericDaeContext::new(view);
         let mut seeds = std::collections::HashMap::new();
         for (_, variable) in view
             .variables()
@@ -74,7 +74,7 @@ fn host_driven_input_seeds(
 }
 
 fn seed_host_driven_input<'dae>(
-    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    evaluator: &mut rumoca_phase_dae::numeric::NumericDaeContext<'dae>,
     variable: dae::VariableView<'dae>,
     seeds: &mut std::collections::HashMap<String, f64>,
 ) -> Result<(), SimulationDiagnosticError> {
@@ -136,17 +136,17 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing_and_param_overrides(
     let mut timings = crate::BuildSimulationTimings::default();
 
     begin_stage("ir_solve");
-    let solve_start = std::time::Instant::now();
+    let solve_start = rumoca_core::maybe_start_timer();
     let problem = rumoca_phase_solve::lower_solve_problem(model)
         .map_err(SimulationDiagnosticError::SolveLowering)?;
     let artifacts = rumoca_phase_solve::lower_solve_artifacts(&problem)
         .map_err(SimulationDiagnosticError::SolveLowering)?;
-    timings.ir_solve_lower_seconds = solve_start.elapsed().as_secs_f64();
+    timings.ir_solve_lower_seconds = rumoca_core::maybe_elapsed_seconds(solve_start);
 
     begin_stage("runtime_vectors");
-    let vector_start = std::time::Instant::now();
+    let vector_start = rumoca_core::maybe_start_timer();
     let vectors = runtime_vectors(model, &problem, parameter_overrides)?;
-    timings.ir_solve_structural_dae_seconds = vector_start.elapsed().as_secs_f64();
+    timings.ir_solve_structural_dae_seconds = rumoca_core::maybe_elapsed_seconds(vector_start);
     timings.ir_solve_seconds =
         timings.ir_solve_lower_seconds + timings.ir_solve_structural_dae_seconds;
 

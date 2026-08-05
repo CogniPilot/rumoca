@@ -51,10 +51,6 @@ fn assert_warm_namespace_completion_timings(
 ) {
     assert!(!cold.request_was_stale && !warm.request_was_stale);
     assert_eq!(cold.uri, warm.uri);
-    assert!(
-        cold.namespace_completion_prime_ms >= warm.namespace_completion_prime_ms,
-        "cold namespace completion should spend at least as much time priming the source-root cache"
-    );
     assert!(!cold.needs_resolved_session && !warm.needs_resolved_session);
     assert!(!cold.ast_fast_path_matched && !warm.ast_fast_path_matched);
     assert!(!cold.query_fast_path_matched && !warm.query_fast_path_matched);

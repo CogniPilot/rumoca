@@ -7,85 +7,214 @@ pub(super) fn validate_functions(
 ) -> Result<HashMap<FunctionSpecializationKey, FunctionPlan>, ToDaeError> {
     let mut plans = HashMap::with_capacity(shapes.certificates().len());
     for certificate in shapes.certificates() {
-        let function = &flat.functions[&certificate.key.function];
-        require_span(function.span, "function declaration")?;
-        if function.is_constructor {
-            return Err(ToDaeError::unsupported_flat(
-                "function lifecycle",
-                format!("`{}` is not a pure Modelica function body", function.name),
-                function.span,
-            ));
-        }
-        // MLS §12.3: a Modelica body is pure. Only an MLS §12.9 external body
-        // may be impure, and it reaches the DAE through its checked interface.
-        if function.external.is_none() && !function.pure {
-            return Err(ToDaeError::unsupported_flat(
-                "function lifecycle",
-                format!(
-                    "`{}` declares an impure Modelica body, which MLS §12.3 does not permit",
-                    function.name
-                ),
-                function.span,
-            ));
-        }
-        for parameter in function
-            .inputs
-            .iter()
-            .chain(&function.outputs)
-            .chain(&function.locals)
-        {
-            require_span(parameter.span, "function parameter declaration")?;
-            validate_function_value_type(parameter, function, flat, &mut HashSet::new())?;
-            if let Some(default) = &parameter.default {
-                validate_function_expression(default, function, flat, &certificate.values)?;
-            }
-        }
-        let static_integers = immutable_integer_defaults(function, flat, &certificate.values)?;
-        let roles = function_expression_roles(function, flat);
-        let context = FunctionValidationContext {
-            function,
-            flat,
-            roles: &roles,
-            static_integers: &static_integers,
-            shapes: &certificate.values,
-            shape_analysis: shapes,
-            call_scoped_actions: true,
-        };
-        let plan = if function.external.is_some() {
-            if !function.body.is_empty() {
-                return Err(ToDaeError::unsupported_flat(
-                    "function lifecycle",
-                    format!(
-                        "`{}` declares both an algorithm body and an external interface",
-                        function.name
-                    ),
-                    function.span,
-                ));
-            }
-            FunctionPlan::External(validate_external_function(function, context)?)
-        } else if let Some(plan) = validate_guarded_function_return(function, context)? {
-            plan
-        } else if let Some(plan) = validate_integer_reduction(function, context)? {
-            plan
-        } else {
-            // A data-dependent loop nest (e.g. Cholesky's `for column in 1:row`)
-            // has no rectangular structured domain; unroll it over its proven
-            // ranges into straight-line scalar work before the checked lowering.
-            // Construction lowers this same `source`, so plans stay aligned.
-            let source = unroll_data_dependent_function_loops(
-                &function.body,
-                context.static_integers,
-                context.shapes,
-                function.name.as_str(),
-            )?;
-            let mut definitions = FunctionDefinitions::new(function);
-            let statements = validate_function_statements(&source, context, &mut definitions)?;
-            require_total_outputs(function, &definitions)?;
-            FunctionPlan::Statements { source, statements }
-        };
+        let plan = validate_function_certificate(flat, shapes, certificate)?;
         plans.insert(certificate.key.clone(), plan);
     }
     Ok(plans)
+}
+
+fn validate_function_certificate(
+    flat: &flat::Model,
+    shapes: &FunctionShapeAnalysis,
+    certificate: &FunctionShapeCertificate,
+) -> Result<FunctionPlan, ToDaeError> {
+    let function = &flat.functions[&certificate.key.function];
+    validate_function_declaration(function, flat, &certificate.values)?;
+    let static_integers = immutable_integer_defaults(function, flat, &certificate.values)?;
+    let roles = function_expression_roles(function, flat);
+    let context = FunctionValidationContext {
+        function,
+        flat,
+        roles: &roles,
+        static_integers: &static_integers,
+        shapes: &certificate.values,
+        shape_analysis: shapes,
+        generated_booleans: &[],
+        call_scoped_actions: true,
+    };
+    if function.external.is_some() {
+        return validate_external_body(function, context);
+    }
+    if let Some(plan) = validate_guarded_function_return(function, context)? {
+        return Ok(plan);
+    }
+    if let Some(plan) = validate_integer_reduction(function, context)? {
+        return Ok(plan);
+    }
+    validate_statement_function(function, context)
+}
+
+fn validate_function_declaration(
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+    values: &ShapeEnvironment,
+) -> Result<(), ToDaeError> {
+    require_span(function.span, "function declaration")?;
+    if function.is_constructor {
+        return Err(ToDaeError::unsupported_flat(
+            "function lifecycle",
+            format!("`{}` is not a pure Modelica function body", function.name),
+            function.span,
+        ));
+    }
+    if function.external.is_none() && !function.pure {
+        return Err(ToDaeError::unsupported_flat(
+            "function lifecycle",
+            format!(
+                "`{}` declares an impure Modelica body, which MLS §12.3 does not permit",
+                function.name
+            ),
+            function.span,
+        ));
+    }
+    for parameter in function
+        .inputs
+        .iter()
+        .chain(&function.outputs)
+        .chain(&function.locals)
+    {
+        require_span(parameter.span, "function parameter declaration")?;
+        validate_function_value_type(parameter, function, flat, &mut HashSet::new())?;
+        if let Some(default) = &parameter.default {
+            validate_function_expression(default, function, flat, values)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_external_body(
+    function: &rumoca_core::Function,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionPlan, ToDaeError> {
+    if !function.body.is_empty() {
+        return Err(ToDaeError::unsupported_flat(
+            "function lifecycle",
+            format!(
+                "`{}` declares both an algorithm body and an external interface",
+                function.name
+            ),
+            function.span,
+        ));
+    }
+    Ok(FunctionPlan::External(validate_external_function(
+        function, context,
+    )?))
+}
+
+fn validate_statement_function(
+    function: &rumoca_core::Function,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionPlan, ToDaeError> {
+    // Normalize only semantics-preserving compact loop rewrites. A dependent
+    // domain is refused rather than expanded into scalar statements.
+    let returned = normalize_function_returns(&function.body)?;
+    let returned_roles = roles_with_guards(context.roles, &returned.guards);
+    let returned_shapes = shapes_with_guards(context.shapes, &returned.guards);
+    let returned_context = FunctionValidationContext {
+        roles: &returned_roles,
+        shapes: &returned_shapes,
+        generated_booleans: &returned.guards,
+        ..context
+    };
+    check_function_assignment_shapes(&returned.statements, returned_context)?;
+    if returned.has_returns {
+        validate_nonreturn_path(function, context)?;
+    }
+    let source = compact_function_loops(
+        &returned.statements,
+        returned_context.static_integers,
+        returned_context.shapes,
+        function,
+        context.flat,
+    )?;
+    let mut definitions = FunctionDefinitions::new(function);
+    let certified_output_seeds = certified_return_output_seeds(
+        function,
+        returned.has_returns,
+        returned_context,
+        &mut definitions,
+    )?;
+    let statements = validate_function_statements(&source, returned_context, &mut definitions)?;
+    require_total_outputs(function, &definitions)?;
+    Ok(FunctionPlan::Statements {
+        source,
+        statements,
+        generated_booleans: returned
+            .guards
+            .iter()
+            .map(|guard| (guard.target.clone(), guard.span))
+            .collect(),
+        certified_output_seeds,
+    })
+}
+
+fn validate_nonreturn_path(
+    function: &rumoca_core::Function,
+    context: FunctionValidationContext<'_>,
+) -> Result<(), ToDaeError> {
+    certify_nonleading_return_branches(function, context)?;
+    let nonreturn = normalize_function_returns(&nonreturn_path(&function.body))?;
+    let roles = roles_with_guards(context.roles, &nonreturn.guards);
+    let shapes = shapes_with_guards(context.shapes, &nonreturn.guards);
+    let nonreturn_context = FunctionValidationContext {
+        roles: &roles,
+        shapes: &shapes,
+        generated_booleans: &nonreturn.guards,
+        ..context
+    };
+    let source = compact_function_loops(
+        &nonreturn.statements,
+        context.static_integers,
+        &shapes,
+        function,
+        context.flat,
+    )?;
+    let mut definitions = FunctionDefinitions::new(function);
+    validate_function_statements(&source, nonreturn_context, &mut definitions)?;
+    require_total_outputs(function, &definitions)
+}
+
+fn roles_with_guards(
+    roles: &HashMap<VarName, PlannedRole>,
+    guards: &[function_returns::GeneratedBooleanDefinition],
+) -> HashMap<VarName, PlannedRole> {
+    let mut guarded = roles.clone();
+    guarded.extend(
+        guards
+            .iter()
+            .map(|guard| (guard.target.clone(), PlannedRole::Parameter)),
+    );
+    guarded
+}
+
+fn shapes_with_guards(
+    shapes: &ShapeEnvironment,
+    guards: &[function_returns::GeneratedBooleanDefinition],
+) -> ShapeEnvironment {
+    let mut guarded = shapes.clone();
+    for guard in guards {
+        guarded.insert(guard.target.clone(), Vec::new());
+    }
+    guarded
+}
+
+fn certified_return_output_seeds(
+    function: &rumoca_core::Function,
+    has_returns: bool,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<Vec<(VarName, FunctionValueSeed)>, ToDaeError> {
+    if !has_returns {
+        return Ok(Vec::new());
+    }
+    let mut seeds = Vec::with_capacity(function.outputs.len());
+    for output in &function.outputs {
+        let target = VarName::new(&output.name);
+        let seed = definitions.whole_loop_seed(&target, context, output.span)?;
+        seeds.push((target, seed));
+    }
+    definitions.assume_certified_outputs(function);
+    Ok(seeds)
 }
 
 fn validate_function_expression(
@@ -125,7 +254,7 @@ fn function_expression_roles(
         roles.extend(
             record_field_projections(value, flat)
                 .into_iter()
-                .map(|(path, _)| (path, PlannedRole::Parameter)),
+                .map(|(path, _, _)| (path, PlannedRole::Parameter)),
         );
     }
     for literal in flat.enum_literal_ordinals.keys() {
@@ -195,13 +324,47 @@ pub(super) fn plan_function_statements(
     statements: &[rumoca_core::Statement],
     context: FunctionValidationContext<'_>,
 ) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
+    let (mut staged_records, staged_members) = plan_staged_record_assemblies(statements, context)?;
     let mut plans = Vec::with_capacity(statements.len());
     let mut index = 0usize;
     while index < statements.len() {
+        if let rumoca_core::Statement::Empty { span } = &statements[index]
+            && let Some(guard) = context
+                .generated_booleans
+                .iter()
+                .find(|guard| guard.span == *span)
+        {
+            validate_function_expression_with_roles(
+                &guard.value,
+                context.roles,
+                context.flat,
+                context.shapes,
+            )?;
+            plans.push(FunctionStatementPlan::GeneratedBooleanAssignment {
+                target: guard.target.clone(),
+                value: guard.value.clone(),
+                span: guard.span,
+            });
+            index += 1;
+            continue;
+        }
         if let Some(assertion) = function_assertion(&statements[index], context.flat)? {
             plans.push(plan_proven_function_assertion(assertion, context)?);
             index += 1;
             continue;
+        }
+        if let Some(assembly) = staged_records.remove(&index) {
+            let count = assembly.statement_count;
+            plans.push(FunctionStatementPlan::RecordFieldAssembly(assembly));
+            plans.extend(
+                std::iter::repeat_with(|| FunctionStatementPlan::RecordFieldAssemblyMember)
+                    .take(count - 1),
+            );
+            index += count;
+            continue;
+        }
+        if staged_members.contains(&index) {
+            unreachable!("a staged record member follows its owning field assembly")
         }
         if let Some((assembly, count)) =
             validate_record_output_assembly(statements, index, context)?
@@ -214,63 +377,61 @@ pub(super) fn plan_function_statements(
             index += count;
             continue;
         }
-        let statement = &statements[index];
-        match statement {
-            rumoca_core::Statement::Assignment { comp, value, span } => {
-                require_span(*span, "function assignment")?;
-                let assignment = validate_function_assignment_target(context, comp, *span)?;
-                validate_function_expression_with_roles(
-                    value,
-                    context.roles,
-                    context.flat,
-                    context.shapes,
-                )?;
-                plans.push(FunctionStatementPlan::Assignment(assignment));
-            }
-            rumoca_core::Statement::For { .. } => {
-                plans.push(validate_function_loop(statement, context)?)
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                span,
-            } => plans.push(plan_function_conditional(
-                cond_blocks,
-                else_block.as_deref(),
-                *span,
-                context,
-            )?),
-            rumoca_core::Statement::FunctionCall {
-                comp,
-                args,
-                outputs,
-                span,
-            } => plans.push(plan_function_multi_output_call(
-                MultiOutputCallStatement {
-                    callee: comp,
-                    args,
-                    outputs,
-                    span: *span,
-                },
-                context,
-            )?),
-            _ => {
-                let span =
-                    required_statement_span(statement, "unsupported function body statement")?;
-                return Err(ToDaeError::unsupported_flat(
-                    "function statement",
-                    format!(
-                        "`{}` contains a statement without a checked DAE owner",
-                        context.function.name
-                    ),
-                    span,
-                ));
-            }
-        }
+        plans.push(plan_one_function_statement(&statements[index], context)?);
         index += 1;
     }
     coalesce_function_array_assemblies(statements, &mut plans, context)?;
     Ok(plans)
+}
+
+fn plan_one_function_statement(
+    statement: &rumoca_core::Statement,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionStatementPlan, ToDaeError> {
+    match statement {
+        rumoca_core::Statement::Assignment { comp, value, span } => {
+            require_span(*span, "function assignment")?;
+            let assignment = validate_function_assignment_target(context, comp, *span)?;
+            validate_function_expression_with_roles(
+                value,
+                context.roles,
+                context.flat,
+                context.shapes,
+            )?;
+            Ok(FunctionStatementPlan::Assignment(assignment))
+        }
+        rumoca_core::Statement::For { .. } => validate_function_loop(statement, context),
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            span,
+        } => plan_function_conditional(cond_blocks, else_block.as_deref(), *span, context),
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            span,
+        } => plan_function_multi_output_call(
+            MultiOutputCallStatement {
+                callee: comp,
+                args,
+                outputs,
+                span: *span,
+            },
+            context,
+        ),
+        _ => {
+            let span = required_statement_span(statement, "unsupported function body statement")?;
+            Err(ToDaeError::unsupported_flat(
+                "function statement",
+                format!(
+                    "`{}` contains a statement without a checked DAE owner",
+                    context.function.name
+                ),
+                span,
+            ))
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -404,33 +565,44 @@ fn validate_function_assignment_target(
     component: &rumoca_core::ComponentReference,
     span: Span,
 ) -> Result<FunctionAssignmentPlan, ToDaeError> {
-    let [target] = component.parts() else {
-        return Err(ToDaeError::unsupported_flat(
-            "function assignment target",
-            "a mutable function value must have one resolved target part",
-            span,
-        ));
+    let (target, subscripts) = match component.parts() {
+        [target] => (VarName::new(&target.ident), &target.subs),
+        [root, field]
+            if root.subs.is_empty()
+                && context
+                    .function
+                    .outputs
+                    .iter()
+                    .chain(&context.function.locals)
+                    .any(|value| {
+                        value.name == root.ident
+                            && value.type_class == Some(rumoca_core::ClassType::Record)
+                    }) =>
+        {
+            (component.to_var_name(), &field.subs)
+        }
+        _ => {
+            return Err(ToDaeError::unsupported_flat(
+                "function assignment target",
+                "a mutable function value must resolve to one value or one exact record field",
+                span,
+            ));
+        }
     };
-    if !context
-        .function
-        .outputs
-        .iter()
-        .chain(&context.function.locals)
-        .any(|value| value.name == target.ident)
-    {
+    if context.shapes.get(&target).is_none() {
         return Err(ToDaeError::unsupported_flat(
             "function assignment target",
             format!(
                 "`{}.{}` is not a whole mutable function value",
-                context.function.name, target.ident
+                context.function.name, target
             ),
             span,
         ));
     }
-    validate_function_subscripts(&target.subs, context)?;
+    validate_function_subscripts(subscripts, context)?;
     Ok(FunctionAssignmentPlan {
-        target: VarName::new(&target.ident),
-        subscripts: target.subs.clone().into_boxed_slice(),
+        target,
+        subscripts: subscripts.clone().into_boxed_slice(),
         seed: None,
     })
 }
@@ -551,6 +723,11 @@ fn plan_function_multi_output_call(
         .shape_analysis
         .certificate(&key)
         .expect("call_key proves the certificate it returns a key for");
+    if let Some(assembly) =
+        plan_record_multi_output_assembly(call.outputs, certificate, call.span, context)?
+    {
+        return Ok(FunctionStatementPlan::RecordMultiOutputAssembly(assembly));
+    }
     let mut outputs = Vec::with_capacity(call.outputs.len());
     for (ordinal, target) in call.outputs.iter().enumerate() {
         let Some(target) = target else {
@@ -569,6 +746,102 @@ fn plan_function_multi_output_call(
     Ok(FunctionStatementPlan::MultiOutputCall { outputs })
 }
 
+fn plan_record_multi_output_assembly(
+    outputs: &[Option<rumoca_core::ComponentReference>],
+    certificate: &FunctionShapeCertificate,
+    span: Span,
+    context: FunctionValidationContext<'_>,
+) -> Result<Option<FunctionRecordCallAssemblyPlan>, ToDaeError> {
+    let Some(Some(first)) = outputs.first() else {
+        return Ok(None);
+    };
+    let [root, _] = first.parts() else {
+        return Ok(None);
+    };
+    let Some(target) = context
+        .function
+        .outputs
+        .iter()
+        .chain(&context.function.locals)
+        .find(|value| {
+            value.name == root.ident && value.type_class == Some(rumoca_core::ClassType::Record)
+        })
+    else {
+        return Ok(None);
+    };
+    let constructor = record_constructor(target, context)?;
+    if outputs.len() != constructor.inputs.len() || outputs.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+
+    let mut fields = Vec::with_capacity(constructor.inputs.len());
+    for field in &constructor.inputs {
+        let field_def_id = field.def_id.ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "`{}.{}` has no exact field identity",
+                    target.name, field.name
+                ),
+                field.span,
+            )
+        })?;
+        let Some((ordinal, receiver)) =
+            outputs.iter().enumerate().find_map(|(ordinal, receiver)| {
+                let receiver = receiver.as_ref()?;
+                let [candidate_root, candidate_field] = receiver.parts() else {
+                    return None;
+                };
+                (candidate_root.ident == target.name
+                    && candidate_field.ident == field.name
+                    && candidate_field.def_id == field_def_id
+                    && candidate_root.subs.is_empty()
+                    && candidate_field.subs.is_empty())
+                .then_some((ordinal, candidate_field))
+            })
+        else {
+            return Ok(None);
+        };
+        let expected = field
+            .dimensions()
+            .iter()
+            .map(|extent| u32::try_from(*extent))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| {
+                ToDaeError::unsupported_flat(
+                    "record output assembly",
+                    format!("`{}.{}` has an invalid extent", target.name, receiver.ident),
+                    span,
+                )
+            })?;
+        let Some(result) = certificate.results.get(ordinal) else {
+            return Ok(None);
+        };
+        if *result != expected {
+            return Err(ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "`{}.{}` has shape {:?}, but result {} has shape {:?}",
+                    target.name,
+                    field.name,
+                    expected,
+                    ordinal + 1,
+                    result
+                ),
+                span,
+            ));
+        }
+        fields.push(FunctionRecordCallField {
+            name: VarName::new(&field.name),
+            result_ordinal: ordinal,
+        });
+    }
+    Ok(Some(FunctionRecordCallAssemblyPlan {
+        target: VarName::new(&target.name),
+        fields,
+    }))
+}
+
 /// Prove one receiving variable of an MLS §11.2.1.1 multi-result call.
 fn plan_multi_output_receiver(
     target: &rumoca_core::ComponentReference,
@@ -579,25 +852,11 @@ fn plan_multi_output_receiver(
     context: FunctionValidationContext<'_>,
 ) -> Result<FunctionAssignmentPlan, ToDaeError> {
     let plan = validate_function_assignment_target(context, target, span)?;
-    // A receiving variable takes one whole result. An element write would need
-    // the aggregate seed MLS §12.4.4 definedness proves for the single-result
-    // form, which this statement shape does not carry.
-    if !plan.is_whole() {
-        return Err(ToDaeError::unsupported_flat(
-            "function call statement",
-            format!(
-                "receiving variable `{}` is subscripted; a multi-result call statement defines \
-                 whole function values",
-                plan.target()
-            ),
-            span,
-        ));
-    }
     // MLS §12.4.3: "The type of each component reference in the list must agree
     // with the type of the corresponding output component." (SPEC_0022
     // FUNC-025). The proven result shape is the one the constructed callee
     // actually returns.
-    let Some(declared) = context.shapes.get(plan.target()) else {
+    let Some(declared) = call_free_target_shape(target, context.shapes) else {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
             format!(
@@ -614,7 +873,7 @@ fn plan_multi_output_receiver(
             span,
         )
     })?;
-    if declared != result {
+    if &declared != result {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
             format!(
@@ -640,102 +899,240 @@ pub(super) fn resolve_function_definitions(
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
     debug_assert_eq!(statements.len(), plans.len());
-    for (statement, plan) in statements.iter().zip(plans.iter_mut()) {
-        match (statement, plan) {
-            (statement, FunctionStatementPlan::ProvenAssertion) => {
-                let assertion = function_assertion(statement, context.flat)?
-                    .expect("a proven assertion plan owns an assertion statement");
-                // Only the condition is evaluated on the proven-success path;
-                // message and level are failure-path values.
-                definitions.require_readable(assertion.condition, context, assertion.span)?;
-            }
-            (statement, FunctionStatementPlan::RuntimeAssertion) => {
-                let assertion = function_assertion(statement, context.flat)?
-                    .expect("a runtime assertion plan owns an assertion statement");
-                definitions.require_readable(assertion.condition, context, assertion.span)?;
-                definitions.require_readable(assertion.message, context, assertion.span)?;
-            }
-            (
-                rumoca_core::Statement::Assignment { value, span, .. },
-                FunctionStatementPlan::Assignment(assignment),
-            ) => resolve_function_assignment_definition(
-                value,
-                *span,
-                assignment,
+    seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
+    let mut index = 0usize;
+    while index < statements.len() {
+        if let FunctionStatementPlan::RecordFieldAssembly(assembly) = &plans[index] {
+            resolve_record_field_assembly_definitions(
+                &statements[index..index + assembly.statement_count],
+                assembly,
                 context,
                 definitions,
-            )?,
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    span,
-                },
-                FunctionStatementPlan::If {
-                    branches,
-                    fallback,
-                    targets,
-                },
-            ) => {
-                *targets = resolve_function_conditional(
-                    cond_blocks,
-                    else_block.as_deref(),
-                    branches,
-                    fallback.as_mut(),
-                    *span,
-                    context,
-                    definitions,
-                )?;
-            }
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    ..
-                },
-                FunctionStatementPlan::ProvenBranch {
-                    selected,
-                    statements: branch,
-                },
-            ) => {
-                // MLS §11.5 executes exactly these statements, so they carry
-                // the definedness certificate straight into the enclosing
-                // sequence: nothing about the values they own is conditional.
-                let selected =
-                    selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
-                resolve_function_definitions(selected, branch, context, definitions)?;
-            }
-            (
-                rumoca_core::Statement::For { span, .. },
-                FunctionStatementPlan::For {
-                    lowering,
-                    statements: body,
-                    ..
-                },
-            ) => resolve_function_loop_definitions(lowering, body, context, definitions, *span)?,
-            (
-                rumoca_core::Statement::FunctionCall { args, span, .. },
-                FunctionStatementPlan::MultiOutputCall { outputs },
-            ) => {
-                // MLS §11.2.1.1 evaluates the arguments, then assigns the
-                // receiving variables left to right, so every argument is read
-                // before any receiver is defined.
-                for argument in args.iter() {
-                    definitions.require_readable(argument, context, *span)?;
-                }
-                for plan in outputs.iter().flatten() {
-                    definitions.define_whole(plan.target());
-                }
-            }
-            (_, FunctionStatementPlan::ArrayAssembly(assembly)) => {
-                definitions.define_whole(&assembly.target);
-            }
-            (_, FunctionStatementPlan::RecordAssembly(assembly)) => {
-                definitions.define_whole(&assembly.target);
-            }
-            (_, FunctionStatementPlan::ArrayAssemblyMember)
-            | (_, FunctionStatementPlan::RecordAssemblyMember) => {}
-            _ => unreachable!("function planning aligns statement and plan shapes"),
+            )?;
+            index += assembly.statement_count;
+            continue;
+        }
+        resolve_function_definition(&statements[index], &mut plans[index], context, definitions)?;
+        index += 1;
+    }
+    Ok(())
+}
+
+fn resolve_record_field_assembly_definitions(
+    statements: &[rumoca_core::Statement],
+    assembly: &FunctionRecordFieldAssemblyPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    for statement in statements {
+        let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
+            unreachable!("record field assembly contains assignments")
+        };
+        definitions.require_readable(value, context, *span)?;
+    }
+    let staged = function_record_field_name(&assembly.target, &assembly.field.name);
+    definitions.define_whole(&staged);
+    if assembly.finalize_fields.is_some() {
+        definitions.define_whole(&assembly.target);
+    }
+    Ok(())
+}
+
+fn resolve_function_definition(
+    statement: &rumoca_core::Statement,
+    plan: &mut FunctionStatementPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    match (statement, plan) {
+        (statement, FunctionStatementPlan::ProvenAssertion) => {
+            resolve_function_assertion_definition(statement, false, context, definitions)?
+        }
+        (statement, FunctionStatementPlan::RuntimeAssertion) => {
+            resolve_function_assertion_definition(statement, true, context, definitions)?
+        }
+        (
+            _,
+            FunctionStatementPlan::GeneratedBooleanAssignment {
+                target,
+                value,
+                span,
+                ..
+            },
+        ) => resolve_generated_boolean_definition(value, target, *span, context, definitions)?,
+        (
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(assignment),
+        ) => {
+            resolve_function_assignment_definition(value, *span, assignment, context, definitions)?
+        }
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                span,
+            },
+            FunctionStatementPlan::If {
+                branches,
+                fallback,
+                targets,
+            },
+        ) => {
+            *targets = resolve_planned_conditional(
+                (cond_blocks, else_block.as_deref(), *span),
+                (branches, fallback.as_mut()),
+                context,
+                definitions,
+            )?
+        }
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            },
+            FunctionStatementPlan::ProvenBranch {
+                selected,
+                statements: branch,
+            },
+        ) => {
+            // MLS §11.5 executes exactly these statements, so they carry
+            // the definedness certificate straight into the enclosing
+            // sequence: nothing about the values they own is conditional.
+            let selected =
+                selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+            resolve_function_definitions(selected, branch, context, definitions)?;
+        }
+        (
+            rumoca_core::Statement::For {
+                indices,
+                equations,
+                span,
+            },
+            FunctionStatementPlan::For {
+                domain,
+                lowering,
+                statements: body,
+                source_depth,
+                ..
+            },
+        ) => resolve_function_loop_definitions(
+            (indices, equations, *span),
+            (domain, *source_depth, lowering, body),
+            context,
+            definitions,
+        )?,
+        (
+            rumoca_core::Statement::FunctionCall { args, span, .. },
+            FunctionStatementPlan::MultiOutputCall { outputs },
+        ) => resolve_multi_output_definitions(args, *span, outputs, context, definitions)?,
+        (
+            rumoca_core::Statement::FunctionCall { args, span, .. },
+            FunctionStatementPlan::RecordMultiOutputAssembly(assembly),
+        ) => resolve_record_multi_output(args, *span, &assembly.target, context, definitions)?,
+        (_, FunctionStatementPlan::ArrayAssembly(assembly)) => {
+            definitions.define_whole(&assembly.target)
+        }
+        (_, FunctionStatementPlan::RecordAssembly(assembly)) => {
+            definitions.define_whole(&assembly.target)
+        }
+        (_, FunctionStatementPlan::ArrayAssemblyMember)
+        | (_, FunctionStatementPlan::RecordAssemblyMember)
+        | (_, FunctionStatementPlan::RecordFieldAssemblyMember) => {}
+        (_, FunctionStatementPlan::RecordFieldAssembly(_)) => {
+            unreachable!("record field assemblies are resolved with their source run")
+        }
+        _ => unreachable!("function planning aligns statement and plan shapes"),
+    }
+    Ok(())
+}
+
+fn resolve_planned_conditional(
+    source: (
+        &[rumoca_core::StatementBlock],
+        Option<&[rumoca_core::Statement]>,
+        Span,
+    ),
+    plan: (
+        &mut [Vec<FunctionStatementPlan>],
+        Option<&mut Vec<FunctionStatementPlan>>,
+    ),
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<Vec<VarName>, ToDaeError> {
+    resolve_function_conditional(
+        source.0,
+        source.1,
+        plan.0,
+        plan.1,
+        source.2,
+        context,
+        definitions,
+    )
+}
+
+fn resolve_generated_boolean_definition(
+    value: &Expression,
+    target: &VarName,
+    span: Span,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    definitions.require_readable(value, context, span)?;
+    definitions.define_whole(target);
+    Ok(())
+}
+
+fn resolve_record_multi_output(
+    arguments: &[Expression],
+    span: Span,
+    target: &VarName,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    for argument in arguments {
+        definitions.require_readable(argument, context, span)?;
+    }
+    definitions.define_whole(target);
+    Ok(())
+}
+
+fn resolve_function_assertion_definition(
+    statement: &rumoca_core::Statement,
+    reads_message: bool,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    let assertion = function_assertion(statement, context.flat)?
+        .expect("an assertion plan owns an assertion statement");
+    definitions.require_readable(assertion.condition, context, assertion.span)?;
+    if reads_message {
+        definitions.require_readable(assertion.message, context, assertion.span)?;
+    }
+    Ok(())
+}
+
+fn resolve_multi_output_definitions(
+    arguments: &[Expression],
+    span: Span,
+    outputs: &mut [Option<FunctionAssignmentPlan>],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    // MLS §11.2.1.1 reads every argument before defining receivers.
+    for argument in arguments {
+        definitions.require_readable(argument, context, span)?;
+    }
+    for plan in outputs.iter_mut().flatten() {
+        for expression in plan.subscripts().iter().filter_map(subscript_expression) {
+            definitions.require_readable(expression, context, span)?;
+        }
+        if plan.is_whole() {
+            definitions.define_whole(plan.target());
+        } else {
+            let seed =
+                definitions.write_elements(plan.target(), plan.subscripts(), context, span)?;
+            plan.seed = plan.seed.take().or(seed);
         }
     }
     Ok(())
@@ -761,8 +1158,9 @@ fn resolve_function_assignment_definition(
         definitions.define_whole(&assignment.target);
         return Ok(());
     }
-    assignment.seed =
+    let seed =
         definitions.write_elements(&assignment.target, &assignment.subscripts, context, span)?;
+    assignment.seed = assignment.seed.take().or(seed);
     Ok(())
 }
 
@@ -776,35 +1174,611 @@ fn subscript_expression(subscript: &Subscript) -> Option<&Expression> {
 /// A loop transition may only carry values whose elements already have a
 /// definition, because MLS §12.4.4 gives the carried value no other owner.
 fn resolve_function_loop_definitions(
-    lowering: &FunctionLoopLowering,
-    body: &[FunctionStatementPlan],
+    source: (&[rumoca_core::ForIndex], &[rumoca_core::Statement], Span),
+    planned: (
+        &StructuredIndexDomain,
+        usize,
+        &mut FunctionLoopLowering,
+        &mut [FunctionStatementPlan],
+    ),
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
-    span: Span,
 ) -> Result<(), ToDaeError> {
+    let (indices, statements, span) = source;
+    let (domain, source_depth, lowering, body) = planned;
     match lowering {
         FunctionLoopLowering::TotalArrayDefinition => {
             for plan in body {
-                let FunctionStatementPlan::Assignment(assignment) = plan else {
-                    unreachable!("total array definitions own only element assignments")
-                };
-                definitions.define_whole(&assignment.target);
-            }
-        }
-        FunctionLoopLowering::Fold { targets } => {
-            for target in targets {
-                if !definitions.is_total(target) {
-                    return Err(ToDaeError::unsupported_flat(
-                        "function loop transition",
-                        format!(
-                            "`{}` carries `{target}` through a loop before every element of `{target}` has a definition",
-                            context.function.name
-                        ),
-                        span,
-                    ));
+                if let FunctionStatementPlan::Assignment(assignment) = plan {
+                    definitions.define_whole(&assignment.target);
                 }
             }
         }
+        FunctionLoopLowering::Fold { targets } => {
+            resolve_fold_definitions(
+                (indices, statements, span),
+                (domain, source_depth, body, targets),
+                context,
+                definitions,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_fold_definitions(
+    source: (&[rumoca_core::ForIndex], &[rumoca_core::Statement], Span),
+    planned: (
+        &StructuredIndexDomain,
+        usize,
+        &mut [FunctionStatementPlan],
+        &mut Vec<VarName>,
+    ),
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    let (indices, statements, span) = source;
+    let (domain, source_depth, plans, targets) = planned;
+    let (indices, statements) = flattened_function_loop_source(indices, statements, source_depth);
+    seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
+    let point_count = domain.scalar_count().map_err(|error| {
+        ToDaeError::unsupported_flat(
+            "function loop transition",
+            format!(
+                "`{}` has an invalid compact domain: {error}",
+                context.function.name
+            ),
+            span,
+        )
+    })?;
+    for ordinal in 0..point_count {
+        let point = domain
+            .index_tuple_at(ordinal)
+            .map_err(|error| {
+                ToDaeError::unsupported_flat(
+                    "function loop transition",
+                    format!(
+                        "`{}` cannot project its compact domain: {error}",
+                        context.function.name
+                    ),
+                    span,
+                )
+            })?
+            .ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "function loop transition",
+                    format!(
+                        "`{}` has a missing compact-domain point",
+                        context.function.name
+                    ),
+                    span,
+                )
+            })?;
+        let mut integers = context.static_integers.clone();
+        integers.extend(
+            indices
+                .iter()
+                .zip(point)
+                .map(|(index, value)| (VarName::new(&index.ident), value)),
+        );
+        let point_context = FunctionValidationContext {
+            static_integers: &integers,
+            ..context
+        };
+        resolve_fold_iteration(statements, plans, point_context, definitions)?;
+        definitions.forget_varying_guard_paths(context.generated_booleans);
+    }
+    targets.retain(|target| {
+        definitions.is_defined(target) || definitions.has_total_guarded_definition(target)
+    });
+    Ok(())
+}
+
+fn seed_guarded_sequence_scratch(
+    statements: &[rumoca_core::Statement],
+    plans: &mut [FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    for outer_index in 0..plans.len() {
+        let Some((guard, branch)) = guarded_sequence(&statements[outer_index]) else {
+            continue;
+        };
+        let Some(inner_len) = guarded_plan_len(&plans[outer_index]) else {
+            continue;
+        };
+        for inner_index in 0..inner_len {
+            let candidates = guarded_plan_targets(&plans[outer_index], inner_index);
+            for target in candidates {
+                seed_guarded_candidate(
+                    (statements, branch),
+                    (outer_index, inner_index),
+                    &target,
+                    guard,
+                    context,
+                    definitions,
+                    &mut plans[outer_index],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn seed_guarded_candidate(
+    sources: (&[rumoca_core::Statement], &[rumoca_core::Statement]),
+    indices: (usize, usize),
+    target: &VarName,
+    guard: &Expression,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+    plan: &mut FunctionStatementPlan,
+) -> Result<(), ToDaeError> {
+    let (statements, branch) = sources;
+    if guarded_scratch_is_observable(
+        statements,
+        branch,
+        indices,
+        target,
+        guard,
+        context,
+        definitions,
+    ) {
+        return Ok(());
+    }
+    let span = required_statement_span(&branch[indices.1], "guarded function-loop scratch")?;
+    let seed = definitions.whole_loop_seed(target, context, span)?;
+    attach_guarded_seed(plan, indices.1, target, seed);
+    definitions.define_whole(target);
+    Ok(())
+}
+
+fn guarded_sequence(
+    statement: &rumoca_core::Statement,
+) -> Option<(&Expression, &[rumoca_core::Statement])> {
+    let rumoca_core::Statement::If {
+        cond_blocks,
+        else_block: None,
+        ..
+    } = statement
+    else {
+        return None;
+    };
+    let [block] = cond_blocks.as_slice() else {
+        return None;
+    };
+    Some((&block.cond, &block.stmts))
+}
+
+fn guarded_plan_len(plan: &FunctionStatementPlan) -> Option<usize> {
+    match plan {
+        FunctionStatementPlan::If {
+            branches,
+            fallback: None,
+            ..
+        } if branches.len() == 1 => Some(branches[0].len()),
+        _ => None,
+    }
+}
+
+fn guarded_plan_targets(plan: &FunctionStatementPlan, inner_index: usize) -> Vec<VarName> {
+    let FunctionStatementPlan::If { branches, .. } = plan else {
+        unreachable!("uniform guard proof aligns source and plan conditionals")
+    };
+    whole_definition_targets(&branches[0][inner_index])
+}
+
+fn guarded_scratch_is_observable(
+    statements: &[rumoca_core::Statement],
+    branch: &[rumoca_core::Statement],
+    indices: (usize, usize),
+    target: &VarName,
+    guard: &Expression,
+    context: FunctionValidationContext<'_>,
+    definitions: &FunctionDefinitions,
+) -> bool {
+    definitions.is_defined(target)
+        || context
+            .function
+            .outputs
+            .iter()
+            .any(|output| output.name == target.as_str())
+        || guarded_prefix_reads_name(statements, indices.0, branch, indices.1, target)
+        || statements
+            .iter()
+            .any(|statement| has_unguarded_target_read(statement, target, guard, false))
+}
+
+fn attach_guarded_seed(
+    plan: &mut FunctionStatementPlan,
+    inner_index: usize,
+    target: &VarName,
+    seed: FunctionValueSeed,
+) {
+    let FunctionStatementPlan::If { branches, .. } = plan else {
+        unreachable!("uniform guard proof aligns source and plan conditionals")
+    };
+    attach_whole_definition_seed(&mut branches[0][inner_index], target, seed);
+}
+
+fn whole_definition_targets(plan: &FunctionStatementPlan) -> Vec<VarName> {
+    match plan {
+        FunctionStatementPlan::Assignment(assignment) if assignment.is_whole() => {
+            vec![assignment.target().clone()]
+        }
+        FunctionStatementPlan::MultiOutputCall { outputs } => outputs
+            .iter()
+            .flatten()
+            .filter(|output| output.is_whole())
+            .map(|output| output.target().clone())
+            .collect(),
+        FunctionStatementPlan::RecordAssembly(assembly) => vec![assembly.target.clone()],
+        FunctionStatementPlan::ArrayAssembly(assembly) => vec![assembly.target.clone()],
+        _ => Vec::new(),
+    }
+}
+
+fn attach_whole_definition_seed(
+    plan: &mut FunctionStatementPlan,
+    target: &VarName,
+    seed: FunctionValueSeed,
+) {
+    match plan {
+        FunctionStatementPlan::Assignment(assignment) if assignment.target() == target => {
+            assignment.seed = Some(seed);
+        }
+        FunctionStatementPlan::MultiOutputCall { outputs } => {
+            let output = outputs
+                .iter_mut()
+                .flatten()
+                .find(|output| output.target() == target)
+                .expect("whole-definition candidate remains in its plan");
+            output.seed = Some(seed);
+        }
+        FunctionStatementPlan::RecordAssembly(assembly) if &assembly.target == target => {
+            assembly.seed = Some(seed);
+        }
+        FunctionStatementPlan::ArrayAssembly(assembly) if &assembly.target == target => {
+            assembly.seed = Some(seed);
+        }
+        _ => unreachable!("whole-definition candidate remains in its plan"),
+    }
+}
+
+fn guarded_prefix_reads_name(
+    guarded: &[rumoca_core::Statement],
+    outer_index: usize,
+    branch: &[rumoca_core::Statement],
+    inner_index: usize,
+    target: &VarName,
+) -> bool {
+    guarded[..outer_index]
+        .iter()
+        .any(|statement| statement_reads_target(statement, target))
+        || branch[..=inner_index]
+            .iter()
+            .any(|statement| statement_reads_target(statement, target))
+}
+
+fn has_unguarded_target_read(
+    statement: &rumoca_core::Statement,
+    target: &VarName,
+    guard: &Expression,
+    guarded: bool,
+) -> bool {
+    match statement {
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            (!guarded
+                && indices
+                    .iter()
+                    .any(|index| expression_reads_target(&index.range, target)))
+                || equations
+                    .iter()
+                    .any(|statement| has_unguarded_target_read(statement, target, guard, guarded))
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks.iter().any(|block| {
+                (!guarded && expression_reads_target(&block.cond, target))
+                    || block.stmts.iter().any(|statement| {
+                        let branch_guarded = guarded || condition_implies_guard(&block.cond, guard);
+                        has_unguarded_target_read(statement, target, guard, branch_guarded)
+                    })
+            }) || else_block.as_ref().is_some_and(|statements| {
+                statements
+                    .iter()
+                    .any(|statement| has_unguarded_target_read(statement, target, guard, guarded))
+            })
+        }
+        _ => !guarded && statement_reads_target(statement, target),
+    }
+}
+
+fn condition_implies_guard(condition: &Expression, guard: &Expression) -> bool {
+    if rumoca_core::expressions_semantically_equal(condition, guard) {
+        return true;
+    }
+    matches!(
+        condition,
+        Expression::Binary {
+            op: OpBinary::And,
+            lhs,
+            rhs,
+            ..
+        } if condition_implies_guard(lhs, guard) || condition_implies_guard(rhs, guard)
+    )
+}
+
+fn statement_reads_target(statement: &rumoca_core::Statement, target: &VarName) -> bool {
+    match statement {
+        rumoca_core::Statement::Assignment { comp, value, .. } => {
+            expression_reads_target(value, target) || component_subscripts_read_target(comp, target)
+        }
+        rumoca_core::Statement::FunctionCall { args, outputs, .. } => {
+            args.iter()
+                .any(|argument| expression_reads_target(argument, target))
+                || outputs
+                    .iter()
+                    .flatten()
+                    .any(|output| component_subscripts_read_target(output, target))
+        }
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        } => {
+            indices
+                .iter()
+                .any(|index| expression_reads_target(&index.range, target))
+                || equations
+                    .iter()
+                    .any(|statement| statement_reads_target(statement, target))
+        }
+        rumoca_core::Statement::While { block, .. } => {
+            expression_reads_target(&block.cond, target)
+                || block
+                    .stmts
+                    .iter()
+                    .any(|statement| statement_reads_target(statement, target))
+        }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks.iter().any(|block| {
+                expression_reads_target(&block.cond, target)
+                    || block
+                        .stmts
+                        .iter()
+                        .any(|statement| statement_reads_target(statement, target))
+            }) || else_block.as_ref().is_some_and(|statements| {
+                statements
+                    .iter()
+                    .any(|statement| statement_reads_target(statement, target))
+            })
+        }
+        rumoca_core::Statement::When { blocks, .. } => blocks.iter().any(|block| {
+            expression_reads_target(&block.cond, target)
+                || block
+                    .stmts
+                    .iter()
+                    .any(|statement| statement_reads_target(statement, target))
+        }),
+        rumoca_core::Statement::Reinit {
+            variable, value, ..
+        } => {
+            component_subscripts_read_target(variable, target)
+                || expression_reads_target(value, target)
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            ..
+        } => {
+            expression_reads_target(condition, target)
+                || expression_reads_target(message, target)
+                || level
+                    .as_deref()
+                    .is_some_and(|level| expression_reads_target(level, target))
+        }
+        rumoca_core::Statement::Empty { .. }
+        | rumoca_core::Statement::Return { .. }
+        | rumoca_core::Statement::Break { .. } => false,
+    }
+}
+
+fn component_subscripts_read_target(
+    component: &rumoca_core::ComponentReference,
+    target: &VarName,
+) -> bool {
+    component.parts().iter().any(|part| {
+        part.subs.iter().any(|subscript| match subscript {
+            Subscript::Expr { expr, .. } => expression_reads_target(expr, target),
+            Subscript::Index { .. } | Subscript::Colon { .. } => false,
+        })
+    })
+}
+
+fn expression_reads_target(expression: &Expression, target: &VarName) -> bool {
+    let mut references = Vec::new();
+    expression.collect_var_refs(&mut references);
+    references.iter().any(|reference| reference == target)
+}
+
+fn resolve_fold_iteration(
+    statements: &[rumoca_core::Statement],
+    plans: &mut [FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    let mut index = 0usize;
+    while index < statements.len() {
+        if let FunctionStatementPlan::RecordAssembly(assembly) = &mut plans[index] {
+            let count = assembly.statement_count;
+            resolve_fold_record_assembly(
+                &statements[index..index + count],
+                assembly,
+                context,
+                definitions,
+            )?;
+            index += count;
+            continue;
+        }
+        let statement = &statements[index];
+        let plan = &mut plans[index];
+        match (statement, plan) {
+            (statement, FunctionStatementPlan::ProvenAssertion) => {
+                let assertion = function_assertion(statement, context.flat)?
+                    .expect("a proven loop assertion owns an assertion statement");
+                definitions.require_readable(assertion.condition, context, assertion.span)?;
+            }
+            (statement, FunctionStatementPlan::RuntimeAssertion) => {
+                let assertion = function_assertion(statement, context.flat)?
+                    .expect("a runtime loop assertion owns an assertion statement");
+                definitions.require_readable(assertion.condition, context, assertion.span)?;
+                definitions.require_readable(assertion.message, context, assertion.span)?;
+            }
+            (
+                rumoca_core::Statement::Assignment { value, span, .. },
+                FunctionStatementPlan::Assignment(assignment),
+            ) => resolve_fold_assignment(value, *span, assignment, context, definitions)?,
+            (
+                rumoca_core::Statement::If {
+                    cond_blocks,
+                    else_block,
+                    span,
+                },
+                FunctionStatementPlan::If {
+                    branches,
+                    fallback,
+                    targets,
+                },
+            ) => {
+                let point_targets = resolve_function_conditional(
+                    cond_blocks,
+                    else_block.as_deref(),
+                    branches,
+                    fallback.as_mut(),
+                    *span,
+                    context,
+                    definitions,
+                )?;
+                union_targets(targets, point_targets);
+            }
+            (
+                rumoca_core::Statement::If {
+                    cond_blocks,
+                    else_block,
+                    ..
+                },
+                FunctionStatementPlan::ProvenBranch {
+                    selected,
+                    statements,
+                },
+            ) => {
+                let selected =
+                    selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+                resolve_fold_iteration(selected, statements, context, definitions)?;
+            }
+            (
+                rumoca_core::Statement::For {
+                    indices,
+                    equations,
+                    span,
+                },
+                FunctionStatementPlan::For {
+                    domain,
+                    lowering,
+                    statements,
+                    source_depth,
+                    ..
+                },
+            ) => resolve_function_loop_definitions(
+                (indices, equations, *span),
+                (domain, *source_depth, lowering, statements),
+                context,
+                definitions,
+            )?,
+            (
+                rumoca_core::Statement::FunctionCall { args, span, .. },
+                FunctionStatementPlan::MultiOutputCall { outputs },
+            ) => {
+                resolve_multi_output_definitions(args, *span, outputs, context, definitions)?;
+            }
+            _ => unreachable!("analysis admits only checked transition statements in a fold"),
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+fn resolve_fold_record_assembly(
+    statements: &[rumoca_core::Statement],
+    assembly: &mut FunctionRecordAssemblyPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    for statement in statements {
+        let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
+            unreachable!("record assembly certificate contains assignments")
+        };
+        definitions.require_readable(value, context, *span)?;
+    }
+    if !definitions.is_defined(&assembly.target) && assembly.seed.is_none() {
+        let span = required_statement_span(&statements[0], "function loop record assembly")?;
+        assembly.seed = Some(definitions.whole_loop_seed(&assembly.target, context, span)?);
+    }
+    definitions.define_whole(&assembly.target);
+    Ok(())
+}
+
+fn union_targets(targets: &mut Vec<VarName>, candidates: Vec<VarName>) {
+    for target in candidates {
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+}
+
+fn resolve_fold_assignment(
+    value: &Expression,
+    span: Span,
+    assignment: &mut FunctionAssignmentPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    definitions.require_readable(value, context, span)?;
+    for expression in assignment
+        .subscripts()
+        .iter()
+        .filter_map(subscript_expression)
+    {
+        definitions.require_readable(expression, context, span)?;
+    }
+    if assignment.subscripts().is_empty() {
+        seed_undefined_whole_loop_value(assignment, context, definitions, span)?;
+        definitions.define_whole(assignment.target());
+        return Ok(());
+    }
+    let seed =
+        definitions.write_elements(assignment.target(), assignment.subscripts(), context, span)?;
+    assignment.seed = assignment.seed.take().or(seed);
+    Ok(())
+}
+
+fn seed_undefined_whole_loop_value(
+    assignment: &mut FunctionAssignmentPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &FunctionDefinitions,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    if !definitions.is_defined(assignment.target()) && assignment.seed.is_none() {
+        assignment.seed = Some(definitions.whole_loop_seed(assignment.target(), context, span)?);
     }
     Ok(())
 }

@@ -434,7 +434,7 @@ fn projected_derivative_model() -> solve::SolveModel {
 #[test]
 fn default_bdf_honors_wall_clock_budget() {
     let error = simulate(
-        &unit_integrator_model(),
+        unit_integrator_model(),
         &SimOptions {
             t_start: 0.0,
             t_end: 1.0,

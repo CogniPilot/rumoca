@@ -14,7 +14,24 @@ pub(super) fn coalesce_function_array_assemblies(
             start += 1;
             continue;
         };
+        let Some(extent) = rank_one_extent(&target, context.function) else {
+            start += 1;
+            continue;
+        };
         let loop_index = start + direct_count;
+        if direct_count == extent && is_record_array(&target, context.function) {
+            plans[start] = FunctionStatementPlan::ArrayAssembly(FunctionArrayAssemblyPlan {
+                target,
+                direct_count,
+                loop_plan: None,
+                seed: None,
+            });
+            for plan in &mut plans[start + 1..loop_index] {
+                *plan = FunctionStatementPlan::ArrayAssemblyMember;
+            }
+            start = loop_index;
+            continue;
+        }
         if loop_index >= plans.len()
             || !total_suffix_loop(
                 &target,
@@ -34,7 +51,8 @@ pub(super) fn coalesce_function_array_assemblies(
         plans[start] = FunctionStatementPlan::ArrayAssembly(FunctionArrayAssemblyPlan {
             target,
             direct_count,
-            loop_plan: Box::new(loop_plan),
+            loop_plan: Some(Box::new(loop_plan)),
+            seed: None,
         });
         for plan in &mut plans[start + 1..loop_index] {
             *plan = FunctionStatementPlan::ArrayAssemblyMember;
@@ -42,6 +60,30 @@ pub(super) fn coalesce_function_array_assemblies(
         start = loop_index + 1;
     }
     Ok(())
+}
+
+fn is_record_array(target: &VarName, function: &rumoca_core::Function) -> bool {
+    function
+        .outputs
+        .iter()
+        .chain(&function.locals)
+        .find(|value| value.name == target.as_str())
+        .is_some_and(|value| {
+            value.type_class == Some(rumoca_core::ClassType::Record)
+                && !value.dimensions().is_empty()
+        })
+}
+
+fn rank_one_extent(target: &VarName, function: &rumoca_core::Function) -> Option<usize> {
+    function
+        .outputs
+        .iter()
+        .chain(&function.locals)
+        .find(|value| value.name == target.as_str())
+        .and_then(|value| match value.dimensions() {
+            [extent] => usize::try_from(*extent).ok(),
+            _ => None,
+        })
 }
 
 fn direct_prefix(
@@ -113,16 +155,7 @@ fn total_suffix_loop(
     else {
         return false;
     };
-    let Some(extent) = function
-        .outputs
-        .iter()
-        .chain(&function.locals)
-        .find(|value| value.name == target.as_str())
-        .and_then(|value| match value.dimensions() {
-            [extent] => usize::try_from(*extent).ok(),
-            _ => None,
-        })
-    else {
+    let Some(extent) = rank_one_extent(target, function) else {
         return false;
     };
     assignment.target() == target

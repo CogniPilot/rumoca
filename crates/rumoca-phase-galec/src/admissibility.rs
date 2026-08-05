@@ -90,6 +90,7 @@ fn continuous_scalar_rows(view: dae::DaeView<'_>) -> usize {
                 .value_type()
                 .scalar_count()
                 .expect("checked scalar capacity"),
+            dae::ContinuousOwnerView::Structured { id, .. } if definitions.consumes_family(id) => 0,
             dae::ContinuousOwnerView::Structured { family, .. } => family.scalar_rows() as usize,
         })
         .sum()
