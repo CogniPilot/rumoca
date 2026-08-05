@@ -58,10 +58,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     ));
                 }
                 let result = self.function_result(function, output, span)?;
-                self.function_arguments
-                    .push((function, arguments.iter().collect()));
+                let arguments: Vec<_> = arguments.iter().collect();
+                self.enter_context(ScalarContextFrame::Function {
+                    parent: self.context_id,
+                    function,
+                    arguments: arguments.clone(),
+                });
+                self.function_arguments.push((function, arguments));
                 let lowered = self.record_field(result, field, scalar, span);
                 self.function_arguments.pop();
+                self.leave_context();
                 lowered
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
@@ -129,7 +135,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let context = self.suspend_context();
         let Some((function, arguments)) = self.function_arguments.pop() else {
+            self.resume_context(context);
             return Err(LowerError::contract(
                 "record function parameter escaped its checked call",
                 span,
@@ -144,6 +152,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })
             .and_then(|argument| self.record_field(argument, field, scalar, span));
         self.function_arguments.push((function, arguments));
+        self.resume_context(context);
         lowered
     }
 
@@ -165,9 +174,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .index_tuple_at(point)
             .expect("checked comprehension domain remains valid")
             .expect("checked record field scalar selects a domain point");
+        self.enter_context(ScalarContextFrame::Domain {
+            parent: self.context_id,
+            domain,
+            values: values.clone(),
+        });
         self.domain_points.push((domain, values));
         let result = self.record_field(body, field, scalar % body_count, span);
         self.domain_points.pop();
+        self.leave_context();
         result
     }
 
@@ -286,7 +301,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .index_tuple_at(point)
                 .expect("checked function fold domain remains valid")
                 .expect("checked function fold point is in range");
+            self.enter_context(ScalarContextFrame::Domain {
+                parent: self.context_id,
+                domain: fold_view.domain(),
+                values: indices.clone(),
+            });
             self.domain_points.push((fold_view.domain(), indices));
+            self.enter_context(ScalarContextFrame::Fold {
+                parent: self.context_id,
+                fold,
+                values: values.clone(),
+            });
             self.function_fold_values.push((fold, values));
             let updates = fold_view
                 .update_values()
@@ -301,7 +326,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .function_fold_values
                 .pop()
                 .expect("function fold frame was just pushed");
+            self.leave_context();
             self.domain_points.pop();
+            self.leave_context();
             values = updates?;
             debug_assert_eq!(
                 previous.len(),
@@ -324,7 +351,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let context = self.suspend_context();
         let Some((function, arguments)) = self.function_arguments.pop() else {
+            self.resume_context(context);
             return Err(LowerError::non_computable(
                 "function parameter escaped its checked call owner",
                 span,
@@ -342,6 +371,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             })
             .and_then(|argument| self.expression(argument, scalar));
         self.function_arguments.push((function, arguments));
+        self.resume_context(context);
         lowered
     }
 
@@ -360,10 +390,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ));
         }
         let result = self.function_result(function, output, span)?;
-        self.function_arguments
-            .push((function, arguments.iter().collect()));
+        let arguments: Vec<_> = arguments.iter().collect();
+        self.enter_context(ScalarContextFrame::Function {
+            parent: self.context_id,
+            function,
+            arguments: arguments.clone(),
+        });
+        self.function_arguments.push((function, arguments));
         let lowered = self.expression(result, scalar);
         self.function_arguments.pop();
+        self.leave_context();
         lowered
     }
 

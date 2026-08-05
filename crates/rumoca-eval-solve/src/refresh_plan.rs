@@ -66,13 +66,19 @@ pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshP
         .iter()
         .filter(|row| row.direct_assignment_certified)
         .count();
+    let exact_rows = plan
+        .rows
+        .iter()
+        .filter(|row| row.exact_assignment_certified)
+        .count();
     tracing::debug!(
         target: "rumoca_eval_solve::refresh",
-        "{name} refresh plan: rows={} seed_rows={} static_seed_rows={} direct_rows={} duplicate_targets={} projection_blocks={} value_projection_blocks={} projection_unknowns={} coupled_blocks={} max_block={} causal_certified={} [{}]",
+        "{name} refresh plan: rows={} seed_rows={} static_seed_rows={} direct_rows={} exact_rows={} duplicate_targets={} projection_blocks={} value_projection_blocks={} projection_unknowns={} coupled_blocks={} max_block={} causal_certified={} [{}]",
         plan.rows.len(),
         plan.causal_seed_rows.len(),
         plan.static_causal_seed_rows.len(),
         direct_rows,
+        exact_rows,
         duplicate_targets,
         plan.simultaneous_plan.blocks.len(),
         plan.value_projection_plan.blocks.len(),
@@ -108,8 +114,9 @@ pub struct AlgebraicRefreshRow {
     /// acyclic dependency-complete schedule to skip simultaneous projection.
     pub direct_assignment_certified: bool,
     /// The row has an exact direct or affine target assignment. This can omit
-    /// a seeded singleton from value rechecking without changing sensitivity
-    /// projection or whole-plan causal certification.
+    /// a seeded singleton from value rechecking. A complete acyclic inventory
+    /// of exact assignments also certifies the whole value solution; sensitivity
+    /// projection continues to retain the compiler-owned simultaneous plan.
     pub exact_assignment_certified: bool,
 }
 
@@ -856,7 +863,7 @@ fn complete_causal_projection_is_certified(
                 || block.row_output_count(row.row_idx) != Some(1)
                 || row_all_y_dependencies(block.block(), row.row_idx)
                     .any(|index| index >= solver_count)
-                || !block.certifies_direct_target_assignment(row.row_idx, row.target_index)
+                || !block.certifies_exact_target_assignment(row.row_idx, row.target_index)
         })
     {
         return false;

@@ -179,9 +179,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
+        self.enter_context(ScalarContextFrame::Parameter {
+            parent: self.context_id,
+            parameter,
+        });
         self.active_parameters.push(parameter);
         let value = self.expression(binding, scalar);
         self.active_parameters.pop();
+        self.leave_context();
         value
     }
 
@@ -229,6 +234,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             state,
             scalar,
         )?;
+        self.enter_context(ScalarContextFrame::Derivative {
+            parent: self.context_id,
+            state: state.index(),
+            scalar,
+        });
         self.active_derivatives.push(key);
         let pushed_point = definition.domain_point.clone();
         if let Some(point) = pushed_point {
@@ -239,6 +249,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.domain_points.pop();
         }
         self.active_derivatives.pop();
+        self.leave_context();
         value
     }
 

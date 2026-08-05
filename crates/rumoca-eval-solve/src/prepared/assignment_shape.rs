@@ -1,6 +1,6 @@
 use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, UnaryOp};
 
-use super::dependency::reg_depends_on_y_index;
+use super::dependency::{YDependencyAnalyzer, reg_depends_on_y_index};
 use super::{invalid_prepared_row, producer};
 use crate::EvalSolveError;
 
@@ -150,6 +150,7 @@ fn affine_residual_shapes(
     };
     let expr_eval_len = checked_expr_eval_len(residual_pos)?;
     let mut targets = Vec::new();
+    let mut dependencies = YDependencyAnalyzer::new(row, 0);
     for op in row {
         let LinearOp::LoadY {
             dst: target_reg,
@@ -164,7 +165,9 @@ fn affine_residual_shapes(
         {
             continue;
         }
-        let Some(coefficient) = additive_target_coefficient(row, residual_reg, target_y_index)
+        dependencies.set_target(target_y_index);
+        let Some(coefficient) =
+            additive_target_coefficient(row, residual_reg, target_y_index, &mut dependencies)
         else {
             continue;
         };
@@ -182,26 +185,35 @@ fn affine_residual_shapes(
     Ok(targets)
 }
 
-fn additive_target_coefficient(row: &[LinearOp], reg: u32, target_y_index: usize) -> Option<f64> {
-    if !reg_depends_on_y_index(row, reg, target_y_index) {
+fn additive_target_coefficient(
+    row: &[LinearOp],
+    reg: u32,
+    target_y_index: usize,
+    dependencies: &mut YDependencyAnalyzer<'_>,
+) -> Option<f64> {
+    if !dependencies.depends_on(reg) {
         return Some(0.0);
     }
     match producer(row, reg)? {
         LinearOp::LoadY { index, .. } if *index == target_y_index => Some(1.0),
-        LinearOp::Move { src, .. } => additive_target_coefficient(row, *src, target_y_index),
+        LinearOp::Move { src, .. } => {
+            additive_target_coefficient(row, *src, target_y_index, dependencies)
+        }
         LinearOp::Unary {
             op: UnaryOp::Neg,
             arg,
             ..
-        } => additive_target_coefficient(row, *arg, target_y_index).map(|value| -value),
+        } => {
+            additive_target_coefficient(row, *arg, target_y_index, dependencies).map(|value| -value)
+        }
         LinearOp::Binary {
             op: BinaryOp::Add,
             lhs,
             rhs,
             ..
         } => Some(
-            additive_target_coefficient(row, *lhs, target_y_index)?
-                + additive_target_coefficient(row, *rhs, target_y_index)?,
+            additive_target_coefficient(row, *lhs, target_y_index, dependencies)?
+                + additive_target_coefficient(row, *rhs, target_y_index, dependencies)?,
         ),
         LinearOp::Binary {
             op: BinaryOp::Sub,
@@ -209,8 +221,8 @@ fn additive_target_coefficient(row: &[LinearOp], reg: u32, target_y_index: usize
             rhs,
             ..
         } => Some(
-            additive_target_coefficient(row, *lhs, target_y_index)?
-                - additive_target_coefficient(row, *rhs, target_y_index)?,
+            additive_target_coefficient(row, *lhs, target_y_index, dependencies)?
+                - additive_target_coefficient(row, *rhs, target_y_index, dependencies)?,
         ),
         _ => None,
     }

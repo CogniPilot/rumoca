@@ -33,8 +33,8 @@ pub use assignment_shape::{
 };
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
-    AffineStencilConstStride, AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp,
-    ScalarProgramBlock, StructuralPattern, TensorOutputMap,
+    AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, ComputeBlock, ComputeNode,
+    LinearOp, ScalarProgramBlock, StructuralPattern, TensorOutputMap, UnaryOp,
 };
 
 /// Reusable evaluator for one Solve-IR row block.
@@ -632,6 +632,118 @@ impl PreparedScalarProgramBlock {
         };
         !row.iter().any(non_causal_linear_op)
             && self.assignment_shape(row_idx, target_y_index).is_some()
+    }
+
+    /// Materialize the compiler-proven target isolator as an ordinary Solve-IR
+    /// expression program. Backends can compile this program and write its one
+    /// output directly to `target_y_index`; executing such programs in refresh
+    /// order preserves the same causal semantics as the prepared interpreter.
+    pub fn exact_target_assignment_program(
+        &self,
+        row_idx: usize,
+        target_y_index: usize,
+    ) -> Option<Vec<LinearOp>> {
+        let row = self.block.programs().get(row_idx)?;
+        if row.iter().any(non_causal_linear_op) {
+            return None;
+        }
+        let shape = self.assignment_shape(row_idx, target_y_index)?;
+        let mut program = row.get(..shape.expr_eval_len())?.to_vec();
+        let mut next_reg = program
+            .iter()
+            .filter_map(LinearOp::dst_register)
+            .max()
+            .map_or(Some(0), |reg| reg.checked_add(1))?;
+        let mut allocate = || {
+            let reg = next_reg;
+            next_reg = next_reg.checked_add(1)?;
+            Some(reg)
+        };
+        let result = match shape {
+            TargetAssignmentShape::Direct { expr_reg, .. } => expr_reg,
+            TargetAssignmentShape::Affine {
+                offset_reg,
+                coefficient_reg,
+                offset_scale,
+                coefficient_scale,
+                ..
+            } => {
+                let offset_scale_reg = allocate()?;
+                let scaled_offset_reg = allocate()?;
+                let coefficient_scale_reg = allocate()?;
+                let scaled_coefficient_reg = allocate()?;
+                let negated_offset_reg = allocate()?;
+                let result_reg = allocate()?;
+                program.push(LinearOp::Const {
+                    dst: offset_scale_reg,
+                    value: offset_scale,
+                });
+                program.push(LinearOp::Binary {
+                    dst: scaled_offset_reg,
+                    op: BinaryOp::Mul,
+                    lhs: offset_scale_reg,
+                    rhs: offset_reg,
+                });
+                program.push(LinearOp::Const {
+                    dst: coefficient_scale_reg,
+                    value: coefficient_scale,
+                });
+                if let Some(coefficient_reg) = coefficient_reg {
+                    program.push(LinearOp::Binary {
+                        dst: scaled_coefficient_reg,
+                        op: BinaryOp::Mul,
+                        lhs: coefficient_scale_reg,
+                        rhs: coefficient_reg,
+                    });
+                } else {
+                    program.push(LinearOp::Move {
+                        dst: scaled_coefficient_reg,
+                        src: coefficient_scale_reg,
+                    });
+                }
+                program.push(LinearOp::Unary {
+                    dst: negated_offset_reg,
+                    op: UnaryOp::Neg,
+                    arg: scaled_offset_reg,
+                });
+                program.push(LinearOp::Binary {
+                    dst: result_reg,
+                    op: BinaryOp::Div,
+                    lhs: negated_offset_reg,
+                    rhs: scaled_coefficient_reg,
+                });
+                result_reg
+            }
+            TargetAssignmentShape::AffineResidual {
+                target_reg,
+                residual_reg,
+                coefficient,
+                ..
+            } => {
+                let coefficient_reg = allocate()?;
+                let correction_reg = allocate()?;
+                let result_reg = allocate()?;
+                program.push(LinearOp::Const {
+                    dst: coefficient_reg,
+                    value: coefficient,
+                });
+                program.push(LinearOp::Binary {
+                    dst: correction_reg,
+                    op: BinaryOp::Div,
+                    lhs: residual_reg,
+                    rhs: coefficient_reg,
+                });
+                program.push(LinearOp::Binary {
+                    dst: result_reg,
+                    op: BinaryOp::Sub,
+                    lhs: target_reg,
+                    rhs: correction_reg,
+                });
+                result_reg
+            }
+        };
+        program.push(LinearOp::StoreOutput { src: result });
+        Some(program)
     }
 
     pub fn eval_target_assignment_row_unchecked_with_context(

@@ -25,9 +25,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .index_tuple_at(point)
             .expect("checked domain remains valid")
             .expect("checked comprehension scalar point is in range");
+        self.enter_context(ScalarContextFrame::Domain {
+            parent: self.context_id,
+            domain,
+            values: values.clone(),
+        });
         self.domain_points.push((domain, values));
         let result = self.expression(body, body_scalar);
         self.domain_points.pop();
+        self.leave_context();
         result
     }
 

@@ -565,6 +565,18 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
             settled: false,
         });
     }
+    // Exact zero satisfies every positive scaled tolerance, independent of
+    // Jacobian-derived row scaling. Runtime callers frequently project an
+    // already canonical algebraic view (for example around event queries), so
+    // avoid rebuilding the full reverse-mode Jacobian merely to prove that
+    // zero is zero. This is an exact semantic shortcut: nonzero residuals keep
+    // the existing scaled convergence and correction path unchanged.
+    if !certify_coordinates && residual.iter().all(|value| *value == 0.0) {
+        return Ok(ProjectionBlockUpdate {
+            changed,
+            settled: true,
+        });
+    }
     let jacobian = algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices)?;
     let (row_scales, variable_scales) = algebraic_block_scales(model, block, &jacobian);
     let residual_converged = scaled_residual_converged(&residual, &row_scales, tol);

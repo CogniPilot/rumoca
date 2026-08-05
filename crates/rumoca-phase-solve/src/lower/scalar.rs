@@ -30,6 +30,34 @@ pub(super) struct ParameterBindingSubstitutions<'dae> {
     bindings: HashMap<u32, dae::ExprId<'dae>>,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ScalarContextFrame<'dae> {
+    Function {
+        parent: u64,
+        function: dae::FunctionId<'dae>,
+        arguments: Vec<dae::ExprId<'dae>>,
+    },
+    Domain {
+        parent: u64,
+        domain: dae::DomainId<'dae>,
+        values: Vec<i64>,
+    },
+    Fold {
+        parent: u64,
+        fold: dae::FunctionFoldId<'dae>,
+        values: Vec<Vec<solve::Reg>>,
+    },
+    Parameter {
+        parent: u64,
+        parameter: u32,
+    },
+    Derivative {
+        parent: u64,
+        state: u32,
+        scalar: usize,
+    },
+}
+
 impl<'dae> ParameterBindingSubstitutions<'dae> {
     pub(super) const fn new(bindings: HashMap<u32, dae::ExprId<'dae>>) -> Self {
         Self { bindings }
@@ -56,6 +84,11 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     active_parameters: Vec<u32>,
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
+    expression_cache: HashMap<(u64, dae::ExprId<'dae>, usize), solve::Reg>,
+    context_ids: HashMap<ScalarContextFrame<'dae>, u64>,
+    context_stack: Vec<u64>,
+    context_id: u64,
+    next_context_id: u64,
 }
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
@@ -80,7 +113,44 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             active_parameters: Vec::new(),
             ops: Vec::new(),
             next_register: 0,
+            expression_cache: HashMap::new(),
+            context_ids: HashMap::new(),
+            context_stack: Vec::new(),
+            context_id: 0,
+            next_context_id: 1,
         }
+    }
+
+    fn enter_context(&mut self, frame: ScalarContextFrame<'dae>) {
+        let id = match self.context_ids.get(&frame).copied() {
+            Some(id) => id,
+            None => {
+                let id = self.next_context_id;
+                self.next_context_id += 1;
+                self.context_ids.insert(frame, id);
+                id
+            }
+        };
+        self.context_stack.push(self.context_id);
+        self.context_id = id;
+    }
+
+    fn leave_context(&mut self) {
+        self.context_id = self
+            .context_stack
+            .pop()
+            .expect("semantic scalar context has a parent");
+    }
+
+    fn suspend_context(&mut self) -> u64 {
+        let suspended = self.context_id;
+        self.context_id = self.context_stack.pop().unwrap_or(0);
+        suspended
+    }
+
+    fn resume_context(&mut self, suspended: u64) {
+        self.context_stack.push(self.context_id);
+        self.context_id = suspended;
     }
 
     /// Let this program resolve a derivative coordinate through the continuous
@@ -266,9 +336,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         expression: dae::ExprId<'dae>,
         scalar: usize,
     ) -> Result<solve::Reg, LowerError> {
+        let key = (self.context_id, expression, scalar);
+        if let Some(register) = self.expression_cache.get(&key).copied() {
+            return Ok(register);
+        }
         let node = self.node(expression);
         self.expect_scalar(node, scalar)?;
-        match node.operation() {
+        let result = match node.operation() {
             dae::ExpressionOperation::Literal(value) => {
                 self.literal(value, node.provenance().span())
             }
@@ -356,7 +430,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 scalar,
                 node.provenance().span(),
             ),
-        }
+        }?;
+        self.expression_cache.insert(key, result);
+        Ok(result)
     }
 
     fn array_update(

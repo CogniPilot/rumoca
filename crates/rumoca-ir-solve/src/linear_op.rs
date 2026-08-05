@@ -1,7 +1,6 @@
 //! Linear register-based ops used by compiled evaluators.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
@@ -401,14 +400,18 @@ pub struct ScalarProgramRegisterFlow {
 
 impl ScalarProgramRegisterFlow {
     pub fn derive(program: &[LinearOp]) -> Result<Self, ScalarProgramRegisterError> {
-        let mut initialized = BTreeSet::new();
+        let mut initialized = Vec::new();
         let mut max_register = None;
         for (op_index, op) in program.iter().copied().enumerate() {
             if let Some(register) = validate_op_sources(op, op_index, &initialized)? {
                 max_register = Some(max_register.map_or(register, |max: Reg| max.max(register)));
             }
             if let Some(dst) = op.dst_register() {
-                initialized.insert(dst);
+                let dst_index = dst as usize;
+                if initialized.len() <= dst_index {
+                    initialized.resize(dst_index + 1, false);
+                }
+                initialized[dst_index] = true;
                 max_register = Some(max_register.map_or(dst, |max: Reg| max.max(dst)));
             }
         }
@@ -493,7 +496,7 @@ impl std::fmt::Display for ScalarProgramRegisterError {
 fn validate_op_sources(
     op: LinearOp,
     op_index: usize,
-    initialized: &BTreeSet<Reg>,
+    initialized: &[bool],
 ) -> Result<Option<Reg>, ScalarProgramRegisterError> {
     match op {
         LinearOp::Const { .. }
@@ -573,7 +576,7 @@ fn validate_op_sources(
 fn validate_random_sources(
     op: LinearOp,
     op_index: usize,
-    initialized: &BTreeSet<Reg>,
+    initialized: &[bool],
 ) -> Result<Option<Reg>, ScalarProgramRegisterError> {
     match op {
         LinearOp::RandomInitialState {
@@ -640,7 +643,7 @@ fn linear_solve_sources(
     rhs_start: Reg,
     n: usize,
     component: usize,
-    initialized: &BTreeSet<Reg>,
+    initialized: &[bool],
 ) -> Result<Reg, ScalarProgramRegisterError> {
     validate_projection(op_index, "LinearSolveComponent", component, n)?;
     let matrix_len = n
@@ -684,9 +687,9 @@ fn require_register(
     op_index: usize,
     operation: &'static str,
     register: Reg,
-    initialized: &BTreeSet<Reg>,
+    initialized: &[bool],
 ) -> Result<(), ScalarProgramRegisterError> {
-    if initialized.contains(&register) {
+    if initialized.get(register as usize).copied().unwrap_or(false) {
         return Ok(());
     }
     Err(ScalarProgramRegisterError::UndefinedRegister {
@@ -701,7 +704,7 @@ fn require_register_range(
     operation: &'static str,
     start: Reg,
     len: usize,
-    initialized: &BTreeSet<Reg>,
+    initialized: &[bool],
 ) -> Result<Reg, ScalarProgramRegisterError> {
     let Some(last_offset) = len.checked_sub(1) else {
         return Err(ScalarProgramRegisterError::EmptyRegisterRange {
@@ -725,25 +728,16 @@ fn require_register_range(
             len,
         },
     )?;
-    let mut expected = start;
-    for register in initialized.range(start..=end).copied() {
-        if register != expected {
+    for register in start..=end {
+        if !initialized.get(register as usize).copied().unwrap_or(false) {
             return Err(ScalarProgramRegisterError::UndefinedRegister {
                 op_index,
                 operation,
-                register: expected,
+                register,
             });
         }
-        if register == end {
-            return Ok(end);
-        }
-        expected = register + 1;
     }
-    Err(ScalarProgramRegisterError::UndefinedRegister {
-        op_index,
-        operation,
-        register: expected,
-    })
+    Ok(end)
 }
 
 fn checked_register_count(max_register: Option<Reg>) -> Result<usize, ScalarProgramRegisterError> {

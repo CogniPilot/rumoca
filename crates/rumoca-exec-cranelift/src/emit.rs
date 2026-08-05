@@ -35,6 +35,7 @@ use interpreter::execute_row;
 // pointer (one program may emit several outputs via consecutive StoreOutputs).
 type ResidualRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *mut f64);
 type JacobianRowFn = unsafe extern "C" fn(*const f64, *const f64, f64, *const f64, *mut f64);
+type AssignmentScheduleFn = unsafe extern "C" fn(*mut f64, *const f64, f64);
 
 #[derive(Clone)]
 enum RowPlan {
@@ -149,6 +150,47 @@ pub(crate) struct CompiledResidualRows {
     input_requirements: InputRequirements,
     regs_scratch: RefCell<Vec<f64>>,
     jit_call_count: Cell<usize>,
+}
+
+pub(crate) struct CompiledAssignmentSchedule {
+    _module: JITModule,
+    jit: AssignmentScheduleFn,
+    input_requirements: InputRequirements,
+    required_y_len: usize,
+    rows: usize,
+}
+
+impl CompiledAssignmentSchedule {
+    pub(crate) fn call(&self, y: &mut [f64], p: &[f64], t: f64) -> Result<(), CompileError> {
+        self.call_with_external_tables(y, p, t, &[])
+    }
+
+    pub(crate) fn call_with_external_tables(
+        &self,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[ExternalTableData],
+    ) -> Result<(), CompileError> {
+        validate_input_requirements(self.input_requirements, y, p, None)?;
+        if y.len() < self.required_y_len {
+            return Err(CompileError::Input(format!(
+                "assignment schedule requires {} y values, got {}",
+                self.required_y_len,
+                y.len()
+            )));
+        }
+        with_active_external_tables(external_tables, || {
+            // SAFETY: compilation validates every input load and target offset;
+            // the checks above establish both against these exact slices.
+            unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t) };
+        });
+        Ok(())
+    }
+
+    pub(crate) fn rows(&self) -> usize {
+        self.rows
+    }
 }
 
 impl CompiledResidualRows {
@@ -383,6 +425,48 @@ pub(crate) fn compile_residual_rows(
     })
 }
 
+pub(crate) fn compile_assignment_schedule(
+    rows: &[Vec<LinearOp>],
+    target_y_indices: &[usize],
+) -> Result<CompiledAssignmentSchedule, CompileError> {
+    if rows.len() != target_y_indices.len() {
+        return Err(CompileError::Input(format!(
+            "assignment schedule has {} rows but {} targets",
+            rows.len(),
+            target_y_indices.len()
+        )));
+    }
+    let plans = plan_rows(rows)?;
+    for (row, plan) in rows.iter().zip(&plans) {
+        validate_row_supported_by_jit(row, RowKind::Residual)?;
+        if plan.output_count() != 1 {
+            return Err(CompileError::Input(
+                "assignment schedule rows must each have exactly one output".to_string(),
+            ));
+        }
+    }
+    let input_requirements = input_requirements_for_plans(&plans);
+    let required_y_len = target_y_indices
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |index| index.saturating_add(1));
+    let mut emitter = CraneliftEmitter::new()?;
+    let func_id = emitter.compile_assignment_schedule(rows, target_y_indices)?;
+    emitter
+        .module
+        .finalize_definitions()
+        .map_err(to_backend_err)?;
+    let jit = finalized_assignment_schedule_fn(&emitter.module, func_id)?;
+    Ok(CompiledAssignmentSchedule {
+        _module: emitter.module,
+        jit,
+        input_requirements,
+        required_y_len,
+        rows: rows.len(),
+    })
+}
+
 pub(crate) fn compile_jacobian_rows(
     rows: &[Vec<LinearOp>],
 ) -> Result<CompiledJacobianRows, CompileError> {
@@ -471,6 +555,20 @@ fn finalized_jacobian_fn(
     // code memory for at least as long as the CompiledJacobianRows containing
     // this pointer.
     Ok(unsafe { std::mem::transmute::<*const u8, JacobianRowFn>(ptr) })
+}
+
+fn finalized_assignment_schedule_fn(
+    module: &JITModule,
+    func_id: FuncId,
+) -> Result<AssignmentScheduleFn, CompileError> {
+    let ptr = module.get_finalized_function(func_id);
+    if ptr.is_null() {
+        return Err(CompileError::Backend(
+            "Cranelift returned a null assignment schedule function pointer".to_string(),
+        ));
+    }
+    // SAFETY: compile_assignment_schedule declares the AssignmentScheduleFn ABI.
+    Ok(unsafe { std::mem::transmute::<*const u8, AssignmentScheduleFn>(ptr) })
 }
 
 unsafe fn call_residual_jit(jit: ResidualRowFn, y: &[f64], p: &[f64], t: f64, out: &mut [f64]) {
@@ -637,6 +735,59 @@ impl CraneliftEmitter {
         self.module.clear_context(&mut context);
         Ok(func_id)
     }
+
+    fn compile_assignment_schedule(
+        &mut self,
+        rows: &[Vec<LinearOp>],
+        target_y_indices: &[usize],
+    ) -> Result<FuncId, CompileError> {
+        let pointer_type = self.module.target_config().pointer_type();
+        let mut signature = self.module.make_signature();
+        signature.params.push(AbiParam::new(pointer_type)); // mutable y
+        signature.params.push(AbiParam::new(pointer_type)); // p
+        signature.params.push(AbiParam::new(types::F64)); // t
+        let func_id = self
+            .module
+            .declare_function("rumoca_assignment_schedule", Linkage::Local, &signature)
+            .map_err(to_backend_err)?;
+        let mut context = self.module.make_context();
+        context.func.signature = signature;
+        let mut fb_ctx = FunctionBuilderContext::new();
+        {
+            let mut fb = FunctionBuilder::new(&mut context.func, &mut fb_ctx);
+            let entry = fb.create_block();
+            fb.append_block_params_for_function_params(entry);
+            fb.switch_to_block(entry);
+            fb.seal_block(entry);
+            let params = fb.block_params(entry).to_vec();
+            let (y_ptr, p_ptr, t_value) = (params[0], params[1], params[2]);
+            let flags = MemFlags::new();
+            for (row, &target) in rows.iter().zip(target_y_indices) {
+                let mut regs = HashMap::new();
+                let mut row_lower = RowLowerCtx {
+                    fb: &mut fb,
+                    module: &mut self.module,
+                    math: &mut self.math,
+                    regs: &mut regs,
+                    y_ptr,
+                    p_ptr,
+                    t_value,
+                    v_ptr: None,
+                    flags,
+                };
+                row_lower.lower_assignment(row, target)?;
+            }
+            fb.ins().return_(&[]);
+            fb.finalize();
+        }
+        let flags = settings::Flags::new(settings::builder());
+        verify_function(&context.func, &flags).map_err(to_backend_err)?;
+        self.module
+            .define_function(func_id, &mut context)
+            .map_err(to_backend_err)?;
+        self.module.clear_context(&mut context);
+        Ok(func_id)
+    }
 }
 
 struct RowLowerCtx<'a, 'b> {
@@ -652,6 +803,30 @@ struct RowLowerCtx<'a, 'b> {
 }
 
 impl<'a, 'b> RowLowerCtx<'a, 'b> {
+    fn lower_assignment(&mut self, row: &[LinearOp], target: usize) -> Result<(), CompileError> {
+        let offset = target
+            .checked_mul(std::mem::size_of::<f64>())
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| {
+                CompileError::Input("assignment target byte offset exceeds i32".to_string())
+            })?;
+        let mut output = None;
+        for &op in row {
+            if let Some(value) = self.lower_op(op)? {
+                if output.replace(value).is_some() {
+                    return Err(CompileError::Input(
+                        "assignment schedule row has multiple outputs".to_string(),
+                    ));
+                }
+            }
+        }
+        let value = output.ok_or_else(|| {
+            CompileError::Input("assignment schedule row has no output".to_string())
+        })?;
+        self.fb.ins().store(self.flags, value, self.y_ptr, offset);
+        Ok(())
+    }
+
     /// Lower every op in `row`, writing each `StoreOutput` result to the next
     /// consecutive `out[k]` slot so a multi-output program fills consecutive
     /// output slots. (`lower_op` returns `Some(value)` exactly for StoreOutput.)
