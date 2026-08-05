@@ -59,6 +59,10 @@ struct Args {
     /// Directory for focused JSON artifacts.
     #[arg(long)]
     artifact_dir: Option<PathBuf>,
+
+    /// Re-run structural matching to print unmatched equations and unknowns.
+    #[arg(long)]
+    structural_summary: bool,
 }
 
 fn compile_report_to_result(report: StrictCompileReport) -> Result<Box<CompilationResult>> {
@@ -163,6 +167,7 @@ fn load_profiled_model(
     source_root: &std::path::Path,
     model: &str,
     artifact_dir: Option<&std::path::Path>,
+    structural_summary: bool,
 ) -> Result<Box<CompilationResult>> {
     let parsed = parse_source_root_with_cache(source_root).with_context(|| {
         format!(
@@ -215,7 +220,9 @@ fn load_profiled_model(
     if let Some(artifact_dir) = artifact_dir {
         write_artifacts(artifact_dir, &result)?;
     }
-    print_structural_summary(&result.dae);
+    if structural_summary {
+        print_structural_summary(&result.dae);
+    }
     debug_log_balance_summary(&result.dae);
     debug_log_unknown_summary(&result.dae);
     Ok(result)
@@ -509,7 +516,12 @@ fn nearest_time_index(times: &[f64], requested: f64) -> Option<usize> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let result = load_profiled_model(&args.source_root, &args.model, args.artifact_dir.as_deref())?;
+    let result = load_profiled_model(
+        &args.source_root,
+        &args.model,
+        args.artifact_dir.as_deref(),
+        args.structural_summary,
+    )?;
 
     if !args.inspect_names.is_empty() {
         inspect_dae_names(&result.dae, &args.inspect_names)?;
@@ -627,7 +639,8 @@ end Lib;
     fn load_profiled_model_compiles_minimal_source_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
+        let result =
+            load_profiled_model(&source_root, "Lib.M", None, false).expect("focused compile");
         assert_eq!(
             result.dae.inspect(|view| {
                 view.variables()
@@ -643,7 +656,8 @@ end Lib;
     fn build_sim_options_uses_experiment_metadata() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
+        let result =
+            load_profiled_model(&source_root, "Lib.M", None, false).expect("focused compile");
         let options = build_sim_options(&result, None);
         assert_eq!(options.t_start, 0.25);
         assert_eq!(options.t_end, 1.5);
@@ -657,7 +671,8 @@ end Lib;
     fn build_sim_options_honors_stop_time_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
+        let result =
+            load_profiled_model(&source_root, "Lib.M", None, false).expect("focused compile");
         let options = build_sim_options(&result, Some(2.0));
         assert_eq!(options.t_end, 2.0);
     }
@@ -666,7 +681,8 @@ end Lib;
     fn run_profiled_simulations_repeats_simulation_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
+        let result =
+            load_profiled_model(&source_root, "Lib.M", None, false).expect("focused compile");
         let options = build_sim_options(&result, None);
         let (elapsed, sim_result) =
             run_profiled_simulations(&result, &options, 2).expect("repeat simulate succeeds");
