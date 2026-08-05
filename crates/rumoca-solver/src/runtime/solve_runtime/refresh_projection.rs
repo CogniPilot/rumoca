@@ -16,7 +16,7 @@ pub(super) struct StaticRefreshCache {
     pub(super) values: Vec<Option<f64>>,
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 impl StaticRefreshCache {
     pub(super) fn bit_eq(&self, other: &Self) -> bool {
         self.valid == other.valid
@@ -30,7 +30,7 @@ impl StaticRefreshCache {
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
     left.len() == right.len()
         && left
@@ -39,7 +39,7 @@ fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
             .all(|(left, right)| left.to_bits() == right.to_bits())
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn option_float_bit_eq(left: Option<f64>, right: Option<f64>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left.to_bits() == right.to_bits(),

@@ -123,9 +123,11 @@ crate-boundary rule.
 ### Bounded ME Verification Profile
 
 The linked FMI 3 ME component exposes a checked lifecycle aggregate and pure
-property functions shared by production code, property tests, and bounded Kani
-harnesses. The normative transition table, proof obligations, exact bounded
-domains, and claim limits are cataloged in
+property functions shared by production code and verification drivers. Small
+finite domains are exhausted by ordinary tests; bounded Kani harnesses are
+reserved for symbolic floating-point and typed-state domains that cannot be
+practically enumerated. The normative transition table, obligations, evidence
+kind, exact bounded domains, and claim limits are cataloged in
 [SPEC_0044 §1](SPEC_0044_FMI_EXECUTION_CATALOG.md#1-bounded-me-verification-profile).
 That bounded evidence does not claim arbitrary-model trajectory correctness,
 floating-point accuracy, solver convergence, or end-to-end Modelica refinement.

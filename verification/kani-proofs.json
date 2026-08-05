@@ -1,173 +1,19 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kani_version": "0.67.0",
   "proofs": [
-    {
-      "package": "rumoca-solver",
-      "harness": "rejected_instantiated_transition_preserves_state",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-001", "ME-LIFE-002"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "one of 6 commands from Instantiated" },
-      "covers": 2
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "rejected_initialization_transition_preserves_state",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-001", "ME-LIFE-002"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "one of 6 commands from InitializationMode" },
-      "covers": 2
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "rejected_event_transition_preserves_state",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-001", "ME-LIFE-002"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "one of 6 commands from EventMode" },
-      "covers": 2
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "rejected_continuous_transition_preserves_state",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-001", "ME-LIFE-002"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "one of 6 commands from ContinuousTimeMode" },
-      "covers": 2
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "terminated_is_dynamically_absorbing",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-003"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "all 6 commands from Terminated" },
-      "covers": 1
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "non_finite_setters_are_transactional",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-BUF-001:scalar-clause", "BEHAVIOR-PIN:finite-scalar-setters-transactional"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "NaN and both infinities across time, event boundary, and one state slot" },
-      "covers": 3
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "rejected_value_reference_batch_is_transactional",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-BUF-001:value-reference-batch-clause"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "6 invalid value-reference batch classes" },
-      "covers": 6
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "rejected_host_buffers_are_transactional",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-BUF-001:host-buffer-clause"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "9 invalid host-buffer classes" },
-      "covers": 9
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "foreign_instance_capabilities_are_rejected",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-BRAND-001"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "3 foreign-instance capability classes" },
-      "covers": 3
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "terminated_facade_is_fail_closed",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-003"],
-      "bound": { "kind": "unwind", "value": 20, "domain": "all 17 active-facade operations from Terminated" },
-      "covers": 17
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "snapshot_restores_observable_state",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-STATE-001"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "all 5 lifecycle states" },
-      "covers": 5
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "host_event_iteration_terminates_after_one_call",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-004"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "one event update with host ceiling 4" },
-      "covers": 1
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "scheduled_time_event_terminates_after_one_call",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-004"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "one scheduled time-event update" },
-      "covers": 1
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "event_boundary_does_not_move_time_backward",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["BEHAVIOR-PIN:event-boundary-time-monotonicity"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "ordered finite time pair in [0, 1] separated by at least 1e-9" },
-      "covers": 1
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "non_convergent_fixed_point_returns_error",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-004"],
-      "bound": { "kind": "unwind", "value": 64, "domain": "finite divergence increment in [1, 4] with kernel fixed-point ceiling" },
-      "covers": 1
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "non_convergent_runtime_event_returns_error",
-      "source": "crates/rumoca-solver/src/verification/kernel_lifecycle.rs",
-      "claims": ["ME-LIFE-004"],
-      "bound": { "kind": "unwind", "value": 128, "domain": "finite runtime-event divergence increment in [1, 4] with kernel fixed-point ceiling" },
-      "covers": 1
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "transition_relation_is_exact_and_rejection_preserves_state",
-      "source": "crates/rumoca-solver/src/verification/me_lifecycle.rs",
-      "claims": ["ME-LIFE-001", "ME-LIFE-002"],
-      "bound": { "kind": "finite_domain", "domain": "5 lifecycle states x 6 commands" },
-      "covers": 13
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "terminated_is_absorbing",
-      "source": "crates/rumoca-solver/src/verification/me_lifecycle.rs",
-      "claims": ["ME-LIFE-003"],
-      "bound": { "kind": "finite_domain", "domain": "all 6 commands from Terminated" },
-      "covers": 6
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "snapshot_restore_is_exact",
-      "source": "crates/rumoca-solver/src/verification/me_lifecycle.rs",
-      "claims": ["ME-LIFE-003:snapshot-restore-clause"],
-      "bound": { "kind": "finite_domain", "domain": "all 5 lifecycle states" },
-      "covers": 5
-    },
-    {
-      "package": "rumoca-solver",
-      "harness": "stage_resolution_is_idempotent_and_innermost_wins",
-      "source": "crates/rumoca-solver/src/verification/me_lifecycle.rs",
-      "claims": ["ME-ERR-001"],
-      "bound": { "kind": "finite_domain", "domain": "6 recorded-stage choices x 5 incoming stages" },
-      "covers": 13
-    },
     {
       "package": "rumoca-solver",
       "harness": "atomic_fixed_point_pre_advance_is_typed_and_transactional",
       "source": "crates/rumoca-solver/src/verification/event_iteration.rs",
       "claims": ["SIM-010"],
-      "bound": { "kind": "unwind", "value": 16, "domain": "exactly 3 typed event-history lanes with arbitrary fixed-point ownership and transactional invalid-input injection" },
+      "selection": {
+        "production_kernel": "advance_pre_values_atomically",
+        "symbolic_inputs": "three typed event-history lanes with arbitrary value kinds, values, and fixed-point ownership",
+        "exhaustive_test_infeasible_because": "the product of typed values, ownership masks, and invalid-input positions is not practically enumerable",
+        "counterexample_means": "event-history advancement can lose type fidelity or partially mutate pre values on rejection"
+      },
+      "bound": { "kind": "unwind", "value": 16, "domain": "three production event-history lanes with arbitrary value kinds, typed values, fixed-point ownership, and invalid-input injection" },
       "covers": 0
     }
   ]

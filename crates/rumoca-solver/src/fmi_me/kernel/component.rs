@@ -89,7 +89,7 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     pub(crate) fn verification_observable_state(&self) -> (MeState, u64, Vec<u64>, Vec<u64>) {
         (
             self.lifecycle.state(),
@@ -113,7 +113,7 @@ impl SolveMeKernel {
         self.canonicalize_committed_event_view(event_time, solver_y, &[])
     }
 
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     pub(crate) fn verification_matches_snapshot(&self, saved: &MeFmuState) -> bool {
         if !Rc::ptr_eq(&saved.instance_brand, &self.instance_brand) {
             return false;

@@ -14,7 +14,7 @@ pub(crate) enum MeState {
 }
 
 impl MeState {
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     pub(crate) const ALL: [Self; 5] = [
         Self::Instantiated,
         Self::InitializationMode,
@@ -45,7 +45,7 @@ pub(crate) enum MeLifecycleCommand {
 }
 
 impl MeLifecycleCommand {
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     pub(crate) const ALL: [Self; 6] = [
         Self::EnterInitializationMode,
         Self::ExitInitializationMode,
@@ -137,7 +137,7 @@ impl MeLifecycle {
         self.state = state;
     }
 
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     pub(crate) fn restore_for_verification(&mut self, state: MeState) {
         self.restore(state);
     }

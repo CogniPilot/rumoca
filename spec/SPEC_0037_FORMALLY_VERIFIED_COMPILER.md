@@ -248,10 +248,17 @@ about the compiler on its own.
 | W2 | Reference slices 2–4 (continuous coupling, clocked partitions, arrays) | Differential agreement across the wider fragment |
 | W3 | Proof assistant selected by maintainer vote; one phase theorem checked | Reproducible proof build; bounded proof CI |
 
-W1 harnesses are written so a Kani proof and a property-test fallback drive the
-same property function; the property text is the deliverable, and the driver is
-whichever the toolchain supports. A fallback run is validation evidence and
-MUST NOT be reported as a proof.
+W1 uses the least expensive driver that covers the stated domain. Small finite
+tables and named classes MUST use exhaustive ordinary tests; Kani is reserved
+for production kernels with symbolic domains impractical to enumerate.
+Property tests MAY sample those domains, but are not proof evidence.
+
+Each Kani manifest entry MUST identify its production kernel, symbolic inputs,
+enumeration barrier, counterexample meaning, assumptions, and bounds. A harness
+that selects a small finite table, lacks symbolic input, or restates an example
+is inadmissible. Counterexamples MUST be actionable. Timeout, cancellation,
+unwinding failure, and incomplete coverage provide no evidence. Claims MUST
+not imply a compiler-wide theorem.
 
 Kani-backed W1 evidence is reproducible only when all of the following are
 present in the same revision:
@@ -266,8 +273,8 @@ present in the same revision:
 - CI MAY run fixed manifest stripes as required matrix jobs, provided the
   stripe function is deterministic and their union is the complete manifest;
 - unwinding checks remain enabled and incomplete proofs fail the command;
-- the result records the Kani version, harness name, declared bound, elapsed
-  time, and success or failure; and
+- the result records the Kani version, harness name, selection rationale,
+  declared bound, elapsed time, and success or failure; and
 - the ordinary development shell does not silently substitute a property-test
   fallback when Kani is unavailable.
 

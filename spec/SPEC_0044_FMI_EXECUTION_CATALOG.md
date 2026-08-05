@@ -31,21 +31,25 @@ Every other transition returns a typed contract failure without mutation.
 Terminated is absorbing except for snapshot restore. Evaluation checks its
 lifecycle capability before mutation.
 
-| Proof ID | Obligation |
-|---|---|
-| ME-LIFE-001 | Construction starts Instantiated; transition relation equals the table |
-| ME-LIFE-002 | Rejected transitions preserve lifecycle state |
-| ME-LIFE-003 | Terminated is absorbing except for snapshot restore |
-| ME-LIFE-004 | Bounded convergent events settle; divergent fixed points return staged non-convergence |
-| ME-ERR-001 | Stage annotation is idempotent; innermost stage wins |
-| ME-BUF-001 | Invalid bounded inputs do not partially mutate state or host buffers |
-| ME-BRAND-001 | Foreign value references, observations, and snapshots reject before mutation |
-| ME-STATE-001 | Snapshot restore re-establishes lifecycle and observable state |
+| Obligation ID | Obligation | Required evidence |
+|---|---|---|
+| ME-LIFE-001 | Construction starts Instantiated; transition relation equals the table | Exhaustive ordinary test of 5 states × 6 commands |
+| ME-LIFE-002 | Rejected transitions preserve lifecycle state | Exhaustive ordinary test of the same finite relation and production façade |
+| ME-LIFE-003 | Terminated is absorbing except for snapshot restore | Exhaustive ordinary test of 6 commands, 17 active operations, and 5 restore targets |
+| ME-LIFE-004 | Bounded convergent events settle; divergent fixed points return staged non-convergence | Ordinary examples and property tests over finite divergence increments |
+| ME-ERR-001 | Stage annotation is idempotent; innermost stage wins | Exhaustive ordinary test of 6 recorded-stage choices × 5 incoming stages |
+| ME-BUF-001 | Invalid bounded inputs do not partially mutate state or host buffers | Exhaustive ordinary tests of the named invalid-input classes below |
+| ME-BRAND-001 | Foreign value references, observations, and snapshots reject before mutation | Exhaustive ordinary test of the 3 capability classes |
+| ME-STATE-001 | Snapshot restore re-establishes lifecycle and observable state | Exhaustive ordinary test of all 5 lifecycle states |
 
-Kani proves these properties only over each harness's declared bounds. Fixtures
-contain one continuous state, at most one writable input, and enumerated finite
-lifecycle, command, and operation classes. Non-convergence fixtures vary their
-finite increment while retaining one Solve topology.
+The Kani profile contains exactly this symbolic bounded property:
+
+| Claim | Symbolic domain | Counterexample meaning |
+|---|---|---|
+| SIM-010 | Three arbitrary typed event-history lanes and ownership masks | Pre advancement can lose type fidelity or partially mutate on rejection |
+
+Kani proves only this property over its declared assumptions and unwind bound.
+This is bounded runtime-kernel evidence, not a proof of compiler semantics.
 
 ME-BUF-001 covers NaN and infinities as time, event boundary, or one state;
 length mismatch; non-finite, foreign, and out-of-range value references; and
@@ -54,8 +58,7 @@ invalid crossing shape, undeclared state-event index, oversized nominal output,
 oversized state input, oversized sensitivity output, non-finite indicator input,
 and output-series column mismatch.
 
-Harnesses call the production pure transition/property functions. Every finite
-class has reachability coverage; separate reimplementations and property-test
-fallbacks are validation, not proof. This profile excludes arbitrary-model
-trajectory correctness, floating-point accuracy, solver convergence, and
-end-to-end Modelica refinement.
+Harnesses call production property functions. Finite exhaustive tests and
+property-test samples are validation, not proof. This profile excludes
+arbitrary-model trajectory correctness, floating-point accuracy, solver
+convergence, and end-to-end Modelica refinement.

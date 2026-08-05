@@ -117,7 +117,7 @@ impl DelayRuntime {
         self.state.borrow_mut().clone_from(&snapshot.0);
     }
 
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     pub(crate) fn matches_snapshot(&self, snapshot: &DelayRuntimeSnapshot) -> bool {
         self.state.borrow().bit_eq(&snapshot.0)
     }
@@ -388,7 +388,7 @@ impl DelayRuntime {
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 impl DelayState {
     fn bit_eq(&self, other: &Self) -> bool {
         self.initialized == other.initialized
@@ -402,7 +402,7 @@ impl DelayState {
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 impl DelayChannelHistory {
     fn bit_eq(&self, other: &Self) -> bool {
         self.points_head == other.points_head
@@ -425,14 +425,14 @@ impl DelayChannelHistory {
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 impl DelayPoint {
     fn bit_eq(self, other: Self) -> bool {
         self.time.to_bits() == other.time.to_bits() && self.value.to_bits() == other.value.to_bits()
     }
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
     left.len() == right.len()
         && left
@@ -441,7 +441,7 @@ fn float_slice_bit_eq(left: &[f64], right: &[f64]) -> bool {
             .all(|(left, right)| left.to_bits() == right.to_bits())
 }
 
-#[cfg(any(test, kani))]
+#[cfg(test)]
 fn suppressed_discontinuity_bit_eq(
     left: Option<SuppressedDiscontinuity>,
     right: Option<SuppressedDiscontinuity>,

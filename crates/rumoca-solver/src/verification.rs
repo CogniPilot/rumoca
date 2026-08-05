@@ -3,20 +3,22 @@
 //!
 //! Each property is written once, as a plain function whose doc comment states
 //! it in one sentence and cites the registry row or FMI clause it comes from.
-//! Two drivers then run that same function:
+//! Its driver is selected by the shape of the input domain:
 //!
-//! - `mod proof`, compiled only under `cfg(kani)`, feeds it `kani::any()`
-//!   values constrained by `kani::assume` and proves the property over the
-//!   whole bounded input space;
-//! - `mod fallback`, compiled only under `cfg(all(test, not(kani)))`, feeds it
-//!   proptest strategies over the same bounds and samples that space.
+//! - finite tables and named invalid-input classes are enumerated completely
+//!   by ordinary tests;
+//! - `mod proof`, compiled only under `cfg(kani)`, is reserved for production
+//!   kernels whose symbolic numeric or typed-state domains make enumeration
+//!   impractical;
+//! - a property-test driver samples each retained symbolic domain during the
+//!   normal developer workflow, without being reported as proof evidence.
 //!
 //! Kani 0.67.0 is pinned in the dedicated `nix develop .#kani` shell. The
 //! canonical `cargo xtask verify kani` gate reads
 //! `verification/kani-proofs.json` and proves every required harness listed
 //! there. The fallback remains useful conventional test evidence, but a green
-//! fallback run is never reported as a proof. Because both drivers call the
-//! same function, a property cannot drift between what is proved and sampled.
+//! property-test run is never reported as a proof. Both drivers call the same
+//! property function, so the proved and sampled statements cannot drift.
 //!
 //! Every submodule below is test- or Kani-only, so no production build carries
 //! one and the SPEC_0038 FMI-boundary hardening test never sees them.
@@ -28,9 +30,9 @@
 mod condition_memory;
 #[cfg(any(test, kani))]
 mod event_iteration;
-#[cfg(any(test, kani))]
+#[cfg(test)]
 mod kernel_lifecycle;
-#[cfg(any(test, kani))]
+#[cfg(test)]
 mod me_lifecycle;
-#[cfg(any(test, kani))]
+#[cfg(test)]
 mod model_fixture;

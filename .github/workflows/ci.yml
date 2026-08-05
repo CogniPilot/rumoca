@@ -205,13 +205,9 @@ jobs:
             .#checks.x86_64-linux.mlir-cpu
 
   kani:
-    name: Kani semantic/runtime contracts (${{ matrix.shard }}/16)
+    name: Kani symbolic event-history contract
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     env:
       CARGO_BUILD_JOBS: 4
       RUST_TEST_THREADS: 4
@@ -236,14 +232,14 @@ jobs:
       - name: Prove bounded semantic and runtime contracts with pinned Kani
         run: |
           nix develop .#kani --command cargo kani --version
-          nix develop .#kani --command cargo xtask verify kani --shard ${{ matrix.shard }}/16
+          nix develop .#kani --command cargo xtask verify kani
 
       - name: Upload Kani proof summary
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: kani-proof-summary-${{ matrix.shard }}-of-16
-          path: target/verification/kani-summary-shard-${{ matrix.shard }}-of-16.json
+          name: kani-proof-summary
+          path: target/verification/kani-summary.json
           if-no-files-found: warn
 
   test:

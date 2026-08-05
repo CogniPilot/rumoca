@@ -311,7 +311,7 @@ impl SolveRuntime {
         self.delay_runtime.restore(&snapshot.delay);
     }
 
-    #[cfg(any(test, kani))]
+    #[cfg(test)]
     pub(crate) fn matches_snapshot(&self, snapshot: &SolveRuntimeSnapshot) -> bool {
         self.static_refresh_cache
             .borrow()

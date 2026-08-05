@@ -9,7 +9,7 @@ use std::process::Command;
 use std::time::Instant;
 
 const MANIFEST_PATH: &str = "verification/kani-proofs.json";
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
+const MANIFEST_SCHEMA_VERSION: u32 = 2;
 const REQUIRED_KANI_VERSION: &str = "0.67.0";
 const SOLVER_PACKAGE: &str = "rumoca-solver";
 const SOLVER_SOURCE_ROOT: &str = "crates/rumoca-solver/src";
@@ -46,8 +46,18 @@ struct KaniProof {
     harness: String,
     source: String,
     claims: Vec<String>,
+    selection: ProofSelection,
     bound: ProofBound,
     covers: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProofSelection {
+    production_kernel: String,
+    symbolic_inputs: String,
+    exhaustive_test_infeasible_because: String,
+    counterexample_means: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -148,6 +158,7 @@ fn validate_manifest(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
                 proof.harness
             );
         }
+        validate_selection(proof)?;
         ensure!(
             selectors.insert((proof.package.as_str(), proof.harness.as_str())),
             "duplicate Kani proof selector {}::{}",
@@ -199,6 +210,28 @@ fn validate_manifest(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
         missing.is_empty() && extra.is_empty(),
         "Kani manifest inventory differs from {SOLVER_SOURCE_ROOT}: missing={missing:?}, extra={extra:?}"
     );
+    Ok(())
+}
+
+fn validate_selection(proof: &KaniProof) -> Result<()> {
+    for (field, value) in [
+        ("production_kernel", &proof.selection.production_kernel),
+        ("symbolic_inputs", &proof.selection.symbolic_inputs),
+        (
+            "exhaustive_test_infeasible_because",
+            &proof.selection.exhaustive_test_infeasible_because,
+        ),
+        (
+            "counterexample_means",
+            &proof.selection.counterexample_means,
+        ),
+    ] {
+        ensure!(
+            !value.trim().is_empty(),
+            "{} has an empty selection.{field}",
+            proof.harness
+        );
+    }
     Ok(())
 }
 
@@ -445,6 +478,7 @@ fn write_summary(root: &Path, manifest: &KaniProofManifest, run: KaniRunSummary<
             serde_json::json!({
                 "harness": proof.harness,
                 "claims": proof.claims,
+                "selection": proof.selection,
                 "declared_bound": proof.bound,
                 "expected_cover_obligations": proof.covers,
                 "covers_satisfied": result.covers_satisfied,
@@ -547,15 +581,13 @@ mod tests {
             .map(|proof| proof.harness.clone())
             .collect::<BTreeSet<_>>();
         let mut selected = BTreeSet::new();
-        for index in 1..=16 {
-            let shard = select_manifest_shard(&manifest, Some((index, 16)))
-                .expect("every CI shard should select proofs");
-            for proof in shard.proofs {
-                assert!(
-                    selected.insert(proof.harness),
-                    "a proof must occur in exactly one deterministic shard"
-                );
-            }
+        let shard = select_manifest_shard(&manifest, Some((1, 1)))
+            .expect("the complete shard should select the proof");
+        for proof in shard.proofs {
+            assert!(
+                selected.insert(proof.harness),
+                "a proof must occur in exactly one deterministic shard"
+            );
         }
         assert_eq!(selected, expected);
     }
@@ -578,7 +610,10 @@ mod tests {
     #[test]
     fn interleaved_parallel_output_is_not_accepted_as_complete() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let manifest = load_manifest(&root).expect("checked-in Kani manifest should be valid");
+        let mut manifest = load_manifest(&root).expect("checked-in Kani manifest should be valid");
+        let mut second_proof = manifest.proofs[0].clone();
+        second_proof.harness.push_str("_second");
+        manifest.proofs.push(second_proof);
         let first = &manifest.proofs[0].harness;
         let second = &manifest.proofs[1].harness;
         let output = format!(

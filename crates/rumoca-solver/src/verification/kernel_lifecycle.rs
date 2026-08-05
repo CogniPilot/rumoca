@@ -1,21 +1,23 @@
-//! Bounded proofs that the dynamic FMI 3 ME facade preserves the verified
-//! lifecycle relation and rejects invalid scalar payloads without mutation.
+//! Verification properties for the dynamic FMI 3 ME facade.
 //!
-//! The pure transition table is proved in `me_lifecycle`; this module proves
-//! that the production `SolveMeKernel` facade actually consults that table.
-//! Each property makes one bounded facade call rather than asking a model
-//! checker to explore long, mostly-invalid command sequences.
+//! `me_lifecycle` enumerates the finite transition table. This module likewise
+//! exhausts named finite facade classes with ordinary tests, and reserves Kani
+//! for symbolic floating-point and bounded fixed-point properties that cannot
+//! be covered by a small enumeration. Every property reaches production
+//! `SolveMeKernel` code through a proof-sized model fixture.
 
 use super::model_fixture::{
-    divergent_initialization_model, divergent_runtime_event_model, single_state_indicator_model,
-    single_state_input_model, single_state_model, single_state_time_event_model,
+    divergent_initialization_model, divergent_runtime_event_model, single_state_model,
+};
+use super::model_fixture::{
+    single_state_indicator_model, single_state_input_model, single_state_time_event_model,
 };
 use crate::fmi_me::lifecycle::{MeLifecycle, MeLifecycleCommand, MeState};
 use crate::fmi_me::{
-    MeError, MeEventCause, MeEventEntry, MeFmuState, MeIndicatorCrossing, MeInstanceConfig,
-    MeModelSource, MeOutputSeries, MeRootProfile, MeStage, MeTime, ModelExchangeKernel,
-    SolveMeKernel,
+    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeRootProfile, MeStage,
+    MeTime, ModelExchangeKernel, SolveMeKernel,
 };
+use crate::fmi_me::{MeFmuState, MeIndicatorCrossing, MeOutputSeries};
 
 const START_TIME: f64 = 0.0;
 const STOP_TIME: f64 = 1.0;
@@ -407,10 +409,6 @@ impl ActiveFacadeOperation {
     ];
 }
 
-fn active_operation_from_index(index: u8) -> ActiveFacadeOperation {
-    ActiveFacadeOperation::ALL[index as usize % ActiveFacadeOperation::ALL.len()]
-}
-
 /// ME-LIFE-003 facade clause: every operation requiring an active component
 /// rejects Terminated before it can mutate component state.
 fn property_terminated_facade_is_fail_closed(operation: ActiveFacadeOperation) {
@@ -701,192 +699,8 @@ fn property_non_convergent_runtime_event_returns_error(increment: f64) {
     assert!(error.to_string().contains("did not converge"));
 }
 
-fn state_from_index(index: u8) -> MeState {
-    MeState::ALL[index as usize % MeState::ALL.len()]
-}
-
-fn command_from_index(index: u8) -> MeLifecycleCommand {
-    MeLifecycleCommand::ALL[index as usize % MeLifecycleCommand::ALL.len()]
-}
-
-#[cfg(kani)]
-mod proof {
-    fn prove_rejection_from(state: super::MeState) {
-        let command = super::command_from_index(kani::any());
-        kani::cover!(super::relation_rejects(state, command));
-        kani::cover!(!super::relation_rejects(state, command));
-        super::property_rejected_facade_transition_preserves_state(state, command);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn rejected_instantiated_transition_preserves_state() {
-        prove_rejection_from(super::MeState::Instantiated);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn rejected_initialization_transition_preserves_state() {
-        prove_rejection_from(super::MeState::InitializationMode);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn rejected_event_transition_preserves_state() {
-        prove_rejection_from(super::MeState::EventMode);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn rejected_continuous_transition_preserves_state() {
-        prove_rejection_from(super::MeState::ContinuousTimeMode);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn terminated_is_dynamically_absorbing() {
-        let command = super::command_from_index(kani::any());
-        kani::cover!(super::relation_rejects(super::MeState::Terminated, command));
-        super::property_rejected_facade_transition_preserves_state(
-            super::MeState::Terminated,
-            command,
-        );
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn non_finite_setters_are_transactional() {
-        let index: u8 = kani::any();
-        let value = super::non_finite_from_index(index);
-        kani::cover!(value.is_nan());
-        kani::cover!(value == f64::INFINITY);
-        kani::cover!(value == f64::NEG_INFINITY);
-        super::property_non_finite_setters_are_transactional(index);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn rejected_value_reference_batch_is_transactional() {
-        let case: u8 = kani::any();
-        kani::cover!(case % 6 == 0);
-        kani::cover!(case % 6 == 1);
-        kani::cover!(case % 6 == 2);
-        kani::cover!(case % 6 == 3);
-        kani::cover!(case % 6 == 4);
-        kani::cover!(case % 6 == 5);
-        super::property_rejected_value_reference_batch_is_transactional(case);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn rejected_host_buffers_are_transactional() {
-        let case: u8 = kani::any();
-        kani::cover!(case % 9 == 0);
-        kani::cover!(case % 9 == 1);
-        kani::cover!(case % 9 == 2);
-        kani::cover!(case % 9 == 3);
-        kani::cover!(case % 9 == 4);
-        kani::cover!(case % 9 == 5);
-        kani::cover!(case % 9 == 6);
-        kani::cover!(case % 9 == 7);
-        kani::cover!(case % 9 == 8);
-        super::property_rejected_host_buffers_are_transactional(case);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn foreign_instance_capabilities_are_rejected() {
-        let case: u8 = kani::any();
-        kani::cover!(case % 3 == 0);
-        kani::cover!(case % 3 == 1);
-        kani::cover!(case % 3 == 2);
-        super::property_foreign_instance_capabilities_are_rejected(case);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(20)]
-    fn terminated_facade_is_fail_closed() {
-        let operation = super::active_operation_from_index(kani::any());
-        kani::cover!(operation == super::ActiveFacadeOperation::GetStates);
-        kani::cover!(operation == super::ActiveFacadeOperation::GetDerivatives);
-        kani::cover!(operation == super::ActiveFacadeOperation::GetDirectionalDerivative);
-        kani::cover!(operation == super::ActiveFacadeOperation::GetIndicators);
-        kani::cover!(operation == super::ActiveFacadeOperation::ProjectStates);
-        kani::cover!(operation == super::ActiveFacadeOperation::CompleteStep);
-        kani::cover!(operation == super::ActiveFacadeOperation::NextEventStop);
-        kani::cover!(operation == super::ActiveFacadeOperation::ClassifyCrossings);
-        kani::cover!(operation == super::ActiveFacadeOperation::CapturePreEvent);
-        kani::cover!(operation == super::ActiveFacadeOperation::ArmStateEvent);
-        kani::cover!(operation == super::ActiveFacadeOperation::Observe);
-        kani::cover!(operation == super::ActiveFacadeOperation::RecordOutputs);
-        kani::cover!(operation == super::ActiveFacadeOperation::GetOutputs);
-        kani::cover!(operation == super::ActiveFacadeOperation::SetFloat64);
-        kani::cover!(operation == super::ActiveFacadeOperation::SetTime);
-        kani::cover!(operation == super::ActiveFacadeOperation::SetStates);
-        kani::cover!(operation == super::ActiveFacadeOperation::ExtendStopTime);
-        super::property_terminated_facade_is_fail_closed(operation);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn snapshot_restores_observable_state() {
-        let target = super::state_from_index(kani::any());
-        kani::cover!(target == super::MeState::Instantiated);
-        kani::cover!(target == super::MeState::InitializationMode);
-        kani::cover!(target == super::MeState::EventMode);
-        kani::cover!(target == super::MeState::ContinuousTimeMode);
-        kani::cover!(target == super::MeState::Terminated);
-        super::property_snapshot_restores_observable_state(target);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn host_event_iteration_terminates_after_one_call() {
-        let completed_after_one_call =
-            super::property_host_event_iteration_terminates_after_one_call();
-        kani::cover!(completed_after_one_call);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn scheduled_time_event_terminates_after_one_call() {
-        let update_complete = super::property_scheduled_time_event_terminates_after_one_call();
-        kani::cover!(update_complete);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(16)]
-    fn event_boundary_does_not_move_time_backward() {
-        let earlier: f64 = kani::any();
-        let later: f64 = kani::any();
-        kani::assume(earlier.is_finite() && later.is_finite());
-        kani::assume(earlier >= super::START_TIME && later <= super::STOP_TIME);
-        kani::assume(earlier + super::MIN_TIME_GAP <= later);
-        kani::cover!(earlier < later);
-        super::property_event_boundary_does_not_move_time_backward(earlier, later);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(64)]
-    fn non_convergent_fixed_point_returns_error() {
-        let increment: f64 = kani::any();
-        kani::assume(increment.is_finite() && increment >= 1.0 && increment <= 4.0);
-        kani::cover!(increment > 1.0);
-        super::property_non_convergent_fixed_point_returns_error(increment);
-    }
-
-    #[kani::proof]
-    #[kani::unwind(128)]
-    fn non_convergent_runtime_event_returns_error() {
-        let increment: f64 = kani::any();
-        kani::assume(increment.is_finite() && increment >= 1.0 && increment <= 4.0);
-        kani::cover!(increment > 1.0);
-        super::property_non_convergent_runtime_event_returns_error(increment);
-    }
-}
-
-#[cfg(all(test, not(kani)))]
-mod fallback {
+#[cfg(test)]
+mod tests {
     use proptest::prelude::*;
 
     fn any_ordered_times() -> impl Strategy<Value = (f64, f64)> {
@@ -899,49 +713,6 @@ mod fallback {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
-
-        #[test]
-        fn rejected_facade_transition_preserves_state(
-            state_index in any::<u8>(),
-            command_index in any::<u8>(),
-        ) {
-            super::property_rejected_facade_transition_preserves_state(
-                super::state_from_index(state_index),
-                super::command_from_index(command_index),
-            );
-        }
-
-        #[test]
-        fn non_finite_setters_are_transactional(index in any::<u8>()) {
-            super::property_non_finite_setters_are_transactional(index);
-        }
-
-        #[test]
-        fn rejected_value_reference_batch_is_transactional(case in any::<u8>()) {
-            super::property_rejected_value_reference_batch_is_transactional(case);
-        }
-
-        #[test]
-        fn rejected_host_buffers_are_transactional(case in any::<u8>()) {
-            super::property_rejected_host_buffers_are_transactional(case);
-        }
-
-        #[test]
-        fn foreign_instance_capabilities_are_rejected(case in any::<u8>()) {
-            super::property_foreign_instance_capabilities_are_rejected(case);
-        }
-
-        #[test]
-        fn terminated_facade_is_fail_closed(index in any::<u8>()) {
-            super::property_terminated_facade_is_fail_closed(
-                super::active_operation_from_index(index),
-            );
-        }
-
-        #[test]
-        fn snapshot_restores_observable_state(state_index in any::<u8>()) {
-            super::property_snapshot_restores_observable_state(super::state_from_index(state_index));
-        }
 
         #[test]
         fn event_boundary_does_not_move_time_backward(
@@ -958,6 +729,57 @@ mod fallback {
         #[test]
         fn non_convergent_runtime_event_returns_error(increment in 1.0f64..=4.0f64) {
             super::property_non_convergent_runtime_event_returns_error(increment);
+        }
+    }
+
+    #[test]
+    fn rejected_facade_transitions_preserve_state_exhaustively() {
+        for state in super::MeState::ALL {
+            for command in super::MeLifecycleCommand::ALL {
+                super::property_rejected_facade_transition_preserves_state(state, command);
+            }
+        }
+    }
+
+    #[test]
+    fn non_finite_setters_are_transactional_exhaustively() {
+        for case in 0..3 {
+            super::property_non_finite_setters_are_transactional(case);
+        }
+    }
+
+    #[test]
+    fn rejected_value_reference_batches_are_transactional_exhaustively() {
+        for case in 0..6 {
+            super::property_rejected_value_reference_batch_is_transactional(case);
+        }
+    }
+
+    #[test]
+    fn rejected_host_buffers_are_transactional_exhaustively() {
+        for case in 0..9 {
+            super::property_rejected_host_buffers_are_transactional(case);
+        }
+    }
+
+    #[test]
+    fn foreign_instance_capabilities_are_rejected_exhaustively() {
+        for case in 0..3 {
+            super::property_foreign_instance_capabilities_are_rejected(case);
+        }
+    }
+
+    #[test]
+    fn terminated_facade_is_fail_closed_exhaustively() {
+        for operation in super::ActiveFacadeOperation::ALL {
+            super::property_terminated_facade_is_fail_closed(operation);
+        }
+    }
+
+    #[test]
+    fn snapshot_restores_observable_state_exhaustively() {
+        for state in super::MeState::ALL {
+            super::property_snapshot_restores_observable_state(state);
         }
     }
 
