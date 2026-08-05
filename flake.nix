@@ -406,6 +406,25 @@
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
           );
         };
+        # WASM packaging needs the workspace build inputs plus the JavaScript
+        # and optimization tools. Keep the interactive shell's Rumoca, OMC,
+        # Julia, Python, and documentation closures out of this CI boundary.
+        devShells.ci-wasm = craneLib.devShell {
+          inputsFrom = [ rumoca ];
+          packages = [
+            pkgs.binaryen
+            pkgs.nodejs_22
+            pkgs.wasm-pack
+          ];
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+            [
+              pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
+          );
+        };
         devShells.${if kaniSupported then "kani" else null} = pkgs.mkShell {
           inputsFrom = [ rumoca ];
           packages = [ kani ];

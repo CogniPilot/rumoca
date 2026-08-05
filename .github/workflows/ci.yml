@@ -1004,6 +1004,8 @@ jobs:
 
       - name: Run MSL parity shard ${{ matrix.shard }}/4
         run: |
+          # One bounded attempt; the 15 s ceiling keeps the strict-high tail
+          # measurable on hosted runners without retries or looser trace checks.
           cargo xtask verify msl-parity \
             --shard ${{ matrix.shard }}/4 \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
@@ -1013,6 +1015,8 @@ jobs:
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
             --sim-total-memory-mb 6144 \
+            --sim-timeout-secs 15 \
+            --model-attempt-timeout-secs 15 \
             --monitor-interval-secs 10
 
       - name: Upload shard results
@@ -1769,7 +1773,7 @@ jobs:
         #                                          non-browser-safe relaxed-SIMD graph)
         #   core     -> @cognipilot/rumoca-core  (no bundled solver — bring your own)
         run: |
-          nix develop --command bash <<'EOF'
+          nix develop .#ci-wasm --command bash <<'EOF'
           set -euo pipefail
           node packages/rumoca/build.mjs --profile release --variant full-web --optimize
           node packages/rumoca/build.mjs --profile release --variant core --optimize
@@ -2201,7 +2205,7 @@ jobs:
 
       - name: Build sdist
         run: |
-          nix develop --command bash -lc '
+          nix develop .#ci-python-wheel --command bash -c '
             set -euo pipefail
             cd crates/rumoca-bind-python
             maturin sdist --out dist
