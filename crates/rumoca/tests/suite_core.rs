@@ -71,6 +71,8 @@ mod function_conditional_sequence_test;
 mod function_input_shadow_state_test;
 #[path = "function_loop_reduction_checked.rs"]
 mod function_loop_reduction_checked;
+#[path = "function_loop_snapshot_test.rs"]
+mod function_loop_snapshot_test;
 #[path = "function_noelse_if_test.rs"]
 mod function_noelse_if_test;
 #[path = "function_output_shadow_state_test.rs"]
@@ -85,6 +87,8 @@ mod function_record_array_test;
 mod function_return_checked;
 #[path = "function_spd_loop_compaction.rs"]
 mod function_spd_loop_compaction;
+#[path = "function_staged_record_update_test.rs"]
+mod function_staged_record_update_test;
 #[path = "galec_equivalence.rs"]
 mod galec_equivalence;
 #[path = "gear_loop_regression.rs"]

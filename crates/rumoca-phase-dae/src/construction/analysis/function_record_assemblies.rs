@@ -129,9 +129,17 @@ pub(super) fn validate_record_output_assembly(
     start: usize,
     context: FunctionValidationContext<'_>,
 ) -> Result<Option<(FunctionRecordAssemblyPlan, usize)>, ToDaeError> {
-    let Some((target, _)) = record_assignment_target(&statements[start], context.function) else {
+    let Some((target, field)) = record_assignment_target(&statements[start], context.function)
+    else {
         return Ok(None);
     };
+    let staged_field = FunctionRecordFieldCoordinate {
+        target: VarName::new(&target.name),
+        field: VarName::new(&field.ident),
+    };
+    if context.staged_record_fields.contains(&staged_field) {
+        return Ok(None);
+    }
     let count = statements[start..]
         .iter()
         .take_while(|statement| {

@@ -334,6 +334,12 @@ pub(super) struct FunctionRecordFieldAssemblyPlan {
     pub(super) finalize_fields: Option<Vec<VarName>>,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(super) struct FunctionRecordFieldCoordinate {
+    pub(super) target: VarName,
+    pub(super) field: VarName,
+}
+
 pub(super) fn function_record_field_name(target: &VarName, field: &VarName) -> VarName {
     VarName::new(format!("{target}.{field}"))
 }
@@ -377,6 +383,9 @@ struct FunctionValidationContext<'scope> {
     shapes: &'scope ShapeEnvironment,
     shape_analysis: &'scope FunctionShapeAnalysis,
     generated_booleans: &'scope [function_returns::GeneratedBooleanDefinition],
+    /// Record-field coordinates already constructed by an enclosing staged
+    /// assembly at this exact source position.
+    staged_record_fields: &'scope HashSet<FunctionRecordFieldCoordinate>,
     /// Whether this source sequence maps directly to the call-scoped action
     /// sequence rather than a loop or runtime-conditional value owner.
     call_scoped_actions: bool,

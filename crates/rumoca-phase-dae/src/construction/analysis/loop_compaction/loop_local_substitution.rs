@@ -329,7 +329,7 @@ pub(super) fn expression_reads_name(expression: &Expression, name: &VarName) -> 
 
 fn statements_assign_name(statements: &[rumoca_core::Statement], name: &VarName) -> bool {
     statements.iter().any(|statement| match statement {
-        rumoca_core::Statement::Assignment { comp, .. } => comp.to_var_name() == *name,
+        rumoca_core::Statement::Assignment { comp, .. } => component_targets_name(comp, name),
         rumoca_core::Statement::For { equations, .. } => statements_assign_name(equations, name),
         rumoca_core::Statement::While { block, .. } => statements_assign_name(&block.stmts, name),
         rumoca_core::Statement::If {

@@ -26,6 +26,7 @@ pub(super) fn compact_function_loops(
     shapes: &ShapeEnvironment,
     function: &rumoca_core::Function,
     flat: &flat::Model,
+    has_certified_output_seeds: bool,
 ) -> Result<Vec<rumoca_core::Statement>, ToDaeError> {
     let output_names = function
         .outputs
@@ -79,14 +80,21 @@ pub(super) fn compact_function_loops(
         inline_dead_loop_scalar_locals(&compacted, &local_value_names, &branch_local_names);
     let compacted = inline_loop_local_prefixes(&compacted, &local_value_names, &output_names);
     let compacted = distribute_partitioned_outer_loops(&compacted);
-    let compacted = push_invariant_conditions_to_fixpoint(compacted, &output_names);
+    let defined_outputs = if has_certified_output_seeds {
+        output_names.clone()
+    } else {
+        HashSet::new()
+    };
+    let compacted =
+        push_invariant_conditions_to_fixpoint(compacted, &output_names, &defined_outputs);
     let compacted = compact_perfect_inner_element_loops(&compacted);
     let compacted = BoundedReductionComprehensions {
         shapes: &bounded_shapes,
     }
     .rewrite_statements(&compacted);
     let compacted = rectangularize_dependent_loops(&compacted, static_integers, &bounded_shapes)?;
-    let compacted = push_invariant_conditions_to_fixpoint(compacted, &output_names);
+    let compacted =
+        push_invariant_conditions_to_fixpoint(compacted, &output_names, &defined_outputs);
     let Some(span) = first_dependent_loop_range(&compacted, static_integers, &bounded_shapes)?
     else {
         return Ok(compacted);
@@ -1309,9 +1317,11 @@ fn scalar_integer_local_definition(
 fn push_invariant_conditions_to_fixpoint(
     mut statements: Vec<rumoca_core::Statement>,
     protected: &HashSet<VarName>,
+    defined_protected: &HashSet<VarName>,
 ) -> Vec<rumoca_core::Statement> {
     loop {
-        let lowered = push_invariant_conditions_into_loops(&statements, protected, &HashSet::new());
+        let lowered =
+            push_invariant_conditions_into_loops(&statements, protected, defined_protected);
         if lowered == statements {
             return lowered;
         }

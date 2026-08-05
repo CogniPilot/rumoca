@@ -22,6 +22,7 @@ fn validate_function_certificate(
     validate_function_declaration(function, flat, &certificate.values)?;
     let static_integers = immutable_integer_defaults(function, flat, &certificate.values)?;
     let roles = function_expression_roles(function, flat);
+    let staged_record_fields = HashSet::new();
     let context = FunctionValidationContext {
         function,
         flat,
@@ -30,6 +31,7 @@ fn validate_function_certificate(
         shapes: &certificate.values,
         shape_analysis: shapes,
         generated_booleans: &[],
+        staged_record_fields: &staged_record_fields,
         call_scoped_actions: true,
     };
     if function.external.is_some() {
@@ -126,6 +128,7 @@ fn validate_statement_function(
         returned_context.shapes,
         function,
         context.flat,
+        returned.has_returns,
     )?;
     let mut definitions = FunctionDefinitions::new(function);
     let certified_output_seeds = certified_return_output_seeds(
@@ -168,6 +171,7 @@ fn validate_nonreturn_path(
         &shapes,
         function,
         context.flat,
+        false,
     )?;
     let mut definitions = FunctionDefinitions::new(function);
     validate_function_statements(&source, nonreturn_context, &mut definitions)?;
@@ -325,9 +329,14 @@ pub(super) fn plan_function_statements(
     context: FunctionValidationContext<'_>,
 ) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
     let (mut staged_records, staged_members) = plan_staged_record_assemblies(statements, context)?;
+    let mut staged_record_fields = context.staged_record_fields.clone();
     let mut plans = Vec::with_capacity(statements.len());
     let mut index = 0usize;
     while index < statements.len() {
+        let statement_context = FunctionValidationContext {
+            staged_record_fields: &staged_record_fields,
+            ..context
+        };
         if let rumoca_core::Statement::Empty { span } = &statements[index]
             && let Some(guard) = context
                 .generated_booleans
@@ -336,9 +345,9 @@ pub(super) fn plan_function_statements(
         {
             validate_function_expression_with_roles(
                 &guard.value,
-                context.roles,
-                context.flat,
-                context.shapes,
+                statement_context.roles,
+                statement_context.flat,
+                statement_context.shapes,
             )?;
             plans.push(FunctionStatementPlan::GeneratedBooleanAssignment {
                 target: guard.target.clone(),
@@ -348,18 +357,32 @@ pub(super) fn plan_function_statements(
             index += 1;
             continue;
         }
-        if let Some(assertion) = function_assertion(&statements[index], context.flat)? {
-            plans.push(plan_proven_function_assertion(assertion, context)?);
+        if let Some(assertion) = function_assertion(&statements[index], statement_context.flat)? {
+            plans.push(plan_proven_function_assertion(
+                assertion,
+                statement_context,
+            )?);
             index += 1;
             continue;
         }
         if let Some(assembly) = staged_records.remove(&index) {
             let count = assembly.statement_count;
+            let staged_field = FunctionRecordFieldCoordinate {
+                target: assembly.target.clone(),
+                field: assembly.field.name.clone(),
+            };
+            let finalizes_record = assembly.finalize_fields.is_some();
+            let target = assembly.target.clone();
             plans.push(FunctionStatementPlan::RecordFieldAssembly(assembly));
             plans.extend(
                 std::iter::repeat_with(|| FunctionStatementPlan::RecordFieldAssemblyMember)
                     .take(count - 1),
             );
+            if finalizes_record {
+                staged_record_fields.retain(|field| field.target != target);
+            } else {
+                staged_record_fields.insert(staged_field);
+            }
             index += count;
             continue;
         }
@@ -367,7 +390,7 @@ pub(super) fn plan_function_statements(
             unreachable!("a staged record member follows its owning field assembly")
         }
         if let Some((assembly, count)) =
-            validate_record_output_assembly(statements, index, context)?
+            validate_record_output_assembly(statements, index, statement_context)?
         {
             plans.push(FunctionStatementPlan::RecordAssembly(assembly));
             plans.extend(
@@ -377,7 +400,10 @@ pub(super) fn plan_function_statements(
             index += count;
             continue;
         }
-        plans.push(plan_one_function_statement(&statements[index], context)?);
+        plans.push(plan_one_function_statement(
+            &statements[index],
+            statement_context,
+        )?);
         index += 1;
     }
     coalesce_function_array_assemblies(statements, &mut plans, context)?;
