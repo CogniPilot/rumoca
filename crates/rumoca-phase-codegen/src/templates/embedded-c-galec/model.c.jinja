@@ -244,9 +244,15 @@ void {{ c_model }}_startup({{ c_model }}State *self) {
     self->rumoca_galec_error_signal_status = UINT32_C(0);
     /* Keep target runtime helpers valid under strict toolchains even when this
      * particular block does not call them. The address expressions emit no
-     * runtime work and preserve single-evaluation min/max semantics. */
+     * runtime work and preserve the helpers' single-evaluation semantics. */
     (void)rumoca_galec_min;
     (void)rumoca_galec_max;
+    (void)rumoca_galec_compare_lt;
+    (void)rumoca_galec_compare_gt;
+    (void)rumoca_galec_compare_le;
+    (void)rumoca_galec_compare_ge;
+    (void)rumoca_galec_compare_eq;
+    (void)rumoca_galec_compare_ne;
 {{ local_declarations(algorithm_code.package.block.startup.locals) }}{{ statements(algorithm_code.package.block.startup.statements) }}}
 
 void {{ c_model }}_recalibrate({{ c_model }}State *self) {
