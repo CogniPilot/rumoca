@@ -200,6 +200,11 @@ jobs:
         # (`path '…rust-nightly.toml.drv' is not valid`). `nix build` realizes the
         # toolchain, so building the checks directly is the reliable gate.
         run: |
+          # Nix evaluates the finite Crane + LLVM derivation graph recursively.
+          # The default hosted-runner stack is too small for this workspace;
+          # keep the evaluator budget explicit and bounded rather than relying
+          # on an unlimited process stack.
+          ulimit -s 65536
           nix build --print-build-logs \
             .#checks.x86_64-linux.rumoca \
             .#checks.x86_64-linux.mlir-cpu
