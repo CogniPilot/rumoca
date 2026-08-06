@@ -20,7 +20,7 @@ pub(super) fn lower_clocked_assignments<'dae>(
     let mut pending = Vec::new();
     lower_discrete_value_owners(view, clock, by_id, pre_names, &mut pending)?;
     lower_discrete_real_equations(view, clock, by_id, pre_names, &mut pending)?;
-    reject_event_actions(view)?;
+    lower_event_actions(view, clock, by_id, pre_names, &mut pending)?;
     order_assignments(pending)
 }
 
@@ -33,7 +33,12 @@ fn lower_discrete_real_equations<'dae>(
 ) -> Result<(), GalecTargetError> {
     let mut owners: HashMap<u32, (usize, bool)> = HashMap::new();
     let clock_owners = discrete_real_clock_owners(view);
+    let causal_definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+    let mut lowerer = ExpressionLowerer::with_assertions(view, by_id, pre_names);
     for index in 0..view.discrete_real_equation_count() {
+        if causal_definitions.consumes_discrete_real_equation(index) {
+            continue;
+        }
         let equation = view
             .discrete_real_equation(index)
             .expect("dense checked discrete Real equation resolves");
@@ -46,7 +51,6 @@ fn lower_discrete_real_equations<'dae>(
                 span: Some(span),
             }
         })?;
-        let mut lowerer = ExpressionLowerer::new(view, by_id, pre_names);
         let (guard, unconditional) = match equation.activation() {
             dae::DiscreteRealActivation::Always => (None, true),
             dae::DiscreteRealActivation::When { trigger, guard } => {
@@ -69,7 +73,8 @@ fn lower_discrete_real_equations<'dae>(
                 span,
             ));
         }
-        let statements = match guard {
+        let mut statements = lowerer.take_assertions();
+        statements.extend(match guard {
             Some(condition) => vec![gast::Spanned::new(
                 gast::Statement::If(gast::IfStatement {
                     branches: vec![gast::IfBranch {
@@ -82,7 +87,7 @@ fn lower_discrete_real_equations<'dae>(
                 span,
             )],
             None => assignments,
-        };
+        });
         let mut reads = HashSet::new();
         collect_current_reads(view, value, &mut reads);
         if let dae::DiscreteRealActivation::When { trigger, guard } = equation.activation() {
@@ -253,19 +258,64 @@ fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
         .collect()
 }
 
-fn reject_event_actions(view: dae::DaeView<'_>) -> Result<(), GalecTargetError> {
-    if let Some(id) = view.event_action_id(0) {
+fn lower_event_actions<'dae>(
+    view: dae::DaeView<'dae>,
+    clock: dae::ClockId<'dae>,
+    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
+    pre_names: &HashMap<u32, gast::Name>,
+    pending: &mut Vec<PendingAssignment<'dae>>,
+) -> Result<(), GalecTargetError> {
+    let mut lowerer = ExpressionLowerer::with_assertions(view, by_id, pre_names);
+    for index in 0..view.event_action_count() {
         let action = view
-            .event_action(id)
+            .event_action(
+                view.event_action_id(index)
+                    .expect("dense checked event action identity"),
+            )
             .expect("checked event action resolves");
-        return Err(unsupported(
-            "event-action",
-            format!(
-                "event action `{}` cannot be represented in GALEC DoStep",
-                event_name(action.operation())
-            ),
-            action.provenance().span(),
-        ));
+        let span = action.provenance().span();
+        let dae::EventActionOperation::Assert { level: None, .. } = action.operation() else {
+            return Err(unsupported(
+                "event-action",
+                format!(
+                    "event action `{}` cannot be represented in GALEC DoStep",
+                    event_name(action.operation())
+                ),
+                span,
+            ));
+        };
+        require_periodic_trigger(view, action.trigger(), clock, span)?;
+        let guard = lower_action_guard(view, action.guard(), clock, &mut lowerer, span)?;
+        let signal = gast::Spanned::new(
+            gast::Statement::Signal(vec![gast::Identifier::new(
+                gast::PredefinedSignal::InvalidArgument.name(),
+            )]),
+            span,
+        );
+        let mut statements = lowerer.take_assertions();
+        statements.extend(match guard {
+            Some(condition) => vec![gast::Spanned::new(
+                gast::Statement::If(gast::IfStatement {
+                    branches: vec![gast::IfBranch {
+                        condition: gast::Condition::Expression(condition),
+                        body: vec![signal],
+                        span,
+                    }],
+                    else_body: None,
+                }),
+                span,
+            )],
+            None => vec![signal],
+        });
+        let mut reads = HashSet::new();
+        collect_condition_current_reads(view, action.trigger(), &mut reads);
+        collect_condition_current_reads(view, action.guard(), &mut reads);
+        pending.push(PendingAssignment {
+            targets: Vec::new(),
+            reads,
+            statements,
+            span,
+        });
     }
     Ok(())
 }
@@ -1103,6 +1153,81 @@ mod tests {
                 ..
             } if value == 1.0
         ));
+    }
+
+    #[test]
+    fn generated_connection_alias_does_not_compete_with_its_clocked_real_owner() {
+        let text =
+            "discrete Real z; Real connectorValue; when sample(0, 1) then z = 1.0; end when;";
+        let mut sources = SourceMap::new();
+        let source = sources.add("clocked-real-connection.mo", text);
+        let declaration = at(source, text, "discrete Real z");
+        let connector_declaration = at(source, text, "Real connectorValue");
+        let clock_at = at(source, text, "sample(0, 1)");
+        let assignment = at(source, text, "z = 1.0");
+        let connection = dae::DaeProvenance::generated(
+            dae::DaeGeneration::ConnectionEquation,
+            connector_declaration.span(),
+        )
+        .expect("connection provenance is source-backed");
+        let model = dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let (z, connector_value) = dae.variables(|variables| {
+                Ok((
+                    variables.discrete_real(
+                        VarName::new("z"),
+                        real,
+                        declaration,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.algebraic(
+                        VarName::new("connectorValue"),
+                        real,
+                        connector_declaration,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+            let (z_connection, connector, z_assignment, one) = dae.expressions(|expressions| {
+                Ok((
+                    expressions
+                        .at(connection)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                    expressions
+                        .at(connection)
+                        .coordinate(dae::CoordinateInput::Algebraic(connector_value))?,
+                    expressions
+                        .at(assignment)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                    expressions
+                        .at(assignment)
+                        .literal(dae::DaeLiteral::Real(1.0))?,
+                ))
+            })?;
+            define_real_equation(dae, connection, z_connection, connector)?;
+            let clock = periodic_clock(dae, clock_at)?;
+            dae.clocks(|clocks| {
+                clocks.own_discrete_real(clock, z, declaration)?;
+                Ok(())
+            })?;
+            let tick = dae.conditions(|conditions| {
+                let tick = conditions.reserve(clock_at)?;
+                conditions.define(tick, dae::ConditionInput::Clock(clock), clock_at)?;
+                Ok(tick)
+            })?;
+            define_when_real_equation(dae, tick, tick, assignment, z_assignment, one)
+        })
+        .expect("checked clocked connection fixture");
+
+        let statements = project(&model).expect("connection alias is eliminated causally");
+        assert_eq!(statements.len(), 1);
+        assert_eq!(statements[0].span, assignment.span());
     }
 
     #[test]

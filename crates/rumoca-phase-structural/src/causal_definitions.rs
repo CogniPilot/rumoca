@@ -16,6 +16,7 @@ pub struct CausalDefinitions<'dae> {
     scalar_definitions: HashMap<(u32, u32), dae::ExprId<'dae>>,
     fully_scalar_defined: HashSet<u32>,
     consumed_equations: HashSet<u32>,
+    consumed_discrete_real_equations: HashSet<u32>,
     consumed_families: HashSet<u32>,
     order: Vec<dae::AlgebraicId<'dae>>,
     remaining_owners: usize,
@@ -23,61 +24,8 @@ pub struct CausalDefinitions<'dae> {
 
 impl<'dae> CausalDefinitions<'dae> {
     pub fn derive(view: dae::DaeView<'dae>) -> Self {
-        let mut candidates = Vec::new();
-        let mut aliases = Vec::new();
-        let mut target_counts = HashMap::<u32, usize>::new();
-        let mut total_owners = 0usize;
-        for owner in view.continuous_owners() {
-            total_owners += 1;
-            let Some((owner, residual)) = definition_owner_residual(view, owner) else {
-                continue;
-            };
-            if let Some(alias) = direct_alias(view, residual) {
-                aliases.push((owner, alias));
-                continue;
-            }
-            let Some((target, value)) = direct_definition(view, residual) else {
-                continue;
-            };
-            if expression_references(view, value, target) {
-                continue;
-            }
-            *target_counts.entry(target.index()).or_default() += 1;
-            candidates.push((owner, target, value));
-        }
-        candidates.retain(|(_, target, _)| target_counts[&target.index()] == 1);
-        append_oriented_aliases(&mut candidates, aliases);
-
-        let candidate_targets = candidates
-            .iter()
-            .map(|(_, target, _)| target.index())
-            .collect::<HashSet<_>>();
-        let dependencies = candidates
-            .iter()
-            .map(|(_, target, value)| {
-                (
-                    target.index(),
-                    algebraic_dependencies(view, *value)
-                        .into_iter()
-                        .filter(|dependency| candidate_targets.contains(dependency))
-                        .collect::<HashSet<_>>(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let mut emitted = HashSet::new();
-        let mut order = Vec::with_capacity(candidates.len());
-        while order.len() < candidates.len() {
-            let Some((_, target, _)) = candidates.iter().find(|(_, target, _)| {
-                !emitted.contains(&target.index())
-                    && dependencies[&target.index()]
-                        .iter()
-                        .all(|dependency| emitted.contains(dependency))
-            }) else {
-                break;
-            };
-            emitted.insert(target.index());
-            order.push(*target);
-        }
+        let (candidates, total_owners) = collect_definition_candidates(view);
+        let (emitted, order) = acyclic_target_order(view, &candidates);
 
         let definitions: HashMap<_, _> = candidates
             .iter()
@@ -89,7 +37,15 @@ impl<'dae> CausalDefinitions<'dae> {
             .filter(|(_, target, _)| emitted.contains(&target.index()))
             .filter_map(|(owner, _, _)| match owner {
                 DefinitionOwner::Residual(equation) => Some(*equation),
-                DefinitionOwner::Structured(_) => None,
+                DefinitionOwner::Structured(_) | DefinitionOwner::DiscreteReal(_) => None,
+            })
+            .collect::<HashSet<_>>();
+        let consumed_discrete_real_equations = candidates
+            .iter()
+            .filter(|(_, target, _)| emitted.contains(&target.index()))
+            .filter_map(|(owner, _, _)| match owner {
+                DefinitionOwner::DiscreteReal(equation) => Some(*equation),
+                DefinitionOwner::Residual(_) | DefinitionOwner::Structured(_) => None,
             })
             .collect::<HashSet<_>>();
         let consumed_families = candidates
@@ -97,7 +53,7 @@ impl<'dae> CausalDefinitions<'dae> {
             .filter(|(_, target, _)| emitted.contains(&target.index()))
             .filter_map(|(owner, _, _)| match owner {
                 DefinitionOwner::Structured(family) => Some(*family),
-                DefinitionOwner::Residual(_) => None,
+                DefinitionOwner::Residual(_) | DefinitionOwner::DiscreteReal(_) => None,
             })
             .collect::<HashSet<_>>();
         let (scalar_definitions, fully_scalar_defined, scalar_equations) =
@@ -109,6 +65,7 @@ impl<'dae> CausalDefinitions<'dae> {
             fully_scalar_defined,
             remaining_owners: total_owners - consumed_equations.len() - consumed_families.len(),
             consumed_equations,
+            consumed_discrete_real_equations,
             consumed_families,
             order,
         }
@@ -145,6 +102,13 @@ impl<'dae> CausalDefinitions<'dae> {
         self.consumed_equations.contains(&equation.index())
     }
 
+    /// Whether an exact generated connection row was proved to define an
+    /// algebraic coordinate from a discrete Real coordinate.
+    pub fn consumes_discrete_real_equation(&self, index: usize) -> bool {
+        u32::try_from(index)
+            .is_ok_and(|index| self.consumed_discrete_real_equations.contains(&index))
+    }
+
     pub fn consumes_family(&self, family: dae::ContinuousFamilyId<'dae>) -> bool {
         self.consumed_families.contains(&family.index())
     }
@@ -177,6 +141,7 @@ fn definition_owner_residual<'dae>(
 enum DefinitionOwner {
     Residual(u32),
     Structured(u32),
+    DiscreteReal(u32),
 }
 
 type DefinitionCandidate<'dae> = (DefinitionOwner, dae::AlgebraicId<'dae>, dae::ExprId<'dae>);
@@ -190,6 +155,89 @@ type AliasCandidate<'dae> = (
         dae::ExprId<'dae>,
     ),
 );
+
+fn collect_definition_candidates<'dae>(
+    view: dae::DaeView<'dae>,
+) -> (Vec<DefinitionCandidate<'dae>>, usize) {
+    let mut candidates = Vec::new();
+    let mut aliases = Vec::new();
+    let mut target_counts = HashMap::<u32, usize>::new();
+    let mut total_owners = 0usize;
+    for continuous in view.continuous_owners() {
+        total_owners += 1;
+        let Some((owner, residual)) = definition_owner_residual(view, continuous) else {
+            continue;
+        };
+        if let Some(alias) = direct_alias(view, residual) {
+            aliases.push((owner, alias));
+            continue;
+        }
+        let Some((target, value)) = direct_definition(view, residual) else {
+            continue;
+        };
+        if expression_references(view, value, target) {
+            continue;
+        }
+        *target_counts.entry(target.index()).or_default() += 1;
+        candidates.push((owner, target, value));
+    }
+    append_discrete_connection_candidates(view, &mut candidates, &mut target_counts);
+    candidates.retain(|(_, target, _)| target_counts[&target.index()] == 1);
+    append_oriented_aliases(&mut candidates, aliases);
+    (candidates, total_owners)
+}
+
+fn append_discrete_connection_candidates<'dae>(
+    view: dae::DaeView<'dae>,
+    candidates: &mut Vec<DefinitionCandidate<'dae>>,
+    target_counts: &mut HashMap<u32, usize>,
+) {
+    for index in 0..view.discrete_real_equation_count() {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("dense checked discrete Real equation resolves");
+        let Some((target, value)) = discrete_connection_definition(view, equation) else {
+            continue;
+        };
+        *target_counts.entry(target.index()).or_default() += 1;
+        candidates.push((DefinitionOwner::DiscreteReal(index as u32), target, value));
+    }
+}
+
+fn acyclic_target_order<'dae>(
+    view: dae::DaeView<'dae>,
+    candidates: &[DefinitionCandidate<'dae>],
+) -> (HashSet<u32>, Vec<dae::AlgebraicId<'dae>>) {
+    let targets = candidates
+        .iter()
+        .map(|(_, target, _)| target.index())
+        .collect::<HashSet<_>>();
+    let dependencies = candidates
+        .iter()
+        .map(|(_, target, value)| {
+            let retained = algebraic_dependencies(view, *value)
+                .into_iter()
+                .filter(|dependency| targets.contains(dependency))
+                .collect::<HashSet<_>>();
+            (target.index(), retained)
+        })
+        .collect::<HashMap<_, _>>();
+    let mut emitted = HashSet::new();
+    let mut order = Vec::with_capacity(candidates.len());
+    while order.len() < candidates.len() {
+        let Some((_, target, _)) = candidates.iter().find(|(_, target, _)| {
+            !emitted.contains(&target.index())
+                && dependencies[&target.index()]
+                    .iter()
+                    .all(|dependency| emitted.contains(dependency))
+        }) else {
+            break;
+        };
+        emitted.insert(target.index());
+        order.push(*target);
+    }
+    (emitted, order)
+}
 
 fn exact_row_major_family_body<'dae>(
     view: dae::DaeView<'dae>,
@@ -399,6 +447,44 @@ fn expression_references_algebraic<'dae>(
     found
 }
 
+/// Recover the causal direction of one exact connection between a discrete
+/// Real producer and an algebraic connector coordinate.
+///
+/// The canonical DAE retains the equality as a B.1b residual because it
+/// contains `z`. Generated connection provenance proves that the row itself
+/// does not own the sampled update, while the coordinate kinds prove the only
+/// executable direction: the algebraic connector reads the discrete value.
+fn discrete_connection_definition<'dae>(
+    view: dae::DaeView<'dae>,
+    equation: dae::DiscreteRealEquationView<'dae>,
+) -> Option<(dae::AlgebraicId<'dae>, dae::ExprId<'dae>)> {
+    if equation.activation() != dae::DiscreteRealActivation::Always
+        || equation.provenance().origin()
+            != dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::ConnectionEquation)
+    {
+        return None;
+    }
+    let residual = view.expression(equation.residual())?;
+    let dae::ExpressionOperation::Binary {
+        operator: dae::BinaryOperator::Subtract,
+        lhs,
+        rhs,
+    } = residual.operation()
+    else {
+        return None;
+    };
+    match (
+        whole_algebraic(view, lhs),
+        whole_discrete_real(view, rhs),
+        whole_discrete_real(view, lhs),
+        whole_algebraic(view, rhs),
+    ) {
+        (Some(target), Some(_), _, _) => compatible_definition(view, target, rhs),
+        (_, _, Some(_), Some(target)) => compatible_definition(view, target, lhs),
+        _ => None,
+    }
+}
+
 fn direct_definition<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
@@ -458,6 +544,18 @@ fn whole_algebraic<'dae>(
 ) -> Option<dae::AlgebraicId<'dae>> {
     match view.expression(expression)?.operation() {
         dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable)) => {
+            Some(variable)
+        }
+        _ => None,
+    }
+}
+
+fn whole_discrete_real<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<dae::DiscreteRealId<'dae>> {
+    match view.expression(expression)?.operation() {
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteReal(variable)) => {
             Some(variable)
         }
         _ => None,
@@ -589,6 +687,25 @@ mod tests {
         for residual in residuals {
             continuous.equation(provenance, |equation| equation.residual(residual))?;
         }
+        Ok(())
+    }
+
+    fn add_discrete_real_residual<'dae>(
+        discrete: &mut dae::DiscreteEquations<'_, 'dae>,
+        residual: dae::ExprId<'dae>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        discrete
+            .real_equation(provenance, |equation| equation.residual(residual))
+            .map(|_| ())
+    }
+
+    fn add_continuous_residual<'dae>(
+        continuous: &mut dae::ContinuousEquations<'_, 'dae>,
+        residual: dae::ExprId<'dae>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        continuous.equation(provenance, |equation| equation.residual(residual))?;
         Ok(())
     }
 
@@ -747,6 +864,76 @@ mod tests {
         .unwrap()
     }
 
+    fn mixed_discrete_connection_model() -> dae::Dae {
+        let mut sources = SourceMap::new();
+        let text = "discrete Real z; Real connectorValue; Real outputValue;";
+        let source = sources.add("discrete-connection.mo", text);
+        let span = Span::from_offsets(source, 0, text.len());
+        let source_provenance = dae::DaeProvenance::source(span).unwrap();
+        let connection_provenance =
+            dae::DaeProvenance::generated(dae::DaeGeneration::ConnectionEquation, span).unwrap();
+        dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    source_provenance,
+                )
+            })?;
+            let (z, connector_value, output_value) = dae.variables(|variables| {
+                Ok((
+                    variables.discrete_real(
+                        VarName::new("z"),
+                        real,
+                        source_provenance,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.algebraic(
+                        VarName::new("connectorValue"),
+                        real,
+                        source_provenance,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.algebraic(
+                        VarName::new("outputValue"),
+                        real,
+                        source_provenance,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+            let (connection, output_alias) = dae.expressions(|expressions| {
+                let z_value = expressions
+                    .at(connection_provenance)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(z))?;
+                let connector = expressions
+                    .at(connection_provenance)
+                    .coordinate(dae::CoordinateInput::Algebraic(connector_value))?;
+                let output = expressions
+                    .at(source_provenance)
+                    .coordinate(dae::CoordinateInput::Algebraic(output_value))?;
+                let connection = expressions.at(connection_provenance).binary(
+                    dae::BinaryOperator::Subtract,
+                    z_value,
+                    connector,
+                )?;
+                let output_alias = expressions.at(source_provenance).binary(
+                    dae::BinaryOperator::Subtract,
+                    connector,
+                    output,
+                )?;
+                Ok((connection, output_alias))
+            })?;
+            dae.discrete(|discrete| {
+                add_discrete_real_residual(discrete, connection, connection_provenance)
+            })?;
+            dae.continuous(|continuous| {
+                add_continuous_residual(continuous, output_alias, source_provenance)
+            })
+        })
+        .unwrap()
+    }
+
     fn indexed_residual<'dae>(
         expressions: &mut dae::Expressions<'_, 'dae>,
         x: dae::ExprId<'dae>,
@@ -815,6 +1002,21 @@ mod tests {
                 .map(|target| view.variable((*target).into()).unwrap().name().as_str())
                 .collect::<Vec<_>>();
             assert_eq!(names, ["x", "y"]);
+            assert_eq!(proof.remaining_owner_count(), 0);
+        });
+    }
+
+    #[test]
+    fn generated_discrete_connection_orients_algebraic_aliases_from_the_sampled_value() {
+        mixed_discrete_connection_model().inspect(|view| {
+            let proof = CausalDefinitions::derive(view);
+            let names = proof
+                .order()
+                .iter()
+                .map(|target| view.variable((*target).into()).unwrap().name().as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["connectorValue", "outputValue"]);
+            assert!(proof.consumes_discrete_real_equation(0));
             assert_eq!(proof.remaining_owner_count(), 0);
         });
     }

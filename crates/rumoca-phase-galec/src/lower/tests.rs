@@ -134,7 +134,8 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
 #[test]
 fn function_assertion_is_detected_before_expression_inlining() {
     let mut sources = SourceMap::new();
-    let text = "function f output Real y; algorithm assert(true, \"valid\"); y := 0.0; end f;";
+    let text =
+        "function f output Real y; algorithm assert(false, \"invalid\"); y := 0.0; end f; f();";
     let source = sources.add("assertion.mo", text);
     let span = Span::from_offsets(source, 0, text.len());
     let provenance = dae::DaeProvenance::source(span).unwrap();
@@ -142,7 +143,7 @@ fn function_assertion_is_detected_before_expression_inlining() {
         let real = dae.types(|types| {
             types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
         })?;
-        dae.function(
+        let (function, ()) = dae.function(
             dae::FunctionSignature::new(VarName::new("f"), [], [real], provenance),
             |dae, reservation| {
                 let output = dae.functions(|functions| {
@@ -153,12 +154,12 @@ fn function_assertion_is_detected_before_expression_inlining() {
                 let condition = dae.expressions(|expressions| {
                     expressions
                         .at(provenance)
-                        .literal(dae::DaeLiteral::Boolean(true))
+                        .literal(dae::DaeLiteral::Boolean(false))
                 })?;
                 let message = dae.expressions(|expressions| {
                     expressions
                         .at(provenance)
-                        .literal(dae::DaeLiteral::String("valid".to_owned()))
+                        .literal(dae::DaeLiteral::String("invalid".to_owned()))
                 })?;
                 dae.functions(|functions| {
                     functions.assertion(&mut body, condition, message, provenance)
@@ -172,12 +173,118 @@ fn function_assertion_is_detected_before_expression_inlining() {
                 dae.functions(|functions| functions.define(body, provenance))
             },
         )?;
+        dae.expressions(|expressions| expressions.at(provenance).call(function, 0, []))?;
         Ok(())
     })
     .unwrap();
     model.inspect(|view| {
         let function = view.function(view.function_id(0).unwrap()).unwrap();
         assert_eq!(first_function_assertion(function.statements()), Some(span));
+        let call = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .find(|id| {
+                matches!(
+                    view.expression(*id).unwrap().operation(),
+                    dae::ExpressionOperation::Call { .. }
+                )
+            })
+            .unwrap();
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let Err(rejected) = ExpressionLowerer::new(view, &variables, &previous).lower(call) else {
+            panic!("an assertion needs an explicit call-scoped action sink")
+        };
+        assert!(matches!(
+            rejected,
+            GalecTargetError::UnsupportedFeature { feature, .. }
+                if feature == "function-assertion"
+        ));
+        let mut lowerer = ExpressionLowerer::with_assertions(view, &variables, &previous);
+        assert_eq!(
+            lowerer.lower(call).unwrap().expression,
+            gast::Expression::Real(0.0)
+        );
+        let assertions = lowerer.take_assertions();
+        assert_eq!(assertions.len(), 1);
+        let gast::Statement::If(assertion) = &assertions[0].node else {
+            panic!("call-scoped assertion lowers to a guarded signal")
+        };
+        assert!(matches!(
+            assertion.branches[0].body[0].node,
+            gast::Statement::Signal(ref signals)
+                if signals[0].as_str() == gast::PredefinedSignal::InvalidArgument.name()
+        ));
+    });
+}
+
+#[test]
+fn record_field_of_checked_function_call_is_projected_before_scalar_lowering() {
+    let mut sources = SourceMap::new();
+    let text = "record Pair Real left; Real right; end Pair; function makePair input Real u; output Pair p; algorithm p := Pair(u, u); end makePair; makePair(2.0).right";
+    let source = sources.add("record-call.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let provenance = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let real = dae.types(|types| {
+            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
+        })?;
+        let pair = dae.types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real), (VarName::new("right"), real)],
+                provenance,
+            )
+        })?;
+        let signature =
+            dae::FunctionSignature::new(VarName::new("makePair"), [real], [pair], provenance);
+        let (function, ()) = dae.function(signature, |dae, reservation| {
+            let parameter = dae.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+            })?;
+            let output = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("p"), 0, provenance)
+            })?;
+            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
+            let fields = dae.expressions(|expressions| {
+                Ok([
+                    expressions.at(provenance).function_parameter(parameter)?,
+                    expressions.at(provenance).function_parameter(parameter)?,
+                ])
+            })?;
+            let value =
+                dae.expressions(|expressions| expressions.at(provenance).record(pair, fields))?;
+            dae.functions(|functions| functions.assign(&mut body, output, value, provenance))?;
+            dae.functions(|functions| functions.define(body, provenance))
+        })?;
+        let argument = dae.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Real(2.0))
+        })?;
+        let call = dae
+            .expressions(|expressions| expressions.at(provenance).call(function, 0, [argument]))?;
+        dae.expressions(|expressions| expressions.at(provenance).field(call, 1))?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let field = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .find(|id| {
+                matches!(
+                    view.expression(*id).unwrap().operation(),
+                    dae::ExpressionOperation::Field { field: 1, .. }
+                )
+            })
+            .unwrap();
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let lowered = ExpressionLowerer::new(view, &variables, &previous)
+            .lower(field)
+            .unwrap();
+        assert_eq!(lowered.scalar_type, gast::ScalarType::Real);
+        assert_eq!(lowered.expression, gast::Expression::Real(2.0));
     });
 }
 

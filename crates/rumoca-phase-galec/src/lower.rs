@@ -5,7 +5,14 @@
 //! by their current-tick dependencies; `pre(x)` becomes a protected
 //! `'previous(x)'` state committed after all assignments.
 
-use std::collections::HashMap;
+mod causal_outputs;
+mod clocked_assignments;
+mod expression_functions;
+mod expression_helpers;
+mod pre_references;
+mod start;
+
+use std::collections::{HashMap, HashSet};
 
 use rumoca_core::Span;
 use rumoca_eval_dae::NumericEvaluator;
@@ -17,11 +24,6 @@ use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
 use rumoca_ir_galec::package::AlgorithmCodePackage;
 
-mod causal_outputs;
-mod clocked_assignments;
-mod expression_helpers;
-mod pre_references;
-mod start;
 use causal_outputs::append_causal_output_assignments;
 use clocked_assignments::lower_clocked_assignments;
 use expression_helpers::*;
@@ -104,7 +106,6 @@ fn lower_view<'dae>(
     append_causal_output_assignments(view, &classified, &by_id, &pre_names, &mut do_step)
         .map_err(single)?;
     append_pre_commits(&referenced_pre, &by_id, &pre_names, &mut do_step)?;
-
     let block_name = crate::mangle::galec_variable_name(
         options.block_name.as_deref().unwrap_or(input.model_name),
     )
@@ -120,7 +121,6 @@ fn lower_view<'dae>(
     block.startup.statements = parts.startup;
     block.recalibrate.statements = parts.recalibrate;
     block.do_step.statements = do_step;
-
     AlgorithmCodePackage::construct(block, parts.nominals, &period_ref).map_err(|error| {
         vec![GalecTargetError::LoweringInternal {
             detail: format!("lowering produced an invalid Algorithm Code package: {error}"),
@@ -792,12 +792,27 @@ struct ExpressionLowerer<'a, 'dae> {
     definitions: rumoca_phase_structural::CausalDefinitions<'dae>,
     call_frames: Vec<CallFrame<'dae>>,
     comprehension_frames: Vec<ComprehensionFrame>,
+    capture_assertions: bool,
+    seen_assertion_calls: HashSet<FunctionAssertionCallKey>,
+    pending_assertions: Vec<gast::Spanned<gast::Statement>>,
 }
 
 struct CallFrame<'dae> {
     call: dae::ExprId<'dae>,
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FunctionAssertionCallKey {
+    path: Vec<FunctionAssertionCallSite>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FunctionAssertionCallSite {
+    function: u32,
+    arguments: Vec<u32>,
+    span: Span,
 }
 
 struct ComprehensionFrame {
@@ -829,7 +844,25 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             definitions: rumoca_phase_structural::CausalDefinitions::derive(view),
             call_frames: Vec::new(),
             comprehension_frames: Vec::new(),
+            capture_assertions: false,
+            seen_assertion_calls: HashSet::new(),
+            pending_assertions: Vec::new(),
         }
+    }
+
+    fn with_assertions(
+        view: dae::DaeView<'dae>,
+        by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
+        pre_names: &'a HashMap<u32, gast::Name>,
+    ) -> Self {
+        Self {
+            capture_assertions: true,
+            ..Self::new(view, by_id, pre_names)
+        }
+    }
+
+    fn take_assertions(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
+        std::mem::take(&mut self.pending_assertions)
     }
 
     fn lower(&mut self, id: dae::ExprId<'dae>) -> Result<TypedExpression, GalecTargetError> {
@@ -987,8 +1020,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 self.lower_comprehension_at(domain, body, indices, node.provenance().span())
             }
+            dae::ExpressionOperation::Field { base, field } => self.lower_record_field_at(
+                base,
+                field as usize,
+                indices,
+                scalar_type,
+                node.provenance().span(),
+            ),
             dae::ExpressionOperation::Record(_)
-            | dae::ExpressionOperation::Field { .. }
             | dae::ExpressionOperation::StringConversion { .. }
             | dae::ExpressionOperation::FunctionFoldParameter { .. }
             | dae::ExpressionOperation::FunctionFoldOutput { .. } => Err(unsupported(
@@ -1074,62 +1113,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             expression,
             scalar_type,
         })
-    }
-
-    fn lower_call_at(
-        &mut self,
-        call: dae::ExprId<'dae>,
-        function: dae::FunctionId<'dae>,
-        output: u32,
-        arguments: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        if self.call_frames.iter().any(|frame| frame.call == call) {
-            return Err(unsupported(
-                "recursive-function",
-                "recursive checked function cannot be inlined into GALEC".to_owned(),
-                span,
-            ));
-        }
-        let function_view = self
-            .view
-            .function(function)
-            .expect("checked function identity resolves");
-        // GAL-025: an MLS §12.9 external body is foreign code with no GALEC
-        // projection. Report the exact interface instead of inlining nothing.
-        if let Some(external) = function_view.external() {
-            return Err(GalecTargetError::ExternalFunction {
-                function: function_view.name().to_string(),
-                language: external.language().as_str().to_owned(),
-                span: function_view.declaration().span(),
-            });
-        }
-        if let Some(assertion) = first_function_assertion(function_view.statements()) {
-            return Err(unsupported(
-                "function-assertion",
-                format!(
-                    "function `{}` contains an assertion, whose error signal is not yet \
-                     represented by the Rumoca GALEC projection",
-                    function_view.name()
-                ),
-                assertion,
-            ));
-        }
-        let result = function_view
-            .result_values()
-            .rhs(output as usize)
-            .ok_or_else(|| GalecTargetError::LoweringInternal {
-                detail: format!("checked function output {output} is missing"),
-            })?;
-        self.call_frames.push(CallFrame {
-            call,
-            function,
-            arguments: arguments.iter().collect(),
-        });
-        let lowered = self.lower_at(result, indices);
-        self.call_frames.pop();
-        lowered
     }
 
     fn lower_index_at(
