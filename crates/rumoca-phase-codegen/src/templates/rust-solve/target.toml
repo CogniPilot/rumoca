@@ -9,6 +9,7 @@ completion_message = """Rust Solve kernel source compiled to: {{ out_dir }}
 Compile: rustc --crate-type lib {{ out_dir }}/{{ model_name }}_solve.rs"""
 
 [capabilities]
+residual_equations = false
 scalar_fallback = true
 events = false
 runtime_events = false

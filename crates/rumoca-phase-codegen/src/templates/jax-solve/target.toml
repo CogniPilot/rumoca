@@ -6,6 +6,7 @@ execution_mode = "symbolic"
 deployment_class = "symbolic"
 
 [capabilities]
+residual_equations = false
 runtime_events = false
 
 [[files]]

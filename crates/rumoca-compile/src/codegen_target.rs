@@ -13,7 +13,8 @@ use feature_analysis::{
     dae_has_clocks, dae_has_dynamic_derivative_subscripts, dae_has_dynamic_ranges, dae_has_events,
     dae_has_external_functions, dae_has_initialization, dae_has_runtime_events,
     dae_has_unlowered_source_temporal_operators, dae_uses_external_tables, dae_uses_random,
-    solve_has_clocks, solve_has_events, solve_has_initialization, solve_has_runtime_events,
+    solve_has_algebraic_projection, solve_has_clocks, solve_has_events, solve_has_initialization,
+    solve_has_runtime_events,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -715,6 +716,13 @@ pub fn validate_solve_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
+    if capabilities.residual_equations != Some(true) && solve_has_algebraic_projection(solve) {
+        unsupported_feature(
+            manifest,
+            "residual_equations",
+            "algebraic projection or implicit residual rows present",
+        )?;
+    }
     if capabilities.initialization == Some(false) && solve_has_initialization(solve) {
         unsupported_feature(
             manifest,
@@ -1517,6 +1525,54 @@ events = false
             .expect_err("an event-free target must reject an event partition");
 
         assert!(error.to_string().contains("unsupported-feature:events"));
+    }
+
+    #[test]
+    fn explicit_rhs_target_rejects_required_algebraic_projection() {
+        let mut solve = rumoca_ir_solve::SolveProblem::default();
+        solve
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .push(rumoca_ir_solve::AlgebraicProjectionBlock::default());
+        let manifest = parse_manifest_with_ir_capabilities(
+            "solve",
+            r#"
+[capabilities]
+residual_equations = false
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+        let error = validate_solve_target_capabilities(&solve, &manifest, capabilities)
+            .expect_err("an explicit RHS target must reject an algebraic projection");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported-feature:residual_equations")
+        );
+    }
+
+    #[test]
+    fn residual_kernel_target_accepts_algebraic_projection_contract() {
+        let mut solve = rumoca_ir_solve::SolveProblem::default();
+        solve
+            .continuous
+            .algebraic_projection_plan
+            .blocks
+            .push(rumoca_ir_solve::AlgebraicProjectionBlock::default());
+        let manifest = parse_manifest_with_ir_capabilities(
+            "solve",
+            r#"
+[capabilities]
+residual_equations = true
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+        validate_solve_target_capabilities(&solve, &manifest, capabilities)
+            .expect("a residual-kernel target may expose the projection contract");
     }
 
     #[test]

@@ -9,6 +9,7 @@ completion_message = """C Solve kernel sources compiled to: {{ out_dir }}
 Compile: cc -O2 -Wall -c {{ out_dir }}/{{ model_name }}_solve.c"""
 
 [capabilities]
+residual_equations = false
 scalar_fallback = true
 events = false
 runtime_events = false

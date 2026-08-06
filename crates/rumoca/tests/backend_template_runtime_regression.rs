@@ -29,6 +29,43 @@ fn rendered_target(target: &str) -> (tempfile::TempDir, Vec<RenderedTargetFile>)
     (directory, files)
 }
 
+#[test]
+fn explicit_rhs_targets_reject_implicit_algebraic_models() {
+    let compiled = Compiler::new()
+        .model("ImplicitAlgebraic")
+        .compile_str(
+            r#"
+model ImplicitAlgebraic
+  Real x(start = 1);
+  Real algebraic(start = 1);
+equation
+  der(x) = algebraic;
+  algebraic * algebraic = x;
+end ImplicitAlgebraic;
+"#,
+            "ImplicitAlgebraic.mo",
+        )
+        .expect("the compiler accepts the implicit algebraic model");
+
+    for target in [
+        "c-solve",
+        "rust-solve",
+        "rust-fixed-solve",
+        "casadi-solve",
+        "jax-solve",
+        "cuda-c",
+    ] {
+        let error = rumoca::render_target_files(&compiled, "ImplicitAlgebraic", target, None)
+            .expect_err("an explicit RHS target cannot omit algebraic projection");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported-feature:residual_equations"),
+            "target {target} returned the wrong diagnostic: {error:#}"
+        );
+    }
+}
+
 fn run_python(module: &Path, script: &str) {
     let output = Command::new("python")
         .args(["-c", script])

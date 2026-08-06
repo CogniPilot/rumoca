@@ -9,6 +9,7 @@ completion_message = """CUDA C Solve target sources generated to: {{ out_dir }}
 Next readiness step: add NVCC smoke coverage before treating this target as executable."""
 
 [capabilities]
+residual_equations = false
 scalar_fallback = true
 events = false
 runtime_events = false

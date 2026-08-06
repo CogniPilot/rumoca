@@ -162,6 +162,11 @@ pub(super) fn solve_has_initialization(problem: &solve::SolveProblem) -> bool {
         || !initialization.update_targets.is_empty()
 }
 
+pub(super) fn solve_has_algebraic_projection(problem: &solve::SolveProblem) -> bool {
+    !problem.continuous.implicit_rhs.is_empty()
+        || !problem.continuous.algebraic_projection_plan.is_empty()
+}
+
 fn dynamic_subscript<'dae>(view: dae::DaeView<'dae>, subscript: dae::SubscriptView<'dae>) -> bool {
     let dae::SubscriptView::Index { expression, .. } = subscript else {
         return true;

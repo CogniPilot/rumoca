@@ -7,6 +7,7 @@ deployment_class = "gpu"
 readiness_level = 0
 
 [capabilities]
+residual_equations = true
 scalar_fallback = true
 # Condition/relation slots can be inputs to continuous kernels, but this target
 # emits neither root/action kernels nor event iteration. Eventful models must
