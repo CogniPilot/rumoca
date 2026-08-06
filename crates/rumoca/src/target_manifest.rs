@@ -1,11 +1,13 @@
 use std::path::Path;
-#[cfg(feature = "scheduled-sim")]
+#[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
 use std::path::PathBuf;
 #[cfg(all(test, feature = "scheduled-sim"))]
 use std::process::Command;
 
 use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
+#[cfg(feature = "scheduled-sim")]
+use rumoca_compile::codegen::targets::TargetFile;
 #[cfg(test)]
 use rumoca_compile::codegen::targets::validate_solve_tensor_inventory;
 use rumoca_compile::codegen::targets::{
@@ -13,10 +15,8 @@ use rumoca_compile::codegen::targets::{
     ensure_target_has_rendered_files, validate_dae_target_capabilities,
     validate_solve_target_capabilities,
 };
-#[cfg(feature = "scheduled-sim")]
-use rumoca_compile::codegen::targets::{
-    TargetArchiveFormat, TargetArchiveRoot, TargetFile, safe_target_join,
-};
+#[cfg(any(feature = "scheduled-sim", feature = "fmu-packaging"))]
+use rumoca_compile::codegen::targets::{TargetArchiveFormat, TargetArchiveRoot, safe_target_join};
 use rumoca_compile::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
 use rumoca_phase_galec::{GalecInput, GalecOptions, GalecTargetError};
 
@@ -55,6 +55,39 @@ pub(crate) fn compile_target(
     }
     let (bundle, manifest) = resolve_manifest_target(target, phase)?;
     compile_manifest_target(result, model, &bundle, &manifest, output)
+}
+
+/// Compile one manifest-declared package through the same checked renderer and
+/// transactional package writer used by `rumoca compile --target`.
+///
+/// This entry point deliberately owns packaging only. It keeps standards gates
+/// independent of simulation, transport, input-device, and viewer features.
+#[cfg(feature = "fmu-packaging")]
+pub fn compile_packaged_target(
+    result: &CompilationResult,
+    model: &str,
+    target: &str,
+    output: PathBuf,
+) -> Result<()> {
+    if raw_template_target(target) {
+        bail!("raw template targets do not declare packages");
+    }
+    let (bundle, manifest) = resolve_manifest_target(target, None)?;
+    if manifest.package.is_none() {
+        bail!("target '{target}' does not declare a package");
+    }
+    ensure_target_has_rendered_files(&manifest)?;
+    validate_target_requirements(result, &manifest)?;
+    let identity = TargetModelIdentity::new(model);
+    let renderer = resolve_manifest_renderer(result, &manifest, &identity)?;
+    compile_manifest_package(
+        result,
+        &renderer,
+        &bundle,
+        &manifest,
+        &output,
+        &identity.artifact_stem,
+    )
 }
 
 /// Apply the `--phase`/`-ir`/unknown-target guards and load a built-in or
@@ -106,7 +139,7 @@ fn resolve_manifest_target(
 ///
 /// Public (re-exported at the crate root) so template-target CI exercises the
 /// exact render path the CLI uses — including capability validation and the
-/// name-dispatched renderers (`wgsl-solve`, `galec`, `embedded-c-galec`,
+/// name-dispatched renderers (`wgsl-ode`, `galec`, `embedded-c-galec`,
 /// `galec-production`) that the generic DAE-JSON template context cannot
 /// reach.
 pub fn render_target_files(
@@ -333,6 +366,9 @@ fn template_ir_to_cli(value: TargetTemplateIr) -> TemplateIr {
     match value {
         TargetTemplateIr::Dae => TemplateIr::Dae,
         TargetTemplateIr::Solve => TemplateIr::Solve,
+        TargetTemplateIr::Fmi => {
+            unreachable!("checked FMI components use their dedicated renderer")
+        }
         TargetTemplateIr::Flat => TemplateIr::Flat,
         TargetTemplateIr::Ast => TemplateIr::Ast,
         TargetTemplateIr::AlgorithmCode => {
@@ -370,7 +406,8 @@ fn compile_manifest_target(
     }
 
     if manifest.package.is_some() {
-        compile_packaged_target(
+        #[cfg(feature = "fmu-packaging")]
+        compile_manifest_package(
             result,
             &renderer,
             bundle,
@@ -378,6 +415,11 @@ fn compile_manifest_target(
             &out_dir,
             &identity.artifact_stem,
         )?;
+        #[cfg(not(feature = "fmu-packaging"))]
+        bail!(
+            "target '{}' requires the fmu-packaging feature",
+            bundle.label(manifest)
+        );
     } else {
         write_manifest_files(
             result,
@@ -392,8 +434,8 @@ fn compile_manifest_target(
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
-fn compile_packaged_target(
+#[cfg(feature = "fmu-packaging")]
+fn compile_manifest_package(
     result: &CompilationResult,
     renderer: &ManifestRenderer,
     bundle: &TargetBundle,
@@ -484,7 +526,7 @@ fn validate_target_requirements(
         TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode => {
             validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
         }
-        TargetTemplateIr::Solve => {
+        TargetTemplateIr::Solve | TargetTemplateIr::Fmi => {
             // Solve remains a projection of checked DAE semantics. Inspect the
             // source artifact as well so a partial kernel cannot erase tables,
             // randomness, events, or another target capability obligation.
@@ -539,8 +581,13 @@ fn write_manifest_file(
 enum ManifestRenderer {
     /// Generic path: the IR-keyed JSON template context.
     Ir(TemplateIr),
-    /// `wgsl-solve` renders Solve kernels without the DAE JSON context.
+    /// `wgsl-ode` renders Solve kernels without the DAE JSON context.
     WgslSolve,
+    /// One checked tensor-native FMI component plus its lazy Solve program.
+    Fmi {
+        renderer: rumoca_phase_codegen::SolveTemplateRenderer,
+        artifact: crate::packaging::ArtifactSession,
+    },
     /// A checked Algorithm Code package plus immutable artifact facts.
     AlgorithmCode {
         package: Box<rumoca_ir_galec::package::AlgorithmCodePackage>,
@@ -559,7 +606,7 @@ fn resolve_manifest_renderer(
     manifest: &TargetManifest,
     identity: &TargetModelIdentity<'_>,
 ) -> Result<ManifestRenderer> {
-    if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-solve") {
+    if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-ode") {
         return Ok(ManifestRenderer::WgslSolve);
     }
     if manifest.ir == TargetTemplateIr::AlgorithmCode {
@@ -570,6 +617,21 @@ fn resolve_manifest_renderer(
             package: Box::new(package),
             artifact,
         });
+    }
+    if manifest.ir == TargetTemplateIr::Fmi {
+        let solve = rumoca_sim::lower_solve_problem(&result.dae)
+            .context("Lower Solve IR for checked FMI component")?;
+        let artifacts = rumoca_sim::lower_solve_artifacts(&solve)
+            .context("Lower Solve artifacts for checked FMI component")?;
+        let component = rumoca_phase_fmi::lower_to_fmi_component(&result.dae, solve)
+            .context("Construct checked FMI component")?;
+        let renderer = rumoca_phase_codegen::SolveTemplateRenderer::new_owned_with_fmi(
+            component,
+            artifacts,
+            &result.dae,
+        )?;
+        let artifact = crate::packaging::ArtifactSession::new(&manifest.files)?;
+        return Ok(ManifestRenderer::Fmi { renderer, artifact });
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -600,6 +662,9 @@ impl ManifestRenderer {
             Self::WgslSolve => result
                 .render_solve_template_str_without_dae(template, model_identifier)
                 .map_err(Into::into),
+            Self::Fmi { renderer, artifact } => renderer
+                .render_with_name_and_artifact(template, model_identifier, artifact)
+                .map_err(Into::into),
             Self::AlgorithmCode { package, artifact } => {
                 let context = crate::packaging::ArtifactRenderContext {
                     session: artifact,
@@ -618,11 +683,10 @@ impl ManifestRenderer {
 
     /// Render one template string against a packaging artifact session.
     ///
-    /// Only the declarative packaging path (`compile_packaged_target`) renders
-    /// with an artifact context, and that path exists only under
-    /// `scheduled-sim`; the gate here matches its sole caller so a
-    /// `--no-default-features` build has no unreachable renderer surface.
-    #[cfg(feature = "scheduled-sim")]
+    /// Only the declarative packaging path renders with an artifact context;
+    /// the feature gate follows packaging ownership and does not pull in the
+    /// scheduled simulator or any transport surface.
+    #[cfg(feature = "fmu-packaging")]
     fn render_with_artifact(
         &self,
         result: &CompilationResult,
@@ -636,6 +700,9 @@ impl ManifestRenderer {
                 .map_err(Into::into),
             Self::WgslSolve => result
                 .render_solve_template_str_without_dae(template, model_identifier)
+                .map_err(Into::into),
+            Self::Fmi { renderer, .. } => renderer
+                .render_with_name_and_artifact(template, model_identifier, artifact)
                 .map_err(Into::into),
             Self::AlgorithmCode { package, .. } => {
                 rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
@@ -922,13 +989,13 @@ stencil = "native"
     }
 
     #[test]
-    fn rust_fixed_solve_builtin_target_accepts_scalarized_matmul() {
+    fn rust_fixed_ode_builtin_target_accepts_scalarized_matmul() {
         let result = compile_matmul_derivative_target_demo();
         let bundle =
-            TargetBundle::load("rust-fixed-solve").expect("load built-in rust-fixed-solve target");
+            TargetBundle::load("rust-fixed-ode").expect("load built-in rust-fixed-ode target");
         let manifest = bundle
             .parse_manifest()
-            .expect("parse rust-fixed-solve manifest");
+            .expect("parse rust-fixed-ode manifest");
         let out_dir = tempfile::tempdir().expect("temp output dir");
 
         compile_manifest_target(
@@ -938,12 +1005,12 @@ stencil = "native"
             &manifest,
             Some(out_dir.path().to_path_buf()),
         )
-        .expect("rust-fixed-solve should render scalarized MatMul derivative sources");
+        .expect("rust-fixed-ode should render scalarized MatMul derivative sources");
 
         let generated = std::fs::read_to_string(
             out_dir
                 .path()
-                .join("MatMulDerivativeTargetDemo_fixed_solve.rs"),
+                .join("MatMulDerivativeTargetDemo_fixed_ode.rs"),
         )
         .expect("read generated fixed Rust source");
         assert!(generated.contains("pub type State = [Scalar; Y_LEN];"));
@@ -952,13 +1019,13 @@ stencil = "native"
     }
 
     #[test]
-    fn rust_fixed_solve_builtin_target_rejects_linsolve_before_writing_source() {
+    fn rust_fixed_ode_builtin_target_rejects_linsolve_before_writing_source() {
         let result = compile_tensor_target_demo();
         let bundle =
-            TargetBundle::load("rust-fixed-solve").expect("load built-in rust-fixed-solve target");
+            TargetBundle::load("rust-fixed-ode").expect("load built-in rust-fixed-ode target");
         let manifest = bundle
             .parse_manifest()
-            .expect("parse rust-fixed-solve manifest");
+            .expect("parse rust-fixed-ode manifest");
         let out_dir = tempfile::tempdir().expect("temp output dir");
 
         let err = compile_manifest_target(
@@ -968,7 +1035,7 @@ stencil = "native"
             &manifest,
             Some(out_dir.path().to_path_buf()),
         )
-        .expect_err("rust-fixed-solve must reject LinSolve before writing source");
+        .expect_err("rust-fixed-ode must reject LinSolve before writing source");
         let message = format!("{err:#}");
         assert!(
             message.contains("unsupported-feature:tensor.linsolve"),
@@ -977,7 +1044,7 @@ stencil = "native"
         assert!(
             !out_dir
                 .path()
-                .join("TensorTargetDemo_fixed_solve.rs")
+                .join("TensorTargetDemo_fixed_ode.rs")
                 .exists(),
             "target validation must fail before rendering an uncompilable source file"
         );
@@ -1001,10 +1068,10 @@ scalar_fallback = false
     }
 
     #[test]
-    fn cuda_c_builtin_target_generates_level_one_scalar_matmul_skeleton() {
+    fn cuda_ode_builtin_target_generates_level_one_scalar_matmul_skeleton() {
         let result = compile_matmul_derivative_target_demo();
-        let bundle = TargetBundle::load("cuda-c").expect("load built-in cuda-c target");
-        let manifest = bundle.parse_manifest().expect("parse cuda-c manifest");
+        let bundle = TargetBundle::load("cuda-ode").expect("load built-in cuda-ode target");
+        let manifest = bundle.parse_manifest().expect("parse cuda-ode manifest");
         let out_dir = tempfile::tempdir().expect("temp output dir");
 
         compile_manifest_target(
@@ -1014,10 +1081,10 @@ scalar_fallback = false
             &manifest,
             Some(out_dir.path().to_path_buf()),
         )
-        .expect("cuda-c target should render its declared scalar MatMul fallback");
+        .expect("cuda-ode target should render its declared scalar MatMul fallback");
 
         let generated =
-            std::fs::read_to_string(out_dir.path().join("MatMulDerivativeTargetDemo_solve.cu"))
+            std::fs::read_to_string(out_dir.path().join("MatMulDerivativeTargetDemo_ode.cu"))
                 .expect("read generated CUDA C source");
         assert!(generated.contains("MatMulDerivativeTargetDemo_derivative_rhs_batch"));
         assert!(generated.contains("Readiness level 1"));
@@ -1028,12 +1095,12 @@ scalar_fallback = false
     }
 
     #[test]
-    fn cuda_c_builtin_target_rejects_linsolve_before_writing_source() {
+    fn cuda_ode_builtin_target_rejects_linsolve_before_writing_source() {
         let result = compile_tensor_target_demo();
-        let bundle = TargetBundle::load("cuda-c").expect("load built-in cuda-c target");
-        let manifest = bundle.parse_manifest().expect("parse cuda-c manifest");
+        let bundle = TargetBundle::load("cuda-ode").expect("load built-in cuda-ode target");
+        let manifest = bundle.parse_manifest().expect("parse cuda-ode manifest");
         let out_dir = tempfile::tempdir().expect("temp output dir");
-        let source = out_dir.path().join("TensorTargetDemo_solve.cu");
+        let source = out_dir.path().join("TensorTargetDemo_ode.cu");
 
         let error = compile_manifest_target(
             &result,
@@ -1042,7 +1109,7 @@ scalar_fallback = false
             &manifest,
             Some(out_dir.path().to_path_buf()),
         )
-        .expect_err("cuda-c must reject LinSolve without a device linear-solve ABI");
+        .expect_err("cuda-ode must reject LinSolve without a device linear-solve ABI");
         let message = format!("{error:#}");
         assert!(
             message.contains("unsupported-feature:tensor.linsolve"),
@@ -1060,15 +1127,15 @@ scalar_fallback = false
     }
 
     #[test]
-    fn cuda_c_builtin_target_nvcc_smoke_for_scalar_model_when_available() {
+    fn cuda_ode_builtin_target_nvcc_smoke_for_scalar_model_when_available() {
         if !command_available("nvcc") {
-            eprintln!("skipping cuda-c NVCC smoke: nvcc is not installed");
+            eprintln!("skipping cuda-ode NVCC smoke: nvcc is not installed");
             return;
         }
 
         let result = compile_scalar_cuda_smoke_demo();
-        let bundle = TargetBundle::load("cuda-c").expect("load built-in cuda-c target");
-        let manifest = bundle.parse_manifest().expect("parse cuda-c manifest");
+        let bundle = TargetBundle::load("cuda-ode").expect("load built-in cuda-ode target");
+        let manifest = bundle.parse_manifest().expect("parse cuda-ode manifest");
         let out_dir = tempfile::tempdir().expect("temp output dir");
 
         compile_manifest_target(
@@ -1078,9 +1145,9 @@ scalar_fallback = false
             &manifest,
             Some(out_dir.path().to_path_buf()),
         )
-        .expect("cuda-c target should render scalar smoke source");
+        .expect("cuda-ode target should render scalar smoke source");
 
-        let source = out_dir.path().join("ScalarCudaSmoke_solve.cu");
+        let source = out_dir.path().join("ScalarCudaSmoke_ode.cu");
         let object = out_dir.path().join("ScalarCudaSmoke_solve.o");
         let output = Command::new("nvcc")
             .arg("-c")

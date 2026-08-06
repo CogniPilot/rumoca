@@ -4,7 +4,7 @@
 //! Each target's `[[files]]` render through [`rumoca::render_target_files`] —
 //! the in-memory twin of `compile --target` — so CI exercises the exact CLI
 //! path: capability validation plus the name-dispatched renderers
-//! (`wgsl-solve`, `galec`, `embedded-c-galec`) that the generic DAE-JSON
+//! (`wgsl-ode`, `galec`, `embedded-c-galec`) that the generic DAE-JSON
 //! template context cannot reach. Targets that declare
 //! `continuous_states = false` (the GALEC-derived targets) render against a
 //! dedicated fixed-sample discrete fixture; every other target keeps the
@@ -13,6 +13,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -51,6 +52,7 @@ fn template_ir(ir: TargetTemplateIr) -> Option<TemplateIr> {
     match ir {
         TargetTemplateIr::Dae => Some(TemplateIr::Dae),
         TargetTemplateIr::Solve => Some(TemplateIr::Solve),
+        TargetTemplateIr::Fmi => None,
         TargetTemplateIr::Flat => Some(TemplateIr::Flat),
         TargetTemplateIr::Ast => Some(TemplateIr::Ast),
         TargetTemplateIr::AlgorithmCode => None,
@@ -142,17 +144,19 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
     let coverage = render_builtin_template_targets(&fixtures);
 
     assert!(
-        coverage.rendered_targets.contains(&"c-solve"),
-        "c-solve must be covered by target render CI"
+        coverage.rendered_targets.contains(&"c-ode"),
+        "c-ode must be covered by target render CI"
     );
     assert!(
         coverage.rendered_targets.contains(&"galec"),
         "galec must be covered by target render CI (GAL-012)"
     );
-    assert_eq!(
-        coverage.manifest_only_targets,
-        vec!["cranelift-solve-jit", "cuda-nvrtc-solve-jit"],
-        "readiness-0 manifest-only target placeholders must be explicitly accounted for"
+    assert!(coverage.rendered_targets.contains(&"fmi2"));
+    assert!(coverage.rendered_targets.contains(&"fmi3"));
+    assert!(
+        coverage.manifest_only_targets.is_empty(),
+        "built-in targets must emit artifacts, found manifest-only targets: {:?}",
+        coverage.manifest_only_targets
     );
 }
 
@@ -161,14 +165,23 @@ fn removed_targets_are_rejected_before_rendering() {
     let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
     for target in [
         "casadi-mx",
+        "casadi-solve",
         "casadi-sx",
-        "fmi2",
-        "fmi3",
+        "c-solve",
+        "cranelift-solve-jit",
+        "cuda-c",
+        "cuda-nvrtc-solve-jit",
         "jax",
+        "jax-solve",
         "julia-mtk",
+        "modelica",
         "onnx",
+        "rust-fixed-solve",
+        "rust-solve",
         "symforce",
         "sympy",
+        "wgsl-rhs",
+        "wgsl-solve",
     ] {
         let error = render_target_files(&fixture.compiled, fixture.model_name, target, None)
             .expect_err("removed target must not render");
@@ -176,6 +189,85 @@ fn removed_targets_are_rejected_before_rendering() {
         assert!(
             message.to_ascii_lowercase().contains("unknown target"),
             "removed target `{target}` did not fail as an unknown target: {message}"
+        );
+    }
+}
+
+#[test]
+fn fmi_targets_render_the_checked_continuous_fixture() {
+    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
+    for target in ["fmi2", "fmi3"] {
+        let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+            .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
+        assert!(files.iter().any(|file| file.path == "modelDescription.xml"));
+    }
+}
+
+fn rendered_modelica_interchange_targets() -> Vec<(&'static str, RenderedTargetFile)> {
+    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
+    ["base-modelica", "flat-modelica", "dae-modelica"]
+        .into_iter()
+        .map(|target| {
+            let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+                .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
+            assert_eq!(files.len(), 1, "{target} must emit one source document");
+            (target, files.into_iter().next().expect("one rendered file"))
+        })
+        .collect()
+}
+
+#[test]
+fn modelica_interchange_targets_round_trip_through_the_compiler() {
+    for (target, file) in rendered_modelica_interchange_targets() {
+        Compiler::new()
+            .model(SMOKE_MODEL)
+            .compile_str(&file.content, &file.path)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{target} output must recompile through Rumoca: {error:#}\n{}",
+                    file.content
+                )
+            });
+    }
+}
+
+#[test]
+fn modelica_interchange_targets_are_accepted_by_required_omc() {
+    let omc_available = Command::new("omc").arg("--version").output().is_ok();
+    if !super::template_runtime_policy::prerequisites_are_available(
+        "OMC interchange check",
+        &[("OMC", omc_available)],
+    ) {
+        return;
+    }
+
+    for (target, file) in rendered_modelica_interchange_targets() {
+        let directory = tempfile::tempdir().expect("temporary OMC interchange directory");
+        fs::write(directory.path().join(&file.path), &file.content)
+            .expect("write Modelica interchange source");
+        fs::write(
+            directory.path().join("check.mos"),
+            format!(
+                "loadFile(\"{}\");\ncheckModel({SMOKE_MODEL});\ngetErrorString();\n",
+                file.path
+            ),
+        )
+        .expect("write OMC interchange script");
+        let output = Command::new("omc")
+            .arg("check.mos")
+            .current_dir(directory.path())
+            .output()
+            .expect("start OMC interchange check");
+        let transcript = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            output.status.success()
+                && transcript.contains(&format!("Check of {SMOKE_MODEL} completed successfully")),
+            "OMC rejected {target} output:\n{transcript}\n{}",
+            file.content,
         );
     }
 }
@@ -309,7 +401,12 @@ fn render_builtin_template_target(
 
 fn assert_target_manifest_metadata(target: &templates::BuiltinTarget, manifest: &TargetManifest) {
     assert_eq!(manifest.name.as_deref(), Some(target.name));
-    if target.name == "c-solve" {
+    assert!(
+        manifest.readiness_level.is_some(),
+        "target {} must declare readiness_level explicitly",
+        target.name
+    );
+    if target.name == "c-ode" {
         assert_eq!(manifest.ir, TargetTemplateIr::Solve);
     }
 }

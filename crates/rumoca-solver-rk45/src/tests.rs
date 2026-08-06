@@ -214,7 +214,7 @@ fn rk45_emits_one_series_per_visible_name() {
 }
 
 #[test]
-fn rk45_refreshes_algebraic_solve_ir_layout() {
+fn rk45_refreshes_algebraic_ode_ir_layout() {
     let mut model = single_state_model(vec![
         vec![
             LinearOp::LoadY { dst: 0, index: 1 },

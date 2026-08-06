@@ -2,6 +2,7 @@ version = 1
 ir = "dae"
 name = "dae-modelica"
 description = "Modelica source reconstructed from DAE IR"
+readiness_level = 1
 execution_mode = "source-transform"
 deployment_class = "modelica"
 

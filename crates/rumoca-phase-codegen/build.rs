@@ -8,6 +8,7 @@ type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 struct TargetDir {
     name: String,
     manifest_path: PathBuf,
+    readme_path: PathBuf,
     templates: Vec<TemplateFile>,
     assets: Vec<AssetFile>,
 }
@@ -72,6 +73,8 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
         .ok_or_else(|| build_error("target directory must have a UTF-8 name"))?
         .to_string();
     let manifest_path = dir.join("target.toml");
+    let readme_path = dir.join("README.md");
+    validate_target_readme(&readme_path, &name)?;
     let mut templates = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry.map_err(|error| {
@@ -122,9 +125,41 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
     Ok(TargetDir {
         name,
         manifest_path,
+        readme_path,
         templates,
         assets,
     })
+}
+
+fn validate_target_readme(path: &Path, target: &str) -> BuildResult<()> {
+    let readme = fs::read_to_string(path).map_err(|error| {
+        build_error(format!(
+            "built-in target {target} requires README.md at {}: {error}",
+            path.display()
+        ))
+    })?;
+    let required = [
+        format!("# `{target}`"),
+        "## Use case".to_string(),
+        "## Contract".to_string(),
+        "## Unsupported".to_string(),
+        "## Verification".to_string(),
+        "## Example".to_string(),
+    ];
+    let missing = required
+        .iter()
+        .filter(|heading| !readme.lines().any(|line| line == heading.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(build_error(format!(
+            "{} is missing required target documentation headings: {}",
+            path.display(),
+            missing.join(", ")
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 fn collect_asset_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> BuildResult<()> {
@@ -161,6 +196,7 @@ fn collect_asset_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Build
             collect_asset_files(root, &path, out)?;
         } else if file_type.is_file()
             && path != root.join("target.toml")
+            && path != root.join("README.md")
             && path.extension().and_then(|extension| extension.to_str()) != Some("jinja")
         {
             out.push(path);
@@ -283,8 +319,13 @@ fn render_generated_templates_module(manifest_dir: &Path, targets: &[TargetDir])
 fn render_target_constants(out: &mut String, manifest_dir: &Path, target: &TargetDir) {
     let manifest_const = generated_manifest_const_name(&target.name);
     let manifest_path = include_path(manifest_dir, &target.manifest_path);
+    let readme_const = generated_readme_const_name(&target.name);
+    let readme_path = include_path(manifest_dir, &target.readme_path);
     out.push_str(&format!(
         "const {manifest_const}: &str = include_str!(\"{manifest_path}\");\n"
+    ));
+    out.push_str(&format!(
+        "const {readme_const}: &str = include_str!(\"{readme_path}\");\n"
     ));
     for template in &target.templates {
         let include_path = include_path(manifest_dir, &template.source_path);
@@ -335,9 +376,10 @@ fn render_builtin_targets(out: &mut String, targets: &[TargetDir]) {
     out.push_str("pub const BUILTIN_TARGETS: &[BuiltinTarget] = &[\n");
     for target in targets {
         out.push_str(&format!(
-            "    BuiltinTarget {{ name: \"{}\", manifest: {}, templates: {}, assets: {} }},\n",
+            "    BuiltinTarget {{ name: \"{}\", manifest: {}, readme: {}, templates: {}, assets: {} }},\n",
             target.name,
             generated_manifest_const_name(&target.name),
+            generated_readme_const_name(&target.name),
             generated_target_templates_const_name(&target.name),
             generated_target_assets_const_name(&target.name)
         ));
@@ -352,6 +394,10 @@ fn include_path(manifest_dir: &Path, path: &Path) -> String {
 
 fn generated_manifest_const_name(target: &str) -> String {
     format!("{}_TARGET_MANIFEST", screaming_identifier(target))
+}
+
+fn generated_readme_const_name(target: &str) -> String {
+    format!("{}_TARGET_README", screaming_identifier(target))
 }
 
 fn generated_target_templates_const_name(target: &str) -> String {

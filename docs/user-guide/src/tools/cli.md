@@ -73,7 +73,7 @@ section of the scenario, not CLI flags.
 ```bash
 rumoca compile Model.mo --emit dae-mo                 # DAE as Modelica, to stdout
 rumoca compile Model.mo --emit solve-json -o out.json # solver IR as JSON
-rumoca compile Model.mo --target c-solve -o out/      # checked Solve target
+rumoca compile Model.mo --target c-ode -o out/      # checked Solve target
 rumoca compile Model.mo --target my.jinja --phase flat
 ```
 

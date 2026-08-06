@@ -141,7 +141,7 @@ pub fn build_simulation(
 
 /// Backend problem construction. Failures are annotated as
 /// [`SimFailureStage::BackendBuild`] by the wrapper above: nothing has been
-/// integrated yet, so these are never numeric-solver failures.
+/// integrated yet, so these are never numeric-oder failures.
 fn build_simulation_inner(
     model: MeModelArtifact,
     opts: &SimOptions,

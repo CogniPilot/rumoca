@@ -1,4 +1,4 @@
-//! WebGPU execution preparation: renders the `wgsl-solve` target and packs
+//! WebGPU execution preparation: renders the `wgsl-ode` target and packs
 //! everything a browser-side integrator needs into one JSON payload.
 
 use std::cell::RefCell;
@@ -8,7 +8,10 @@ use wasm_bindgen::prelude::*;
 use crate::simulation_api::build_simulation_options;
 use crate::{WasmError, compile_requested_model, qualify_input_model_name, with_singleton_session};
 use rumoca_compile::codegen::SolveTemplateRenderer;
-use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
+use rumoca_compile::codegen::targets::{
+    TargetBundle, TargetTemplateSource, validate_dae_target_capabilities,
+    validate_solve_target_capabilities,
+};
 
 /// Last prepared model identity. Parameter updates validate against this, then
 /// use full runtime lowering only when an update is requested.
@@ -33,12 +36,12 @@ thread_local! {
 ///
 /// Compiles `source`, lowers it to the Solve IR with simulation defaults
 /// (honoring the model's `experiment` annotation like `simulate_model`),
-/// renders the `wgsl-solve` builtin target, and returns a JSON object:
+/// renders the `wgsl-ode` builtin target, and returns a JSON object:
 ///
 /// ```json
 /// {
 ///   "wgsl": "...compute shader source...",
-///   "layout": { ...the wgsl-solve layout manifest... },
+///   "layout": { ...the wgsl-ode layout manifest... },
 ///   "y0": [..], "p0": [..],
 ///   "n_states": 3,
 ///   "t_start": 0.0, "t_end": 1.0,
@@ -47,10 +50,10 @@ thread_local! {
 /// }
 /// ```
 ///
-/// v1 semantics: the host integrates the first `n_states` entries of `y`;
-/// the remaining (algebraic) slots and all parameters - including relation
-/// memory - stay frozen at their prepared initial values. The layout's
-/// `runtime_event_roots` count lets hosts warn when that matters.
+/// This API accepts explicit ODEs only. It settles supported initialization on
+/// the CPU before dispatch, then the host integrates the first `n_states`
+/// entries of `y`. Algebraic projection, events, clocks, and the other
+/// unsupported `wgsl-ode` capabilities fail before a shader is rendered.
 #[wasm_bindgen]
 pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, WasmError> {
     with_singleton_session(|session| {
@@ -58,28 +61,45 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
         let requested_model = qualify_input_model_name(session, model_name);
         let result = compile_requested_model(session, &requested_model)?;
 
+        let bundle = TargetBundle::builtin("wgsl-ode")
+            .ok_or_else(|| WasmError::new("wgsl-ode builtin target is missing"))?;
+        let manifest = bundle
+            .parse_manifest()
+            .map_err(|error| WasmError::new(format!("wgsl-ode manifest failed: {error}")))?;
+        let mut runtime_capabilities = manifest
+            .capabilities
+            .clone()
+            .ok_or_else(|| WasmError::new("wgsl-ode manifest has no capability contract"))?;
+        // The standalone shader cannot initialize itself. This composed API
+        // provides that one capability by settling the checked initialization
+        // problem on the CPU before returning y0/p0. Every shader capability
+        // remains exactly as declared by the target manifest.
+        runtime_capabilities.initialization = Some(true);
+        validate_dae_target_capabilities(&result.dae, &manifest, &runtime_capabilities)
+            .map_err(|error| WasmError::new(format!("wgsl-ode rejected model: {error}")))?;
+
         let (opts, _solver_label) = build_simulation_options(&result, 0.0, 0.0, "");
         let solve_model = rumoca_sim::lower_dae_for_gpu_preparation(&result.dae, &opts)
             .map_err(|e| WasmError::new(format!("Solve lowering failed: {e}")))?;
+        validate_solve_target_capabilities(&solve_model.problem, &manifest, &runtime_capabilities)
+            .map_err(|error| WasmError::new(format!("wgsl-ode rejected model: {error}")))?;
 
-        let bundle = TargetBundle::builtin("wgsl-solve")
-            .ok_or_else(|| WasmError::new("wgsl-solve builtin target is missing"))?;
         // One shared lazy context for the WGSL and layout templates.
         let renderer =
             SolveTemplateRenderer::new(&solve_model.problem, &solve_model.artifacts, model_name)
-                .map_err(|e| WasmError::new(format!("wgsl-solve context failed: {e}")))?;
+                .map_err(|e| WasmError::new(format!("wgsl-ode context failed: {e}")))?;
         let render = |template_name: &str| -> Result<String, WasmError> {
             let template = bundle
                 .template_source(template_name)
                 .map_err(|e| WasmError::new(format!("{e}")))?;
             renderer
                 .render(template.as_ref())
-                .map_err(|e| WasmError::new(format!("wgsl-solve render failed: {e}")))
+                .map_err(|e| WasmError::new(format!("wgsl-ode render failed: {e}")))
         };
-        let wgsl = render("model_solve.wgsl.jinja")?;
+        let wgsl = render("model_ode.wgsl.jinja")?;
         let layout_text = render("model_layout.json.jinja")?;
         let layout: serde_json::Value = serde_json::from_str(&layout_text)
-            .map_err(|e| WasmError::new(format!("wgsl-solve layout is not JSON: {e}")))?;
+            .map_err(|e| WasmError::new(format!("wgsl-ode layout is not JSON: {e}")))?;
         let state_count = solve_model.state_scalar_count();
         let state_names = solve_model
             .problem
@@ -88,7 +108,7 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             .names
             .get(..state_count)
             .ok_or_else(|| {
-                WasmError::new("wgsl-solve layout has fewer solver names than state scalar slots")
+                WasmError::new("wgsl-ode layout has fewer solver names than state scalar slots")
             })?
             .to_vec();
 

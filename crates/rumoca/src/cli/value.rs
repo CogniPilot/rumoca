@@ -22,9 +22,8 @@ use super::{
     CompilationResult, CompileArgs, CompilePhase, EarlyIrArtifact, SimCommandArgs, SimOptions,
     SimulationRequestSummary, SimulationRunMetrics, TemplateIr,
     compile_str_dae_with_inferred_model, compile_str_early_ir_with_inferred_model,
-    compile_str_with_inferred_model, direct_sim_t_end, render_early_ir_as_modelica_ast,
-    render_early_ir_as_modelica_flat, render_ir_as_modelica, simulate_solver_or_auto,
-    simulation_failure_error, target_manifest,
+    compile_str_with_inferred_model, direct_sim_t_end, render_early_ir_as_modelica_flat,
+    render_ir_as_modelica, simulate_solver_or_auto, simulation_failure_error, target_manifest,
 };
 
 /// Compile `source` (inline Modelica text) according to `args` and return the
@@ -86,7 +85,9 @@ fn early_ir_value(artifact: &EarlyIrArtifact, model: &str, json: bool) -> Result
         };
     }
     let rendered = match artifact {
-        EarlyIrArtifact::Ast(resolved) => render_early_ir_as_modelica_ast(resolved, model)?,
+        EarlyIrArtifact::Ast(_) => {
+            bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
+        }
         EarlyIrArtifact::Flat(flat) => render_early_ir_as_modelica_flat(flat, model)?,
     };
     Ok(json!({ "format": "modelica", "source": rendered }))

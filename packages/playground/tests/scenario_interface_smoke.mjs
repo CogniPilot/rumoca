@@ -297,7 +297,7 @@ async function codegenConfigCommandsUseRuntimeBridgeAndApplyWrites() {
         'name = "Ball"',
         "",
         "[codegen]",
-        'target = "c-solve"',
+        'target = "c-ode"',
         "",
       ].join("\n"),
     },
@@ -310,14 +310,14 @@ async function codegenConfigCommandsUseRuntimeBridgeAndApplyWrites() {
         const sources = JSON.parse(payload?.payload?.workspaceSources || "{}");
         if (payload?.command === "rumoca.scenario.getCodegenConfig") {
           assert(
-            sources["rumoca-scenario.ball.toml"]?.includes('target = "c-solve"'),
+            sources["rumoca-scenario.ball.toml"]?.includes('target = "c-ode"'),
             "expected getCodegenConfig to receive initial scenario TOML",
           );
-          return JSON.stringify({ target: "c-solve", outputDir: null });
+          return JSON.stringify({ target: "c-ode", outputDir: null });
         }
         if (payload?.command === "rumoca.scenario.setCodegenConfig") {
           assert(
-            sources["rumoca-scenario.ball.toml"]?.includes('target = "c-solve"'),
+            sources["rumoca-scenario.ball.toml"]?.includes('target = "c-ode"'),
             "expected setCodegenConfig to receive live scenario TOML",
           );
           return JSON.stringify({
@@ -343,7 +343,7 @@ async function codegenConfigCommandsUseRuntimeBridgeAndApplyWrites() {
   const current = await scenarioInterface.execute("rumoca.scenario.getCodegenConfig", {
     model: "Ball",
   });
-  assert(current?.target === "c-solve", "expected codegen target from scenario");
+  assert(current?.target === "c-ode", "expected codegen target from scenario");
 
   const saved = await scenarioInterface.execute("rumoca.scenario.setCodegenConfig", {
     model: "Ball",

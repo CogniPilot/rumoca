@@ -64,10 +64,10 @@ The narrative below is the mental model.
 You can watch every step on a real model:
 
 ```bash
-rumoca compile Model.mo --emit ast-mo     # or flat-mo, dae-mo, *-json
+rumoca compile Model.mo --emit ast-json   # flat-mo, dae-mo, and later *-json are also available
 rumoca compile Model.mo --emit solve-json
 rumoca compile Model.mo --inspect structure
-rumoca compile Model.mo --target c-solve -o /tmp/out -v # phase timing lines
+rumoca compile Model.mo --target c-ode -o /tmp/out -v # phase timing lines
 ```
 
 ## Try It Here

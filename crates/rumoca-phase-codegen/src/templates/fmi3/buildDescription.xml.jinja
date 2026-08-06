@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+{%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+<fmiBuildDescription fmiVersion="3.0">
+  <BuildConfiguration modelIdentifier="{{ model_identifier }}">
+    <SourceFileSet language="C99">
+      <SourceFile name="model.c"/>
+      <PreprocessorDefinition name="FMI3_OVERRIDE_FUNCTION_PREFIX" value="1" description="Export the unprefixed FMI 3 shared-library ABI"/>
+    </SourceFileSet>
+  </BuildConfiguration>
+</fmiBuildDescription>

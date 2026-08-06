@@ -32,7 +32,7 @@ user-facing contract.
 
 Solve-level tensor nodes, including `ComputeNode::AffineStencil`, arrive at
 templates with scalar fallback behavior already proven. Stencil-aware targets
-such as `wgsl-solve` should render the native tensor node directly; scalar
+such as `wgsl-ode` should render the native tensor node directly; scalar
 targets should use the fallback programs and must not infer stencil structure
 by scanning flattened row text.
 

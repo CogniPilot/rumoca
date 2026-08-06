@@ -195,8 +195,8 @@ fn casadi_simulate(
         .map_err(|error| format!("lower solve artifacts: {error}"))?;
     let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
         .map_err(|error| format!("render context: {error}"))?;
-    let template = templates::builtin_template_source("casadi-solve", "casadi_solve.py.jinja")
-        .ok_or_else(|| "checked casadi-solve template is missing".to_string())?;
+    let template = templates::builtin_template_source("casadi-ode", "casadi_ode.py.jinja")
+        .ok_or_else(|| "checked casadi-ode template is missing".to_string())?;
     let code = renderer
         .render_with_name(template, model_name)
         .map_err(|error| format!("render: {error}"))?;

@@ -1,0 +1,176 @@
+{%- macro scalar_const(op) -%}
+{%- if op.value_class == "finite" -%}{{ op.value }}
+{%- elif op.value_class == "positive_infinity" -%}f64::INFINITY
+{%- elif op.value_class == "negative_infinity" -%}f64::NEG_INFINITY
+{%- else -%}f64::NAN
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro unary(operator, arg) -%}
+{%- if operator == "Neg" -%}-__r{{ arg }}
+{%- elif operator == "Not" -%}if __r{{ arg }} == 0.0 { 1.0 } else { 0.0 }
+{%- elif operator == "Abs" -%}__r{{ arg }}.abs()
+{%- elif operator == "Sign" -%}if __r{{ arg }} > 0.0 { 1.0 } else if __r{{ arg }} < 0.0 { -1.0 } else { 0.0 }
+{%- elif operator == "Sqrt" -%}__r{{ arg }}.sqrt()
+{%- elif operator == "Floor" -%}__r{{ arg }}.floor()
+{%- elif operator == "Ceil" -%}__r{{ arg }}.ceil()
+{%- elif operator == "Trunc" -%}__r{{ arg }}.trunc()
+{%- elif operator in ["Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Sinh", "Cosh", "Tanh", "Exp"] -%}__r{{ arg }}.{{ operator | lower }}()
+{%- elif operator == "Log" -%}__r{{ arg }}.ln()
+{%- elif operator == "Log10" -%}__r{{ arg }}.log10()
+{%- else -%}{{ fail("unsupported-feature:scalar.unary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro binary(operator, lhs, rhs) -%}
+{%- if operator == "Add" -%}__r{{ lhs }} + __r{{ rhs }}
+{%- elif operator == "Sub" -%}__r{{ lhs }} - __r{{ rhs }}
+{%- elif operator == "Mul" -%}__r{{ lhs }} * __r{{ rhs }}
+{%- elif operator == "Div" -%}__r{{ lhs }} / __r{{ rhs }}
+{%- elif operator == "Pow" -%}__r{{ lhs }}.powf(__r{{ rhs }})
+{%- elif operator == "And" -%}if __r{{ lhs }} != 0.0 && __r{{ rhs }} != 0.0 { 1.0 } else { 0.0 }
+{%- elif operator == "Or" -%}if __r{{ lhs }} != 0.0 || __r{{ rhs }} != 0.0 { 1.0 } else { 0.0 }
+{%- elif operator == "Atan2" -%}__r{{ lhs }}.atan2(__r{{ rhs }})
+{%- elif operator == "Min" -%}__r{{ lhs }}.min(__r{{ rhs }})
+{%- elif operator == "Max" -%}__r{{ lhs }}.max(__r{{ rhs }})
+{%- else -%}{{ fail("unsupported-feature:scalar.binary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro compare(operator, lhs, rhs) -%}
+{%- if operator == "Lt" -%}if __r{{ lhs }} < __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Le" -%}if __r{{ lhs }} <= __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Gt" -%}if __r{{ lhs }} > __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Ge" -%}if __r{{ lhs }} >= __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Eq" -%}if __r{{ lhs }} == __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Ne" -%}if __r{{ lhs }} != __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro scalar_op(op) %}
+{%- if op.kind == "Const" %}
+    let __r{{ op.dst }}: f64 = {{ scalar_const(op) }};
+{%- elif op.kind == "LoadTime" %}
+    let __r{{ op.dst }}: f64 = time;
+{%- elif op.kind == "LoadY" %}
+    let __r{{ op.dst }}: f64 = y[{{ op.index }}];
+{%- elif op.kind == "LoadP" %}
+    let __r{{ op.dst }}: f64 = p[{{ op.index }}];
+{%- elif op.kind == "LoadIndexedP" %}
+    let __r{{ op.dst }}: f64 = p[{{ op.base }} + __r{{ op.index_ref }}.round().clamp(0.0, {{ op.count - 1 if op.count > 0 else 0 }} as f64) as usize];
+{%- elif op.kind == "Move" %}
+    let __r{{ op.dst }}: f64 = __r{{ op.src }};
+{%- elif op.kind == "LinearSolveComponent" %}
+    let __r{{ op.dst }}: f64 = rumoca_solve_linear_component(
+        &[{% for index in range(op.matrix_start, op.matrix_start + op.n * op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %}],
+        &[{% for index in range(op.rhs_start, op.rhs_start + op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %}],
+        {{ op.n }},
+        {{ op.component }},
+    )?;
+{%- elif op.kind == "Unary" %}
+    let __r{{ op.dst }}: f64 = {{ unary(op.operator, op.arg) }};
+{%- elif op.kind == "Binary" %}
+    let __r{{ op.dst }}: f64 = {{ binary(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Compare" %}
+    let __r{{ op.dst }}: f64 = {{ compare(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Select" %}
+    let __r{{ op.dst }}: f64 = if __r{{ op.cond }} != 0.0 { __r{{ op.if_true }} } else { __r{{ op.if_false }} };
+{%- elif op.kind == "StoreOutput" %}
+    __out[{{ op.output_index }}] = __r{{ op.src }};
+{%- else %}
+{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
+{%- endif %}
+{%- endmacro %}
+
+#![allow(dead_code, non_snake_case)]
+
+pub const Y_LEN: usize = {{ solve.layout.y_scalars }};
+pub const P_LEN: usize = {{ solve.layout.p_scalars }};
+pub const DERIVATIVE_LEN: usize = {{ solve_blocks.continuous.derivative_rhs.output_count }};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolveError {
+    InvalidLinearSystem,
+    SingularLinearSystem,
+}
+
+{%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
+{%- if plan.uses_linear_solve_component %}
+fn rumoca_solve_linear_component(
+    matrix: &[f64],
+    rhs: &[f64],
+    n: usize,
+    component: usize,
+) -> Result<f64, SolveError> {
+    let matrix_len = n.checked_mul(n).ok_or(SolveError::InvalidLinearSystem)?;
+    if n == 0 || component >= n || matrix.len() < matrix_len || rhs.len() < n {
+        return Err(SolveError::InvalidLinearSystem);
+    }
+
+    let mut a = matrix[..matrix_len].to_vec();
+    let mut b = rhs[..n].to_vec();
+    for pivot in 0..n {
+        let mut best = pivot;
+        let mut best_abs = a[pivot * n + pivot].abs();
+        for row in pivot + 1..n {
+            let candidate = a[row * n + pivot].abs();
+            if candidate > best_abs {
+                best = row;
+                best_abs = candidate;
+            }
+        }
+        if best_abs == 0.0 {
+            return Err(SolveError::SingularLinearSystem);
+        }
+        if best != pivot {
+            for col in pivot..n {
+                a.swap(pivot * n + col, best * n + col);
+            }
+            b.swap(pivot, best);
+        }
+        let diag = a[pivot * n + pivot];
+        for row in pivot + 1..n {
+            let factor = a[row * n + pivot] / diag;
+            a[row * n + pivot] = 0.0;
+            for col in pivot + 1..n {
+                a[row * n + col] -= factor * a[pivot * n + col];
+            }
+            b[row] -= factor * b[pivot];
+        }
+    }
+
+    let mut x = vec![0.0; n];
+    for row in (0..n).rev() {
+        let mut sum = b[row];
+        for col in row + 1..n {
+            sum -= a[row * n + col] * x[col];
+        }
+        let diag = a[row * n + row];
+        if diag == 0.0 {
+            return Err(SolveError::SingularLinearSystem);
+        }
+        x[row] = sum / diag;
+    }
+    Ok(x[component])
+}
+{%- endif %}
+
+pub fn derivative_rhs(
+    time: f64,
+    y: &[f64],
+    p: &[f64],
+    out: &mut [f64],
+) -> Result<(), SolveError> {
+    let _ = time;
+    let _ = y;
+    let _ = p;
+    let mut __out = vec![0.0; DERIVATIVE_LEN];
+{%- for program in plan.programs %}
+{%- for op in program.ops %}
+{{ scalar_op(op) }}
+{%- endfor %}
+{%- endfor %}
+    out[..DERIVATIVE_LEN].copy_from_slice(&__out);
+    Ok(())
+}

@@ -42,8 +42,8 @@ rewrites, no template policy:
 | `rumoca-exec-mlir` | MLIR-based compilation path |
 | `rumoca-exec-wasm` | WASM execution backend |
 
-The generated-code targets (`rust-solve`, `c-solve`, `cuda-c`,
-`cuda-nvrtc-solve-jit`, `wgsl-solve`, and the symbolic Solve targets)
+The generated-code targets (`rust-ode`, `c-ode`, `cuda-ode`,
+`cuda-ode`, `wgsl-ode`, and the symbolic ODE RHS targets)
 consume Solve through the codegen engine instead — see
 [Code Generation Engine](../runtime/codegen.md).
 
@@ -53,7 +53,7 @@ The pathway for a new execution backend (the same one a future WebGPU/WGSL
 backend would take):
 
 1. Decide the consumption model: a codegen *target* (templates rendering
-   kernels, like `cuda-c`) or an execution *adapter* (an API wrapper, like
+   kernels, like `cuda-ode`) or an execution *adapter* (an API wrapper, like
    `rumoca-exec-cranelift`) — or both, like the NVRTC JIT.
 2. Consume Solve IR. If the backend needs tensor structure, use the tensor
    program nodes; every valid node has a fallible scalar fallback, so a backend

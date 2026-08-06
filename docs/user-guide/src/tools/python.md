@@ -117,7 +117,7 @@ jax_model = m.to_jax()             # rhs is jit/grad/vmap-able
 
 These render the same tested codegen targets used by `m.codegen(target)`, so the
 live object and the generated files never drift. For writing files instead, use
-`m.codegen("casadi-solve").save_all("out/")`.
+`m.codegen("casadi-ode").save_all("out/")`.
 
 For build systems that need a single callable operation, use:
 

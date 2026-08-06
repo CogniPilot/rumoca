@@ -5,8 +5,8 @@ name: Nightly
 #     out over N shards before one merged quality reading (`msl-sweep-*`);
 #   * the event/friction cohort, which needs minutes-per-model budgets rather
 #     than the 10s PR budget (these models time out, they do not fail);
-#   * the cross-backend MSL suites (`msl-external-tests`), which are declared in
-#     `crates/rumoca-test-msl/Cargo.toml` but were never wired to any workflow;
+#   * the cross-backend MSL suites (`msl-external-tests`), which exercise
+#     generated Solve targets outside the pull-request critical path;
 #   * a real fuzzing budget for the parser.
 #
 # Every job here is diagnostic. None of them gates a merge, and none of them
@@ -900,7 +900,7 @@ jobs:
       # fixed correctness threshold.
       - name: C Solve MSL suite
         continue-on-error: true
-        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test c_solve_msl_test -- --nocapture
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test c_ode_msl_test -- --nocapture
 
       - name: CasADi MSL suite
         continue-on-error: true

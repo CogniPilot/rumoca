@@ -85,7 +85,7 @@ fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
     "#;
 
     let json = prepare_gpu_simulation(source, "GpuExplicitMap")
-        .expect("prepare_gpu_simulation should render wgsl-solve payload");
+        .expect("prepare_gpu_simulation should render wgsl-ode payload");
     let payload: serde_json::Value =
         serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
     let wgsl = payload
@@ -100,20 +100,10 @@ fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
         .pointer("/layout/native_families")
         .and_then(serde_json::Value::as_array)
         .expect("GPU layout should include derivative RHS native family metadata");
-    let implicit_kernels = payload
-        .pointer("/layout/implicit_rhs/kernels")
-        .and_then(serde_json::Value::as_array)
-        .expect("GPU layout should include implicit RHS kernel schedule");
-    let implicit_native_families = payload
-        .pointer("/layout/implicit_rhs/native_families")
-        .and_then(serde_json::Value::as_array)
-        .expect("GPU layout should include implicit RHS native family metadata");
-
     assert!(
         wgsl.contains("fn derivative_rhs_map0"),
         "GPU payload should preserve the derivative Map family: {payload:?}"
     );
-    assert!(!wgsl.contains("fn implicit_rhs_map0"));
     let workgroup_size = payload
         .pointer("/layout/workgroup_size")
         .and_then(serde_json::Value::as_u64)
@@ -125,13 +115,13 @@ fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
     assert_eq!(
         wgsl.matches(&format!("// workgroup_size={workgroup_size}"))
             .count(),
-        2,
-        "GPU WGSL inventory should report derivative and implicit workgroup sizes"
+        1,
+        "GPU WGSL inventory should report the derivative workgroup size"
     );
     assert_eq!(
         wgsl.matches(&format!("// chunk_size={chunk_size}")).count(),
-        2,
-        "GPU WGSL inventory should report derivative and implicit scalar chunk sizes"
+        1,
+        "GPU WGSL inventory should report the derivative scalar chunk size"
     );
     assert_eq!(
         payload.get("n_states").and_then(serde_json::Value::as_u64),
@@ -158,38 +148,15 @@ fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
         "derivative_rhs_chunk",
         "derivative RHS",
     );
-    assert_gpu_entry_prefixes(
-        &payload,
-        "/layout/implicit_rhs",
-        &["implicit_rhs_map", "implicit_rhs_stencil"],
-        "implicit_rhs_chunk",
-        "implicit RHS",
-    );
-    assert_eq!(
-        payload.pointer("/layout/implicit_rhs/scalar_fallback_rows"),
-        Some(&serde_json::Value::from(0))
-    );
     assert_eq!(
         payload.pointer("/layout/chunks"),
         Some(&serde_json::Value::from(0))
     );
-    assert_eq!(
-        payload.pointer("/layout/implicit_rhs/chunks"),
-        Some(&serde_json::Value::from(0))
-    );
-    assert_eq!(
-        payload.pointer("/layout/implicit_rhs/workgroup_size"),
-        payload.pointer("/layout/workgroup_size")
-    );
-    assert_eq!(
-        payload.pointer("/layout/implicit_rhs/chunk_size"),
-        payload.pointer("/layout/chunk_size")
-    );
+    assert!(payload.pointer("/layout/implicit_rhs").is_none());
     assert!(
         has_native_map_kernel(derivative_kernels, "derivative_rhs_map", 0, 1),
         "GPU layout should schedule native derivative RHS kernels with output offsets: {payload:?}"
     );
-    assert!(implicit_kernels.is_empty());
     assert_gpu_kernel_entry_kinds(
         derivative_kernels,
         "derivative_rhs",
@@ -199,7 +166,61 @@ fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
         has_native_map_family(derivative_native_families, 0, 1, 3),
         "GPU layout should expose derivative family shape and output offset metadata: {payload:?}"
     );
-    assert!(implicit_native_families.is_empty());
+
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_rejects_algebraic_projection() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model GpuImplicit
+      Real x(start = 1.0, fixed = true);
+      Real a;
+    equation
+      der(x) = a;
+      a * a = x;
+    end GpuImplicit;
+    "#;
+
+    let error = prepare_gpu_simulation(source, "GpuImplicit")
+        .expect_err("wgsl-ode must reject algebraic projection");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported-feature:residual_equations"),
+        "unexpected algebraic-projection refusal: {error}"
+    );
+
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn test_prepare_gpu_simulation_rejects_events() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+
+    let source = r#"
+    model GpuEvent
+      Real x(start = 1.0, fixed = true);
+    equation
+      der(x) = -x;
+      when x < 0.5 then
+        reinit(x, 1.0);
+      end when;
+    end GpuEvent;
+    "#;
+
+    let error = prepare_gpu_simulation(source, "GpuEvent")
+        .expect_err("wgsl-ode must reject eventful models");
+    assert!(
+        error.to_string().contains("unsupported-feature:events"),
+        "unexpected event refusal: {error}"
+    );
 
     clear_source_root_cache().expect("clear source-root cache");
 }
@@ -220,7 +241,7 @@ fn test_prepare_gpu_simulation_separates_output_and_fixed_step_intervals() {
     "#;
 
     let json = prepare_gpu_simulation(source, "GpuFixedStep")
-        .expect("prepare_gpu_simulation should render wgsl-solve payload");
+        .expect("prepare_gpu_simulation should render wgsl-ode payload");
     let payload: serde_json::Value =
         serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
 
@@ -390,11 +411,6 @@ fn test_prepare_gpu_simulation_exposes_scalar_chunk_output_indices() {
         .pointer("/layout/kernels")
         .and_then(serde_json::Value::as_array)
         .expect("GPU layout should include derivative RHS kernel schedule");
-    let implicit_kernels = payload
-        .pointer("/layout/implicit_rhs/kernels")
-        .and_then(serde_json::Value::as_array)
-        .expect("GPU layout should include implicit RHS kernel schedule");
-
     assert!(
         payload.pointer("/layout/kernel_prefix").is_none(),
         "GPU layout should not expose stale kernel_prefix metadata: {payload:?}"
@@ -406,18 +422,10 @@ fn test_prepare_gpu_simulation_exposes_scalar_chunk_output_indices() {
         "derivative_rhs_chunk",
         "derivative RHS",
     );
-    assert_gpu_entry_prefixes(
-        &payload,
-        "/layout/implicit_rhs",
-        &["implicit_rhs_map", "implicit_rhs_stencil"],
-        "implicit_rhs_chunk",
-        "implicit RHS",
-    );
     assert!(
         has_scalar_chunk_output_indices(derivative_kernels, "derivative_rhs_chunk", &[0]),
         "GPU layout should expose derivative scalar chunk output slots: {payload:?}"
     );
-    assert!(implicit_kernels.is_empty());
     assert_gpu_kernel_entry_kinds(
         derivative_kernels,
         "derivative_rhs",

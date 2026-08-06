@@ -1,0 +1,48 @@
+version = 1
+ir = "solve"
+name = "wgsl-ode"
+description = "WGSL compute-shader explicit-ODE derivative kernels for WebGPU execution"
+execution_mode = "jit"
+deployment_class = "gpu"
+readiness_level = 0
+
+[capabilities]
+continuous_states = true
+residual_equations = false
+scalar_fallback = true
+# Condition/relation slots can be inputs to continuous kernels, but this target
+# emits neither root/action kernels nor event iteration. Eventful models must
+# therefore fail before rendering; a host warning is not semantic support.
+events = false
+runtime_events = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+initialization = false
+clocks = false
+dynamic_ranges = false
+# Fixed-shape Map/AffineStencil families preserve resolved affine derivative
+# subscripts natively even though genuinely dynamic ranges remain unsupported.
+dynamic_derivative_subscripts = true
+external_functions = false
+external_tables = false
+random = false
+
+[capabilities.tensor]
+matmul = "scalar"
+elementwise = "native"
+stencil = "native"
+reductions = "scalar"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f32"]
+
+[[files]]
+path = "{{ model_name }}_ode.wgsl"
+template = "model_ode.wgsl.jinja"
+
+[[files]]
+path = "{{ model_name }}_layout.json"
+template = "model_layout.json.jinja"

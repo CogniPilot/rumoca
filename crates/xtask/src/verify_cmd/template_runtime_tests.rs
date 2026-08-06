@@ -7,7 +7,7 @@
 //! the real manifest and the real test sources so both failure modes surface as
 //! a precise `xtask` unit-test failure instead of an opaque gate abort.
 
-use super::{TEMPLATE_RUNTIME_GROUPS, template_runtime_test_stems};
+use super::{RequiredExternalToolsMarker, TEMPLATE_RUNTIME_GROUPS, template_runtime_test_stems};
 use crate::util::workspace_root_from_manifest_dir;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -16,6 +16,34 @@ use std::path::{Path, PathBuf};
 /// Feature the gate passes to `cargo test`; every pinned target must require it
 /// so the target is actually buildable under that invocation.
 const GATE_FEATURE: &str = "template-runtime-tests";
+
+#[test]
+fn required_external_tools_marker_is_scoped_to_the_gate() {
+    let root = tempfile::tempdir().expect("temporary workspace root");
+    let path = root.path().join("target/template-runtimes/strict");
+    {
+        let _marker =
+            RequiredExternalToolsMarker::new(root.path(), true).expect("create strict marker");
+        assert!(path.is_file());
+    }
+    assert!(
+        !path.exists(),
+        "gate-created marker must be removed on exit"
+    );
+}
+
+#[test]
+fn required_external_tools_marker_preserves_explicit_local_policy() {
+    let root = tempfile::tempdir().expect("temporary workspace root");
+    let path = root.path().join("target/template-runtimes/strict");
+    fs::create_dir_all(path.parent().expect("marker parent")).expect("create marker directory");
+    fs::write(&path, b"local policy\n").expect("write local marker");
+    {
+        let _marker =
+            RequiredExternalToolsMarker::new(root.path(), true).expect("reuse strict marker");
+    }
+    assert!(path.is_file(), "pre-existing marker belongs to the caller");
+}
 
 fn rumoca_manifest_path() -> PathBuf {
     workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))

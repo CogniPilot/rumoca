@@ -16,7 +16,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0000](SPEC_0000_SPEC_GUIDELINES.md) | Specification Writing Guidelines | process | ~260 | ACCEPTED |
 | [SPEC_0001](SPEC_0001_DEFID.md) | DefId for Stable References | IR | ~50 | ACCEPTED |
 | [SPEC_0002](SPEC_0002_SCOPE_TREE.md) | Scope Tree for Name Lookup | IR | ~95 | ACCEPTED |
-| [SPEC_0007](SPEC_0007_IR_PIPELINE.md) | Compiler Pipeline and IR Contracts | architecture | ~270 | ACCEPTED |
+| [SPEC_0007](SPEC_0007_IR_PIPELINE.md) | Compiler Pipeline and IR Contracts | architecture | ~315 | ACCEPTED |
 | [SPEC_0008](SPEC_0008_PHASE_ERRORS.md) | Diagnostics, Traceability, and Phase-Local Errors | error | ~330 | ACCEPTED |
 | [SPEC_0018](SPEC_0018_TOOL_CONFIG.md) | Tool Configuration Loading | tooling | ~155 | ACCEPTED |
 | [SPEC_0021](SPEC_0021_CODE_COMPLEXITY.md) | Maintainability and Determinism Guidelines | convention | ~210 | ACCEPTED |
@@ -30,13 +30,13 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) | Complex Numeric Types in Solve IR | IR | ~135 | DRAFT |
 | [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~280 | DRAFT |
 | [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Formally Verified Compiler | verification | ~305 | DRAFT |
-| [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md) | Unified FMI Execution | target/runtime | ~260 | DRAFT |
+| [SPEC_0038](SPEC_0038_UNIFIED_FMI_EXECUTION.md) | Unified FMI Execution | target/runtime | ~265 | DRAFT |
 | [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) | Proof-Carrying Structural Sparsity | IR | ~150 | DRAFT |
 | [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md) | IR Stage Contract Catalog | architecture | ~85 | REFERENCE |
 | [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) | Crate Ownership Catalog | architecture | ~125 | REFERENCE |
 | [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) | GALEC Language and Decision Catalog | target/codegen | ~70 | REFERENCE |
 | [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) | Valid-by-Construction Catalog | IR | ~180 | REFERENCE |
-| [SPEC_0044](SPEC_0044_FMI_EXECUTION_CATALOG.md) | FMI Execution Contract Catalog | runtime/verification | ~65 | REFERENCE |
+| [SPEC_0044](SPEC_0044_FMI_EXECUTION_CATALOG.md) | FMI Execution Contract Catalog | runtime/verification | ~130 | REFERENCE |
 
 ### Reference annexes
 

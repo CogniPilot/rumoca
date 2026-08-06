@@ -422,7 +422,7 @@ def test_codegen_file_helper() -> None:
         written = rm.Session(roots=[str(SOURCE_ROOT)]).codegen_file(
             MODEL_FILE,
             "UsesLib",
-            "c-solve",
+            "c-ode",
             tmp,
         )
         assert written
@@ -451,7 +451,7 @@ def test_run_codegen_scenario() -> None:
                     'name = "UsesLib"',
                     "",
                     "[codegen]",
-                    'target = "c-solve"',
+                    'target = "c-ode"',
                     'output_dir = "generated"',
                     "",
                 ]

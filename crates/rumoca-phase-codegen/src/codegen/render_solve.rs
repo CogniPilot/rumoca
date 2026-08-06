@@ -1095,7 +1095,7 @@ impl SolveRowDialect {
     ) -> RenderResult {
         Err(render_err(
             "LinearSolveComponent is not supported by the WGSL dialect yet; \
-             models with implicit linear blocks cannot target wgsl-solve",
+             models with implicit linear blocks cannot target wgsl-ode",
         ))
     }
 

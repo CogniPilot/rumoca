@@ -1,0 +1,12 @@
+[package]
+name = "rumoca-fmi-ls-wasm-host"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "=1.0.103"
+wasmtime = { version = "=45.0.1", features = ["component-model"] }
+wasmtime-wasi = "=45.0.1"

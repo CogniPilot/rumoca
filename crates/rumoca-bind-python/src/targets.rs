@@ -13,7 +13,7 @@ use rumoca_compile::codegen::templates::builtin_targets;
 pub struct Target {
     #[pyo3(get)]
     pub id: String,
-    /// IR stage this target consumes: `"ast" | "flat" | "dae" | "solve"`.
+    /// IR stage this target consumes.
     #[pyo3(get)]
     pub ir: String,
     #[pyo3(get)]
@@ -45,6 +45,7 @@ fn ir_str(ir: TargetTemplateIr) -> &'static str {
         TargetTemplateIr::Flat => "flat",
         TargetTemplateIr::Dae => "dae",
         TargetTemplateIr::Solve => "solve",
+        TargetTemplateIr::Fmi => "fmi",
         TargetTemplateIr::AlgorithmCode => "algorithm-code",
     }
 }

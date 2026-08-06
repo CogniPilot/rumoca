@@ -1,8 +1,7 @@
 //! End-to-end coverage for `rumoca compile --emit <stage>` (and `--inspect`).
 //!
 //! These invoke the real binary so the codegen templates and IR serialization
-//! are exercised — the prior parse-only CLI tests missed broken `ast-mo`
-//! (template field/whitespace bugs) and `ast-json` (non-string map key).
+//! are exercised, including the AST JSON map-key representation.
 
 use std::fs;
 use std::path::Path;
@@ -91,7 +90,7 @@ fn emit_modelica_stages_render() {
     // Each Modelica-form stage renders non-empty source. (The `when` equation
     // only survives literally in the pre-lowering AST; flat/dae lower it into
     // discrete event handling, so it is not asserted here.)
-    for emit in ["ast-mo", "flat-mo", "dae-mo"] {
+    for emit in ["flat-mo", "dae-mo"] {
         let out = assert_emit_ok(&file, emit);
         assert!(
             out.contains("der(x)"),
@@ -146,29 +145,6 @@ fn emit_flat_json_exposes_structured_equation_families() {
     assert!(
         families[0].get("iterations").is_none(),
         "structured family should not serialize one entry per scalar iteration"
-    );
-}
-
-#[test]
-fn emit_ast_mo_is_well_formed_modelica() {
-    let (_dir, file) = fixture_file();
-    let out = assert_emit_ok(&file, "ast-mo");
-    // Regression guards for the AST pretty-printer whitespace/field bugs.
-    assert!(
-        out.contains("parameter Real g"),
-        "variability prefix must keep its trailing space (`parameter Real`), got:\n{out}"
-    );
-    assert!(
-        !out.contains("parameterReal"),
-        "variability prefix collapsed into the type name:\n{out}"
-    );
-    assert!(
-        out.starts_with("model EmitFixture"),
-        "output should start at the model declaration (no leading blank line):\n{out:?}"
-    );
-    assert!(
-        out.contains("reinit(v, -v)") || out.contains("reinit(v,-v)"),
-        "the `when` body must be rendered, got:\n{out}"
     );
 }
 

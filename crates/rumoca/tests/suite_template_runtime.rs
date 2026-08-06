@@ -10,5 +10,10 @@
 mod backend_template_runtime_regression;
 #[path = "codegen_example_regression.rs"]
 mod codegen_example_regression;
+#[cfg(feature = "fmu-packaging")]
+#[path = "fmi_ls_wasm_runtime.rs"]
+mod fmi_ls_wasm_runtime;
+#[path = "template_runtime_policy.rs"]
+mod template_runtime_policy;
 #[path = "template_target_ci.rs"]
 mod template_target_ci;

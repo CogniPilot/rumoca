@@ -1000,18 +1000,14 @@ fn dae_template_projects_function_folds_by_definition_identity() {
 }
 
 #[test]
-fn symbolic_solve_targets_use_checked_declarations_and_solve_programs() {
+fn symbolic_ode_targets_use_checked_declarations_and_solve_programs() {
     let dae = empty_checked_dae();
     let problem = solve::SolveProblem::default();
     let artifacts = solve::SolveArtifacts::default();
 
     for (target, template_name, marker) in [
-        (
-            "casadi-solve",
-            "casadi_solve.py.jinja",
-            "import casadi as ca",
-        ),
-        ("jax-solve", "jax_solve.py.jinja", "import jax"),
+        ("casadi-ode", "casadi_ode.py.jinja", "import casadi as ca"),
+        ("jax-ode", "jax_ode.py.jinja", "import jax"),
     ] {
         let template = crate::templates::builtin_template_source(target, template_name)
             .expect("checked Solve template exists");

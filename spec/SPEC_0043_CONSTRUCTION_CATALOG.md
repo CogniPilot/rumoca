@@ -190,6 +190,16 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | SPEC_0029 helper ownership changes with the implementing cutover | Same atomic change | Specs remain consistent |
 | Every node requires source/generated provenance | `flat::Model::construct` | No dummy provenance |
 
+### 8. FMI Component Construction Catalog
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| `FmiComponent::construct` consumes one checked `SolveProblem` and matching DAE-derived declaration inputs | `rumoca-ir-fmi` | Metadata cannot detach from its executable kernel |
+| Source identity, tensor extent, scalar names, storage role/type/run, attributes, state count, and value-reference bounds are checked before construction returns | `FmiComponent::construct` | FMI adapters receive no malformed parallel metadata |
+| The checked component is non-cloneable and transfers its exact Solve kernel by value to rendering | FMI component/codegen boundary | Rendering cannot silently select a second kernel |
+| FMI 2 scalar variables and FMI 3 tensor variables derive from the same checked storage runs | Version adapters | Version projection cannot repeat equation lowering |
+| Unsupported source types fail in `rumoca-phase-fmi` before target rendering | FMI lowering | No plausible default representation |
+
 ## References
 
 - [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) — owning construction

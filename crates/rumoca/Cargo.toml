@@ -73,8 +73,10 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+rumoca-ir-fmi = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
+rumoca-phase-fmi = { workspace = true }
 rumoca-phase-galec = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
@@ -148,6 +150,14 @@ required-features = ["examples-smoke-tests"]
 name = "suite_template_runtime"
 path = "tests/suite_template_runtime.rs"
 required-features = ["template-runtime-tests"]
+
+# FMI 2/3 package, ABI, lifecycle, and execution conformance. Kept separate
+# from general template runtimes so CI can build it without simulator,
+# transport, viewer, or input-device features.
+[[test]]
+name = "suite_fmi"
+path = "tests/suite_fmi.rs"
+required-features = ["template-runtime-tests", "fmu-packaging"]
 
 # `tests/msl_sim_regression.rs`.
 [[test]]

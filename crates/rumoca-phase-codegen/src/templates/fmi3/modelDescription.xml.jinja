@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+{%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+<fmiModelDescription
+  fmiVersion="3.0"
+  modelName="{{ model_name | xml_escape }}"
+  generationTool="Rumoca"
+  instantiationToken="{{ artifact.identities.fmu }}">
+  <ModelExchange modelIdentifier="{{ model_identifier }}"/>
+  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true"/>
+  <UnitDefinitions>
+    <Unit name="s">
+      <BaseUnit s="1"/>
+    </Unit>
+  </UnitDefinitions>
+  <ModelVariables>
+    <Float64 name="time" valueReference="0" causality="independent" variability="continuous" unit="s"/>
+{%- set state_ordinal = namespace(value=0) %}
+{%- for variable in fmi.variables %}
+    <Float64 name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference_fmi3 }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.role == "State" %} initial="exact"{% elif variable.causality in ["parameter", "calculated_parameter"] %} initial="exact"{% endif %} start="{% for value in variable.start %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}{% if variable.minimum %} min="{% for value in variable.minimum %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}{% if variable.maximum %} max="{% for value in variable.maximum %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}{% if variable.nominal %} nominal="{% for value in variable.nominal %}{{ value }}{{ " " if not loop.last else "" }}{% endfor %}"{% endif %}>
+{%- for extent in variable.dimensions %}
+      <Dimension start="{{ extent }}"/>
+{%- endfor %}
+    </Float64>
+{%- if variable.role == "State" %}
+{%- set state_ordinal.value = state_ordinal.value + 1 %}
+{%- endif %}
+{%- endfor %}
+{%- set derivative_ordinal = namespace(value=0) %}
+{%- for variable in fmi.variables %}
+{%- if variable.role == "State" %}
+    <Float64 name="der({{ variable.name | xml_escape }})" valueReference="{{ fmi.derivative_value_reference_base_fmi3 + derivative_ordinal.value }}" causality="local" variability="continuous" initial="calculated" derivative="{{ variable.value_reference_fmi3 }}">
+{%- for extent in variable.dimensions %}
+      <Dimension start="{{ extent }}"/>
+{%- endfor %}
+    </Float64>
+{%- set derivative_ordinal.value = derivative_ordinal.value + 1 %}
+{%- endif %}
+{%- endfor %}
+  </ModelVariables>
+  <ModelStructure>
+{%- for variable in fmi.variables %}
+{%- if variable.causality == "output" %}
+    <Output valueReference="{{ variable.value_reference_fmi3 }}"/>
+{%- endif %}
+{%- endfor %}
+{%- set derivative_ordinal.value = 0 %}
+{%- for variable in fmi.variables %}
+{%- if variable.role == "State" %}
+    <ContinuousStateDerivative valueReference="{{ fmi.derivative_value_reference_base_fmi3 + derivative_ordinal.value }}"/>
+    <InitialUnknown valueReference="{{ fmi.derivative_value_reference_base_fmi3 + derivative_ordinal.value }}"/>
+{%- set derivative_ordinal.value = derivative_ordinal.value + 1 %}
+{%- endif %}
+{%- endfor %}
+  </ModelStructure>
+</fmiModelDescription>

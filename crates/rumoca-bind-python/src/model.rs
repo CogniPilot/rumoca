@@ -547,12 +547,12 @@ impl Model {
     // removed DAE-template schema is not reconstructed for language backends.
     #[pyo3(signature = ())]
     fn to_casadi(&self) -> ApiResult<PyObject> {
-        self.live_export("build_casadi", "casadi-solve", "solve")
+        self.live_export("build_casadi", "casadi-ode", "solve")
     }
 
     #[pyo3(signature = ())]
     fn to_jax(&self) -> ApiResult<PyObject> {
-        self.live_export("build_jax", "jax-solve", "solve")
+        self.live_export("build_jax", "jax-ode", "solve")
     }
 
     /// A new `Model` handle with tunable parameter overrides applied at the next

@@ -90,7 +90,8 @@ Failure classifications:
 | Commands not run MUST be reported with reason | final updates/PRs | Exposes residual risk |
 | Work is not done while temporary probes or symptom patches remain | all changes | Prevents cleanup debt |
 | Semantic work is done only after spec grounding, root-cause proof, and regression coverage | compiler/simulator | Fix must be defensible |
-| Cargo subprocesses launched by repository tooling MUST derive a host-topology job budget for `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS` unless the caller sets them explicitly | developer tooling | Keeps verification responsive without overriding an operator choice; an underived rayon pool fans out to every CPU inside an already-capped child |
+| Built-in targets MUST satisfy SPEC_0007's product contract | code generation | Excludes placeholders and lossy output |
+| Repository-launched Cargo MUST derive `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS` from host topology unless explicitly set | developer tooling | Avoids nested oversubscription |
 | The automatic Cargo budget MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two at 8 or more | developer tooling | Small runners retain throughput while developer machines retain foreground capacity |
 | Long-running isolated workers MUST exit when their parent control channel closes and MUST enforce a bounded resident-memory policy | worker orchestration | Interrupted gates must not leave orphaned or unbounded processes |
 

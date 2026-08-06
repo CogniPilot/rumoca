@@ -103,8 +103,8 @@ grows the list; never lower it to make a red gate green.
   files skip the baseline-relative quality gate, so this lane is purely
   diagnostic; it deliberately does **not** pass
   `--require-selected-targets-success` until the cohort actually passes.
-- `cross-backend-msl` — the `msl-external-tests` FMI3 and CasADi suites, which
-  were declared in `Cargo.toml` but referenced by no workflow.
+- `cross-backend-msl` — the `msl-external-tests` checked C Solve and CasADi
+  suites, kept off the pull-request critical path.
 - `parser-fuzz` — `cargo xtask verify fuzz --max-total-secs 900` over the
   standalone `fuzz/` cargo-fuzz crate.
 

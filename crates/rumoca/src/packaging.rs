@@ -21,15 +21,15 @@
 //! producer bytes exist, and the bytes hashed are the exact bytes written.
 
 use std::collections::{BTreeMap, HashMap};
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 use std::fs;
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 use std::io::Write as _;
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 use rumoca_compile::codegen::targets::{AssetBundle, TargetAssetFile, safe_target_join};
 use rumoca_compile::codegen::targets::{ChecksumAlgorithm, RenderedTargetFile, TargetFile};
 use serde::Serialize;
@@ -38,11 +38,11 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 use uuid::Uuid;
 
-#[cfg(all(test, feature = "scheduled-sim"))]
+#[cfg(all(test, feature = "fmu-packaging"))]
 mod tests;
 
 /// How the rendered files + assets are finalized on disk (contract §4b).
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 pub struct PackageSpec {
     /// Files whose presence recognizes a directory as a previous product.
     pub required_files: Vec<String>,
@@ -51,19 +51,19 @@ pub struct PackageSpec {
 }
 
 /// The zip form of a package (contract §4b `Zip { ext }`).
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 pub struct ZipPackage {
     /// Absolute path of the archive declared by the target.
     pub archive_path: PathBuf,
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 struct PreparedProduct {
     files: BTreeMap<PathBuf, Vec<u8>>,
     required_files: Vec<PathBuf>,
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 struct StagedArchive {
     directory: tempfile::TempDir,
     file: PathBuf,
@@ -190,7 +190,7 @@ pub fn topo_sort(files: &[TargetFile]) -> Result<Vec<usize>> {
 /// Nothing is written until every byte is
 /// rendered and hashed, so a render or topo failure leaves the product path
 /// untouched.
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 pub fn render_and_package(
     files: &[TargetFile],
     render: impl Fn(&str, &ArtifactRenderContext<'_>) -> Result<String>,
@@ -362,13 +362,13 @@ pub fn render_web_files(
         .collect()
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn resolve_product_root(root: &Path) -> Result<PathBuf> {
     validate_destination_path(root, "Package root")?;
     std::path::absolute(root).with_context(|| format!("Resolve package root '{}'", root.display()))
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn resolve_archive_path(archive: &Path, root: &Path) -> Result<PathBuf> {
     validate_destination_path(archive, "Package archive path")?;
     let archive = std::path::absolute(archive)
@@ -383,7 +383,7 @@ fn resolve_archive_path(archive: &Path, root: &Path) -> Result<PathBuf> {
     Ok(archive)
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn validate_destination_path(path: &Path, label: &str) -> Result<()> {
     if path.as_os_str().is_empty() {
         bail!("{label} must not be empty");
@@ -409,7 +409,7 @@ fn validate_destination_path(path: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn resolve_required_files(required_files: &[String]) -> Result<Vec<PathBuf>> {
     if required_files.is_empty() {
         bail!("[package] required_files must declare at least one product marker");
@@ -420,7 +420,7 @@ fn resolve_required_files(required_files: &[String]) -> Result<Vec<PathBuf>> {
         .collect()
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn resolve_relative_path(path: impl AsRef<Path>, label: &str) -> Result<PathBuf> {
     let path = path.as_ref();
     let joined = safe_target_join(Path::new("product"), path)
@@ -442,7 +442,7 @@ fn resolve_relative_path(path: impl AsRef<Path>, label: &str) -> Result<PathBuf>
     Ok(normalized)
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn prepare_product(
     rendered: Vec<(String, Vec<u8>)>,
     assets: Vec<(String, Vec<TargetAssetFile>)>,
@@ -475,7 +475,7 @@ fn prepare_product(
     })
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn insert_prepared_file(
     files: &mut BTreeMap<PathBuf, Vec<u8>>,
     path: PathBuf,
@@ -490,7 +490,7 @@ fn insert_prepared_file(
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn validate_file_tree(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
     for path in files.keys() {
         let mut ancestor = path.parent();
@@ -510,7 +510,7 @@ fn validate_file_tree(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
 /// Make way for this run's product directory. A directory holding all declared
 /// marker files is a previous build and can be replaced; any other non-empty
 /// directory is treated as foreign.
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn validate_existing_root(out_dir: &Path, required_files: &[PathBuf]) -> Result<()> {
     if !out_dir.exists() {
         return Ok(());
@@ -538,7 +538,7 @@ fn validate_existing_root(out_dir: &Path, required_files: &[PathBuf]) -> Result<
     );
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn validate_existing_archive(archive_path: &Path, required_files: &[PathBuf]) -> Result<()> {
     if !archive_path.exists() {
         return Ok(());
@@ -579,7 +579,7 @@ fn validate_existing_archive(archive_path: &Path, required_files: &[PathBuf]) ->
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn zip_entry_name(path: &Path) -> Result<String> {
     path.components()
         .map(|component| {
@@ -592,7 +592,7 @@ fn zip_entry_name(path: &Path) -> Result<String> {
         .map(|segments| segments.join("/"))
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn write_prepared_product(root: &Path, prepared: &PreparedProduct) -> Result<()> {
     for (path, bytes) in &prepared.files {
         let output_path = root.join(path);
@@ -606,7 +606,7 @@ fn write_prepared_product(root: &Path, prepared: &PreparedProduct) -> Result<()>
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn validate_staged_product(root: &Path, required_files: &[PathBuf]) -> Result<()> {
     for required in required_files {
         let marker = root.join(required);
@@ -620,7 +620,7 @@ fn validate_staged_product(root: &Path, required_files: &[PathBuf]) -> Result<()
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn stage_archive(package_root: &Path, final_path: &Path) -> Result<StagedArchive> {
     let parent = final_path
         .parent()
@@ -636,7 +636,7 @@ fn stage_archive(package_root: &Path, final_path: &Path) -> Result<StagedArchive
     Ok(StagedArchive { directory, file })
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn install_staged_package(
     staged_root: tempfile::TempDir,
     final_root: &Path,
@@ -717,12 +717,12 @@ fn install_staged_package(
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn collect_rollback_errors<const N: usize>(results: [Result<()>; N]) -> Vec<anyhow::Error> {
     results.into_iter().filter_map(Result::err).collect()
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn abort_install(
     primary: anyhow::Error,
     rollback_errors: Vec<anyhow::Error>,
@@ -752,7 +752,7 @@ fn abort_install(
     ))
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn restore_staged_root(staged_root: &Path, final_root: &Path) -> Result<()> {
     fs::rename(final_root, staged_root).with_context(|| {
         format!(
@@ -762,7 +762,7 @@ fn restore_staged_root(staged_root: &Path, final_root: &Path) -> Result<()> {
     })
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn restore_previous_root(had_root: bool, previous_root: &Path, final_root: &Path) -> Result<()> {
     if had_root {
         fs::rename(previous_root, final_root)
@@ -771,7 +771,7 @@ fn restore_previous_root(had_root: bool, previous_root: &Path, final_root: &Path
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn restore_previous_archive(
     had_archive: bool,
     previous_archive: Option<&Path>,
@@ -793,7 +793,7 @@ fn restore_previous_archive(
 }
 
 /// Write a deterministic flat zip of `package_root` to a new staging file.
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn write_zip_package(package_root: &Path, archive_path: &Path) -> Result<()> {
     let mut relative_paths = Vec::new();
     collect_package_files(package_root, package_root, &mut relative_paths)?;
@@ -801,7 +801,7 @@ fn write_zip_package(package_root: &Path, archive_path: &Path) -> Result<()> {
     write_zip_entries(package_root, archive_path, &relative_paths)
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn collect_package_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
     for entry in
         fs::read_dir(dir).with_context(|| format!("Read package directory '{}'", dir.display()))?
@@ -826,7 +826,7 @@ fn collect_package_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Resu
     Ok(())
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn relative_package_path(root: &Path, path: &Path) -> Result<String> {
     path.strip_prefix(root)
         .expect("package entry is beneath package root")
@@ -841,7 +841,7 @@ fn relative_package_path(root: &Path, path: &Path) -> Result<String> {
         .map(|segments| segments.join("/"))
 }
 
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 fn write_zip_entries(
     package_root: &Path,
     archive_path: &Path,

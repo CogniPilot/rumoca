@@ -62,10 +62,10 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     let c = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("c-solve", "model_solve.c.jinja"),
+        builtin_template("c-ode", "model_ode.c.jinja"),
         "SparseDemo",
     )
-    .expect("c-solve template should render");
+    .expect("c-ode template should render");
     assert!(c.contains("__out[i] = 0.0;"));
     assert!(c.contains("__out[2] ="));
     assert!(c.contains("__out[4] ="));
@@ -75,10 +75,10 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     let rust = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("rust-solve", "model_solve.rs.jinja"),
+        builtin_template("rust-ode", "model_ode.rs.jinja"),
         "SparseDemo",
     )
-    .expect("rust-solve template should render");
+    .expect("rust-ode template should render");
     assert!(rust.contains("let mut __out = vec![0.0; DERIVATIVE_LEN];"));
     assert!(rust.contains("__out[2] ="));
     assert!(rust.contains("__out[4] ="));
@@ -91,10 +91,10 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     let cuda = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("cuda-c", "model_solve.cu.jinja"),
+        builtin_template("cuda-ode", "model_ode.cu.jinja"),
         "SparseDemo",
     )
-    .expect("cuda-c template should render");
+    .expect("cuda-ode template should render");
     assert!(cuda.contains("batch_out[i] = 0.0;"));
     assert!(cuda.contains("batch_out[2] ="));
     assert!(cuda.contains("batch_out[4] ="));
@@ -120,12 +120,12 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     let layout = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("wgsl-solve", "model_layout.json.jinja"),
+        builtin_template("wgsl-ode", "model_layout.json.jinja"),
         "SparseDemo",
     )
-    .expect("wgsl-solve layout manifest should render");
+    .expect("wgsl-ode layout manifest should render");
     let layout: serde_json::Value =
-        serde_json::from_str(&layout).expect("wgsl-solve layout manifest should be valid JSON");
+        serde_json::from_str(&layout).expect("wgsl-ode layout manifest should be valid JSON");
     let expected_strides = serde_json::json!([{ "dimension": 0, "stride": 2 }]);
     assert_eq!(
         layout["kernels"][0]["output_map"]["strides"], expected_strides,
@@ -139,10 +139,10 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     let wgsl = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("wgsl-solve", "model_solve.wgsl.jinja"),
+        builtin_template("wgsl-ode", "model_ode.wgsl.jinja"),
         "SparseDemo",
     )
-    .expect("wgsl-solve source should render");
+    .expect("wgsl-ode source should render");
     assert!(
         wgsl.contains("Native map family: affine output map start 2, rows 3"),
         "native WGSL source should describe sparse output maps without implying contiguity:\n{wgsl}"

@@ -14,6 +14,7 @@ rumoca-core = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-ir-dae = { workspace = true }
+rumoca-ir-fmi = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-galec = { workspace = true }
 rumoca-ir-solve = { workspace = true }
@@ -26,4 +27,5 @@ thiserror = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+naga = { version = "27", features = ["wgsl-in"] }
 tempfile = { workspace = true }

@@ -7,8 +7,8 @@ Generated files go under `gen/`, which is ignored by git.
 cargo run -p rumoca -- \
   compile examples/models/Ball.mo \
   --model Ball \
-  --target jax-solve \
-  --output examples/codegen/gen/ball_jax_solve
+  --target jax-ode \
+  --output examples/codegen/gen/ball_jax_ode
 
 cargo run -p rumoca -- \
   compile examples/models/SympyDecay.mo \
@@ -31,10 +31,10 @@ cargo run -p rumoca -- \
 
 Scenarios:
 
-- `rumoca-scenario.ball_jax_solve.toml`: checked Solve JAX target.
+- `rumoca-scenario.ball_jax_ode.toml`: checked ODE RHS JAX target.
 - `rumoca-scenario.galec_counter_production.toml`: GALEC/eFMI Production
   Code target (`.alg` plus generated C).
-- `rumoca-scenario.sympy_decay_c_solve.toml`: checked Solve C target.
+- `rumoca-scenario.sympy_decay_c_ode.toml`: checked ODE RHS C target.
 - `rumoca-scenario.sympy_decay_checked_dae_report.toml`: custom target
   directory that renders a readable report from the canonical checked DAE
   projection.

@@ -53,7 +53,7 @@ fn required_msl_sim_regressions_are_selected_by_workspace_verification() {
 #[test]
 fn nightly_selects_each_reproducible_external_msl_cross_check() {
     let workflow = repository_file(".github/workflows/nightly.yml");
-    for target in ["c_solve_msl_test", "casadi_msl_test"] {
+    for target in ["c_ode_msl_test", "casadi_msl_test"] {
         assert!(
             workflow.contains(&format!("--features msl-external-tests --test {target}")),
             "nightly external-MSL diagnostics do not select `{target}`"
@@ -72,7 +72,6 @@ fn opt_in_backend_stress_survey_is_not_mislabeled_as_a_required_gate() {
     for required in [
         "`backend-stress-tests` is an opt-in 30-model diagnostic survey",
         "`msl-external-tests` contains opt-in MSL corpus cross-checks",
-        "`fmu_target_discovery` is a manual target-list maintenance",
     ] {
         assert!(
             contributing.contains(required),

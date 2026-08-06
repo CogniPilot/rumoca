@@ -13,8 +13,8 @@ name = "galec"
 # galec-production target's claim, not this one's.
 description = "eFMI Algorithm Code export: eFMU container (__content.xml + schemas/ + Algorithm Code representation with Model.alg + manifest.xml) for fixed-sample discrete models, in directory and .efmu zip forms"
 execution_mode = "packaged"
-# deployment_class is the deployment FAMILY axis of `rumoca targets` (like
-# "gpu" spanning cuda-c readiness levels), not a conformance claim; the
+# deployment_class is the deployment FAMILY axis of `rumoca targets`, not a
+# conformance claim; the
 # honest rung claim lives in description/completion_message per GAL-021.
 deployment_class = "efmi"
 readiness_level = 2

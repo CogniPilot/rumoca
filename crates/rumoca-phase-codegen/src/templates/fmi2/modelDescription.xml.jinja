@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+{%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+<fmiModelDescription
+  fmiVersion="2.0"
+  modelName="{{ model_name | xml_escape }}"
+  generationTool="Rumoca"
+  guid="{ {{- artifact.identities.fmu -}} }"
+  numberOfEventIndicators="0">
+  <ModelExchange modelIdentifier="{{ model_identifier }}">
+    <SourceFiles>
+      <File name="model.c"/>
+    </SourceFiles>
+  </ModelExchange>
+  <CoSimulation modelIdentifier="{{ model_identifier }}" canHandleVariableCommunicationStepSize="true">
+    <SourceFiles>
+      <File name="model.c"/>
+    </SourceFiles>
+  </CoSimulation>
+  <UnitDefinitions>
+    <Unit name="s">
+      <BaseUnit s="1"/>
+    </Unit>
+  </UnitDefinitions>
+  <ModelVariables>
+    <ScalarVariable name="time" valueReference="0" causality="independent" variability="continuous">
+      <Real unit="s"/>
+    </ScalarVariable>
+{%- set index = namespace(model=2, vr=1) %}
+{%- for variable in fmi.variables %}
+{%- for scalar in range(variable.storage.scalar_count) %}
+    <ScalarVariable name="{{ variable.scalar_names[scalar] | xml_escape }}" valueReference="{{ index.vr }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.role == "State" %} initial="exact"{% elif variable.causality in ["parameter", "calculated_parameter"] %} initial="exact"{% endif %}{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}>
+      <Real start="{{ variable.start[scalar] }}"{% if variable.minimum %} min="{{ variable.minimum[scalar] }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] }}"{% endif %}{% if variable.nominal %} nominal="{{ variable.nominal[scalar] }}"{% endif %}/>
+    </ScalarVariable>
+{%- set index.model = index.model + 1 %}
+{%- set index.vr = index.vr + 1 %}
+{%- endfor %}
+{%- endfor %}
+{%- set derivative_model_index = index.model %}
+{%- set state_model_index = namespace(value=2) %}
+{%- for variable in fmi.variables %}
+{%- if variable.role == "State" %}
+{%- for scalar in range(variable.storage.scalar_count) %}
+    <ScalarVariable name="der({{ variable.scalar_names[scalar] | xml_escape }})" valueReference="{{ index.vr }}" causality="local" variability="continuous" initial="calculated">
+      <Real derivative="{{ state_model_index.value }}"/>
+    </ScalarVariable>
+{%- set index.model = index.model + 1 %}
+{%- set index.vr = index.vr + 1 %}
+{%- set state_model_index.value = state_model_index.value + 1 %}
+{%- endfor %}
+{%- else %}
+{%- set state_model_index.value = state_model_index.value + variable.storage.scalar_count %}
+{%- endif %}
+{%- endfor %}
+  </ModelVariables>
+  <ModelStructure>
+{%- set output_index = namespace(value=2) %}
+{%- set output_count = namespace(value=0) %}
+{%- for variable in fmi.variables %}
+{%- if variable.causality == "output" %}
+{%- set output_count.value = output_count.value + variable.storage.scalar_count %}
+{%- endif %}
+{%- set output_index.value = output_index.value + variable.storage.scalar_count %}
+{%- endfor %}
+{%- if output_count.value > 0 %}
+    <Outputs>
+{%- set model_index = namespace(value=2) %}
+{%- for variable in fmi.variables %}
+{%- for scalar in range(variable.storage.scalar_count) %}
+{%- if variable.causality == "output" %}
+      <Unknown index="{{ model_index.value }}"/>
+{%- endif %}
+{%- set model_index.value = model_index.value + 1 %}
+{%- endfor %}
+{%- endfor %}
+    </Outputs>
+{%- endif %}
+{%- if solve.solve_layout.state_scalar_count > 0 %}
+    <Derivatives>
+{%- for scalar in range(solve.solve_layout.state_scalar_count) %}
+      <Unknown index="{{ derivative_model_index + scalar }}"/>
+{%- endfor %}
+    </Derivatives>
+    <InitialUnknowns>
+{%- for scalar in range(solve.solve_layout.state_scalar_count) %}
+      <Unknown index="{{ derivative_model_index + scalar }}"/>
+{%- endfor %}
+    </InitialUnknowns>
+{%- endif %}
+  </ModelStructure>
+</fmiModelDescription>

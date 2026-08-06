@@ -11,7 +11,7 @@
 //! What is accepted:
 //!
 //! * **Exactly** the [`EXPECTED_RUMOCA_TEST_TARGETS`] set of `[[test]]` targets
-//!   — the eight that exist today. Any number of *test files* may be added:
+//!   — the nine that exist today. Any number of *test files* may be added:
 //!   they cost nothing extra as long as a `suite_*.rs` umbrella `#[path]`s them
 //!   in. Only adding a whole new linked binary is rejected, and that rejection
 //!   is editable: append the name here with a sentence saying why the new
@@ -34,14 +34,18 @@ use std::path::PathBuf;
 
 /// Every `[[test]]` target declared by `crates/rumoca/Cargo.toml`.
 ///
-/// Seven `suite_*` umbrellas plus the architecture gate, which is its own
+/// Eight `suite_*` umbrellas plus the architecture gate, which is its own
 /// target because people rerun it by name and its failure has to be readable on
 /// its own. Adding an entry here is a deliberate, reviewable act: it means one
 /// more whole-compiler link in every `cargo test -p rumoca`.
+/// `suite_fmi` cannot share `suite_template_runtime`: its conformance gate must
+/// prove the exporter builds without the simulator, transports, inputs, or
+/// viewer enabled, while the general template suite uses the default graph.
 const EXPECTED_RUMOCA_TEST_TARGETS: &[&str] = &[
     "architecture_hardening_test",
     "suite_core",
     "suite_examples_smoke",
+    "suite_fmi",
     "suite_galec_fmu",
     "suite_gates",
     "suite_heavy_solve",
@@ -111,8 +115,8 @@ fn test_rumoca_test_target_count_is_pinned() {
     );
     assert_eq!(
         declared.len(),
-        8,
-        "expected 7 `suite_*` umbrellas plus `architecture_hardening_test`"
+        9,
+        "expected 8 `suite_*` umbrellas plus `architecture_hardening_test`"
     );
 }
 

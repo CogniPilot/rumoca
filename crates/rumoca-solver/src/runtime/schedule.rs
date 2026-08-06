@@ -30,7 +30,7 @@ struct StopEvent {
 impl SolveStopSchedule {
     pub fn new(problem: &solve::SolveProblem, t_start: f64, t_end: f64) -> Self {
         let mut schedule = Self {
-            events: collect_static_solve_events(problem, t_start, t_end),
+            events: collect_static_ode_events(problem, t_start, t_end),
             periodic_schedules: problem.clocks.periodic_event_schedules.clone(),
             next_idx: 0,
             last_consumed_scheduled_time: None,
@@ -358,7 +358,7 @@ fn periodic_tick_time_at(schedule: &solve::PeriodicEventSchedule, t: f64) -> Opt
     sample_time_match_with_tol(tick_time, t).then_some(tick_time)
 }
 
-fn collect_static_solve_events(
+fn collect_static_ode_events(
     problem: &solve::SolveProblem,
     t_start: f64,
     t_end: f64,

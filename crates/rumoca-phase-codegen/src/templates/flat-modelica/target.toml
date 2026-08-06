@@ -2,6 +2,7 @@ version = 1
 ir = "flat"
 name = "flat-modelica"
 description = "Modelica source reconstructed from flat IR"
+readiness_level = 1
 execution_mode = "source-transform"
 deployment_class = "modelica"
 

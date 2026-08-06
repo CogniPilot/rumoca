@@ -54,8 +54,8 @@ def test_simulate() -> None:
 
 def test_codegen() -> None:
     m = rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
-    cg = m.codegen("c-solve")
-    assert cg.target == "c-solve"
+    cg = m.codegen("c-ode")
+    assert cg.target == "c-ode"
     assert any(p.endswith(".c") for p in cg.paths)
     # Iterable of (path, content).
     for path, content in cg:
@@ -77,9 +77,9 @@ def test_session_reuse() -> None:
 
 def test_targets_and_solvers() -> None:
     ids = [t.id for t in rm.targets()]
-    assert "c-solve" in ids
-    c_solve = next(t for t in rm.targets() if t.id == "c-solve")
-    assert c_solve.ir == "solve"
+    assert "c-ode" in ids
+    c_ode = next(t for t in rm.targets() if t.id == "c-ode")
+    assert c_ode.ir == "solve"
     solver_ids = [s.id for s in rm.solvers()]
     assert "rk-like" in solver_ids
 

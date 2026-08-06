@@ -283,6 +283,8 @@ capabilities consume checked `Dae`/`SolveProblem` facts and retain equivalent en
 evidence. Missing lowering fails at its first owner. Pending targets stay
 undiscoverable; no stubs, alternate semantic paths, target aliases, silent
 defaults, old-shape adapters, or compatibility readers.
+The checked FMI projection follows
+[SPEC_0043 §8](SPEC_0043_CONSTRUCTION_CATALOG.md#8-fmi-component-construction-catalog).
 
 ## References
 

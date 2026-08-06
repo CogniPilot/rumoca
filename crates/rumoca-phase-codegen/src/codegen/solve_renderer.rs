@@ -57,6 +57,29 @@ impl SolveTemplateRenderer {
                 std::sync::Arc::new(artifacts),
                 None,
                 dae_entry,
+                Value::default(),
+            )?,
+        })
+    }
+
+    /// Renderer for one checked FMI component. The FMI entry is the opaque
+    /// constructor-validated metadata/storage binding; Solve operations remain
+    /// lazy so large tensor programs are not materialized as template maps.
+    pub fn new_owned_with_fmi(
+        component: rumoca_ir_fmi::FmiComponent,
+        artifacts: solve::SolveArtifacts,
+        dae_model: &dae::Dae,
+    ) -> Result<Self, CodegenError> {
+        let dae_entry = checked_dae_template_value(dae_model)?;
+        let fmi_entry = Value::from_serialize(&component);
+        let solve = component.into_solve();
+        Ok(Self {
+            context: solve_render_context_value_with_arcs(
+                std::sync::Arc::new(solve),
+                std::sync::Arc::new(artifacts),
+                None,
+                dae_entry,
+                fmi_entry,
             )?,
         })
     }
@@ -73,11 +96,25 @@ impl SolveTemplateRenderer {
         template: &str,
         model_name: &str,
     ) -> Result<String, CodegenError> {
+        self.render_with_name_and_artifact(template, model_name, &())
+    }
+
+    /// Render with immutable package metadata in addition to the checked FMI
+    /// and Solve products. Package identities are minted once by the generic
+    /// artifact layer; FMI templates consume them without inventing a second
+    /// identity source.
+    pub fn render_with_name_and_artifact<T: serde::Serialize>(
+        &self,
+        template: &str,
+        model_name: &str,
+        artifact: &T,
+    ) -> Result<String, CodegenError> {
         let mut env = create_environment();
         env.add_template("inline", template)?;
         let tmpl = env.get_template("inline")?;
         Ok(tmpl.render(minijinja::context! {
             model_name => model_name,
+            artifact => Value::from_serialize(artifact),
             ..self.context.clone()
         })?)
     }
@@ -108,6 +145,7 @@ fn solve_render_context_value_with_dae(
         std::sync::Arc::new(artifacts.clone()),
         model_name,
         dae_entry,
+        Value::default(),
     )
 }
 
@@ -116,6 +154,7 @@ fn solve_render_context_value_with_arcs(
     artifacts_arc: std::sync::Arc<solve::SolveArtifacts>,
     model_name: Option<&str>,
     dae_entry: Value,
+    fmi_entry: Value,
 ) -> Result<Value, CodegenError> {
     // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
     // fields serialize on demand and op lists materialize one op at a time, so a
@@ -160,6 +199,7 @@ fn solve_render_context_value_with_arcs(
     Ok(match model_name {
         Some(name) => minijinja::context! {
             dae => dae_entry.clone(),
+            fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
             ir => solve_value,
@@ -173,6 +213,7 @@ fn solve_render_context_value_with_arcs(
         },
         None => minijinja::context! {
             dae => dae_entry.clone(),
+            fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
             ir => solve_value,

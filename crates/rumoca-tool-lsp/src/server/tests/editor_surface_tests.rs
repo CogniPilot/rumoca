@@ -210,7 +210,7 @@ fn execute_command_dispatches_workspace_target_catalog_command() {
             .expect("target catalog should serialize to an array");
         assert!(
             targets.iter().any(|target| {
-                target.get("id").and_then(serde_json::Value::as_str) == Some("c-solve")
+                target.get("id").and_then(serde_json::Value::as_str) == Some("c-ode")
             }),
             "workspace target catalog should include the checked Solve C built-in"
         );

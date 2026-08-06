@@ -36,7 +36,7 @@ pub use crate::fmt_cli::FmtArgs;
 pub use crate::sim_bench::SimBenchArgs;
 use crate::{CompilationResult, Compiler, CompilerError, DaeCompilationResult, TemplateIr};
 use rumoca_compile::{
-    codegen::{render_ast_template_with_name, render_flat_template_with_name},
+    codegen::render_flat_template_with_name,
     compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
     compile::{Dae, FlatModel},
 };
@@ -363,8 +363,6 @@ impl From<CompilePhase> for TemplateIr {
 /// The solver IR has no Modelica form, so `solve-mo` is intentionally absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EmitTarget {
-    #[value(name = "ast-mo")]
-    AstMo,
     #[value(name = "ast-json")]
     AstJson,
     #[value(name = "flat-mo")]
@@ -382,7 +380,7 @@ pub enum EmitTarget {
 impl EmitTarget {
     fn phase(self) -> CompilePhase {
         match self {
-            Self::AstMo | Self::AstJson => CompilePhase::Ast,
+            Self::AstJson => CompilePhase::Ast,
             Self::FlatMo | Self::FlatJson => CompilePhase::Flat,
             Self::DaeMo | Self::DaeJson => CompilePhase::Dae,
             Self::SolveJson => CompilePhase::Solve,
@@ -1130,8 +1128,8 @@ fn run_early_ir_dump(
 ) -> Result<()> {
     let rendered = match (artifact, json) {
         (EarlyIrArtifact::Ast(resolved), true) => serde_json::to_string_pretty(resolved.inner())?,
-        (EarlyIrArtifact::Ast(resolved), false) => {
-            render_early_ir_as_modelica_ast(resolved, model)?
+        (EarlyIrArtifact::Ast(_), false) => {
+            bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
         }
         (EarlyIrArtifact::Flat(flat), true) => serde_json::to_string_pretty(flat)?,
         (EarlyIrArtifact::Flat(flat), false) => render_early_ir_as_modelica_flat(flat, model)?,
@@ -1201,16 +1199,6 @@ fn write_ir_dump(
     Ok(())
 }
 
-fn render_early_ir_as_modelica_ast(resolved: &ResolvedTree, model: &str) -> Result<String> {
-    let template = rumoca_compile::codegen::templates::builtin_template_source(
-        "modelica",
-        "modelica.mo.jinja",
-    )
-    .ok_or_else(|| anyhow::anyhow!("missing built-in modelica template"))?;
-    let model_identifier = model.replace('.', "_");
-    render_ast_template_with_name(resolved.inner(), template, &model_identifier).map_err(Into::into)
-}
-
 fn render_early_ir_as_modelica_flat(flat: &FlatModel, model: &str) -> Result<String> {
     let template = rumoca_compile::codegen::templates::builtin_template_source(
         "flat-modelica",
@@ -1229,7 +1217,9 @@ fn render_ir_as_modelica(
     phase: CompilePhase,
 ) -> Result<String> {
     let (target, template_file) = match phase {
-        CompilePhase::Ast => ("modelica", "modelica.mo.jinja"),
+        CompilePhase::Ast => {
+            bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
+        }
         CompilePhase::Flat => ("flat-modelica", "flat_modelica.mo.jinja"),
         CompilePhase::Dae => ("dae-modelica", "dae_modelica.mo.jinja"),
         CompilePhase::Solve => {

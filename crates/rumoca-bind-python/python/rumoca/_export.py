@@ -43,9 +43,9 @@ class SolveExport:
 
 def build_casadi(content: str, name: str, _form: str) -> SolveExport:
     module = _exec_module(content, f"{name}_casadi")
-    return SolveExport(module, name, "casadi-solve")
+    return SolveExport(module, name, "casadi-ode")
 
 
 def build_jax(content: str, name: str, _form: str) -> SolveExport:
     module = _exec_module(content, f"{name}_jax")
-    return SolveExport(module, name, "jax-solve")
+    return SolveExport(module, name, "jax-ode")

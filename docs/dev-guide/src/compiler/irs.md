@@ -13,7 +13,9 @@ pretty-printers, and doc generators work here because they need the original
 syntax. Every node carries a `Span`, and that provenance must survive any
 AST merging.
 
-Dump it: `rumoca compile Model.mo --emit ast-mo` (or `ast-json`).
+Dump it as checked JSON: `rumoca compile Model.mo --emit ast-json`. Rumoca does
+not reconstruct Modelica from this semantic tree because doing so would lose
+source syntax; use the formatter for source-preserving output.
 
 ## Flat (`rumoca-ir-flat`)
 

@@ -687,7 +687,7 @@ fn render_target_command_renders_compiled_open_document_model() {
                         .expect("file uri")
                         .to_string(),
                     "model": "Decay",
-                    "target": "c-solve",
+                    "target": "c-ode",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
@@ -704,9 +704,9 @@ fn render_target_command_renders_compiled_open_document_model() {
                 .get("files")
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|files| files.iter().any(|file| {
-                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_solve.c")
+                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_ode.c")
                 })),
-            "render target command should return the checked Solve C model file"
+            "render target command should return the checked ODE RHS C model file"
         );
     });
 }

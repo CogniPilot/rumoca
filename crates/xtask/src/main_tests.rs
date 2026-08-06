@@ -134,6 +134,7 @@ fn cli_parses_verify_template_runtimes_job() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::All);
+                assert!(!args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },
@@ -155,6 +156,29 @@ fn cli_parses_verify_template_runtimes_backend() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::Casadi);
+            }
+            other => panic!("expected template runtimes command, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_verify_template_runtimes_required_tools_policy() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "template-runtimes",
+        "--backend",
+        "cuda",
+        "--require-external-tools",
+    ])
+    .expect("parse required external tool policy");
+    match cli.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::TemplateRuntimes(args) => {
+                assert_eq!(args.backend, TemplateRuntimeBackend::Cuda);
+                assert!(args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },

@@ -1619,7 +1619,7 @@ fn test_render_target_wrapper_serializes_target_files() {
         .get("dae_native")
         .expect("compile response should contain dae_native");
 
-    let rendered = render_target(&native.to_string(), "SimpleDecay", "c-solve", "", "{}")
+    let rendered = render_target(&native.to_string(), "SimpleDecay", "c-ode", "", "{}")
         .expect("render target should succeed");
     let decoded: serde_json::Value = decode_wasm_value(rendered);
     assert!(
@@ -1627,9 +1627,9 @@ fn test_render_target_wrapper_serializes_target_files() {
             .get("files")
             .and_then(serde_json::Value::as_array)
             .is_some_and(|files| files.iter().any(|file| {
-                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_solve.c")
+                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_ode.c")
             })),
-        "render target should include the checked Solve C target file"
+        "render target should include the checked ODE RHS C target file"
     );
 }
 

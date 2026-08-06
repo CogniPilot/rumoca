@@ -456,7 +456,7 @@ the same slider feeds `aoa_cmd` during stepping, so the physical airfoil angle
 moves through the first-order lag.
 
 This example defaults the **GPU** checkbox
-on: the compiler's experimental `wgsl-solve` backend lowers the system to
+on: the compiler's experimental `wgsl-ode` backend lowers the system to
 WebGPU compute kernels and an in-page RK4 integrator runs them. Interior
 finite-volume loops are preserved as source-proven affine stencils, so the
 WebGPU path emits native row-parallel stencil kernels instead of rediscovering

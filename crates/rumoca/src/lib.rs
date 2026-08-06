@@ -68,5 +68,7 @@ pub use target_manifest::render_target_files;
 pub use packaging::{
     ArtifactRenderContext, ArtifactSession, render_web, render_web_files, sha1_hex, topo_sort,
 };
-#[cfg(feature = "scheduled-sim")]
+#[cfg(feature = "fmu-packaging")]
 pub use packaging::{PackageSpec, ZipPackage, render_and_package};
+#[cfg(feature = "fmu-packaging")]
+pub use target_manifest::compile_packaged_target;

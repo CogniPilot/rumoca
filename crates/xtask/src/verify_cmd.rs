@@ -103,6 +103,10 @@ pub(crate) struct VerifyTemplateRuntimeArgs {
     /// Template backend group to verify. The default runs all backend groups.
     #[arg(long, value_enum, default_value_t = TemplateRuntimeBackend::All)]
     pub(crate) backend: TemplateRuntimeBackend,
+
+    /// Fail when an external toolchain required by the selected backend is absent.
+    #[arg(long)]
+    pub(crate) require_external_tools: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -112,7 +116,12 @@ pub(crate) enum TemplateRuntimeBackend {
     Render,
     C,
     Casadi,
+    Cuda,
+    Fmi,
     Jax,
+    Modelica,
+    Rust,
+    Wasm,
 }
 
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
@@ -740,12 +749,15 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Render,
         test: TEMPLATE_RUNTIME_TEST,
-        filters: &["dae_template_context_"],
+        filters: &[
+            "dae_template_context_",
+            "explicit_rhs_targets_reject_implicit_algebraic_models",
+        ],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::C,
         test: TEMPLATE_RUNTIME_TEST,
-        filters: &["c_solve_"],
+        filters: &["c_ode_"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Casadi,
@@ -753,9 +765,34 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
         filters: &["casadi_"],
     },
     TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Cuda,
+        test: TEMPLATE_RUNTIME_TEST,
+        filters: &["cuda_ode_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Fmi,
+        test: "suite_fmi",
+        filters: &["cli_target_fmi::", "fmi_ls_dae_contract::"],
+    },
+    TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Jax,
         test: TEMPLATE_RUNTIME_TEST,
         filters: &["jax_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Modelica,
+        test: TEMPLATE_RUNTIME_TEST,
+        filters: &["modelica_interchange_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Rust,
+        test: TEMPLATE_RUNTIME_TEST,
+        filters: &["rust_ode_", "rust_fixed_ode_"],
+    },
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Wasm,
+        test: TEMPLATE_RUNTIME_TEST,
+        filters: &["fmi_ls_wasm_"],
     },
 ];
 
@@ -778,6 +815,7 @@ fn template_runtime_test_stems() -> Vec<&'static str> {
 }
 
 fn run_template_runtime_checks(root: &Path, args: VerifyTemplateRuntimeArgs) -> Result<()> {
+    let _required_tools = RequiredExternalToolsMarker::new(root, args.require_external_tools)?;
     trim_template_runtime_artifacts(root)?;
 
     for group in TEMPLATE_RUNTIME_GROUPS
@@ -790,17 +828,49 @@ fn run_template_runtime_checks(root: &Path, args: VerifyTemplateRuntimeArgs) -> 
     trim_template_runtime_artifacts(root)
 }
 
+struct RequiredExternalToolsMarker {
+    path: PathBuf,
+    created: bool,
+}
+
+impl RequiredExternalToolsMarker {
+    fn new(root: &Path, required: bool) -> Result<Self> {
+        let path = root.join("target/template-runtimes/strict");
+        let created = required && !path.exists();
+        if created {
+            let parent = path
+                .parent()
+                .context("template-runtime strict marker must have a parent directory")?;
+            fs::create_dir_all(parent)?;
+            fs::write(&path, b"required by cargo xtask verify template-runtimes\n")?;
+        }
+        Ok(Self { path, created })
+    }
+}
+
+impl Drop for RequiredExternalToolsMarker {
+    fn drop(&mut self) {
+        if self.created {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn run_template_runtime_group(root: &Path, group: TemplateRuntimeTestGroup) -> Result<()> {
     if group.filters.is_empty() {
-        return run_template_runtime_test(root, group.test, None);
+        return run_template_runtime_test(root, group, None);
     }
     for filter in group.filters {
-        run_template_runtime_test(root, group.test, Some(filter))?;
+        run_template_runtime_test(root, group, Some(filter))?;
     }
     Ok(())
 }
 
-fn run_template_runtime_test(root: &Path, test: &str, filter: Option<&str>) -> Result<()> {
+fn run_template_runtime_test(
+    root: &Path,
+    group: TemplateRuntimeTestGroup,
+    filter: Option<&str>,
+) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.arg("test")
         .arg("--verbose")
@@ -808,15 +878,33 @@ fn run_template_runtime_test(root: &Path, test: &str, filter: Option<&str>) -> R
         .arg("1")
         .arg("-p")
         .arg("rumoca")
-        .arg("--features")
-        .arg("template-runtime-tests")
+        .args(template_runtime_features(group.backend))
         .arg("--test")
-        .arg(test);
+        .arg(group.test);
     if let Some(filter) = filter {
         cmd.arg(filter);
     }
     cmd.arg("--").arg("--nocapture").current_dir(root);
     run_status(cmd)
+}
+
+fn template_runtime_features(backend: TemplateRuntimeBackend) -> &'static [&'static str] {
+    if matches!(
+        backend,
+        TemplateRuntimeBackend::Fmi | TemplateRuntimeBackend::Wasm
+    ) {
+        &[
+            "--no-default-features",
+            "--features",
+            "template-runtime-tests,fmu-packaging",
+        ]
+    } else {
+        &[
+            "--no-default-features",
+            "--features",
+            "template-runtime-tests",
+        ]
+    }
 }
 
 fn trim_template_runtime_artifacts(root: &Path) -> Result<()> {

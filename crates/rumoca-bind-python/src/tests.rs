@@ -60,8 +60,8 @@ fn builtin_targets_exclude_removed_dae_symbolic_schema() {
     ] {
         assert!(!ids.iter().any(|id| id == removed), "{removed}: {ids:?}");
     }
-    assert!(ids.iter().any(|id| id == "casadi-solve"));
-    assert!(ids.iter().any(|id| id == "jax-solve"));
+    assert!(ids.iter().any(|id| id == "casadi-ode"));
+    assert!(ids.iter().any(|id| id == "jax-ode"));
 }
 
 #[test]

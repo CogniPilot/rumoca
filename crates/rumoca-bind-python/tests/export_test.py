@@ -27,7 +27,7 @@ def test_to_casadi() -> None:
 
     exported = _model().to_casadi()
     assert isinstance(exported, rm.SolveExport)
-    assert exported.target == "casadi-solve"
+    assert exported.target == "casadi-ode"
     assert exported.state_names == ["x"]
     assert exported.parameter_names == ["gain"]
     assert isinstance(exported.rhs, ca.Function)
@@ -50,7 +50,7 @@ def test_to_jax() -> None:
 
     exported = _model().to_jax()
     assert isinstance(exported, rm.SolveExport)
-    assert exported.target == "jax-solve"
+    assert exported.target == "jax-ode"
     assert exported.state_names == ["x"]
     assert exported.parameter_names == ["gain"]
     xdot = jax.jit(exported.rhs)(

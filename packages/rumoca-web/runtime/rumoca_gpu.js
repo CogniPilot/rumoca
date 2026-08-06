@@ -1,9 +1,8 @@
 // Rumoca WebGPU RK4 driver.
 //
 // Canonical WGSL/WebGPU execution adapter for the GPU simulation path. The
-// compiler emits per-state derivative kernels via the `wgsl-solve` target
-// (WASM `prepare_gpu_simulation`); the target also exposes implicit residual
-// kernels in the layout for future implicit GPU solvers. This module wraps a
+// compiler emits per-state derivative kernels via the `wgsl-ode` target
+// (WASM `prepare_gpu_simulation`). This module wraps a
 // fixed-step classic RK4 integrator around the derivative kernels. The RK4
 // stage/combine algebra runs in the two small hand-written kernels below.
 //
@@ -627,7 +626,7 @@ function validatedKernelSchedule(block, options) {
     return schedule;
 }
 
-// Normalize and validate the derivative kernel schedule in the wgsl-solve
+// Normalize and validate the derivative kernel schedule in the wgsl-ode
 // layout. Native kernels write through generated WGSL output maps, so the host
 // only dispatches them; it still validates the maps before building pipelines
 // because the RK4 path assumes a dense derivative vector matching state order.
@@ -643,31 +642,6 @@ export function derivativeKernelSchedule(layout) {
             + 'Rebuild it from the wgsl-backend sources '
             + '(wasm-pack build crates/rumoca-bind-wasm).',
     });
-}
-
-// Validate the implicit RHS kernel inventory exposed by wgsl-solve. The
-// browser RK4 path does not dispatch these kernels yet; this keeps the manifest
-// contract executable for future implicit GPU solvers.
-export function implicitKernelSchedule(layout) {
-    if (layout === null || typeof layout !== 'object') {
-        throw new Error('GPU layout has invalid implicit_rhs metadata.');
-    }
-    return validatedKernelSchedule(layout.implicit_rhs, {
-        layoutLabel: 'GPU implicit_rhs layout',
-        kernelEntryLabel: 'GPU implicit kernel',
-        outputName: 'implicit RHS',
-        nativeEntryPrefixes: ['implicit_rhs_map', 'implicit_rhs_stencil'],
-        scalarEntryPrefix: 'implicit_rhs_chunk',
-        denseOutputRequired: false,
-        allowEmptySchedule: true,
-    });
-}
-
-export function gpuKernelSchedules(layout) {
-    return {
-        derivative: derivativeKernelSchedule(layout),
-        implicit: implicitKernelSchedule(layout),
-    };
 }
 
 export function gpuKernelDispatchPlan(
@@ -695,34 +669,6 @@ export function gpuKernelDispatchPlan(
             ),
         };
     });
-}
-
-export function gpuKernelWorkgroupBudget(
-    schedule,
-    label = 'GPU kernel schedule',
-    maxWorkgroups = Number.MAX_SAFE_INTEGER,
-) {
-    if (!Array.isArray(schedule)) {
-        throw new Error(`${label} metadata is invalid.`);
-    }
-    return schedule.reduce((total, kernel, index) => {
-        const entry = stringField(kernel, 'entry', `${label}[${index}]`);
-        const rows = integerField(kernel, 'rows', `${label}[${index}]`, 1);
-        const workgroupSize = integerField(
-            kernel, 'workgroupSize', `${label}[${index}]`, 1);
-        const workgroups = checkedWorkgroupCount(
-            rows,
-            workgroupSize,
-            `${label}[${index}] ${entry}`,
-            maxWorkgroups,
-            'budget',
-        );
-        return checkedMetadataAdd(
-            total,
-            workgroups,
-            `${label}[${index}] workgroup budget`,
-        );
-    }, 0);
 }
 
 // Acquire a WebGPU adapter, throwing actionable errors when WebGPU is
@@ -782,16 +728,14 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
             + `states=${nStates}); this model is not supported yet.`
         );
     }
-    const schedules = gpuKernelSchedules(layout);
+    const derivativeSchedule = derivativeKernelSchedule(layout);
 
     const device = await adapter.requestDevice();
     const maxWorkgroups = deviceWorkgroupLimit(device);
     const kernelList = gpuKernelDispatchPlan(
-        schedules.derivative, 'GPU derivative kernel schedule', maxWorkgroups);
-    const implicitWorkgroups = gpuKernelWorkgroupBudget(
-        schedules.implicit, 'GPU implicit kernel schedule', maxWorkgroups);
+        derivativeSchedule, 'GPU derivative kernel schedule', maxWorkgroups);
     onPhase('Parsing GPU kernels (WGSL)', null);
-    const derModule = await compileGpuModule(device, prep.wgsl, 'wgsl-solve');
+    const derModule = await compileGpuModule(device, prep.wgsl, 'wgsl-ode');
     const stageModule = await compileGpuModule(device, GPU_STAGE_WGSL, 'rk4-stage');
     const combineModule = await compileGpuModule(device, GPU_COMBINE_WGSL, 'rk4-combine');
 
@@ -1123,7 +1067,7 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                 simDetails: {
                     actual: { t_start: tStart, t_end: times[times.length - 1], points: times.length, variables: names.length },
                     requested: {
-                        solver: `wgsl-solve RK4 (f32)${eventNote}`,
+                        solver: `wgsl-ode RK4 (f32)${eventNote}`,
                         t_start: tStart,
                         t_end: tEnd,
                         dt: outputDt,
@@ -1136,8 +1080,6 @@ export async function buildGpuProgram(adapter, prep, onPhase = () => {}) {
                 derivativeKernels: kernelList.length,
                 derivativeWorkgroups: workgroupTotal(
                     kernelList, 'GPU derivative kernel schedule'),
-                implicitKernels: schedules.implicit.length,
-                implicitWorkgroups,
                 profile,
             },
         };

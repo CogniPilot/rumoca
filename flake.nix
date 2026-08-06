@@ -24,7 +24,15 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate =
+            package: builtins.elem (nixpkgs.lib.getName package) [
+              "cuda_cccl"
+              "cuda_cudart"
+              "cuda_nvcc"
+            ];
+        };
         rumocaVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
 
         # Pin the EXACT toolchain from rust-toolchain.toml (nightly-2026-02-27 +
@@ -297,11 +305,14 @@
             inputsFrom = [ rumoca ];
             packages = extraPackages;
             LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
-              pkgs.gfortran.cc.lib
-              pkgs.stdenv.cc.cc.lib
-              pkgs.zlib
-            ];
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+              [
+                pkgs.gfortran.cc.lib
+                pkgs.stdenv.cc.cc.lib
+                pkgs.zlib
+              ]
+              ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
+            );
           };
         # xtask itself is NOT built here: after the light-xtask split it carries no
         # compiler deps and compiles per-job in seconds, so build-once buys nothing.
@@ -439,6 +450,24 @@
           );
         };
         devShells.ci-template-core = templateRuntimeShell [ ];
+        devShells.ci-template-cuda = templateRuntimeShell (
+          pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.cudaPackages.cuda_cudart
+            pkgs.cudaPackages.cuda_nvcc
+          ]
+        );
+        devShells.ci-template-fmi = templateRuntimeShell [
+          ciPython
+          pkgs.cmake
+          pkgs.curl
+          pkgs.jre_headless
+          pkgs.libxml2
+          pkgs.unzip
+        ];
+        devShells.ci-template-modelica = templateRuntimeShell (
+          pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]
+        );
+        devShells.ci-template-wasm = templateRuntimeShell [ pkgs.wasm-tools ];
         devShells.ci-template-python = templateRuntimeShell [ ciPython ];
         devShells.ci-template-julia = templateRuntimeShell (
           pkgs.lib.optionals pkgs.stdenv.isLinux [ ciJulia ]

@@ -152,15 +152,16 @@ Verification-surface classification:
   correctness gate: it reports per-model failures and only requires one
   end-to-end comparison for each selected backend.
 - `msl-external-tests` contains opt-in MSL corpus cross-checks for generated
-  backends. Nightly CI surveys FMI2, FMI3, embedded C, and CasADi under the Nix
-  development shell. `fmu_target_discovery` is a manual target-list maintenance
-  tool and is not a pass/fail verification gate.
+  backends. Nightly CI surveys the checked C Solve and CasADi targets under the
+  Nix development shell. FMI 2/3 packaging is intentionally absent until it is
+  rebuilt against the checked kernel. `fmu_target_discovery` is a manual
+  target-list maintenance workflow, not a pass/fail verification gate.
 
 ```bash
 nix develop --command cargo test --release -p rumoca-test-msl \
   --features backend-stress-tests --test backend_stress_test -- --nocapture
 nix develop --command cargo test --release -p rumoca-test-msl \
-  --features msl-external-tests --test fmi2_msl_test -- --nocapture
+  --features msl-external-tests --test c_ode_msl_test -- --nocapture
 ```
 
 Command discovery:

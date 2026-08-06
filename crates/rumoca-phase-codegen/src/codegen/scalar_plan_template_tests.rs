@@ -89,7 +89,7 @@ fn multi_output_program_emits_every_store_and_computes_shared_register_once() {
     let c = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("c-solve", "model_solve.c.jinja"),
+        builtin_template("c-ode", "model_ode.c.jinja"),
         "Shared",
     )
     .expect("C multi-output program should render");
@@ -101,7 +101,7 @@ fn multi_output_program_emits_every_store_and_computes_shared_register_once() {
     let rust = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("rust-solve", "model_solve.rs.jinja"),
+        builtin_template("rust-ode", "model_ode.rs.jinja"),
         "Shared",
     )
     .expect("Rust multi-output program should render");
@@ -125,7 +125,7 @@ fn textual_targets_fail_closed_on_an_unsupported_semantic_op() {
     let error = render_solve_template_with_name(
         &problem,
         &solve::SolveArtifacts::default(),
-        builtin_template("c-solve", "model_solve.c.jinja"),
+        builtin_template("c-ode", "model_ode.c.jinja"),
         "Unsupported",
     )
     .expect_err("unsupported operations must not be skipped")
@@ -152,7 +152,7 @@ fn linear_solve_targets_expose_explicit_failure_abis() {
     let c = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("c-solve", "model_solve.c.jinja"),
+        builtin_template("c-ode", "model_ode.c.jinja"),
         "Singular",
     )
     .expect("C target should render an explicit status ABI");
@@ -165,7 +165,7 @@ fn linear_solve_targets_expose_explicit_failure_abis() {
     let rust = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("rust-solve", "model_solve.rs.jinja"),
+        builtin_template("rust-ode", "model_ode.rs.jinja"),
         "Singular",
     )
     .expect("Rust target should render a Result ABI");
@@ -188,15 +188,15 @@ fn compile_and_run_c_failure_abi(
     let header = render_solve_template_with_name(
         problem,
         artifacts,
-        builtin_template("c-solve", "model_solve.h.jinja"),
+        builtin_template("c-ode", "model_ode.h.jinja"),
         "Singular",
     )
     .expect("C target header should render");
-    std::fs::write(directory.join("Singular_solve.c"), source).expect("write generated C source");
-    std::fs::write(directory.join("Singular_solve.h"), header).expect("write generated C header");
+    std::fs::write(directory.join("Singular_ode.c"), source).expect("write generated C source");
+    std::fs::write(directory.join("Singular_ode.h"), header).expect("write generated C header");
     std::fs::write(
         directory.join("c_driver.c"),
-        r#"#include "Singular_solve.h"
+        r#"#include "Singular_ode.h"
 int main(void) {
     double out = 42.0;
     int status = Singular_derivative_rhs(0.0, 0, 0, &out);
@@ -208,7 +208,7 @@ int main(void) {
     let binary = directory.join("c_failure_abi");
     let c_compile = std::process::Command::new("cc")
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
-        .arg(directory.join("Singular_solve.c"))
+        .arg(directory.join("Singular_ode.c"))
         .arg(directory.join("c_driver.c"))
         .args(["-lm", "-o"])
         .arg(&binary)
@@ -229,11 +229,10 @@ int main(void) {
 }
 
 fn compile_and_run_rust_failure_abi(source: &str, directory: &std::path::Path) {
-    std::fs::write(directory.join("singular_solve.rs"), source)
-        .expect("write generated Rust source");
+    std::fs::write(directory.join("singular_ode.rs"), source).expect("write generated Rust source");
     std::fs::write(
         directory.join("rust_driver.rs"),
-        r#"#[path = "singular_solve.rs"]
+        r#"#[path = "singular_ode.rs"]
 mod generated;
 fn main() {
     let mut out = [42.0];
@@ -284,14 +283,14 @@ fn indexed_python_targets_keep_indexing_inside_symbolic_array_dialects() {
     let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, &dae)
         .expect("checked Solve context constructs");
     let jax = renderer
-        .render(builtin_template("jax-solve", "jax_solve.py.jinja"))
+        .render(builtin_template("jax-ode", "jax_ode.py.jinja"))
         .expect("JAX indexed target should render");
     assert!(jax.contains("jnp.where"));
     assert!(jax.contains(".astype(jnp.int64)"));
     assert!(!jax.contains("int(min(max(round("));
 
     let casadi = renderer
-        .render(builtin_template("casadi-solve", "casadi_solve.py.jinja"))
+        .render(builtin_template("casadi-ode", "casadi_ode.py.jinja"))
         .expect("CasADi indexed target should render");
     assert!(casadi.contains("__index1 = fmin(fmax(if_else("));
     assert!(casadi.contains("if_else(__index1 == 0.0, P[0]"));

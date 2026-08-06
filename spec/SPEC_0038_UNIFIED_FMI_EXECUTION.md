@@ -112,13 +112,9 @@ and `ModelStructure` required by the implemented model. Packaged XML MUST
 validate against the official FMI 3 schema, and linked-versus-packaged tests
 MUST prove that the importer sees the same metadata and call results.
 
-Ratifying this boundary requires a coordinated amendment to SPEC_0029 §12 and
-the concrete-solver row in SPEC_0041 §4. Their current accepted wording says a
-concrete solver consumes Solve IR; the replacement wording must say that a
-concrete numerical solver consumes only `rumoca-solver`'s generic FMI ME
-importer/host contract. Until that accepted-spec amendment lands, this draft is
-the migration proposal and MUST NOT be used to silently weaken either accepted
-crate-boundary rule.
+SPEC_0029 §12 and SPEC_0041 §4 assign the checked FMI aggregate, its lowering,
+the shared FMI runtime, and the concrete-solver boundary. A concrete numerical
+solver consumes only `rumoca-solver`'s generic FMI ME importer/host contract.
 
 ### Bounded ME Verification Profile
 
@@ -134,19 +130,15 @@ floating-point accuracy, solver convergence, or end-to-end Modelica refinement.
 
 ### Phasing
 
-The cutover lands in four phases. Each phase is behaviour-freezing unless its
-row says otherwise: a phase that only moves code MUST prove bit-identical sim
-traces against the pre-phase binary, because a divergence introduced while
-relocating semantics cannot be told apart from the divergence being fixed.
+The cutover has four phases. Code-movement phases MUST prove bit-identical
+traces against the pre-phase binary unless their row states otherwise.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
 | 1 | Internal ME kernel trait in `rumoca-solver` and one `SolveModel` projection; migrate the rk-like session onto it | Bit-identical traces vs. the pre-migration binary; the rk-like crate links Solve IR from no dependency table except `dev-dependencies`, so no production path there can name it |
+| 2 | Replace the transitional extended kernel surface with the strict FMI 3.0.2 ME component and importer contracts; construct one checked FMI component aggregate | Official-schema-valid model description, exhaustive finite lifecycle tests plus bounded symbolic checks where justified, and bit-identical traces except for separately proved semantic fixes |
 | 3 | FMI CS profile as an ME host plus a selected integrator | ME/CS trace parity on one kernel artifact |
 | 4 | Packaged FMU and Wasm deployment forms | Linked-versus-packaged and native-versus-Wasm lifecycle parity |
-
-Phase 1 does not fix event-semantics divergences; it removes the reason they
-have to be fixed twice. Fixing them is phase 2 work, on the one event loop.
 
 #### Acceptance Contract: the reduced state-only system
 
@@ -216,14 +208,26 @@ Solve lowering.
 The CLI may provide distinct profile names for discoverability, but those
 profiles MUST select capabilities of the same generator. They MUST NOT own
 independent equation lowering, initialization, event, or state-machine code.
+A raw derivative-only C kernel may remain an internal lowering or diagnostic
+fixture, but it MUST NOT be a user-visible deployment target once FMI 2/3 are
+exposed.
 
-CasADi, JAX, SymPy, SymForce, Julia ModelingToolkit, and ONNX exports remain
-first-class analysis projections from computable checked Solve IR. Solve must
-retain sparse implicit residuals, Jacobian structure, initialization systems,
-roots, and events needed by those projections. They are not FMI deployment
-profiles and MUST NOT repeat DAE structural analysis or become alternate
-semantic pipelines. A symbolic engine may separately act as an FMI ME host,
-but that host role is distinct from symbolic export.
+Symbolic exports remain analysis projections from computable checked Solve IR,
+which retains their residuals, Jacobian structure, initialization, roots, and
+events. They are not FMI profiles and MUST NOT repeat structural analysis. A
+symbolic engine's separate FMI ME host role is not symbolic export.
+
+### FMI-LS-DAE Layered Profile
+
+FMI-LS-DAE is a layered profile of one FMI 3 Model Exchange component, not a
+second DAE lowering. The component remains a valid ODE-form ME FMU when DAE
+mode is disabled and exposes its original algebraic variables and residuals
+when the structural `enableDAEModeVariable` is enabled in Configuration Mode.
+The checked-construction, tensor, lifecycle, packaging, versioning, and target
+registration obligations in
+[SPEC_0044 §3](SPEC_0044_FMI_EXECUTION_CATALOG.md#3-fmi-ls-dae-layered-profile)
+are normative by reference. The target stays unregistered until both profiles
+execute and their negative controls pass.
 
 The computable primal `SolveProblem` is the required projection input.
 Compiler-produced AD, Jacobian, and mass-matrix `SolveArtifacts` are a separate,
@@ -240,25 +244,21 @@ Diffsol or a private in-memory Rumoca backend.
 
 ### Evidence
 
-| Evidence | Proves |
-|---|---|
-| One checked-kernel artifact hash across profiles | Identical model semantics |
-| ME host parity across Diffsol and another solver | Solver separation |
-| ME/CS native-versus-Wasm trace parity | Deployment equivalence |
-| Linked-versus-packaged FMU lifecycle parity | Packaging equivalence |
-| `rumoca-input` device/scenario tests through linked and Wasm FMI setters | One input contract |
-| Codec frame mappings through linked and Wasm FMI get/set operations | One model boundary |
-| Injected transport timeout/disconnect/failure tests | No false successful steps |
-| Invalid name/type/shape/state input tests fail before model evaluation | No silent input loss |
-| Batched native/Wasm throughput and boundary-latency budgets | Fast interactive and production simulation |
-| FMI conformance tests for each advertised profile | Interface compliance |
-| Identical OMC inventory through native and Wasm runners | Backend-neutral parity evidence |
-| eFMI schema and checksum validation | Production package integrity |
-| Injected unsupported-capability failures | Early-error behavior |
+CI MUST test the exact standard version, interface profile, platform form, and
+advertised capabilities. A profile is user-visible only after its mandatory
+positive, negative-control, metadata, ABI, lifecycle, and execution evidence in
+[SPEC_0044 §2](SPEC_0044_FMI_EXECUTION_CATALOG.md#2-standards-conformance-ci)
+and its cross-form evidence in
+[SPEC_0044 §4](SPEC_0044_FMI_EXECUTION_CATALOG.md#4-cross-form-evidence)
+passes. Those catalog rows are normative by reference.
 
 ## References
 
 - [SPEC_0007](SPEC_0007_IR_PIPELINE.md)
 - [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md)
+- [FMI validation tools](https://fmi-standard.org/validation/)
+- [FMI 3.0.2 specification](https://fmi-standard.org/docs/3.0.2/)
+- [eFMI resources and compliance tools](https://www.efmi-standard.org/resources/)
 - [FMI layered standard for WebAssembly](https://github.com/modelica/fmi-ls-wasm)
+- [FMI layered standard for DAE](https://github.com/modelica/fmi-ls-dae)
 - [Rumoca issue #34](https://github.com/CogniPilot/rumoca/issues/34)

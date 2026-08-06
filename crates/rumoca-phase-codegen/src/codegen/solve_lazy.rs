@@ -5,7 +5,7 @@
 //! model. These wrappers expose the IR to templates *lazily*: structural fields
 //! are produced on demand and op lists materialize one op at a time during
 //! iteration, so peak memory is O(one program) instead of O(whole problem).
-//! Targets that never access a field (e.g. c-solve never touches
+//! Targets that never access a field (e.g. c-ode never touches
 //! `solve.continuous`) pay nothing for it. The Rust render functions can also
 //! `downcast_object_ref` to [`SolveProgramsObject`] / [`SolveOpListObject`] to
 //! iterate the typed ops directly with zero materialization.

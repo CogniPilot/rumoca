@@ -19,8 +19,8 @@ Modelica source (.mo)
         │
         ▼  rumoca-phase-parse
   ┌──────────┐
-  │   AST    │  rumoca-ir-ast        ◄─ codegen: formatters, pretty-printers,
-  └────┬─────┘                           documentation generators
+  │   AST    │  rumoca-ir-ast        ◄─ consumers: formatters, source-aware
+  └────┬─────┘                           documentation tools
        │  rumoca-phase-resolve, rumoca-phase-typecheck,
        │  rumoca-phase-instantiate
        ▼
@@ -30,23 +30,24 @@ Modelica source (.mo)
        │  rumoca-phase-flatten, rumoca-phase-dae
        ▼
   ┌──────────┐
-  │   DAE    │  rumoca-ir-dae        ◄─ codegen: FMI export, DAE-level
-  └────┬─────┘                           symbolic/array backends
+  │   DAE    │  rumoca-ir-dae        ◄─ codegen: DAE-level symbolic/array
+  └────┬─────┘                           backends
        │  rumoca-phase-solve              (CasADi, SymPy, JAX)
        ▼
   ┌──────────┐
   │  Solve   │  rumoca-ir-solve      ◄─ codegen/JIT: numeric C/Rust,
-  └──────────┘                           CUDA C/NVRTC, MLIR/LLVM, kernels
+  └──────────┘                           MLIR/LLVM, CUDA C and WGSL kernels
 ```
 
 **Codegen targets the lowest proven-valid IR it needs — no lower.**
 
 | Backend | IR level | Why |
 |---|---|---|
-| Formatter, doc generator | AST | Needs syntax + spans |
+| Formatter, doc generator | AST | Needs syntax + spans; it is a target only when it preserves every supported construct or fails closed |
 | Flat Modelica export | Flat | Original expression structure |
-| FMI export, DAE-readable C/Fortran, CasADi, SymPy, JAX-style symbolic/array targets | DAE | MLS B.1 form, source traceability |
-| Numeric sim, C/Rust kernels, JIT, MLIR, CUDA/GPU | Solve | Register-machine plus tensor bytecode |
+| DAE residual and symbolic-analysis targets | DAE | MLS B.1 form, residual ownership, source traceability |
+| Numeric simulation and explicit-ODE products | Solve | Register-machine plus tensor bytecode |
+| FMI 2/3 components | checked FMI component export IR derived from DAE + Solve | DAE metadata and tensor shape plus one executable checked kernel |
 
 `rumoca-phase-codegen` renders text; execution adapters wrap toolchains and
 runtimes without owning compiler semantics.
@@ -70,6 +71,37 @@ target directory. Supporting a new IR requires one target-neutral semantic view
 and capability vocabulary, never a target-language renderer in Rust. Export IRs
 remain projections and do not become canonical pipeline stages merely because a
 target manifest can select them.
+
+The checked FMI component export is the single deployment projection for FMI 2
+and FMI 3. Its constructor binds DAE-owned variable identity, causality, type,
+shape, units, and provenance to the exact executable Solve kernel. FMI-version
+adapters may scalarize only the external value-reference view required by that
+version; they MUST NOT repeat equation lowering, initialization, event, or
+state-machine semantics. A raw derivative-only C kernel is not an FMI component
+and MUST NOT be advertised as an FMI deployment substitute.
+
+### Built-in Target Product Contract
+
+A built-in target is an executable or inspectable compiler product, not a
+roadmap marker. Every directory registered below
+`rumoca-phase-codegen/src/templates/` MUST satisfy all of these rules:
+
+| Rule | Required evidence |
+|---|---|
+| Public names describe artifacts or interface profiles | Target IDs remain meaningful without IR knowledge |
+| Consumed IR is a separate manifest dimension | `target.toml` declares `ir`; `rumoca targets` reports it |
+| The target has a concrete present-day user workflow | `README.md` names the intended user, input IR, produced artifact, invocation, and the decision or deployment task the artifact supports |
+| The target states its semantic boundary honestly | `README.md` and `target.toml` name non-goals, unsupported semantics, readiness, and whether the artifact is source, analysis output, a runtime component, or a standards container |
+| The target emits a non-empty artifact | At least one `[[files]]` entry renders through the checked target path; manifest-only future placeholders are prohibited |
+| Unsupported input fails closed | Focused negative tests prove that unsupported semantic operations cannot become comments, stubs, zero values, omitted sections, or successful-looking artifacts |
+| The artifact is checked at the strongest practical boundary | Unit tests always cover manifest parsing and real rendering; language targets parse or compile; executable targets run a numerical fixture; package/standard targets validate metadata, lifecycle, and execution against the exact claimed revision |
+| Documentation and tests are target-local and discoverable | The target `README.md` lists the exact focused tests and external gates that support its readiness claim |
+| Experimental status narrows claims, not evidence | A readiness-zero target may expose a pinned experimental interface, but still emits and validates a useful artifact; readiness zero cannot excuse a non-product |
+
+If a target has only a proposed future use case, keep the design in a spec,
+issue, or development note until an artifact and its minimum evidence exist.
+Templates MUST use a span-bearing failure for an unsupported checked construct;
+lossy placeholder text is never an acceptable source reconstruction.
 
 ---
 

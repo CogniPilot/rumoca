@@ -461,13 +461,13 @@ fn compile_phase_maps_to_template_ir() {
 #[test]
 fn cli_parses_compile_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-solve", "--output", "out",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-ode", "--output", "out",
     ])
     .expect("parse compile target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("c-solve"));
+            assert_eq!(args.target.as_deref(), Some("c-ode"));
             assert_eq!(args.output, Some(PathBuf::from("out")));
         }
         other => panic!("expected compile command, got {other:?}"),
@@ -477,14 +477,14 @@ fn cli_parses_compile_manifest_target() {
 #[test]
 fn cli_parses_compile_builtin_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-solve", "--output",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-ode", "--output",
         "model.py",
     ])
     .expect("parse compile template target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("c-solve"));
+            assert_eq!(args.target.as_deref(), Some("c-ode"));
             assert_eq!(args.output, Some(PathBuf::from("model.py")));
         }
         other => panic!("expected compile command, got {other:?}"),
@@ -521,7 +521,7 @@ fn compile_flag_separation_is_enforced() {
     // --emit and --target are mutually exclusive (don't overload --target).
     assert!(
         Cli::try_parse_from([
-            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "c-solve"
+            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "c-ode"
         ])
         .is_err()
     );
@@ -536,7 +536,6 @@ fn compile_flag_separation_is_enforced() {
     );
     // every <stage>-<format> dump value is accepted.
     for value in [
-        "ast-mo",
         "ast-json",
         "flat-mo",
         "flat-json",
@@ -555,7 +554,7 @@ fn compile_flag_separation_is_enforced() {
 
 #[test]
 fn cli_rejects_compile_backend_option() {
-    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "c-solve"])
+    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "c-ode"])
         .expect_err("backend option was unified into target");
     assert!(
         err.to_string().contains("unexpected argument '--backend'"),

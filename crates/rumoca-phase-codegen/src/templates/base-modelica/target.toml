@@ -2,6 +2,7 @@ version = 1
 ir = "flat"
 name = "base-modelica"
 description = "Base Modelica interchange output from flat IR"
+readiness_level = 0
 execution_mode = "source-transform"
 deployment_class = "modelica"
 

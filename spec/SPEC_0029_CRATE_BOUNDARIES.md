@@ -222,7 +222,7 @@ dependency inputs on reopen, not to serialize the full downstream pipeline.
 ### 12. Runtime, Backend, Simulation Session, And Visualization Layering
 
 ```
-compiler/session → DAE structural → solve-IR lowering → runtime contracts → solver backend → simulation session → reporting → visualization
+compiler/session → DAE structural → solve-IR lowering → checked export/runtime contracts → solver backend → simulation session → reporting → visualization
 ```
 
 Ownership of each link in that chain is
@@ -234,6 +234,13 @@ encoders, JITs, toolchains, or device APIs. Textual target policy lives in
 IR capability probes. Unsupported capabilities report
 `unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
 generated artifacts through stable execution ABIs and equivalence tests.
+
+FMI deployment is the checked-export case, not a textual projection directly
+from DAE or Solve. `rumoca-ir-fmi` owns the private invariant-bearing FMI
+component aggregate, `rumoca-phase-fmi` constructs it from checked DAE metadata
+and the corresponding checked Solve kernel, and `rumoca-phase-codegen` owns the
+generated FMI 2/3 lifecycle and ABI adapter text. Those adapters consume the
+checked aggregate and MUST NOT repeat Modelica, DAE, or Solve lowering.
 
 Each target manifest selects one proven-valid canonical or checked export IR.
 `rumoca-phase-codegen` exposes a typed, read-only semantic view for each
@@ -255,7 +262,9 @@ Target-specific package/schema models, constants, filenames, and artifact
 graphs also belong in the owning target directory, not in IR or phase Rust.
 Generic documented artifact commands may hash rendered bytes, validate a
 declared schema, and assemble the declared graph without understanding eFMI or
-another target format.
+another target format. Generic on-disk package assembly is owned by the
+`fmu-packaging` feature and MUST NOT depend on scheduled simulation, transports,
+input devices, viewers, or process control.
 
 Target assets follow the same ownership rule. Builtin target discovery embeds
 arbitrary assets declared beneath a target directory; external targets resolve

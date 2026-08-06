@@ -40,7 +40,7 @@ mod solve_template_context_tests;
 mod stencil_codegen_tests;
 mod symbol_alloc;
 #[cfg(test)]
-mod wgsl_solve_tests;
+mod wgsl_ode_tests;
 
 pub(crate) use expr_config::{ExprConfig, IfStyle, get_str_attr};
 use render_expr::{get_field, is_variant, render_expression};

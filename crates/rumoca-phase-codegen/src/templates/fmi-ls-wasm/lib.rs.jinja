@@ -1,0 +1,493 @@
+//! FMI-LS-Wasm Co-Simulation component generated from Rumoca's checked FMI IR.
+//!
+//! The WIT package is pinned to modelica/fmi-ls-wasm commit
+//! c1aac17d392bec989fe2d059db3cc57bb7a0fff5. The draft is non-normative.
+
+mod model;
+
+// ---------------------------------------------------------------------------
+// WIT bindings
+// ---------------------------------------------------------------------------
+wit_bindgen::generate!({
+    world: "co-simulation-fmu",
+    path: "wit",
+});
+
+use std::cell::RefCell;
+
+use exports::fmi::fmi3::{
+    co_simulation::{
+        DoStepResult, Guest as CoSimulationGuest, GuestCoSimulationInstance,
+    },
+    common::Guest as CommonGuest,
+};
+use exports::fmi::fmi3::co_simulation::{
+    DiscreteStatesInfo, IntervalFraction, IntervalQualifier, Status, VariableDependency,
+};
+const Y_LEN: usize = {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }};
+const P_LEN: usize = {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }};
+const STATE_LEN: usize = {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lifecycle {
+    Instantiated,
+    Initialization,
+    Step,
+    Terminated,
+}
+
+#[derive(Clone)]
+struct ComponentData {
+    lifecycle: Lifecycle,
+    time: f64,
+    y: [f64; Y_LEN],
+    p: [f64; P_LEN],
+}
+
+impl Default for ComponentData {
+    fn default() -> Self {
+        let mut data = Self {
+            lifecycle: Lifecycle::Instantiated,
+            time: 0.0,
+            y: [0.0; Y_LEN],
+            p: [0.0; P_LEN],
+        };
+{%- for variable in fmi.variables %}{% for scalar in range(variable.storage.scalar_count) %}
+        data.{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = {{ variable.start[scalar] }};
+{%- endfor %}{% endfor %}
+        data
+    }
+}
+
+thread_local! {
+    static STORE: RefCell<Vec<Option<ComponentData>>> = const { RefCell::new(Vec::new()) };
+}
+
+fn store_alloc() -> usize {
+    STORE.with_borrow_mut(|s| {
+        if let Some((index, slot)) = s.iter_mut().enumerate().find(|(_, slot)| slot.is_none()) {
+            *slot = Some(ComponentData::default());
+            index
+        } else {
+            s.push(Some(ComponentData::default()));
+            s.len() - 1
+        }
+    })
+}
+
+fn store_get<R>(idx: usize, f: impl FnOnce(&ComponentData) -> R) -> R {
+    STORE.with_borrow(|s| f(s[idx].as_ref().expect("live FMI-LS resource has storage")))
+}
+
+fn store_set<R>(idx: usize, f: impl FnOnce(&mut ComponentData) -> R) -> R {
+    STORE.with_borrow_mut(|s| {
+        f(s[idx]
+            .as_mut()
+            .expect("live FMI-LS resource has storage"))
+    })
+}
+
+fn store_release(idx: usize) {
+    STORE.with_borrow_mut(|s| s[idx] = None);
+}
+
+fn derivative(data: &ComponentData) -> Result<[f64; STATE_LEN], Status> {
+    let mut result = [0.0; STATE_LEN];
+    model::derivative_rhs(data.time, &data.y, &data.p, &mut result)
+        .map_err(|_| Status::Error)?;
+    if result[..{{ solve.solve_layout.state_scalar_count }}]
+        .iter()
+        .all(|value| value.is_finite())
+    {
+        Ok(result)
+    } else {
+        Err(Status::Error)
+    }
+}
+
+fn integrate_rk4(data: &mut ComponentData, start: f64, step: f64) -> Result<(), Status> {
+    let initial = data.y;
+    data.time = start;
+    let k1 = derivative(data)?;
+    for index in 0..{{ solve.solve_layout.state_scalar_count }} {
+        data.y[index] = initial[index] + 0.5 * step * k1[index];
+    }
+    data.time = start + 0.5 * step;
+    let k2 = derivative(data)?;
+    for index in 0..{{ solve.solve_layout.state_scalar_count }} {
+        data.y[index] = initial[index] + 0.5 * step * k2[index];
+    }
+    let k3 = derivative(data)?;
+    for index in 0..{{ solve.solve_layout.state_scalar_count }} {
+        data.y[index] = initial[index] + step * k3[index];
+    }
+    data.time = start + step;
+    let k4 = derivative(data)?;
+    for index in 0..{{ solve.solve_layout.state_scalar_count }} {
+        data.y[index] = initial[index]
+            + step * (k1[index] + 2.0 * k2[index] + 2.0 * k3[index] + k4[index]) / 6.0;
+        if !data.y[index].is_finite() {
+            return Err(Status::Error);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// co-simulation::co-simulation-instance resource
+// ---------------------------------------------------------------------------
+
+pub struct RumocaCoSimulationInstance {
+    idx: usize,
+}
+
+impl Drop for RumocaCoSimulationInstance {
+    fn drop(&mut self) {
+        store_release(self.idx);
+    }
+}
+
+impl GuestCoSimulationInstance for RumocaCoSimulationInstance {
+
+    // ── Static factory ───────────────────────────────────────────────────────
+
+    fn instantiate_co_simulation(
+        _instance_name:                   String,
+        instantiation_token:              String,
+        _resource_path:                   String,
+        _visible:                         bool,
+        _logging_on:                      bool,
+        event_mode_used:                  bool,
+        early_return_allowed:             bool,
+        required_intermediate_variables:  Vec<u32>,
+    ) -> Option<exports::fmi::fmi3::co_simulation::CoSimulationInstance> {
+        if instantiation_token != "{{ artifact.identities.fmu }}"
+            || event_mode_used
+            || early_return_allowed
+            || !required_intermediate_variables.is_empty()
+        {
+            return None;
+        }
+        let idx = store_alloc();
+        Some(exports::fmi::fmi3::co_simulation::CoSimulationInstance::new(
+            RumocaCoSimulationInstance { idx },
+        ))
+    }
+
+    // ── Debug logging ────────────────────────────────────────────────────────
+
+    fn set_debug_logging(&self, _logging_on: bool, _categories: Vec<String>) -> Status {
+        Status::Ok
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
+    fn enter_initialization_mode(
+        &self,
+        tolerance:  Option<f64>,
+        start_time: f64,
+        stop_time:  Option<f64>,
+    ) -> Status {
+        if !start_time.is_finite()
+            || tolerance.is_some_and(|value| !value.is_finite() || value < 0.0)
+            || stop_time.is_some_and(|stop| !stop.is_finite() || stop < start_time)
+        {
+            return Status::Error;
+        }
+        store_set(self.idx, |data| {
+            if data.lifecycle != Lifecycle::Instantiated {
+                return Status::Error;
+            }
+            data.time = start_time;
+            data.lifecycle = Lifecycle::Initialization;
+            Status::Ok
+        })
+    }
+
+    fn exit_initialization_mode(&self) -> Status {
+        store_set(self.idx, |data| {
+            if data.lifecycle != Lifecycle::Initialization || derivative(data).is_err() {
+                return Status::Error;
+            }
+            data.lifecycle = Lifecycle::Step;
+            Status::Ok
+        })
+    }
+
+    fn enter_event_mode(&self) -> Status {
+        Status::Error
+    }
+
+    fn update_discrete_states(&self) -> Result<DiscreteStatesInfo, Status> {
+        Err(Status::Error)
+    }
+
+    fn terminate(&self) -> Status {
+        store_set(self.idx, |data| {
+            if data.lifecycle != Lifecycle::Step {
+                return Status::Error;
+            }
+            data.lifecycle = Lifecycle::Terminated;
+            Status::Ok
+        })
+    }
+
+    fn reset(&self) -> Status {
+        store_set(self.idx, |data| *data = ComponentData::default());
+        Status::Ok
+    }
+
+    fn enter_configuration_mode(&self) -> Status {
+        Status::Error
+    }
+
+    fn exit_configuration_mode(&self) -> Status {
+        Status::Error
+    }
+
+    // ── Float64 getter / setter ──────────────────────────────────────────────
+
+    fn get_float64(&self, value_references: Vec<u32>) -> Result<Vec<f64>, Status> {
+        store_get(self.idx, |data| {
+            let mut values = Vec::new();
+            for vr in value_references {
+                match vr {
+                    0 => values.push(data.time),
+{%- for variable in fmi.variables %}
+                    {{ variable.value_reference_fmi3 }} => values.extend_from_slice(
+                        &data.{{ variable.storage.column }}[{{ variable.storage.base }}..{{ variable.storage.base + variable.storage.scalar_count }}],
+                    ),
+{%- endfor %}
+                    _ => return Err(Status::Error),
+                }
+            }
+            Ok(values)
+        })
+    }
+
+    fn set_float64(&self, value_references: Vec<u32>, values: Vec<f64>) -> Status {
+        store_set(self.idx, |data| {
+            if !matches!(data.lifecycle, Lifecycle::Instantiated | Lifecycle::Initialization | Lifecycle::Step) {
+                return Status::Error;
+            }
+            // Apply into a candidate so an invalid value reference, length, or
+            // non-finite value cannot leave a partially updated component.
+            let mut candidate = data.clone();
+            let mut cursor = 0;
+            for vr in value_references {
+                match vr {
+{%- for variable in fmi.variables %}{% if variable.role == "State" or variable.causality == "input" or variable.causality == "parameter" %}
+                    {{ variable.value_reference_fmi3 }} => {
+{%- if variable.role == "State" %}
+                        if data.lifecycle == Lifecycle::Step {
+                            return Status::Error;
+                        }
+{%- elif variable.causality == "parameter" and not variable.tunable %}
+                        if data.lifecycle == Lifecycle::Step {
+                            return Status::Error;
+                        }
+{%- endif %}
+                        let end = cursor + {{ variable.storage.scalar_count }};
+                        if end > values.len()
+                            || values[cursor..end].iter().any(|value| !value.is_finite())
+                        {
+                            return Status::Error;
+                        }
+                        candidate.{{ variable.storage.column }}[{{ variable.storage.base }}..{{ variable.storage.base + variable.storage.scalar_count }}]
+                            .copy_from_slice(&values[cursor..end]);
+                        cursor = end;
+                    }
+{%- endif %}{% endfor %}
+                    _ => return Status::Error,
+                }
+            }
+            if cursor != values.len() {
+                return Status::Error;
+            }
+            *data = candidate;
+            Status::Ok
+        })
+    }
+
+    // ── All other typed getters – not supported ──────────────────────────────
+
+    fn get_float32(&self, _: Vec<u32>) -> Result<Vec<f32>,      Status> { Err(Status::Error) }
+    fn get_int8   (&self, _: Vec<u32>) -> Result<Vec<i8>,       Status> { Err(Status::Error) }
+    fn get_int16  (&self, _: Vec<u32>) -> Result<Vec<i16>,      Status> { Err(Status::Error) }
+    fn get_int32  (&self, _: Vec<u32>) -> Result<Vec<i32>,      Status> { Err(Status::Error) }
+    fn get_int64  (&self, _: Vec<u32>) -> Result<Vec<i64>,      Status> { Err(Status::Error) }
+    fn get_uint8  (&self, _: Vec<u32>) -> Result<Vec<u8>,       Status> { Err(Status::Error) }
+    fn get_uint16 (&self, _: Vec<u32>) -> Result<Vec<u16>,      Status> { Err(Status::Error) }
+    fn get_uint32 (&self, _: Vec<u32>) -> Result<Vec<u32>,      Status> { Err(Status::Error) }
+    fn get_uint64 (&self, _: Vec<u32>) -> Result<Vec<u64>,      Status> { Err(Status::Error) }
+    fn get_boolean(&self, _: Vec<u32>) -> Result<Vec<bool>,     Status> { Err(Status::Error) }
+    fn get_string (&self, _: Vec<u32>) -> Result<Vec<String>,   Status> { Err(Status::Error) }
+    fn get_binary (&self, _: Vec<u32>) -> Result<Vec<Vec<u8>>,  Status> { Err(Status::Error) }
+    fn get_clock  (&self, _: Vec<u32>) -> Result<Vec<bool>,     Status> { Err(Status::Error) }
+
+    // ── All other typed setters – not supported ──────────────────────────────
+
+    fn set_float32(&self, _: Vec<u32>, _: Vec<f32>)     -> Status { Status::Error }
+    fn set_int8   (&self, _: Vec<u32>, _: Vec<i8>)      -> Status { Status::Error }
+    fn set_int16  (&self, _: Vec<u32>, _: Vec<i16>)     -> Status { Status::Error }
+    fn set_int32  (&self, _: Vec<u32>, _: Vec<i32>)     -> Status { Status::Error }
+    fn set_int64  (&self, _: Vec<u32>, _: Vec<i64>)     -> Status { Status::Error }
+    fn set_uint8  (&self, _: Vec<u32>, _: Vec<u8>)      -> Status { Status::Error }
+    fn set_uint16 (&self, _: Vec<u32>, _: Vec<u16>)     -> Status { Status::Error }
+    fn set_uint32 (&self, _: Vec<u32>, _: Vec<u32>)     -> Status { Status::Error }
+    fn set_uint64 (&self, _: Vec<u32>, _: Vec<u64>)     -> Status { Status::Error }
+    fn set_boolean(&self, _: Vec<u32>, _: Vec<bool>)    -> Status { Status::Error }
+    fn set_string (&self, _: Vec<u32>, _: Vec<String>)  -> Status { Status::Error }
+    fn set_binary (&self, _: Vec<u32>, _: Vec<Vec<u8>>) -> Status { Status::Error }
+    fn set_clock  (&self, _: Vec<u32>, _: Vec<bool>)    -> Status { Status::Error }
+
+    // ── Variable dependencies ────────────────────────────────────────────────
+
+    fn get_number_of_variable_dependencies(&self, _vr: u32) -> Result<u64, Status> {
+        Err(Status::Error)
+    }
+
+    fn get_variable_dependencies(
+        &self,
+        _dependent: u32,
+    ) -> Result<Vec<VariableDependency>, Status> {
+        Err(Status::Error)
+    }
+
+    // ── FMU state serialisation ──────────────────────────────────────────────
+
+    fn get_fmu_state(&self) -> Result<Vec<u8>, Status> {
+        Err(Status::Error)
+    }
+
+    fn set_fmu_state(&self, _state: Vec<u8>) -> Status {
+        Status::Error
+    }
+
+    // ── Directional / adjoint derivatives ───────────────────────────────────
+
+    fn get_directional_derivative(
+        &self,
+        _unknowns: Vec<u32>,
+        _knowns:   Vec<u32>,
+        _seed:     Vec<f64>,
+    ) -> Result<Vec<f64>, Status> {
+        Err(Status::Error)
+    }
+
+    fn get_adjoint_derivative(
+        &self,
+        _unknowns: Vec<u32>,
+        _knowns:   Vec<u32>,
+        _seed:     Vec<f64>,
+    ) -> Result<Vec<f64>, Status> {
+        Err(Status::Error)
+    }
+
+    // ── Clock interval / shift queries – not applicable ──────────────────────
+
+    fn get_interval_decimal(&self, _: Vec<u32>) -> Result<Vec<(f64, IntervalQualifier)>, Status> {
+        Err(Status::Error)
+    }
+    fn get_interval_fraction(&self, _: Vec<u32>) -> Result<Vec<(IntervalFraction, IntervalQualifier)>, Status> {
+        Err(Status::Error)
+    }
+    fn get_shift_decimal(&self, _: Vec<u32>) -> Result<Vec<f64>, Status> {
+        Err(Status::Error)
+    }
+    fn get_shift_fraction(&self, _: Vec<u32>) -> Result<Vec<IntervalFraction>, Status> {
+        Err(Status::Error)
+    }
+    fn set_interval_decimal(&self, _: Vec<u32>, _: Vec<f64>) -> Status {
+        Status::Error
+    }
+    fn set_interval_fraction(&self, _: Vec<u32>, _: Vec<IntervalFraction>) -> Status {
+        Status::Error
+    }
+    fn set_shift_decimal(&self, _: Vec<u32>, _: Vec<f64>) -> Status {
+        Status::Error
+    }
+    fn set_shift_fraction(&self, _: Vec<u32>, _: Vec<IntervalFraction>) -> Status {
+        Status::Error
+    }
+    fn evaluate_discrete_states(&self) -> Status {
+        Status::Error
+    }
+
+    // ── Co-simulation-specific methods ──────────────────────────────────────
+
+    fn do_step(
+        &self,
+        current_communication_point:             f64,
+        communication_step_size:                 f64,
+        _no_set_fmu_state_prior_to_current_point: bool,
+    ) -> Result<DoStepResult, Status> {
+        if !current_communication_point.is_finite()
+            || !communication_step_size.is_finite()
+            || communication_step_size <= 0.0
+        {
+            return Err(Status::Error);
+        }
+        let next_time = current_communication_point + communication_step_size;
+        if !next_time.is_finite() {
+            return Err(Status::Error);
+        }
+        store_set(self.idx, |data| {
+            if data.lifecycle != Lifecycle::Step
+                || (data.time - current_communication_point).abs()
+                    > 1e-12 * data.time.abs().max(current_communication_point.abs()).max(1.0)
+            {
+                return Err(Status::Error);
+            }
+            let previous = data.clone();
+            if integrate_rk4(data, current_communication_point, communication_step_size).is_err() {
+                *data = previous;
+                return Err(Status::Error);
+            }
+            Ok(())
+        })?;
+        Ok(DoStepResult {
+            last_successful_time:  next_time,
+            event_handling_needed: false,
+            terminate_simulation:  false,
+            early_return:          false,
+        })
+    }
+
+    fn set_input_derivatives(
+        &self,
+        _requests: Vec<(u32, u32)>,
+        _values:   Vec<f64>,
+    ) -> Status {
+        Status::Error
+    }
+
+    fn get_output_derivatives(
+        &self,
+        _requests: Vec<(u32, u32)>,
+    ) -> Result<Vec<f64>, Status> {
+        Err(Status::Error)
+    }
+
+    fn enter_step_mode(&self) -> Status {
+        Status::Error
+    }
+}
+
+// ---------------------------------------------------------------------------
+// World binding
+// ---------------------------------------------------------------------------
+
+struct RumocaFmu;
+
+impl CommonGuest for RumocaFmu {
+    fn get_version() -> String {
+        "3.0".to_string()
+    }
+}
+
+impl CoSimulationGuest for RumocaFmu {
+    type CoSimulationInstance = RumocaCoSimulationInstance;
+}
+
+export!(RumocaFmu);

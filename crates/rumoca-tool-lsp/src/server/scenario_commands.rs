@@ -283,9 +283,9 @@ impl ModelicaLanguageServer {
             TargetTemplateIr::AlgorithmCode => {
                 render_algorithm_code_source_files(&bundle, &manifest, &compiled, &model)
             }
-            TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
+            TargetTemplateIr::Fmi | TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
                 return Some(Self::simulation_error_value(format!(
-                    "target '{}' uses {:?} IR; editor target rendering requires DAE or Solve IR",
+                    "target '{}' uses {:?} IR; editor target rendering supports DAE, Solve, or Algorithm Code IR",
                     target_name, manifest.ir
                 )));
             }

@@ -13,6 +13,7 @@ members = [
     # Executable reference semantics (SPEC_0037 verification track)
     "crates/rumoca-reference",
     "crates/rumoca-ir-dae",
+    "crates/rumoca-ir-fmi",
     "crates/rumoca-ir-solve",
     "crates/rumoca-eval-ast",
     "crates/rumoca-eval-flat",
@@ -22,6 +23,7 @@ members = [
     "crates/rumoca-ir-ast",
     "crates/rumoca-ir-flat",
     "crates/rumoca-phase-codegen",
+    "crates/rumoca-phase-fmi",
     "crates/rumoca-phase-galec",
     "crates/rumoca-phase-flatten",
     "crates/rumoca-phase-instantiate",
@@ -90,6 +92,7 @@ rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
 rumoca-reference = { path = "crates/rumoca-reference" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
+rumoca-ir-fmi = { path = "crates/rumoca-ir-fmi" }
 rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
 rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
 rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
@@ -107,6 +110,7 @@ rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
 rumoca-phase-solve = { path = "crates/rumoca-phase-solve", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
+rumoca-phase-fmi = { path = "crates/rumoca-phase-fmi" }
 rumoca-phase-galec = { path = "crates/rumoca-phase-galec" }
 rumoca-signal-frame = { path = "crates/rumoca-signal-frame" }
 rumoca-codec = { path = "crates/rumoca-codec" }

@@ -1,0 +1,62 @@
+version = 1
+ir = "fmi"
+name = "fmi3"
+description = "FMI 3.0.2 source-code ME+CS FMU with native tensor variables"
+execution_mode = "packaged"
+deployment_class = "fmu"
+readiness_level = 1
+completion_message = """FMI 3 ME+CS source FMU written to: {{ out_dir }}
+  {{ model_name }}/     unpacked source FMU
+  {{ model_name }}.fmu  standards-valid flat FMU archive
+Advertised profiles: FMI 3 Model Exchange and Co-Simulation."""
+
+[package]
+root = "{{ model_name }}"
+required_files = ["modelDescription.xml", "sources/buildDescription.xml", "sources/model.c"]
+
+[package.archive]
+path = "{{ model_name }}.fmu"
+format = "zip"
+root = "flat"
+
+[capabilities]
+continuous_states = true
+residual_equations = false
+scalar_fallback = true
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = false
+runtime_events = false
+clocks = false
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[capabilities.tensor]
+matmul = "scalar"
+linsolve = "unsupported"
+elementwise = "scalar"
+stencil = "scalar"
+reductions = "scalar"
+layout = "row-major"
+supports_dynamic_shapes = false
+sparse = false
+dtypes = ["f64"]
+
+[[files]]
+path = "modelDescription.xml"
+template = "modelDescription.xml.jinja"
+id = "fmu"
+
+[[files]]
+path = "sources/buildDescription.xml"
+template = "buildDescription.xml.jinja"
+
+[[files]]
+path = "sources/model.c"
+template = "model.c.jinja"

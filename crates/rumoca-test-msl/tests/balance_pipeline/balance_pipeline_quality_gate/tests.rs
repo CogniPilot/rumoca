@@ -440,7 +440,7 @@ fn current_quality_snapshot_includes_pipeline_progression() {
         .insert("events".to_string(), 2);
     summary
         .unsupported_feature_counts_by_backend
-        .entry("c-solve".to_string())
+        .entry("c-ode".to_string())
         .or_default()
         .insert("events".to_string(), 2);
     summary.failures_by_phase.insert(
@@ -494,7 +494,7 @@ fn current_quality_snapshot_includes_pipeline_progression() {
     assert_eq!(
         pipeline
             .get("unsupported_feature_counts_by_backend")
-            .and_then(|value| value.get("c-solve"))
+            .and_then(|value| value.get("c-ode"))
             .and_then(|value| value.get("events"))
             .and_then(Value::as_u64),
         Some(2)

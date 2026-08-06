@@ -76,6 +76,7 @@ pub mod templates {
     pub struct BuiltinTarget {
         pub name: &'static str,
         pub manifest: &'static str,
+        pub readme: &'static str,
         pub templates: &'static [BuiltinTargetTemplate],
         pub assets: &'static [BuiltinTargetAsset],
     }
