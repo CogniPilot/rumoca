@@ -222,11 +222,9 @@ fn classify_fn(declared: bool, raises: bool) -> UserFunction {
     UserFunction {
         kind: FunctionKind::Stateless,
         name: n("classify"),
-        signals: if declared {
-            vec![id("probeFault")]
-        } else {
-            Vec::new()
-        },
+        signals: std::iter::once(id("NAN"))
+            .chain(declared.then(|| id("probeFault")))
+            .collect(),
         parameters: vec![in_real("v"), out_real("w")],
         locals: Vec::new(),
         statements: vec![Spanned::dummy(Statement::If(IfStatement {
@@ -288,7 +286,7 @@ fn estimator() -> Block {
             local("w"),
             Expression::Call(fcall("classify", vec![sref("u")])),
         ),
-        catch_stmt(&["probeFault"], vec![assign(local("w"), r(0.0))]),
+        catch_stmt(&["probeFault", "NAN"], vec![assign(local("w"), r(0.0))]),
         call_stmt("accumulate", vec![lref("w")]),
         assign(
             state("y"),
@@ -510,6 +508,7 @@ fn integer_division_rejected() {
 #[test]
 fn if_expression_branches_must_be_equally_typed() {
     let mut block = minimal();
+    block.do_step.signals = vec![PredefinedSignal::Nan];
     block.do_step.locals = vec![int_decl("k")];
     block.do_step.statements = vec![assign(
         local("k"),
@@ -1021,6 +1020,7 @@ fn stateful_call_must_be_isolated_in_its_expression() {
 #[test]
 fn stateful_calls_banned_inside_if_expressions() {
     let mut block = minimal();
+    block.do_step.signals = vec![PredefinedSignal::Nan];
     block.protected_functions = vec![bump_fn()];
     block.do_step.locals = vec![real_decl("w")];
     block.do_step.statements = vec![assign(
@@ -1050,6 +1050,7 @@ fn control_inputs_are_read_only() {
 #[test]
 fn undeclared_escape_rejected() {
     let mut block = minimal();
+    block.do_step.signals = vec![PredefinedSignal::Nan];
     block.error_signals = vec![id("probeFault")];
     // Raises `probeFault` without declaring it in the signals clause.
     block.protected_functions = vec![classify_fn(false, true)];
@@ -1084,7 +1085,7 @@ fn testing_an_already_caught_signal_rejected() {
     block.do_step.statements[1] = Spanned::dummy(Statement::If(IfStatement {
         branches: vec![
             IfBranch {
-                condition: catch_cond(&["probeFault"]),
+                condition: catch_cond(&["probeFault", "NAN"]),
                 body: vec![assign(local("w"), r(0.0))],
                 span: Span::DUMMY,
             },
@@ -1097,6 +1098,41 @@ fn testing_an_already_caught_signal_rejected() {
         else_body: None,
     }));
     expect_codes(&block, &["EG038"]);
+}
+
+#[test]
+fn real_comparisons_require_nan_in_the_escape_clause() {
+    let mut block = minimal();
+    block.do_step.statements = vec![Spanned::dummy(Statement::If(IfStatement {
+        branches: vec![IfBranch {
+            condition: Condition::Expression(bin(BinaryOp::Eq, sref("u"), r(0.0))),
+            body: vec![],
+            span: Span::DUMMY,
+        }],
+        else_body: None,
+    }))];
+    expect_codes(&block, &["EG036"]);
+
+    block.do_step.signals = vec![PredefinedSignal::Nan];
+    expect_valid(&block);
+}
+
+#[test]
+fn integer_comparisons_do_not_spuriously_signal_nan() {
+    let mut block = minimal();
+    block.do_step.locals = vec![int_decl("k")];
+    block.do_step.statements = vec![Spanned::dummy(Statement::If(IfStatement {
+        branches: vec![IfBranch {
+            condition: Condition::Expression(bin(BinaryOp::Lt, lref("k"), int(4))),
+            body: vec![],
+            span: Span::DUMMY,
+        }],
+        else_body: None,
+    }))];
+    expect_valid(&block);
+
+    block.do_step.signals = vec![PredefinedSignal::Nan];
+    expect_codes(&block, &["EG037"]);
 }
 
 #[test]

@@ -57,10 +57,14 @@ pub struct AlgorithmCodePackage {
 
 impl AlgorithmCodePackage {
     pub fn construct(
-        block: crate::Block,
+        mut block: crate::Block,
         variable_nominals: Vec<Option<f64>>,
         clock_variable_name: &str,
     ) -> Result<Self, PackageError> {
+        let [startup, recalibrate, do_step] = crate::validate::derive_method_signal_clauses(&block);
+        block.startup.signals = startup;
+        block.recalibrate.signals = recalibrate;
+        block.do_step.signals = do_step;
         let block = CheckedAlgorithmBlock::construct(block)?;
         let declarations = block_declarations(block.block());
         if declarations.len() != variable_nominals.len() {

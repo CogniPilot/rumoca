@@ -23,9 +23,10 @@
 //! analysis is the sole reporter of resolution failures (EG014/EG015); the
 //! other analyses resolve silently and skip what they cannot resolve.
 //!
-//! Slice-2 deferral (SPEC_0034 D8, trap T9): Real relational operators
-//! signaling `NAN` is NOT yet accounted in the escape-set dataflow; the
-//! hook point is documented in the `signals` module.
+//! Real relational and equality operators signal `NAN` for qNaN operands
+//! (SPEC_0034 D8, trap T9). Signal analysis consumes the expression types
+//! proven by type analysis, so Integer and Boolean comparisons do not acquire
+//! spurious escape signals.
 
 use crate::ast::Block;
 use crate::diagnostic::GalecError;
@@ -60,10 +61,22 @@ pub fn validate(block: &Block) -> Result<(), Vec<GalecError>> {
     let mut diags = Vec::new();
     structure::check(&ctx, &mut diags);
     names::check(&ctx, &mut diags);
-    types::check(&ctx, &mut diags);
+    let expression_types = types::check(&ctx, &mut diags);
     dims::check(&ctx, &mut diags);
     termination::check(&ctx, &mut diags);
     effects::check(&ctx, &mut diags);
-    signals::check(&ctx, &mut diags);
+    signals::check(&ctx, &expression_types, &mut diags);
     if diags.is_empty() { Ok(()) } else { Err(diags) }
+}
+
+/// Derive the redundant method signal clauses at the checked package
+/// construction boundary. Parsed source still goes through [`validate`]
+/// unchanged, so an authored incorrect clause remains a diagnostic.
+pub(crate) fn derive_method_signal_clauses(
+    block: &Block,
+) -> [Vec<crate::ast::PredefinedSignal>; 3] {
+    let ctx = context::BlockContext::new(block);
+    let mut diagnostics = Vec::new();
+    let expression_types = types::check(&ctx, &mut diagnostics);
+    signals::method_signal_clauses(&ctx, &expression_types)
 }

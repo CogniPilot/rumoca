@@ -113,7 +113,7 @@ array sizes rejected.
 | Type/shape | expressions carry exact type/extents; `/` is Real-only; `^`→Real; no implicit promotion; `else` mandatory |
 | Static domain | dimensions, subscripts, and loop bounds carry checked constant-Integer proofs |
 | Calls/effects | branded function IDs make unresolved/recursive calls impossible; body capabilities restrict writes and stateful calls |
-| Signals | construction derives §3.2.5 escape sets; only settable signals testable; ≤16 user signals; method escape ⊆ predefined 6 |
+| Signals | construction derives §3.2.5 escape sets, including NAN from Real comparisons; only settable signals testable; ≤16 user signals; method escape ⊆ predefined 6 |
 
 ### Language Traps (T1–T14)
 

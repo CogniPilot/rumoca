@@ -272,7 +272,7 @@ fn rate_controller_do_step() -> BlockMethod {
         else_value: Box::new(lref("unboundedDrive")),
     });
     BlockMethod {
-        signals: vec![],
+        signals: vec![PredefinedSignal::Nan],
         locals: vec![
             real_decl(n("trackingError")),
             real_decl(n("derivativeEstimate")),
@@ -359,6 +359,7 @@ public
         self.integralGain := self.gain / self.integralTime;
     end Recalibrate;
     method DoStep
+        signals NAN;
     protected
         Real trackingError;
         Real derivativeEstimate;
@@ -538,7 +539,7 @@ fn classify_function() -> UserFunction {
     UserFunction {
         kind: FunctionKind::Stateless,
         name: n("classify"),
-        signals: vec![id("sensorFault")],
+        signals: vec![id("sensorFault"), id("NAN")],
         parameters: vec![
             Parameter {
                 direction: Direction::Input,
@@ -716,7 +717,7 @@ const SIGNAL_GUARD_ALG: &str = "block SignalGuard
 protected
     signal sensorFault;
     function classify
-        signals sensorFault;
+        signals sensorFault, NAN;
         input Real v;
         output Boolean ok;
     algorithm

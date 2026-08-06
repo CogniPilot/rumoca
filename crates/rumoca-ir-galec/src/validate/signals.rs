@@ -25,24 +25,28 @@
 //!   in-set); the statement out-set unions the loop's in-set, so a zero-trip
 //!   loop never loses signals.
 //!
-//! Slice-2 hook (SPEC_0034 D8, trap T9): Real relational operators signal
-//! `NAN` when an operand is qNaN. Slice 1 accounts no relational signals;
-//! see [`SignalWalker::relational_signal_set`] — enabling NAN accounting is
-//! a local change there (adding operand-type awareness), with no dataflow
-//! restructuring.
+//! Real relational and equality operators signal `NAN` when an operand is
+//! qNaN (SPEC_0034 D8, trap T9). This walker consumes the expression types
+//! proven by the preceding type analysis, so the escape set is exact rather
+//! than conservatively attaching `NAN` to Integer or Boolean comparisons.
 
 use crate::ast::{
-    BinaryOp, Condition, Expression, FunctionCall, Identifier, IfStatement, SignalCheck, Spanned,
-    Statement,
+    BinaryOp, Condition, Expression, FunctionCall, Identifier, IfStatement, PrecedenceClass,
+    PredefinedSignal, ScalarType, SignalCheck, Spanned, Statement,
 };
 use crate::diagnostic::{GalecError, PathSegment};
 
 use super::context::{BlockContext, BodyView, Cursor, SignalSet, SignalTable, resolve_call};
+use super::types::ExpressionTypes;
 
 /// User-defined signal budget in the 32-bit encoding (§3.2.5 §1.6).
 const MAX_USER_SIGNALS: usize = 16;
 
-pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
+pub(super) fn check(
+    ctx: &BlockContext<'_>,
+    expression_types: &ExpressionTypes,
+    diags: &mut Vec<GalecError>,
+) {
     if ctx.signals.user_count() > MAX_USER_SIGNALS {
         diags.push(GalecError::TooManyUserSignals {
             location: Cursor::for_block(ctx).here(),
@@ -50,13 +54,19 @@ pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
         });
     }
     for body in ctx.bodies() {
-        check_body(ctx, &body, diags);
+        check_body(ctx, expression_types, &body, diags);
     }
 }
 
-fn check_body(ctx: &BlockContext<'_>, body: &BodyView<'_>, diags: &mut Vec<GalecError>) {
+fn check_body(
+    ctx: &BlockContext<'_>,
+    expression_types: &ExpressionTypes,
+    body: &BodyView<'_>,
+    diags: &mut Vec<GalecError>,
+) {
     let mut walker = SignalWalker {
         ctx,
+        expression_types,
         cursor: Cursor::for_body(ctx, body),
         closures: Vec::new(),
         diags,
@@ -80,8 +90,33 @@ fn check_body(ctx: &BlockContext<'_>, body: &BodyView<'_>, diags: &mut Vec<Galec
     }
 }
 
+/// Exact predefined escape clauses for the three block methods.
+pub(super) fn method_signal_clauses(
+    ctx: &BlockContext<'_>,
+    expression_types: &ExpressionTypes,
+) -> [Vec<PredefinedSignal>; 3] {
+    let bodies = ctx.bodies();
+    std::array::from_fn(|index| {
+        let body = &bodies[index];
+        let mut diagnostics = Vec::new();
+        let mut walker = SignalWalker {
+            ctx,
+            expression_types,
+            cursor: Cursor::for_body(ctx, body),
+            closures: Vec::new(),
+            diags: &mut diagnostics,
+        };
+        let computed = walker.statements(body.statements, SignalSet::default());
+        PredefinedSignal::ALL
+            .into_iter()
+            .filter(|signal| computed.contains(SignalTable::predefined_bit(*signal)))
+            .collect()
+    })
+}
+
 struct SignalWalker<'a, 'd> {
     ctx: &'a BlockContext<'a>,
+    expression_types: &'a ExpressionTypes,
     cursor: Cursor,
     /// Signal-closures in scope: (name, statically captured set), LIFO.
     closures: Vec<(String, SignalSet)>,
@@ -325,7 +360,7 @@ impl<'a> SignalWalker<'a, '_> {
             Expression::Binary { op, lhs, rhs } => {
                 let mut set = self.expression_signals(lhs);
                 set.union_with(&self.expression_signals(rhs));
-                set.union_with(&Self::relational_signal_set(*op));
+                set.union_with(&self.relational_signal_set(*op, lhs, rhs));
                 set
             }
         }
@@ -346,13 +381,22 @@ impl<'a> SignalWalker<'a, '_> {
         set
     }
 
-    /// Slice-2 hook (SPEC_0034 D8, trap T9): under full Beta-1 semantics a
-    /// Real relational comparison signals `NAN` for qNaN operands. Slice 1
-    /// accounts no relational signals; flipping this on later means
-    /// returning `{NAN}` for relational/equality operators with Real
-    /// operands (requires operand types, available from the type analysis).
-    fn relational_signal_set(_op: BinaryOp) -> SignalSet {
-        SignalSet::default()
+    /// Under full Beta-1 semantics, Real relational and equality comparisons
+    /// signal `NAN` for qNaN operands. A valid comparison has equal operand
+    /// types, so the proven left type is sufficient.
+    fn relational_signal_set(&self, op: BinaryOp, lhs: &Expression, rhs: &Expression) -> SignalSet {
+        let compares = matches!(
+            op.precedence_class(),
+            PrecedenceClass::Relational | PrecedenceClass::Equality
+        );
+        let real = self.expression_types.get(lhs)
+            == Some(super::context::Ty::Scalar(ScalarType::Real))
+            && self.expression_types.get(rhs) == Some(super::context::Ty::Scalar(ScalarType::Real));
+        let mut set = SignalSet::default();
+        if compares && real {
+            set.insert(SignalTable::predefined_bit(PredefinedSignal::Nan));
+        }
+        set
     }
 
     // -----------------------------------------------------------------

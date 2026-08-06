@@ -689,7 +689,7 @@ fn pid_do_step() -> BlockMethod {
         else_value: Box::new(lref("unboundedDrive")),
     });
     BlockMethod {
-        signals: vec![],
+        signals: vec![PredefinedSignal::Nan],
         locals: vec![
             real_decl(n("trackingError")),
             real_decl(n("derivativeEstimate")),
@@ -931,7 +931,7 @@ fn classify_function() -> UserFunction {
     UserFunction {
         kind: FunctionKind::Stateless,
         name: n("classify"),
-        signals: vec![id("sensorFault")],
+        signals: vec![id("sensorFault"), id("NAN")],
         parameters: vec![
             in_real("v"),
             Parameter {
@@ -1240,7 +1240,7 @@ fn canonical_classify() -> UserFunction {
     UserFunction {
         kind: FunctionKind::Stateless,
         name: n("classify"),
-        signals: vec![id("probeFault")],
+        signals: vec![id("probeFault"), id("NAN")],
         parameters: vec![in_real("v"), out_real("w")],
         locals: vec![],
         statements: vec![Spanned::dummy(Statement::If(IfStatement {
@@ -1313,7 +1313,7 @@ fn canonical_estimator() -> Block {
                     closure: None,
                     test: Some(SignalTest {
                         negated: false,
-                        signals: vec![id("probeFault")],
+                        signals: vec![id("probeFault"), id("NAN")],
                     }),
                     fallback: None,
                 }),
