@@ -13,6 +13,8 @@ mod codegen_example_regression;
 #[cfg(feature = "fmu-packaging")]
 #[path = "fmi_ls_wasm_runtime.rs"]
 mod fmi_ls_wasm_runtime;
+#[path = "modelica_interchange_runtime.rs"]
+mod modelica_interchange_runtime;
 #[path = "template_runtime_policy.rs"]
 mod template_runtime_policy;
 #[path = "template_target_ci.rs"]

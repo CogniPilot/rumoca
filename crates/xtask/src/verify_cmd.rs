@@ -782,7 +782,7 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Modelica,
         test: TEMPLATE_RUNTIME_TEST,
-        filters: &["modelica_interchange_"],
+        filters: &["modelica_interchange_runtime::"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Rust,
