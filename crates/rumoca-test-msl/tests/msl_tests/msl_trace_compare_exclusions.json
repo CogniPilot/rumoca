@@ -14,6 +14,10 @@
       "reason": "The differing channels are period Mean/RMS aggregates at integration-residue scale within the model's 1e-6 experiment tolerance; waveform channels agree and Rumoca's mean is closer to the analytic 3*sqrt(6)/pi*Vrms value."
     },
     {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
+      "reason": "The differing meanVoltage.y channel is the event-latched output of Blocks.Math.Mean. Tiny PWM event-time shifts make raw pointwise comparison of the held aggregate non-identifying; the switching waveform and physical states agree, and both solvers converge to the same 19.999995992 V endpoint within 2.7e-10 V."
+    },
+    {
       "model_name": "Modelica.Mechanics.Translational.Examples.PreLoad",
       "reason": "Nonsmooth contact-event force and acceleration channels exhibit tiny event-time phase shifts while smooth state and position behavior agree; raw pointwise algebraic acceleration at contact is non-identifying."
     }

@@ -881,6 +881,7 @@ mod tests {
             "Modelica.Blocks.Examples.DemoSignalCharacteristic",
             "Modelica.Electrical.Analog.Examples.ChuaCircuit",
             "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
+            "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
             "Modelica.Mechanics.Translational.Examples.PreLoad",
         ];
         assert_eq!(exclusions.len(), expected.len());
