@@ -1669,7 +1669,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: CogniPilot/modelica_models
-          ref: 973cc7f4d5ff39eee23303f83e6f10473a254f51
+          ref: 16172e4935956d872477814cf63bd3690b3e10a4
           path: target/modelica-models
           persist-credentials: false
 
