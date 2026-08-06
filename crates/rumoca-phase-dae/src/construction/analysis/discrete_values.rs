@@ -233,9 +233,11 @@ fn algorithm_reads_target_before_definition(
                     && args
                         .iter()
                         .any(|argument| expression_reads_current_target(argument, target, roles));
-                if outputs.iter().flatten().any(|output| {
-                    rumoca_core::component_ref_to_base_reference(output).var_name() == target
-                }) {
+                if outputs
+                    .iter()
+                    .flatten()
+                    .any(|output| source_target_contains(&output.to_var_name(), target))
+                {
                     written = true;
                 }
             }

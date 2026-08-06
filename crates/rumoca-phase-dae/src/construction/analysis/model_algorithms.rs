@@ -17,6 +17,7 @@ pub(in crate::construction) enum ModelAlgorithmPlan {
     },
     Event {
         tensor_loops: HashMap<Span, ModelEventTensorLoopPlan>,
+        function_calls: HashMap<Span, ModelEventFunctionCallPlan>,
     },
 }
 
@@ -31,6 +32,7 @@ pub(super) fn analyze_model_algorithm(
     flat: &flat::Model,
     algorithm: &flat::Algorithm,
     roles: &HashMap<VarName, PlannedRole>,
+    shapes: &FunctionShapeAnalysis,
 ) -> Result<ModelAlgorithmPlan, ToDaeError> {
     if contains_event_control(&algorithm.statements) {
         let targets = model_algorithm_targets(flat, algorithm);
@@ -48,7 +50,18 @@ pub(super) fn analyze_model_algorithm(
         }
         let mut tensor_loops = HashMap::new();
         analyze_event_tensor_loops(flat, &algorithm.statements, &mut tensor_loops)?;
-        return Ok(ModelAlgorithmPlan::Event { tensor_loops });
+        let mut function_calls = HashMap::new();
+        analyze_event_function_calls(
+            flat,
+            &algorithm.statements,
+            roles,
+            shapes,
+            &mut function_calls,
+        )?;
+        return Ok(ModelAlgorithmPlan::Event {
+            tensor_loops,
+            function_calls,
+        });
     }
     let targets = model_algorithm_targets(flat, algorithm);
     if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets, roles)? {

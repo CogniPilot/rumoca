@@ -14,6 +14,16 @@ pub(super) struct AlgorithmFunctionCall<'source> {
     pub(super) arguments: &'source [Expression],
     pub(super) outputs: &'source [Option<rumoca_core::ComponentReference>],
     pub(super) span: Span,
+    pub(super) plan: &'source ModelEventFunctionCallPlan,
+}
+
+struct AlgorithmCallTarget<'scope, 'shape, 'dae> {
+    context: AlgorithmStatementContext<'scope, 'shape, 'dae>,
+    guard: EventGuard<'dae>,
+    target: &'scope VarName,
+    value: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+    projection: &'scope [usize],
 }
 
 fn statement_guard<'dae>(
@@ -172,8 +182,8 @@ pub(super) fn lower_algorithm_function_call<'dae>(
         .collect::<Result<Vec<_>, _>>()?;
     let provenance = dae::DaeProvenance::source(call.span)?;
     let mut updates = Vec::new();
-    for (ordinal, output) in call.outputs.iter().enumerate() {
-        let Some(output) = output else {
+    for (ordinal, (output, plan)) in call.outputs.iter().zip(&call.plan.outputs).enumerate() {
+        let (Some(_), Some(plan)) = (output, plan) else {
             continue;
         };
         let value = construction.expressions(|expressions| {
@@ -181,18 +191,69 @@ pub(super) fn lower_algorithm_function_call<'dae>(
                 .at(provenance)
                 .call(function, ordinal, arguments.iter().copied())
         })?;
-        updates.push((output.to_var_name(), value));
-        lower_when_assignment(
-            construction,
-            discrete_values,
-            discrete_owner,
-            context.coordinates[&output.to_var_name()],
-            guard,
-            value,
-            provenance,
-        )?;
+        match plan {
+            ModelEventFunctionOutputPlan::Coordinate(target) => {
+                lower_algorithm_call_target(
+                    construction,
+                    discrete_values,
+                    discrete_owner,
+                    AlgorithmCallTarget {
+                        context,
+                        guard,
+                        target,
+                        value,
+                        provenance,
+                        projection: &[],
+                    },
+                    &mut updates,
+                )?;
+            }
+            ModelEventFunctionOutputPlan::Record(fields) => {
+                for field in fields {
+                    lower_algorithm_call_target(
+                        construction,
+                        discrete_values,
+                        discrete_owner,
+                        AlgorithmCallTarget {
+                            context,
+                            guard,
+                            target: &field.target,
+                            value,
+                            provenance,
+                            projection: &field.projection,
+                        },
+                        &mut updates,
+                    )?;
+                }
+            }
+        }
     }
     Ok(updates)
+}
+
+fn lower_algorithm_call_target<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    discrete_owner: Option<DiscreteValueOwnerHandle>,
+    target: AlgorithmCallTarget<'_, '_, 'dae>,
+    updates: &mut Vec<(VarName, dae::ExprId<'dae>)>,
+) -> Result<(), dae::DaeConstructionError> {
+    let mut value = target.value;
+    for ordinal in target.projection {
+        value = construction
+            .expressions(|expressions| expressions.at(target.provenance).field(value, *ordinal))?;
+    }
+    lower_when_assignment(
+        construction,
+        discrete_values,
+        discrete_owner,
+        target.context.coordinates[target.target],
+        target.guard,
+        value,
+        target.provenance,
+    )?;
+    updates.push((target.target.clone(), value));
+    Ok(())
 }
 
 pub(super) fn lower_algorithm_tensor_loop<'dae>(
@@ -289,6 +350,7 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     clock: dae::ClockId<'dae>,
+    function_calls: &HashMap<Span, ModelEventFunctionCallPlan>,
     statements: &[rumoca_core::Statement],
 ) -> Result<(), dae::DaeConstructionError> {
     for statement in statements {
@@ -308,13 +370,10 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
                 }
             }
             rumoca_core::Statement::FunctionCall { outputs, span, .. } => {
-                for output in outputs.iter().flatten() {
-                    own_clocked_coordinate(
-                        construction,
-                        clock,
-                        coordinates[&output.to_var_name()],
-                        *span,
-                    )?;
+                let plan = &function_calls[span];
+                debug_assert_eq!(outputs.len(), plan.outputs.len());
+                for output in plan.outputs.iter().flatten() {
+                    own_clocked_function_output(construction, coordinates, clock, output, *span)?;
                 }
             }
             rumoca_core::Statement::If {
@@ -323,24 +382,68 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
                 ..
             } => {
                 for block in cond_blocks {
-                    own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+                    own_clocked_algorithm_targets(
+                        construction,
+                        coordinates,
+                        clock,
+                        function_calls,
+                        &block.stmts,
+                    )?;
                 }
                 if let Some(statements) = else_block {
-                    own_clocked_algorithm_targets(construction, coordinates, clock, statements)?;
+                    own_clocked_algorithm_targets(
+                        construction,
+                        coordinates,
+                        clock,
+                        function_calls,
+                        statements,
+                    )?;
                 }
             }
             rumoca_core::Statement::When { blocks, .. } => {
                 for block in blocks {
-                    own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+                    own_clocked_algorithm_targets(
+                        construction,
+                        coordinates,
+                        clock,
+                        function_calls,
+                        &block.stmts,
+                    )?;
                 }
             }
             rumoca_core::Statement::For { equations, .. } => {
-                own_clocked_algorithm_targets(construction, coordinates, clock, equations)?;
+                own_clocked_algorithm_targets(
+                    construction,
+                    coordinates,
+                    clock,
+                    function_calls,
+                    equations,
+                )?;
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+fn own_clocked_function_output<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    clock: dae::ClockId<'dae>,
+    output: &ModelEventFunctionOutputPlan,
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    match output {
+        ModelEventFunctionOutputPlan::Coordinate(target) => {
+            own_clocked_coordinate(construction, clock, coordinates[target], span)
+        }
+        ModelEventFunctionOutputPlan::Record(fields) => {
+            for field in fields {
+                own_clocked_coordinate(construction, clock, coordinates[&field.target], span)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn own_clocked_coordinate<'dae>(

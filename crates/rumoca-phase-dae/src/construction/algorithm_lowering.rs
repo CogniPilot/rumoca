@@ -6,6 +6,7 @@ pub(super) struct AlgorithmEnvironment<'scope, 'shape, 'dae> {
     pub(super) functions: &'scope FunctionRegistry<'shape, 'dae>,
     pub(super) sample_lattices: &'scope [(Span, PeriodicClockSchedule)],
     pub(super) tensor_loops: Option<&'scope HashMap<Span, ModelEventTensorLoopPlan>>,
+    pub(super) function_calls: Option<&'scope HashMap<Span, ModelEventFunctionCallPlan>>,
 }
 
 #[derive(Clone, Copy)]
@@ -31,13 +32,19 @@ pub(super) fn lower_algorithms<'dae>(
     // Claim every sampled algorithm coordinate before lowering any body. A
     // consumer is allowed to precede its producer in Flat order; the unique
     // clock owner is an analysis fact, not an artifact of lowering order.
-    for algorithm in &request.flat.algorithms {
-        preclaim_algorithm_clock_targets(
-            construction,
-            request.environment,
-            &algorithm.statements,
-            None,
-        )?;
+    for (algorithm, plan) in request.flat.algorithms.iter().zip(request.plans) {
+        let environment = match plan {
+            ModelAlgorithmPlan::Event {
+                tensor_loops,
+                function_calls,
+            } => AlgorithmEnvironment {
+                tensor_loops: Some(tensor_loops),
+                function_calls: Some(function_calls),
+                ..request.environment
+            },
+            _ => request.environment,
+        };
+        preclaim_algorithm_clock_targets(construction, environment, &algorithm.statements, None)?;
     }
     for (algorithm, plan) in request.flat.algorithms.iter().zip(request.plans) {
         let owner_provenance =
@@ -87,10 +94,14 @@ pub(super) fn lower_algorithms<'dae>(
                     binder_spans,
                 )?;
             }
-            ModelAlgorithmPlan::Event { tensor_loops } => {
+            ModelAlgorithmPlan::Event {
+                tensor_loops,
+                function_calls,
+            } => {
                 let mut values = HashMap::new();
                 let environment = AlgorithmEnvironment {
                     tensor_loops: Some(tensor_loops),
+                    function_calls: Some(function_calls),
                     ..request.environment
                 };
                 lower_algorithm_statements(
@@ -122,6 +133,9 @@ fn preclaim_algorithm_clock_targets<'dae>(
             construction,
             environment.coordinates,
             clock.into(),
+            environment
+                .function_calls
+                .expect("event analysis supplies clocked function-call plans"),
             statements,
         );
     }
@@ -194,13 +208,7 @@ fn lower_algorithm_statement<'dae>(
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
     statement: &rumoca_core::Statement,
 ) -> Result<(), dae::DaeConstructionError> {
-    let context = AlgorithmStatementContext {
-        coordinates: environment.coordinates,
-        functions: environment.functions,
-        values,
-        parent: owner.parent,
-        owner_span: owner.span,
-    };
+    let context = algorithm_statement_context(environment, owner, values);
     match statement {
         rumoca_core::Statement::Assignment { comp, value, span } => {
             let updates = lower_algorithm_assignment(
@@ -246,16 +254,19 @@ fn lower_algorithm_statement<'dae>(
             outputs,
             span,
         } => {
-            let updates = lower_algorithm_function_call(
+            let updates = lower_algorithm_call_statement(
                 construction,
                 discrete_values,
-                owner.discrete_owner,
+                owner,
                 context,
                 AlgorithmFunctionCall {
                     component: comp,
                     arguments: args,
                     outputs,
                     span: *span,
+                    plan: &environment
+                        .function_calls
+                        .expect("event analysis supplies function-call receiver plans")[span],
                 },
             )?;
             values.extend(updates);
@@ -292,6 +303,36 @@ fn lower_algorithm_statement<'dae>(
         ),
         _ => unreachable!("algorithm analysis restricts the checked statement grammar"),
     }
+}
+
+fn algorithm_statement_context<'scope, 'shape, 'dae>(
+    environment: AlgorithmEnvironment<'scope, 'shape, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    values: &'scope HashMap<VarName, dae::ExprId<'dae>>,
+) -> AlgorithmStatementContext<'scope, 'shape, 'dae> {
+    AlgorithmStatementContext {
+        coordinates: environment.coordinates,
+        functions: environment.functions,
+        values,
+        parent: owner.parent,
+        owner_span: owner.span,
+    }
+}
+
+fn lower_algorithm_call_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    owner: AlgorithmOwner<'dae>,
+    context: AlgorithmStatementContext<'_, '_, 'dae>,
+    call: AlgorithmFunctionCall<'_>,
+) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
+    lower_algorithm_function_call(
+        construction,
+        discrete_values,
+        owner.discrete_owner,
+        context,
+        call,
+    )
 }
 
 fn lower_algorithm_for_statement<'dae>(
@@ -414,6 +455,9 @@ fn lower_algorithm_if<'dae>(
                 construction,
                 environment.coordinates,
                 clock.into(),
+                environment
+                    .function_calls
+                    .expect("event analysis supplies clocked function-call plans"),
                 &block.stmts,
             )?;
         }
@@ -719,6 +763,9 @@ fn lower_algorithm_when<'dae>(
                 construction,
                 environment.coordinates,
                 clock.into(),
+                environment
+                    .function_calls
+                    .expect("event analysis supplies clocked function-call plans"),
                 &block.stmts,
             )?;
         }

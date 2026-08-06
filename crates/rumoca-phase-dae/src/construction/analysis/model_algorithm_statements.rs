@@ -440,16 +440,16 @@ fn validate_function_call_output(
     let target = output.to_var_name();
     let is_whole_coordinate =
         !output.parts().is_empty() && output.parts().iter().all(|part| part.subs.is_empty());
-    let is_discrete = matches!(
+    let is_writable = matches!(
         roles.get(&target),
-        Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue | PlannedRole::Aggregate)
     );
-    if is_whole_coordinate && is_discrete {
+    if is_whole_coordinate && is_writable {
         return Ok(());
     }
     Err(ToDaeError::unsupported_algorithm(
         "model",
-        format!("function-call output `{target}` is not a whole discrete coordinate"),
+        format!("function-call output `{target}` is not a whole discrete coordinate or record"),
         output.span(),
     ))
 }

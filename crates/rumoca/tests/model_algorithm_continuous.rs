@@ -142,6 +142,90 @@ fn event_guarded_model_algorithm_constructs_one_checked_discrete_action() {
 }
 
 #[test]
+fn sampled_multi_result_record_receiver_projects_checked_discrete_leaves() {
+    let compiled = Compiler::new()
+        .model("RecordTransition.Controller")
+        .compile_str(
+            r#"
+package RecordTransition
+  record State
+    Real first;
+    Real second;
+  end State;
+
+  function advance
+    input State previous;
+    output State next;
+    output Real command;
+  algorithm
+    next.first := previous.first + 1.0;
+    next.second := previous.second + 2.0;
+    command := next.first + next.second;
+  end advance;
+
+  block Controller
+    discrete output Real first(start = 0.0);
+    discrete output Real second(start = 0.0);
+    discrete output Real command(start = 0.0);
+  protected
+    State nextState;
+    discrete Real nextCommand(start = 0.0);
+  algorithm
+    when sample(0.0, 0.1) then
+      (nextState, nextCommand) := advance(
+        State(pre(first), pre(second)));
+      first := nextState.first;
+      second := nextState.second;
+      command := nextCommand;
+    end when;
+  end Controller;
+end RecordTransition;
+"#,
+            "record_transition.mo",
+        )
+        .expect("a whole record call receiver should construct discrete leaf owners");
+
+    compiled.dae.inspect(|view| {
+        let projected_calls = (0..view.expression_count())
+            .filter_map(|index| view.expression(view.expression_id(index)?))
+            .filter(|expression| {
+                let rumoca_ir_dae::ExpressionOperation::Field { base, .. } = expression.operation()
+                else {
+                    return false;
+                };
+                view.expression(base).is_some_and(|base| {
+                    matches!(
+                        base.operation(),
+                        rumoca_ir_dae::ExpressionOperation::Call { .. }
+                    )
+                })
+            })
+            .count();
+        assert_eq!(
+            projected_calls, 2,
+            "the two record leaves must project one checked record-valued call"
+        );
+    });
+
+    let simulation = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.0,
+            ..SimOptions::default()
+        },
+    )
+    .expect("the checked record transition should execute at the initial sample");
+    for (name, expected) in [("first", 1.0), ("second", 2.0), ("command", 3.0)] {
+        let index = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("trace should contain `{name}`"));
+        assert_eq!(simulation.data[index].last().copied(), Some(expected));
+    }
+}
+
+#[test]
 fn model_algorithm_read_before_definition_fails_in_dae_analysis() {
     let error = Compiler::new()
         .model("InvalidAlgorithmMemory")

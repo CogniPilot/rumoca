@@ -1,5 +1,3 @@
-use super::*;
-
 mod clocks;
 mod comprehensions;
 mod delays;
@@ -24,6 +22,7 @@ mod function_returns;
 mod function_value_types;
 mod initial_algorithms;
 mod loop_compaction;
+mod model_algorithm_calls;
 mod model_algorithm_statements;
 mod model_algorithms;
 mod model_roles;
@@ -35,6 +34,8 @@ mod source_balance;
 mod structured_families;
 mod unexecuted_branches;
 mod when_chains;
+
+use super::*;
 use clocks::SampledTarget;
 use clocks::{ClockAnalysis, ClockDomainAnalysis, analyze_clocks};
 pub(super) use clocks::{
@@ -111,6 +112,8 @@ use initial_algorithms::{
     reject_unsupported_initial_algorithm_statements,
 };
 use loop_compaction::compact_function_loops;
+use model_algorithm_calls::analyze_event_function_calls;
+pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
 use model_algorithm_statements::validate_model_algorithm;
 use model_algorithms::analyze_model_algorithm;
 pub(super) use model_algorithms::{ModelAlgorithmPlan, ModelEventTensorLoopPlan};
@@ -479,24 +482,24 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         analyze_clocked_partitions(flat, &clocks, &constants, &mut roles, &mut expression_roles)?;
     let multi_output_equations =
         analyze_multi_output_equations(flat, &expression_roles, &states, &function_shapes)?;
-    validate_model_expressions(
-        flat,
-        &expression_roles,
-        &states,
-        &record_array_fields,
-        function_shapes.model_values(),
-        &multi_output_equations,
-    )?;
-    let (continuous_family_rows, initialization_family_rows) = analyze_structured_family_rows(
+    let (continuous_family_rows, initialization_family_rows) =
+        validate_expressions_and_structured_rows(
+            flat,
+            &roles,
+            &expression_roles,
+            &states,
+            &record_array_fields,
+            function_shapes.model_values(),
+            &multi_output_equations,
+        )?;
+    let (mut sample_lattices, model_algorithm_plans) = analyze_event_algorithms(
         flat,
         &roles,
         &expression_roles,
         &states,
-        &record_array_fields,
-        function_shapes.model_values(),
+        &constants,
+        &function_shapes,
     )?;
-    let (mut sample_lattices, model_algorithm_plans) =
-        analyze_event_algorithms(flat, &roles, &expression_roles, &states, &constants)?;
     let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
         analyze_discrete_connections(flat, &roles)?;
     let mut initial_algorithms =
@@ -557,6 +560,33 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         assigned_discrete_targets: balance.assigned_discrete_targets,
         semi_linear_rules: SemiLinearRules::default(),
     })
+}
+
+fn validate_expressions_and_structured_rows(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    expression_roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    record_array_fields: &RecordArrayFieldPlans,
+    values: &ShapeEnvironment,
+    multi_output_equations: &HashMap<usize, MultiOutputEquationPlan>,
+) -> Result<(HashSet<usize>, HashSet<usize>), ToDaeError> {
+    validate_model_expressions(
+        flat,
+        expression_roles,
+        states,
+        record_array_fields,
+        values,
+        multi_output_equations,
+    )?;
+    analyze_structured_family_rows(
+        flat,
+        roles,
+        expression_roles,
+        states,
+        record_array_fields,
+        values,
+    )
 }
 
 fn validate_runtime_coordinates(
@@ -629,6 +659,7 @@ fn analyze_event_algorithms(
     expression_roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
+    function_shapes: &FunctionShapeAnalysis,
 ) -> Result<EventAlgorithmAnalysis, ToDaeError> {
     let mut sample_lattices = Vec::new();
     validate_when_chains(
@@ -644,6 +675,7 @@ fn analyze_event_algorithms(
         expression_roles,
         states,
         constants,
+        function_shapes,
         &mut sample_lattices,
     )?;
     Ok((sample_lattices, plans))
@@ -744,6 +776,7 @@ fn analyze_model_algorithms(
     expression_roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
+    function_shapes: &FunctionShapeAnalysis,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<Vec<ModelAlgorithmPlan>, ToDaeError> {
     flat.algorithms
@@ -756,7 +789,7 @@ fn analyze_model_algorithms(
                 constants,
                 sample_lattices,
             )?;
-            analyze_model_algorithm(flat, algorithm, roles)
+            analyze_model_algorithm(flat, algorithm, roles, function_shapes)
         })
         .collect()
 }
