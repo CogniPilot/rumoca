@@ -10,7 +10,7 @@
     "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
     "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
     "self", "rumoca_galec_sign", "rumoca_galec_imin", "rumoca_galec_imax",
-    "rumoca_galec_division_towards_zero"
+    "rumoca_galec_division_towards_zero", "rumoca_galec_error_signal_status"
 ] -%}
 {%- set c_symbols = allocate_symbols(
     algorithm_code.symbol_names,
@@ -42,6 +42,7 @@
       <TargetType id="TT_F64" kind="efmiFloat64" codedType="double"/>
       <TargetType id="TT_I32" kind="efmiInteger32" codedType="int32_t"/>
       <TargetType id="TT_BOOL" kind="efmiBool" codedType="bool"/>
+      <TargetType id="TT_U32" kind="efmiUnsignedInteger32" codedType="uint32_t"/>
       <TargetType id="TT_VOID" kind="efmiVoid" codedType="void"/>
     </TargetTypes>
     <CodeFiles>
@@ -51,6 +52,7 @@
           <Typedef id="TD_F64" name="double"><Alias targetTypeRefId="TT_F64"/></Typedef>
           <Typedef id="TD_I32" name="int32_t"><Alias targetTypeRefId="TT_I32"/></Typedef>
           <Typedef id="TD_BOOL" name="bool"><Alias targetTypeRefId="TT_BOOL"/></Typedef>
+          <Typedef id="TD_U32" name="uint32_t"><Alias targetTypeRefId="TT_U32"/></Typedef>
           <Typedef id="TD_VOID" name="void"><Alias targetTypeRefId="TT_VOID"/></Typedef>
           <Typedef id="TD_STATE"{{ attr("name", c_model ~ "State") }}>
             <Components>
@@ -66,6 +68,7 @@
               </Component>
 {%- endif %}
 {%- endfor %}
+              <Component id="CO_ERROR_SIGNAL_STATUS" name="rumoca_galec_error_signal_status" typeDefRefId="TD_U32"/>
             </Components>
           </Typedef>
         </Typedefs>
@@ -88,6 +91,10 @@
           <FormalParameter formalParameterRefId="FP_DOSTEP_SELF"{{ attr("componentIdentifier", symbol(c_symbols, variable.name)) }}/>
         </DataReference>
 {%- endfor %}
+        <DataReference>
+          <ForeignVariableReference manifestReferenceRefId="MR_AC" foreignRefId="ESS"/>
+          <FormalParameter formalParameterRefId="FP_DOSTEP_SELF" componentIdentifier="rumoca_galec_error_signal_status"/>
+        </DataReference>
       </DataReferences>
       <FunctionReferences>
         <FunctionReference><ForeignFunctionReference manifestReferenceRefId="MR_AC" foreignRefId="BM_STARTUP"/><GlobalFunction functionRefId="FN_STARTUP"/></FunctionReference>

@@ -10,7 +10,7 @@
     "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
     "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
     "self", "rumoca_galec_sign", "rumoca_galec_imin", "rumoca_galec_imax",
-    "rumoca_galec_division_towards_zero"
+    "rumoca_galec_division_towards_zero", "rumoca_galec_error_signal_status"
 ] -%}
 {%- set c_symbols = allocate_symbols(
     algorithm_code.symbol_names,
@@ -34,6 +34,7 @@ typedef struct {
 {%- for variable in algorithm_code.variables %}
     {{ c_type(variable.kind) }} {{ symbol(c_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
+    uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus */
 } {{ c_model }}State;
 
 void {{ c_model }}_startup({{ c_model }}State *self);

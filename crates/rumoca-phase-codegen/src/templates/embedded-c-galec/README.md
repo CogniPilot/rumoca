@@ -14,6 +14,9 @@ application needs plain C rather than an eFMU container.
   startup/recalibrate/do-step functions.
 - Tensor assignments preserve checked extents and deterministic row-major
   storage.
+- The standard `ErrorSignalStatus` is reset at each method boundary, explicit
+  signals set their assigned bits, and Real comparisons set `NAN` and return
+  false when either operand is NaN.
 - It is deliberately a non-eFMI deployment track.
 
 ## Unsupported

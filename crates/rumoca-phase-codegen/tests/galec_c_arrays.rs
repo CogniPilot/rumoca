@@ -8,6 +8,24 @@ use serde_json::json;
 use tempfile::tempdir;
 
 const MODEL: &str = "ArrayProjection";
+const NAN_COMPARISON_DRIVER: &str = "\
+#include <math.h>
+#include \"ArrayProjection.h\"
+
+int main(void) {
+    ArrayProjectionState state = {0};
+    state.lhs = NAN;
+    state.rhs = 1.0;
+    ArrayProjection_dostep(&state);
+    if (state.lt || state.gt || state.le || state.ge || state.eq || state.ne) return 1;
+    if (state.rumoca_galec_error_signal_status != UINT32_C(4)) return 2;
+
+    state.lhs = 2.0;
+    ArrayProjection_dostep(&state);
+    if (state.lt || !state.gt || state.le || !state.ge || state.eq || !state.ne) return 3;
+    return state.rumoca_galec_error_signal_status != UINT32_C(0);
+}
+";
 
 fn array_declaration(
     kind: galec::ScalarType,
@@ -329,5 +347,183 @@ fn multipart_state_shape_is_rejected_when_the_c_state_view_cannot_represent_it()
     assert!(
         error.contains("standalone target does not support compartment root"),
         "{error}"
+    );
+}
+
+#[test]
+fn generated_c_real_nan_comparisons_signal_and_return_false() {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Real,
+            "lhs",
+            false,
+        ),
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Real,
+            "rhs",
+            false,
+        ),
+    ];
+    let comparisons = [
+        ("lt", galec::BinaryOp::Lt),
+        ("gt", galec::BinaryOp::Gt),
+        ("le", galec::BinaryOp::Le),
+        ("ge", galec::BinaryOp::Ge),
+        ("eq", galec::BinaryOp::Eq),
+        ("ne", galec::BinaryOp::Ne),
+    ];
+    block.interface.extend(comparisons.iter().map(|(name, _)| {
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Boolean,
+            name,
+            false,
+        )
+    }));
+    block.do_step.signals = vec![galec::PredefinedSignal::Nan];
+    block.do_step.statements = comparisons
+        .iter()
+        .map(|(name, operator)| {
+            state_assignment(
+                name,
+                galec::Expression::binary(*operator, expression("lhs"), expression("rhs")),
+            )
+        })
+        .collect();
+    let checked = CheckedAlgorithmBlock::construct(block).expect("valid comparing GALEC block");
+    let header = render(&checked, "model.h.jinja").expect("checked header");
+    let source = render(&checked, "model.c.jinja").expect("checked source");
+
+    for operator in ["lt", "gt", "le", "ge", "eq", "ne"] {
+        let call = format!("rumoca_galec_compare_{operator}(");
+        assert!(source.contains(&call), "missing `{call}`:\n{source}");
+    }
+
+    let directory = tempdir().expect("temporary generated-C directory");
+    let header_path = directory.path().join(format!("{MODEL}.h"));
+    let source_path = directory.path().join(format!("{MODEL}.c"));
+    let driver_path = directory.path().join("main.c");
+    let executable = directory.path().join("nan-comparison");
+    fs::write(&header_path, header).expect("write generated header");
+    fs::write(&source_path, &source).expect("write generated source");
+    fs::write(&driver_path, NAN_COMPARISON_DRIVER).expect("write generated-C driver");
+
+    let compile = Command::new("cc")
+        .args([
+            "-std=c99",
+            "-pedantic",
+            "-Wall",
+            "-Wextra",
+            "-Wconversion",
+            "-Wsign-conversion",
+            "-Werror",
+        ])
+        .arg(&driver_path)
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable)
+        .arg("-lm")
+        .output()
+        .expect("run C compiler");
+    assert!(
+        compile.status.success(),
+        "strict generated-C compile failed:\n{}\nsource:\n{source}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&executable)
+        .output()
+        .expect("execute generated-C NaN harness");
+    assert!(
+        run.status.success(),
+        "NaN comparison harness returned {:?}",
+        run.status.code()
+    );
+}
+
+#[test]
+fn generated_c_exposes_and_resets_the_standard_error_signal_status() {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![interface(
+        galec::InterfaceKind::Input,
+        galec::ScalarType::Boolean,
+        "raise_error",
+        false,
+    )];
+    block.do_step.signals = vec![galec::PredefinedSignal::InvalidArgument];
+    block.do_step.statements = vec![galec::Spanned::dummy(galec::Statement::If(
+        galec::IfStatement {
+            branches: vec![galec::IfBranch {
+                condition: galec::Condition::Expression(expression("raise_error")),
+                body: vec![galec::Spanned::dummy(galec::Statement::Signal(vec![
+                    galec::Identifier::new("INVALID_ARGUMENT"),
+                ]))],
+                span: rumoca_core::Span::DUMMY,
+            }],
+            else_body: None,
+        },
+    ))];
+    let checked = CheckedAlgorithmBlock::construct(block).expect("valid signaling GALEC block");
+    let header = render(&checked, "model.h.jinja").expect("checked header");
+    let source = render(&checked, "model.c.jinja").expect("checked source");
+
+    assert!(
+        header.contains("uint32_t rumoca_galec_error_signal_status;"),
+        "{header}"
+    );
+    assert!(
+        source.contains("rumoca_galec_error_signal_status |= UINT32_C(1);"),
+        "{source}"
+    );
+
+    let directory = tempdir().expect("temporary generated-C directory");
+    let header_path = directory.path().join(format!("{MODEL}.h"));
+    let source_path = directory.path().join(format!("{MODEL}.c"));
+    let driver_path = directory.path().join("main.c");
+    let executable = directory.path().join("signal-status");
+    fs::write(&header_path, header).expect("write generated header");
+    fs::write(&source_path, source).expect("write generated source");
+    fs::write(
+        &driver_path,
+        "\
+#include \"ArrayProjection.h\"
+
+int main(void) {
+    ArrayProjectionState state = {0};
+    ArrayProjection_dostep(&state);
+    if (state.rumoca_galec_error_signal_status != UINT32_C(0)) return 1;
+    state.raise_error = true;
+    ArrayProjection_dostep(&state);
+    if (state.rumoca_galec_error_signal_status != UINT32_C(1)) return 2;
+    state.raise_error = false;
+    ArrayProjection_dostep(&state);
+    return state.rumoca_galec_error_signal_status != UINT32_C(0);
+}
+",
+    )
+    .expect("write generated-C driver");
+
+    let compile = Command::new("cc")
+        .args(["-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror"])
+        .arg(&driver_path)
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("run C compiler");
+    assert!(
+        compile.status.success(),
+        "strict generated-C compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&executable)
+        .output()
+        .expect("execute generated-C signal harness");
+    assert!(
+        run.status.success(),
+        "signal harness returned {:?}",
+        run.status.code()
     );
 }

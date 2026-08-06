@@ -199,6 +199,21 @@ fn galec_c_symbols_are_collision_safe_reserved_disjoint_and_consistent() {
         manifest.contains("componentIdentifier=\"volatile_2\""),
         "{manifest}"
     );
+    assert!(
+        manifest.contains("id=\"TT_U32\" kind=\"efmiUnsignedInteger32\" codedType=\"uint32_t\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains(
+            "id=\"CO_ERROR_SIGNAL_STATUS\" name=\"rumoca_galec_error_signal_status\" typeDefRefId=\"TD_U32\""
+        ),
+        "{manifest}"
+    );
+    assert!(manifest.contains("foreignRefId=\"ESS\""), "{manifest}");
+    assert!(
+        manifest.contains("componentIdentifier=\"rumoca_galec_error_signal_status\""),
+        "{manifest}"
+    );
 }
 
 #[test]

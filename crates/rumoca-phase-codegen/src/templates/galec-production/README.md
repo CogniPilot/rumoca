@@ -15,6 +15,8 @@ tool interchange.
   ProductionCode representations.
 - Generated C99 functions and storage have complete LogicalData and BlockMethod
   mappings.
+- GALEC error signals are accumulated in a 32-bit status field using the
+  standard bit encoding and mapped to Algorithm Code `ErrorSignalStatus`.
 - The checksum graph binds both representations and every generated code file
   to the exact packaged bytes.
 

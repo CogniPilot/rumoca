@@ -774,8 +774,17 @@ fn logical_data_cross_references_resolve_and_cover_the_algorithm_code() {
         );
     }
 
-    // Exactly-once coverage: sorted multiset equality catches both
-    // unmapped and doubly-mapped AC entities.
+    // Exactly-once coverage: sorted multiset equality catches both unmapped
+    // and doubly-mapped AC entities. ErrorSignalStatus is a sibling of the
+    // Variables wrapper in the Algorithm Code schema, but it is runtime data
+    // and therefore participates in the same LogicalData mapping proof.
+    let error_signal_status =
+        sole_element_attributes(&container.ac_manifest(), "ErrorSignalStatus")
+            .get("id")
+            .expect("ErrorSignalStatus id")
+            .clone();
+    ac_variable_ids.push(error_signal_status);
+    ac_variable_ids.sort();
     let mut data_foreign_ids: Vec<String> = data_refs
         .iter()
         .map(|attrs| attrs.get("foreignRefId").expect("foreignRefId").clone())
