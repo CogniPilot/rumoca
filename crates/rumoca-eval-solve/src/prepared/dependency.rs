@@ -44,149 +44,55 @@ impl<'a> YDependencyAnalyzer<'a> {
     }
 
     pub(super) fn depends_on(&mut self, reg: u32) -> bool {
-        reg_depends_on_y_index_memo(
-            self.row,
-            &self.producers,
-            reg,
-            self.target_y_index,
-            self.generation,
-            &mut self.memo_generation,
-            &mut self.memo_value,
-        )
+        let reg_index = reg as usize;
+        if self.memo_generation.get(reg_index).copied() == Some(self.generation) {
+            return self.memo_value[reg_index];
+        }
+        // Register programs are checked DAGs. Seed `false` before recursion so
+        // malformed fixture cycles still terminate conservatively.
+        let Some(memo_entry) = self.memo_generation.get_mut(reg_index) else {
+            return false;
+        };
+        *memo_entry = self.generation;
+        self.memo_value[reg_index] = false;
+        let result = self
+            .producer(reg)
+            .is_some_and(|operation| self.operation_depends_on_target(operation));
+        self.memo_value[reg_index] = result;
+        result
     }
-}
 
-pub(super) fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> bool {
-    YDependencyAnalyzer::new(row, target_y_index).depends_on(reg)
-}
-
-fn reg_depends_on_y_index_memo(
-    row: &[LinearOp],
-    producers: &[Option<usize>],
-    reg: u32,
-    target_y_index: usize,
-    generation: u32,
-    memo_generation: &mut [u32],
-    memo_value: &mut [bool],
-) -> bool {
-    let reg_index = reg as usize;
-    if memo_generation.get(reg_index).copied() == Some(generation) {
-        return memo_value[reg_index];
+    fn producer(&self, register: u32) -> Option<LinearOp> {
+        self.producers
+            .get(register as usize)
+            .and_then(|producer| *producer)
+            .and_then(|index| self.row.get(index))
+            .copied()
     }
-    // Guard against accidental cycles (register programs are acyclic in
-    // practice): seed `false` before recursing so a back-edge terminates.
-    let Some(memo_entry) = memo_generation.get_mut(reg_index) else {
-        return false;
-    };
-    *memo_entry = generation;
-    memo_value[reg_index] = false;
-    let result = producers
-        .get(reg as usize)
-        .and_then(|producer| *producer)
-        .and_then(|index| row.get(index))
-        .is_some_and(|op| match *op {
-            LinearOp::LoadY { index, .. } => index == target_y_index,
+
+    fn operation_depends_on_target(&mut self, operation: LinearOp) -> bool {
+        match operation {
+            LinearOp::LoadY { index, .. } => index == self.target_y_index,
             LinearOp::Move { src, .. }
             | LinearOp::Unary { arg: src, .. }
             | LinearOp::LoadIndexedP { index: src, .. }
-            | LinearOp::LoadIndexedSeed { index: src, .. } => reg_depends_on_y_index_memo(
-                row,
-                producers,
-                src,
-                target_y_index,
-                generation,
-                memo_generation,
-                memo_value,
-            ),
+            | LinearOp::LoadIndexedSeed { index: src, .. } => self.depends_on(src),
             LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
-                reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    lhs,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    rhs,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                )
+                self.any_register_depends([lhs, rhs])
             }
             LinearOp::Select {
                 cond,
                 if_true,
                 if_false,
                 ..
-            } => {
-                reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    cond,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    if_true,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    if_false,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                )
-            }
+            } => self.any_register_depends([cond, if_true, if_false]),
             LinearOp::LinearSolveComponent {
                 matrix_start,
                 rhs_start,
                 n,
                 ..
-            } => {
-                let Some(matrix_len) = n.checked_mul(n) else {
-                    return true;
-                };
-                reg_range_depends_on_y_index(
-                    row,
-                    producers,
-                    matrix_start,
-                    matrix_len,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_range_depends_on_y_index(
-                    row,
-                    producers,
-                    rhs_start,
-                    n,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                )
-            }
-            LinearOp::TableBounds { table_id, .. } => reg_depends_on_y_index_memo(
-                row,
-                producers,
-                table_id,
-                target_y_index,
-                generation,
-                memo_generation,
-                memo_value,
-            ),
+            } => self.linear_solve_depends(matrix_start, rhs_start, n),
+            LinearOp::TableBounds { table_id, .. } => self.depends_on(table_id),
             LinearOp::TableLookup {
                 table_id,
                 column,
@@ -198,75 +104,15 @@ fn reg_depends_on_y_index_memo(
                 column,
                 input,
                 ..
-            } => {
-                reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    table_id,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    column,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    input,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                )
-            }
+            } => self.any_register_depends([table_id, column, input]),
             LinearOp::TableNextEvent { table_id, time, .. } => {
-                reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    table_id,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    time,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                )
+                self.any_register_depends([table_id, time])
             }
             LinearOp::RandomInitialState {
                 local_seed,
                 global_seed,
                 ..
-            } => {
-                reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    local_seed,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    global_seed,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                )
-            }
+            } => self.any_register_depends([local_seed, global_seed]),
             LinearOp::RandomResult {
                 state_start,
                 state_len,
@@ -276,95 +122,43 @@ fn reg_depends_on_y_index_memo(
                 state_start,
                 state_len,
                 ..
-            } => reg_range_depends_on_y_index(
-                row,
-                producers,
-                state_start,
-                state_len,
-                target_y_index,
-                generation,
-                memo_generation,
-                memo_value,
-            ),
-            LinearOp::ImpureRandomInit { seed, .. } => reg_depends_on_y_index_memo(
-                row,
-                producers,
-                seed,
-                target_y_index,
-                generation,
-                memo_generation,
-                memo_value,
-            ),
-            LinearOp::ImpureRandom { id, .. } => reg_depends_on_y_index_memo(
-                row,
-                producers,
-                id,
-                target_y_index,
-                generation,
-                memo_generation,
-                memo_value,
-            ),
+            } => self.register_range_depends(state_start, state_len),
+            LinearOp::ImpureRandomInit { seed, .. } => self.depends_on(seed),
+            LinearOp::ImpureRandom { id, .. } => self.depends_on(id),
             LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
-                reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    id,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    imin,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                ) || reg_depends_on_y_index_memo(
-                    row,
-                    producers,
-                    imax,
-                    target_y_index,
-                    generation,
-                    memo_generation,
-                    memo_value,
-                )
+                self.any_register_depends([id, imin, imax])
             }
             LinearOp::Const { .. }
             | LinearOp::LoadTime { .. }
             | LinearOp::LoadP { .. }
             | LinearOp::LoadSeed { .. }
             | LinearOp::StoreOutput { .. } => false,
-        });
-    memo_value[reg_index] = result;
-    result
-}
+        }
+    }
 
-fn reg_range_depends_on_y_index(
-    row: &[LinearOp],
-    producers: &[Option<usize>],
-    start: u32,
-    len: usize,
-    target_y_index: usize,
-    generation: u32,
-    memo_generation: &mut [u32],
-    memo_value: &mut [bool],
-) -> bool {
-    (0..len).any(|offset| {
-        let Some(reg) = checked_reg_offset(start, offset) else {
+    fn any_register_depends<const N: usize>(&mut self, registers: [u32; N]) -> bool {
+        registers
+            .into_iter()
+            .any(|register| self.depends_on(register))
+    }
+
+    fn linear_solve_depends(&mut self, matrix_start: u32, rhs_start: u32, n: usize) -> bool {
+        let Some(matrix_len) = n.checked_mul(n) else {
             return true;
         };
-        reg_depends_on_y_index_memo(
-            row,
-            producers,
-            reg,
-            target_y_index,
-            generation,
-            memo_generation,
-            memo_value,
-        )
-    })
+        self.register_range_depends(matrix_start, matrix_len)
+            || self.register_range_depends(rhs_start, n)
+    }
+
+    fn register_range_depends(&mut self, start: u32, len: usize) -> bool {
+        (0..len).any(|offset| {
+            checked_reg_offset(start, offset).is_none_or(|register| self.depends_on(register))
+        })
+    }
+}
+
+pub(super) fn reg_depends_on_y_index(row: &[LinearOp], reg: u32, target_y_index: usize) -> bool {
+    YDependencyAnalyzer::new(row, target_y_index).depends_on(reg)
 }
 
 fn checked_reg_offset(start: u32, offset: usize) -> Option<u32> {

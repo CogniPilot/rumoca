@@ -649,99 +649,7 @@ impl PreparedScalarProgramBlock {
         }
         let shape = self.assignment_shape(row_idx, target_y_index)?;
         let mut program = row.get(..shape.expr_eval_len())?.to_vec();
-        let mut next_reg = program
-            .iter()
-            .filter_map(LinearOp::dst_register)
-            .max()
-            .map_or(Some(0), |reg| reg.checked_add(1))?;
-        let mut allocate = || {
-            let reg = next_reg;
-            next_reg = next_reg.checked_add(1)?;
-            Some(reg)
-        };
-        let result = match shape {
-            TargetAssignmentShape::Direct { expr_reg, .. } => expr_reg,
-            TargetAssignmentShape::Affine {
-                offset_reg,
-                coefficient_reg,
-                offset_scale,
-                coefficient_scale,
-                ..
-            } => {
-                let offset_scale_reg = allocate()?;
-                let scaled_offset_reg = allocate()?;
-                let coefficient_scale_reg = allocate()?;
-                let scaled_coefficient_reg = allocate()?;
-                let negated_offset_reg = allocate()?;
-                let result_reg = allocate()?;
-                program.push(LinearOp::Const {
-                    dst: offset_scale_reg,
-                    value: offset_scale,
-                });
-                program.push(LinearOp::Binary {
-                    dst: scaled_offset_reg,
-                    op: BinaryOp::Mul,
-                    lhs: offset_scale_reg,
-                    rhs: offset_reg,
-                });
-                program.push(LinearOp::Const {
-                    dst: coefficient_scale_reg,
-                    value: coefficient_scale,
-                });
-                if let Some(coefficient_reg) = coefficient_reg {
-                    program.push(LinearOp::Binary {
-                        dst: scaled_coefficient_reg,
-                        op: BinaryOp::Mul,
-                        lhs: coefficient_scale_reg,
-                        rhs: coefficient_reg,
-                    });
-                } else {
-                    program.push(LinearOp::Move {
-                        dst: scaled_coefficient_reg,
-                        src: coefficient_scale_reg,
-                    });
-                }
-                program.push(LinearOp::Unary {
-                    dst: negated_offset_reg,
-                    op: UnaryOp::Neg,
-                    arg: scaled_offset_reg,
-                });
-                program.push(LinearOp::Binary {
-                    dst: result_reg,
-                    op: BinaryOp::Div,
-                    lhs: negated_offset_reg,
-                    rhs: scaled_coefficient_reg,
-                });
-                result_reg
-            }
-            TargetAssignmentShape::AffineResidual {
-                target_reg,
-                residual_reg,
-                coefficient,
-                ..
-            } => {
-                let coefficient_reg = allocate()?;
-                let correction_reg = allocate()?;
-                let result_reg = allocate()?;
-                program.push(LinearOp::Const {
-                    dst: coefficient_reg,
-                    value: coefficient,
-                });
-                program.push(LinearOp::Binary {
-                    dst: correction_reg,
-                    op: BinaryOp::Div,
-                    lhs: residual_reg,
-                    rhs: coefficient_reg,
-                });
-                program.push(LinearOp::Binary {
-                    dst: result_reg,
-                    op: BinaryOp::Sub,
-                    lhs: target_reg,
-                    rhs: correction_reg,
-                });
-                result_reg
-            }
-        };
+        let result = AssignmentProgramBuilder::new(&mut program)?.materialize(shape)?;
         program.push(LinearOp::StoreOutput { src: result });
         Some(program)
     }
@@ -1053,6 +961,131 @@ struct TargetAssignmentScratchRequest<'a> {
     t: f64,
     context: RowEvalContext<'a>,
     scratch: &'a mut RowEvalScratch,
+}
+
+struct AssignmentProgramBuilder<'a> {
+    program: &'a mut Vec<LinearOp>,
+    next_register: u32,
+}
+
+impl<'a> AssignmentProgramBuilder<'a> {
+    fn new(program: &'a mut Vec<LinearOp>) -> Option<Self> {
+        let next_register = program
+            .iter()
+            .filter_map(LinearOp::dst_register)
+            .max()
+            .map_or(Some(0), |register| register.checked_add(1))?;
+        Some(Self {
+            program,
+            next_register,
+        })
+    }
+
+    fn materialize(&mut self, shape: TargetAssignmentShape) -> Option<u32> {
+        match shape {
+            TargetAssignmentShape::Direct { expr_reg, .. } => Some(expr_reg),
+            TargetAssignmentShape::Affine {
+                offset_reg,
+                coefficient_reg,
+                offset_scale,
+                coefficient_scale,
+                ..
+            } => self.affine(offset_reg, coefficient_reg, offset_scale, coefficient_scale),
+            TargetAssignmentShape::AffineResidual {
+                target_reg,
+                residual_reg,
+                coefficient,
+                ..
+            } => self.affine_residual(target_reg, residual_reg, coefficient),
+        }
+    }
+
+    fn affine(
+        &mut self,
+        offset: u32,
+        coefficient: Option<u32>,
+        offset_scale: f64,
+        coefficient_scale: f64,
+    ) -> Option<u32> {
+        let offset_scale_reg = self.allocate()?;
+        let scaled_offset = self.allocate()?;
+        let coefficient_scale_reg = self.allocate()?;
+        let scaled_coefficient = self.allocate()?;
+        let negated_offset = self.allocate()?;
+        let result = self.allocate()?;
+        self.program.push(LinearOp::Const {
+            dst: offset_scale_reg,
+            value: offset_scale,
+        });
+        self.program.push(LinearOp::Binary {
+            dst: scaled_offset,
+            op: BinaryOp::Mul,
+            lhs: offset_scale_reg,
+            rhs: offset,
+        });
+        self.program.push(LinearOp::Const {
+            dst: coefficient_scale_reg,
+            value: coefficient_scale,
+        });
+        self.scaled_coefficient(coefficient_scale_reg, coefficient, scaled_coefficient);
+        self.program.push(LinearOp::Unary {
+            dst: negated_offset,
+            op: UnaryOp::Neg,
+            arg: scaled_offset,
+        });
+        self.program.push(LinearOp::Binary {
+            dst: result,
+            op: BinaryOp::Div,
+            lhs: negated_offset,
+            rhs: scaled_coefficient,
+        });
+        Some(result)
+    }
+
+    fn scaled_coefficient(&mut self, scale: u32, coefficient: Option<u32>, target: u32) {
+        let operation = match coefficient {
+            Some(coefficient) => LinearOp::Binary {
+                dst: target,
+                op: BinaryOp::Mul,
+                lhs: scale,
+                rhs: coefficient,
+            },
+            None => LinearOp::Move {
+                dst: target,
+                src: scale,
+            },
+        };
+        self.program.push(operation);
+    }
+
+    fn affine_residual(&mut self, target: u32, residual: u32, coefficient: f64) -> Option<u32> {
+        let coefficient_reg = self.allocate()?;
+        let correction = self.allocate()?;
+        let result = self.allocate()?;
+        self.program.push(LinearOp::Const {
+            dst: coefficient_reg,
+            value: coefficient,
+        });
+        self.program.push(LinearOp::Binary {
+            dst: correction,
+            op: BinaryOp::Div,
+            lhs: residual,
+            rhs: coefficient_reg,
+        });
+        self.program.push(LinearOp::Binary {
+            dst: result,
+            op: BinaryOp::Sub,
+            lhs: target,
+            rhs: correction,
+        });
+        Some(result)
+    }
+
+    fn allocate(&mut self) -> Option<u32> {
+        let register = self.next_register;
+        self.next_register = self.next_register.checked_add(1)?;
+        Some(register)
+    }
 }
 
 fn row_loads_y_index(row: &[LinearOp], target_y_index: usize) -> bool {

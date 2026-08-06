@@ -812,12 +812,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             })?;
         let mut output = None;
         for &op in row {
-            if let Some(value) = self.lower_op(op)? {
-                if output.replace(value).is_some() {
-                    return Err(CompileError::Input(
-                        "assignment schedule row has multiple outputs".to_string(),
-                    ));
-                }
+            if let Some(value) = self.lower_op(op)?
+                && output.replace(value).is_some()
+            {
+                return Err(CompileError::Input(
+                    "assignment schedule row has multiple outputs".to_string(),
+                ));
             }
         }
         let value = output.ok_or_else(|| {

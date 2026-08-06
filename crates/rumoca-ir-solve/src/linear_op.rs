@@ -407,11 +407,7 @@ impl ScalarProgramRegisterFlow {
                 max_register = Some(max_register.map_or(register, |max: Reg| max.max(register)));
             }
             if let Some(dst) = op.dst_register() {
-                let dst_index = dst as usize;
-                if initialized.len() <= dst_index {
-                    initialized.resize(dst_index + 1, false);
-                }
-                initialized[dst_index] = true;
+                mark_register_initialized(&mut initialized, dst);
                 max_register = Some(max_register.map_or(dst, |max: Reg| max.max(dst)));
             }
         }
@@ -491,6 +487,14 @@ impl std::fmt::Display for ScalarProgramRegisterError {
             }
         }
     }
+}
+
+fn mark_register_initialized(initialized: &mut Vec<bool>, register: Reg) {
+    let index = register as usize;
+    if initialized.len() <= index {
+        initialized.resize(index + 1, false);
+    }
+    initialized[index] = true;
 }
 
 fn validate_op_sources(
