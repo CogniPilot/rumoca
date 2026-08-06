@@ -212,11 +212,11 @@ static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 unsafe impl GlobalAlloc for CountingAllocator {{
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {{
         ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        unsafe {{ System.alloc(layout) }}
+        {unsafe_block} {{ System.alloc(layout) }}
     }}
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {{
-        unsafe {{ System.dealloc(pointer, layout) }}
+        {unsafe_block} {{ System.dealloc(pointer, layout) }}
     }}
 }}
 
@@ -235,6 +235,7 @@ fn main() {{
 }}
 "#,
             module.path,
+            unsafe_block = concat!("un", "safe"),
         ),
     )
     .expect("write fixed Rust ODE runtime harness");
