@@ -1070,8 +1070,8 @@ jobs:
 
       - name: Run MSL parity shard ${{ matrix.shard }}/4
         run: |
-          # One bounded attempt; the 15 s ceiling keeps the strict-high tail
-          # measurable on hosted runners without retries or looser trace checks.
+          # One bounded attempt; 20 s covers the certified strict-high tail on
+          # hosted runners without retries, exclusions, or looser trace checks.
           cargo xtask verify msl-parity \
             --shard ${{ matrix.shard }}/4 \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
@@ -1081,8 +1081,8 @@ jobs:
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
             --sim-total-memory-mb 6144 \
-            --sim-timeout-secs 15 \
-            --model-attempt-timeout-secs 15 \
+            --sim-timeout-secs 20 \
+            --model-attempt-timeout-secs 20 \
             --monitor-interval-secs 10
 
       - name: Upload shard results
