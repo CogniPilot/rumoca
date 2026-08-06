@@ -8,10 +8,10 @@ readiness_level = 0
 
 [capabilities]
 scalar_fallback = true
-# Condition/relation slots render as plain parameter reads; event *iteration*
-# is not provided by this target (runtime_events stays false) — hosts must
-# refuse or warn for models whose conditions fire during simulation.
-events = true
+# Condition/relation slots can be inputs to continuous kernels, but this target
+# emits neither root/action kernels nor event iteration. Eventful models must
+# therefore fail before rendering; a host warning is not semantic support.
+events = false
 runtime_events = false
 forward_ad = false
 reverse_ad = false

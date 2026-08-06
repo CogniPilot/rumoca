@@ -13,6 +13,7 @@ use feature_analysis::{
     dae_has_clocks, dae_has_dynamic_derivative_subscripts, dae_has_dynamic_ranges, dae_has_events,
     dae_has_external_functions, dae_has_initialization, dae_has_runtime_events,
     dae_has_unlowered_source_temporal_operators, dae_uses_external_tables, dae_uses_random,
+    solve_has_clocks, solve_has_events, solve_has_initialization, solve_has_runtime_events,
 };
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -714,6 +715,26 @@ pub fn validate_solve_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
+    if capabilities.initialization == Some(false) && solve_has_initialization(solve) {
+        unsupported_feature(
+            manifest,
+            "initialization",
+            "initialization residual, projection, or assignment owners present",
+        )?;
+    }
+    if capabilities.events != Some(true) && solve_has_events(solve) {
+        unsupported_feature(manifest, "events", "event or discrete partitions present")?;
+    }
+    if capabilities.runtime_events == Some(false) && solve_has_runtime_events(solve) {
+        unsupported_feature(
+            manifest,
+            "runtime_events",
+            "delay-history or terminal-event runtime support is required",
+        )?;
+    }
+    if capabilities.clocks != Some(true) && solve_has_clocks(solve) {
+        unsupported_feature(manifest, "clocks", "clock partition entries present")?;
+    }
     let mut inventory = solve.compute_node_counts();
     inventory.add_assign(solve.initialization.residual.compute_node_counts());
     let uses_linear_solve_component = solve.uses_linear_solve_component()
@@ -1083,7 +1104,7 @@ mod tests {
         TensorLayoutCapability, builtin_target_compatibility_matrix,
         ensure_target_has_rendered_files, parse_target_manifest, safe_target_join,
         target_asset_relative_path, templates, validate_dae_target_capabilities,
-        validate_target_manifest,
+        validate_solve_target_capabilities, validate_target_manifest,
     };
     use rumoca_core::{SourceMap, StructuredIndexBinder, StructuredIndexDomain};
     use rumoca_ir_dae::{Dae, DaeLiteral, DaeProvenance};
@@ -1477,6 +1498,72 @@ dtypes = ["f32", "f64"]
             tensor.dtypes,
             Some(vec!["f32".to_string(), "f64".to_string()])
         );
+    }
+
+    #[test]
+    fn solve_target_rejects_event_partition_without_event_support() {
+        let mut solve = rumoca_ir_solve::SolveProblem::default();
+        solve.events.scheduled_time_events.push(1.0);
+        let manifest = parse_manifest_with_ir_capabilities(
+            "solve",
+            r#"
+[capabilities]
+events = false
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+        let error = validate_solve_target_capabilities(&solve, &manifest, capabilities)
+            .expect_err("an event-free target must reject an event partition");
+
+        assert!(error.to_string().contains("unsupported-feature:events"));
+    }
+
+    #[test]
+    fn solve_target_rejects_terminal_runtime_without_runtime_event_support() {
+        let mut solve = rumoca_ir_solve::SolveProblem::default();
+        solve.events.has_terminal_event = true;
+        let manifest = parse_manifest_with_ir_capabilities(
+            "solve",
+            r#"
+[capabilities]
+events = true
+runtime_events = false
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+        let error = validate_solve_target_capabilities(&solve, &manifest, capabilities)
+            .expect_err("a runtime-event-free target must reject termination");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported-feature:runtime_events")
+        );
+    }
+
+    #[test]
+    fn solve_target_rejects_clock_partition_without_clock_support() {
+        let mut solve = rumoca_ir_solve::SolveProblem::default();
+        solve
+            .clocks
+            .periodic_event_schedules
+            .push(rumoca_ir_solve::PeriodicEventSchedule::default());
+        let manifest = parse_manifest_with_ir_capabilities(
+            "solve",
+            r#"
+[capabilities]
+events = true
+clocks = false
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+        let error = validate_solve_target_capabilities(&solve, &manifest, capabilities)
+            .expect_err("a clock-free target must reject a clock partition");
+
+        assert!(error.to_string().contains("unsupported-feature:clocks"));
     }
 
     #[test]

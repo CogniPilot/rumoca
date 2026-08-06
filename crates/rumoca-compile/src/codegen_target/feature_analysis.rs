@@ -1,6 +1,7 @@
 //! Read-only feature discovery over the checked DAE.
 
 use rumoca_ir_dae as dae;
+use rumoca_ir_solve as solve;
 
 pub(super) fn dae_has_external_functions(_: &dae::Dae) -> bool {
     // External lifecycle declarations are not part of the checked function
@@ -110,6 +111,55 @@ pub(super) fn dae_has_dynamic_derivative_subscripts(model: &dae::Dae) -> bool {
                 .any(|subscript| dynamic_subscript(view, subscript))
         })
     })
+}
+
+pub(super) fn solve_has_events(problem: &solve::SolveProblem) -> bool {
+    let discrete = &problem.discrete;
+    let events = &problem.events;
+    !discrete.event_iteration_plan.runs.is_empty()
+        || !discrete.runtime_assignment_rhs.is_empty()
+        || !discrete.post_commit_assignment_rhs.is_empty()
+        || !discrete.rhs.is_empty()
+        || !discrete.structured_rhs.is_empty()
+        || !discrete.structured_updates.is_empty()
+        || !events.root_conditions.is_empty()
+        || !events.condition_memory_parameter_indices.is_empty()
+        || !events.scheduled_root_conditions.is_empty()
+        || !events.scheduled_time_events.is_empty()
+        || !events.dynamic_time_event_names.is_empty()
+        || !events.dynamic_time_event_rhs.is_empty()
+        || !events.action_conditions.is_empty()
+        || !events.actions.is_empty()
+}
+
+pub(super) fn solve_has_runtime_events(problem: &solve::SolveProblem) -> bool {
+    let events = &problem.events;
+    let delays = &events.delays;
+    events.has_terminal_event
+        || !delays.source_rhs.is_empty()
+        || !delays.delay_time_rhs.is_empty()
+        || !delays.delay_max_rhs.is_empty()
+        || !delays.value_parameter_indices.is_empty()
+}
+
+pub(super) fn solve_has_clocks(problem: &solve::SolveProblem) -> bool {
+    !problem.clocks.periodic_event_schedules.is_empty()
+        || !problem.clocks.activation_parameter_indices.is_empty()
+        || problem.discrete.clock_owners.iter().any(Option::is_some)
+        || problem
+            .discrete
+            .structured_updates
+            .iter()
+            .any(|update| update.clock_owner.is_some())
+}
+
+pub(super) fn solve_has_initialization(problem: &solve::SolveProblem) -> bool {
+    let initialization = &problem.initialization;
+    !initialization.residual.is_empty()
+        || !initialization.projection_unknowns.is_empty()
+        || !initialization.projection_plan.is_empty()
+        || !initialization.update_rhs.is_empty()
+        || !initialization.update_targets.is_empty()
 }
 
 fn dynamic_subscript<'dae>(view: dae::DaeView<'dae>, subscript: dae::SubscriptView<'dae>) -> bool {

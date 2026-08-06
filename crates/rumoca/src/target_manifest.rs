@@ -485,6 +485,10 @@ fn validate_target_requirements(
             validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
         }
         TargetTemplateIr::Solve => {
+            // Solve remains a projection of checked DAE semantics. Inspect the
+            // source artifact as well so a partial kernel cannot erase tables,
+            // randomness, events, or another target capability obligation.
+            validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
             let solve = rumoca_sim::lower_solve_problem(&result.dae)
                 .context("Lower Solve IR for target capability validation")?;
             validate_solve_target_capabilities(&solve, manifest, capabilities)?;
@@ -770,6 +774,23 @@ end ScalarCudaSmoke;
             .expect("scalar CUDA smoke demo should compile")
     }
 
+    fn compile_clocked_target_demo() -> CompilationResult {
+        let source = r#"
+model ClockedTargetDemo
+  discrete Real y(start=0, fixed=true);
+equation
+  when sample(0, 0.1) then
+    y = pre(y) + 1;
+  end when;
+end ClockedTargetDemo;
+"#;
+
+        Compiler::new()
+            .model("ClockedTargetDemo")
+            .compile_str(source, "ClockedTargetDemo.mo")
+            .expect("clocked target demo should compile")
+    }
+
     fn command_available(command: &str) -> bool {
         Command::new(command).arg("--version").output().is_ok()
     }
@@ -797,6 +818,26 @@ linsolve = "scalar"
 
         validate_target_requirements(&result, &manifest)
             .expect("scalar tensor fallback target should accept LinSolve Solve IR");
+    }
+
+    #[test]
+    fn solve_target_capabilities_reject_clocked_model_before_rendering() {
+        let result = compile_clocked_target_demo();
+        let manifest = solve_manifest(
+            r#"
+[capabilities]
+events = false
+runtime_events = false
+clocks = false
+"#,
+        );
+
+        let error = validate_target_requirements(&result, &manifest)
+            .expect_err("an event-free Solve target must reject a clocked model");
+        assert!(
+            error.to_string().contains("unsupported-feature:events"),
+            "{error}"
+        );
     }
 
     #[test]
