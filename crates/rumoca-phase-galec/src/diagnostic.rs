@@ -49,22 +49,22 @@ pub enum GalecTargetError {
         event_actions: usize,
     },
 
-    /// GAL-016: GALEC blocks have exactly one static base period; dynamic
+    /// GAL-016: GALEC blocks have one static base period; dynamic
     /// (runtime-triggered) clocks are not yet supported by the Rumoca GALEC
-    /// projection (counter-encoding over one base period is a future option).
+    /// projection.
     #[error(
         "model has {count} runtime-triggered clock condition(s); dynamic \
          clocks are not yet supported by the Rumoca GALEC projection \
-         (GALEC blocks are driven by exactly one fixed-period clock) [EGT004]"
+         (GALEC blocks are driven by one fixed base period) [EGT004]"
     )]
     DynamicClock { count: usize },
 
-    /// GAL-016: exactly one fixed-period clock schedule is required.
+    /// GAL-016: at least one fixed-period clock schedule is required.
     #[error(
-        "model declares {count} periodic clock schedule(s); a GALEC block is \
-         driven by exactly one fixed-period clock [EGT005]"
+        "model declares no fixed-period clock schedule; a GALEC block requires \
+         at least one fixed clock to establish its base period [EGT005]"
     )]
-    ClockCountNotOne { count: usize },
+    NoPeriodicClock,
 
     /// The single clock schedule must have a finite, strictly positive
     /// period.
@@ -245,7 +245,7 @@ impl GalecTargetError {
             Self::ExternalFunction { .. } => "EGT002",
             Self::RuntimeEvents { .. } => "EGT003",
             Self::DynamicClock { .. } => "EGT004",
-            Self::ClockCountNotOne { .. } => "EGT005",
+            Self::NoPeriodicClock => "EGT005",
             Self::InvalidClockPeriod { .. } => "EGT006",
             Self::PartialModel => "EGT007",
             Self::UnsupportedClassType { .. } => "EGT008",
@@ -282,7 +282,7 @@ impl GalecTargetError {
             Self::ContinuousDynamics { .. }
             | Self::RuntimeEvents { .. }
             | Self::DynamicClock { .. }
-            | Self::ClockCountNotOne { .. }
+            | Self::NoPeriodicClock
             | Self::PartialModel
             | Self::UnsupportedClassType { .. }
             | Self::UnrepresentableName { .. }

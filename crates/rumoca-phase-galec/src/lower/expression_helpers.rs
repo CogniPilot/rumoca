@@ -74,10 +74,9 @@ pub(super) fn literal_scalar_index(
         .iter()
         .zip(indices)
         .try_fold(0_u32, |scalar, (extent, index)| {
-            let gast::Expression::Integer(index) = index else {
-                return None;
-            };
-            let coordinate = u32::try_from(*index).ok()?.checked_sub(1)?;
+            let coordinate = u32::try_from(constant_integer(index)?)
+                .ok()?
+                .checked_sub(1)?;
             if coordinate >= *extent {
                 return None;
             }
@@ -492,6 +491,46 @@ pub(super) fn lower_builtin<'dae>(
     arguments: dae::ExpressionOperands<'dae>,
     span: Span,
 ) -> Result<gast::Expression, GalecTargetError> {
+    if builtin == dae::PureBuiltin::Size {
+        let array = arguments.get(0).expect("checked size array argument");
+        let dimension = arguments.get(1).ok_or_else(|| {
+            unsupported(
+                "builtin:size",
+                "array-valued size(A) requires an element projection".to_owned(),
+                span,
+            )
+        })?;
+        let dimension = literal_integer(lowerer.view, dimension).ok_or_else(|| {
+            unsupported(
+                "dynamic-size-dimension",
+                "size(A, d) requires a constructor-proven dimension".to_owned(),
+                span,
+            )
+        })?;
+        let dimension = usize::try_from(dimension - 1).map_err(|_| {
+            unsupported(
+                "size-dimension",
+                "size dimension is outside the checked array rank".to_owned(),
+                span,
+            )
+        })?;
+        let extent = lowerer
+            .view
+            .expression(array)
+            .expect("checked size array resolves")
+            .value_type()
+            .dimensions()
+            .get(dimension)
+            .copied()
+            .ok_or_else(|| {
+                unsupported(
+                    "size-dimension",
+                    "size dimension is outside the checked array rank".to_owned(),
+                    span,
+                )
+            })?;
+        return Ok(gast::Expression::Integer(i64::from(extent)));
+    }
     if builtin == dae::PureBuiltin::Smooth {
         return lowerer
             .lower(arguments.get(1).expect("checked smooth value argument"))

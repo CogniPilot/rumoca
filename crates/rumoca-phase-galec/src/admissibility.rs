@@ -5,11 +5,19 @@ use rumoca_ir_dae as dae;
 use crate::diagnostic::GalecTargetError;
 use crate::input::GalecInput;
 
-/// The single fixed-period clock a projected block runs on.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One source clock scheduled on the projected block's fixed base period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmittedClockDomain {
+    pub clock_index: u32,
+    pub divisor: u32,
+}
+
+/// The fixed base period and exactly commensurate source-clock schedule.
+#[derive(Debug, Clone, PartialEq)]
 pub struct AdmittedClock {
     pub period_seconds: f64,
     pub phase_seconds: f64,
+    pub domains: Vec<AdmittedClockDomain>,
 }
 
 /// Inspect checked DAE ownership directly and collect every projection-scope
@@ -19,6 +27,18 @@ pub fn check_admissibility(input: &GalecInput<'_>) -> Result<AdmittedClock, Vec<
 }
 
 fn check_view(view: dae::DaeView<'_>) -> Result<AdmittedClock, Vec<GalecTargetError>> {
+    let mut errors = projection_errors(view);
+    let periodic = periodic_clocks(view);
+    if periodic.is_empty() {
+        errors.push(GalecTargetError::NoPeriodicClock);
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    admit_clock_lattice(view, &periodic).map_err(|error| vec![error])
+}
+
+fn projection_errors(view: dae::DaeView<'_>) -> Vec<GalecTargetError> {
     let mut errors = Vec::new();
     let states = view
         .variables()
@@ -63,19 +83,62 @@ fn check_view(view: dae::DaeView<'_>) -> Result<AdmittedClock, Vec<GalecTargetEr
     if dynamic != 0 {
         errors.push(GalecTargetError::DynamicClock { count: dynamic });
     }
-    let periodic = periodic_clocks(view);
-    if periodic.len() != 1 {
-        errors.push(GalecTargetError::ClockCountNotOne {
-            count: periodic.len(),
-        });
-    }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    let (period, phase) = periodic[0];
+    errors
+}
+
+fn admit_clock_lattice(
+    view: dae::DaeView<'_>,
+    periodic: &[(u32, &rumoca_core::PeriodicClockSchedule)],
+) -> Result<AdmittedClock, GalecTargetError> {
+    let Some(base) = periodic
+        .iter()
+        .min_by_key(|(_, schedule)| schedule.period())
+    else {
+        unreachable!("an admitted projection has at least one periodic clock")
+    };
+    let domains = periodic
+        .iter()
+        .map(|(clock_index, schedule)| {
+            let ratio = schedule
+                .period()
+                .checked_div(base.1.period())
+                .map_err(|error| GalecTargetError::UnsupportedFeature {
+                    feature: "clock-lattice".to_owned(),
+                    detail: error.to_string(),
+                    span: view
+                        .clock(
+                            view.clock_id(*clock_index as usize)
+                                .expect("clock index resolves"),
+                        )
+                        .map(|clock| clock.provenance().span()),
+                })?;
+            let divisor = u32::try_from(ratio.numerator())
+                .ok()
+                .filter(|_| ratio.denominator() == 1)
+                .ok_or_else(|| GalecTargetError::UnsupportedFeature {
+                    feature: "incommensurate-clock".to_owned(),
+                    detail: format!(
+                        "period {} s is not an integer multiple of base period {} s",
+                        schedule.period_seconds(),
+                        base.1.period_seconds()
+                    ),
+                    span: view
+                        .clock(
+                            view.clock_id(*clock_index as usize)
+                                .expect("clock index resolves"),
+                        )
+                        .map(|clock| clock.provenance().span()),
+                })?;
+            Ok(AdmittedClockDomain {
+                clock_index: *clock_index,
+                divisor,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(AdmittedClock {
-        period_seconds: period,
-        phase_seconds: phase,
+        period_seconds: base.1.period_seconds(),
+        phase_seconds: base.1.phase_seconds(),
+        domains,
     })
 }
 
@@ -112,7 +175,7 @@ fn initialization_scalar_rows(view: dae::DaeView<'_>) -> usize {
         .sum()
 }
 
-fn periodic_clocks(view: dae::DaeView<'_>) -> Vec<(f64, f64)> {
+fn periodic_clocks(view: dae::DaeView<'_>) -> Vec<(u32, &rumoca_core::PeriodicClockSchedule)> {
     (0..view.clock_count())
         .filter_map(|index| {
             let id = view.clock_id(index).expect("dense checked clock identity");
@@ -120,7 +183,10 @@ fn periodic_clocks(view: dae::DaeView<'_>) -> Vec<(f64, f64)> {
                 dae::ClockOperation::Periodic(schedule)
                     if schedule.anchor() == rumoca_core::ClockPhaseAnchor::Absolute =>
                 {
-                    Some((schedule.period_seconds(), schedule.phase_seconds()))
+                    Some((
+                        u32::try_from(index).expect("clock count fits u32"),
+                        schedule,
+                    ))
                 }
                 dae::ClockOperation::Periodic(_) => None,
                 dae::ClockOperation::Triggered(_) => None,
@@ -142,7 +208,7 @@ mod tests {
         let errors = check_admissibility(&input).unwrap_err();
         assert!(matches!(
             errors.as_slice(),
-            [GalecTargetError::ClockCountNotOne { count: 0 }]
+            [GalecTargetError::NoPeriodicClock]
         ));
     }
 

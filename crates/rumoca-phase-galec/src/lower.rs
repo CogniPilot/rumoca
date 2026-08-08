@@ -6,11 +6,14 @@
 //! `'previous(x)'` state committed after all assignments.
 
 mod causal_outputs;
+mod clock_schedule;
 mod clocked_assignments;
 mod expression_functions;
 mod expression_helpers;
+mod expression_projection;
 mod pre_references;
 mod start;
+mod user_functions;
 
 use std::collections::{HashMap, HashSet};
 
@@ -24,8 +27,7 @@ use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
 use rumoca_ir_galec::package::AlgorithmCodePackage;
 
-use causal_outputs::append_causal_output_assignments;
-use clocked_assignments::lower_clocked_assignments;
+use clock_schedule::lower_clock_schedule;
 use expression_helpers::*;
 use pre_references::referenced_pre_variables;
 use start::{StartShape, StartValues};
@@ -34,6 +36,7 @@ use start::{StartShape, StartValues};
 enum VariableClass {
     Input,
     Output,
+    Local,
     TunableParameter,
     DependentParameter,
     Constant,
@@ -57,6 +60,7 @@ struct ProjectionParts {
     protected: Vec<gast::ProtectedEntity>,
     startup: Vec<gast::Spanned<gast::Statement>>,
     recalibrate: Vec<gast::Spanned<gast::Statement>>,
+    do_step_locals: Vec<gast::VariableDeclaration>,
 }
 
 /// Lower one checked DAE into validated eFMI Algorithm Code.
@@ -76,8 +80,8 @@ fn lower_view<'dae>(
     view: dae::DaeView<'dae>,
     clock: AdmittedClock,
 ) -> Result<AlgorithmCodePackage, Vec<GalecTargetError>> {
-    let clock_id = admitted_clock_id(view).map_err(single)?;
-    validate_clock(clock, view, clock_id).map_err(single)?;
+    let clock_id = admitted_clock_id(view, &clock).map_err(single)?;
+    validate_clocks(&clock, view).map_err(single)?;
     let classified = classify_variables(view)?;
     let by_id = classified
         .iter()
@@ -89,7 +93,7 @@ fn lower_view<'dae>(
     let mut parts = build_variable_parts(view, &classified, &by_id, &referenced_pre, &pre_names)?;
 
     let period_ref = append_clock_period(
-        clock,
+        &clock,
         view.clock(clock_id)
             .expect("admitted checked clock resolves")
             .provenance()
@@ -101,10 +105,31 @@ fn lower_view<'dae>(
         &mut parts.startup,
     )?;
 
-    let mut do_step =
-        lower_clocked_assignments(view, clock_id, &by_id, &pre_names).map_err(single)?;
-    append_causal_output_assignments(view, &classified, &by_id, &pre_names, &mut do_step)
-        .map_err(single)?;
+    let clocked = lower_clock_schedule(
+        view,
+        &clock,
+        &classified,
+        &by_id,
+        &pre_names,
+        &mut parts.nominals,
+        &mut parts.protected,
+        &mut parts.startup,
+    )
+    .map_err(single)?;
+    parts.do_step_locals.extend(clocked.locals);
+    let mut do_step = clocked.statements;
+    let mut called_user_functions = clocked.called_user_functions;
+    called_user_functions.extend(
+        causal_outputs::append_causal_assignments(
+            view,
+            &classified,
+            &by_id,
+            &pre_names,
+            &mut parts.do_step_locals,
+            &mut do_step,
+        )
+        .map_err(single)?,
+    );
     append_pre_commits(&referenced_pre, &by_id, &pre_names, &mut do_step)?;
     let block_name = crate::mangle::galec_variable_name(
         options.block_name.as_deref().unwrap_or(input.model_name),
@@ -120,6 +145,9 @@ fn lower_view<'dae>(
     block.protected = parts.protected;
     block.startup.statements = parts.startup;
     block.recalibrate.statements = parts.recalibrate;
+    block.protected_functions =
+        user_functions::lower_reachable(view, called_user_functions).map_err(single)?;
+    block.do_step.locals = parts.do_step_locals;
     block.do_step.statements = do_step;
     AlgorithmCodePackage::construct(block, parts.nominals, &period_ref).map_err(|error| {
         vec![GalecTargetError::LoweringInternal {
@@ -144,6 +172,7 @@ fn build_variable_parts<'dae>(
         protected: Vec::new(),
         startup: Vec::new(),
         recalibrate: Vec::new(),
+        do_step_locals: Vec::new(),
     };
     for variable in classified {
         append_variable(view, variable, by_id, pre_names, &mut evaluator, &mut parts)?;
@@ -169,6 +198,12 @@ fn append_variable<'dae>(
     evaluator: &mut NumericEvaluator<'dae>,
     parts: &mut ProjectionParts,
 ) -> Result<(), Vec<GalecTargetError>> {
+    if classified.class == VariableClass::Local {
+        parts
+            .do_step_locals
+            .push(declaration(classified, gast::RangeAttributes::default()));
+        return Ok(());
+    }
     let projected = build_projected_variable(view, classified, evaluator)?;
     let start = projected.start;
     let declaration = declaration(classified, projected.range);
@@ -205,6 +240,7 @@ fn append_variable<'dae>(
             parts.startup.push(assignment.clone());
             parts.recalibrate.push(assignment);
         }
+        VariableClass::Local => unreachable!("causal locals return before state construction"),
         VariableClass::Constant | VariableClass::State => {
             parts.protected.push(gast::ProtectedEntity {
                 kind: if classified.class == VariableClass::Constant {
@@ -224,43 +260,44 @@ fn append_variable<'dae>(
 
 fn admitted_clock_id<'dae>(
     view: dae::DaeView<'dae>,
+    clock: &AdmittedClock,
 ) -> Result<dae::ClockId<'dae>, GalecTargetError> {
-    (0..view.clock_count())
-        .filter_map(|index| view.clock_id(index))
-        .find(|id| {
-            matches!(
-                view.clock(*id).map(dae::ClockView::operation),
-                Some(dae::ClockOperation::Periodic(_))
-            )
-        })
-        .ok_or(GalecTargetError::ClockCountNotOne { count: 0 })
+    clock
+        .domains
+        .iter()
+        .find(|domain| domain.divisor == 1)
+        .and_then(|domain| usize::try_from(domain.clock_index).ok())
+        .and_then(|index| view.clock_id(index))
+        .ok_or(GalecTargetError::NoPeriodicClock)
 }
 
-fn validate_clock<'dae>(
-    clock: AdmittedClock,
-    view: dae::DaeView<'dae>,
-    clock_id: dae::ClockId<'dae>,
-) -> Result<(), GalecTargetError> {
-    let span = view
-        .clock(clock_id)
-        .expect("admitted clock resolves")
-        .provenance()
-        .span();
-    if !clock.period_seconds.is_finite() || clock.period_seconds <= 0.0 {
-        return Err(GalecTargetError::InvalidClockPeriod {
-            period_seconds: clock.period_seconds,
-            span,
-        });
-    }
-    if clock.phase_seconds != 0.0 {
-        return Err(unsupported(
-            "clock-phase",
-            format!(
-                "clock phase offset {} s cannot be represented by the eFMI Beta-1 Clock",
-                clock.phase_seconds
-            ),
-            span,
-        ));
+fn validate_clocks(clock: &AdmittedClock, view: dae::DaeView<'_>) -> Result<(), GalecTargetError> {
+    for domain in &clock.domains {
+        let id = usize::try_from(domain.clock_index)
+            .ok()
+            .and_then(|index| view.clock_id(index))
+            .expect("admitted clock index resolves");
+        let entry = view.clock(id).expect("admitted clock resolves");
+        let dae::ClockOperation::Periodic(schedule) = entry.operation() else {
+            unreachable!("admissibility retained only periodic clocks")
+        };
+        let span = entry.provenance().span();
+        if !schedule.period_seconds().is_finite() || schedule.period_seconds() <= 0.0 {
+            return Err(GalecTargetError::InvalidClockPeriod {
+                period_seconds: schedule.period_seconds(),
+                span,
+            });
+        }
+        if schedule.phase_seconds() != 0.0 {
+            return Err(unsupported(
+                "clock-phase",
+                format!(
+                    "clock phase offset {} s cannot be represented by the eFMI Beta-1 Clock",
+                    schedule.phase_seconds()
+                ),
+                span,
+            ));
+        }
     }
     Ok(())
 }
@@ -274,10 +311,13 @@ fn classify_variables<'dae>(
     for (id, variable) in view.variables() {
         let causally_defined = definitions.definition_for_variable(id).is_some()
             || definitions.fully_defines_variable(id);
-        if causally_defined && variable.causality() != dae::VariableCausality::Output {
-            continue;
-        }
-        match classify_variable(id, variable) {
+        let classified =
+            if causally_defined && variable.causality() != dae::VariableCausality::Output {
+                classify_causal_local(id, variable)
+            } else {
+                classify_variable(id, variable)
+            };
+        match classified {
             Ok(classified) => variables.push(classified),
             Err(error) => errors.push(error),
         }
@@ -287,6 +327,40 @@ fn classify_variables<'dae>(
     } else {
         Err(errors)
     }
+}
+
+fn classify_causal_local<'dae>(
+    id: dae::VariableId<'dae>,
+    variable: dae::VariableView<'dae>,
+) -> Result<ClassifiedVariable<'dae>, GalecTargetError> {
+    let span = variable.declaration().span();
+    if !matches!(
+        variable.role(),
+        dae::VariableRole::Algebraic | dae::VariableRole::Output
+    ) || variable.causality() != dae::VariableCausality::Local
+    {
+        return Err(GalecTargetError::UnclassifiableVariable {
+            variable: variable.name().to_string(),
+            causality: causality_name(variable.causality()),
+            partition: role_name(variable.role()),
+            origin: origin_name(variable.origin()),
+            span,
+        });
+    }
+    Ok(ClassifiedVariable {
+        id,
+        variable,
+        class: VariableClass::Local,
+        scalar_type: scalar_type(
+            variable.value_type().scalar_type(),
+            variable.name().as_str(),
+            span,
+        )?,
+        name: with_span(
+            crate::mangle::galec_variable_name(variable.name().as_str())?,
+            span,
+        ),
+    })
 }
 
 fn classify_variable<'dae>(
@@ -319,7 +393,11 @@ fn classify_variable<'dae>(
             });
         }
     };
-    let scalar_type = scalar_type(variable.value_type().scalar_type(), variable.name(), span)?;
+    let scalar_type = scalar_type(
+        variable.value_type().scalar_type(),
+        variable.name().as_str(),
+        span,
+    )?;
     let name = with_span(
         crate::mangle::galec_variable_name(variable.name().as_str())?,
         span,
@@ -335,7 +413,7 @@ fn classify_variable<'dae>(
 
 fn scalar_type(
     scalar: dae::ScalarType,
-    name: &rumoca_core::VarName,
+    name: &str,
     span: Span,
 ) -> Result<gast::ScalarType, GalecTargetError> {
     match scalar {
@@ -615,7 +693,7 @@ fn append_previous_states<'dae>(
 
 #[allow(clippy::too_many_arguments)]
 fn append_clock_period(
-    clock: AdmittedClock,
+    clock: &AdmittedClock,
     span: Span,
     classified: &[ClassifiedVariable<'_>],
     pre_names: &HashMap<u32, gast::Name>,
@@ -791,16 +869,32 @@ struct ExpressionLowerer<'a, 'dae> {
     pre_names: &'a HashMap<u32, gast::Name>,
     definitions: rumoca_phase_structural::CausalDefinitions<'dae>,
     call_frames: Vec<CallFrame<'dae>>,
+    function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<TypedExpression>>)>,
+    function_fold_output_cache: HashMap<FunctionFoldOutputKey, TypedExpression>,
+    scalar_projection_cache: HashMap<ScalarProjectionKey, TypedExpression>,
+    function_fold_projection_cache: HashMap<u32, bool>,
     comprehension_frames: Vec<ComprehensionFrame>,
+    loop_index_bounds: Vec<LoopIndexBound>,
+    materialize_function_values: bool,
+    inline_causal_locals: bool,
+    conditional_depth: usize,
+    materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
+    materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
+    called_user_functions: HashSet<u32>,
+    function_scope: Option<dae::FunctionId<'dae>>,
+    temporary_locals: Vec<gast::VariableDeclaration>,
+    temporary_counter: usize,
+    temporary_namespace: String,
     capture_assertions: bool,
     seen_assertion_calls: HashSet<FunctionAssertionCallKey>,
-    pending_assertions: Vec<gast::Spanned<gast::Statement>>,
+    pending_prefix_statements: Vec<gast::Spanned<gast::Statement>>,
 }
 
 struct CallFrame<'dae> {
     call: dae::ExprId<'dae>,
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
+    indices: Vec<Option<i64>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -812,6 +906,7 @@ struct FunctionAssertionCallKey {
 struct FunctionAssertionCallSite {
     function: u32,
     arguments: Vec<u32>,
+    indices: Vec<Option<i64>>,
     span: Span,
 }
 
@@ -820,15 +915,91 @@ struct ComprehensionFrame {
     binders: Vec<gast::Expression>,
 }
 
+struct LoopIndexBound {
+    name: gast::Name,
+    minimum: i64,
+    maximum: i64,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MaterializedFunctionValueKey {
+    call_path: Vec<MaterializedCallKey>,
+    function: u32,
+    definition: u32,
+    indices: Vec<i64>,
+    fields: Vec<u32>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MaterializedCallKey {
+    function: u32,
+    arguments: Vec<u32>,
+    indices: Vec<Option<i64>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MaterializedFunctionCallKey {
+    call_path: Vec<MaterializedCallKey>,
+    function: u32,
+    arguments: Vec<u32>,
+}
+
+#[derive(Clone)]
 struct TypedExpression {
     expression: gast::Expression,
     scalar_type: gast::ScalarType,
 }
 
-enum ArrayUpdateAxis {
-    UpdatedIndex,
-    UpdatedValue(gast::Expression),
-    Historical,
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FunctionFoldOutputKey {
+    call_path: Vec<MaterializedCallKey>,
+    fold: u32,
+    carried: u32,
+    scalar: u32,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ScalarProjectionKey {
+    call_path: Vec<MaterializedCallKey>,
+    expression: u32,
+    indices: Vec<i64>,
+}
+
+fn expression_depth(expression: &gast::Expression) -> usize {
+    match expression {
+        gast::Expression::Bool(_)
+        | gast::Expression::Integer(_)
+        | gast::Expression::Real(_)
+        | gast::Expression::Ref(_)
+        | gast::Expression::Neg(_) => 1,
+        gast::Expression::Size { dimension, .. }
+        | gast::Expression::Paren(dimension)
+        | gast::Expression::Not(dimension) => 1 + expression_depth(dimension),
+        gast::Expression::Call(call) => {
+            1 + call
+                .arguments
+                .iter()
+                .map(expression_depth)
+                .max()
+                .unwrap_or(0)
+        }
+        gast::Expression::If(value) => {
+            let branch_depth = value
+                .branches
+                .iter()
+                .flat_map(|(condition, result)| [condition, result])
+                .map(expression_depth)
+                .max()
+                .unwrap_or(0);
+            1 + branch_depth.max(expression_depth(&value.else_value))
+        }
+        gast::Expression::Array(elements) => {
+            1 + elements.iter().map(expression_depth).max().unwrap_or(0)
+        }
+        gast::Expression::Binary { lhs, rhs, .. } => {
+            1 + expression_depth(lhs).max(expression_depth(rhs))
+        }
+    }
 }
 
 impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
@@ -843,10 +1014,25 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             pre_names,
             definitions: rumoca_phase_structural::CausalDefinitions::derive(view),
             call_frames: Vec::new(),
+            function_fold_values: Vec::new(),
+            function_fold_output_cache: HashMap::new(),
+            scalar_projection_cache: HashMap::new(),
+            function_fold_projection_cache: HashMap::new(),
             comprehension_frames: Vec::new(),
+            loop_index_bounds: Vec::new(),
+            materialize_function_values: false,
+            inline_causal_locals: false,
+            conditional_depth: 0,
+            materialized_function_values: HashMap::new(),
+            materialized_function_calls: HashMap::new(),
+            called_user_functions: HashSet::new(),
+            function_scope: None,
+            temporary_locals: Vec::new(),
+            temporary_counter: 0,
+            temporary_namespace: "value".to_owned(),
             capture_assertions: false,
             seen_assertion_calls: HashSet::new(),
-            pending_assertions: Vec::new(),
+            pending_prefix_statements: Vec::new(),
         }
     }
 
@@ -861,8 +1047,57 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         }
     }
 
-    fn take_assertions(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
-        std::mem::take(&mut self.pending_assertions)
+    fn with_do_step_effects(
+        view: dae::DaeView<'dae>,
+        by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
+        pre_names: &'a HashMap<u32, gast::Name>,
+    ) -> Self {
+        Self {
+            capture_assertions: true,
+            materialize_function_values: true,
+            ..Self::new(view, by_id, pre_names)
+        }
+    }
+
+    /// Finish one emitted statement group and sever every temporary cache
+    /// whose initializer belongs to that group.
+    ///
+    /// A later scheduler may reorder statement groups. Keeping a cached local
+    /// across this boundary would let the later group read a temporary whose
+    /// defining assignment moved after the read.
+    fn take_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
+        self.finish_statement_group();
+        self.drain_prefix_statements()
+    }
+
+    fn drain_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
+        std::mem::take(&mut self.pending_prefix_statements)
+    }
+
+    fn finish_statement_group(&mut self) {
+        self.materialized_function_values.clear();
+        self.materialized_function_calls.clear();
+        self.function_fold_output_cache.clear();
+        self.scalar_projection_cache.clear();
+        self.seen_assertion_calls.clear();
+    }
+
+    fn take_temporary_locals(&mut self) -> Vec<gast::VariableDeclaration> {
+        std::mem::take(&mut self.temporary_locals)
+    }
+
+    fn take_called_user_functions(&mut self) -> HashSet<u32> {
+        std::mem::take(&mut self.called_user_functions)
+    }
+
+    fn with_temporary_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.temporary_namespace = namespace.into();
+        self
+    }
+
+    fn with_causal_inlining(mut self) -> Self {
+        self.inline_causal_locals = true;
+        self
     }
 
     fn lower(&mut self, id: dae::ExprId<'dae>) -> Result<TypedExpression, GalecTargetError> {
@@ -886,6 +1121,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         id: dae::ExprId<'dae>,
         indices: &[gast::Expression],
     ) -> Result<TypedExpression, GalecTargetError> {
+        let cache_key = self.scalar_projection_key(id, indices);
+        if let Some(key) = &cache_key
+            && let Some(value) = self.scalar_projection_cache.get(key)
+        {
+            return Ok(value.clone());
+        }
         let node = self
             .view
             .expression(id)
@@ -903,10 +1144,49 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         }
         let scalar_type = scalar_type(
             node.value_type().scalar_type(),
-            &rumoca_core::VarName::new("<expression>"),
+            "<expression>",
             node.provenance().span(),
         )?;
-        self.lower_operation(id, node, indices, scalar_type)
+        let value = self.lower_operation(id, node, indices, scalar_type)?;
+        if let Some(key) = cache_key {
+            self.scalar_projection_cache.insert(key, value.clone());
+        }
+        Ok(value)
+    }
+
+    fn scalar_projection_key(
+        &self,
+        expression: dae::ExprId<'dae>,
+        indices: &[gast::Expression],
+    ) -> Option<ScalarProjectionKey> {
+        if !self.materialize_function_values
+            || self.conditional_depth != 0
+            || !self.comprehension_frames.is_empty()
+            || !self.loop_index_bounds.is_empty()
+            || !self.function_fold_values.is_empty()
+        {
+            return None;
+        }
+        Some(ScalarProjectionKey {
+            call_path: self
+                .call_frames
+                .iter()
+                .map(|frame| MaterializedCallKey {
+                    function: frame.function.index(),
+                    arguments: frame
+                        .arguments
+                        .iter()
+                        .map(|argument| argument.index())
+                        .collect(),
+                    indices: frame.indices.clone(),
+                })
+                .collect(),
+            expression: expression.index(),
+            indices: indices
+                .iter()
+                .map(constant_integer)
+                .collect::<Option<Vec<_>>>()?,
+        })
     }
 
     fn lower_operation(
@@ -962,7 +1242,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 lower_builtin(self, builtin, arguments, node.provenance().span())?
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                return self.lower_at(definition.rhs(), indices);
+                return self.lower_function_value(definition, indices, scalar_type);
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 return self.lower_index_at(base, subscripts, indices, node.provenance().span());
@@ -972,8 +1252,161 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             }
             _ => return self.lower_aggregate_operation(id, node, indices, scalar_type),
         };
+        self.bound_expression(
+            TypedExpression {
+                expression,
+                scalar_type,
+            },
+            node.provenance().span(),
+        )
+    }
+
+    fn bound_expression(
+        &mut self,
+        value: TypedExpression,
+        span: Span,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        const MAX_INLINE_DEPTH: usize = 16;
+        if !self.materialize_function_values
+            || expression_depth(&value.expression) <= MAX_INLINE_DEPTH
+        {
+            return Ok(value);
+        }
+        let name = gast::Name::ident(format!(
+            "rumoca_{}_expr_{}",
+            self.temporary_namespace, self.temporary_counter
+        ));
+        self.temporary_counter += 1;
+        self.temporary_locals.push(gast::VariableDeclaration {
+            ty: gast::TypeRef::Primitive(value.scalar_type),
+            name: name.clone(),
+            dimensions: Vec::new(),
+            range: gast::RangeAttributes::default(),
+            span,
+        });
+        self.pending_prefix_statements.push(gast::Spanned::new(
+            gast::Statement::Assignment {
+                target: gast::Reference::local(name.clone()),
+                value: value.expression,
+            },
+            span,
+        ));
         Ok(TypedExpression {
-            expression,
+            expression: gast::Expression::Ref(gast::Reference::local(name)),
+            scalar_type: value.scalar_type,
+        })
+    }
+
+    fn lower_function_value(
+        &mut self,
+        definition: dae::FunctionDefinitionView<'dae>,
+        indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        if self.function_scope == Some(definition.id().function()) {
+            let value = self
+                .view
+                .function(definition.id().function())
+                .expect("checked function identity resolves")
+                .values()
+                .find(|value| value.id() == definition.target())
+                .expect("checked function definition target resolves");
+            return Ok(TypedExpression {
+                expression: gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
+                    name: user_functions::value_name(value)?,
+                    subscripts: indices.to_vec(),
+                    span: definition.provenance().span(),
+                })),
+                scalar_type,
+            });
+        }
+        let Some(key) = self.function_value_key(definition, indices, Vec::new()) else {
+            return self.lower_at(definition.rhs(), indices);
+        };
+        if let Some(name) = self.materialized_function_values.get(&key) {
+            return Ok(TypedExpression {
+                expression: gast::Expression::Ref(gast::Reference::local(name.clone())),
+                scalar_type,
+            });
+        }
+
+        let value = self.lower_at(definition.rhs(), indices)?;
+        self.store_materialized_function_value(
+            key,
+            value,
+            scalar_type,
+            definition.provenance().span(),
+        )
+    }
+
+    fn function_value_key(
+        &self,
+        definition: dae::FunctionDefinitionView<'dae>,
+        indices: &[gast::Expression],
+        fields: Vec<u32>,
+    ) -> Option<MaterializedFunctionValueKey> {
+        if !self.materialize_function_values
+            || self.conditional_depth != 0
+            || self.call_frames.is_empty()
+        {
+            return None;
+        }
+        Some(MaterializedFunctionValueKey {
+            call_path: self
+                .call_frames
+                .iter()
+                .map(|frame| MaterializedCallKey {
+                    function: frame.function.index(),
+                    arguments: frame
+                        .arguments
+                        .iter()
+                        .map(|argument| argument.index())
+                        .collect(),
+                    indices: frame.indices.clone(),
+                })
+                .collect(),
+            function: definition.id().function().index(),
+            definition: definition.id().ordinal(),
+            indices: indices
+                .iter()
+                .map(|index| match index {
+                    gast::Expression::Integer(value) => Some(*value),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?,
+            fields,
+        })
+    }
+
+    fn store_materialized_function_value(
+        &mut self,
+        key: MaterializedFunctionValueKey,
+        value: TypedExpression,
+        scalar_type: gast::ScalarType,
+        span: Span,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        let name = gast::Name::ident(format!(
+            "rumoca_{}_value_{}",
+            self.temporary_namespace, self.temporary_counter
+        ));
+        self.temporary_counter += 1;
+        self.temporary_locals.push(gast::VariableDeclaration {
+            ty: gast::TypeRef::Primitive(scalar_type),
+            name: name.clone(),
+            dimensions: Vec::new(),
+            range: gast::RangeAttributes::default(),
+            span,
+        });
+        self.pending_prefix_statements.push(gast::Spanned::new(
+            gast::Statement::Assignment {
+                target: gast::Reference::local(name.clone()),
+                value: coerce(value, scalar_type, span)?,
+            },
+            span,
+        ));
+        self.materialized_function_values.insert(key, name.clone());
+        Ok(TypedExpression {
+            expression: gast::Expression::Ref(gast::Reference::local(name)),
             scalar_type,
         })
     }
@@ -1027,10 +1460,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 scalar_type,
                 node.provenance().span(),
             ),
+            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => self
+                .lower_function_fold_parameter_at(fold, carried, indices, node.provenance().span()),
+            dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
+                self.lower_function_fold_output_at(fold, carried, indices, node.provenance().span())
+            }
             dae::ExpressionOperation::Record(_)
-            | dae::ExpressionOperation::StringConversion { .. }
-            | dae::ExpressionOperation::FunctionFoldParameter { .. }
-            | dae::ExpressionOperation::FunctionFoldOutput { .. } => Err(unsupported(
+            | dae::ExpressionOperation::StringConversion { .. } => Err(unsupported(
                 "expression-form",
                 format!(
                     "checked expression form {:?} is outside the scalar GALEC projection",
@@ -1042,827 +1478,126 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         }
     }
 
-    fn lower_unary_at(
-        &mut self,
-        operator: dae::UnaryOperator,
-        operand: dae::ExprId<'dae>,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<gast::Expression, GalecTargetError> {
-        let operand = self.lower_at(operand, indices)?;
-        match operator {
-            dae::UnaryOperator::Plus => Ok(operand.expression),
-            dae::UnaryOperator::Negate => match operand.scalar_type {
-                gast::ScalarType::Real => Ok(gast::Expression::negated_real(operand.expression)),
-                gast::ScalarType::Integer => {
-                    Ok(gast::Expression::negated_integer(operand.expression))
-                }
-                gast::ScalarType::Boolean => Err(type_mismatch("numeric", "Boolean", span)),
-            },
-            dae::UnaryOperator::Not => Ok(gast::Expression::Not(Box::new(operand.expression))),
-        }
-    }
-
-    fn lower_binary_at(
-        &mut self,
-        operator: dae::BinaryOperator,
-        lhs: dae::ExprId<'dae>,
-        rhs: dae::ExprId<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let lhs_type = self.view.expression(lhs).expect("checked lhs").value_type();
-        let rhs_type = self.view.expression(rhs).expect("checked rhs").value_type();
-        if operator == dae::BinaryOperator::Multiply
-            && indices.is_empty()
-            && matches!(
-                (lhs_type.dimensions(), rhs_type.dimensions()),
-                ([lhs_extent], [rhs_extent]) if lhs_extent == rhs_extent
-            )
-        {
-            let extent = lhs_type.dimensions()[0];
-            let mut terms = Vec::with_capacity(extent as usize);
-            for index in 1..=extent {
-                let index = [gast::Expression::Integer(i64::from(index))];
-                let lhs = self.lower_at(lhs, &index)?;
-                let rhs = self.lower_at(rhs, &index)?;
-                terms.push(lower_binary(operator, lhs, rhs, scalar_type, span)?);
-            }
-            let expression = terms
-                .into_iter()
-                .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::Add, lhs, rhs))
-                .ok_or_else(|| {
-                    unsupported(
-                        "zero-dot-product",
-                        "zero-length dot product requires an explicit additive identity".to_owned(),
-                        span,
-                    )
-                })?;
-            return Ok(TypedExpression {
-                expression,
-                scalar_type,
-            });
-        }
-        let lhs_indices = operand_projection(lhs_type.dimensions(), indices, span)?;
-        let rhs_indices = operand_projection(rhs_type.dimensions(), indices, span)?;
-        let lhs = self.lower_at(lhs, &lhs_indices)?;
-        let rhs = self.lower_at(rhs, &rhs_indices)?;
-        let expression = lower_binary(operator, lhs, rhs, scalar_type, span)?;
-        Ok(TypedExpression {
-            expression,
-            scalar_type,
-        })
-    }
-
-    fn lower_index_at(
-        &mut self,
-        base: dae::ExprId<'dae>,
-        subscripts: dae::SubscriptsView<'dae>,
-        projection: &[gast::Expression],
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let mut projected = projection.iter();
-        let mut base_indices = Vec::with_capacity(
-            self.view
-                .expression(base)
-                .expect("checked indexed base")
-                .value_type()
-                .dimensions()
-                .len(),
-        );
-        for subscript in subscripts.iter() {
-            match subscript {
-                dae::SubscriptView::Index { expression, .. } => {
-                    base_indices.push(self.lower(expression)?.expression);
-                }
-                dae::SubscriptView::Whole { .. } => {
-                    base_indices.push(next_projected_index(&mut projected, "whole", span)?);
-                }
-                dae::SubscriptView::Slice { expression, .. } => {
-                    let selected = next_projected_index(&mut projected, "slice", span)?;
-                    base_indices.push(self.lower_slice_index(expression, selected, span)?);
-                }
-            }
-        }
-        base_indices.extend(projected.cloned());
-        self.lower_at(base, &base_indices)
-    }
-
-    fn lower_slice_index(
-        &mut self,
-        expression: dae::ExprId<'dae>,
-        projected: gast::Expression,
-        span: Span,
-    ) -> Result<gast::Expression, GalecTargetError> {
-        let ordinal = match projected {
-            gast::Expression::Integer(value) if value >= 1 => value,
-            _ => {
-                return Err(unsupported(
-                    "dynamic-slice-projection",
-                    "GALEC slice projection requires a constructor-proven literal ordinal"
-                        .to_owned(),
-                    span,
-                ));
-            }
-        };
-        let node = self
-            .view
-            .expression(expression)
-            .expect("checked slice expression");
-        if let dae::ExpressionOperation::Range(range) = node.operation() {
-            return range
-                .start()
-                .value()
-                .checked_add((ordinal - 1).saturating_mul(range.effective_step()))
-                .map(gast::Expression::Integer)
-                .ok_or_else(|| {
-                    unsupported(
-                        "slice-overflow",
-                        "slice index arithmetic overflowed".to_owned(),
-                        span,
-                    )
-                });
-        }
-        self.lower_at(expression, &[gast::Expression::Integer(ordinal)])
-            .map(|value| value.expression)
-    }
-
-    fn lower_array_at(
-        &mut self,
-        elements: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let (first, rest) = indices.split_first().ok_or_else(|| {
-            unsupported(
-                "array-projection",
-                "array constructor requires an element index".to_owned(),
-                span,
-            )
-        })?;
-        let ordinal = match first {
-            gast::Expression::Integer(value) => usize::try_from(*value)
-                .ok()
-                .and_then(|value| value.checked_sub(1)),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            unsupported(
-                "dynamic-array-constructor-index",
-                "array constructor projection requires a positive literal index".to_owned(),
-                span,
-            )
-        })?;
-        let element = elements.get(ordinal).ok_or_else(|| {
-            unsupported(
-                "array-constructor-index",
-                "array constructor projection is outside its checked extent".to_owned(),
-                span,
-            )
-        })?;
-        self.lower_at(element, rest)
-    }
-
-    /// Project one scalar from a checked tensor SSA update.
-    ///
-    /// GALEC exposes scalar assignments, while DAE deliberately retains an
-    /// indexed Modelica assignment as `ArrayUpdate(base, value, subscripts)`.
-    /// Row-major target expansion supplies literal coordinates here. Those
-    /// coordinates select either the updated value or the historical base;
-    /// the aggregate owner itself remains compact in DAE.
-    fn lower_array_update_at(
-        &mut self,
-        base: dae::ExprId<'dae>,
-        value: dae::ExprId<'dae>,
-        subscripts: dae::SubscriptsView<'dae>,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let projected = indices
-            .iter()
-            .map(|index| match index {
-                gast::Expression::Integer(value) if *value >= 1 => Ok(*value),
-                _ => Err(unsupported(
-                    "dynamic-array-update-projection",
-                    "array-update projection requires constructor-proven literal coordinates"
-                        .to_owned(),
-                    span,
-                )),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let base_dimensions = self
-            .view
-            .expression(base)
-            .expect("checked array-update base resolves")
-            .value_type()
-            .dimensions();
-        let Some(value_indices) =
-            self.array_update_value_indices(subscripts, &projected, base_dimensions, span)?
-        else {
-            return self.lower_at(base, indices);
-        };
-        self.lower_at(value, &value_indices)
-    }
-
-    fn array_update_value_indices(
-        &mut self,
-        subscripts: dae::SubscriptsView<'dae>,
-        projected: &[i64],
-        base_dimensions: &[u32],
-        span: Span,
-    ) -> Result<Option<Vec<gast::Expression>>, GalecTargetError> {
-        let mut value_indices = Vec::new();
-        for (axis, (&coordinate, &extent)) in projected.iter().zip(base_dimensions).enumerate() {
-            match self.array_update_axis(subscripts.get(axis), coordinate, extent, span)? {
-                ArrayUpdateAxis::UpdatedIndex => {}
-                ArrayUpdateAxis::UpdatedValue(index) => value_indices.push(index),
-                ArrayUpdateAxis::Historical => return Ok(None),
-            }
-        }
-        Ok(Some(value_indices))
-    }
-
-    fn array_update_axis(
-        &mut self,
-        subscript: Option<dae::SubscriptView<'dae>>,
-        coordinate: i64,
-        extent: u32,
-        span: Span,
-    ) -> Result<ArrayUpdateAxis, GalecTargetError> {
-        match subscript {
-            Some(dae::SubscriptView::Index { expression, .. }) => {
-                let selected = self.lower(expression)?;
-                let gast::Expression::Integer(selected) = selected.expression else {
-                    return Err(unsupported(
-                        "dynamic-array-update-subscript",
-                        "array-update index is not a constructor-proven Integer".to_owned(),
-                        span,
-                    ));
-                };
-                Ok(if selected == coordinate {
-                    ArrayUpdateAxis::UpdatedIndex
-                } else {
-                    ArrayUpdateAxis::Historical
-                })
-            }
-            Some(dae::SubscriptView::Whole { .. }) | None => Ok(ArrayUpdateAxis::UpdatedValue(
-                gast::Expression::Integer(coordinate),
-            )),
-            Some(dae::SubscriptView::Slice { expression, .. }) => Ok(self
-                .static_slice_ordinal(expression, coordinate, extent)?
-                .map_or(ArrayUpdateAxis::Historical, |ordinal| {
-                    ArrayUpdateAxis::UpdatedValue(gast::Expression::Integer(ordinal))
-                })),
-        }
-    }
-
-    fn static_slice_ordinal(
-        &mut self,
-        slice: dae::ExprId<'dae>,
-        coordinate: i64,
-        extent: u32,
-    ) -> Result<Option<i64>, GalecTargetError> {
-        let node = self
-            .view
-            .expression(slice)
-            .expect("checked array-update slice resolves");
-        let dae::ExpressionOperation::Range(range) = node.operation() else {
-            return Err(unsupported(
-                "dynamic-array-update-slice",
-                "array-update slice requires a constructor-proven range".to_owned(),
-                node.provenance().span(),
-            ));
-        };
-        let start = range.start().value();
-        let stop = range.stop().value();
-        let step = range.effective_step();
-        let in_direction = if step > 0 {
-            coordinate >= start && coordinate <= stop
-        } else {
-            coordinate <= start && coordinate >= stop
-        };
-        let delta = coordinate - start;
-        if !in_direction || step == 0 || delta % step != 0 {
-            return Ok(None);
-        }
-        let ordinal = delta / step + 1;
-        if coordinate > i64::from(extent) || ordinal < 1 {
-            return Ok(None);
-        }
-        Ok(Some(ordinal))
-    }
-
-    fn lower_elementwise_builtin(
-        &mut self,
-        builtin: dae::PureBuiltin,
-        arguments: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        if builtin == dae::PureBuiltin::Transpose {
-            return Err(unsupported(
-                "transpose",
-                "GALEC has no checked first-two-axis tensor permutation mapping".to_owned(),
-                span,
-            ));
-        }
-        if builtin == dae::PureBuiltin::Linspace {
-            return self.lower_linspace_element(arguments, indices, span);
-        }
-        if builtin == dae::PureBuiltin::Cross {
-            return self.lower_cross_element(arguments, indices, scalar_type, span);
-        }
-        if builtin == dae::PureBuiltin::Identity {
-            return Ok(lower_identity_element(indices));
-        }
-        if builtin == dae::PureBuiltin::Vector {
-            let operand = arguments.get(0).expect("checked vector operand");
-            let dimensions = self
-                .view
-                .expression(operand)
-                .expect("checked vector operand resolves")
-                .value_type()
-                .dimensions();
-            let projection = vector_operand_projection(dimensions, indices);
-            return self.lower_at(operand, &projection);
-        }
-        if builtin == dae::PureBuiltin::Zeros || builtin == dae::PureBuiltin::Ones {
-            return Ok(TypedExpression {
-                expression: gast::Expression::Real(if builtin == dae::PureBuiltin::Ones {
-                    1.0
-                } else {
-                    0.0
-                }),
-                scalar_type,
-            });
-        }
-        if builtin == dae::PureBuiltin::Fill {
-            return self.lower_at(arguments.get(0).expect("checked fill value argument"), &[]);
-        }
-        if matches!(
-            builtin,
-            dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent | dae::PureBuiltin::Homotopy
-        ) {
-            let ordinal = usize::from(builtin == dae::PureBuiltin::Smooth);
-            return self.lower_at(
-                arguments
-                    .get(ordinal)
-                    .expect("checked transparent builtin argument"),
-                indices,
-            );
-        }
-        let mut lowered = Vec::with_capacity(arguments.len());
-        for argument in arguments.iter() {
-            let dimensions = self
-                .view
-                .expression(argument)
-                .expect("checked builtin argument")
-                .value_type()
-                .dimensions();
-            let projection = operand_projection(dimensions, indices, span)?;
-            lowered.push(self.lower_at(argument, &projection)?);
-        }
-        let expression = lower_builtin_arguments(builtin, lowered, span)?;
-        Ok(TypedExpression {
-            expression,
-            scalar_type,
-        })
-    }
-
-    fn lower_reduction(
-        &mut self,
-        builtin: dae::PureBuiltin,
-        arguments: dae::ExpressionOperands<'dae>,
-        scalar_type: gast::ScalarType,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let operand = arguments.get(0).expect("checked reduction operand");
-        let dimensions = self
-            .view
-            .expression(operand)
-            .expect("checked reduction operand resolves")
-            .value_type()
-            .dimensions();
-        let operator = if builtin == dae::PureBuiltin::Sum {
-            gast::BinaryOp::Add
-        } else {
-            gast::BinaryOp::Mul
-        };
-        let mut values = Vec::new();
-        for indices in row_major_indices(dimensions) {
-            let indices = indices
-                .into_iter()
-                .map(|index| gast::Expression::Integer(i64::from(index)))
-                .collect::<Vec<_>>();
-            values.push(self.lower_at(operand, &indices)?.expression);
-        }
-        let expression = values
-            .into_iter()
-            .reduce(|lhs, rhs| gast::Expression::binary(operator, lhs, rhs))
-            .unwrap_or_else(|| reduction_identity(builtin, scalar_type));
-        Ok(TypedExpression {
-            expression,
-            scalar_type,
-        })
-    }
-
-    fn lower_linspace_element(
-        &mut self,
-        arguments: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let [index] = indices else {
-            unreachable!("checked linspace result has rank one")
-        };
-        let start = coerce(
-            self.lower_at(arguments.get(0).expect("checked linspace start"), &[])?,
-            gast::ScalarType::Real,
-            span,
-        )?;
-        let stop = coerce(
-            self.lower_at(arguments.get(1).expect("checked linspace stop"), &[])?,
-            gast::ScalarType::Real,
-            span,
-        )?;
-        let count = coerce(
-            self.lower_at(arguments.get(2).expect("checked linspace extent"), &[])?,
-            gast::ScalarType::Real,
-            span,
-        )?;
-        let index = coerce(
-            TypedExpression {
-                expression: index.clone(),
-                scalar_type: gast::ScalarType::Integer,
-            },
-            gast::ScalarType::Real,
-            span,
-        )?;
-        let one = gast::Expression::Real(1.0);
-        let offset = gast::Expression::binary(gast::BinaryOp::Sub, index, one.clone());
-        let width = gast::Expression::binary(gast::BinaryOp::Sub, count, one);
-        let delta = gast::Expression::binary(gast::BinaryOp::Sub, stop, start.clone());
-        let scaled = gast::Expression::binary(gast::BinaryOp::Mul, delta, offset);
-        Ok(TypedExpression {
-            expression: gast::Expression::binary(
-                gast::BinaryOp::Add,
-                start,
-                gast::Expression::binary(gast::BinaryOp::Div, scaled, width),
-            ),
-            scalar_type: gast::ScalarType::Real,
-        })
-    }
-
-    fn lower_cross_element(
-        &mut self,
-        arguments: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let [index] = indices else {
-            unreachable!("checked cross result has rank one")
-        };
-        let mut component = |ordinal: usize| {
-            let (first, second) = [(1, 2), (2, 0), (0, 1)][ordinal];
-            let first = [gast::Expression::Integer(i64::from(first + 1))];
-            let second = [gast::Expression::Integer(i64::from(second + 1))];
-            let lhs_first = self.lower_at(arguments.get(0).expect("checked cross lhs"), &first)?;
-            let rhs_second =
-                self.lower_at(arguments.get(1).expect("checked cross rhs"), &second)?;
-            let positive = lower_binary(
-                dae::BinaryOperator::Multiply,
-                lhs_first,
-                rhs_second,
-                scalar_type,
-                span,
-            )?;
-            let lhs_second =
-                self.lower_at(arguments.get(0).expect("checked cross lhs"), &second)?;
-            let rhs_first = self.lower_at(arguments.get(1).expect("checked cross rhs"), &first)?;
-            let negative = lower_binary(
-                dae::BinaryOperator::Multiply,
-                lhs_second,
-                rhs_first,
-                scalar_type,
-                span,
-            )?;
-            Ok::<_, GalecTargetError>(gast::Expression::binary(
-                gast::BinaryOp::Sub,
-                positive,
-                negative,
-            ))
-        };
-        let expression = if let gast::Expression::Integer(index) = index {
-            component(usize::try_from(*index - 1).expect("checked cross index is 1..=3"))?
-        } else {
-            let first = component(0)?;
-            let second = component(1)?;
-            let third = component(2)?;
-            gast::Expression::If(gast::IfExpression {
-                branches: vec![
-                    (
-                        gast::Expression::binary(
-                            gast::BinaryOp::Eq,
-                            index.clone(),
-                            gast::Expression::Integer(1),
-                        ),
-                        first,
-                    ),
-                    (
-                        gast::Expression::binary(
-                            gast::BinaryOp::Eq,
-                            index.clone(),
-                            gast::Expression::Integer(2),
-                        ),
-                        second,
-                    ),
-                ],
-                else_value: Box::new(third),
-            })
-        };
-        Ok(TypedExpression {
-            expression,
-            scalar_type,
-        })
-    }
-
-    fn coordinate_at(
-        &mut self,
-        coordinate: dae::CoordinateView<'dae>,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        if let dae::CoordinateView::ClockInterval(clock) = coordinate {
-            return Ok(TypedExpression {
-                expression: gast::Expression::Real(
-                    self.view.periodic_clock(clock).period_seconds(),
-                ),
-                scalar_type: gast::ScalarType::Real,
-            });
-        }
-        if let dae::CoordinateView::Binder(binder) = coordinate {
-            let expression = self
-                .comprehension_frames
-                .iter()
-                .rev()
-                .find(|frame| frame.domain == binder.domain().index())
-                .and_then(|frame| frame.binders.get(binder.ordinal() as usize))
-                .cloned()
-                .ok_or_else(|| GalecTargetError::LoweringInternal {
-                    detail: "domain binder used without its checked comprehension frame".to_owned(),
-                })?;
-            return Ok(TypedExpression {
-                expression,
-                scalar_type: gast::ScalarType::Integer,
-            });
-        }
-        if let dae::CoordinateView::Algebraic(variable) = coordinate
-            && let Some(definition) = self.definitions.definition(variable)
-        {
-            return self.lower_at(definition, indices);
-        }
-        if let dae::CoordinateView::Algebraic(variable) = coordinate {
-            let variable_id = dae::VariableId::from(variable);
-            let dimensions = self
-                .view
-                .variable(variable_id)
-                .expect("checked algebraic variable resolves")
-                .value_type()
-                .dimensions();
-            if let Some(scalar) = literal_scalar_index(dimensions, indices)
-                && let Some(definition) = self
-                    .definitions
-                    .scalar_definition_for_variable(variable_id, scalar)
-            {
-                return self.lower_at(definition, &[]);
-            }
-        }
-        if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
-            let argument = self
-                .call_frames
-                .iter()
-                .rev()
-                .find(|frame| frame.function == parameter.function())
-                .and_then(|frame| frame.arguments.get(parameter.ordinal() as usize))
-                .copied()
-                .ok_or_else(|| GalecTargetError::LoweringInternal {
-                    detail: "function parameter used without its checked call frame".to_owned(),
-                })?;
-            return self.lower_at(argument, indices);
-        }
-        let (variable, previous) = coordinate_variable(coordinate, span)?;
-        let classified = self.by_id.get(&variable.index()).ok_or_else(|| {
-            GalecTargetError::UnknownVariableReference {
-                name: format!("#{}", variable.index()),
-                span: Some(span),
-            }
-        })?;
-        let name = if previous {
-            self.pre_names
-                .get(&variable.index())
-                .ok_or_else(|| GalecTargetError::LoweringInternal {
-                    detail: format!(
-                        "pre-coordinate for `{}` was not collected",
-                        classified.variable.name()
-                    ),
-                })?
-                .clone()
-        } else {
-            classified.name.clone()
-        };
-        let expression = if indices
-            .iter()
-            .all(|index| matches!(index, gast::Expression::Integer(_)))
-        {
-            gast::Expression::Ref(state_reference_with_subscripts(
-                name,
-                indices.to_vec(),
-                span,
-            ))
-        } else {
-            self.lower_dynamic_reference(classified, name, indices, span)?
-        };
-        Ok(TypedExpression {
-            expression,
-            scalar_type: classified.scalar_type,
-        })
-    }
-
-    fn lower_comprehension_at(
-        &mut self,
-        domain: dae::DomainId<'dae>,
-        body: dae::ExprId<'dae>,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let domain_view = self
-            .view
-            .domain(domain)
-            .expect("checked comprehension domain resolves");
-        let binder_count = domain_view.extents().len();
-        let (ordinals, body_indices) = indices.split_at_checked(binder_count).ok_or_else(|| {
-            unsupported(
-                "comprehension-projection",
-                "comprehension projection lacks one ordinal per checked binder".to_owned(),
-                span,
-            )
-        })?;
-        let binders = domain_view
-            .structured()
-            .binders
-            .iter()
-            .zip(ordinals)
-            .map(|(binder, ordinal)| comprehension_binder_value(binder, ordinal.clone()))
-            .collect();
-        self.comprehension_frames.push(ComprehensionFrame {
-            domain: domain.index(),
-            binders,
-        });
-        let result = self.lower_at(body, body_indices);
-        self.comprehension_frames.pop();
-        result
-    }
-
-    fn lower_dynamic_reference(
-        &self,
-        classified: &ClassifiedVariable<'dae>,
-        name: gast::Name,
-        indices: &[gast::Expression],
-        span: Span,
-    ) -> Result<gast::Expression, GalecTargetError> {
-        let dimensions = classified.variable.value_type().dimensions();
-        let indices = indices
-            .iter()
-            .map(|index| {
-                constant_integer(index)
-                    .map(gast::Expression::Integer)
-                    .unwrap_or_else(|| index.clone())
-            })
-            .collect::<Vec<_>>();
-        if dimensions.len() != indices.len() {
-            return Err(unsupported(
-                "dynamic-array-index",
-                "dynamic reference does not have one index per checked dimension".to_owned(),
-                span,
-            ));
-        }
-        if indices
-            .iter()
-            .all(|index| matches!(index, gast::Expression::Integer(_)))
-        {
-            return Ok(gast::Expression::Ref(state_reference_with_subscripts(
-                name, indices, span,
-            )));
-        }
-        for (index, extent) in indices.iter().zip(dimensions) {
-            if !matches!(index, gast::Expression::Integer(_)) {
-                self.prove_dynamic_index(index, *extent, span)?;
-            }
-        }
-        let candidates = row_major_indices(dimensions)
-            .into_iter()
-            .filter(|candidate| {
-                indices.iter().zip(candidate).all(|(index, candidate)| {
-                    !matches!(index, gast::Expression::Integer(found) if *found != i64::from(*candidate))
-                })
-            })
-            .collect::<Vec<_>>();
-        let (fallback, branches) = candidates.split_last().ok_or_else(|| {
-            unsupported(
-                "dynamic-array-index",
-                "checked dynamic index domain is empty".to_owned(),
-                span,
-            )
-        })?;
-        let branches = branches
-            .iter()
-            .map(|candidate| {
-                let condition = indices
-                    .iter()
-                    .zip(candidate)
-                    .filter(|(index, _)| !matches!(index, gast::Expression::Integer(_)))
-                    .map(|(index, candidate)| {
-                        gast::Expression::binary(
-                            gast::BinaryOp::Eq,
-                            index.clone(),
-                            gast::Expression::Integer(i64::from(*candidate)),
-                        )
-                    })
-                    .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
-                    .expect("dynamic reference has at least one dynamic index");
-                (
-                    condition,
-                    gast::Expression::Ref(state_reference_indexed(name.clone(), candidate, span)),
-                )
-            })
-            .collect();
-        Ok(gast::Expression::If(gast::IfExpression {
-            branches,
-            else_value: Box::new(gast::Expression::Ref(state_reference_indexed(
-                name, fallback, span,
-            ))),
-        }))
-    }
-
-    fn prove_dynamic_index(
-        &self,
-        index: &gast::Expression,
-        extent: u32,
-        span: Span,
-    ) -> Result<(), GalecTargetError> {
-        let gast::Expression::Ref(gast::Reference::State(parts)) = index else {
-            return Err(unsupported(
-                "dynamic-array-index",
-                format!("dynamic index `{index:?}` needs a directly bounded checked coordinate"),
-                span,
-            ));
-        };
-        let [part] = parts.as_slice() else {
-            return Err(unsupported(
-                "dynamic-array-index",
-                "dynamic index needs one directly bounded checked coordinate".to_owned(),
-                span,
-            ));
-        };
-        let variable = self
-            .by_id
-            .values()
-            .find(|variable| variable.name.lexeme() == part.name.lexeme())
-            .ok_or_else(|| {
-                unsupported(
-                    "dynamic-array-index",
-                    "dynamic index coordinate is not in the checked variable environment"
-                        .to_owned(),
-                    span,
-                )
-            })?;
-        let minimum = variable
-            .variable
-            .minimum()
-            .and_then(|value| literal_integer(self.view, value));
-        let maximum = variable
-            .variable
-            .maximum()
-            .and_then(|value| literal_integer(self.view, value));
-        if minimum.is_some_and(|minimum| minimum >= 1)
-            && maximum.is_some_and(|maximum| maximum <= i64::from(extent))
-        {
-            Ok(())
-        } else {
-            Err(unsupported(
-                "dynamic-array-index",
-                format!(
-                    "index `{}` lacks proven bounds within 1:{extent}",
-                    variable.variable.name()
-                ),
-                span,
-            ))
-        }
-    }
-
     fn lower_conditional_at(
+        &mut self,
+        operands: dae::ExpressionOperands<'dae>,
+        indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
+        span: Span,
+    ) -> Result<gast::Expression, GalecTargetError> {
+        if self.materialize_function_values {
+            self.conditional_depth += 1;
+            let result = self.lower_materialized_conditional(operands, indices, scalar_type, span);
+            self.conditional_depth -= 1;
+            return result;
+        }
+        self.lower_conditional_branches(operands, indices, scalar_type, span)
+    }
+
+    fn lower_materialized_conditional(
+        &mut self,
+        operands: dae::ExpressionOperands<'dae>,
+        indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
+        span: Span,
+    ) -> Result<gast::Expression, GalecTargetError> {
+        let name = gast::Name::ident(format!(
+            "rumoca_{}_conditional_{}",
+            self.temporary_namespace, self.temporary_counter
+        ));
+        self.temporary_counter += 1;
+        self.temporary_locals.push(gast::VariableDeclaration {
+            ty: gast::TypeRef::Primitive(scalar_type),
+            name: name.clone(),
+            dimensions: Vec::new(),
+            range: gast::RangeAttributes::default(),
+            span,
+        });
+        let statements = self.lower_materialized_conditional_branch(
+            operands,
+            indices,
+            scalar_type,
+            &name,
+            0,
+            span,
+        )?;
+        self.pending_prefix_statements.extend(statements);
+        Ok(gast::Expression::Ref(gast::Reference::local(name)))
+    }
+
+    fn lower_materialized_conditional_branch(
+        &mut self,
+        operands: dae::ExpressionOperands<'dae>,
+        indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
+        target: &gast::Name,
+        ordinal: usize,
+        span: Span,
+    ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+        if ordinal + 1 == operands.len() {
+            let start = self.pending_prefix_statements.len();
+            let value = self.lower_at(
+                operands.get(ordinal).expect("checked conditional fallback"),
+                indices,
+            )?;
+            let mut body = self.pending_prefix_statements.split_off(start);
+            body.push(gast::Spanned::new(
+                gast::Statement::Assignment {
+                    target: gast::Reference::local(target.clone()),
+                    value: coerce(value, scalar_type, span)?,
+                },
+                span,
+            ));
+            return Ok(body);
+        }
+
+        let condition_start = self.pending_prefix_statements.len();
+        let condition = self.lower(
+            operands
+                .get(ordinal)
+                .expect("checked conditional branch condition"),
+        )?;
+        require_boolean(&condition, span)?;
+        let mut statements = self.pending_prefix_statements.split_off(condition_start);
+
+        let value_start = self.pending_prefix_statements.len();
+        let value = self.lower_at(
+            operands
+                .get(ordinal + 1)
+                .expect("checked conditional branch value"),
+            indices,
+        )?;
+        let mut body = self.pending_prefix_statements.split_off(value_start);
+        body.push(gast::Spanned::new(
+            gast::Statement::Assignment {
+                target: gast::Reference::local(target.clone()),
+                value: coerce(value, scalar_type, span)?,
+            },
+            span,
+        ));
+        let else_body = self.lower_materialized_conditional_branch(
+            operands,
+            indices,
+            scalar_type,
+            target,
+            ordinal + 2,
+            span,
+        )?;
+        statements.push(gast::Spanned::new(
+            gast::Statement::If(gast::IfStatement {
+                branches: vec![gast::IfBranch {
+                    condition: gast::Condition::Expression(condition.expression),
+                    body,
+                    span,
+                }],
+                else_body: Some(else_body),
+            }),
+            span,
+        ));
+        Ok(statements)
+    }
+
+    fn lower_conditional_branches(
         &mut self,
         operands: dae::ExpressionOperands<'dae>,
         indices: &[gast::Expression],

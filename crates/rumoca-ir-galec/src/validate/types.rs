@@ -19,14 +19,13 @@
 //! (EG014/EG015): the other analyses resolve silently so each unresolved
 //! name is diagnosed exactly once.
 
-use std::collections::BTreeMap;
-
 use crate::ast::{
     BinaryOp, Condition, Dimension, Expression, FunctionCall, IfExpression, IfStatement,
     LimitTarget, PrecedenceClass, Reference, ScalarType, Spanned, Statement, TypeRef,
     VariableDeclaration,
 };
 use crate::diagnostic::{GalecError, PathSegment};
+use rustc_hash::FxHashMap;
 
 use super::context::{
     BlockContext, BodyView, Cursor, FunctionScope, Resolved, Ty, lexeme, reference_lexeme,
@@ -55,7 +54,10 @@ pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) -> Expr
 /// borrowed. Keeping this correlation here makes later analyses consume the
 /// type proof instead of independently reimplementing GALEC typing rules.
 #[derive(Default)]
-pub(super) struct ExpressionTypes(BTreeMap<usize, Ty>);
+// Pointer identity is lookup-only evidence shared by later validators. It is
+// never iterated into diagnostics or serialized output, so SPEC_0021 permits
+// a hash table here and avoids O(log n) tree insertion for large tensor code.
+pub(super) struct ExpressionTypes(FxHashMap<usize, Ty>);
 
 impl ExpressionTypes {
     pub(super) fn get(&self, expression: &Expression) -> Option<Ty> {

@@ -114,6 +114,32 @@ pub(super) fn method_signal_clauses(
     })
 }
 
+/// Exact escape clause for one user function in declaration order.
+pub(super) fn user_signal_clause(
+    ctx: &BlockContext<'_>,
+    expression_types: &ExpressionTypes,
+    function_index: usize,
+) -> Vec<Identifier> {
+    let body = ctx
+        .bodies()
+        .into_iter()
+        .nth(function_index + 3)
+        .expect("checked user-function index resolves");
+    let mut diagnostics = Vec::new();
+    let mut walker = SignalWalker {
+        ctx,
+        expression_types,
+        cursor: Cursor::for_body(ctx, &body),
+        closures: Vec::new(),
+        diags: &mut diagnostics,
+    };
+    walker
+        .statements(body.statements, SignalSet::default())
+        .iter()
+        .map(|bit| Identifier::new(ctx.signals.name(bit)))
+        .collect()
+}
+
 struct SignalWalker<'a, 'd> {
     ctx: &'a BlockContext<'a>,
     expression_types: &'a ExpressionTypes,

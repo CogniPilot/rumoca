@@ -61,7 +61,8 @@ impl AlgorithmCodePackage {
         variable_nominals: Vec<Option<f64>>,
         clock_variable_name: &str,
     ) -> Result<Self, PackageError> {
-        let [startup, recalibrate, do_step] = crate::validate::derive_method_signal_clauses(&block);
+        let [startup, recalibrate, do_step] =
+            crate::validate::derive_generated_signal_clauses(&mut block);
         block.startup.signals = startup;
         block.recalibrate.signals = recalibrate;
         block.do_step.signals = do_step;
@@ -134,4 +135,69 @@ fn clock_ordinal(block: &crate::Block, name: &str) -> Option<usize> {
                 && declaration.dimensions.is_empty();
             (constant && scalar_real && declaration.name.lexeme() == name).then_some(index + 1)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast as galec;
+
+    fn call(name: &str) -> galec::Spanned<galec::Statement> {
+        galec::Spanned::dummy(galec::Statement::Call(galec::FunctionCall {
+            function: galec::Name::ident(name),
+            arguments: Vec::new(),
+        }))
+    }
+
+    fn function(
+        name: &str,
+        statements: Vec<galec::Spanned<galec::Statement>>,
+    ) -> galec::UserFunction {
+        galec::UserFunction {
+            kind: galec::FunctionKind::Stateless,
+            name: galec::Name::ident(name),
+            signals: Vec::new(),
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn generated_signal_clauses_propagate_once_in_callee_first_order() {
+        let mut block = galec::Block::new(galec::Name::ident("SignalClosure"));
+        block.protected = vec![galec::ProtectedEntity {
+            kind: galec::ProtectedKind::Constant,
+            decl: galec::VariableDeclaration::scalar(
+                galec::ScalarType::Real,
+                galec::Name::ident("period"),
+            ),
+            start: Some(galec::Expression::Real(0.01)),
+        }];
+        block.protected_functions = vec![
+            function("caller", vec![call("callee")]),
+            function(
+                "callee",
+                vec![galec::Spanned::dummy(galec::Statement::Signal(vec![
+                    galec::Identifier::new("INVALID_ARGUMENT"),
+                ]))],
+            ),
+        ];
+        block.do_step.statements = vec![call("caller")];
+
+        let package = AlgorithmCodePackage::construct(block, vec![None], "period")
+            .expect("generated signal clauses must close before validation");
+        let block = package.block();
+        assert_eq!(
+            block.do_step.signals,
+            vec![galec::PredefinedSignal::InvalidArgument]
+        );
+        for function in &block.protected_functions {
+            assert_eq!(
+                function.signals,
+                vec![galec::Identifier::new("INVALID_ARGUMENT")]
+            );
+        }
+    }
 }

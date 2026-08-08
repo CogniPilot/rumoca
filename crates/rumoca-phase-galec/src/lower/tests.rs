@@ -29,6 +29,24 @@ fn vector_projection_preserves_the_unique_non_unit_dimension() {
 }
 
 #[test]
+fn transpose_projection_exchanges_only_the_first_two_axes() {
+    let mut projection = [
+        gast::Expression::Integer(2),
+        gast::Expression::Integer(3),
+        gast::Expression::Integer(4),
+    ];
+    projection.swap(0, 1);
+    assert_eq!(
+        projection,
+        [
+            gast::Expression::Integer(3),
+            gast::Expression::Integer(2),
+            gast::Expression::Integer(4),
+        ]
+    );
+}
+
+#[test]
 fn static_integer_index_arithmetic_folds_without_overflow() {
     let expression = gast::Expression::binary(
         gast::BinaryOp::Add,
@@ -111,11 +129,13 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
             .map(|variable| (variable.id.index(), variable.clone()))
             .collect::<HashMap<_, _>>();
         let mut statements = Vec::new();
-        append_causal_output_assignments(
+        let mut locals = Vec::new();
+        causal_outputs::append_causal_assignments(
             view,
             &classified,
             &by_id,
             &HashMap::new(),
+            &mut locals,
             &mut statements,
         )
         .unwrap();
@@ -204,7 +224,7 @@ fn function_assertion_is_detected_before_expression_inlining() {
             lowerer.lower(call).unwrap().expression,
             gast::Expression::Real(0.0)
         );
-        let assertions = lowerer.take_assertions();
+        let assertions = lowerer.take_prefix_statements();
         assert_eq!(assertions.len(), 1);
         let gast::Statement::If(assertion) = &assertions[0].node else {
             panic!("call-scoped assertion lowers to a guarded signal")
@@ -213,6 +233,195 @@ fn function_assertion_is_detected_before_expression_inlining() {
             assertion.branches[0].body[0].node,
             gast::Statement::Signal(ref signals)
                 if signals[0].as_str() == gast::PredefinedSignal::InvalidArgument.name()
+        ));
+    });
+}
+
+#[test]
+fn prefix_boundary_rematerializes_function_calls_for_reorder_safety() {
+    let mut sources = SourceMap::new();
+    let text = "function f output Real y; algorithm y := 1.0; end f; f();";
+    let source = sources.add("materialized-prefix.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let provenance = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let real = dae.types(|types| {
+            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
+        })?;
+        let (function, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("f"), [], [real], provenance),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, provenance)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let one = dae.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Real(1.0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, output, one, provenance))?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        dae.expressions(|expressions| expressions.at(provenance).call(function, 0, []))?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let call = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .find(|id| {
+                matches!(
+                    view.expression(*id).unwrap().operation(),
+                    dae::ExpressionOperation::Call { .. }
+                )
+            })
+            .unwrap();
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+
+        let first = lowerer.lower(call).unwrap().expression;
+        let first_prefix = lowerer.take_prefix_statements();
+        let second = lowerer.lower(call).unwrap().expression;
+        let second_prefix = lowerer.take_prefix_statements();
+
+        assert_eq!(first_prefix.len(), 1);
+        assert_eq!(second_prefix.len(), 1);
+        assert_ne!(first, second);
+        assert!(matches!(
+            (&first_prefix[0].node, &second_prefix[0].node),
+            (
+                gast::Statement::MultiAssignment { targets: first, .. },
+                gast::Statement::MultiAssignment { targets: second, .. }
+            ) if matches!(
+                (&first[0], &second[0]),
+                (
+                    gast::Reference::Local(first_target),
+                    gast::Reference::Local(second_target)
+                ) if first_target.name.lexeme() != second_target.name.lexeme()
+            )
+        ));
+    });
+}
+
+#[test]
+fn tensor_prefix_dependency_finds_outer_indices_inside_nested_loops() {
+    let outer = gast::Name::ident("outer");
+    let accumulator = gast::Name::ident("sum");
+    let reset = gast::Spanned::dummy(gast::Statement::Assignment {
+        target: gast::Reference::local(accumulator.clone()),
+        value: gast::Expression::Real(0.0),
+    });
+    let dependent = gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
+        iterator: Some(gast::Name::ident("inner")),
+        start: gast::Expression::Integer(1),
+        step: None,
+        stop: gast::Expression::Integer(3),
+        body: vec![gast::Spanned::dummy(gast::Statement::Assignment {
+            target: gast::Reference::local(accumulator),
+            value: gast::Expression::Ref(gast::Reference::local(outer.clone())),
+        })],
+    }));
+    let independent = gast::Spanned::dummy(gast::Statement::Assignment {
+        target: gast::Reference::local(gast::Name::ident("argument")),
+        value: gast::Expression::Real(1.0),
+    });
+
+    assert!(user_functions::statement_depends_on(
+        &dependent,
+        std::slice::from_ref(&outer)
+    ));
+    assert!(!user_functions::statement_depends_on(
+        &independent,
+        std::slice::from_ref(&outer)
+    ));
+
+    let (before, body) = user_functions::partition_tensor_prefixes(
+        vec![reset, dependent, independent.clone()],
+        std::slice::from_ref(&outer),
+    );
+    assert_eq!(before, vec![independent]);
+    assert_eq!(body.len(), 2);
+    assert!(matches!(body[0].node, gast::Statement::Assignment { .. }));
+    assert!(matches!(body[1].node, gast::Statement::For(_)));
+}
+
+#[test]
+fn lazy_tensor_selection_hoists_shared_calls_but_guards_indexed_contractions() {
+    let model = dae::Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
+    model.inspect(|view| {
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let outer = gast::Name::ident("outer");
+        let shared = gast::Name::ident("shared");
+        let contraction = gast::Name::ident("contraction");
+        lowerer.loop_index_bounds.push(LoopIndexBound {
+            name: outer.clone(),
+            minimum: 1,
+            maximum: 6,
+        });
+
+        let shared_call = gast::Spanned::dummy(gast::Statement::Assignment {
+            target: gast::Reference::local(shared.clone()),
+            value: gast::Expression::Real(2.0),
+        });
+        let contraction_loop = gast::Spanned::dummy(gast::Statement::For(gast::ForLoop {
+            iterator: Some(gast::Name::ident("inner")),
+            start: gast::Expression::Integer(1),
+            step: None,
+            stop: gast::Expression::Integer(3),
+            body: vec![gast::Spanned::dummy(gast::Statement::Assignment {
+                target: gast::Reference::local(contraction.clone()),
+                value: gast::Expression::Ref(gast::Reference::local(outer.clone())),
+            })],
+        }));
+        let branches = vec![
+            expression_projection::SelectionBranch {
+                condition: gast::Expression::binary(
+                    gast::BinaryOp::Le,
+                    gast::Expression::Ref(gast::Reference::local(outer)),
+                    gast::Expression::Integer(3),
+                ),
+                value: expression_projection::SelectionValue {
+                    prefix: vec![shared_call, contraction_loop],
+                    expression: gast::Expression::Ref(gast::Reference::local(contraction)),
+                },
+            },
+            expression_projection::SelectionBranch {
+                condition: gast::Expression::Bool(false),
+                value: expression_projection::SelectionValue {
+                    prefix: Vec::new(),
+                    expression: gast::Expression::Ref(gast::Reference::local(shared)),
+                },
+            },
+        ];
+        lowerer.lower_lazy_selection(
+            branches,
+            expression_projection::SelectionValue {
+                prefix: Vec::new(),
+                expression: gast::Expression::Real(0.0),
+            },
+            gast::ScalarType::Real,
+            Span::DUMMY,
+        );
+
+        let statements = lowerer.take_prefix_statements();
+        assert_eq!(statements.len(), 2);
+        assert!(matches!(
+            statements[0].node,
+            gast::Statement::Assignment { .. }
+        ));
+        let gast::Statement::If(selection) = &statements[1].node else {
+            panic!("range-sensitive contraction must remain under the selection guard")
+        };
+        assert!(matches!(
+            selection.branches[0].body[0].node,
+            gast::Statement::For(_)
         ));
     });
 }
@@ -285,6 +494,21 @@ fn record_field_of_checked_function_call_is_projected_before_scalar_lowering() {
             .unwrap();
         assert_eq!(lowered.scalar_type, gast::ScalarType::Real);
         assert_eq!(lowered.expression, gast::Expression::Real(2.0));
+
+        let mut materialized = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        let selected = materialized.lower(field).unwrap().expression;
+        let prefix = materialized.take_prefix_statements();
+        assert_eq!(prefix.len(), 1);
+        let gast::Statement::MultiAssignment { targets, .. } = &prefix[0].node else {
+            panic!("one record call must become one multi-output assignment")
+        };
+        assert_eq!(targets.len(), 2);
+        assert!(matches!(
+            selected,
+            gast::Expression::Ref(gast::Reference::Local(ref selected))
+                if matches!(&targets[1], gast::Reference::Local(target)
+                    if target.name.lexeme() == selected.name.lexeme())
+        ));
     });
 }
 

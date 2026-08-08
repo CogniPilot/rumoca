@@ -10,7 +10,7 @@ mod input;
 mod lower;
 mod mangle;
 
-pub use admissibility::{AdmittedClock, check_admissibility};
+pub use admissibility::{AdmittedClock, AdmittedClockDomain, check_admissibility};
 pub use diagnostic::GalecTargetError;
 pub use input::{GalecInput, GalecOptions};
 pub use lower::lower_to_algorithm_code;

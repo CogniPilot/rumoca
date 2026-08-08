@@ -4,24 +4,120 @@ use std::collections::HashSet;
 
 use super::*;
 
-struct PendingAssignment<'dae> {
-    targets: Vec<dae::VariableId<'dae>>,
-    reads: HashSet<u32>,
-    statements: Vec<gast::Spanned<gast::Statement>>,
-    span: Span,
+#[derive(Clone)]
+pub(super) struct ClockedAssignment {
+    pub(super) targets: HashSet<u32>,
+    pub(super) reads: HashSet<u32>,
+    pub(super) statements: Vec<gast::Spanned<gast::Statement>>,
+    pub(super) span: Span,
 }
 
+pub(super) struct ClockedAssignments {
+    #[cfg(test)]
+    pub(super) statements: Vec<gast::Spanned<gast::Statement>>,
+    pub(super) locals: Vec<gast::VariableDeclaration>,
+    pub(super) called_user_functions: HashSet<u32>,
+    pub(super) assignments: Vec<ClockedAssignment>,
+}
+
+#[cfg(test)]
 pub(super) fn lower_clocked_assignments<'dae>(
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
-) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+) -> Result<ClockedAssignments, GalecTargetError> {
+    lower_clocked_assignments_for_domain(view, clock, by_id, pre_names, true)
+}
+
+pub(super) fn lower_clocked_assignments_for_domain<'dae>(
+    view: dae::DaeView<'dae>,
+    clock: dae::ClockId<'dae>,
+    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
+    pre_names: &HashMap<u32, gast::Name>,
+    include_unclocked_actions: bool,
+) -> Result<ClockedAssignments, GalecTargetError> {
     let mut pending = Vec::new();
-    lower_discrete_value_owners(view, clock, by_id, pre_names, &mut pending)?;
-    lower_discrete_real_equations(view, clock, by_id, pre_names, &mut pending)?;
-    lower_event_actions(view, clock, by_id, pre_names, &mut pending)?;
-    order_assignments(pending)
+    let mut locals = Vec::new();
+    let mut called_user_functions = HashSet::new();
+    lower_discrete_value_owners(
+        &mut DiscreteValueLowering {
+            view,
+            clock,
+            by_id,
+            pre_names,
+            method_locals: &mut locals,
+            called_user_functions: &mut called_user_functions,
+        },
+        include_unclocked_actions,
+        &mut pending,
+    )?;
+    lower_discrete_real_equations(
+        view,
+        clock,
+        by_id,
+        pre_names,
+        &mut pending,
+        &mut locals,
+        &mut called_user_functions,
+    )?;
+    lower_event_actions(
+        view,
+        clock,
+        by_id,
+        pre_names,
+        include_unclocked_actions,
+        &mut pending,
+    )?;
+    for assignment in &mut pending {
+        assignment.reads =
+            expand_causal_definition_reads(view, std::mem::take(&mut assignment.reads));
+    }
+    #[cfg(test)]
+    let statements = order_assignments(&pending)?;
+    Ok(ClockedAssignments {
+        #[cfg(test)]
+        statements,
+        locals,
+        called_user_functions,
+        assignments: pending,
+    })
+}
+
+/// Expand current-tick reads through every exact acyclic algebraic definition.
+///
+/// Clock-domain ordering cannot stop at an intermediate algebraic coordinate:
+/// if `command = filtered` and `filtered = slowState`, the fast domain reads
+/// `slowState` even though its lowered expression initially names `filtered`.
+/// [`CausalDefinitions`] is the construction proof that this traversal is
+/// finite and semantics-preserving.
+fn expand_causal_definition_reads(view: dae::DaeView<'_>, mut reads: HashSet<u32>) -> HashSet<u32> {
+    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+    let mut pending = reads.iter().copied().collect::<Vec<_>>();
+    let mut expanded = HashSet::new();
+    while let Some(index) = pending.pop() {
+        if !expanded.insert(index) {
+            continue;
+        }
+        let Some(variable) = view
+            .variables()
+            .map(|(id, _)| id)
+            .find(|id| id.index() == index)
+        else {
+            continue;
+        };
+        let Some(definition) = definitions.definition_for_variable(variable) else {
+            continue;
+        };
+        let mut definition_reads = HashSet::new();
+        collect_current_reads(view, definition, &mut definition_reads);
+        for dependency in definition_reads {
+            if reads.insert(dependency) {
+                pending.push(dependency);
+            }
+        }
+    }
+    reads
 }
 
 fn lower_discrete_real_equations<'dae>(
@@ -29,12 +125,16 @@ fn lower_discrete_real_equations<'dae>(
     clock: dae::ClockId<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
-    pending: &mut Vec<PendingAssignment<'dae>>,
+    pending: &mut Vec<ClockedAssignment>,
+    method_locals: &mut Vec<gast::VariableDeclaration>,
+    called_user_functions: &mut HashSet<u32>,
 ) -> Result<(), GalecTargetError> {
     let mut owners: HashMap<u32, (usize, bool)> = HashMap::new();
     let clock_owners = discrete_real_clock_owners(view);
     let causal_definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-    let mut lowerer = ExpressionLowerer::with_assertions(view, by_id, pre_names);
+    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, by_id, pre_names)
+        .with_causal_inlining()
+        .with_temporary_namespace(format!("clocked{}", clock.index()));
     for index in 0..view.discrete_real_equation_count() {
         if causal_definitions.consumes_discrete_real_equation(index) {
             continue;
@@ -44,7 +144,10 @@ fn lower_discrete_real_equations<'dae>(
             .expect("dense checked discrete Real equation resolves");
         let span = equation.provenance().span();
         let (target, value) = explicit_discrete_real_definition(view, equation)?;
-        require_discrete_real_clock_owner(&clock_owners, target, clock, span)?;
+        let owner_clock = require_discrete_real_clock_owner(&clock_owners, target, span)?;
+        if owner_clock != clock.index() {
+            continue;
+        }
         let classified = by_id.get(&target.index()).ok_or_else(|| {
             GalecTargetError::UnknownVariableReference {
                 name: format!("#{}", target.index()),
@@ -73,7 +176,7 @@ fn lower_discrete_real_equations<'dae>(
                 span,
             ));
         }
-        let mut statements = lowerer.take_assertions();
+        let mut statements = lowerer.take_prefix_statements();
         statements.extend(match guard {
             Some(condition) => vec![gast::Spanned::new(
                 gast::Statement::If(gast::IfStatement {
@@ -94,8 +197,8 @@ fn lower_discrete_real_equations<'dae>(
             collect_condition_current_reads(view, trigger, &mut reads);
             collect_condition_current_reads(view, guard, &mut reads);
         }
-        let assignment = PendingAssignment {
-            targets: vec![target],
+        let assignment = ClockedAssignment {
+            targets: [target.index()].into_iter().collect(),
             reads,
             statements,
             span,
@@ -118,6 +221,8 @@ fn lower_discrete_real_equations<'dae>(
             pending.push(assignment);
         }
     }
+    method_locals.extend(lowerer.take_temporary_locals());
+    called_user_functions.extend(lowerer.take_called_user_functions());
     Ok(())
 }
 
@@ -222,19 +327,10 @@ fn coupled_discrete_real_equation(span: Span) -> GalecTargetError {
 fn require_discrete_real_clock_owner<'dae>(
     owners: &HashMap<u32, u32>,
     target: dae::VariableId<'dae>,
-    expected: dae::ClockId<'dae>,
     span: Span,
-) -> Result<(), GalecTargetError> {
+) -> Result<u32, GalecTargetError> {
     match owners.get(&target.index()).copied() {
-        Some(clock) if clock == expected.index() => Ok(()),
-        Some(clock) => Err(unsupported(
-            "clock-domain",
-            format!(
-                "discrete Real definition belongs to clock #{clock}, not admitted DoStep clock #{}",
-                expected.index()
-            ),
-            span,
-        )),
+        Some(clock) => Ok(clock),
         None => Err(unsupported(
             "clock-domain",
             "discrete Real definition has no explicit clock owner".to_owned(),
@@ -263,9 +359,11 @@ fn lower_event_actions<'dae>(
     clock: dae::ClockId<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
-    pending: &mut Vec<PendingAssignment<'dae>>,
+    include_unclocked: bool,
+    pending: &mut Vec<ClockedAssignment>,
 ) -> Result<(), GalecTargetError> {
-    let mut lowerer = ExpressionLowerer::with_assertions(view, by_id, pre_names);
+    let mut lowerer =
+        ExpressionLowerer::with_assertions(view, by_id, pre_names).with_causal_inlining();
     for index in 0..view.event_action_count() {
         let action = view
             .event_action(
@@ -284,7 +382,22 @@ fn lower_event_actions<'dae>(
                 span,
             ));
         };
-        require_periodic_trigger(view, action.trigger(), clock, span)?;
+        let trigger_is_always = matches!(
+            view.condition(action.trigger())
+                .expect("checked event trigger resolves")
+                .operation(),
+            dae::ConditionOperation::Always
+        );
+        let trigger_clocks = condition_clocks(view, action.trigger());
+        if trigger_clocks.is_empty() && !include_unclocked {
+            continue;
+        }
+        if !trigger_clocks.is_empty() && !trigger_clocks.contains(&clock.index()) {
+            continue;
+        }
+        if !trigger_is_always {
+            require_periodic_trigger(view, action.trigger(), clock, span)?;
+        }
         let guard = lower_action_guard(view, action.guard(), clock, &mut lowerer, span)?;
         let signal = gast::Spanned::new(
             gast::Statement::Signal(vec![gast::Identifier::new(
@@ -292,7 +405,7 @@ fn lower_event_actions<'dae>(
             )]),
             span,
         );
-        let mut statements = lowerer.take_assertions();
+        let mut statements = lowerer.take_prefix_statements();
         statements.extend(match guard {
             Some(condition) => vec![gast::Spanned::new(
                 gast::Statement::If(gast::IfStatement {
@@ -310,8 +423,8 @@ fn lower_event_actions<'dae>(
         let mut reads = HashSet::new();
         collect_condition_current_reads(view, action.trigger(), &mut reads);
         collect_condition_current_reads(view, action.guard(), &mut reads);
-        pending.push(PendingAssignment {
-            targets: Vec::new(),
+        pending.push(ClockedAssignment {
+            targets: HashSet::new(),
             reads,
             statements,
             span,
@@ -320,52 +433,144 @@ fn lower_event_actions<'dae>(
     Ok(())
 }
 
-fn lower_discrete_value_owners<'dae>(
+fn condition_clocks<'dae>(view: dae::DaeView<'dae>, root: dae::ConditionId<'dae>) -> HashSet<u32> {
+    let mut pending = vec![root];
+    let mut seen = HashSet::new();
+    let mut clocks = HashSet::new();
+    while let Some(condition) = pending.pop() {
+        if !seen.insert(condition.index()) {
+            continue;
+        }
+        match view
+            .condition(condition)
+            .expect("checked condition identity resolves")
+            .operation()
+        {
+            dae::ConditionOperation::Clock(clock) => {
+                clocks.insert(clock.index());
+            }
+            dae::ConditionOperation::Not(inner) => pending.push(inner),
+            dae::ConditionOperation::And(lhs, rhs)
+            | dae::ConditionOperation::Or(lhs, rhs)
+            | dae::ConditionOperation::AnyRise(lhs, rhs) => pending.extend([lhs, rhs]),
+            dae::ConditionOperation::Initial
+            | dae::ConditionOperation::Always
+            | dae::ConditionOperation::Relation(_)
+            | dae::ConditionOperation::Discrete(_) => {}
+        }
+    }
+    clocks
+}
+
+struct DiscreteValueLowering<'a, 'dae> {
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
-    pending: &mut Vec<PendingAssignment<'dae>>,
+    by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
+    pre_names: &'a HashMap<u32, gast::Name>,
+    method_locals: &'a mut Vec<gast::VariableDeclaration>,
+    called_user_functions: &'a mut HashSet<u32>,
+}
+
+fn lower_discrete_value_owners<'dae>(
+    context: &mut DiscreteValueLowering<'_, 'dae>,
+    include_unclocked: bool,
+    pending: &mut Vec<ClockedAssignment>,
 ) -> Result<(), GalecTargetError> {
-    for index in 0..view.discrete_value_owner_count() {
-        let owner = view
+    let clock_owners = discrete_value_clock_owners(context.view);
+    for index in 0..context.view.discrete_value_owner_count() {
+        let owner = context
+            .view
             .discrete_value_owner(
-                view.discrete_value_owner_id(index)
+                context
+                    .view
+                    .discrete_value_owner_id(index)
                     .expect("dense checked B.1c owner identity"),
             )
             .expect("checked B.1c owner resolves");
-        pending.push(lower_discrete_value_owner(
-            view, clock, by_id, pre_names, owner,
-        )?);
+        let explicit_clocks = owner
+            .targets()
+            .iter()
+            .map(|target| clock_owners.get(&target.index()).copied())
+            .collect::<Option<HashSet<_>>>();
+        if explicit_clocks
+            .as_ref()
+            .is_some_and(|clocks| clocks.len() != 1)
+        {
+            return Err(unsupported(
+                "clock-domain",
+                "one atomic discrete value owner spans multiple clock domains".to_owned(),
+                owner.provenance().span(),
+            ));
+        }
+        let trigger_clocks = owner
+            .branches()
+            .iter()
+            .flat_map(|branch| match branch.activation() {
+                dae::DiscreteBranchActivation::When { trigger, .. } => {
+                    condition_clocks(context.view, trigger)
+                }
+                dae::DiscreteBranchActivation::Always => HashSet::new(),
+            })
+            .collect::<HashSet<_>>();
+        let explicit_clocks = explicit_clocks.filter(|clocks| !clocks.is_empty());
+        if explicit_clocks.is_none() && trigger_clocks.is_empty() && !include_unclocked {
+            continue;
+        }
+        if explicit_clocks
+            .as_ref()
+            .is_some_and(|clocks| !clocks.contains(&context.clock.index()))
+            || (explicit_clocks.is_none()
+                && !trigger_clocks.is_empty()
+                && !trigger_clocks.contains(&context.clock.index()))
+        {
+            continue;
+        }
+        pending.push(lower_discrete_value_owner(context, owner, index)?);
     }
     Ok(())
 }
 
+fn discrete_value_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
+    (0..view.clock_ownership_count())
+        .filter_map(|index| {
+            let id = view
+                .clock_ownership_id(index)
+                .expect("dense checked clock ownership identity");
+            let ownership = view
+                .clock_ownership(id)
+                .expect("checked clock ownership resolves");
+            (ownership.kind() == dae::ClockedVariableKind::DiscreteValue)
+                .then_some((ownership.variable().index(), ownership.clock().index()))
+        })
+        .collect()
+}
+
 fn lower_discrete_value_owner<'dae>(
-    view: dae::DaeView<'dae>,
-    clock: dae::ClockId<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
+    context: &mut DiscreteValueLowering<'_, 'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
-) -> Result<PendingAssignment<'dae>, GalecTargetError> {
+    owner_index: usize,
+) -> Result<ClockedAssignment, GalecTargetError> {
     let span = owner.provenance().span();
-    let targets = owner
+    let target_variables = owner
         .targets()
         .iter()
         .map(dae::VariableId::from)
         .collect::<Vec<_>>();
-    let classified = targets
+    let classified = target_variables
         .iter()
         .map(|target| {
-            by_id
-                .get(&target.index())
-                .ok_or_else(|| GalecTargetError::UnknownVariableReference {
+            context.by_id.get(&target.index()).ok_or_else(|| {
+                GalecTargetError::UnknownVariableReference {
                     name: format!("#{}", target.index()),
                     span: Some(span),
-                })
+                }
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut lowerer = ExpressionLowerer::new(view, by_id, pre_names);
+    let mut lowerer =
+        ExpressionLowerer::with_do_step_effects(context.view, context.by_id, context.pre_names)
+            .with_causal_inlining()
+            .with_temporary_namespace(format!("discrete_value{owner_index}"));
     let mut reads = HashSet::new();
     let mut conditional = Vec::new();
     let mut unconditional = None;
@@ -375,11 +580,17 @@ fn lower_discrete_value_owner<'dae>(
         match branch.activation() {
             dae::DiscreteBranchActivation::Always => unconditional = Some(assignments),
             dae::DiscreteBranchActivation::When { trigger, guard } => {
-                require_periodic_trigger(view, trigger, clock, branch_span)?;
-                collect_condition_current_reads(view, trigger, &mut reads);
-                collect_condition_current_reads(view, guard, &mut reads);
-                let condition = lower_action_guard(view, guard, clock, &mut lowerer, branch_span)?
-                    .unwrap_or(gast::Expression::Bool(true));
+                require_periodic_trigger(context.view, trigger, context.clock, branch_span)?;
+                collect_condition_current_reads(context.view, trigger, &mut reads);
+                collect_condition_current_reads(context.view, guard, &mut reads);
+                let condition = lower_action_guard(
+                    context.view,
+                    guard,
+                    context.clock,
+                    &mut lowerer,
+                    branch_span,
+                )?
+                .unwrap_or(gast::Expression::Bool(true));
                 conditional.push(gast::IfBranch {
                     condition: gast::Condition::Expression(condition),
                     body: assignments,
@@ -388,7 +599,7 @@ fn lower_discrete_value_owner<'dae>(
             }
         }
         for (value, _) in branch.values().iter() {
-            collect_current_reads(view, value, &mut reads);
+            collect_current_reads(context.view, value, &mut reads);
         }
     }
     let statements = if let Some(assignments) = unconditional {
@@ -402,8 +613,17 @@ fn lower_discrete_value_owner<'dae>(
             span,
         )]
     };
-    Ok(PendingAssignment {
-        targets,
+    context
+        .method_locals
+        .extend(lowerer.take_temporary_locals());
+    context
+        .called_user_functions
+        .extend(lowerer.take_called_user_functions());
+    Ok(ClockedAssignment {
+        targets: target_variables
+            .into_iter()
+            .map(|target| target.index())
+            .collect(),
         reads,
         statements,
         span,
@@ -430,7 +650,9 @@ fn lower_discrete_value_branch<'dae>(
             ));
         }
     }
-    Ok(assignments)
+    let mut statements = lowerer.take_prefix_statements();
+    statements.extend(assignments);
+    Ok(statements)
 }
 
 fn collect_current_reads<'dae>(
@@ -560,8 +782,9 @@ fn condition_requires_clock<'dae>(
     }
 }
 
-fn order_assignments<'dae>(
-    pending: Vec<PendingAssignment<'dae>>,
+#[cfg(test)]
+fn order_assignments(
+    pending: &[ClockedAssignment],
 ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
     let targets = pending
         .iter()
@@ -570,7 +793,7 @@ fn order_assignments<'dae>(
             assignment
                 .targets
                 .iter()
-                .map(move |target| (target.index(), index))
+                .map(move |target| (*target, index))
         })
         .collect::<HashMap<_, _>>();
     let mut emitted = vec![false; pending.len()];
@@ -631,8 +854,17 @@ mod tests {
                 .iter()
                 .map(|variable| (variable.id.index(), variable.clone()))
                 .collect::<HashMap<_, _>>();
-            let clock = admitted_clock_id(view).expect("test has one periodic clock");
+            let clock = (0..view.clock_count())
+                .filter_map(|index| view.clock_id(index))
+                .find(|clock| {
+                    matches!(
+                        view.clock(*clock).map(dae::ClockView::operation),
+                        Some(dae::ClockOperation::Periodic(_))
+                    )
+                })
+                .expect("test has one periodic clock");
             lower_clocked_assignments(view, clock, &by_id, &HashMap::new())
+                .map(|assignments| assignments.statements)
         })
     }
 
