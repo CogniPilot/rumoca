@@ -16,7 +16,11 @@ completion_message = """GALEC-derived embedded C sources compiled to: {{ out_dir
   {{ model_name }}.c   method definitions printed from the projected GALEC block
 This is a GALEC-derived embedded C export, NOT an eFMI Production Code
 container (SPEC_0034 GAL-024): no eFMU manifest mapping is emitted.
-Compile: cc -Wall -Werror -c {{ out_dir }}/{{ model_name }}.c"""
+Safety assurance: designed for the MISRA C:2023 profile in GAL-029/030;
+MISRA compliance and DO-178C compliance are not claimed.
+Compile preflight: cc -std=c99 -pedantic -Wall -Wextra -Wconversion
+  -Wsign-conversion -Wshadow -Wundef -Wcast-qual -Wstrict-prototypes
+  -Wmissing-prototypes -Werror -c {{ out_dir }}/{{ model_name }}.c"""
 
 # Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
 # the galec target: both consume the same DAE → GALEC projection, so

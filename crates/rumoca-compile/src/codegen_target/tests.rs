@@ -488,6 +488,23 @@ residual_equations = false
 }
 
 #[test]
+fn algorithm_code_defers_algebraic_owner_classification_to_its_projection() {
+    let dae = dae_with_placeholder_family();
+    let manifest = parse_manifest_with_ir_capabilities(
+        "algorithm-code",
+        r#"
+[capabilities]
+continuous_states = false
+residual_equations = false
+"#,
+    );
+    let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+    validate_dae_target_capabilities(&dae, &manifest, capabilities)
+        .expect("Algorithm Code must classify algebraic owners in its checked projection");
+}
+
+#[test]
 fn solve_target_rejects_terminal_runtime_without_runtime_event_support() {
     let mut solve = rumoca_ir_solve::SolveProblem::default();
     solve.events.has_terminal_event = true;

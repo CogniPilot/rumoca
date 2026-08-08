@@ -55,7 +55,7 @@ mod errors;
 pub mod views;
 
 pub use codegen::{
-    CodegenInput, SolveTemplateRenderer, dae_template_json,
+    AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json,
     render_algorithm_code_template_with_artifact, render_ast_template,
     render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact,
     render_flat_template_with_name, render_solve_template_with_name, render_template,

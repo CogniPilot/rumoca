@@ -26,7 +26,9 @@ completion_message = """eFMI Production Code eFMU written to: {{ out_dir }}
 Conformance: "eFMI Production Code export" (SPEC_0034 GAL-021/GAL-024) — schema-valid
 eFMU with Algorithm Code + Production Code representations, all SHA-1 checksums
 computed from the written bytes, LogicalData mapping every block variable and
-method; the co-emitted GALEC also round-trip parses ("GALEC language conformance")."""
+method; the co-emitted GALEC also round-trip parses ("GALEC language conformance").
+Safety assurance: designed for the MISRA C:2023 profile in GAL-029/030;
+MISRA compliance and DO-178C compliance are not claimed."""
 
 [integer]
 minimum = -2147483648

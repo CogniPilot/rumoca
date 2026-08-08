@@ -18,19 +18,21 @@
 ) -%}
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
 {%- macro c_type(kind) -%}
-{%- if kind == "real" -%}double{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
 {%- endmacro -%}
 {% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
  * GALEC-derived embedded C export (SPEC_0034 GAL-024).
  * NOT an eFMI Production Code container.
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed.
  * Target syntax and layout are owned by this template. */{% endblock %}
-#ifndef {{ c_model | upper }}_GALEC_H
-#define {{ c_model | upper }}_GALEC_H
+#ifndef RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
+#define RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
 
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef struct {
+typedef struct {{ c_model }}StateTag {
 {%- for variable in algorithm_code.variables %}
     {{ c_type(variable.kind) }} {{ symbol(c_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
@@ -40,18 +42,5 @@ typedef struct {
 void {{ c_model }}_startup({{ c_model }}State *self);
 void {{ c_model }}_recalibrate({{ c_model }}State *self);
 void {{ c_model }}_dostep({{ c_model }}State *self);
-
-#ifndef EFMI_STATE_TYPE
-#  define EFMI_STATE_TYPE(model) model##State
-#endif
-#ifndef EFMI_INIT
-#  define EFMI_INIT(model, state) model##_startup(state)
-#endif
-#ifndef EFMI_RECALIBRATE
-#  define EFMI_RECALIBRATE(model, state) model##_recalibrate(state)
-#endif
-#ifndef EFMI_STEP
-#  define EFMI_STEP(model, state) model##_dostep(state)
-#endif
 
 #endif

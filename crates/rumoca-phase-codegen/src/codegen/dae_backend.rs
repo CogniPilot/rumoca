@@ -852,6 +852,22 @@ fn project_conditions(view: dae::DaeView<'_>) -> Value {
                 })
             })
             .collect::<Vec<_>>(),
+        "structured_roots": (0..view.structured_root_count())
+            .map(|index| {
+                let id = view
+                    .structured_root_id(index)
+                    .expect("dense checked structured-root identity resolves");
+                let root = view
+                    .structured_root(id)
+                    .expect("checked structured root resolves");
+                json!({
+                    "id": id.index(),
+                    "domain": root.domain().index(),
+                    "expression": root.expression().index(),
+                    "provenance": root.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
     })
 }
 

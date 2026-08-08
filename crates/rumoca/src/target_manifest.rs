@@ -174,7 +174,8 @@ pub fn render_target_files(
     if manifest.ir == TargetTemplateIr::AlgorithmCode {
         let package =
             lower_algorithm_code(result, identity.semantic_name, manifest.name.as_deref())?;
-        let render = algorithm_code_web_render(&package, &bundle, &identity.artifact_stem);
+        let renderer = rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(&package)?;
+        let render = algorithm_code_web_render(&renderer, &bundle, &identity.artifact_stem);
         return crate::packaging::render_web_files(&manifest.files, render);
     }
     let renderer = resolve_manifest_renderer(result, &manifest, &identity)?;
@@ -266,7 +267,7 @@ fn source_map(result: &CompilationResult) -> SourceMap {
 /// typed semantic C context at top level, and manifest templates read only
 /// their validated product context below `ctx`.
 fn algorithm_code_web_render<'a>(
-    package: &'a rumoca_ir_galec::package::AlgorithmCodePackage,
+    renderer: &'a rumoca_phase_codegen::AlgorithmCodeTemplateRenderer,
     bundle: &'a TargetBundle,
     model_identifier: &'a str,
 ) -> impl Fn(&str, &crate::packaging::ArtifactRenderContext<'_>) -> Result<String> + 'a {
@@ -274,13 +275,9 @@ fn algorithm_code_web_render<'a>(
         let source = bundle
             .template_source(template_or_path)
             .unwrap_or(std::borrow::Cow::Borrowed(template_or_path));
-        rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            package,
-            artifact,
-            source.as_ref(),
-            model_identifier,
-        )
-        .map_err(anyhow::Error::from)
+        renderer
+            .render_with_name_and_artifact(source.as_ref(), model_identifier, artifact)
+            .map_err(anyhow::Error::from)
     }
 }
 
@@ -590,7 +587,7 @@ enum ManifestRenderer {
     },
     /// A checked Algorithm Code package plus immutable artifact facts.
     AlgorithmCode {
-        package: Box<rumoca_ir_galec::package::AlgorithmCodePackage>,
+        renderer: rumoca_phase_codegen::AlgorithmCodeTemplateRenderer,
         artifact: crate::packaging::ArtifactSession,
     },
 }
@@ -612,11 +609,9 @@ fn resolve_manifest_renderer(
     if manifest.ir == TargetTemplateIr::AlgorithmCode {
         let package =
             lower_algorithm_code(result, identity.semantic_name, manifest.name.as_deref())?;
+        let renderer = rumoca_phase_codegen::AlgorithmCodeTemplateRenderer::new(&package)?;
         let artifact = crate::packaging::ArtifactSession::new(&manifest.files)?;
-        return Ok(ManifestRenderer::AlgorithmCode {
-            package: Box::new(package),
-            artifact,
-        });
+        return Ok(ManifestRenderer::AlgorithmCode { renderer, artifact });
     }
     if manifest.ir == TargetTemplateIr::Fmi {
         let solve = rumoca_sim::lower_solve_problem(&result.dae)
@@ -665,18 +660,14 @@ impl ManifestRenderer {
             Self::Fmi { renderer, artifact } => renderer
                 .render_with_name_and_artifact(template, model_identifier, artifact)
                 .map_err(Into::into),
-            Self::AlgorithmCode { package, artifact } => {
+            Self::AlgorithmCode { renderer, artifact } => {
                 let context = crate::packaging::ArtifactRenderContext {
                     session: artifact,
                     checksums: &checksums,
                 };
-                rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-                    package,
-                    &context,
-                    template,
-                    model_identifier,
-                )
-                .map_err(anyhow::Error::from)
+                renderer
+                    .render_with_name_and_artifact(template, model_identifier, &context)
+                    .map_err(anyhow::Error::from)
             }
         }
     }
@@ -704,15 +695,9 @@ impl ManifestRenderer {
             Self::Fmi { renderer, .. } => renderer
                 .render_with_name_and_artifact(template, model_identifier, artifact)
                 .map_err(Into::into),
-            Self::AlgorithmCode { package, .. } => {
-                rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-                    package,
-                    artifact,
-                    template,
-                    model_identifier,
-                )
-                .map_err(anyhow::Error::from)
-            }
+            Self::AlgorithmCode { renderer, .. } => renderer
+                .render_with_name_and_artifact(template, model_identifier, artifact)
+                .map_err(anyhow::Error::from),
         }
     }
 }

@@ -44,7 +44,7 @@ use tempfile::tempdir;
 // The `galec_cli_support/` helpers are declared once by the umbrella binary
 // that owns this file (see `suite_galec_fmu.rs`), so the sibling suites share
 // one copy instead of compiling the same file several times per binary.
-use super::cc_support::cc;
+use super::cc_support::assurance_c99_cc;
 use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
 use super::container_xml_support::{
     assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
@@ -211,6 +211,44 @@ algorithm
 end GalecProdHelperIdioms;
 ";
 
+const GUARDED_TENSOR_CONTRACTION_FIXTURE: &str = "\
+function updateSlice
+  input Real J[3, 3];
+  input Real xi[6];
+  output Real result[6];
+algorithm
+  result := zeros(6);
+  result[1:3] := J * xi[1:3];
+end updateSlice;
+
+function blockCovariance
+  input Real rotation[3, 3];
+  input Real positionCovariance[3, 3];
+  input Real velocityCovariance[3, 3];
+  output Real covariance[6, 6];
+algorithm
+  covariance := cat(1,
+    cat(2, transpose(rotation) * positionCovariance * rotation, zeros(3, 3)),
+    cat(2, zeros(3, 3), transpose(rotation) * velocityCovariance * rotation));
+end blockCovariance;
+
+model GalecProdGuardedTensorContraction
+  constant Real dt = 0.02;
+  parameter Real rotation[3, 3] = identity(3);
+  parameter Real positionCovariance[3, 3] = diagonal({1.0, 1.0, 1.0});
+  parameter Real velocityCovariance[3, 3] = diagonal({2.0, 2.0, 2.0});
+  parameter Real xi[6] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+  discrete output Real slice[6](each start = 0.0);
+  discrete output Real covariance[6, 6](each start = 0.0);
+algorithm
+  when sample(0.0, dt) then
+    slice := updateSlice(rotation, xi);
+    covariance := blockCovariance(
+      rotation, positionCovariance, velocityCovariance);
+  end when;
+end GalecProdGuardedTensorContraction;
+";
+
 const UNSUPPORTED_GALEC_BUILTIN_FIXTURE: &str = "\
 model GalecProdUnsupportedBuiltin
   constant Real dt = 0.02;
@@ -230,11 +268,11 @@ const DRIVER_MAIN: &str = "\
 #include \"GalecProdCliSmoke.h\"
 
 int main(void) {
-    EFMI_STATE_TYPE(GalecProdCliSmoke) state;
-    EFMI_INIT(GalecProdCliSmoke, &state);
-    EFMI_RECALIBRATE(GalecProdCliSmoke, &state);
+    GalecProdCliSmokeState state;
+    GalecProdCliSmoke_startup(&state);
+    GalecProdCliSmoke_recalibrate(&state);
     for (int step = 0; step < 3; ++step) {
-        EFMI_STEP(GalecProdCliSmoke, &state);
+        GalecProdCliSmoke_dostep(&state);
         printf(\"%.1f\\n\", state.y);
     }
     return 0;
@@ -367,7 +405,7 @@ fn algebraic_component_output_read_by_sampled_parent_compiles() {
 }
 
 #[test]
-fn inline_helpers_vector_return_and_row_slice_compile() {
+fn helper_specializations_multi_output_calls_and_row_slices_compile() {
     let dir = tempdir().expect("tempdir");
     let out_dir = dir.path().join("out");
     let model = "GalecProdHelperIdioms";
@@ -392,13 +430,51 @@ fn inline_helpers_vector_return_and_row_slice_compile() {
     assert!(alg.contains("self.segmentStart[3] :="), "{alg}");
     assert!(alg.contains("self.splitHigh :="), "{alg}");
     assert!(alg.contains("self.currentWaypoint :="), "{alg}");
-    assert!(!alg.contains("lowPass("), "{alg}");
-    assert!(!alg.contains("vectorNorm("), "{alg}");
-    assert!(!alg.contains("rateLimit("), "{alg}");
-    assert!(!alg.contains("splitCommand("), "{alg}");
-    assert!(!alg.contains("clip("), "{alg}");
-    assert!(!alg.contains("wrapAngle("), "{alg}");
-    assert!(!alg.contains("1:2"), "{alg}");
+    assert!(alg.contains("function lowPass_specialization_0"), "{alg}");
+    assert!(alg.contains("function lowPass_specialization_1"), "{alg}");
+    assert!(alg.contains("lowPass_specialization_0("), "{alg}");
+    assert!(alg.contains("lowPass_specialization_1("), "{alg}");
+    assert!(alg.contains("vectorNorm("), "{alg}");
+    assert!(alg.contains("rateLimit("), "{alg}");
+    assert!(alg.contains("function splitCommand"), "{alg}");
+    assert!(alg.contains(") := splitCommand("), "{alg}");
+    assert!(alg.contains("clip("), "{alg}");
+    assert!(alg.contains("wrapAngle("), "{alg}");
+    assert!(alg.contains(" in 1:2 loop"), "{alg}");
+}
+
+#[test]
+fn guarded_tensor_contractions_compile_as_strict_c99_without_eager_out_of_bounds_access() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdGuardedTensorContraction";
+    let file = write_fixture(dir.path(), model, GUARDED_TENSOR_CONTRACTION_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "guarded tensor contraction fixture failed to export.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let source = out_dir
+        .join(model)
+        .join("ProductionCode")
+        .join(format!("{model}.c"));
+    let object = dir.path().join("guarded-tensor-contraction.o");
+    let compile = assurance_c99_cc()
+        .arg("-c")
+        .arg(&source)
+        .arg("-o")
+        .arg(&object)
+        .output()
+        .expect("run strict C compiler");
+    assert!(
+        compile.status.success(),
+        "strict C99 rejected guarded tensor contractions.\nstderr:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        fs::read_to_string(source).expect("read generated source")
+    );
 }
 
 #[test]
@@ -630,6 +706,19 @@ fn compile_target_galec_production_emits_schema_valid_two_representation_efmu() 
             .join("ProductionCode/efmiProductionCodeManifest.xsd"),
     )
     .expect("ProductionCode/manifest.xml must validate against the vendored PC XSD");
+    let production_manifest =
+        fs::read_to_string(container.pc_manifest()).expect("read Production Code manifest");
+    assert!(
+        production_manifest.contains("floatPrecision=\"32-bit\"")
+            && production_manifest.contains("kind=\"efmiFloat32\"")
+            && production_manifest.contains("codedType=\"float\""),
+        "Production Code precision metadata must exactly match generated float storage"
+    );
+    assert!(
+        !production_manifest.contains("efmiFloat64")
+            && !production_manifest.contains("codedType=\"double\""),
+        "the embedded Production Code target must not claim or expose binary64 storage"
+    );
 }
 
 /// Row E2: the full checksum web recomputes from the bytes actually on
@@ -1091,14 +1180,7 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
     let driver = dir.path().join("main.c");
     fs::write(&driver, DRIVER_MAIN).expect("write driver");
     let program = dir.path().join("smoke");
-    let compile = cc()
-        .arg("-std=c99")
-        .arg("-pedantic")
-        .arg("-Wall")
-        .arg("-Wextra")
-        .arg("-Wconversion")
-        .arg("-Wsign-conversion")
-        .arg("-Werror")
+    let compile = assurance_c99_cc()
         .arg("-I")
         .arg(container.root.join("ProductionCode"))
         .arg("-o")

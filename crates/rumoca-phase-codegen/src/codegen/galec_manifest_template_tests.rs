@@ -164,14 +164,14 @@ fn galec_c_symbols_are_collision_safe_reserved_disjoint_and_consistent() {
             .expect("Production Code manifest template"),
     );
 
-    assert_eq!(header.matches("double b; /* declaration 1: a.b").count(), 1);
+    assert_eq!(header.matches("float b; /* declaration 1: a.b").count(), 1);
     assert_eq!(
-        header.matches("double a_b; /* declaration 2: a_b").count(),
+        header.matches("float a_b; /* declaration 2: a_b").count(),
         1
     );
     assert_eq!(
         header
-            .matches("double volatile_2; /* declaration 3: volatile")
+            .matches("float volatile_2; /* declaration 3: volatile")
             .count(),
         1
     );
@@ -179,15 +179,15 @@ fn galec_c_symbols_are_collision_safe_reserved_disjoint_and_consistent() {
     assert!(source.contains("void constexpr_2_startup"), "{source}");
     assert!(manifest.contains("name=\"constexpr_2State\""), "{manifest}");
     assert!(
-        manifest.contains("<Component id=\"CO_1\" name=\"b\" typeDefRefId=\"TD_F64\""),
+        manifest.contains("<Component id=\"CO_1\" name=\"b\" typeDefRefId=\"TD_F32\""),
         "{manifest}"
     );
     assert!(
-        manifest.contains("<Component id=\"CO_2\" name=\"a_b\" typeDefRefId=\"TD_F64\""),
+        manifest.contains("<Component id=\"CO_2\" name=\"a_b\" typeDefRefId=\"TD_F32\""),
         "{manifest}"
     );
     assert!(
-        manifest.contains("<Component id=\"CO_3\" name=\"volatile_2\" typeDefRefId=\"TD_F64\""),
+        manifest.contains("<Component id=\"CO_3\" name=\"volatile_2\" typeDefRefId=\"TD_F32\""),
         "{manifest}"
     );
     assert!(
@@ -245,14 +245,45 @@ fn galec_real_min_max_are_relational_target_helpers() {
         source.contains(r#"function == "max" -%}rumoca_galec_max"#),
         "{source}"
     );
-    assert!(source.contains("return u1 < u2 ? u1 : u2;"), "{source}");
-    assert!(source.contains("return u1 > u2 ? u1 : u2;"), "{source}");
+    assert!(source.contains("if (u1 < u2)"), "{source}");
+    assert!(source.contains("if (u1 > u2)"), "{source}");
     assert!(
-        source.contains("#define rumoca_galec_imin"),
+        source.contains("static inline int32_t rumoca_galec_imin"),
         "Integer min must retain its distinct builtin mapping"
     );
     assert!(
-        source.contains("#define rumoca_galec_imax"),
+        source.contains("static inline int32_t rumoca_galec_imax"),
         "Integer max must retain its distinct builtin mapping"
     );
+}
+
+#[test]
+fn galec_c_templates_enforce_the_assurance_profile_without_claiming_compliance() {
+    let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
+        .expect("C source template");
+    let header = templates::builtin_template_source("embedded-c-galec", "model.h.jinja")
+        .expect("C header template");
+
+    for forbidden in [
+        "malloc(",
+        "calloc(",
+        "realloc(",
+        "free(",
+        "#define rumoca_galec_",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "forbidden `{forbidden}` in C template"
+        );
+        assert!(
+            !header.contains(forbidden),
+            "forbidden `{forbidden}` in H template"
+        );
+    }
+    assert!(!header.contains("#  define EFMI_"), "{header}");
+    assert!(header.contains("RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED"));
+    assert!(source.contains("MISRA compliance and DO-178C compliance are not claimed"));
+    assert!(header.contains("MISRA compliance and DO-178C compliance are not claimed"));
+    assert!(source.contains("dimensions|length == 1 %}const"));
+    assert!(source.contains("rank > 1 therefore stays unqualified"));
 }

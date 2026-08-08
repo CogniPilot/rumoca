@@ -12,11 +12,21 @@ pub(super) struct TypedBlockView<'a> {
     compartments: &'a [ast::StateCompartment],
     protected: &'a [ast::ProtectedEntity],
     error_signals: &'a [ast::Identifier],
-    protected_functions: &'a [ast::UserFunction],
+    protected_functions: Vec<TypedFunctionView<'a>>,
     startup: TypedMethodView<'a>,
     recalibrate: TypedMethodView<'a>,
     do_step: TypedMethodView<'a>,
-    public_functions: &'a [ast::UserFunction],
+    public_functions: Vec<TypedFunctionView<'a>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TypedFunctionView<'a> {
+    kind: ast::FunctionKind,
+    name: &'a ast::Name,
+    signals: &'a [ast::Identifier],
+    parameters: &'a [ast::Parameter],
+    locals: &'a [ast::VariableDeclaration],
+    statements: Vec<TypedSpannedStatement<'a>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,7 +38,18 @@ struct TypedMethodView<'a> {
 
 #[derive(Debug, Clone, Serialize)]
 struct TypedSpannedStatement<'a> {
+    trace: Option<StatementTrace>,
     node: TypedStatementView<'a>,
+}
+
+/// Stable source anchor retained at the template boundary for generated-code
+/// traceability (SPEC_0034 GAL-032). Source ids are hashes of normalized source
+/// names; byte offsets identify the exact statement owner in that source.
+#[derive(Debug, Clone, Copy, Serialize)]
+struct StatementTrace {
+    source_id: u64,
+    byte_start: usize,
+    byte_end: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +109,7 @@ enum TypedConditionView<'a> {
 struct TypedCallView<'a> {
     function: &'a ast::Name,
     lifted_base: Option<&'static str>,
+    user_function: bool,
     arguments: Vec<TypedExpressionView<'a>>,
 }
 
@@ -95,6 +117,7 @@ struct TypedCallView<'a> {
 struct TypedReferenceView<'a> {
     rank: usize,
     extents: Option<Vec<usize>>,
+    scalar: Option<ast::ScalarType>,
     #[serde(flatten)]
     node: TypedReferenceNodeView<'a>,
 }
@@ -110,6 +133,7 @@ enum TypedReferenceNodeView<'a> {
 struct TypedExpressionView<'a> {
     rank: usize,
     extents: Option<Vec<usize>>,
+    scalar: Option<ast::ScalarType>,
     #[serde(flatten)]
     node: TypedExpressionNodeView<'a>,
 }
@@ -152,11 +176,19 @@ pub(super) fn block(block: &ast::Block) -> Result<TypedBlockView<'_>, String> {
         compartments: &block.compartments,
         protected: &block.protected,
         error_signals: &block.error_signals,
-        protected_functions: &block.protected_functions,
+        protected_functions: block
+            .protected_functions
+            .iter()
+            .map(|function| shapes.function(function))
+            .collect::<Result<_, _>>()?,
         startup: shapes.method(&block.startup)?,
         recalibrate: shapes.method(&block.recalibrate)?,
         do_step: shapes.method(&block.do_step)?,
-        public_functions: &block.public_functions,
+        public_functions: block
+            .public_functions
+            .iter()
+            .map(|function| shapes.function(function))
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -203,6 +235,18 @@ impl<'a> BlockShapes<'a> {
             signals: &method.signals,
             locals: &method.locals,
             statements: scope.statements(&method.statements)?,
+        })
+    }
+
+    fn function(&self, function: &'a ast::UserFunction) -> Result<TypedFunctionView<'a>, String> {
+        let scope = ScopeShapes::for_function(self, function);
+        Ok(TypedFunctionView {
+            kind: function.kind,
+            name: &function.name,
+            signals: &function.signals,
+            parameters: &function.parameters,
+            locals: &function.locals,
+            statements: scope.statements(&function.statements)?,
         })
     }
 
@@ -315,6 +359,7 @@ impl<'a> BlockShapes<'a> {
         Ok(ShapeEvidence {
             rank: builtin_rank(output.ty),
             extents: (builtin_rank(output.ty) == 0).then(Vec::new),
+            scalar: Some(builtin_scalar(output.ty)),
         })
     }
 }
@@ -332,6 +377,24 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             locals: locals
                 .iter()
                 .map(|declaration| (declaration.name.lexeme(), declaration))
+                .collect(),
+            iterators: HashSet::new(),
+        }
+    }
+
+    fn for_function(block: &'block BlockShapes<'a>, function: &'a ast::UserFunction) -> Self {
+        Self {
+            block,
+            locals: function
+                .parameters
+                .iter()
+                .map(|parameter| (parameter.decl.name.lexeme(), &parameter.decl))
+                .chain(
+                    function
+                        .locals
+                        .iter()
+                        .map(|declaration| (declaration.name.lexeme(), declaration)),
+                )
                 .collect(),
             iterators: HashSet::new(),
         }
@@ -357,6 +420,11 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             .iter()
             .map(|statement| {
                 Ok(TypedSpannedStatement {
+                    trace: (!statement.span.is_dummy()).then_some(StatementTrace {
+                        source_id: statement.span.source.0,
+                        byte_start: statement.span.start.0,
+                        byte_end: statement.span.end.0,
+                    }),
                     node: self.statement(&statement.node)?,
                 })
             })
@@ -445,6 +513,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             function: &call.function,
             lifted_base: rumoca_ir_galec::builtins::find_lifted_base(call.function.lexeme())
                 .map(|builtin| builtin.name),
+            user_function: self.block.functions.contains_key(call.function.lexeme()),
             arguments: call
                 .arguments
                 .iter()
@@ -456,7 +525,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
     fn reference(&self, reference: &'a ast::Reference) -> Result<TypedReferenceView<'a>, String> {
         let shape = match reference {
             ast::Reference::Local(part) if self.iterators.contains(part.name.lexeme()) => {
-                ShapeEvidence::scalar()
+                ShapeEvidence::scalar(ast::ScalarType::Integer)
             }
             ast::Reference::Local(part) => self
                 .locals
@@ -474,6 +543,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         Ok(TypedReferenceView {
             rank: shape.rank,
             extents: shape.extents,
+            scalar: shape.scalar,
             node: match reference {
                 ast::Reference::Local(part) => TypedReferenceNodeView::Local(part),
                 ast::Reference::State(parts) => TypedReferenceNodeView::State(parts),
@@ -487,15 +557,15 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
     ) -> Result<TypedExpressionView<'a>, String> {
         let (shape, node) = match expression {
             ast::Expression::Bool(value) => (
-                ShapeEvidence::scalar(),
+                ShapeEvidence::scalar(ast::ScalarType::Boolean),
                 TypedExpressionNodeView::Bool(*value),
             ),
             ast::Expression::Integer(value) => (
-                ShapeEvidence::scalar(),
+                ShapeEvidence::scalar(ast::ScalarType::Integer),
                 TypedExpressionNodeView::Integer(*value),
             ),
             ast::Expression::Real(value) => (
-                ShapeEvidence::scalar(),
+                ShapeEvidence::scalar(ast::ScalarType::Real),
                 TypedExpressionNodeView::Real(*value),
             ),
             ast::Expression::Ref(reference) => {
@@ -506,7 +576,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 )
             }
             ast::Expression::Size { array, dimension } => (
-                ShapeEvidence::scalar(),
+                ShapeEvidence::scalar(ast::ScalarType::Integer),
                 TypedExpressionNodeView::Size {
                     array: self.reference(array)?,
                     dimension: Box::new(self.expression(dimension)?),
@@ -536,7 +606,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 )
             }
             ast::Expression::Not(value) => (
-                ShapeEvidence::scalar(),
+                ShapeEvidence::scalar(ast::ScalarType::Boolean),
                 TypedExpressionNodeView::Not(Box::new(self.expression(value)?)),
             ),
             ast::Expression::Binary { op, lhs, rhs } => self.binary_expression(*op, lhs, rhs)?,
@@ -544,6 +614,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         Ok(TypedExpressionView {
             rank: shape.rank,
             extents: shape.extents,
+            scalar: shape.scalar,
             node,
         })
     }
@@ -586,7 +657,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
         let element_shape = values
             .first()
             .map(ShapeEvidence::of_expression)
-            .unwrap_or_else(ShapeEvidence::scalar);
+            .unwrap_or_else(ShapeEvidence::unknown_scalar);
         for value in &values[1..] {
             require_equal_shape(
                 element_shape.clone(),
@@ -602,6 +673,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             ShapeEvidence {
                 rank: element_shape.rank + 1,
                 extents,
+                scalar: element_shape.scalar,
             },
             TypedExpressionNodeView::Array(values),
         ))
@@ -626,7 +698,7 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 ShapeEvidence::of_expression(&rhs),
             )?
         } else {
-            ShapeEvidence::scalar()
+            ShapeEvidence::scalar(ast::ScalarType::Boolean)
         };
         Ok((shape, TypedExpressionNodeView::Binary { op, lhs, rhs }))
     }
@@ -636,13 +708,23 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
 struct ShapeEvidence {
     rank: usize,
     extents: Option<Vec<usize>>,
+    scalar: Option<ast::ScalarType>,
 }
 
 impl ShapeEvidence {
-    fn scalar() -> Self {
+    fn scalar(scalar: ast::ScalarType) -> Self {
         Self {
             rank: 0,
             extents: Some(Vec::new()),
+            scalar: Some(scalar),
+        }
+    }
+
+    fn unknown_scalar() -> Self {
+        Self {
+            rank: 0,
+            extents: Some(Vec::new()),
+            scalar: None,
         }
     }
 
@@ -650,6 +732,7 @@ impl ShapeEvidence {
         Self {
             rank: reference.rank,
             extents: reference.extents.clone(),
+            scalar: reference.scalar,
         }
     }
 
@@ -657,6 +740,7 @@ impl ShapeEvidence {
         Self {
             rank: expression.rank,
             extents: expression.extents.clone(),
+            scalar: expression.scalar,
         }
     }
 }
@@ -665,6 +749,10 @@ fn declaration_shape(declaration: &ast::VariableDeclaration) -> ShapeEvidence {
     ShapeEvidence {
         rank: declaration.dimensions.len(),
         extents: literal_extents(&declaration.dimensions),
+        scalar: match declaration.ty {
+            ast::TypeRef::Primitive(scalar) => Some(scalar),
+            ast::TypeRef::Compartment(_) => None,
+        },
     }
 }
 
@@ -742,5 +830,24 @@ fn reference_shape(
     } else {
         None
     };
-    Ok(ShapeEvidence { rank, extents })
+    Ok(ShapeEvidence {
+        rank,
+        extents,
+        scalar: match declaration.ty {
+            ast::TypeRef::Primitive(scalar) => Some(scalar),
+            ast::TypeRef::Compartment(_) => None,
+        },
+    })
+}
+
+const fn builtin_scalar(ty: rumoca_ir_galec::builtins::BuiltinType) -> ast::ScalarType {
+    use rumoca_ir_galec::builtins::BuiltinType;
+    match ty {
+        BuiltinType::Boolean => ast::ScalarType::Boolean,
+        BuiltinType::Integer | BuiltinType::IntegerVector => ast::ScalarType::Integer,
+        BuiltinType::Real
+        | BuiltinType::RealVector
+        | BuiltinType::RealMatrix
+        | BuiltinType::RealArray3 => ast::ScalarType::Real,
+    }
 }

@@ -25,7 +25,7 @@ use tempfile::tempdir;
 // The `galec_cli_support/` helpers are declared once by the umbrella binary
 // that owns this file (see `suite_core.rs`), so the sibling suites share one
 // copy instead of compiling the same file several times per binary.
-use super::cc_support::cc;
+use super::cc_support::assurance_c99_cc;
 use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
@@ -63,11 +63,11 @@ const DRIVER_MAIN: &str = "\
 #include \"EmbeddedGalecSmoke.h\"
 
 int main(void) {
-    EFMI_STATE_TYPE(EmbeddedGalecSmoke) state;
-    EFMI_INIT(EmbeddedGalecSmoke, &state);
-    EFMI_RECALIBRATE(EmbeddedGalecSmoke, &state);
+    EmbeddedGalecSmokeState state;
+    EmbeddedGalecSmoke_startup(&state);
+    EmbeddedGalecSmoke_recalibrate(&state);
     for (int step = 0; step < 3; ++step) {
-        EFMI_STEP(EmbeddedGalecSmoke, &state);
+        EmbeddedGalecSmoke_dostep(&state);
         printf(\"%.1f\\n\", state.y);
     }
     return 0;
@@ -79,24 +79,24 @@ const MIN_MAX_DRIVER: &str = r#"
 #include "EmbeddedGalecSmoke.c"
 
 int main(void) {
-    const double qnan = NAN;
+    const float qnan = NAN;
 
-    if (rumoca_galec_min(2.0, 3.0) != 2.0
-        || rumoca_galec_min(3.0, 2.0) != 2.0
-        || rumoca_galec_max(2.0, 3.0) != 3.0
-        || rumoca_galec_max(3.0, 2.0) != 3.0) {
+    if (rumoca_galec_min(2.0f, 3.0f) != 2.0f
+        || rumoca_galec_min(3.0f, 2.0f) != 2.0f
+        || rumoca_galec_max(2.0f, 3.0f) != 3.0f
+        || rumoca_galec_max(3.0f, 2.0f) != 3.0f) {
         return 1;
     }
-    if (rumoca_galec_min(2.0, 2.0) != 2.0
-        || rumoca_galec_max(2.0, 2.0) != 2.0) {
+    if (rumoca_galec_min(2.0f, 2.0f) != 2.0f
+        || rumoca_galec_max(2.0f, 2.0f) != 2.0f) {
         return 2;
     }
-    if (rumoca_galec_min(qnan, 2.0) != 2.0
-        || rumoca_galec_max(qnan, 2.0) != 2.0) {
+    if (rumoca_galec_min(qnan, 2.0f) != 2.0f
+        || rumoca_galec_max(qnan, 2.0f) != 2.0f) {
         return 3;
     }
-    if (!isnan(rumoca_galec_min(2.0, qnan))
-        || !isnan(rumoca_galec_max(2.0, qnan))) {
+    if (!isnan(rumoca_galec_min(2.0f, qnan))
+        || !isnan(rumoca_galec_max(2.0f, qnan))) {
         return 4;
     }
     return 0;
@@ -133,14 +133,7 @@ fn real_min_max_use_order_sensitive_relational_nan_semantics() {
     let generated_source =
         fs::read_to_string(out_dir.join(format!("{MODEL}.c"))).expect("read generated C source");
     let program = out_dir.join("min_max");
-    let compile = cc()
-        .arg("-std=c99")
-        .arg("-pedantic")
-        .arg("-Wall")
-        .arg("-Wextra")
-        .arg("-Wconversion")
-        .arg("-Wsign-conversion")
-        .arg("-Werror")
+    let compile = assurance_c99_cc()
         .arg("-o")
         .arg(&program)
         .arg(&driver)
@@ -187,14 +180,7 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
     let driver = out_dir.join("main.c");
     fs::write(&driver, DRIVER_MAIN).expect("write driver");
     let program = out_dir.join("smoke");
-    let compile = cc()
-        .arg("-std=c99")
-        .arg("-pedantic")
-        .arg("-Wall")
-        .arg("-Wextra")
-        .arg("-Wconversion")
-        .arg("-Wsign-conversion")
-        .arg("-Werror")
+    let compile = assurance_c99_cc()
         .arg("-o")
         .arg(&program)
         .arg(&driver)
@@ -226,8 +212,7 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
     );
 }
 
-/// GAL-024 honesty: the emitted header and the CLI completion message both
-/// self-describe as NOT an eFMI Production Code container.
+/// GAL-024/GAL-029 honesty: target scope and assurance claims stay explicit.
 #[test]
 fn export_self_describes_as_not_an_efmi_production_code_container() {
     let dir = tempdir().expect("tempdir");
@@ -239,20 +224,25 @@ fn export_self_describes_as_not_an_efmi_production_code_container() {
         header.contains("NOT an eFMI Production Code container"),
         "header must carry the GAL-024 self-description:\n{header}"
     );
-    for macro_name in [
-        "EFMI_STATE_TYPE",
-        "EFMI_INIT",
-        "EFMI_RECALIBRATE",
-        "EFMI_STEP",
+    for api_name in [
+        "EmbeddedGalecSmokeState",
+        "EmbeddedGalecSmoke_startup",
+        "EmbeddedGalecSmoke_recalibrate",
+        "EmbeddedGalecSmoke_dostep",
     ] {
         assert!(
-            header.contains(macro_name),
-            "header must expose {macro_name}:\n{header}"
+            header.contains(api_name),
+            "header must expose {api_name}:\n{header}"
         );
     }
+    assert!(!header.contains("#  define EFMI_"), "{header}");
+    assert!(header.contains("MISRA compliance and DO-178C compliance are not claimed"));
     assert!(
         strip_ansi(&stderr).contains("NOT an eFMI Production Code"),
         "completion message must carry the GAL-024 self-description, got:\n{stderr}"
+    );
+    assert!(
+        strip_ansi(&stderr).contains("MISRA compliance and DO-178C compliance are not claimed")
     );
 }
 

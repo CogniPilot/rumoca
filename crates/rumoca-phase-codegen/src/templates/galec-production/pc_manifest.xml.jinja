@@ -18,7 +18,7 @@
 ) -%}
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
 {%- macro attr(name, value) -%}{{ " " }}{{ name }}="{{ value | xml_escape }}"{%- endmacro -%}
-{%- macro type_id(kind) -%}{% if kind == "real" %}TD_F64{% elif kind == "integer" %}TD_I32{% elif kind == "boolean" %}TD_BOOL{% else %}{{ fail_closed_scalar_type }}{% endif %}{%- endmacro -%}
+{%- macro type_id(kind) -%}{% if kind == "real" %}TD_F32{% elif kind == "integer" %}TD_I32{% elif kind == "boolean" %}TD_BOOL{% else %}{{ fail_closed_scalar_type }}{% endif %}{%- endmacro -%}
 {%- macro function(id, name, return_id, self_id) %}
           <Function{{ attr("id", id) }}{{ attr("name", name) }}>
             <ReturnParameter{{ attr("id", return_id) }} typeDefRefId="TD_VOID"/>
@@ -36,10 +36,10 @@
     <File id="F_H"{{ attr("name", model_name ~ ".h") }} path="./" needsChecksum="true"{{ attr("checksum", artifact.checksums.c_header_sha1) }} role="Code"/>
     <File id="F_C"{{ attr("name", model_name ~ ".c") }} path="./" needsChecksum="true"{{ attr("checksum", artifact.checksums.c_source_sha1) }} role="Code"/>
   </Files>
-  <CodeContainer language="C" standard="C99" platform="Legacy" floatPrecision="64-bit">
+  <CodeContainer language="C" standard="C99" platform="Legacy" floatPrecision="32-bit">
     <Target>Generic</Target>
     <TargetTypes>
-      <TargetType id="TT_F64" kind="efmiFloat64" codedType="double"/>
+      <TargetType id="TT_F32" kind="efmiFloat32" codedType="float"/>
       <TargetType id="TT_I32" kind="efmiInteger32" codedType="int32_t"/>
       <TargetType id="TT_BOOL" kind="efmiBool" codedType="bool"/>
       <TargetType id="TT_U32" kind="efmiUnsignedInteger32" codedType="uint32_t"/>
@@ -49,7 +49,7 @@
       <CodeFile id="CF_H" fileType="ProductionCode" codeType="HeaderFile">
         <FileReference fileRefId="F_H"/>
         <Typedefs>
-          <Typedef id="TD_F64" name="double"><Alias targetTypeRefId="TT_F64"/></Typedef>
+          <Typedef id="TD_F32" name="float"><Alias targetTypeRefId="TT_F32"/></Typedef>
           <Typedef id="TD_I32" name="int32_t"><Alias targetTypeRefId="TT_I32"/></Typedef>
           <Typedef id="TD_BOOL" name="bool"><Alias targetTypeRefId="TT_BOOL"/></Typedef>
           <Typedef id="TD_U32" name="uint32_t"><Alias targetTypeRefId="TT_U32"/></Typedef>

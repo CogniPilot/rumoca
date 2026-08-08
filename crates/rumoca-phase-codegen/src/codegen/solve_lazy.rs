@@ -355,6 +355,8 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenE
     let implicit_rhs = compute_block_value(Arc::new(problem.continuous.implicit_rhs.clone()))?;
     let derivative_rhs = compute_block_value(Arc::new(problem.continuous.derivative_rhs.clone()))?;
     let residual = compute_block_value(Arc::new(problem.continuous.residual.clone()))?;
+    let (algebraic_assignment_plan, algebraic_assignment_complete) =
+        algebraic_assignment_plan(&problem)?;
     Ok(lazy_map(
         &[
             "implicit_rhs",
@@ -362,6 +364,8 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenE
             "algebraic_projection_plan",
             "residual",
             "derivative_rhs",
+            "algebraic_assignment_plan",
+            "algebraic_assignment_complete",
         ],
         move |k| {
             let c = &problem.continuous;
@@ -369,6 +373,8 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenE
                 "implicit_rhs" => Some(implicit_rhs.clone()),
                 "derivative_rhs" => Some(derivative_rhs.clone()),
                 "residual" => Some(residual.clone()),
+                "algebraic_assignment_plan" => Some(algebraic_assignment_plan.clone()),
+                "algebraic_assignment_complete" => Some(Value::from(algebraic_assignment_complete)),
                 "implicit_row_targets" => Some(Value::from_serialize(&c.implicit_row_targets)),
                 "algebraic_projection_plan" => {
                     Some(Value::from_serialize(&c.algebraic_projection_plan))
@@ -377,6 +383,43 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenE
             }
         },
     ))
+}
+
+fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bool), CodegenError> {
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&problem.continuous.implicit_rhs)?;
+    let prepared = rumoca_eval_solve::PreparedScalarProgramBlock::new(scalar.clone())
+        .map_err(|error| CodegenError::template(error.to_string()))?;
+    let mut programs = Vec::new();
+    let mut spans = Vec::new();
+    let mut targets = Vec::new();
+    let mut complete = true;
+    for block in &problem.continuous.algebraic_projection_plan.blocks {
+        let ([row], [target]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
+            complete = false;
+            continue;
+        };
+        let Some(program_index) = prepared.single_output_row_for_output_index(*row) else {
+            complete = false;
+            continue;
+        };
+        let Some(program) = prepared.exact_target_assignment_program(program_index, *target) else {
+            complete = false;
+            continue;
+        };
+        programs.push(program);
+        spans.push(
+            scalar
+                .program_span(program_index)
+                .expect("checked scalar projection row has provenance"),
+        );
+        targets.push(*target);
+    }
+    let assignments = solve::ScalarProgramBlock::with_output_indices(programs, spans, targets)
+        .map_err(|error| CodegenError::template(error.to_string()))?;
+    let plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
+        Arc::new(assignments),
+    )?);
+    Ok((plan, complete))
 }
 
 fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
@@ -424,10 +467,17 @@ fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
     )
 }
 
-fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
-    lazy_map(
+fn events_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
+    let root_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
+        Arc::new(problem.events.root_conditions.clone()),
+    )?);
+    let action_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
+        Arc::new(problem.events.action_conditions.clone()),
+    )?);
+    Ok(lazy_map(
         &[
             "root_conditions",
+            "root_plan",
             "root_relation_memory_targets",
             "root_zero_domains",
             "root_relation_refresh_roles",
@@ -436,6 +486,7 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
             "dynamic_time_event_names",
             "dynamic_time_event_rhs",
             "action_conditions",
+            "action_plan",
             "actions",
         ],
         move |k| {
@@ -444,12 +495,14 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
                 "root_conditions" => Some(scalar_program_block_value(Arc::new(
                     e.root_conditions.clone(),
                 ))),
+                "root_plan" => Some(root_plan.clone()),
                 "dynamic_time_event_rhs" => Some(scalar_program_block_value(Arc::new(
                     e.dynamic_time_event_rhs.clone(),
                 ))),
                 "action_conditions" => Some(scalar_program_block_value(Arc::new(
                     e.action_conditions.clone(),
                 ))),
+                "action_plan" => Some(action_plan.clone()),
                 "root_relation_memory_targets" => {
                     Some(Value::from_serialize(&e.root_relation_memory_targets))
                 }
@@ -468,7 +521,7 @@ fn events_value(problem: Arc<solve::SolveProblem>) -> Value {
                 _ => None,
             }
         },
-    )
+    ))
 }
 
 pub(super) fn artifacts_value(
@@ -513,6 +566,7 @@ pub(super) fn solve_value(
     artifacts: Arc<solve::SolveArtifacts>,
 ) -> Result<Value, CodegenError> {
     let continuous = continuous_value(problem.clone())?;
+    let events = events_value(problem.clone())?;
     let artifacts_value = artifacts_value(artifacts.clone())?;
     Ok(lazy_map(
         &[
@@ -532,7 +586,7 @@ pub(super) fn solve_value(
             "solve_layout" => Some(Value::from_serialize(&problem.solve_layout)),
             "continuous" => Some(continuous.clone()),
             "discrete" => Some(discrete_value(problem.clone())),
-            "events" => Some(events_value(problem.clone())),
+            "events" => Some(events.clone()),
             "initialization" => Some(Value::from_serialize(&problem.initialization)),
             "clocks" => Some(Value::from_serialize(&problem.clocks)),
             "artifacts" => Some(artifacts_value.clone()),

@@ -10,6 +10,7 @@ use rumoca_ir_solve as solve;
 use serde::Serialize;
 use std::path::Path;
 
+mod algorithm_code_renderer;
 #[cfg(test)]
 mod checked_dae_diagnostic_tests;
 #[cfg(test)]
@@ -484,17 +485,8 @@ pub fn render_algorithm_code_template_with_artifact<T: Serialize>(
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-    let tmpl = env.get_template("inline")?;
-    let view = crate::views::algorithm_code::AlgorithmCodeView::new(package)
-        .map_err(CodegenError::template)?;
-    Ok(tmpl.render(minijinja::context! {
-        algorithm_code => Value::from_serialize(view),
-        artifact => Value::from_serialize(artifact),
-        ir_kind => "algorithm_code",
-        model_name,
-    })?)
+    AlgorithmCodeTemplateRenderer::new(package)?
+        .render_with_name_and_artifact(template, model_name, artifact)
 }
 
 /// Render a validated standalone Algorithm Code block.
@@ -1170,5 +1162,6 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     render_statements(&stmts, &cfg, indent_str)
 }
 
+pub use algorithm_code_renderer::AlgorithmCodeTemplateRenderer;
 pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;

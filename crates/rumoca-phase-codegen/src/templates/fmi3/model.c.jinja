@@ -1,4 +1,5 @@
 {%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+{%- if not solve.continuous.algebraic_assignment_complete %}{{ fail("unsupported-feature:fmi3.coupled-or-non-isolable-algebraic-projection") }}{% endif %}
 {%- macro scalar_const(op) -%}{% if op.value_class == "finite" %}{{ op.value }}{% elif op.value_class == "positive_infinity" %}INFINITY{% elif op.value_class == "negative_infinity" %}(-INFINITY){% else %}NAN{% endif %}{%- endmacro %}
 {%- macro unary(operator, arg) -%}
 {%- if operator == "Neg" -%}(-r[{{ arg }}]){% elif operator == "Not" -%}(r[{{ arg }}] == 0.0 ? 1.0 : 0.0){% elif operator == "Abs" -%}fabs(r[{{ arg }}]){% elif operator == "Sign" -%}(r[{{ arg }}] > 0.0 ? 1.0 : (r[{{ arg }}] < 0.0 ? -1.0 : 0.0)){% elif operator == "Sqrt" -%}sqrt(r[{{ arg }}]){% elif operator == "Floor" -%}floor(r[{{ arg }}]){% elif operator == "Ceil" -%}ceil(r[{{ arg }}]){% elif operator == "Trunc" -%}trunc(r[{{ arg }}]){% elif operator in ["Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Sinh", "Cosh", "Tanh", "Exp"] -%}{{ operator | lower }}(r[{{ arg }}]){% elif operator == "Log" -%}log(r[{{ arg }}]){% elif operator == "Log10" -%}log10(r[{{ arg }}]){% else -%}{{ fail("unsupported-feature:scalar.unary." ~ operator) }}{% endif -%}
@@ -9,7 +10,7 @@
 {%- macro compare(operator, lhs, rhs) -%}
 {%- if operator == "Lt" -%}(r[{{ lhs }}] < r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Le" -%}(r[{{ lhs }}] <= r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Gt" -%}(r[{{ lhs }}] > r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Ge" -%}(r[{{ lhs }}] >= r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Eq" -%}(r[{{ lhs }}] == r[{{ rhs }}] ? 1.0 : 0.0){% elif operator == "Ne" -%}(r[{{ lhs }}] != r[{{ rhs }}] ? 1.0 : 0.0){% else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}{% endif -%}
 {%- endmacro %}
-{%- macro scalar_op(op) %}
+{%- macro scalar_op(op, output="m->derivative") %}
 {%- if op.kind == "Const" %}    r[{{ op.dst }}] = {{ scalar_const(op) }};
 {%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = m->time;
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
@@ -20,7 +21,7 @@
 {%- elif op.kind == "Binary" %}    r[{{ op.dst }}] = {{ binary(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Compare" %}    r[{{ op.dst }}] = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}    r[{{ op.dst }}] = r[{{ op.cond }}] != 0.0 ? r[{{ op.if_true }}] : r[{{ op.if_false }}];
-{%- elif op.kind == "StoreOutput" %}    m->derivative[{{ op.output_index }}] = r[{{ op.src }}];
+{%- elif op.kind == "StoreOutput" %}    {{ output }}[{{ op.output_index }}] = r[{{ op.src }}];
 {%- else %}{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}{% endif -%}
 {%- endmacro %}
 #include <math.h>
@@ -44,16 +45,28 @@ static void initialize_values(ModelInstance* m) {
     m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = {{ variable.start[scalar] }};
 {%- endfor %}{% endfor %}
 }
-static fmi3Status evaluate_derivatives(ModelInstance* m) {
-{%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
-{%- for program in plan.programs %}{% for op in program.ops %}
-{%- if loop.first %}    {
+static fmi3Status refresh_algebraics(ModelInstance* m) {
+{%- for program in solve.continuous.algebraic_assignment_plan.programs %}
+    {
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
-{%- endif %}
+{%- for op in program.ops %}
+{{ scalar_op(op, "m->y") }}
+{%- endfor %}
+    }
+{%- endfor %}
+    return fmi3OK;
+}
+static fmi3Status evaluate_derivatives(ModelInstance* m) {
+    if (refresh_algebraics(m) != fmi3OK) return fmi3Error;
+{% set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
+{% for program in plan.programs %}{% for op in program.ops %}
+{% if loop.first %}    {
+    double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;
+{% endif %}
 {{ scalar_op(op) }}
-{%- if loop.last %}    }
-{%- endif %}
-{%- endfor %}{% endfor %}
+{% if loop.last %}    }
+{% endif %}
+{% endfor %}{% endfor %}
     for (size_t i = 0; i < {{ solve.solve_layout.state_scalar_count }}; ++i) {
         if (!isfinite(m->derivative[i])) return fmi3Error;
     }
@@ -87,6 +100,7 @@ static size_t value_count(fmi3ValueReference vr) {
     }
 }
 static fmi3Status get_float64(ModelInstance* m, fmi3ValueReference vr, double* values) {
+    if (refresh_algebraics(m) != fmi3OK) return fmi3Error;
     switch (vr) {
     case 0: values[0] = m->time; return fmi3OK;
 {%- for variable in fmi.variables %}

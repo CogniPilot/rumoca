@@ -622,7 +622,7 @@ pub fn validate_dae_target_capabilities(
             manifest.name.as_deref().unwrap_or("<unnamed>")
         );
     }
-    let (state_count, continuous_equation_count, continuous_family_count) = dae.inspect(|view| {
+    let (state_count, residual_owner_count, continuous_family_count) = dae.inspect(|view| {
         let state_count = view
             .variables()
             .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
@@ -648,16 +648,11 @@ pub fn validate_dae_target_capabilities(
             format!("{continuous_family_count} compact equation family owner(s)"),
         )?;
     }
-    if capabilities.continuous_states == Some(false)
-        && (state_count != 0 || continuous_equation_count != 0)
-    {
+    if capabilities.continuous_states == Some(false) && state_count != 0 {
         unsupported_feature(
             manifest,
             "continuous_states",
-            format!(
-                "{} state(s), {} residual derivative equation(s)",
-                state_count, continuous_equation_count
-            ),
+            format!("{state_count} state(s)"),
         )?;
     }
     // A Solve/FMI target does not emit DAE owners directly. Its later checked
@@ -666,12 +661,12 @@ pub fn validate_dae_target_capabilities(
     // plain explicit ODE impossible to export.
     if manifest.ir == TargetTemplateIr::Dae
         && capabilities.residual_equations == Some(false)
-        && continuous_equation_count != 0
+        && residual_owner_count != 0
     {
         unsupported_feature(
             manifest,
             "residual_equations",
-            format!("{continuous_equation_count} equation(s)"),
+            format!("{residual_owner_count} equation(s)"),
         )?;
     }
     if capabilities.external_functions == Some(false) && dae_has_external_functions(dae) {

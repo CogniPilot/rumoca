@@ -19,3 +19,26 @@ pub(super) fn cc() -> Command {
     );
     Command::new("cc")
 }
+
+/// Strict, portable C99 preflight used for every generated GALEC C product.
+///
+/// These warnings catch useful coding-profile defects, but are deliberately
+/// not called a MISRA compliance check (SPEC_0034 GAL-029/GAL-031).
+pub(super) fn assurance_c99_cc() -> Command {
+    let mut command = cc();
+    command.args([
+        "-std=c99",
+        "-pedantic",
+        "-Wall",
+        "-Wextra",
+        "-Wconversion",
+        "-Wsign-conversion",
+        "-Wshadow",
+        "-Wundef",
+        "-Wcast-qual",
+        "-Wstrict-prototypes",
+        "-Wmissing-prototypes",
+        "-Werror",
+    ]);
+    command
+}

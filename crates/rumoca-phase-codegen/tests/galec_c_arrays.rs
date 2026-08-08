@@ -166,6 +166,67 @@ fn render(block: &CheckedAlgorithmBlock, path: &str) -> Result<String, String> {
 }
 
 #[test]
+fn generated_statements_retain_modelica_source_anchors() {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![interface(
+        galec::InterfaceKind::Output,
+        galec::ScalarType::Real,
+        "selected",
+        false,
+    )];
+    let source_id = rumoca_core::SourceId::from_source_name("trace/Controller.mo");
+    block.do_step.statements = vec![galec::Spanned::new(
+        galec::Statement::Assignment {
+            target: state("selected"),
+            value: galec::Expression::Real(1.0),
+        },
+        rumoca_core::Span::from_offsets(source_id, 41, 58),
+    )];
+    let checked = CheckedAlgorithmBlock::construct(block).expect("trace fixture must be valid");
+    let source = render(&checked, "model.c.jinja").expect("trace fixture must render");
+
+    assert!(
+        source.contains(&format!(
+            "/* Modelica trace: source-id {}, bytes 41..58. */",
+            source_id.0
+        )),
+        "{source}"
+    );
+}
+
+#[test]
+fn large_checked_if_expression_renders_without_template_recursion() {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![interface(
+        galec::InterfaceKind::Output,
+        galec::ScalarType::Real,
+        "selected",
+        false,
+    )];
+    let branches = (0..225)
+        .map(|value| {
+            (
+                galec::Expression::Bool(false),
+                galec::Expression::Real(f64::from(value)),
+            )
+        })
+        .collect();
+    block.do_step.statements = vec![state_assignment(
+        "selected",
+        galec::Expression::If(galec::IfExpression {
+            branches,
+            else_value: Box::new(galec::Expression::Real(225.0)),
+        }),
+    )];
+    let block = CheckedAlgorithmBlock::construct(block)
+        .expect("bounded large conditional must be valid GALEC");
+    let source =
+        render(&block, "model.c.jinja").expect("bounded conditional must render iteratively");
+
+    assert!(source.contains("224.0f : 225.0f"));
+}
+
+#[test]
 fn recursive_array_expressions_execute_with_checked_values() {
     let block = checked_array_block();
     let header = render(&block, "model.h.jinja").expect("checked header");
@@ -180,8 +241,8 @@ fn recursive_array_expressions_execute_with_checked_values() {
         "self->difference[1] = (self->a[1] - self->gain);",
         "self->selected[0] = (self->choose_a ? self->a[0] : self->b[0]);",
         "self->selected[1] = (self->choose_a ? self->a[1] : self->b[1]);",
-        "self->lifted[0] = sin(self->a[0]);",
-        "self->lifted[1] = sin(self->a[1]);",
+        "self->lifted[0] = sinf(self->a[0]);",
+        "self->lifted[1] = sinf(self->a[1]);",
     ] {
         assert!(
             source.contains(expected),
@@ -202,8 +263,8 @@ fn recursive_array_expressions_execute_with_checked_values() {
 #include <math.h>
 #include \"ArrayProjection.h\"
 
-static int close_enough(double lhs, double rhs) {
-    return fabs(lhs - rhs) < 1.0e-12;
+static int close_enough(float lhs, float rhs) {
+    return fabsf(lhs - rhs) < 1.0e-6f;
 }
 
 int main(void) {
@@ -221,8 +282,8 @@ int main(void) {
         && close_enough(state.difference[1], -2.5)
         && close_enough(state.selected[0], 3.0)
         && close_enough(state.selected[1], 4.0)
-        && close_enough(state.lifted[0], sin(1.0))
-        && close_enough(state.lifted[1], sin(-2.0)));
+        && close_enough(state.lifted[0], sinf(1.0f))
+        && close_enough(state.lifted[1], sinf(-2.0f)));
 }
 ",
     )
@@ -259,6 +320,117 @@ int main(void) {
         run.status.code(),
         String::from_utf8_lossy(&run.stderr)
     );
+}
+
+#[test]
+fn multi_output_user_calls_compile_and_copy_every_result() {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Real,
+            "input_value",
+            false,
+        ),
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Real,
+            "values",
+            true,
+        ),
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Boolean,
+            "accepted",
+            false,
+        ),
+    ];
+    block.protected_functions = vec![make_pair_function()];
+    block.do_step.statements = vec![galec::Spanned::dummy(galec::Statement::MultiAssignment {
+        targets: vec![state("values"), state("accepted")],
+        call: galec::FunctionCall {
+            function: galec::Name::ident("make_pair"),
+            arguments: vec![expression("input_value")],
+        },
+    })];
+    let checked = CheckedAlgorithmBlock::construct(block).expect("valid multi-output GALEC block");
+    let header = render(&checked, "model.h.jinja").expect("checked header");
+    let source = render(&checked, "model.c.jinja").expect("checked source");
+    assert!(source.contains("make_pair(self, self->input_value, self->values, &self->accepted);"));
+    assert!(source.contains("(void)unused_input;"));
+
+    let directory = tempdir().expect("temporary generated-C directory");
+    let header_path = directory.path().join(format!("{MODEL}.h"));
+    let source_path = directory.path().join(format!("{MODEL}.c"));
+    let driver_path = directory.path().join("main.c");
+    let executable = directory.path().join("multi-output");
+    fs::write(&header_path, header).expect("write generated header");
+    fs::write(&source_path, source).expect("write generated source");
+    fs::write(
+        &driver_path,
+        "#include \"ArrayProjection.h\"\nint main(void) {\n  ArrayProjectionState state = {0};\n  ArrayProjection_dostep(&state);\n  return !(state.values[0] == 2.0f && state.values[1] == 3.0f && state.accepted);\n}\n",
+    )
+    .expect("write generated-C driver");
+    let compile = Command::new("cc")
+        .args(["-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror"])
+        .arg(&driver_path)
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("run C compiler");
+    assert!(
+        compile.status.success(),
+        "strict generated-C compile failed:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        fs::read_to_string(&source_path).expect("read generated source")
+    );
+    assert!(
+        Command::new(&executable)
+            .status()
+            .expect("execute multi-output harness")
+            .success()
+    );
+}
+
+fn make_pair_function() -> galec::UserFunction {
+    galec::UserFunction {
+        kind: galec::FunctionKind::Stateless,
+        name: galec::Name::ident("make_pair"),
+        signals: Vec::new(),
+        parameters: vec![
+            galec::Parameter {
+                direction: galec::Direction::Input,
+                decl: galec::VariableDeclaration::scalar(
+                    galec::ScalarType::Real,
+                    galec::Name::ident("unused_input"),
+                ),
+            },
+            galec::Parameter {
+                direction: galec::Direction::Output,
+                decl: array_declaration(galec::ScalarType::Real, "pair", 2),
+            },
+            galec::Parameter {
+                direction: galec::Direction::Output,
+                decl: galec::VariableDeclaration::scalar(
+                    galec::ScalarType::Boolean,
+                    galec::Name::ident("ok"),
+                ),
+            },
+        ],
+        locals: Vec::new(),
+        statements: vec![
+            local_assignment(
+                "pair",
+                galec::Expression::Array(vec![
+                    galec::Expression::Real(2.0),
+                    galec::Expression::Real(3.0),
+                ]),
+            ),
+            local_assignment("ok", galec::Expression::Bool(true)),
+        ],
+        span: rumoca_core::Span::DUMMY,
+    }
 }
 
 #[test]
