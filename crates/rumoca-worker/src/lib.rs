@@ -24,7 +24,7 @@ pub use memory_limit::{
 /// Per-model wall timeout (seconds) for one MSL-parity simulation. Shared so the
 /// rumoca sim worker and the OMC reference run use the *same* budget (a model is
 /// only fairly comparable when both tools are given identical time to simulate).
-pub const MSL_SIM_TIMEOUT_SECS: f64 = 12.0;
+pub const MSL_SIM_TIMEOUT_SECS: f64 = 10.0;
 /// Uniform output intervals used by the MSL parity oracle when a model has no
 /// explicit `experiment(Interval=...)` annotation.
 ///

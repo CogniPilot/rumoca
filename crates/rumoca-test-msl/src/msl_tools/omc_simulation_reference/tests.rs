@@ -690,6 +690,51 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
 }
 
 #[test]
+fn trace_output_summary_does_not_call_missing_initial_evidence_accurate() {
+    let trace = |start| SimTrace {
+        model_name: Some("M".to_string()),
+        times: vec![start, 1.0],
+        names: vec!["x".to_string()],
+        data: vec![vec![Some(1.0), Some(1.0)]],
+        variable_meta: None,
+        certification_profile: None,
+    };
+    let metric =
+        compare_model_traces("M", &trace(f64::from_bits(1)), &trace(0.0)).expect("compare traces");
+    assert_eq!(metric.initial_condition.channels_compared, 0);
+    let mut report = TraceQuantification::default();
+    report.models.insert(
+        "M".to_string(),
+        TraceModelMetric {
+            metric,
+            state_selection: None,
+            rumoca_sim_wall_seconds: None,
+            rumoca_sim_seconds: None,
+            rumoca_sim_build_seconds: None,
+            rumoca_sim_run_seconds: None,
+            omc_sim_system_seconds: None,
+            omc_total_system_seconds: None,
+            omc_wall_seconds: None,
+        },
+    );
+
+    let summary = compute_trace_output_summary(&report);
+
+    assert_eq!(
+        summary
+            .initial_condition
+            .models_with_unmeasured_initial_conditions,
+        1
+    );
+    assert_eq!(
+        summary
+            .initial_condition
+            .models_with_accurate_initial_conditions,
+        0
+    );
+}
+
+#[test]
 fn load_trace_exclusions_reads_each_entrys_own_reason() {
     let temp = tempfile::tempdir().expect("tempdir");
     let exclusions_file = temp.path().join("trace_exclusions.json");

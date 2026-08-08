@@ -68,9 +68,10 @@ pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
 }
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
-/// Version 2 makes tensor-preservation evidence mandatory and records the
-/// corrected cumulative-stage attribution for pre-flatten `ER0xx` failures.
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 2;
+/// Version 3 makes reviewed pointwise-oracle boundaries explicit and excludes
+/// them from the strict-high denominator while requiring every `sim_ok` model
+/// to remain classified.
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 3;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -166,8 +167,10 @@ pub(super) struct MslInitialConditionStatsBaseline {
     models_compared: usize,
     models_with_accurate_initial_conditions: usize,
     models_with_initial_condition_deviation: usize,
+    models_with_unmeasured_initial_conditions: usize,
     accurate_initial_conditions_percent: Option<f64>,
     models_with_initial_condition_deviation_percent: Option<f64>,
+    models_with_unmeasured_initial_conditions_percent: Option<f64>,
     total_channels_compared: usize,
     high_channels_total: usize,
     near_channels_total: usize,
@@ -213,36 +216,29 @@ pub(super) struct MslTensorPreservationBaseline {
 pub(super) struct MslMetricSchemaMigration {
     from_quality_gate_version: u32,
     to_quality_gate_version: u32,
-    flatten_models_before: usize,
-    flatten_models_after: usize,
-    reattributed_error_code: String,
-    reattributed_models: Vec<String>,
-    tensor_preservation_source_git_commit: String,
+    change: String,
+    strict_high_before: usize,
+    strict_high_after: usize,
+    policy_excluded_after: usize,
+    excluded_strict_high_before: usize,
+    excluded_non_high_before: usize,
+    exclusions_file: String,
+    exclusions_sha256: String,
 }
 
-fn quality_gate_v2_metric_schema_migration() -> MslMetricSchemaMigration {
+fn quality_gate_v3_metric_schema_migration() -> MslMetricSchemaMigration {
     MslMetricSchemaMigration {
-        from_quality_gate_version: 1,
+        from_quality_gate_version: 2,
         to_quality_gate_version: MSL_QUALITY_GATE_VERSION,
-        flatten_models_before: 565,
-        flatten_models_after: 555,
-        reattributed_error_code: "ER002".to_string(),
-        reattributed_models: [
-            "Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater",
-            "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
-            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
-            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2",
-            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
-            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2",
-            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
-            "Modelica.Fluid.Examples.Explanatory.MeasuringTemperature",
-            "Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings",
-            "Modelica.Fluid.Examples.InverseParameterization",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
-        tensor_preservation_source_git_commit: "a966d9e8e781ff7154d25a7cf4e74eb2b14ac4df"
+        change: "reviewed-pointwise-oracle-boundaries-v1".to_string(),
+        strict_high_before: 118,
+        strict_high_after: 113,
+        policy_excluded_after: 9,
+        excluded_strict_high_before: 5,
+        excluded_non_high_before: 4,
+        exclusions_file: "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json"
+            .to_string(),
+        exclusions_sha256: "e064ffb80771c1e231e849afcaa25cc2a08b8b7f9bf449bf8651905e5dcdc4d0"
             .to_string(),
     }
 }
@@ -607,6 +603,10 @@ fn parse_initial_condition_stats(
             initial,
             "models_with_initial_condition_deviation",
         )?,
+        models_with_unmeasured_initial_conditions: json_usize_field(
+            initial,
+            "models_with_unmeasured_initial_conditions",
+        )?,
         accurate_initial_conditions_percent: json_f64_field(
             initial,
             "accurate_initial_conditions_percent",
@@ -614,6 +614,10 @@ fn parse_initial_condition_stats(
         models_with_initial_condition_deviation_percent: json_f64_field(
             initial,
             "models_with_initial_condition_deviation_percent",
+        ),
+        models_with_unmeasured_initial_conditions_percent: json_f64_field(
+            initial,
+            "models_with_unmeasured_initial_conditions_percent",
         ),
         total_channels_compared: json_usize_field(initial, "total_channels_compared")?,
         high_channels_total: json_usize_field(initial, "high_channels_total")?,
@@ -1024,7 +1028,7 @@ pub(super) fn current_msl_quality_baseline(
                 gate_input.tensor_family_bodies,
             ),
         },
-        metric_schema_migration: Some(quality_gate_v2_metric_schema_migration()),
+        metric_schema_migration: Some(quality_gate_v3_metric_schema_migration()),
         compiler_contract_migration: Some(checked_dae_compiler_contract_migration()),
     }
 }

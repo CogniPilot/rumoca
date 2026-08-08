@@ -254,6 +254,7 @@ impl ModelFailureBucket {
             // construction-time rejection; routing it through the stage keeps
             // the bucket producer knowledge rather than a second mapping.
             SimError::StateOnlyPathUnavailable(_)
+            | SimError::DirectionalDerivativeUnavailable { .. }
             | SimError::SolveIr(_)
             | SimError::SolverError(_) => Self::from_sim_stage(error.stage().unwrap_or(fallback)),
             // `kind()` peels every annotation, so a `Staged` cannot reach here.
@@ -446,6 +447,14 @@ mod tests {
             ModelFailureBucket::from_sim_error(&unstaged, SimFailureStage::BackendBuild),
             ModelFailureBucket::SimBackendBuild,
             "with no recorded stage the worker's own position decides"
+        );
+        let capability = SimError::DirectionalDerivativeUnavailable {
+            reason: "non-differentiable operation".to_string(),
+        };
+        assert_eq!(
+            ModelFailureBucket::from_sim_error(&capability, SimFailureStage::BackendBuild),
+            ModelFailureBucket::SimBackendBuild,
+            "BDF derivative capability is decided during backend construction"
         );
     }
 

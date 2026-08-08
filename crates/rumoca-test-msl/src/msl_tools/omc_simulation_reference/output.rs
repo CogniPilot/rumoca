@@ -191,6 +191,11 @@ fn trace_channel_summary_from_totals(
 fn initial_condition_summary(trace_report: &TraceQuantification) -> InitialConditionSummary {
     let model_count = trace_report.models.len();
     let model_count_f64 = model_count.max(1) as f64;
+    let models_with_unmeasured_initial_conditions = trace_report
+        .models
+        .values()
+        .filter(|item| item.metric.initial_condition.channels_compared == 0)
+        .count();
     let models_with_initial_condition_deviation = trace_report
         .models
         .values()
@@ -203,8 +208,10 @@ fn initial_condition_summary(trace_report: &TraceQuantification) -> InitialCondi
     let mut summary = InitialConditionSummary {
         models_compared: model_count,
         models_with_accurate_initial_conditions: model_count
-            .saturating_sub(models_with_initial_condition_deviation),
+            .saturating_sub(models_with_initial_condition_deviation)
+            .saturating_sub(models_with_unmeasured_initial_conditions),
         models_with_initial_condition_deviation,
+        models_with_unmeasured_initial_conditions,
         ..InitialConditionSummary::default()
     };
     for stats in channels {
@@ -225,6 +232,8 @@ fn initial_condition_summary(trace_report: &TraceQuantification) -> InitialCondi
         summary.models_with_accurate_initial_conditions as f64 * 100.0 / model_count_f64;
     summary.models_with_initial_condition_deviation_percent =
         summary.models_with_initial_condition_deviation as f64 * 100.0 / model_count_f64;
+    summary.models_with_unmeasured_initial_conditions_percent =
+        summary.models_with_unmeasured_initial_conditions as f64 * 100.0 / model_count_f64;
     summary.high_channels_percent = summary.high_channels_total as f64 * 100.0 / channel_count_f64;
     summary.near_channels_percent = summary.near_channels_total as f64 * 100.0 / channel_count_f64;
     summary.deviation_channels_percent =
@@ -667,10 +676,13 @@ fn print_trace_snapshot(trace_summary: &TraceOutputSummary) {
         trace_summary.violation_mass_total
     );
     println!(
-        "    initial_conditions: accurate_models={:.2}%, deviation_channels={:.2}%, violation_mass_total={:.6e}",
+        "    initial_conditions: accurate_models={:.2}%, unmeasured_models={}, deviation_channels={:.2}%, violation_mass_total={:.6e}",
         trace_summary
             .initial_condition
             .accurate_initial_conditions_percent,
+        trace_summary
+            .initial_condition
+            .models_with_unmeasured_initial_conditions,
         trace_summary.initial_condition.deviation_channels_percent,
         trace_summary.initial_condition.violation_mass_total
     );

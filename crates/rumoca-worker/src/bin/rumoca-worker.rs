@@ -1255,6 +1255,7 @@ fn is_trivial_static_dae(result: &DaeCompilationResult) -> bool {
                 && view.discrete_value_owner_count() == 0
                 && view.condition_count() == 0
                 && view.relation_count() == 0
+                && view.structured_root_count() == 0
                 && view.initialization_owner_count() == 0
         })
 }

@@ -880,7 +880,12 @@ mod tests {
         let expected = [
             "Modelica.Blocks.Examples.DemoSignalCharacteristic",
             "Modelica.Electrical.Analog.Examples.ChuaCircuit",
+            "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
+            "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
             "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV",
             "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
             "Modelica.Mechanics.Translational.Examples.PreLoad",
         ];

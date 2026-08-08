@@ -21,7 +21,7 @@ pub(crate) struct MslParityBudgetArgs {
     /// Per-model Solve-IR lowering wall budget in seconds (raise-only)
     #[arg(long, value_name = "SECS")]
     ir_solve_timeout_secs: Option<u64>,
-    /// Per-model, per-phase wall budget in seconds (12s default, raise-only;
+    /// Per-model, per-phase wall budget in seconds (10s default, raise-only;
     /// one attempt per model)
     #[arg(long, value_name = "SECS")]
     model_attempt_timeout_secs: Option<u64>,

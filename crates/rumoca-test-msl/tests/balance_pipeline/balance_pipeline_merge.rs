@@ -454,6 +454,11 @@ fn merge_initial_condition_summary(trace_values: &[&Value]) -> Result<Value, Str
         &["models_with_initial_condition_deviation"],
         "initial_condition.models_with_initial_condition_deviation",
     )?;
+    let unmeasured = sum_required_usize(
+        &initial_values,
+        &["models_with_unmeasured_initial_conditions"],
+        "initial_condition.models_with_unmeasured_initial_conditions",
+    )?;
     let total_channels = sum_required_usize(
         &initial_values,
         &["total_channels_compared"],
@@ -488,8 +493,10 @@ fn merge_initial_condition_summary(trace_values: &[&Value]) -> Result<Value, Str
         "models_compared": models_compared,
         "models_with_accurate_initial_conditions": accurate,
         "models_with_initial_condition_deviation": deviated,
+        "models_with_unmeasured_initial_conditions": unmeasured,
         "accurate_initial_conditions_percent": percent(accurate, models_compared),
         "models_with_initial_condition_deviation_percent": percent(deviated, models_compared),
+        "models_with_unmeasured_initial_conditions_percent": percent(unmeasured, models_compared),
         "total_channels_compared": total_channels,
         "high_channels_total": high,
         "near_channels_total": near,
@@ -1264,6 +1271,7 @@ fn shard_trace_initial_condition_fixture() -> Value {
         "models_compared": 1,
         "models_with_accurate_initial_conditions": 1,
         "models_with_initial_condition_deviation": 0,
+        "models_with_unmeasured_initial_conditions": 0,
         "total_channels_compared": 1,
         "high_channels_total": 1,
         "near_channels_total": 0,

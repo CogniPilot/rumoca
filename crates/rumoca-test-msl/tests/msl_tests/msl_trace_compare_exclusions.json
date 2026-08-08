@@ -10,8 +10,28 @@
       "reason": "The MSL model is explicitly chaotic and runs for 50000 seconds. Exponential trajectory separation makes one solver's pointwise trajectory non-identifying; this model requires invariant or statistical comparison."
     },
     {
+      "model_name": "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
+      "reason": "At the 0.1 s input step, OMC records the pre-event PIA resistor loss powers at t=0.1 and the post-event values at t=0.1000000001100004, while Rumoca records the post-event values at t=0.1. The post-event peak agrees to floating-point precision and 281/283 channels are strict-high; the two minor channels are aliases of this event-side output convention, so raw pointwise interpolation is non-identifying."
+    },
+    {
+      "model_name": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
+      "reason": "At the 0.1 s current-command step, OMC records the pre-event PID error at t=0.1 and the post-event value at t=0.1000000001100014, while Rumoca records the post-event value at t=0.1. The seven minor channels are PID error aliases of this event-side phase shift; all 200 other channels are strict-high and the post-event response agrees, so raw pointwise interpolation at the discontinuity is non-identifying."
+    },
+    {
       "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
       "reason": "The differing channels are period Mean/RMS aggregates at integration-residue scale within the model's 1e-6 experiment tolerance; waveform channels agree and Rumoca's mean is closer to the analytic 3*sqrt(6)/pi*Vrms value."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
+      "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV",
+      "reason": "The differing channels are aliases of one period RMS aggregate at integration-residue scale within the model's 1e-6 experiment tolerance. OMC gives 17103.337997 at 1e-6 and 17103.266886 at 1e-10, while Rumoca gives 17103.258674 at 1e-6; the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
+    },
+    {
+      "model_name": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
+      "reason": "Only aliases of the period-integrated RootMeanSquare/Mean aggregate differ. At the annotation tolerance of 1e-6, OMC's endpoint RMS is 109.999434852 V; rerunning the same generated OMC model at 1e-10 moves it to 110.000018546 V, a 5.84e-4 V shift that accounts for Rumoca's 5.74e-4 V difference. The physical waveform and state channels agree, so the default-tolerance OMC trace is not converged enough to identify pointwise aggregate parity."
     },
     {
       "model_name": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",

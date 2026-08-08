@@ -1603,7 +1603,7 @@ fn completed_compile_phase_follows_the_pipeline_order() {
 }
 
 #[test]
-fn checked_quality_baseline_has_versioned_metric_migration_and_tensor_kpi() {
+fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi() {
     let baseline =
         load_msl_quality_baseline(&msl_quality_baseline_path()).expect("load checked baseline");
     assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
@@ -1612,14 +1612,19 @@ fn checked_quality_baseline_has_versioned_metric_migration_and_tensor_kpi() {
 
     let migration = baseline
         .metric_schema_migration
-        .expect("checked baseline must document the version-1 to version-2 migration");
-    assert_eq!(migration.from_quality_gate_version, 1);
+        .expect("checked baseline must document the version-2 to version-3 migration");
+    assert_eq!(migration.from_quality_gate_version, 2);
     assert_eq!(migration.to_quality_gate_version, MSL_QUALITY_GATE_VERSION);
-    assert_eq!(migration.flatten_models_before, 565);
-    assert_eq!(migration.flatten_models_after, 555);
-    assert_eq!(migration.reattributed_error_code, "ER002");
-    assert_eq!(migration.reattributed_models.len(), 10);
-    assert!(!migration.tensor_preservation_source_git_commit.is_empty());
+    assert_eq!(migration.change, "reviewed-pointwise-oracle-boundaries-v1");
+    assert_eq!(migration.strict_high_before, 118);
+    assert_eq!(migration.strict_high_after, 113);
+    assert_eq!(migration.policy_excluded_after, 9);
+    assert_eq!(migration.excluded_strict_high_before, 5);
+    assert_eq!(migration.excluded_non_high_before, 4);
+    assert_eq!(
+        migration.exclusions_sha256,
+        "e064ffb80771c1e231e849afcaa25cc2a08b8b7f9bf449bf8651905e5dcdc4d0"
+    );
 
     let contract = baseline
         .compiler_contract_migration

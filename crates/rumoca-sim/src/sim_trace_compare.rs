@@ -18,7 +18,7 @@ const NORMALIZATION_SCALE_EPS: f64 = 1.0e-12;
 pub const HIGH_AGREEMENT_CHANNEL_THRESHOLD: f64 = 0.05;
 pub const MINOR_AGREEMENT_CHANNEL_THRESHOLD: f64 = 0.20;
 pub const MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE: f64 = 0.80;
-pub const MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE: f64 = 0.01;
+pub const MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE: f64 = 0.0;
 pub const MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE: f64 = 0.90;
 pub const MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE: f64 = 0.10;
 pub const HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD: f64 = 0.05;
@@ -847,45 +847,6 @@ fn normalize_trace(trace: &mut SimTrace) {
             column.truncate(trace.times.len());
         }
     }
-    collapse_duplicate_timestamps(trace);
-}
-
-fn collapse_duplicate_timestamps(trace: &mut SimTrace) {
-    if trace.times.len() < 2 {
-        return;
-    }
-
-    let mut dedup_times: Vec<f64> = Vec::with_capacity(trace.times.len());
-    let mut dedup_indices: Vec<usize> = Vec::with_capacity(trace.times.len());
-    for (idx, &time) in trace.times.iter().enumerate() {
-        if dedup_times
-            .last()
-            .is_some_and(|last| (time - *last).abs() <= GRID_DEDUP_EPS)
-        {
-            if let Some(last_time) = dedup_times.last_mut() {
-                *last_time = time;
-            }
-            if let Some(last_idx) = dedup_indices.last_mut() {
-                *last_idx = idx;
-            }
-        } else {
-            dedup_times.push(time);
-            dedup_indices.push(idx);
-        }
-    }
-
-    if dedup_times.len() == trace.times.len() {
-        return;
-    }
-
-    trace.times = dedup_times;
-    for column in &mut trace.data {
-        let mut dedup_column = Vec::with_capacity(dedup_indices.len());
-        for &idx in &dedup_indices {
-            dedup_column.push(column.get(idx).copied().unwrap_or(None));
-        }
-        *column = dedup_column;
-    }
 }
 
 fn series_map(trace: &SimTrace) -> HashMap<String, Vec<Option<f64>>> {
@@ -1008,7 +969,7 @@ fn compare_channel(
     let normalization_scale = scale.normalization_scale;
     let normalized_l1_error = mean_abs_error / normalization_scale;
     let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
-    let initial_abs_error = initial_abs_error(&samples);
+    let initial_abs_error = initial_abs_error(rumoca, omc);
     let initial_bounded_normalized_error = initial_abs_error.map(|error| {
         let normalized = error / normalization_scale;
         normalized / (1.0 + normalized)
@@ -1042,14 +1003,28 @@ fn compare_channel(
     })
 }
 
-fn initial_abs_error(samples: &[(f64, Option<f64>, Option<f64>)]) -> Option<f64> {
-    samples.iter().find_map(|(_, rumoca, omc)| {
-        let (Some(rumoca), Some(omc)) = (*rumoca, *omc) else {
-            return None;
-        };
-        let error = (rumoca - omc).abs();
-        error.is_finite().then_some(error)
-    })
+fn initial_abs_error(rumoca: ChannelSeries<'_>, omc: ChannelSeries<'_>) -> Option<f64> {
+    let rumoca_time = *rumoca.times.first()?;
+    let omc_time = *omc.times.first()?;
+    if !rumoca_time.is_finite() || !omc_time.is_finite() || rumoca_time != omc_time {
+        return None;
+    }
+
+    let rumoca_value = settled_value_at_exact_start(rumoca)?;
+    let omc_value = settled_value_at_exact_start(omc)?;
+    let error = (rumoca_value - omc_value).abs();
+    error.is_finite().then_some(error)
+}
+
+fn settled_value_at_exact_start(series: ChannelSeries<'_>) -> Option<f64> {
+    let start = *series.times.first()?;
+    series
+        .times
+        .iter()
+        .zip(series.values)
+        .take_while(|(time, _)| **time == start)
+        .filter_map(|(_, value)| value.filter(|value| value.is_finite()))
+        .last()
 }
 
 fn channel_comparison_grid(rumoca_times: &[f64], omc_times: &[f64]) -> Option<Vec<f64>> {

@@ -19,7 +19,8 @@
 //!
 //! * a results directory carrying a non-empty `omc_simulation_reference.json`
 //!   whose `trace_comparison.models_compared` is greater than zero, alongside a
-//!   non-empty `sim_trace_comparison.json`;
+//!   `sim_trace_comparison.json` with the same model count and zero unmeasured
+//!   initialization models;
 //! * any run passing `--allow-unmeasured-parity`, which prints the same
 //!   "parity unmeasured" headline as a warning instead of failing. The flag is
 //!   the ONLY way to get a green cohort-shaped run with no comparison, and it
@@ -27,8 +28,8 @@
 //!
 //! It **rejects** (exit nonzero, headline
 //! [`PARITY_UNMEASURED_HEADLINE`]): a missing or empty reference, a missing or
-//! empty trace comparison, a reference that is not valid JSON, and a reference
-//! whose comparator compared zero models.
+//! invalid trace comparison, a reference whose comparator compared zero models,
+//! or any compared model without exact-start initialization evidence.
 //!
 //! Owner: this module. The artifact names it guards are written by
 //! `rumoca-msl-tools omc-simulation-reference`
@@ -91,13 +92,60 @@ pub(crate) fn read_comparator_evidence(results_dir: &Path) -> ComparatorEvidence
             };
         }
     };
+    let comparison_raw = match fs::read_to_string(&comparison) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return ComparatorEvidence::Unmeasured {
+                reason: format!("{} is unreadable ({error})", comparison.display()),
+            };
+        }
+    };
+    let comparison_payload: serde_json::Value = match serde_json::from_str(&comparison_raw) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return ComparatorEvidence::Unmeasured {
+                reason: format!("{} is not valid JSON ({error})", comparison.display()),
+            };
+        }
+    };
     let models_compared = payload
         .pointer("/trace_comparison/models_compared")
         .and_then(serde_json::Value::as_u64);
     match models_compared {
-        Some(count) if count > 0 => ComparatorEvidence::Measured {
-            models_compared: count as usize,
-        },
+        Some(count) if count > 0 => {
+            let trace_count = comparison_payload
+                .pointer("/models_compared")
+                .and_then(serde_json::Value::as_u64);
+            if trace_count != Some(count) {
+                return ComparatorEvidence::Unmeasured {
+                    reason: format!(
+                        "{} models_compared {:?} does not match reference count {count}",
+                        comparison.display(),
+                        trace_count
+                    ),
+                };
+            }
+            let unmeasured_initial = comparison_payload
+                .pointer("/summary/initial_condition/models_with_unmeasured_initial_conditions")
+                .and_then(serde_json::Value::as_u64);
+            match unmeasured_initial {
+                Some(0) => ComparatorEvidence::Measured {
+                    models_compared: count as usize,
+                },
+                Some(unmeasured) => ComparatorEvidence::Unmeasured {
+                    reason: format!(
+                        "{} reports {unmeasured} model(s) without exact-start initialization evidence",
+                        comparison.display()
+                    ),
+                },
+                None => ComparatorEvidence::Unmeasured {
+                    reason: format!(
+                        "{} carries no summary.initial_condition.models_with_unmeasured_initial_conditions",
+                        comparison.display()
+                    ),
+                },
+            }
+        }
         Some(_) => ComparatorEvidence::Unmeasured {
             reason: format!(
                 "{} reports trace_comparison.models_compared = 0",
@@ -155,11 +203,21 @@ mod tests {
         format!(r#"{{"trace_comparison":{{"models_compared":{models_compared}}}}}"#)
     }
 
+    fn complete_comparison(models_compared: usize, unmeasured_initial: usize) -> String {
+        format!(
+            r#"{{"models_compared":{models_compared},"summary":{{"initial_condition":{{"models_with_unmeasured_initial_conditions":{unmeasured_initial}}}}}}}"#
+        )
+    }
+
     #[test]
     fn a_complete_pair_of_artifacts_is_measured() {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), OMC_REFERENCE_FILE, &complete_reference(48));
-        write(dir.path(), TRACE_COMPARISON_FILE, "{}");
+        write(
+            dir.path(),
+            TRACE_COMPARISON_FILE,
+            &complete_comparison(48, 0),
+        );
         assert_eq!(
             read_comparator_evidence(dir.path()),
             ComparatorEvidence::Measured {
@@ -199,7 +257,11 @@ mod tests {
     fn a_reference_that_compared_nothing_is_unmeasured() {
         let dir = tempdir().expect("tempdir");
         write(dir.path(), OMC_REFERENCE_FILE, &complete_reference(0));
-        write(dir.path(), TRACE_COMPARISON_FILE, "{}");
+        write(
+            dir.path(),
+            TRACE_COMPARISON_FILE,
+            &complete_comparison(0, 0),
+        );
         let error = check_comparator_evidence(dir.path(), false)
             .expect_err("comparing zero models is not a parity reading");
         assert!(format!("{error:#}").contains("models_compared = 0"));
@@ -223,6 +285,20 @@ mod tests {
         let error = check_comparator_evidence(dir.path(), false)
             .expect_err("unparseable reference must not read as a pass");
         assert!(format!("{error:#}").contains("not valid JSON"));
+    }
+
+    #[test]
+    fn a_model_without_exact_start_initialization_evidence_is_unmeasured() {
+        let dir = tempdir().expect("tempdir");
+        write(dir.path(), OMC_REFERENCE_FILE, &complete_reference(48));
+        write(
+            dir.path(),
+            TRACE_COMPARISON_FILE,
+            &complete_comparison(48, 1),
+        );
+        let error = check_comparator_evidence(dir.path(), false)
+            .expect_err("missing initialization evidence must fail closed");
+        assert!(format!("{error:#}").contains("without exact-start initialization evidence"));
     }
 
     #[test]

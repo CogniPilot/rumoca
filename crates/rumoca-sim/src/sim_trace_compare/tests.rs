@@ -513,7 +513,7 @@ fn compare_model_requires_common_variables() {
 }
 
 #[test]
-fn compare_trace_collapses_duplicate_timestamps_to_last_value() {
+fn trajectory_and_initial_metric_use_settled_exact_start_time_value() {
     let rumoca = trace("M", vec![0.0, 0.1], vec!["x"], vec![vec![1.0, 1.0]]);
     let mut omc = trace(
         "M",
@@ -526,8 +526,51 @@ fn compare_trace_collapses_duplicate_timestamps_to_last_value() {
     let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
     assert!(
         metric.bounded_normalized_l1_score < 1.0e-12,
-        "duplicate timestamp collapse should keep settled event value"
+        "trajectory comparison should use the settled event value"
     );
+    assert_eq!(metric.initial_condition.deviation_count, 0);
+    assert_eq!(metric.initial_condition.high_count, 1);
+}
+
+#[test]
+fn common_left_limit_is_not_replaced_by_different_start_event_grids() {
+    let rumoca = trace(
+        "M",
+        vec![0.0, 2.0e-11, 0.1],
+        vec!["off"],
+        vec![vec![0.0, 1.0, 1.0]],
+    );
+    let omc = trace(
+        "M",
+        vec![0.0, 6.0e-21, 6.0e-21, 0.1],
+        vec!["off"],
+        vec![vec![0.0, 0.0, 1.0, 1.0]],
+    );
+
+    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+
+    assert_eq!(metric.initial_condition.channels_compared, 1);
+    assert_eq!(metric.initial_condition.high_count, 1);
+    assert_eq!(metric.initial_condition.deviation_count, 0);
+    assert_eq!(metric.worst_variables[0].initial_abs_error, Some(0.0));
+}
+
+#[test]
+fn exact_start_time_event_rows_settle_before_initial_comparison() {
+    let rumoca = trace("M", vec![0.0, 0.1], vec!["step.y"], vec![vec![1.0, 1.0]]);
+    let omc = trace(
+        "M",
+        vec![0.0, 0.0, 0.0, 0.1],
+        vec!["step.y"],
+        vec![vec![0.0, 0.0, 1.0, 1.0]],
+    );
+
+    let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
+
+    assert_eq!(metric.initial_condition.channels_compared, 1);
+    assert_eq!(metric.initial_condition.high_count, 1);
+    assert_eq!(metric.initial_condition.deviation_count, 0);
+    assert_eq!(metric.worst_variables[0].initial_abs_error, Some(0.0));
 }
 
 #[test]
@@ -866,6 +909,19 @@ fn channel_distribution_thresholds_classify_model_as_expected() {
             MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE
         ),
         AgreementBand::Deviation
+    );
+
+    let one_hidden_deviation = channel_distribution_metric("one-hidden-deviation", 1000, 0, 1, 0);
+    assert_eq!(
+        classify_trace_metric_channel_distribution(
+            &one_hidden_deviation,
+            MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
+            MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE,
+            MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
+            MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE
+        ),
+        AgreementBand::MinorAgreement,
+        "one wrong observable cannot be strict-high, however many aliases surround it"
     );
 }
 
