@@ -1,37 +1,57 @@
 //! Backend-neutral simulation contracts and runtime helpers for Rumoca.
 
+#[cfg(all(not(kani), not(feature = "sparse-linalg")))]
+compile_error!("rumoca-solver production builds require the `sparse-linalg` feature");
+
+#[cfg(not(kani))]
 pub mod fmi_me;
+#[cfg(not(kani))]
 pub mod report_payload;
+#[cfg(not(kani))]
 pub mod runtime;
+#[cfg(kani)]
+mod runtime;
+#[cfg(not(kani))]
 pub mod solver;
+#[cfg(not(kani))]
 pub mod timeline;
 mod verification;
 
+#[cfg(not(kani))]
 pub use report_payload::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
+#[cfg(not(kani))]
 pub use runtime::eval_at::{EvalAtReport, EvalAtSlot};
+#[cfg(not(kani))]
 pub use runtime::event::{
     RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventBoundaryOutcome,
     process_runtime_event_boundary, runtime_event_horizon, runtime_event_right_limit,
     runtime_root_event_application_time,
 };
+#[cfg(not(kani))]
 pub use runtime::event_newton::{CoupledEventNewtonModel, solve_coupled_event_newton};
+#[cfg(not(kani))]
 pub use runtime::jacobian::{
     JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
 };
+#[cfg(not(kani))]
 pub use runtime::mass_matrix::{PreparedMassMatrix, solve_mass_matrix};
+#[cfg(not(kani))]
 pub use runtime::no_state::{
     NoStateEventStep, NoStateOrchestrationBackend, NoStateRootBoundary, NoStateRootSearchScratch,
     NoStateScheduledStop, first_no_state_root_crossing, no_state_root_scan_step_ceiling,
     run_no_state_output_schedule,
 };
+#[cfg(not(kani))]
 pub use runtime::orchestration::{LoopStats, run_with_runtime_schedule};
+#[cfg(not(kani))]
 pub use runtime::pre_params::{
     clear_scheduled_root_relation_memory, commit_pre_params_after_event,
     commit_pre_params_after_event_at, update_slot, write_pre_params_from_sources,
 };
+#[cfg(not(kani))]
 pub use runtime::projection::{
     AlgebraicProjectionArgs, AlgebraicProjectionModel, ImplicitProjectionModel,
     InitialHomotopySystem, ManifoldProjectionModel, implicit_residual_is_zero,
@@ -40,20 +60,24 @@ pub use runtime::projection::{
     project_algebraics_with_plan_certified, project_initial_variables_with_homotopy,
     project_initial_variables_with_plan, project_state_manifold,
 };
+#[cfg(not(kani))]
 pub use runtime::report::{
     DRIVER_TRACE_TARGET, RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot,
     trace_runtime_done, trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail,
     trace_runtime_timeout,
 };
+#[cfg(not(kani))]
 pub use runtime::schedule::{
     CoincidentScheduledEvent, RuntimeEventStop, RuntimeStopSchedule, SolveStopSchedule,
     coincident_scheduled_event, initial_runtime_event_stop, initial_static_event_pre_mode,
     merge_runtime_event_stops,
 };
+#[cfg(not(kani))]
 pub use runtime::solve_events::{
     apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
     next_runtime_event_stop, visible_values_with_context,
 };
+#[cfg(not(kani))]
 pub use runtime::solve_ops::{
     EventActionOutcome, EventPreMode, EventPreSources, RootCrossing, RuntimeSolveError,
     apply_discrete_slot_value, build_sim_result_from_solve_model, convert_variable_meta,
@@ -64,19 +88,23 @@ pub use runtime::solve_ops::{
     root_value_crossed, row_reads_solver_or_time, runtime_value_changed, runtime_values_changed,
     update_relation_memory_slots,
 };
+#[cfg(not(kani))]
 pub use runtime::solve_runtime::{
     AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
     ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
     ProjectedPostInitialEventInput, SolveRuntime,
 };
+#[cfg(not(kani))]
 pub use runtime::time::{
     event_solver_step_cap, stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol,
 };
+#[cfg(not(kani))]
 pub use runtime::timeout::{
     SolverDeadlineGuard, TimeoutBudget, TimeoutExceeded, is_solver_timeout_panic,
     panic_on_expired_solver_deadline, run_timeout_result, run_timeout_step,
     run_timeout_step_result,
 };
+#[cfg(not(kani))]
 pub use solver::{
     BackendState, DiffsolMethod, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
     SimTermination, SimVariableMeta, SimulationBackend, StepUntilOutcome,

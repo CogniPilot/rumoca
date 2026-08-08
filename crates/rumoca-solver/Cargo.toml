@@ -6,8 +6,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["sparse-linalg"]
+sparse-linalg = ["dep:faer"]
+
 [dependencies]
-faer = { workspace = true }
+faer = { workspace = true, optional = true }
 indexmap = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-eval-solve = { workspace = true }

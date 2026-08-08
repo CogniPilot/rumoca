@@ -8,13 +8,13 @@
       "source": "crates/rumoca-solver/src/verification/event_iteration.rs",
       "claims": ["SIM-010"],
       "selection": {
-        "production_kernel": "advance_pre_values_atomically",
+        "production_kernel": "advance_event_iteration_lanes",
         "symbolic_inputs": "three typed event-history lanes with arbitrary value kinds, values, and fixed-point ownership",
         "exhaustive_test_infeasible_because": "the product of typed values, ownership masks, and invalid-input positions is not practically enumerable",
         "counterexample_means": "event-history advancement can lose type fidelity or partially mutate pre values on rejection"
       },
       "bound": { "kind": "unwind", "value": 16, "domain": "three production event-history lanes with arbitrary value kinds, typed values, fixed-point ownership, and invalid-input injection" },
-      "covers": 0
+      "covers": 3
     }
   ]
 }

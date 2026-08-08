@@ -3,7 +3,7 @@
 
 use rumoca_ir_solve::EventIterationValueKind;
 
-use crate::runtime::pre_params::{EventIterationLane, advance_event_iteration_lanes};
+use crate::runtime::event_history::{EventIterationLane, advance_event_iteration_lanes};
 
 const LANE_COUNT: usize = 3;
 
@@ -58,6 +58,8 @@ fn property_atomic_fixed_point_pre_advance(
     }
     let before = lanes;
     let result = advance_event_iteration_lanes(&mut lanes);
+    #[cfg(kani)]
+    kani::cover!(inject_invalid, "typed input rejection is reachable");
     if inject_invalid {
         assert!(result.is_err(), "an invalid typed lane must reject");
         for (actual, expected) in lanes.iter().zip(before) {
@@ -73,6 +75,16 @@ fn property_atomic_fixed_point_pre_advance(
     let expected_changed = before
         .iter()
         .any(|lane| lane.fixed_point && lane.current != lane.pre);
+    #[cfg(kani)]
+    kani::cover!(
+        expected_changed,
+        "a successful changing advance is reachable"
+    );
+    #[cfg(kani)]
+    kani::cover!(
+        !expected_changed,
+        "a successful already-settled advance is reachable"
+    );
     assert_eq!(result, Ok(expected_changed));
     for (actual, expected) in lanes.iter().zip(before) {
         assert_eq!(actual.current.to_bits(), expected.current.to_bits());

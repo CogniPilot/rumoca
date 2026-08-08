@@ -341,7 +341,14 @@ fn run_solver_proofs(
         // each result block, so per-harness timing and cover attribution is
         // fail-closed only when those blocks remain sequential. Individual
         // CBMC processes can also consume most of a verification host's RAM.
-        .args(["kani", "--package", SOLVER_PACKAGE, "--jobs", "1"])
+        .args([
+            "kani",
+            "--package",
+            SOLVER_PACKAGE,
+            "--no-default-features",
+            "--jobs",
+            "1",
+        ])
         .current_dir(root);
     if shard.is_some() {
         for proof in &manifest.proofs {
