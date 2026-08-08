@@ -336,7 +336,7 @@ impl TriviaGap<'_> {
     }
 
     pub(super) fn assignment_operator_replacement(&self) -> Option<TextReplacement> {
-        if self.text.contains(['\n', '\r']) {
+        if self.text.contains(['\n', '\r']) || gap_contains_comment_start(self.text) {
             return None;
         }
         let assignment_offset = self.text.rfind('=')?;
@@ -351,7 +351,10 @@ impl TriviaGap<'_> {
     }
 
     pub(super) fn compact_assignment_operator_replacement(&self) -> Option<TextReplacement> {
-        if self.text == "=" || self.text.contains(['\n', '\r']) {
+        if self.text == "="
+            || self.text.contains(['\n', '\r'])
+            || gap_contains_comment_start(self.text)
+        {
             return None;
         }
         let assignment_offset = self.text.rfind('=')?;
@@ -366,7 +369,7 @@ impl TriviaGap<'_> {
     }
 
     pub(super) fn statement_assignment_operator_replacement(&self) -> Option<TextReplacement> {
-        if self.text.contains(['\n', '\r']) {
+        if self.text.contains(['\n', '\r']) || gap_contains_comment_start(self.text) {
             return None;
         }
         let assignment_offset = self.text.rfind(":=")?;
@@ -697,6 +700,16 @@ pub(super) fn is_closing_delimiter_opening_parenthesis_gap(text: &str) -> bool {
             .all(|c| matches!(c, ' ' | '\t'))
 }
 
+/// True when a trivia gap contains the start of a Modelica comment.
+///
+/// Operator-spacing rules search the raw gap text for their operator with
+/// `rfind`, so a gap that carries a comment (`x = /* gain == 2 */ y`) would
+/// otherwise rewrite bytes *inside* the user's comment. Formatting must never
+/// alter comment text, so such gaps are left untouched.
+pub(super) fn gap_contains_comment_start(text: &str) -> bool {
+    text.contains("/*") || text.contains("//")
+}
+
 pub(super) fn is_statement_separator_gap(text: &str) -> bool {
     let Some(semicolon_offset) = text.find(';') else {
         return false;
@@ -728,11 +741,7 @@ pub(super) fn spaced_token_operator_text(operator: &str) -> &'static str {
 }
 
 pub(super) fn token_span(token: &Token) -> Span {
-    Span::from_offsets(
-        ir_core::SourceId::from_source_name(&token.location.file_name),
-        token.location.start as usize,
-        token.location.end as usize,
-    )
+    token.location.span()
 }
 
 pub(super) fn expression_list_item_span(expr: &ast::Expression) -> Span {

@@ -1,6 +1,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -12,11 +13,17 @@ use std::time::Instant;
 
 use clap::Parser;
 use rumoca_compile::compile::Dae;
+use rumoca_ir_solve::visitor::SolveVisitor;
+use rumoca_ir_solve::{LinearOp, SolveModel};
+use rumoca_sim::sim_trace_compare::{TraceCertificationProfile, TraceRandomOpKind};
 use rumoca_sim::{
     BuildSimulationTimings, SimError, build_simulation_with_stage_timing_and_solve_model,
     check_prepared_initialization, run_prepared_simulation,
 };
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
+use rumoca_test_msl::resource_budget::{
+    SOLVE_IR_SIZE_LIMIT_MB_DEFAULT, SolveIrBudgetMeasureError, SolveIrSizeBudget,
+};
 
 const DEFAULT_WORKER_STACK_MB: usize = 64;
 
@@ -61,6 +68,14 @@ struct Args {
     trace_json: Option<PathBuf>,
     #[arg(long)]
     solve_ir_json: Option<PathBuf>,
+    /// Per-model Solve-IR serialized-size ceiling in MB.
+    ///
+    /// Raise-only, exactly like `--timeout-seconds`: a smaller value is clamped
+    /// back up to the committed default so a caller cannot tighten the gate
+    /// below the baseline it was measured with. See
+    /// `rumoca_test_msl::resource_budget` for the acceptance contract.
+    #[arg(long, default_value_t = SOLVE_IR_SIZE_LIMIT_MB_DEFAULT)]
+    solve_ir_size_limit_mb: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -95,6 +110,14 @@ struct SimWorkerResult {
     solve_ir_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     solve_ir_error: Option<String>,
+    /// Serialized size of this model's Solve IR, in bytes.
+    ///
+    /// Exact when the model fits the per-model ceiling; a lower bound (already
+    /// past the ceiling) when it does not, because measurement stops there.
+    /// Reported as a number so the harness applies the ceiling itself rather
+    /// than parsing the rendered error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    solve_ir_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -106,6 +129,8 @@ struct SimTraceArtifact {
     data: Vec<Vec<f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     variable_meta: Option<Vec<SimTraceVariableMetaArtifact>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    certification_profile: Option<TraceCertificationProfile>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -175,6 +200,7 @@ fn sim_worker_result(
         trace_error: None,
         solve_ir_file: None,
         solve_ir_error: None,
+        solve_ir_bytes: None,
     }
 }
 
@@ -381,7 +407,9 @@ fn classify_solver_error(
     sim_build_seconds: f64,
     sim_run_seconds: f64,
 ) -> SimWorkerResult {
-    match err {
+    // `kind()` peels the stage annotation the solver backend attaches, so an
+    // annotated timeout is still classified as a timeout.
+    match err.kind() {
         SimError::Timeout { seconds } => sim_worker_result(
             "sim_timeout",
             Some(format!("timeout after {:.3}s", seconds)),
@@ -389,9 +417,9 @@ fn classify_solver_error(
             sim_build_seconds,
             sim_run_seconds,
         ),
-        other => sim_worker_result(
+        _ => sim_worker_result(
             "sim_solver_fail",
-            Some(other.to_string()),
+            Some(err.to_string()),
             elapsed,
             sim_build_seconds,
             sim_run_seconds,
@@ -399,7 +427,12 @@ fn classify_solver_error(
     }
 }
 
-fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> Result<(), String> {
+fn write_trace_json(
+    trace_path: &Path,
+    model_name: &str,
+    result: &SimResult,
+    certification_profile: Option<TraceCertificationProfile>,
+) -> Result<(), String> {
     if let Some(parent) = trace_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -432,6 +465,7 @@ fn write_trace_json(trace_path: &Path, model_name: &str, result: &SimResult) -> 
                     .collect(),
             )
         },
+        certification_profile,
     };
 
     let file = File::create(trace_path).map_err(|e| {
@@ -484,23 +518,8 @@ fn parse_dae_json(mut reader: impl Read, source_label: &str) -> Result<Dae, Stri
     }
 }
 
-fn sample_grid_dt(args: &Args) -> Option<f64> {
-    if args.output_samples == 0 {
-        return None;
-    }
-    let span = (args.t_end - args.t_start).abs();
-    if !span.is_finite() || span <= 0.0 {
-        return None;
-    }
-    Some((span / args.output_samples as f64).max(1e-6))
-}
-
 fn effective_output_dt(args: &Args) -> Option<f64> {
-    // Honor explicit experiment Interval from the model/test settings.
-    // `output_samples` is only a fallback when no interval is provided.
-    args.dt
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .or_else(|| sample_grid_dt(args))
+    rumoca_worker::msl_sim_output_dt(args.t_start, args.t_end, args.dt, args.output_samples)
 }
 
 fn read_dae_from_args(args: &Args) -> Result<Dae, String> {
@@ -537,7 +556,14 @@ fn sim_options_from_args(args: &Args) -> SimOptions {
     opts
 }
 
-type WorkerRunOk = (SimResult, BuildSimulationTimings, f64, f64, f64);
+type WorkerRunOk = (
+    SimResult,
+    BuildSimulationTimings,
+    f64,
+    f64,
+    f64,
+    Option<TraceCertificationProfile>,
+);
 type WorkerRunErr = (SimError, BuildSimulationTimings, f64, WorkerErrorPhase);
 
 #[derive(Debug, Clone, Copy)]
@@ -547,7 +573,23 @@ enum WorkerErrorPhase {
     Simulation { sim_run_seconds: f64 },
 }
 
-fn write_solve_ir_json(path: &Path, model: &rumoca_ir_solve::SolveModel) -> Result<(), String> {
+/// Measure the Solve IR against the per-model size ceiling, writing the JSON
+/// artifact along the way when one was requested.
+///
+/// Measurement is unconditional: the ceiling is a property of the model, not of
+/// whether someone asked for the artifact, and the budgeted writer stops at the
+/// first byte past the ceiling so measuring an oversized model costs one
+/// ceiling's worth of work rather than materializing it.
+fn measure_solve_ir(
+    path: Option<&Path>,
+    model: &rumoca_ir_solve::SolveModel,
+    budget: SolveIrSizeBudget,
+) -> Result<u64, String> {
+    let Some(path) = path else {
+        return budget
+            .measure_serialized(model, std::io::sink())
+            .map_err(|error| error.to_string());
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             format!(
@@ -559,15 +601,80 @@ fn write_solve_ir_json(path: &Path, model: &rumoca_ir_solve::SolveModel) -> Resu
     let file = File::create(path)
         .map_err(|e| format!("failed to create Solve IR JSON '{}': {e}", path.display()))?;
     let mut writer = BufWriter::new(file);
-    serde_json::to_writer(&mut writer, model).map_err(|e| {
-        format!(
-            "failed to serialize Solve IR JSON '{}': {e}",
-            path.display()
-        )
-    })?;
+    let bytes = match budget.measure_serialized(model, &mut writer) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // Do not leave a truncated artifact behind: it would deserialize as
+            // a corrupt Solve IR rather than as "this model was rejected".
+            drop(writer);
+            let _ = std::fs::remove_file(path);
+            return Err(match error {
+                SolveIrBudgetMeasureError::BudgetExceeded(exceeded) => exceeded.to_string(),
+                SolveIrBudgetMeasureError::Serialize(message) => format!(
+                    "failed to serialize Solve IR JSON '{}': {message}",
+                    path.display()
+                ),
+            });
+        }
+    };
     writer
         .write_all(b"\n")
-        .map_err(|e| format!("failed to finalize Solve IR JSON '{}': {e}", path.display()))
+        .map_err(|e| format!("failed to finalize Solve IR JSON '{}': {e}", path.display()))?;
+    Ok(bytes + 1)
+}
+
+/// Where this run's Solve IR is measured (and optionally written), plus the
+/// size the measurement observed.
+///
+/// Bundled so the pipeline signature stays about the simulation and the
+/// ceiling stays one value that travels together with the artifact path.
+struct SolveIrMeasurement<'a> {
+    path: Option<&'a Path>,
+    budget: SolveIrSizeBudget,
+    /// Serialized size the run observed; `None` if lowering never reached the
+    /// Solve model.
+    bytes: Option<u64>,
+}
+
+#[derive(Default)]
+struct RandomOpCollector {
+    kinds: BTreeSet<TraceRandomOpKind>,
+}
+
+impl SolveVisitor for RandomOpCollector {
+    type Error = std::convert::Infallible;
+
+    fn visit_linear_op(
+        &mut self,
+        _kind: rumoca_ir_solve::visitor::LinearOpSliceKind,
+        _op_index: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        self.kinds.extend(random_op_kind(op));
+        Ok(())
+    }
+}
+
+fn random_op_kind(op: &LinearOp) -> Option<TraceRandomOpKind> {
+    match op {
+        LinearOp::RandomInitialState { .. } => Some(TraceRandomOpKind::RandomInitialState),
+        LinearOp::RandomResult { .. } => Some(TraceRandomOpKind::RandomResult),
+        LinearOp::RandomState { .. } => Some(TraceRandomOpKind::RandomState),
+        LinearOp::ImpureRandomInit { .. } => Some(TraceRandomOpKind::ImpureRandomInit),
+        LinearOp::ImpureRandom { .. } => Some(TraceRandomOpKind::ImpureRandom),
+        LinearOp::ImpureRandomInteger { .. } => Some(TraceRandomOpKind::ImpureRandomInteger),
+        _ => None,
+    }
+}
+
+fn certification_profile_for_solve_model(model: &SolveModel) -> Option<TraceCertificationProfile> {
+    let mut collector = RandomOpCollector::default();
+    match collector.visit_solve_model(model) {
+        Ok(()) => {}
+        Err(never) => match never {},
+    }
+    (!collector.kinds.is_empty())
+        .then(|| TraceCertificationProfile::stochastic(collector.kinds.into_iter().collect()))
 }
 
 fn run_simulation_pipeline(
@@ -576,11 +683,12 @@ fn run_simulation_pipeline(
     watchdog: &WorkerStageWatchdog,
     solve_timeout_seconds: f64,
     sim_timeout_seconds: f64,
-    solve_ir_json: Option<&Path>,
+    solve_ir: &mut SolveIrMeasurement<'_>,
 ) -> Result<WorkerRunOk, WorkerRunErr> {
     let build_started = Instant::now();
     let mut build_timings = BuildSimulationTimings::default();
     let mut solve_ir_error: Option<String> = None;
+    let mut certification_profile = None;
     let prepared = build_simulation_with_stage_timing_and_solve_model(
         dae,
         opts,
@@ -593,10 +701,10 @@ fn run_simulation_pipeline(
             watchdog.enter(stage, timeout_seconds);
         },
         |solve_model| {
-            if let Some(path) = solve_ir_json
-                && let Err(err) = write_solve_ir_json(path, solve_model)
-            {
-                solve_ir_error = Some(err);
+            certification_profile = certification_profile_for_solve_model(solve_model);
+            match measure_solve_ir(solve_ir.path, solve_model, solve_ir.budget) {
+                Ok(bytes) => solve_ir.bytes = Some(bytes),
+                Err(err) => solve_ir_error = Some(err),
             }
         },
     );
@@ -646,6 +754,7 @@ fn run_simulation_pipeline(
                 sim_build_seconds,
                 sim_run_seconds,
                 ic_seconds,
+                certification_profile,
             )
         })
         .map_err(|err| {
@@ -709,6 +818,7 @@ fn run(args: &Args) -> SimWorkerResult {
                 trace_error: None,
                 solve_ir_file: None,
                 solve_ir_error: None,
+                solve_ir_bytes: None,
             };
         }
     };
@@ -716,20 +826,51 @@ fn run(args: &Args) -> SimWorkerResult {
     let opts = sim_options_from_args(args);
 
     let sim_start = Instant::now();
+    // Raise-only: `SolveIrSizeBudget::from_mb` clamps a smaller request back up
+    // to the committed default.
+    let mut solve_ir = SolveIrMeasurement {
+        path: args.solve_ir_json.as_deref(),
+        budget: SolveIrSizeBudget::from_mb(args.solve_ir_size_limit_mb),
+        bytes: None,
+    };
+    let solve_ir_bytes = std::cell::Cell::new(None);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_simulation_pipeline(
+        let outcome = run_simulation_pipeline(
             &dae,
             &opts,
             &watchdog,
             args.solve_timeout_seconds,
             args.timeout_seconds,
-            args.solve_ir_json.as_deref(),
-        )
+            &mut solve_ir,
+        );
+        solve_ir_bytes.set(solve_ir.bytes);
+        outcome
     }));
     watchdog.clear();
     let elapsed = sim_start.elapsed().as_secs_f64();
+    let mut result = classify_run_outcome(args, outcome, elapsed);
+    if let Some(path) = args.solve_ir_json.as_deref()
+        && path.is_file()
+    {
+        result.solve_ir_file = Some(path.to_string_lossy().to_string());
+    }
+    result.solve_ir_bytes = solve_ir_bytes.get();
+    result
+}
+
+type WorkerRunOutcome = std::thread::Result<Result<WorkerRunOk, WorkerRunErr>>;
+
+/// Turn the pipeline outcome (or its panic) into a worker result row.
+fn classify_run_outcome(args: &Args, outcome: WorkerRunOutcome, elapsed: f64) -> SimWorkerResult {
     match outcome {
-        Ok(Ok((result, build_timings, sim_build_seconds, sim_run_seconds, ic_seconds))) => {
+        Ok(Ok((
+            result,
+            build_timings,
+            sim_build_seconds,
+            sim_run_seconds,
+            ic_seconds,
+            certification_profile,
+        ))) => {
             let mut worker_result = with_build_timings(
                 classify_success(&result, elapsed, sim_build_seconds, sim_run_seconds),
                 build_timings,
@@ -739,7 +880,8 @@ fn run(args: &Args) -> SimWorkerResult {
             if worker_result.status == "sim_ok"
                 && let Some(trace_path) = args.trace_json.as_deref()
             {
-                match write_trace_json(trace_path, &args.model_name, &result) {
+                match write_trace_json(trace_path, &args.model_name, &result, certification_profile)
+                {
                     Ok(()) => {
                         worker_result.trace_file = Some(trace_path.to_string_lossy().to_string());
                     }
@@ -748,43 +890,22 @@ fn run(args: &Args) -> SimWorkerResult {
                     }
                 }
             }
-            if let Some(path) = args.solve_ir_json.as_deref()
-                && path.is_file()
-            {
-                worker_result.solve_ir_file = Some(path.to_string_lossy().to_string());
-            }
             worker_result
         }
-        Ok(Err((err, build_timings, sim_build_seconds, sim_run_seconds))) => {
-            let mut result = classify_worker_error(
-                err,
-                elapsed,
-                build_timings,
-                sim_build_seconds,
-                sim_run_seconds,
-            );
-            if let Some(path) = args.solve_ir_json.as_deref()
-                && path.is_file()
-            {
-                result.solve_ir_file = Some(path.to_string_lossy().to_string());
-            }
-            result
-        }
-        Err(panic_info) => {
-            let mut result = sim_worker_result(
-                "sim_solver_fail",
-                Some(format!("panic: {}", panic_message(panic_info))),
-                elapsed,
-                0.0,
-                0.0,
-            );
-            if let Some(path) = args.solve_ir_json.as_deref()
-                && path.is_file()
-            {
-                result.solve_ir_file = Some(path.to_string_lossy().to_string());
-            }
-            result
-        }
+        Ok(Err((err, build_timings, sim_build_seconds, sim_run_seconds))) => classify_worker_error(
+            err,
+            elapsed,
+            build_timings,
+            sim_build_seconds,
+            sim_run_seconds,
+        ),
+        Err(panic_info) => sim_worker_result(
+            "sim_solver_fail",
+            Some(format!("panic: {}", panic_message(panic_info))),
+            elapsed,
+            0.0,
+            0.0,
+        ),
     }
 }
 
@@ -836,58 +957,55 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::{
         Args, WorkerErrorPhase, classify_worker_error, effective_output_dt, parse_dae_json,
-        sample_grid_dt,
+        random_op_kind,
     };
-    use rumoca_compile::compile::{Dae, Session, SessionConfig};
+    use rumoca_compile::compile::{Session, SessionConfig};
+    use rumoca_ir_solve::LinearOp;
+    use rumoca_sim::sim_trace_compare::TraceRandomOpKind;
     use rumoca_sim::{BuildSimulationTimings, SimError};
-    use serde_json::json;
     use std::path::PathBuf;
 
-    fn deep_add_expr_json(base_add_expr: &serde_json::Value, depth: usize) -> serde_json::Value {
-        let mut expr = base_add_expr.clone();
-        let add_op = expr
-            .get("Binary")
-            .and_then(|node| node.get("op"))
-            .cloned()
-            .expect("base add expression should have Binary.op");
-        let rhs_one = base_add_expr
-            .get("Binary")
-            .and_then(|node| node.get("rhs"))
-            .cloned()
-            .expect("base add expression should have Binary.rhs");
-
-        for _ in 0..depth {
-            expr = json!({
-                "Binary": {
-                    "op": add_op.clone(),
-                    "lhs": expr,
-                    "rhs": rhs_one.clone()
-                }
-            });
-        }
-
-        expr
+    #[test]
+    fn random_trace_profile_detection_is_structural_not_model_named() {
+        assert_eq!(
+            random_op_kind(&LinearOp::ImpureRandom {
+                dst: 0,
+                id: 1,
+                call_site: 2,
+            }),
+            Some(TraceRandomOpKind::ImpureRandom)
+        );
+        assert_eq!(
+            random_op_kind(&LinearOp::Const { dst: 0, value: 1.0 }),
+            None
+        );
     }
 
     #[test]
-    fn parse_dae_json_handles_deeply_nested_expression_trees() {
-        let source = "model DeepBinary\n  Real x(start = 0);\nequation\n  der(x) = 0 + 1;\nend DeepBinary;\n";
+    fn parse_dae_json_handles_large_flat_expression_arenas() {
+        let sum = std::iter::repeat_n("1", 513)
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!(
+            "model DeepBinary\n  Real x(start = 0);\nequation\n  der(x) = {sum};\nend DeepBinary;\n"
+        );
         let mut session = Session::new(SessionConfig::default());
         session
-            .add_document("deep_binary.mo", source)
+            .add_document("deep_binary.mo", &source)
             .expect("add source file");
         let compiled = session
             .compile_model("DeepBinary")
             .expect("compile deep nested expression model");
-        let mut dae_json = serde_json::to_value(&compiled.dae).expect("serialize deep DAE json");
-        let base_add_expr = dae_json["f_x"][0]["rhs"]["Binary"]["rhs"].clone();
-        dae_json["f_x"][0]["rhs"]["Binary"]["rhs"] = deep_add_expr_json(&base_add_expr, 512);
-        let deep_dae: Dae =
-            serde_json::from_value(dae_json).expect("deserialize mutated deep DAE value");
-        let payload = serde_json::to_vec(&deep_dae).expect("encode deep DAE JSON payload");
+        let payload = serde_json::to_vec(&compiled.dae).expect("encode wire-v11 DAE payload");
         let parsed =
             parse_dae_json(std::io::Cursor::new(payload), "in-memory").expect("parse deep DAE");
-        assert_eq!(parsed.continuous.equations.len(), 1);
+        parsed.inspect(|view| {
+            assert_eq!(view.continuous_equation_count(), 1);
+            assert!(
+                view.expression_count() > 512,
+                "wire-v11 should retain the large flat expression arena"
+            );
+        });
     }
 
     fn test_args() -> Args {
@@ -907,6 +1025,7 @@ mod tests {
             solve_timeout_seconds: 10.0,
             trace_json: None,
             solve_ir_json: None,
+            solve_ir_size_limit_mb: crate::SOLVE_IR_SIZE_LIMIT_MB_DEFAULT,
         }
     }
 
@@ -966,8 +1085,21 @@ mod tests {
     #[test]
     fn test_sample_grid_dt_uses_span_and_output_samples() {
         let args = test_args();
-        let dt = sample_grid_dt(&args).expect("sample dt should be present");
+        let dt = effective_output_dt(&args).expect("sample dt should be present");
         assert!((dt - 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_sample_grid_dt_is_invariant_under_time_scaling() {
+        let ordinary = test_args();
+        let mut short = test_args();
+        short.t_end = 1.0e-7;
+
+        let ordinary_dt = effective_output_dt(&ordinary).expect("ordinary sample dt");
+        let short_dt = effective_output_dt(&short).expect("short-horizon sample dt");
+
+        assert!(((short_dt / ordinary_dt) - 1.0e-7).abs() <= 2.0 * f64::EPSILON * 1.0e-7);
+        assert!((short_dt - 1.0e-9).abs() <= f64::EPSILON * 1.0e-9);
     }
 
     #[test]

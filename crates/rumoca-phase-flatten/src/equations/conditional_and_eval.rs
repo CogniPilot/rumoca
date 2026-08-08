@@ -60,7 +60,15 @@ pub(super) fn expand_nested_if_to_simple(
         }
     }
 
-    if !else_simple_eqs.is_empty() && else_simple_eqs.len() != num_equations {
+    if else_block.is_none() && num_equations != 0 {
+        return Err(FlattenError::unsupported_equation(
+            format!(
+                "nested if-equation: omitted else branch has 0 equations, but if branch has {num_equations}"
+            ),
+            span,
+        ));
+    }
+    if else_block.is_some() && else_simple_eqs.len() != num_equations {
         return Err(FlattenError::unsupported_equation(
             format!(
                 "nested if-equation: else branch has {} equations, but if branch has {}",
@@ -81,16 +89,15 @@ pub(super) fn expand_nested_if_to_simple(
             .map(|(cond, eqs)| (cond.clone(), build_simple_equation_residual(&eqs[eq_idx])))
             .collect();
 
-        let else_residual = if !else_simple_eqs.is_empty() {
-            build_simple_equation_residual(&else_simple_eqs[eq_idx])
-        } else {
-            ast::Expression::Binary {
-                op: OpBinary::Sub,
-                lhs: Arc::new(expanded_branches[0].1[eq_idx].lhs.clone()),
-                rhs: Arc::new(zero_real_expr(span)),
-                span,
-            }
-        };
+        let else_residual = else_simple_eqs
+            .get(eq_idx)
+            .map(build_simple_equation_residual)
+            .ok_or_else(|| {
+                FlattenError::unsupported_equation(
+                    "dynamic nested if-equation cannot synthesize an omitted else equation",
+                    span,
+                )
+            })?;
 
         let conditional_residual = ast::Expression::If {
             branches,
@@ -122,7 +129,36 @@ pub(super) fn create_conditional_equation_from_simple(
     else_simple_eqs: &[SimpleEquation],
     eq_idx: usize,
     context: &ConditionalEquationContext<'_>,
-) -> Result<flat::Equation, FlattenError> {
+) -> Result<FlattenedEquations, FlattenError> {
+    let first = &expanded_branches[0].1[eq_idx];
+    let scalar_count =
+        infer_simple_equation_scalar_count(&first.lhs, &first.rhs, context.prefix, context.ctx);
+    let counts_match = expanded_branches.iter().all(|(_, equations)| {
+        let equation = &equations[eq_idx];
+        infer_simple_equation_scalar_count(
+            &equation.lhs,
+            &equation.rhs,
+            context.prefix,
+            context.ctx,
+        ) == scalar_count
+    }) && {
+        let equation = &else_simple_eqs[eq_idx];
+        infer_simple_equation_scalar_count(
+            &equation.lhs,
+            &equation.rhs,
+            context.prefix,
+            context.ctx,
+        ) == scalar_count
+    };
+    if !counts_match {
+        return Err(FlattenError::unsupported_equation(
+            "dynamic if-equation branches have different scalar row counts",
+            context.span,
+        ));
+    }
+    if scalar_count == 0 {
+        return Ok(FlattenedEquations::default());
+    }
     // Build a conditional residual directly:
     // if c1 then (lhs1-rhs1) elseif c2 then (lhs2-rhs2) else (lhsN-rhsN)
     // This preserves MLS semantics even when branch equations do not share the same lhs.
@@ -140,11 +176,30 @@ pub(super) fn create_conditional_equation_from_simple(
         context.ctx,
         None,
     )?;
-    Ok(flat::Equation::new(
-        residual,
-        context.span,
-        context.origin.clone(),
-    ))
+    let equation = if scalar_count == 1 {
+        flat::Equation::new(residual, context.span, context.origin.clone())
+    } else {
+        flat::Equation::new_array(residual, context.span, context.origin.clone(), scalar_count)
+    };
+    let dimensions = infer_simple_equation_dims(
+        &first.lhs,
+        &first.rhs,
+        context.prefix,
+        context.ctx,
+        scalar_count,
+    );
+    let structured_equations = if is_tuple_receiver_equation_lhs(&first.lhs) {
+        Vec::new()
+    } else {
+        array_family::structured_array_equation_family(0, &equation, dimensions.as_deref())?
+            .into_iter()
+            .collect()
+    };
+    Ok(FlattenedEquations {
+        equations: vec![equation],
+        structured_equations,
+        ..Default::default()
+    })
 }
 
 fn build_simple_equation_residual(eq: &SimpleEquation) -> ast::Expression {
@@ -181,18 +236,15 @@ fn build_conditional_residual_from_simple(
         .collect();
 
     // Get else branch residual.
-    let else_residual = if !else_simple_eqs.is_empty() {
-        build_simple_equation_residual(&else_simple_eqs[eq_idx])
-    } else {
-        // Preserve prior lowering semantics for if-equations without else:
-        // residual = lhs - (if cond then rhs else 0)  => else residual is lhs - 0.
-        ast::Expression::Binary {
-            op: OpBinary::Sub,
-            lhs: Arc::new(expanded_branches[0].1[eq_idx].lhs.clone()),
-            rhs: Arc::new(zero_real_expr(span)),
-            span,
-        }
-    };
+    let else_residual = else_simple_eqs
+        .get(eq_idx)
+        .map(build_simple_equation_residual)
+        .ok_or_else(|| {
+            FlattenError::unsupported_equation(
+                "dynamic if-equation cannot omit an else branch when another branch contributes equations",
+                span,
+            )
+        })?;
 
     // Build the if-expression
     Ok(ast::Expression::If {
@@ -212,10 +264,10 @@ fn flatten_simple_in_list(
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<Vec<flat::Equation>, FlattenError> {
+) -> Result<FlattenedEquations, FlattenError> {
     // MLS §10.5: Skip equations with empty range subscripts
     if has_empty_range_subscript(ctx, lhs, prefix) || has_empty_range_subscript(ctx, rhs, prefix) {
-        return Ok(vec![]);
+        return Ok(FlattenedEquations::default());
     }
 
     // Keep array comprehensions in equations by expanding structural ranges.
@@ -225,14 +277,26 @@ fn flatten_simple_in_list(
     let residual = make_residual(ctx, &lhs, &rhs, prefix, def_map, None)?;
     let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
     if scalar_count == 0 {
-        return Ok(vec![]);
+        return Ok(FlattenedEquations::default());
     }
+    let equation_dims = infer_simple_equation_dims(&lhs, &rhs, prefix, ctx, scalar_count);
     let equation = if scalar_count == 1 {
         flat::Equation::new(residual, span, origin.clone())
     } else {
         flat::Equation::new_array(residual, span, origin.clone(), scalar_count)
     };
-    Ok(vec![equation])
+    let structured_equations = if is_tuple_receiver_equation_lhs(&lhs) {
+        Vec::new()
+    } else {
+        array_family::structured_array_equation_family(0, &equation, equation_dims.as_deref())?
+            .into_iter()
+            .collect()
+    };
+    Ok(FlattenedEquations {
+        equations: vec![equation],
+        structured_equations,
+        ..Default::default()
+    })
 }
 
 /// Flatten a list of equations (used for expanded for/if-equations).
@@ -249,8 +313,9 @@ pub(super) fn flatten_equations_list(
     for eq in equations {
         match eq {
             ast::Equation::Simple { lhs, rhs } => {
-                let eqs = flatten_simple_in_list(ctx, lhs, rhs, prefix, span, origin, def_map)?;
-                result.equations.extend(eqs);
+                let equations =
+                    flatten_simple_in_list(ctx, lhs, rhs, prefix, span, origin, def_map)?;
+                result.append(equations);
             }
             ast::Equation::For { indices, equations } => {
                 let expanded =
@@ -304,11 +369,11 @@ pub(super) fn flatten_equations_list(
             ast::Equation::When(blocks) => {
                 // MLS §8.3.3/§8.3.5: When-equations inside for-loops are allowed.
                 // Flatten each when-block with the current prefix (which includes for-loop indices)
-                let clauses =
+                let chain =
                     crate::when_equations::flatten_when_blocks(ctx, blocks, prefix, span, def_map)?;
-                result.when_clauses.extend(clauses);
+                result.when_chains.push(chain);
             }
-            ast::Equation::FunctionCall { comp, args } => {
+            ast::Equation::FunctionCall { comp, args, .. } => {
                 let flattened =
                     flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, origin)?;
                 if flattened.is_empty() && !is_side_effect_only_function(comp) {
@@ -945,9 +1010,10 @@ pub(crate) fn substitute_index_in_equation(
             lhs: substitute_index_in_component_ref(lhs, var_name, value),
             rhs: substitute_index_in_component_ref(rhs, var_name, value),
         },
-        ast::Equation::FunctionCall { comp, args } => ast::Equation::FunctionCall {
+        ast::Equation::FunctionCall { comp, args, span } => ast::Equation::FunctionCall {
             comp: substitute_index_in_component_ref(comp, var_name, value),
             args: args.iter().map(&sub_expr).collect(),
+            span: *span,
         },
         ast::Equation::Assert {
             condition,
@@ -980,40 +1046,123 @@ fn substitute_index_in_component_ref(
                         .map(|sub| substitute_index_in_subscript(sub, var_name, value))
                         .collect()
                 }),
+                def_id: part.def_id,
             })
             .collect(),
-        def_id: cr.def_id,
         span: cr.span,
+        qualified_display_name: cr.qualified_display_name.clone(),
     }
 }
 
 /// Substitute an index variable with a concrete value in an expression.
+fn substitute_index_in_operator_expression(
+    expr: &ast::Expression,
+    var_name: &str,
+    value: i64,
+) -> Option<ast::Expression> {
+    match expr {
+        ast::Expression::ComponentReference(cr) => Some(
+            substitute_index_component_reference_expression(cr, var_name, value),
+        ),
+        ast::Expression::Binary { op, lhs, rhs, span } => Some(ast::Expression::Binary {
+            op: op.clone(),
+            lhs: Arc::new(substitute_index_in_expression(lhs, var_name, value)),
+            rhs: Arc::new(substitute_index_in_expression(rhs, var_name, value)),
+            span: *span,
+        }),
+        ast::Expression::Unary { op, rhs, span } => Some(ast::Expression::Unary {
+            op: op.clone(),
+            rhs: Arc::new(substitute_index_in_expression(rhs, var_name, value)),
+            span: *span,
+        }),
+        _ => None,
+    }
+}
+
+fn substitute_index_in_structural_expression(
+    expr: &ast::Expression,
+    var_name: &str,
+    value: i64,
+) -> Option<ast::Expression> {
+    match expr {
+        ast::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            span,
+        } => Some(substitute_index_in_array_comprehension(
+            expr,
+            indices,
+            filter.as_deref(),
+            *span,
+            var_name,
+            value,
+        )),
+        ast::Expression::ArrayIndex {
+            base,
+            subscripts,
+            span,
+        } => Some(substitute_index_in_array_index_expression(
+            base, subscripts, *span, var_name, value,
+        )),
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } => Some(substitute_index_in_field_access_expression(
+            base,
+            field,
+            *field_def_id,
+            *span,
+            var_name,
+            value,
+        )),
+        ast::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => Some(substitute_index_in_range_expression(
+            start,
+            step.as_deref(),
+            end,
+            *span,
+            var_name,
+            value,
+        )),
+        ast::Expression::Tuple { elements, span } => Some(substitute_index_in_tuple_expression(
+            elements, *span, var_name, value,
+        )),
+        _ => None,
+    }
+}
+
 pub(crate) fn substitute_index_in_expression(
     expr: &ast::Expression,
     var_name: &str,
     value: i64,
 ) -> ast::Expression {
+    if let Some(substituted) = substitute_index_in_operator_expression(expr, var_name, value) {
+        return substituted;
+    }
+    if let Some(substituted) = substitute_index_in_structural_expression(expr, var_name, value) {
+        return substituted;
+    }
     match expr {
-        ast::Expression::ComponentReference(cr) => {
-            substitute_index_component_reference_expression(cr, var_name, value)
-        }
-
-        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
-            op: op.clone(),
-            lhs: Arc::new(substitute_index_in_expression(lhs, var_name, value)),
-            rhs: Arc::new(substitute_index_in_expression(rhs, var_name, value)),
-            span: *span,
-        },
-
-        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
-            op: op.clone(),
-            rhs: Arc::new(substitute_index_in_expression(rhs, var_name, value)),
-            span: *span,
-        },
-
-        ast::Expression::FunctionCall { comp, args, span } => {
-            substitute_index_in_function_call_expression(comp, args, *span, var_name, value)
-        }
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => substitute_index_in_function_call_expression(
+            comp,
+            args,
+            *is_partial_application,
+            *span,
+            var_name,
+            value,
+        ),
 
         ast::Expression::ClassModification {
             target,
@@ -1062,48 +1211,6 @@ pub(crate) fn substitute_index_in_expression(
             substitute_index_in_parenthesized_expression(inner, *span, var_name, value)
         }
 
-        ast::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            span,
-        } => substitute_index_in_array_comprehension(
-            expr,
-            indices,
-            filter.as_deref(),
-            *span,
-            var_name,
-            value,
-        ),
-
-        ast::Expression::ArrayIndex {
-            base,
-            subscripts,
-            span,
-        } => substitute_index_in_array_index_expression(base, subscripts, *span, var_name, value),
-
-        ast::Expression::FieldAccess { base, field, span } => {
-            substitute_index_in_field_access_expression(base, field, *span, var_name, value)
-        }
-
-        ast::Expression::Range {
-            start,
-            step,
-            end,
-            span,
-        } => substitute_index_in_range_expression(
-            start,
-            step.as_deref(),
-            end,
-            *span,
-            var_name,
-            value,
-        ),
-
-        ast::Expression::Tuple { elements, span } => {
-            substitute_index_in_tuple_expression(elements, *span, var_name, value)
-        }
-
         // Terminal and empty expressions don't need substitution.
         _ => expr.clone(),
     }
@@ -1112,6 +1219,7 @@ pub(crate) fn substitute_index_in_expression(
 fn substitute_index_in_function_call_expression(
     comp: &ComponentReference,
     args: &[ast::Expression],
+    is_partial_application: bool,
     span: rumoca_core::Span,
     var_name: &str,
     value: i64,
@@ -1119,6 +1227,7 @@ fn substitute_index_in_function_call_expression(
     ast::Expression::FunctionCall {
         comp: substitute_index_in_component_ref(comp, var_name, value),
         args: substitute_index_in_expression_list(args, var_name, value),
+        is_partial_application,
         span,
     }
 }
@@ -1230,6 +1339,7 @@ fn substitute_index_in_array_index_expression(
 fn substitute_index_in_field_access_expression(
     base: &ast::Expression,
     field: &str,
+    field_def_id: Option<rumoca_core::DefId>,
     span: rumoca_core::Span,
     var_name: &str,
     value: i64,
@@ -1237,6 +1347,7 @@ fn substitute_index_in_field_access_expression(
     ast::Expression::FieldAccess {
         base: Arc::new(substitute_index_in_expression(base, var_name, value)),
         field: field.to_string(),
+        field_def_id,
         span,
     }
 }

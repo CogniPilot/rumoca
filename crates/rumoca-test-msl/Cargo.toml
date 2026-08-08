@@ -9,9 +9,12 @@ publish = false
 
 [features]
 default = []
-backend-stress-tests = []
 msl-external-tests = []
 msl-full-test = []
+# Standalone maintenance binaries are opt-in so selecting an integration test
+# does not make Cargo link every helper solely to populate CARGO_BIN_EXE_*.
+msl-profile-bin = []
+tensor-scaling-bin = []
 
 [[bin]]
 name = "rumoca-sim-worker"
@@ -27,6 +30,12 @@ path = "src/bin/rumoca-msl-tools.rs"
 [[bin]]
 name = "rumoca-msl-profile"
 path = "src/bin/rumoca-msl-profile.rs"
+required-features = ["msl-profile-bin"]
+
+[[bin]]
+name = "rumoca-tensor-scaling"
+path = "src/bin/rumoca-tensor-scaling.rs"
+required-features = ["tensor-scaling-bin"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -37,6 +46,7 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
 rumoca-ir-solve = { workspace = true }
+rumoca-eval-dae = { workspace = true }
 rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation", "report"] }
 rumoca-worker = { workspace = true }
 # Used by the MSL tooling moved from xtask (zmq: OMC worker pool; nix: process

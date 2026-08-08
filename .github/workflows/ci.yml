@@ -87,8 +87,8 @@ jobs:
 
       # Architectural invariant, checked without compiling anything: `xtask` must
       # carry NO rumoca-* workspace crate. It parses args, moves files, and shells
-      # out; heavy compiler-linked work runs on demand via `cargo run -p <crate>`
-      # (rumoca-test-msl, rumoca-tool-docs). If a rumoca-* dep creeps back in,
+      # out; compiler-linked work runs on demand through a command in its owning
+      # package. If a rumoca-* dep creeps back in,
       # building any xtask bin again drags in the whole compiler/diffsol stack.
       - name: Architecture — xtask stays dependency-light
         run: |
@@ -147,11 +147,13 @@ jobs:
           path: target/review/review-scan.json
           if-no-files-found: ignore
 
-      - name: Check generated Modelica parser is current
+      - name: Check generated parsers are current
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code -- crates/rumoca-phase-parse/src/generated
+          git diff --exit-code -- \
+            crates/rumoca-phase-parse/src/generated \
+            crates/rumoca-phase-parse-galec/src/parse/generated
 
       - name: Generate crate DAG release artifact
         run: cargo xtask repo graph crates --format dot
@@ -163,12 +165,9 @@ jobs:
           path: target/crate-dag/workspace-crate-dag.dot
           if-no-files-found: error
 
-  # Reproducible build + clippy + fmt via the root crane+fenix flake, backed by
-  # the Cachix binary cache (cognipilot.cachix.org). First run is cold and pushes
-  # the built closure; subsequent runs (and local `cachix use rumoca`) restore
-  # the prebuilt dependency closure + rumoca binary in seconds. Replaces the
-  # deprecated magic-nix-cache, which rate-limited the GitHub Actions cache API
-  # on a closure this size (roadmap M4 slice 2).
+  # Reproducible package build via the root crane+fenix flake. Nix store paths
+  # are cached privately in GitHub Actions, so pull requests need no external
+  # cache credentials.
   nix-checks:
     name: Nix flake checks (Linux)
     runs-on: ubuntu-24.04
@@ -183,19 +182,17 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          name: cognipilot
-          # Public cache: pulls need no auth; the token lets CI push new paths.
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          use-flakehub: false
+          diagnostic-endpoint: ''
 
-      - name: Nix build the flake package check
-        # Build ONLY the reproducible package check. Format and clippy are owned
-        # by the standalone Format/Lint jobs, and the heavy release MSL artifact
-        # bundle is built once by the dedicated `nix-build-msl` producer and
-        # consumed via Cachix; building any of that here too would duplicate
-        # release+LTO work.
+      - name: Nix build the package and required MLIR CPU checks
+        # Build only the reproducible package and focused MLIR CPU checks.
+        # Format and clippy are owned by the standalone Format/Lint jobs, and
+        # the heavy release MSL artifact bundle is built once by the dedicated
+        # `nix-build-msl` producer.
         #
         # We deliberately do NOT run `nix flake check`: it eval-builds every output
         # (re-building those packages), and its `--no-build` eval trips over the
@@ -203,7 +200,52 @@ jobs:
         # (`path '…rust-nightly.toml.drv' is not valid`). `nix build` realizes the
         # toolchain, so building the checks directly is the reliable gate.
         run: |
-          nix build --print-build-logs .#checks.x86_64-linux.rumoca
+          # Nix evaluates the finite Crane + LLVM derivation graph recursively.
+          # The default hosted-runner stack is too small for this workspace;
+          # keep the evaluator budget explicit and bounded rather than relying
+          # on an unlimited process stack.
+          ulimit -s 65536
+          nix build --print-build-logs \
+            .#checks.x86_64-linux.rumoca \
+            .#checks.x86_64-linux.mlir-cpu
+
+  kani:
+    name: Kani symbolic event-history contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
+          diagnostic-endpoint: ''
+
+      - name: Prove bounded semantic and runtime contracts with pinned Kani
+        run: |
+          nix develop .#kani --command cargo kani --version
+          nix develop .#kani --command cargo xtask verify kani
+
+      - name: Upload Kani proof summary
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kani-proof-summary
+          path: target/verification/kani-summary.json
+          if-no-files-found: warn
 
   test:
     name: Test (${{ matrix.os }})
@@ -267,6 +309,11 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
         shell: bash
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Rust cache (native)
         uses: Swatinem/rust-cache@v2
         with:
@@ -313,6 +360,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p target/msl
+          touch target/msl/formatter-stability-required
           msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
           if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
             echo "MSL cache is valid at $msl_dir"
@@ -356,8 +405,6 @@ jobs:
       # fails on the smoke step).
       - name: Run workspace tests (Linux monitored)
         if: runner.os == 'Linux' && !cancelled()
-        env:
-          REQUIRE_MSL_FMT_DRIFT: "1"
         shell: bash
         run: |
           set -euo pipefail
@@ -381,12 +428,29 @@ jobs:
 
       - name: Run workspace tests
         if: runner.os != 'Linux' && !cancelled()
-        env:
-          REQUIRE_MSL_FMT_DRIFT: "1"
         run: cargo xtask verify workspace
 
       - name: Build all binaries
         run: cargo xtask verify binaries
+
+      - name: Run tensor compile-scaling ratchet
+        if: runner.os == 'Linux'
+        run: |
+          cargo build \
+            --package rumoca-test-msl \
+            --bin rumoca-tensor-scaling \
+            --features rumoca-test-msl/tensor-scaling-bin
+          target/debug/rumoca-tensor-scaling \
+            --enforce \
+            --output target/tensor-scaling/report.json
+
+      - name: Upload tensor compile-scaling report
+        if: runner.os == 'Linux' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tensor-compile-scaling-report
+          path: target/tensor-scaling/report.json
+          if-no-files-found: warn
 
   template-runtime-tests:
     name: Template Runtime (${{ matrix.backend }})
@@ -397,30 +461,25 @@ jobs:
         include:
           - backend: render
             nix_shell: ci-template-core
-          - backend: native
-            nix_shell: ci-template-core
-          - backend: embedded-c
-            nix_shell: ci-template-core
-          - backend: fmi
+          - backend: c
             nix_shell: ci-template-core
           - backend: casadi
             nix_shell: ci-template-python
-          - backend: sympy
-            nix_shell: ci-template-python
-          - backend: symforce
-            nix_shell: ci-template-python
-          - backend: onnx
-            nix_shell: ci-template-python
+          - backend: cuda
+            nix_shell: ci-template-cuda
+          - backend: fmi
+            nix_shell: ci-template-fmi
           - backend: jax
             nix_shell: ci-template-python
-          - backend: julia
-            nix_shell: ci-template-julia
+          - backend: modelica
+            nix_shell: ci-template-modelica
+          - backend: rust
+            nix_shell: ci-template-core
+          - backend: wasm
+            nix_shell: ci-template-wasm
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
-      JULIA_DEPOT_PATH: "${{ github.workspace }}/target/julia-depot:"
-      JULIA_PKG_PRECOMPILE_AUTO: '0'
-      JULIA_PROJECT: ${{ github.workspace }}/infra/julia
     steps:
       - uses: actions/checkout@v5
         with:
@@ -432,10 +491,11 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          name: cognipilot
+          use-flakehub: false
+          diagnostic-endpoint: ''
 
       - name: Rust cache (template-runtime)
         uses: Swatinem/rust-cache@v2
@@ -465,17 +525,8 @@ jobs:
           df -h . / /tmp /home/runner/actions-runner/cached 2>/dev/null || true
           du -sh target target/debug ~/.cargo ~/.rustup /home/runner/actions-runner/cached/_diag 2>/dev/null || true
 
-      - name: Julia template runtime cache
-        if: matrix.backend == 'julia'
-        uses: actions/cache@v4
-        with:
-          path: target/julia-depot
-          key: ${{ runner.os }}-julia-template-${{ hashFiles('infra/julia/Manifest.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-julia-template-
-
       - name: Prepare Python template runtime dependencies
-        if: matrix.nix_shell == 'ci-template-python'
+        if: matrix.nix_shell == 'ci-template-python' || matrix.nix_shell == 'ci-template-fmi'
         env:
           TEMPLATE_BACKEND: ${{ matrix.backend }}
         run: |
@@ -490,21 +541,13 @@ jobs:
               python -m pip install casadi==3.7.2 numpy==2.4.3
               python -c 'import casadi, numpy; print("casadi template deps ok")'
               ;;
-            sympy)
-              python -m pip install sympy==1.14.0
-              python -c 'import sympy; print("sympy template deps ok")'
-              ;;
-            symforce)
-              python -m pip install numpy==2.4.3 scipy==1.17.1 symforce==0.11.0 sympy==1.14.0
-              python -c 'import symforce; print("symforce template deps ok")'
-              ;;
-            onnx)
-              python -m pip install numpy==2.4.3 onnx==1.20.1 onnxruntime==1.24.3
-              python -c 'import numpy, onnx, onnxruntime; print("onnx template deps ok")'
-              ;;
             jax)
               python -m pip install diffrax==0.7.2 jax==0.9.2 numpy==2.4.3 scipy==1.17.1
               python -c 'import diffrax, jax, numpy; print("jax template deps ok")'
+              ;;
+            fmi)
+              python -m pip install fmpy==0.3.30
+              python -c 'import fmpy; assert fmpy.__version__ == "0.3.30"; print("FMPy conformance dependency ok")'
               ;;
             *)
               echo "::error::unexpected Python template backend: $TEMPLATE_BACKEND"
@@ -513,17 +556,47 @@ jobs:
           esac
           EOF
 
-      - name: Prepare Julia template runtime dependencies
-        if: matrix.backend == 'julia'
+      - name: Fetch pinned official FMI standards
+        if: matrix.backend == 'fmi'
         run: |
           nix develop .#${{ matrix.nix_shell }} --command bash <<'EOF'
           set -euo pipefail
-          julia --project=infra/julia <<'JL'
-          using Pkg
-          Pkg.instantiate()
-          using ModelingToolkit, OrdinaryDiffEqTsit5, IfElse, SciMLBase, Sundials
-          println("julia template runtime deps ok")
-          JL
+          cache="$PWD/target/fmi-standards"
+          mkdir -p "$cache/2.0.5" "$cache/3.0.2"
+          mkdir -p "$cache/vdm2" "$cache/vdm3"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            https://github.com/modelica/fmi-standard/releases/download/v2.0.5/FMI-Standard-2.0.5.zip \
+            --output "$cache/fmi-2.0.5.zip"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            https://github.com/modelica/fmi-standard/releases/download/v3.0.2/FMI-Standard-3.0.2.zip \
+            --output "$cache/fmi-3.0.2.zip"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            https://github.com/INTO-CPS-Association/FMI-VDM-Model/releases/download/Release/1.1.3/vdmcheck2-1.1.3-distribution-rules.zip \
+            --output "$cache/vdmcheck2-1.1.3.zip"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            https://github.com/INTO-CPS-Association/FMI-VDM-Model/releases/download/Release/1.1.3/vdmcheck3-1.1.3-distribution-rules.zip \
+            --output "$cache/vdmcheck3-1.1.3.zip"
+          printf '%s  %s\n' \
+            2695efc7f3aac3443957b0784880e16eec84013558995547f5d706cbf2104909 \
+            "$cache/fmi-2.0.5.zip" \
+            454a12f40069db7efc38faee1c8899fabe74086c0b052f88133b16f256c444bd \
+            "$cache/fmi-3.0.2.zip" \
+            53916d61e7f46ff12e010b05646085e27f808acde6069d47f4ee9e45ae98e7d5 \
+            "$cache/vdmcheck2-1.1.3.zip" \
+            9f429acedff53350106efa66bbaed077ddbb107c81cca96f585451da3499afd7 \
+            "$cache/vdmcheck3-1.1.3.zip" | sha256sum --check
+          unzip -q "$cache/fmi-2.0.5.zip" -d "$cache/2.0.5"
+          unzip -q "$cache/fmi-3.0.2.zip" -d "$cache/3.0.2"
+          unzip -q "$cache/vdmcheck2-1.1.3.zip" -d "$cache/vdm2"
+          unzip -q "$cache/vdmcheck3-1.1.3.zip" -d "$cache/vdm3"
+          mkdir -p target/fmi-conformance
+          printf '%s\n' \
+            '{' \
+            "  \"fmi2_standard_dir\": \"$cache/2.0.5\"," \
+            "  \"fmi3_standard_dir\": \"$cache/3.0.2\"," \
+            "  \"fmi2_vdm_check\": \"$cache/vdm2/vdmcheck-1.1.3/VDMCheck2.sh\"," \
+            "  \"fmi3_vdm_check\": \"$cache/vdm3/vdmcheck-1.1.3/VDMCheck3.sh\"" \
+            '}' > target/fmi-conformance/config.json
           EOF
 
       - name: Run template runtime checks
@@ -532,13 +605,17 @@ jobs:
         run: |
           nix develop .#${{ matrix.nix_shell }} --command bash <<'EOF'
           set -euo pipefail
-          mkdir -p target/template-runtimes
-          touch target/template-runtimes/strict
           venv="target/template-runtime-venv-${TEMPLATE_BACKEND}"
+          system_cmake=$(command -v cmake || true)
           if [ -d "$venv" ]; then
             . "$venv/bin/activate"
           fi
-          cargo xtask verify template-runtimes --backend "$TEMPLATE_BACKEND"
+          if [ "$TEMPLATE_BACKEND" = fmi ]; then
+            export PATH="$(dirname "$system_cmake"):$PATH"
+          fi
+          cargo xtask verify template-runtimes \
+            --backend "$TEMPLATE_BACKEND" \
+            --require-external-tools
           EOF
 
   editor-msl-smoke:
@@ -769,12 +846,11 @@ jobs:
         run: |
           ./target/debug/xtask coverage gate --allowed-workspace-line-coverage-drop 3.0
 
-  # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane and push to
-  # Cachix, so the shard / merge / ModelicaTest consumers restore them instead
-  # of each recompiling + re-LTO'ing the workspace. LTO is a link-time cost no
-  # per-crate cache can avoid — only build-once does. On an unchanged dep closure
-  # the crane `cargoArtifacts` layer is a Cachix hit; only the workspace crates
-  # rebuild here, once, for all consumers.
+  # Build the heavy MSL artifacts (release + LTO) ONCE via Nix/crane. The
+  # producer keeps the pinned OpenModelica closure in its own stable GitHub
+  # Actions cache and the source-dependent MSL closure in a commit-keyed cache,
+  # then exports both as workflow artifacts. Consumers never rebuild either
+  # closure independently.
   nix-build-msl:
     name: Build MSL artifacts (Nix, once)
     runs-on: ubuntu-24.04
@@ -789,18 +865,108 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
-        with:
-          name: cognipilot
-          # Public cache: consumer pulls need no auth; the token lets this
-          # producer push the freshly built closure. Absent on fork PRs, in which
-          # case consumers Cachix-miss and fall back to compiling — still correct.
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      - name: Build + cache MSL artifacts
+      - name: Install closure archive tooling
         run: |
-          nix build --print-build-logs .#msl-artifacts
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      - name: Derive Nix closure cache keys
+        id: nix-cache-keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+
+          with open("flake.lock", encoding="utf-8") as lock_file:
+              locked = json.load(lock_file)["nodes"]["openmodelica"]["locked"]
+          identity = f'{locked["rev"]}\0{locked["narHash"]}'.encode()
+          digest = hashlib.sha256(identity).hexdigest()[:16]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f'openmodelica={locked["rev"]}-{digest}\n')
+          PY
+
+      - name: Restore OpenModelica closure cache
+        uses: actions/cache@v5
+        with:
+          path: target/nix-cache/openmodelica-cli-closure.nar.zst
+          key: openmodelica-cli-closure-v1-${{ runner.os }}-${{ steps.nix-cache-keys.outputs.openmodelica }}
+          restore-keys: |
+            openmodelica-cli-closure-v1-${{ runner.os }}-
+
+      - name: Restore MSL artifacts closure cache
+        uses: actions/cache@v5
+        with:
+          path: target/nix-cache/msl-artifacts-closure.nar.zst
+          key: msl-artifacts-closure-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            msl-artifacts-closure-v1-${{ runner.os }}-
+
+      - name: Import cached Nix closures
+        shell: bash
+        run: |
+          set -euo pipefail
+          for archive in \
+            target/nix-cache/openmodelica-cli-closure.nar.zst \
+            target/nix-cache/msl-artifacts-closure.nar.zst
+          do
+            if [[ -s "$archive" ]]; then
+              zstd --decompress --stdout "$archive" | nix-store --import
+            else
+              echo "No prior closure cache at $archive"
+            fi
+          done
+
+      - name: Build shared MSL and OpenModelica artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build --print-build-logs .#msl-artifacts \
+            --out-link result-msl-artifacts
+          nix build --print-build-logs .#openmodelica-cli \
+            --out-link result-openmodelica
+
+      - name: Export shared Nix closures
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/nix-cache
+          export_closure() {
+            local output_link=$1
+            local archive=$2
+            local -a closure_paths=()
+            mapfile -t closure_paths < <(
+              nix-store -qR "$output_link" | sort -u
+            )
+            nix-store --export "${closure_paths[@]}" |
+              zstd -T0 -3 -f -o "$archive"
+          }
+          export_closure \
+            result-openmodelica \
+            target/nix-cache/openmodelica-cli-closure.nar.zst
+          export_closure \
+            result-msl-artifacts \
+            target/nix-cache/msl-artifacts-closure.nar.zst
+
+      - name: Upload OpenModelica closure
+        uses: actions/upload-artifact@v6
+        with:
+          name: openmodelica-cli-nix-closure
+          path: target/nix-cache/openmodelica-cli-closure.nar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload MSL artifacts closure
+        uses: actions/upload-artifact@v6
+        with:
+          name: msl-artifacts-nix-closure
+          path: target/nix-cache/msl-artifacts-closure.nar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
   # ============================================================================
   # MSL parity gate, sharded. The ~54min root-example parity run (575 models +
@@ -808,8 +974,8 @@ jobs:
   # (so the timeout tail spreads evenly); the msl-merge job then runs the
   # baseline ratchet ONCE on the merged results. ModelicaTest is its own job.
   #
-  # Each consumer restores the prebuilt MSL artifact bundle from Cachix (needs:
-  # nix-build-msl) and runs it via `--prebuilt-test-binary` /
+  # Each consumer imports the producer's GitHub workflow artifacts (needs:
+  # nix-build-msl) and runs them via `--prebuilt-test-binary` /
   # `--prebuilt-sim-worker`, so no workspace compile/LTO happens here — only the
   # light `cargo xtask` wrapper builds.
   # ============================================================================
@@ -831,7 +997,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev
+          sudo apt-get install -y libudev-dev zstd
 
       - name: Install Rust
         run: |
@@ -880,25 +1046,32 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: Download shared Nix closures
+        uses: actions/download-artifact@v8
         with:
-          name: cognipilot
+          pattern: '*-nix-closure'
+          path: target/nix-cache
+          merge-multiple: true
 
-      - name: Restore flake-pinned OpenModelica CLI (Cachix)
+      - name: Import shared Nix closures
         shell: bash
         run: |
           set -euo pipefail
+          for archive in \
+            target/nix-cache/openmodelica-cli-closure.nar.zst \
+            target/nix-cache/msl-artifacts-closure.nar.zst
+          do
+            zstd --decompress --stdout "$archive" | nix-store --import
+          done
           nix build .#openmodelica-cli --out-link result-openmodelica
+          nix build .#msl-artifacts --out-link result-msl-artifacts
           echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
           result-openmodelica/bin/omc --version
 
-      - name: Restore prebuilt MSL binaries (Cachix)
-        run: |
-          nix build .#msl-artifacts --out-link result-msl-artifacts
-
       - name: Run MSL parity shard ${{ matrix.shard }}/4
         run: |
+          # One bounded attempt; 20 s covers the certified strict-high tail on
+          # hosted runners without retries, exclusions, or looser trace checks.
           cargo xtask verify msl-parity \
             --shard ${{ matrix.shard }}/4 \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
@@ -908,6 +1081,8 @@ jobs:
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
             --sim-total-memory-mb 6144 \
+            --sim-timeout-secs 20 \
+            --model-attempt-timeout-secs 20 \
             --monitor-interval-secs 10
 
       - name: Upload shard results
@@ -918,6 +1093,7 @@ jobs:
             target/msl/results/msl_results.json
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
+            target/msl/results/msl_band_table.json
           if-no-files-found: error
 
   msl-merge:
@@ -937,7 +1113,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev
+          sudo apt-get install -y libudev-dev zstd
 
       - name: Install Rust
         run: |
@@ -963,13 +1139,19 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: Download shared Nix closure
+        uses: actions/download-artifact@v8
         with:
-          name: cognipilot
+          name: msl-artifacts-nix-closure
+          path: target/nix-cache
 
-      - name: Restore prebuilt MSL binaries (Cachix)
+      - name: Import shared Nix closure
+        shell: bash
         run: |
+          set -euo pipefail
+          zstd --decompress --stdout \
+            target/nix-cache/msl-artifacts-closure.nar.zst |
+            nix-store --import
           nix build .#msl-artifacts --out-link result-msl-artifacts
 
       - name: Merge shards + run quality gate
@@ -978,6 +1160,10 @@ jobs:
             --merge-shards target/msl/shards \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests"
 
+      # The band table is part of the merged evidence, not an optional extra:
+      # without it the merged run cannot say which models entered or left the
+      # compared set, and `parity_measured: false` in the snapshot is exactly the
+      # gate's own verdict that it had no comparable table to read.
       - name: Validate merged MSL quality outputs
         shell: bash
         run: |
@@ -986,6 +1172,13 @@ jobs:
           test -s target/msl/results/omc_simulation_reference.json
           test -s target/msl/results/sim_trace_comparison.json
           test -s target/msl/results/msl_quality_current.json
+          test -s target/msl/results/msl_band_table.json
+          measured="$(jq -r '.parity_measured // false' target/msl/results/msl_quality_current.json)"
+          if [[ "$measured" != "true" ]]; then
+            reason="$(jq -r '.parity_unmeasured_reason // "no reason recorded"' target/msl/results/msl_quality_current.json)"
+            echo "::error title=parity unmeasured: comparator did not run::the merged run published no parity number ($reason); sim_ok is completion, never parity"
+            exit 1
+          fi
 
       - name: Generate MSL compatibility report
         if: always()
@@ -1057,7 +1250,7 @@ jobs:
 
       - name: Locate MSL quality snapshot
         id: msl-quality-snapshot
-        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1229,6 +1422,7 @@ jobs:
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_quality_current.json
+            target/msl/results/msl_band_table.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/msl_package_trace_accuracy.md
             target/msl/results/mls_contract_coverage.md
@@ -1241,7 +1435,7 @@ jobs:
     name: ModelicaTest Semantic Gate
     runs-on: ubuntu-24.04
     needs: [nix-build-msl]
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1251,7 +1445,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libudev-dev
+          sudo apt-get install -y libudev-dev zstd
 
       - name: Install Rust
         run: |
@@ -1295,8 +1489,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          modelicatest_revision=8ae3d35c24e519cb2996cab20f3b13daf2b0c50a
           rm -rf target/msl/modelicatest-source
-          git clone --depth 1 --branch v4.1.0             https://github.com/modelica/ModelicaStandardLibrary.git             target/msl/modelicatest-source
+          git init target/msl/modelicatest-source
+          git -C target/msl/modelicatest-source remote add origin \
+            https://github.com/modelica/ModelicaStandardLibrary.git
+          git -C target/msl/modelicatest-source fetch --depth 1 origin "$modelicatest_revision"
+          git -C target/msl/modelicatest-source checkout --detach FETCH_HEAD
+          test "$(git -C target/msl/modelicatest-source rev-parse HEAD)" = "$modelicatest_revision"
           rm -rf target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
           cp -a             target/msl/modelicatest-source/ModelicaTest             target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
 
@@ -1305,22 +1505,27 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: Download shared Nix closures
+        uses: actions/download-artifact@v8
         with:
-          name: cognipilot
+          pattern: '*-nix-closure'
+          path: target/nix-cache
+          merge-multiple: true
 
-      - name: Restore flake-pinned OpenModelica CLI (Cachix)
+      - name: Import shared Nix closures
         shell: bash
         run: |
           set -euo pipefail
+          for archive in \
+            target/nix-cache/openmodelica-cli-closure.nar.zst \
+            target/nix-cache/msl-artifacts-closure.nar.zst
+          do
+            zstd --decompress --stdout "$archive" | nix-store --import
+          done
           nix build .#openmodelica-cli --out-link result-openmodelica
+          nix build .#msl-artifacts --out-link result-msl-artifacts
           echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
           result-openmodelica/bin/omc --version
-
-      - name: Restore prebuilt MSL binaries (Cachix)
-        run: |
-          nix build .#msl-artifacts --out-link result-msl-artifacts
 
       - name: Run ModelicaTest semantic gate
         shell: bash
@@ -1346,6 +1551,39 @@ jobs:
             --out target/msl/modelicatest-results/modelica_test_catalog.md \
             --json-out target/msl/modelicatest-results/modelica_test_catalog.json
 
+      # Report-only survey of the *whole* ModelicaTest package. The blocking
+      # gate above stays bounded to the committed target list; this pass exists
+      # to discover which additional ModelicaTest models now reach `sim_ok` so
+      # the committed list can be ratcheted upward. It never fails the job
+      # (`--require-selected-targets-success` is deliberately absent) and only
+      # runs on main, where wall time is not on the PR critical path.
+      - name: Survey ModelicaTest coverage (report only)
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl/modelicatest-survey
+          cargo xtask verify msl-parity \
+            --results-dir target/msl/modelicatest-survey \
+            --include-modelica-test \
+            --sim-match ModelicaTest. \
+            --sim-set full \
+            --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
+            --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
+            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
+            --stage-parallelism 3 \
+            --sim-parallelism 3 \
+            --sim-worker-memory-mb 2048 \
+            --sim-total-memory-mb 6144
+          ./result-msl-artifacts/bin/rumoca-msl-tools modelica-test-catalog \
+            --results target/msl/modelicatest-survey/msl_results.json \
+            --out target/msl/modelicatest-survey/modelica_test_catalog.md \
+            --json-out target/msl/modelicatest-survey/modelica_test_catalog.json \
+            --base-targets crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json \
+            --promote-targets-out target/msl/modelicatest-survey/modelica_test_targets_ci.promoted.json \
+            --per-category 6
+
       - name: Upload ModelicaTest artifacts
         if: always()
         uses: actions/upload-artifact@v6
@@ -1354,14 +1592,16 @@ jobs:
           path: |
             target/msl/modelicatest-results/msl_results.json
             target/msl/modelicatest-results/modelica_test_catalog.md
+            target/msl/modelicatest-survey/modelica_test_catalog.md
+            target/msl/modelicatest-survey/modelica_test_targets_ci.promoted.json
           if-no-files-found: warn
 
   modelica-models-gate:
     name: modelica_models Compatibility Gate
     runs-on: ubuntu-24.04
     needs: [nix-build-msl]
-    # Cachix is optional for PRs, so a cache miss must leave enough time to
-    # rebuild the shared MSL artifact bundle before compiling the corpus.
+    # Importing the producer's closure keeps this gate focused on the external
+    # compatibility corpus rather than rebuilding the workspace.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -1376,22 +1616,33 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: CogniPilot/modelica_models
-          ref: 973cc7f4d5ff39eee23303f83e6f10473a254f51
+          ref: 16172e4935956d872477814cf63bd3690b3e10a4
           path: target/modelica-models
           persist-credentials: false
+
+      - name: Install closure archive tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: Download shared Nix closure
+        uses: actions/download-artifact@v8
         with:
-          name: cognipilot
+          name: msl-artifacts-nix-closure
+          path: target/nix-cache
 
-      - name: Restore prebuilt compatibility runner (Cachix)
+      - name: Import shared Nix closure
+        shell: bash
         run: |
+          set -euo pipefail
+          zstd --decompress --stdout \
+            target/nix-cache/msl-artifacts-closure.nar.zst |
+            nix-store --import
           nix build .#msl-artifacts --out-link result-msl-artifacts
 
       - name: Compile aggregate corpus with Rumoca
@@ -1513,10 +1764,11 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          name: cognipilot
+          use-flakehub: false
+          diagnostic-endpoint: ''
 
       - name: Rust cache (wasm)
         uses: Swatinem/rust-cache@v2
@@ -1534,7 +1786,7 @@ jobs:
         #                                          non-browser-safe relaxed-SIMD graph)
         #   core     -> @cognipilot/rumoca-core  (no bundled solver — bring your own)
         run: |
-          nix develop --command bash <<'EOF'
+          nix develop .#ci-wasm --command bash <<'EOF'
           set -euo pipefail
           node packages/rumoca/build.mjs --profile release --variant full-web --optimize
           node packages/rumoca/build.mjs --profile release --variant core --optimize
@@ -1827,15 +2079,19 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            nix_system: x86_64-linux
             name: linux-x86_64-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            nix_system: aarch64-linux
             name: linux-aarch64-gnu
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            nix_system: x86_64-darwin
             name: macos-x86_64
           - os: macos-15
             target: aarch64-apple-darwin
+            nix_system: aarch64-darwin
             name: macos-aarch64
           - os: windows-2025
             target: x86_64-pc-windows-msvc
@@ -1852,11 +2108,12 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
+      - name: GitHub Actions Nix cache
         if: runner.os != 'Windows'
-        uses: cachix/cachix-action@v17
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          name: cognipilot
+          use-flakehub: false
+          diagnostic-endpoint: ''
 
       - uses: actions/setup-python@v6
         if: runner.os == 'Windows'
@@ -1880,7 +2137,7 @@ jobs:
       - name: Build wheels (Nix)
         if: runner.os != 'Windows'
         run: |
-          nix develop --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
             set -euo pipefail
             maturin build \
               --release \
@@ -1903,7 +2160,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          nix develop --command bash -lc '
+          nix develop ".#devShells.${{ matrix.nix_system }}.ci-python-wheel" --command bash -lc '
             set -euo pipefail
             python -m venv target/python-wheel-smoke-venv
             . target/python-wheel-smoke-venv/bin/activate
@@ -1953,14 +2210,15 @@ jobs:
         with:
           determinate: false
 
-      - name: Cachix (CogniPilot binary cache)
-        uses: cachix/cachix-action@v17
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          name: cognipilot
+          use-flakehub: false
+          diagnostic-endpoint: ''
 
       - name: Build sdist
         run: |
-          nix develop --command bash -lc '
+          nix develop .#ci-python-wheel --command bash -c '
             set -euo pipefail
             cd crates/rumoca-bind-python
             maturin sdist --out dist

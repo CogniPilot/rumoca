@@ -43,7 +43,6 @@ pub mod cache;
 mod codegen_api;
 mod codegen_target;
 mod experiment;
-mod galec_api;
 mod instrumentation;
 #[cfg(test)]
 mod instrumentation_tests;
@@ -52,6 +51,7 @@ mod package_layout;
 pub mod parallelism;
 mod parse;
 mod parsed_artifact_cache;
+mod portable_source_root_cache;
 mod scenario_config;
 mod session;
 mod source_root_cache;
@@ -62,6 +62,10 @@ mod workspace_config;
 /// Source-root discovery and cache helpers.
 pub mod source_roots {
     pub use crate::package_layout::PackageLayoutError;
+    pub use crate::portable_source_root_cache::{
+        PortableSourceRoot, PortableSourceRootCacheIssue, PortableSourceRootCacheReport,
+        write_portable_source_root_cache,
+    };
     pub use crate::session::SourceRootRefreshPlan;
     pub use crate::source_root_cache::{
         ParsedSourceRoot, SourceRootCacheStatus, SourceRootCacheTiming,
@@ -100,7 +104,8 @@ pub mod parsing {
     pub use crate::parse::{
         LenientParseResult, ParseError, ParseFailure, ParseResult, ParseSuccess,
         parse_and_merge_parallel, parse_files_parallel, parse_files_parallel_lenient,
-        parse_source_to_ast, parse_source_to_ast_with_errors, validate_source_syntax,
+        parse_source_to_ast, parse_source_to_ast_with_errors, source_map_for_parsed_files,
+        validate_source_syntax,
     };
 }
 
@@ -114,12 +119,12 @@ pub mod scenario {
         SimulationModelOverride, clear_model_simulation_preset, codegen_config_from_json,
         codegen_config_to_json, is_rumoca_task_filename, load_codegen_config_for_model,
         load_plot_views_for_model, load_simulation_snapshot_for_model, load_source_roots_for_model,
-        load_source_roots_for_model_task, parse_fallback_simulation, parse_scenario_config_file,
-        parse_views_payload, scenario_config_full_to_json, scenario_config_response,
-        scenario_config_text_from_json, simulation_override_from_json, simulation_preset_to_json,
-        simulation_settings_to_json, source_roots_from_json, source_roots_to_json,
-        visualization_views_to_json, write_codegen_config_for_model, write_model_simulation_preset,
-        write_plot_views_for_model, write_source_roots_for_model,
+        load_source_roots_for_model_task, normalize_solver_opt, parse_fallback_simulation,
+        parse_scenario_config_file, parse_views_payload, scenario_config_full_to_json,
+        scenario_config_response, scenario_config_text_from_json, simulation_override_from_json,
+        simulation_preset_to_json, simulation_settings_to_json, source_roots_from_json,
+        source_roots_to_json, visualization_views_to_json, write_codegen_config_for_model,
+        write_model_simulation_preset, write_plot_views_for_model, write_source_roots_for_model,
         write_source_roots_for_model_task,
     };
 }
@@ -132,73 +137,44 @@ pub mod workspace {
     };
 }
 
-/// Code generation helpers operating on compiled DAE.
+/// Curated code-generation helpers for proven-valid compiler artifacts.
 pub mod codegen {
     pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_for_fmi_implementation_context,
-        dae_for_fmi_model_description_context, dae_for_fmi_native_implementation_context,
-        dae_for_solve_template_context, dae_to_template_json, fmi3_native_projection_available,
-        render_ast_template_with_name, render_dae_template, render_dae_template_with_json,
-        render_dae_template_with_json_and_name, render_dae_template_with_name,
-        render_flat_template_with_name, render_solve_template_with_name,
+        CodegenError, SolveTemplateRenderer, dae_to_template_json,
+        render_algorithm_code_template_with_artifact, render_ast_template_with_name,
+        render_dae_template, render_dae_template_with_name, render_flat_template_with_name,
+        render_solve_template_with_name,
     };
     pub mod targets {
         pub use crate::codegen_target::{
-            AssetBundle, BuiltinTargetDescriptor, ChecksumNeed, RenderedTargetFile,
-            TargetBuildKind, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
-            TargetFeatureSupport, TargetFile, TargetFileRenderContext, TargetManifest,
+            AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed,
+            RenderedTargetFile, TargetArchive, TargetArchiveFormat, TargetArchiveRoot,
+            TargetAssetFile, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
+            TargetFeatureSupport, TargetFile, TargetIntegerDomain, TargetManifest, TargetPackage,
             TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability,
             TensorLayoutCapability, builtin_target_compatibility_matrix,
             builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
             parse_target_manifest, render_dae_target_files, safe_target_join,
             target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
+            validate_solve_target_capabilities, validate_solve_tensor_inventory,
         };
     }
 }
 
-/// GALEC / eFMI Algorithm Code export facade (SPEC_0034 GAL-010: frontends
-/// reach the `rumoca-galec-codegen` projection only through this module).
-pub mod galec {
-    pub use crate::galec_api::{
-        EMBEDDED_C_GALEC_CONFORMANCE_LINES, EMBEDDED_C_GALEC_CONFORMANCE_SUMMARY,
-        EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET, GALEC_TARGET, GalecCExport,
-        GalecExportError, GalecPackagingPlan, GalecSources, PRODUCTION_CONFORMANCE_LINES,
-        PRODUCTION_CONFORMANCE_SUMMARY, build_scalar_type_map, dae_for_galec_projection,
-        is_galec_target, plan_galec_export, plan_galec_production_export, render_galec_c_export,
-        render_galec_c_files_from_context, render_galec_sources,
-    };
-    pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
-    pub use rumoca_ir_galec::ast::ScalarType;
-
-    /// Curated downward re-export of the eFMI packaging primitives the
-    /// `rumoca` crate's generic container/checksum build step needs
-    /// (SPEC_0029 §8): the SHA-1 primitive and the path/name newtypes live in
-    /// `rumoca-galec-codegen` (Tier 3, below the build step), and the build
-    /// step imports them here rather than taking a direct dependency on the
-    /// projection crate — keeping `rumoca`'s only compiler-facing edge
-    /// `rumoca-compile`.
-    pub use rumoca_galec_codegen::{
-        EfmiError, FilePath, NameWithoutSlashes, Sha1Hex, xml_escape, xs_double,
-    };
-}
-
 /// Read-only DAE analysis helpers exposed through the compile facade.
 pub mod analysis {
-    pub use rumoca_phase_dae::balance::BalanceDetail;
-    pub use rumoca_phase_dae::{balance, balance_detail, equations_unknowns, is_balanced};
+    pub use rumoca_phase_dae::balance::{BalanceBreakdown, BalanceDetail};
+    pub use rumoca_phase_dae::balance_detail;
 }
 
-/// Structural-analysis primitives (BLT sorting, scalarization).
+/// Structural-analysis primitives over a branded checked-DAE view.
 pub mod phase_structural {
-    pub use rumoca_phase_structural::scalarize::scalarize_equations;
     pub use rumoca_phase_structural::{
-        AlgebraicLoop, BltBlock, CausalStep, EliminationResult, EquationRef, IcBlock,
-        IcRelaxationHint, Incidence, SortedDae, StructuralDiagnostics, StructuralError,
-        Substitution, TearingResult, UnknownId, analyze_structure, build_blt_from_incidence,
-        build_ic_plan, build_ic_relaxation_hint, build_solver_sparsity_triplets,
-        runtime_defined_continuous_unknown_names, runtime_defined_unknown_names, sort_dae,
-        tear_algebraic_loop,
+        AlgebraicLoop, BltBlock, EquationRef, Incidence, SortedDae, StructuralDiagnostics,
+        StructuralError, StructuredScalarBlock, TearingResult, UnknownId, analyze,
+        build_blt_from_incidence, runtime_defined_continuous_unknown_names,
+        runtime_defined_unknown_names, sort, tear_algebraic_loop,
     };
 }
 
@@ -208,26 +184,24 @@ pub mod compile {
     pub use rumoca_core::{
         Causality as AstCausality, Token as AstToken, VarName, Variability as AstVariability,
     };
-    pub use rumoca_ir_ast::ResolvedTree;
     pub use rumoca_ir_ast::{
         Component as AstComponent, ComponentRefPart as AstComponentRefPart,
         ComponentReference as AstComponentReference, Expression as AstExpression,
         ForIndex as AstForIndex, Subscript as AstSubscript,
     };
-    pub use rumoca_ir_dae::{Dae, Variable};
+    pub use rumoca_ir_dae::{
+        ClockOperation, ConditionId, ContinuousOwnerView, CoordinateView, Dae, DaeProvenance,
+        DaeView, DiscreteBranchActivation, DiscreteRealActivation, DiscreteRealEquationView,
+        ExprId, ExpressionOperation, ResidualEquationView, VariableId, VariableRole, VariableView,
+        for_each_expression,
+    };
     pub use rumoca_ir_flat::Model as FlatModel;
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct SourceTextPosition {
-        pub line: u32,
-        pub character: u32,
-    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SourceSpanLocation {
         pub file_name: String,
-        pub start: SourceTextPosition,
-        pub end: SourceTextPosition,
+        pub start: rumoca_core::text_position::TextPosition,
+        pub end: rumoca_core::text_position::TextPosition,
     }
 
     pub fn source_span_location(
@@ -245,27 +219,9 @@ pub mod compile {
         }
         Some(SourceSpanLocation {
             file_name: file_name.to_string(),
-            start: byte_offset_to_position(source, start_byte),
-            end: byte_offset_to_position(source, end_byte),
+            start: rumoca_core::text_position::byte_offset_to_position(source, start_byte),
+            end: rumoca_core::text_position::byte_offset_to_position(source, end_byte),
         })
-    }
-
-    fn byte_offset_to_position(source: &str, byte_offset: usize) -> SourceTextPosition {
-        let clamped = byte_offset.min(source.len());
-        let mut line = 0u32;
-        let mut character = 0u32;
-        for (idx, ch) in source.char_indices() {
-            if idx >= clamped {
-                break;
-            }
-            if ch == '\n' {
-                line = line.saturating_add(1);
-                character = 0;
-            } else {
-                character = character.saturating_add(ch.len_utf16() as u32);
-            }
-        }
-        SourceTextPosition { line, character }
     }
 
     pub use crate::instrumentation::{
@@ -277,11 +233,12 @@ pub mod compile {
         CompilePhaseTimingSnapshot, CompilePhaseTimingStat, CompiledSourceRoot,
         DaeCompilationResult, Document, DocumentSymbol, DocumentSymbolKind, FailedPhase,
         LocalComponentInfo, ModelDiagnostics, ModelFailureDiagnostic, NavigationClassTargetInfo,
-        ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session, SessionChange,
-        SessionConfig, SessionSnapshot, SourceRootActivityKind, SourceRootActivityPhase,
-        SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind, SourceRootLoadMode,
-        SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming, StrictCompileReport,
-        StructuralOverride, WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
+        ParsedSourceDocument, ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session,
+        SessionChange, SessionConfig, SessionSnapshot, SourceRootActivityKind,
+        SourceRootActivityPhase, SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind,
+        SourceRootLoadMode, SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming,
+        StrictCompilation, StrictCompileFailure, StrictCompileReport, StructuralOverride,
+        WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
         compile_phase_timing_stats, install_compile_phase_observer,
         reset_compile_phase_timing_stats,
     };

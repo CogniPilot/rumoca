@@ -54,9 +54,9 @@ def test_simulate() -> None:
 
 def test_codegen() -> None:
     m = rm.Session(roots=[str(SOURCE_ROOT)]).load(MODEL_FILE)
-    cg = m.codegen("sympy")
-    assert cg.target == "sympy"
-    assert any(p.endswith(".py") for p in cg.paths)
+    cg = m.codegen("c-ode")
+    assert cg.target == "c-ode"
+    assert any(p.endswith(".c") for p in cg.paths)
     # Iterable of (path, content).
     for path, content in cg:
         assert isinstance(path, str) and isinstance(content, str)
@@ -77,9 +77,9 @@ def test_session_reuse() -> None:
 
 def test_targets_and_solvers() -> None:
     ids = [t.id for t in rm.targets()]
-    assert "sympy" in ids
-    sympy = next(t for t in rm.targets() if t.id == "sympy")
-    assert sympy.ir in ("ast", "flat", "dae", "solve")
+    assert "c-ode" in ids
+    c_ode = next(t for t in rm.targets() if t.id == "c-ode")
+    assert c_ode.ir == "solve"
     solver_ids = [s.id for s in rm.solvers()]
     assert "rk-like" in solver_ids
 

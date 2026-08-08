@@ -34,7 +34,17 @@ pub(crate) fn materialize_referenced_zero_sized_array_variables(
                 name.as_str()
             ))
         })?;
+        // The referenced declaration produced no instantiated occurrence, so the
+        // placeholder owns a Flat-allocated occurrence identity that keeps its
+        // exact declaration provenance.
+        let instance_id = flat.materialize_instance(flat::InstanceRelation {
+            owner: name.instance_id(),
+            declaration: name.target_def_id(),
+            indices: Box::default(),
+            kind: flat::InstanceKind::Materialized,
+        });
         let variable = flat::Variable {
+            instance_id,
             name: var_name.clone(),
             component_ref: name.component_ref().cloned(),
             source_span,
@@ -117,4 +127,90 @@ fn zero_sized_array_dims_for_ref(name: &rumoca_core::Reference, ctx: &Context) -
             .and_then(|target_name| ctx.array_dimensions.get(target_name))
     })?;
     (!dims.is_empty() && dims.iter().any(|dim| *dim <= 0)).then(|| dims.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{Span, VarName};
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("zero_sized_array_test.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn var_ref(path: &str, def_id: u32) -> rumoca_core::Expression {
+        let parts = rumoca_core::ComponentPath::from_flat_path(path)
+            .parts()
+            .iter()
+            .enumerate()
+            .map(|(index, ident)| rumoca_core::ComponentRefPart {
+                ident: ident.clone(),
+                span: test_span(),
+                subs: Vec::new(),
+                def_id: rumoca_core::DefId::new(def_id + u32::try_from(index).expect("small path")),
+            })
+            .collect();
+        rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::from_component_reference(
+                rumoca_core::ComponentReference::construct(false, test_span(), parts)
+                    .expect("fixture reference carries an exact identity for every part"),
+            ),
+            subscripts: Vec::new(),
+            span: test_span(),
+        }
+    }
+
+    #[test]
+    fn materialized_placeholders_carry_distinct_allocated_occurrence_identities() {
+        let mut flat = flat::Model::new();
+        for (index, path) in ["CriticalDamping.c0", "CriticalDamping.c1"]
+            .into_iter()
+            .enumerate()
+        {
+            flat.equations.push(flat::Equation::new(
+                var_ref(path, 10 + u32::try_from(index).expect("small fixture") * 10),
+                test_span(),
+                flat::EquationOrigin::ComponentEquation {
+                    component: "CriticalDamping".to_string(),
+                },
+            ));
+        }
+        let mut ctx = Context::new();
+        ctx.array_dimensions
+            .insert("CriticalDamping.c0".to_string(), vec![0]);
+        ctx.array_dimensions
+            .insert("CriticalDamping.c1".to_string(), vec![0]);
+
+        materialize_referenced_zero_sized_array_variables(&mut flat, &ctx)
+            .expect("zero-sized placeholders materialize");
+
+        let identities: Vec<rumoca_core::InstanceId> = ["CriticalDamping.c0", "CriticalDamping.c1"]
+            .into_iter()
+            .map(|name| {
+                flat.variables
+                    .get(&VarName::new(name))
+                    .unwrap_or_else(|| panic!("missing placeholder {name}"))
+                    .instance_id
+            })
+            .collect();
+        for instance_id in &identities {
+            assert!(
+                !instance_id.is_unset(),
+                "placeholder kept the reserved unset occurrence identity"
+            );
+            assert_eq!(
+                flat.instance_relations
+                    .get(instance_id)
+                    .expect("materialized occurrence is registered")
+                    .kind,
+                flat::InstanceKind::Materialized
+            );
+        }
+        assert_ne!(identities[0], identities[1]);
+        assert_eq!(flat.validate_shape_contract(), Ok(()));
+    }
 }

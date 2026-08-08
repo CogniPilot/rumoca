@@ -1,0 +1,1299 @@
+# Formal-statement registry — which formal statement justifies each pinned
+# behavior, and whether it is spec-normative or oracle-implied.
+#
+# Hand written. Nothing generates this table: the classification each row makes
+# is a judgment, and a generator would launder it. See
+# `src/registry/formal.rs` for the schema, the tiers, and the rules
+# `tests/formal_statement_invariants.rs` enforces over every row.
+#
+# Field summary:
+#   id                 FS-<CATEGORY>-<NNN>, category from SPEC_0022
+#   statement          the formal statement, one precise sentence
+#   tier               SpecSourced | OracleImplied
+#   edition/section    SpecSourced: the MLS edition and section
+#   quote_kind/quote   SpecSourced: Verbatim MLS text, or the tree's Paraphrase
+#   quote_source       SpecSourced: the file where `quote` already appears
+#   oracle/evidence    OracleImplied: the oracle, and where its evidence is
+#   latitude_note      OracleImplied: what the specification leaves open
+#   pin_kind           Test | Site | Record
+#   pin_file/pin_anchor  the file, and the exact text that must occur in it
+#   status             Enforced | RecordedDivergence | Unimplemented
+
+# ---------------------------------------------------------------------------
+# EQN — when-equation activation (MLS §8.3.5, §8.3.5.1, §8.5, §8.6)
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-EQN-001'
+statement = 'A when-clause activates on the rising edge of a Boolean activation buffer whose start value is the activation condition evaluated at the initialization instant, so a condition already true there presents no edge.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Verbatim'
+quote = 'Boolean b(start = x.start > 2); b = x > 2; v1 = if edge(b) then expr1 else pre(v1);'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'a_state_condition_true_at_the_start_never_activates_on_either_session'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'rumoca left the buffer at false, which manufactured an edge at the initial event for every already-true activation on both solver paths.'
+
+[[statements]]
+id = 'FS-EQN-002'
+statement = 'Before the start of integration every variable satisfies v = pre(v), so an activation buffer cannot present a rising edge at the initial event unless the condition itself rises there.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'Before the start of the integration, it must be guaranteed that for all variables `v`, `v = pre(v)`'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'a_falling_time_condition_never_activates_on_either_session'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§8.3.5.1']
+
+[[statements]]
+id = 'FS-EQN-003'
+statement = 'A when-clause is active during initialization if and only if it is explicitly enabled with initial().'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'The equations of a when-clause are active during initialization, if and only if they are explicitly enabled with `initial()`'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'an_initial_activation_still_runs_at_the_initial_event_on_either_session'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['EQN-023']
+
+[[statements]]
+id = 'FS-EQN-004'
+statement = 'An initial()-enabled when-clause does not enable the when-clauses beside it; every other activation still needs its own rising edge at the initial event.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'The equations of a when-clause are active during initialization, if and only if they are explicitly enabled with `initial()`'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'an_initial_event_does_not_activate_the_conditions_beside_it'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'The seeded buffer removes spurious initial activations without removing the §8.6 one; this row is what keeps FS-EQN-001 and FS-EQN-002 readable as one fix rather than a suppression.'
+
+[[statements]]
+id = 'FS-EQN-005'
+statement = 'A when-clause activates only at the instant when its scalar condition, or any element of its vector condition, becomes true.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5'
+quote_kind = 'Verbatim'
+quote = 'only at the instant when the scalar expression or any of the elements of the vector expression becomes true'
+quote_source = 'crates/rumoca-phase-dae/src/construction/model_events.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/model_events.rs'
+pin_anchor = 'lower_chain_guards'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-EQN-006'
+statement = 'A vector activation is realised as one Boolean buffer per element with the activation edge(b1) or ... or edge(bn), which is not the edge of the disjunction of the elements.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Paraphrase'
+quote = '§8.3.5.1 realises that as one `Boolean bi` per element with the activation `edge(b1) or … or edge(bn)`'
+quote_source = 'crates/rumoca-phase-dae/src/construction/conditions.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'a_vector_activation_rises_where_its_disjunction_cannot'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§8.3.5']
+note = 'Folding a vector into one Or gives the whole vector one buffer, which deletes outright every activation whose disjunction is a tautology — the shape Modelica.Blocks.Logical.TriggeredTrapezoid and LogicalDelay are written in.'
+
+[[statements]]
+id = 'FS-EQN-007'
+statement = 'A source-written when-clause over a literal or parameter-constant condition still owns an activation buffer seeded from that condition, so it never has a rising edge and its body never runs.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Verbatim'
+quote = 'Boolean b(start = x.start > 2); b = x > 2; v1 = if edge(b) then expr1 else pre(v1);'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'a_source_when_over_a_literal_never_runs'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'The synthesised activation of an unguarded algorithm section and of a section-level assert is a distinct DAE node (ConditionOperation::Always) that carries no buffer, so the two shapes can no longer be confused.'
+
+[[statements]]
+id = 'FS-EQN-008'
+statement = 'An assert is violated because its condition is false, not because it became false, so a section-level assertion is a level check that carries no activation buffer.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.7'
+quote_kind = 'Verbatim'
+quote = 'assert(condition, message) ... the assertion is violated if the condition is false'
+quote_source = 'crates/rumoca-phase-dae/src/construction.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction.rs'
+pin_anchor = 'lower_assertions'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§8.3.5', '§8.5']
+note = 'An assertion written inside a when body keeps its edge, because there the activation belongs to the when.'
+
+[[statements]]
+id = 'FS-EQN-009'
+statement = 'The branches of a when/elsewhen chain are ordered by priority, so where two branch edges coincide the earlier branch resolves the assignment conflict.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.4'
+quote_kind = 'Verbatim'
+quote = 'can be used to resolve assignment conflicts since the first of the when/elsewhen parts are given higher priority than later ones'
+quote_source = 'crates/rumoca-phase-dae/src/construction/model_events.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-sim/src/solve_lowering/tests.rs'
+pin_anchor = 'checked_when_elsewhen_priority_selects_first_on_simultaneous_rise'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§8.3.5', '§8.3.5.1']
+note = 'The priority rule lives in §8.3.5.4, the Single Assignment Rule applied to when-equations, not in §8.3.5 itself. FS-EQN-016 records the shape where rumoca does not reach this resolution, because its two branches land in different event iterations.'
+
+[[statements]]
+id = 'FS-EQN-010'
+statement = 'An elsewhen branch carries no condition of its own beyond its own rising edge, so a first branch that stays true does not suppress the branches after it.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5'
+quote_kind = 'Verbatim'
+quote = 'only at the instant when the scalar expression or any of the elements of the vector expression becomes true'
+quote_source = 'crates/rumoca-phase-dae/src/construction/model_events.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-sim/src/solve_lowering/tests.rs'
+pin_anchor = 'checked_when_elsewhen_runs_its_later_branch_while_the_first_is_still_true'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'The PersistentFirstPriority fixture. Guarding branch i with cond_i and not (cond_1 or ...) held y = 1 for the whole run where OpenModelica reaches y = 2 at t = 0.7.'
+
+[[statements]]
+id = 'FS-EQN-011'
+statement = 'A when body expands to simultaneous equations, one v = if edge(b) then expr else pre(v) per assigned variable, so a body that reads a variable it also assigns must observe the newly assigned value.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Verbatim'
+quote = 'Boolean b(start = x.start > 2); b = x > 2; v1 = if edge(b) then expr1 else pre(v1);'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'A `when` body reading a variable the same body assigns — SPEC VIOLATION'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+note = 'rumoca evaluates the rows of an event pass sequentially against the event-entry snapshot, so it sees the old value: omc gives b = 100 and rumoca gives b = -100 on both solver sessions. This is the whole of what separates rumoca from omc on the *shape* of Modelica.Blocks.Math.ContinuousSignalExtrema, whose t_min/t_max read y_min after the same body assigns it — the model itself does not compile in rumoca today (initial() inside an expression and terminal(), ED018; pre of a continuous variable, ED019), so no claim is made about its measured behavior. The claim is measured on reductions of the shape.'
+
+[[statements]]
+id = 'FS-EQN-012'
+statement = 'Whether the special relations time >= discrete expression and time < discrete expression trigger a time event at time = discrete expression is left to the implementation.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.5'
+quote_kind = 'Verbatim'
+quote = 'It is a quality of implementation issue that the following special relations `time >= discrete expression`, `time < discrete expression` trigger a time event at `time = discrete expression`'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_anchor = 'time_event_instant'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'This row states the freedom only. FS-EQN-013 states which side of it rumoca takes and why.'
+
+[[statements]]
+id = 'FS-EQN-013'
+statement = 'A when activation over time and parameter-evaluable operands owns an exactly scheduled instant rather than a located zero crossing, because a crossing located on the instant leaves a strict relation still reading false and is consumed with the activation never true.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc, dassl, stopTime = 1.0, numberOfIntervals = 20)'
+evidence = 'crates/rumoca/tests/time_event_when_activation.rs — the module-header comparison table, eight models measured at t = 0.45 / 0.5 / 0.55'
+latitude_note = 'MLS §8.5 grants the choice (FS-EQN-012), so a located crossing conforms as well as a schedule. Only the schedule reproduces the omc column, and only for a when activation: conditions of assertions and of algorithm if-statements keep owning their events through their own semantic owners.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'strict_time_activation_fires_at_its_instant'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-EQN-014'
+statement = 'An event-generating expression has an internal buffer whose value can change only at event instants; during continuous integration it holds the value from the last event instant.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.5'
+quote_kind = 'Verbatim'
+quote = 'An event generating expression has an internal buffer, and the value of the expression can only be changed at event instants'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_anchor = 'collect_activation_time_events'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-EQN-015'
+statement = 'A scheduled time-event instant and a state crossing that land on the same instant belong to one event iteration, so an activation that reads pre(a) at that instant reads the value a held before the iteration.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.5'
+quote_kind = 'Verbatim'
+quote = 'An event generating expression has an internal buffer, and the value of the expression can only be changed at event instants'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'REGRESSION INTRODUCED EARLIER'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+note = 'Giving the time relation a scheduled instant splits the two activations into two iterations on the rk-like session, and b regressed from 10 to 11 relative to the pre-change tree. Measured and accepted: no MSL when gains a scheduled instant, and five other probes moved from wrong to omc-matching. The fix belongs to the rk-like session, which applies a scheduled right limit without carrying the continuous state across it.'
+
+[[statements]]
+id = 'FS-EQN-016'
+statement = 'Two branches of one when/elsewhen chain whose instants coincide are resolved in one event iteration, so branch priority decides and the first branch assignment stands for the rest of the run.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Paraphrase'
+quote = '§8.3.5.1 spells the chain out as one if-expression per assigned variable whose arms are `edge(b1)`, `edge(b2)`, … over one `Boolean bi` per branch condition'
+quote_source = 'crates/rumoca-phase-dae/src/construction/model_events.rs'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'REGRESSION INTRODUCED HERE'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+related_sections = ['§8.3.5', '§8.3.5.4']
+note = 'A violation rather than a latitude: §8.3.5.1 gives each assigned variable ONE if-elseif expression whose arms are the branch edges, and one equation cannot be evaluated across two event iterations, so splitting the chain is not a scheduling freedom. §8.3.5.4 then supplies the resolution FS-EQN-009 carries. rumoca gives the first branch a scheduled instant and the second a located crossing, which land in different iterations, so the second branch finds its own edge where the first no longer has one: y regressed from 1 to 2 relative to the pre-change tree on this shape. Before the branch guards were corrected the level subtraction masked it. The diffsol session leaves y = 0 here, before and after.'
+
+[[statements]]
+id = 'FS-EQN-017'
+statement = 'A scalar initial() occurring inside a larger activation condition does not enable the when-clause during initialization; §8.6 enables exactly the spellings when initial() then and when {..., initial(), ...} then.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca/tests/time_event_when_activation.rs — the divergence list in the module header'
+latitude_note = 'MLS §8.6 names two enabling spellings; that a condition merely containing initial() is therefore not enabled is read off omc, which enables neither `when initial() or time > 0.5` nor `when not initial()`. rumoca treats any condition containing initial() as enabling. The vector spelling is correct; the scalar one is a separate §8.6 admissibility question and no test asserts it.'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'A scalar `initial()` inside a larger condition enables the whole'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+
+[[statements]]
+id = 'FS-EQN-018'
+statement = 'A vector activation carrying initial() beside a time threshold that the event itself moves owns a dynamic time-event deadline that is re-evaluated after every event boundary.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5'
+quote_kind = 'Paraphrase'
+quote = 'A vector activation whose `time` threshold reschedules itself owns a checked dynamic deadline.'
+quote_source = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'a_rescheduling_vector_activation_owns_a_dynamic_time_event'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'This is the shape used by Modelica.Blocks.Sources.TimeTable and CombiTimeTable. The checked DAE distinguishes the dynamic deadline from both a static scheduled instant and a continuously searched root.'
+
+# ---------------------------------------------------------------------------
+# SIM — the §8.6 initialization instant, and solver-session divergences
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-SIM-001'
+statement = 'For every Real variable with fixed = true, the equation variable = startExpression is added to the initialization equations.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Paraphrase'
+quote = 'For every Real variable vc with fixed = true, the equation vc = startExpression is added to the initialization equations.'
+quote_source = 'crates/rumoca-phase-structural/src/dae_transform/tests/initial_values.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-solve/src/lower/initial_pins.rs'
+pin_anchor = 'lower_transferred_initial_values'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['SIM-002', 'SIM-004']
+note = 'A demotion turns a state into an algebraic, which owns no initialization equation, so the structural phase proves which state a pin fixes and carries the value over.'
+
+[[statements]]
+id = 'FS-SIM-002'
+statement = 'Every parameter declared fixed = false is an unknown of the initialization system, and its start value may be used as a guess.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Paraphrase'
+quote = 'All variables declared as parameter having `fixed = false` are treated as unknowns during the initialization phase, i.e., there must be additional equations for them — and the start-value can be used as a guess-value during initialization.'
+quote_source = 'crates/rumoca-phase-solve/src/lower/initial_parameters.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-solve/src/tests/initialization.rs'
+pin_anchor = 'fixed_false_parameter_becomes_an_initialization_projection_unknown'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['SIM-003']
+
+[[statements]]
+id = 'FS-SIM-003'
+statement = 'A parameter that has both a binding equation and fixed = false is solved from its binding equation, not from the initialization projection.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'In the case a parameter has both a binding equation and `fixed = false` a diagnostic is recommended, but the parameter should be solved from the binding equation.'
+quote_source = 'crates/rumoca-phase-solve/src/lower/initial_parameters.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-solve/src/tests/initialization.rs'
+pin_anchor = 'a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'A bound parameter reading a projection unknown is both re-applied as an update row and substituted into every residual reading it, so the projection solves the guessed unknowns simultaneously with the binding rather than iterating against a stale number.'
+
+[[statements]]
+id = 'FS-SIM-004'
+statement = 'A parameter carrying both a binding equation and fixed = false draws no diagnostic.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca-phase-solve/src/lower/initial_parameters.rs — the module header'
+latitude_note = 'MLS §8.6 recommends a diagnostic rather than requiring one, and the declaration has one unambiguous reading, which is the one implemented. omc accepts the same models with a probably-redundant warning; rumoca emits nothing, so the two tools differ on diagnostics and agree on values.'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca-phase-solve/src/lower/initial_parameters.rs'
+pin_anchor = 'probably redundant'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+
+[[statements]]
+id = 'FS-SIM-005'
+statement = 'The declared start value of an initialization unknown is the guess the projection starts from, so a nonlinear initialization block with several roots is decided by the guess and not by the equations alone.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'the start-value can be used as a guess-value during initialization'
+quote_source = 'crates/rumoca-phase-solve/src/lower/initial_parameters.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-solve/src/lower/initial_projection.rs'
+pin_anchor = 'initialization_unknown_space'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'q*q = 4 from start = 3 gives 2 and from start = -3 gives -2; both are legal §8.6 answers, so a cross-tool comparison of such a model compares guesses as much as equations.'
+
+[[statements]]
+id = 'FS-SIM-006'
+statement = 'Where one initialization equation cannot fix two guessed states, which state keeps its guess is not determined by the model.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca-phase-solve/src/lower/initial_projection.rs — the module header, under the two choices this phase makes that the model does not'
+latitude_note = 'Nothing in §8.6 picks between them, because the model states nothing about it. omc warns that the initial conditions are not fully specified and keeps x, solving y = 5; this planner takes the first augmenting assignment in solver-slot order and keeps y, solving x = 2. Neither answer is more correct; the row exists so the choice cannot drift silently.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-sim/src/solve_lowering/tests.rs'
+pin_anchor = 'an_under_determined_state_component_keeps_the_remaining_start_guesses'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+
+[[statements]]
+id = 'FS-SIM-007'
+statement = 'The initialization system is simultaneous over every equation of the model at once, so an initialization row that reads an algebraic variable determines that variable together with the states: `a = 2*time + 5; der(x) = a - x;` with `initial equation der(x) = 0` initializes x to 5.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'The initialization uses all equations and algorithms that are utilized in the intended operation.'
+quote_source = 'crates/rumoca-phase-solve/src/lower/initial_projection.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-sim/src/solve_lowering/tests.rs'
+pin_anchor = 'an_algebraic_reading_initialization_row_cannot_certify_against_a_stale_seed'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+related_sections = ['§8.6']
+note = 'This is a §8.6 requirement, not a latitude: der(...) and the pre-variables are interpreted as unknown algebraic variables and the whole equation set is solved at once, so x(0) = 5 is required rather than chosen. Initialization residual evaluation now reconstructs algebraic/output coordinates before certifying the complete residual, preventing declaration seeds from silently certifying x(0) = 0. Rows requiring the not-yet-proved coupled algebraic/initial projection fail closed with a typed unowned-coordinate diagnostic. That is sound for a small verified profile but is still a Modelica completeness gap; enforcing this statement requires a checked simultaneous reduction with total derivatives.'
+
+[[statements]]
+id = 'FS-SIM-008'
+statement = 'An initialization system whose rows read a discrete coordinate may still be solvable, so `x + q = 5; x = d + 2;` with `d(start = 0, fixed = true)` is determined at x = 2, q = 3.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca-phase-solve/src/lower/initial_projection.rs — the module header, under discrete reads'
+latitude_note = 'The discrete coordinate is at its §8.6 value when the residual runs, so the row checks a real number; rumoca simply has no way to solve for the state it also reads and reports EX001. That is an over-refusal against omc, not merely an unplanned row.'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca-phase-solve/src/lower/initial_projection.rs'
+pin_anchor = 'That is an over-refusal against OMC'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+
+[[statements]]
+id = 'FS-SIM-009'
+statement = 'A self-rescheduling when guard whose threshold is already met at the start instant has no rising edge there, so it never fires, never re-arms, and its accumulator holds its start value for the whole run.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca/tests/periodic_source_counter_regression.rs — module-header item 8 and the TSTART_THRESHOLD_STALLS table'
+latitude_note = 'The behavior follows from §8.3.5.1 start clause and §8.6 pre(v) = v (FS-EQN-001, FS-EQN-002), but that derivation is rumoca reasoning; what fixes the answer as count = 0 for the whole run is the omc run. The companion model with startTime = -0.035, whose first threshold is not met at the start, counts normally and is what keeps this row from reading as self-rescheduling thresholds do not work.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/periodic_source_counter_regression.rs'
+pin_anchor = 'initial_self_rescheduling_counter_never_starts_when_its_threshold_is_already_met'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'CAVEAT: the pinned case is the narrow one — a single self-rescheduling guard already met at the start. The wider shape, where a discrete accumulator stalls because its initial value leaves every guard in a chain already satisfied, is not pinned by any test in this tree, so this row must not be read as covering it.'
+
+[[statements]]
+id = 'FS-SIM-010'
+statement = 'A when-clause that legitimately runs at the initial event runs exactly once there.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca/tests/time_event_when_activation.rs — the divergence list in the module header'
+latitude_note = 'MLS §8.6 does not bound how many times a tool may apply the initialization instant. omc leaves `when true then y = pre(y) + 1` at 0; the diffsol session applies its initial-event update two or three times, so every assertion in that file that reads t = 0 on both sessions reads a level rather than a count.'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'The diffsol session applies the initial event more than once'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+
+[[statements]]
+id = 'FS-SIM-011'
+statement = 'A zero crossing over a continuous state is located at the instant the state reaches the threshold.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca/tests/time_event_when_activation.rs — the divergence list in the module header'
+latitude_note = 'MLS §8.5 requires the crossing to be located but fixes no accuracy for the search. On SimSolverMode::Bdf `when x > 0.3 then y = 1` with der(x) = 1 first reads y = 1 at t = 0.7 rather than 0.3. Measured identical before and after the activation work, so it is that session root location and not the activation semantics.'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'The diffsol session and a located state crossing'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+
+[[statements]]
+id = 'FS-SIM-012'
+statement = 'The activation of a when-clause is applied at the event right limit, and the output row is stamped with that limit rather than with the instant.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc, dassl, stopTime = 1.0, numberOfIntervals = 20)'
+evidence = 'crates/rumoca/tests/time_event_when_activation.rs — the module header, on the one presentational difference asserted around'
+latitude_note = 'Both tools apply the activation at the right limit, where the §8.5 buffered relation first reads true, and both stamp the row with that limit; they differ only in how wide it is. omc uses about 4e-10 relative; rumoca uses 2 * atol, i.e. 0.500002 for an instant at 0.5 at the default atol. The values agree and the stamps differ by 2e-6 out of a 0.05 output interval.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'the_diffsol_session_agrees_on_a_scheduled_instant'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-SIM-013'
+statement = 'A when-clause over a relation that is already true at the start instant does not fire there, while one that becomes true just after the start fires once at the start right limit.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc)'
+evidence = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs — the doc comment on the time-event instant bound; the omc right-limit row is stamped t = 1e-10 for `when time > 0`'
+latitude_note = 'MLS §8.5 defines an event as the instant an event-generating expression changes value, and nothing changes at the start; whether a tool nevertheless schedules a stop there is not fixed. rumoca leaves both spellings to the zero crossing, which locates them at the start and applies them at the right limit — where omc applies them too. Both halves now agree with omc on the rk-like session.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/time_event_when_activation.rs'
+pin_anchor = 'an_activation_at_the_start_instant_fires_exactly_once'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'This row previously recorded `when time >= 0` firing at t = 0 against omc. That divergence is gone: seeding the activation buffer from the settled initialization values (FS-EQN-001) removed the manufactured edge, and a probe of both sessions at this tree confirms `when time >= 0` no longer fires. The stale claim survived in the expression_events.rs doc comment and was corrected with this row. FS-SIM-014 carries the divergence the same probe did find.'
+
+[[statements]]
+id = 'FS-SIM-014'
+statement = 'A when-clause whose relation becomes true just after the start instant fires once, on every solver session.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc), against a probe of both rumoca solver sessions at this tree'
+evidence = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs — the doc comment on the time-event instant bound, which names the Bdf gap'
+latitude_note = 'MLS §8.5 requires the crossing to be located but fixes neither the accuracy of the search nor how a session applies a crossing that lands on the start instant. On SimSolverMode::RkLike `when time > 0` fires once at the right limit as omc does; on SimSolverMode::Bdf it does not fire at all, because the crossing located at the start instant is never applied there. That is a diffsol event-boundary defect rather than an owner decision.'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_anchor = 'diffsol event-boundary defect'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+note = 'NEEDS A TEST. No test pins either half of this row: the rk-like agreement is covered incidentally by an_activation_at_the_start_instant_fires_exactly_once (FS-SIM-013), but the Bdf gap is recorded only in prose. A wave that touches the diffsol event boundary should convert this Record pin into a Test pin and flip its polarity.'
+
+[[statements]]
+id = 'FS-SIM-015'
+statement = 'A model entering simulation through build_simulation or check_initialization is integrated only as a reduced state-only ODE, and one whose state derivatives read a solver coordinate that no algebraic projection block produces is rejected by name rather than re-expressed as a general implicit DAE.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.6 scopes what a tool must establish before and during a simulation run — the initialization system, the event iteration, and the values every variable holds at each instant — and it states those as properties of the solution, never of the system form or integrator used to reach them. The silence is therefore established by what §8.6 does state: it fixes the answer and leaves the machinery free, so a tool carrying a general implicit DAE beside the reduced ODE conforms exactly as well as one carrying only the reduced form. Nothing in §8.6, or in the §8.5 event semantics it leans on, distinguishes them.'
+alternatives_considered = 'Keeping both systems was the status quo and was refused on evidence rather than on conformance: a census of the 566-model MSL cohort found zero models constructing the general one, so it was carried, untested by any cohort model, purely as a fallback — and as a fallback it could only ever have absorbed a rumoca-phase-solve regression by switching integrators with no diagnostic. Keeping it behind a flag was refused: pre-1.0 the tree deletes a superseded path rather than gating it. Rejecting unprojectable models *silently* (returning the old boolean false) was refused because an unprojectable coordinate is a lowering defect, and answering a defect with a different integrator hides it. FMI 3.0 Model Exchange was considered as an oracle and rejected as one: ME constrains what a component exports, not what a tool integrates internally, and a mass-matrix system M·x@ = f with invertible M is presentable as x@ = M**-1 f anyway — this crate already does exactly that in OdeModel::solve_state_mass — so ME implies nothing about the general path.'
+oracle_consulted = 'None. OpenModelica settles trajectory values, not which internal system form a tool reduces to, so it cannot separate the two candidates: both produce the same trajectories, which is why the 566-model freeze comparison was byte-identical on both sides.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-solver-diffsol/src/tests/state_path_integration.rs'
+pin_anchor = 'simulate_rejects_an_unprojectable_derivative_dependency_by_name'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Scoped deliberately to build_simulation / check_initialization, which is the whole of where it is enforced. SimulationSession takes neither entry point: it constructs the general implicit problem directly for its own stepping loop (crates/rumoca-solver-diffsol/src/session.rs), so a model this row rejects can still be stepped through a session — crates/rumoca/tests/index_reduction_manifold.rs runs one model through both routes and is the in-tree counterexample. Consolidating the session onto the same reduction is follow-on work. The ESDIRK34 / TR-BDF2 tableaus removed alongside the general path are not abandoned: they are to be re-homed onto the FMI ME kernel as host integrators (board #134), which is why no surface offers their names in the meantime rather than offering a name that silently runs BDF.'
+
+[[statements]]
+id = 'FS-SIM-018'
+statement = 'At a scheduled time-event instant every numerical solver plugin records one canonical observation carrying the settled right-limit value.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.5 fixes what happens *to the solution* at an event instant — the integration halts, the discrete equations are re-evaluated until the event iteration settles, and every variable has a left and a right limit there — and MLS §8.6 fixes what must hold before integration starts. Neither states which of those two limits a tool must deposit in its result at the instant, nor whether it must deposit both. That is a result-file convention, not a solution property: a tool that reports only the right limit and one that reports both agree on every value MLS constrains. The silence is established by what §8.5 does state, exactly as for FS-SIM-015: it fixes the answer and leaves the reporting free.'
+alternatives_considered = 'Keeping solver-specific observation conventions was refused because it makes a model trace depend on the numerical plugin and shifts every later row in a row-indexed comparison. Recording both limits was also considered, but the ME runtime already owns the settled superdense state and all plugins can expose that state through one common convention.'
+oracle_consulted = 'OpenModelica (omc a96aa1a-cmake). On the pinned ScheduledStep probe with a 0.01 output grid, its CSV records the ordinary aligned sample at t = 0.5 with Vs = 0, then an event pair at t = 0.5000000000000306 with Vs = 0 and Vs = 24. The few-ULP displacement and total row count are tool artifacts, but the same-time left/right pair decisively selects two-sided boundary observability over the kernel host current right-only convention.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/fmi_me_host_divergence.rs'
+pin_anchor = 'the_two_hosts_agree_on_the_observation_at_a_scheduled_event_instant'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'The common ME runtime owns event iteration and observation projection. The test pins plugin-independent trace shape and value at the scheduled boundary; OpenModelica remains the external trace oracle even though its result file chooses a two-sided reporting convention.'
+
+# ---------------------------------------------------------------------------
+# EXPR — event-generating operators (MLS §3.7.5) and semiLinear (§3.7.4.5)
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-EXPR-001'
+statement = 'noEvent mandates that no zero crossing function monitors any normally event-generating subexpression inside its argument.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.5'
+quote_kind = 'Verbatim'
+quote = 'no zero crossing functions shall be used to monitor any of the normally event-generating subexpressions inside expr'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_anchor = 'collect_event_owners'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['EXPR-039']
+
+[[statements]]
+id = 'FS-EXPR-002'
+statement = 'smooth grants a freedom rather than imposing a rule: a tool may decline to generate events for expressions inside it, and smooth does not guarantee that no events are generated.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.5'
+quote_kind = 'Verbatim'
+quote = 'a tool is free to not generate events for expressions inside `smooth`. However, `smooth` does not guarantee that no events will be generated'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_anchor = 'collect_event_owners'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['EXPR-038']
+note = 'This row states the freedom only. FS-EXPR-003 states which side of it rumoca takes.'
+
+[[statements]]
+id = 'FS-EXPR-003'
+statement = 'No relation inside a smooth owns a zero crossing, including the relation the semiLinear definition places inside its own smooth.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc), read from its generated C for Modelica.Thermal.FluidHeatFlow.Examples.PumpDropOut'
+evidence = 'crates/rumoca-phase-dae/src/construction/analysis/expression_semi_linear.rs — the events section of the module header'
+latitude_note = 'MLS §3.7.5 grants the freedom (FS-EXPR-002) rather than mandating suppression; only noEvent says shall. rumoca takes the freedom uniformly. omc resolves it the same way: the Rule 1 selectors appear as ordinary equations while the zero-crossing table lists only the ramp time events and the friction relations.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/semi_linear.rs'
+pin_anchor = 'semi_linear_owns_no_state_event_because_its_definition_is_smooth'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-EXPR-004'
+statement = 'semiLinear(x, positiveSlope, negativeSlope) is defined as smooth(0, if x >= 0 then positiveSlope*x else negativeSlope*x).'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.4.5'
+quote_kind = 'Paraphrase'
+quote = 'smooth(0, if x >= 0 then positiveSlope*x else negativeSlope*x)'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/expression_semi_linear.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/semi_linear.rs'
+pin_anchor = 'semi_linear_lowers_to_the_checked_conditional_of_its_two_segments'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-EXPR-005'
+statement = 'Equations with semiLinear become underdetermined when the first argument reaches zero, and it is recommended that Rule 1 and Rule 2 transform such equation sets during translation to select one meaningful solution.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.4.5'
+quote_kind = 'Paraphrase'
+quote = 'In some situations, equations with the `semiLinear` function become underdetermined if the first argument (`x`) becomes zero, i.e., there is an infinite number of solutions. It is recommended that the following rules are used to transform the equations during the translation phase in order to select one meaningful solution in such cases.'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/expression_semi_linear.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/semi_linear.rs'
+pin_anchor = 'rule_one_rewrites_the_underdetermined_pair_into_a_selector_and_a_collapsed_operator'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'The transformation is recommended, not required, so the untransformed equation set is conformant and this owner never rejects: it transforms only what it can prove.'
+
+[[statements]]
+id = 'FS-EXPR-006'
+statement = 'semiLinear(m_flow, port_h, h) is identical to -semiLinear(-m_flow, h, port_h), which is what lets an equation whose x and y are both the negation of the group be read as the same equation with its slopes exchanged.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.4.5'
+quote_kind = 'Verbatim'
+quote = '`semiLinear(m_flow, port_h, h)` is identical to `-semiLinear(-m_flow, h, port_h)`'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/expression_semi_linear.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/semi_linear_zero_flow.rs'
+pin_anchor = 'zero_flow_node_enthalpy_is_determined_by_the_rule_one_selector_not_held_by_the_solver'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'No MSL model writes the Rule 1 chain literally; FluidHeatFlow writes one port equation each and the connection equations are what make two of them share one x and one y.'
+
+[[statements]]
+id = 'FS-EXPR-007'
+statement = 'A junction of more than two semiLinear ports, whose port enthalpy flows are three different variables constrained only by one sum, has no selected solution at exactly zero flow.'
+tier = 'SpecSilent'
+rationale = 'MLS §3.7.4.5 states Rule 1 over a *chain*: a sequence of equations that all share one y and one x, whose slopes link end to end. A three-way junction shares neither, so the rule does not reach it — the silence is scoped by the rule the section does state, not merely by the section failing to mention junctions. §3.7.4.5 only *recommends* transforming the underdetermined case away where its rules apply, so leaving the junction rows as written is conformant.'
+alternatives_considered = 'Rejecting the shape was considered and refused: a structurally identical model whose x never reaches zero simulates correctly without any transformation, so rejection would take those models too. Inventing a junction rule was refused because any choice of one meaningful solution would be this compiler picking a value the model never states.'
+pin_kind = 'Record'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/expression_semi_linear.rs'
+pin_anchor = 'the MLS supplies no rule'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+note = 'A per-node property, not a per-model one: ParallelPumpDropOut and TwoMass each join three FlowPorts at a node and also carry ordinary two-port nodes whose rows this owner does chain and rewrite.'
+
+[[statements]]
+id = 'FS-EXPR-008'
+statement = 'Which end of a semiLinear chain the surviving positive slope comes from is not determined; the two orientations differ only in the value at exactly x == 0 and both satisfy Rule 1.'
+tier = 'SpecSilent'
+rationale = 'MLS §3.7.4.5 states Rule 1 as a rewrite over a chain without naming which endpoint sa is, and the section supplies the identity that makes the two orientations interchangeable — semiLinear(m_flow, port_h, h) is identical to -semiLinear(-m_flow, h, port_h) — so reversing the orientation maps the chain onto itself with sa and sb exchanged. The silence is therefore established by the rule and its own identity, not assumed from the section being quiet: the specification says the two are the same equation, and says nothing that separates them at x == 0.'
+alternatives_considered = 'rumoca fixes the orientation from the model itself: sa is the endpoint whose slope class roots on the earlier-declared variable, which on the FluidHeatFlow models is the upstream-in-forward-flow end. The alternative of calibrating against another tool was tried and abandoned. What stays unpinned is a chain endpoint whose slope class holds two variables proven equal: that class roots on whichever the union merged first, and the tie-break can name the opposite end. No FluidHeatFlow node proves two slopes equal.'
+oracle_consulted = 'OpenModelica (omc) — rejected as an anchor: its selection at x == 0 is itself a function of the operand order its connection balances were emitted in, so it does not answer the question and cannot be calibrated against.'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/expression_semi_linear.rs'
+pin_anchor = 'fn emit_chain('
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'rumoca fixes the orientation from the model itself: sa is the endpoint whose slope class roots on the earlier-declared variable. What that does not pin is a chain endpoint whose slope class holds two variables proven equal; no FluidHeatFlow node proves two slopes equal.'
+
+# ---------------------------------------------------------------------------
+# CLK — sample and clocked sampling (MLS §3.7.5, §16.5.1)
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-CLK-001'
+statement = 'The Boolean sample(start, interval) takes two scalar parameter expressions, so both operands must be parameter-evaluable at translation time.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.5'
+quote_kind = 'Paraphrase'
+quote = 'sample(start, interval) requires exactly two scalar parameter arguments'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/event_conditions.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/event_conditions.rs'
+pin_anchor = 'evaluate_sample_schedule'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'This row carries the arity and scalarity rule only. Which *forms* of parameter expression rumoca can evaluate at construction is a narrower question, and FS-CLK-005 records where that narrowness is not the specification.'
+
+[[statements]]
+id = 'FS-CLK-005'
+statement = 'A parameter declared fixed = false with no binding, whose value an initial equation supplies, is a legal parameter expression for the start operand of sample.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.5'
+quote_kind = 'Paraphrase'
+quote = 'sample start'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/event_conditions.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/event_conditions.rs'
+pin_anchor = 'evaluate_clock_seconds'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+related_sections = ['§8.6']
+note = 'rumoca refuses the operand as not parameter-evaluable, because the parameter set holds no number for it at construction: MLS §8.6 gives the initial section its value. That is an over-refusal, not a §3.7.5 rule — `parameter Real t0(fixed = false)` with `initial equation t0 = time` is a legal parameter expression and OMC compiles it. 52 MSL models sit behind this refusal (the Blocks.Math.Mean and SignalExtrema instances). The reduced value IS the simulation start instant, a runtime option, so folding it at construction would be wrong whenever t_start mod interval is nonzero — OMC shifts its whole sample grid with the start time — which is why the fix is start-relative periodic scheduling rather than a constant fold.'
+
+[[statements]]
+id = 'FS-CLK-002'
+statement = 'The schedule of a Boolean sample(start, interval) is metadata rather than a zero crossing, so noEvent cannot suppress it.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.5'
+quote_kind = 'Paraphrase'
+quote = '`sample(start, interval)` is a periodic Boolean operator whose schedule is metadata, not a zero crossing, so `noEvent` cannot suppress it'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/periodic_source_counter_regression.rs'
+pin_anchor = 'sample_when_accumulator_advances_once_per_tick'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§16.5.1']
+
+[[statements]]
+id = 'FS-CLK-003'
+statement = 'A zero-phase Boolean sample ticks at the initialization instant and re-arms, so its accumulator advances once per interval afterwards.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§3.7.5'
+quote_kind = 'Paraphrase'
+quote = '`sample(start, interval)` is a periodic Boolean operator whose schedule is metadata, not a zero crossing, so `noEvent` cannot suppress it'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/expression_events.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/periodic_source_counter_regression.rs'
+pin_anchor = 'rk_like_zero_phase_sample_when_accumulator_advances_after_initial_tick'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-CLK-004'
+statement = 'The clocked sample(u) samples the value of u on an inferred clock; it is not a structural Boolean event indicator and must not be folded to true.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§16.5.1'
+quote_kind = 'Paraphrase'
+quote = '`sample(u)` samples the value of `u` on an inferred clock. It is not a structural Boolean event indicator and must not be folded to `true`.'
+quote_source = 'crates/rumoca/tests/clocked_sample_regression.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/clocked_sample_regression.rs'
+pin_anchor = 'real_sample_time_equation_stays_runtime_sample_after_flatten'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§16.3', '§3.7.5']
+note = 'The two-operand §16.3 value sample names its clock and only a whole Clock coordinate can be that operand, so the §3.7.5 form keeps its Real second operand and is deliberately not matched as a clocked value sample.'
+
+# ---------------------------------------------------------------------------
+# FUNC — purity (§12.3) and call semantics (§11.2.1.1, §12.4.2.1, §12.4.3)
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-FUNC-001'
+statement = 'An external function declared with neither pure nor impure shall be treated as impure, and writing no prefix is deprecated — reported, never rejected.'
+tier = 'SpecSourced'
+edition = '3.7'
+section = '§12.3'
+quote_kind = 'Verbatim'
+quote = 'shall be treated as impure'
+quote_source = 'crates/rumoca-contracts/tests/func_contracts.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/func_contracts.rs'
+pin_anchor = 'func_032_external_function_without_purity_is_impure_but_unrestricted'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['FUNC-032', 'FUNC-004']
+related_sections = ['§12.9']
+note = 'MLS 3.6 §12.3 put both halves in one sentence — assumed to be impure, but without any restriction on calling them — and stated the report as a requirement, so rumoca emits WR001 for every such declaration rather than only at simulation-model call sites.'
+
+[[statements]]
+id = 'FS-FUNC-002'
+statement = 'pure(f(...)) only bypasses purity checking of the callee; the argument expressions of the call are unaffected.'
+tier = 'SpecSourced'
+edition = '3.7'
+section = '§12.3'
+quote_kind = 'Verbatim'
+quote = 'only by-passes the purity checking of the callee impureFunction; the argument expressions of the function call are not affected'
+quote_source = 'crates/rumoca-core/src/lib.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-core/src/lib.rs'
+pin_anchor = 'PURITY_WRAPPER'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['FUNC-005']
+note = 'pure is a keyword, so the name can never be shadowed by a declaration; the wrapper carries no value of its own and lowering erases it.'
+
+[[statements]]
+id = 'FS-FUNC-003'
+statement = 'A function with n results needs at most n receiving variables in a multi-result call statement.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§11.2.1.1'
+quote_kind = 'Verbatim'
+quote = 'A function with n results needs m≤n receiving variables'
+quote_source = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_anchor = 'fewer_receivers_than_results_reads_the_leading_results'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-FUNC-004'
+statement = 'Receiving variables may be omitted from a multi-result call statement, and an omitted slot reads no result and defines nothing.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§11.2.1.1'
+quote_kind = 'Verbatim'
+quote = 'It is possible to omit receiving variables from this list'
+quote_source = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_anchor = 'omitted_receiving_variable_defines_nothing'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-FUNC-005'
+statement = 'The type of each component reference in a multi-result receiving list must agree with the type of the corresponding output component.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§12.4.3'
+quote_kind = 'Verbatim'
+quote = 'The type of each component reference in the list must agree with the type of the corresponding output component.'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/function_bodies.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_anchor = 'receiving_variable_shape_disagreement_is_rejected_by_name'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['FUNC-025']
+
+[[statements]]
+id = 'FS-FUNC-006'
+statement = 'A multi-result call is evaluated once and its results are then assigned, so reading each result as its own invocation is observationally equal to that single evaluation only for a callee whose results depend on nothing but its arguments.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§12.4.3'
+quote_kind = 'Paraphrase'
+quote = 'MLS §12.4.3 evaluates a multi-result call once'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/function_bodies.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_anchor = 'multi_result_call_to_an_impure_external_callee_is_rejected_by_name'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§12.3', '§11.2.1.1']
+note = 'The canonical DAE owns no multi-result node: it owns one call(function, ordinal, ..) per result read, so a statement reading k results denotes k invocations. Rather than diverge silently, an impure external callee is refused by name. What makes body_is_pure the exact predicate is the §12.3 rule of FS-FUNC-001 — a bare external is treated as impure — but the statement being protected here is the §12.4.3 single evaluation, which is why this row cites §12.4.3 and lists §12.3 beside it. A shared multi-result node would remove both the refusal and the cost.'
+
+[[statements]]
+id = 'FS-FUNC-007'
+statement = 'A function partial application denotes a partially evaluated function, which is itself a function value and not an array of scalars.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§12.4.2.1'
+quote_kind = 'Verbatim'
+quote = 'returns a partially evaluated function that is also a function, with the remaining not bound formal parameters still present in the same order as in the original function declaration'
+quote_source = 'crates/rumoca-phase-dae/src/construction/function_shapes/mod.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_anchor = 'function_partial_application_is_rejected_by_name'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+contracts = ['FUNC-033']
+note = 'Flat carries no marker distinguishing the form from an under-applied call, so the shape prover would otherwise report an arity mismatch and point a reader at the callee declaration instead of at the unimplemented feature. The signature Flat does preserve is exact: every argument a retained named-argument wrapper, and fewer arguments than the callee declares.'
+
+# ---------------------------------------------------------------------------
+# ARR — array construction and subscripts (MLS §10.4.2.1, §10.5)
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-ARR-001'
+statement = 'The concatenation operator needs at least one argument; the empty matrix construction is undefined.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.4.2.1'
+quote_kind = 'Verbatim'
+quote = 'There must be at least one argument (i.e., [] is not defined)'
+quote_source = 'crates/rumoca-phase-dae/src/construction/function_shapes/expression_rules.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/function_shapes/expression_rules.rs'
+pin_anchor = 'matrix_expression_shape'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-023']
+
+[[statements]]
+id = 'FS-ARR-002'
+statement = 'The bracket operator builds [A, B, ...] as cat(2, promote(A, n), ...), so it always denotes a matrix and a row of scalar operands is a 1 x n matrix.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.4.2.1'
+quote_kind = 'Paraphrase'
+quote = 'Concatenation along second dimension'
+quote_source = 'crates/rumoca-phase-dae/src/construction/function_shapes/expression_rules.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_anchor = 'matrix_row_of_scalars_proves_rank_two'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-007']
+note = 'Before this rule the comma spelling arrived as one flat operand list and was built as an n-vector: [0, 1, 1, 0, 0] was a 5-vector rather than the 1 x 5 matrix MLS gives it.'
+
+[[statements]]
+id = 'FS-ARR-003'
+statement = 'A non-scalar operand of the bracket operator is promoted before concatenation, so a vector operand becomes a column and a row of vectors transposes into the result.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.4.2.1'
+quote_kind = 'Paraphrase'
+quote = 'Concatenation along second dimension'
+quote_source = 'crates/rumoca-phase-dae/src/construction/function_shapes/expression_rules.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/tests/multi_output_calls.rs'
+pin_anchor = 'model_scope_matrix_row_of_vectors_uses_checked_promotion'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'The checked construction promotes each length-3 vector to 3 x 1 and concatenates the result to 3 x 2. This replaces the former 2 x 3 interpretation that answered y = 2 where omc gives 3.'
+
+[[statements]]
+id = 'FS-ARR-004'
+statement = 'A subscript belongs to the part of a component reference it is written on, so in a.b[e].c the sliced array is b and the expression denotes member c of element e.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.5'
+quote_kind = 'Paraphrase'
+quote = 'MLS §10.5: a subscript belongs to the part it is written on'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields/tests.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields/tests.rs'
+pin_anchor = 'nested_component_array_slice_projects_the_subscripted_part'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Anchoring the proof on the head of the path would only ever admit b[e].c and never a.b[e].c.'
+
+[[statements]]
+id = 'FS-ARR-005'
+statement = 'A member projection whose path carries two array occurrences denotes a higher-rank array, which the projection certificate cannot describe.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.5'
+quote_kind = 'Paraphrase'
+quote = 'A second array part would make the expression denote a higher-rank array (MLS §10.5) that this certificate cannot describe'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields/tests.rs'
+pin_anchor = 'a_second_array_part_on_the_slice_path_is_rejected_by_name'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+note = 'A defensive guard rather than a reachable source rejection: the legal spelling leaf[1].ac.pin[:].v never becomes a ProjectionPattern today. Silently projecting one of the two arrays would fabricate a shape the model never wrote.'
+
+[[statements]]
+id = 'FS-ARR-006'
+statement = 'A member slice subscripting more than one dimension denotes an array §10.5 gives a meaning to.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.5'
+quote_kind = 'Paraphrase'
+quote = 'MLS §10.5 gives the construct a meaning; this compiler abstains from it by name'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields/tests.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields/tests.rs'
+pin_anchor = 'a_multi_dimensional_member_slice_abstains_by_name'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+note = 'The abstention is by name rather than by minting a shape the compiler cannot realize; the test pins the abstention, not the meaning.'
+
+[[statements]]
+id = 'FS-ARR-007'
+statement = 'The subscripts a component reference may carry are budgeted against the dimensions the declaration gives the component, so the reference is measured against the declared array and never against the scalar element a subscript selects.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = 'the array dimensions belong to the declaration, so `c[1]` in an equation is a subscript on the declared array, not on the element instance that the subscript selects'
+quote_source = 'crates/rumoca-phase-typecheck/src/semantic_scope.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_element_expanded_array_reports_its_declared_rank_when_over_subscripted'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-026']
+related_sections = ['§10.1', '§10.4.1', '§10.5']
+note = 'The declared extents are read from the record instantiation writes for every array it expands, not from the descriptor it writes only for the ones it compacted: SPEC_0032 §1 makes compaction an optimization, and a diagnostic that changed with it was reporting the compiler rather than the model. 56 MSL models (57 by diagnostic text; one carries it under the ET000 summary) were rejected as `has 0 dimension(s)` on legal subscripts because of it. The section follows the contract it cites: SPEC_0022 stamps ARR-026 = §10.6.9 for the subscript-count rule, and §10.5.1 for ARR-025, which is about index type.'
+
+[[statements]]
+id = 'FS-ARR-008'
+statement = 'A component reference is measured against the dimensions of every part of its path, so a part whose declared extents the compiler cannot determine leaves the whole reference unmeasurable and the subscript budget unenforced, rather than measurable against zero dimensions.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = '§10.4.1 composes the reference shape from every part, so a part with unknown extents makes the composition unknown'
+quote_source = 'crates/rumoca-phase-typecheck/src/typechecker/equation_compat.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_record_array_member_of_a_scalar_owner_is_subscriptable'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['ARR-026']
+related_sections = ['§10.4.1', '§10.5.1']
+note = 'The subscript walk accumulates the extents of each part and spends that part of the subscripts against them. An absent part used to contribute nothing, which left the already-spent vector of the enclosing prefix standing and reported its leftover length as the rank of the absent declaration — `has 0 dimension(s)` for a member the model gave three. Absence is unknown, not scalar; a known scalar is recorded as an explicit empty extent list and still rejects. This rule governs absence only, and does NOT close the `has 0 dimension(s)` class: the same text still reaches a model when the shape lookup answers a positive wrong shape rather than absence, which `arr_026_redeclared_record_member_array_still_reports_zero_dimensions` pins on a redeclared record member array (omc accepts it). That is wrong-instance resolution, a separate defect tracked on its own. Counting convention for the MSL cohort, which differs by one between the two ways of counting: 22 models carried the ET009 *code* before this change and 2 carry it after, while 23 carried the diagnostic *text* and 3 carry it after — the extra model, `CCCV_StackRC`, reports the same text under an ET000 summary and is unchanged either way. Both conventions agree that 20 models were fixed. Of the 3 that remain, 2 are the `kDegraded[:,2]` unspecified-extent defect and 1 is the redeclared shape above; none is an absence. The section follows the contract it cites: SPEC_0022 stamps ARR-026 = §10.6.9 for the subscript-count rule.'
+
+[[statements]]
+id = 'FS-ARR-009'
+statement = 'A component reference may carry no more subscripts than the declaration it names has dimensions, and exceeding that count is an error of the model.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§10.6.9'
+quote_kind = 'Paraphrase'
+quote = 'a literal subscript that selects no expanded element'
+quote_source = 'crates/rumoca-phase-typecheck/src/semantic_scope.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
+pin_anchor = 'arr_026_over_subscripted_record_member_loses_its_equation_instead_of_being_named'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+contracts = ['ARR-026']
+related_sections = ['§10.5.1']
+note = 'The count rule is enforced wherever the shape lookup answers, which `arr_026_a_member_array_is_still_rejected_when_over_subscripted` holds it to. It is not enforced when the reference reaches the member through a prefix the instance-shape index cannot resolve, because the identity walk filters candidate instances by the very subscripts being validated: an over-long subscript list selects no expanded element, the walk reports absence, and FS-ARR-008 then abstains. The pin records what happens instead, and it is worse than an unnamed rejection: the binding equation is dropped from the DAE entirely, so `Cx yy = c.i[1, 2]` surfaces as `unbalanced model: 3 equations, 4 unknowns` spanned on the enclosing model rather than on the subscript. omc names it (`Wrong number of subscripts in c.i[1, 2] (2 subscripts for 1 dimensions)`). The model is still rejected, so this is a diagnostic and blame-target gap rather than an admissibility one. The fix is to stop filtering the final prefix part by its own subscripts in the shape query; that is a change to identity resolution, not to the abstention, and is deliberately not folded into it. Index-bounds checking (§10.5.1) is a separate statement and is not covered by this row or its pin.'
+
+# ---------------------------------------------------------------------------
+# INST / PKG — scoping and class occurrences (MLS §5.3.1, §7.1, §13.2)
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-INST-001'
+statement = 'Name lookup starts in the current scope and proceeds to enclosing scopes until the name is found or the global scope is reached.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§5.3.1'
+quote_kind = 'Paraphrase'
+quote = 'Name lookup starts in the current scope and proceeds to enclosing scopes until the name is found or global scope is reached.'
+quote_source = 'crates/rumoca-ir-ast/src/scope.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-ir-ast/src/scope.rs'
+pin_anchor = 'pub fn lookup('
+pin_polarity = 'Asserts'
+status = 'Enforced'
+
+[[statements]]
+id = 'FS-INST-002'
+statement = 'An encapsulated boundary exposes the predefined names and neither the enclosing scopes nor arbitrary top-level classes.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§5.3.1'
+quote_kind = 'Paraphrase'
+quote = 'an encapsulated boundary exposes predefined names, but neither enclosing scopes nor arbitrary top-level classes'
+quote_source = 'crates/rumoca-ir-ast/src/scope.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-ir-ast/src/scope.rs'
+pin_anchor = 'predefined_member'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'A predefined name resolves through its own registered declaration identity, so a source declaration that shadows the same spelling cannot change the query.'
+
+[[statements]]
+id = 'FS-INST-003'
+statement = 'A reference to an enclosing-scope constant from inside an encapsulated class is not resolvable.'
+tier = 'OracleImplied'
+oracle = 'OpenModelica (omc checkModel), run in-process when omc is on PATH'
+evidence = 'crates/rumoca/tests/omc_differential_semantics.rs — the test asserts omc reports that the variable is not found in scope, then asserts rumoca rejects the same source'
+latitude_note = 'The test cites no MLS sentence: it is the only true differential-oracle test in the tree, and it fixes the rejection by agreement rather than by citation. FS-INST-002 carries the §5.3.1 reading the compiler actually implements.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/omc_differential_semantics.rs'
+pin_anchor = 'encapsulated_scope_rejection_matches_omc'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'The test skips when omc is unavailable, so it is evidence when it runs and silent when it does not.'
+
+[[statements]]
+id = 'FS-INST-004'
+statement = 'Only components name a part of a component reference; an extends clause adds class occurrences that no part spells, so those occurrences are stepped over when a path is matched against a declaration chain.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§7.1'
+quote_kind = 'Paraphrase'
+quote = 'an `extends` adds class occurrences that no part spells (MLS §7.1)'
+quote_source = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-dae/src/construction/analysis/record_array_fields.rs'
+pin_anchor = 'component_ancestry'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Stepping over class occurrences is also how a same-spelled coordinate belonging to a sibling instance is excluded without consulting a rendered name.'
+
+[[statements]]
+id = 'FS-PKG-001'
+statement = 'A callable is identified by its lookup-qualified spelling, not by its use-site spelling, so two exposures of one declaration stay distinct.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§13.2'
+quote_kind = 'Paraphrase'
+quote = "Resolve records a callable's use-site spelling in the structured parts and its lookup-qualified spelling (MLS §5.3, §13.2) as the rendered name"
+quote_source = 'crates/rumoca-phase-flatten/src/functions/callable_scope_identity.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-flatten/src/functions/callable_scope_identity.rs'
+pin_anchor = 'scope_qualified_reference'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§5.3', '§13.2.1']
+note = 'A renaming import such as import generator = Modelica.Math.Random.Generators.Xorshift128plus leaves the root segment resolved to the imported declaration while spelling the local alias; the alias is replaced by that root declaration own declared name, so the segment keeps its exact resolved identity, span and subscripts.'
+
+# ---------------------------------------------------------------------------
+# CONN / STRM — connection member pairing (MLS §9.3, §15.1)
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-CONN-001'
+statement = 'A connect may pair a stream variable only with another stream variable.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§9.3'
+quote_kind = 'Verbatim'
+quote = 'stream variables only to other stream variables'
+quote_source = 'crates/rumoca-phase-flatten/src/errors.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-flatten/src/connections/tests/member_pairing_tests.rs'
+pin_anchor = 'stream_paired_with_non_stream_is_rejected_with_both_member_spans'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['CONN-030']
+related_sections = ['§15.1']
+
+[[statements]]
+id = 'FS-CONN-002'
+statement = 'A connect may pair a parameter primitive only with a parameter and a constant primitive only with a constant.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§9.3'
+quote_kind = 'Verbatim'
+quote = 'the primitive components may only connect parameter variables to parameter variables and constant variables to constant variables'
+quote_source = 'crates/rumoca-phase-flatten/src/errors.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-flatten/src/connections/tests/member_pairing_tests.rs'
+pin_anchor = 'parameter_paired_with_variable_is_rejected_with_both_member_spans'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['CONN-028']
+
+[[statements]]
+id = 'FS-CONN-003'
+statement = 'Connecting two parameter, or two constant, primitives yields an equality assertion rather than a connection equation.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§9.3'
+quote_kind = 'Verbatim'
+quote = 'Constants or parameters in connected components yield the appropriate assert-statements [...]; connections are not generated.'
+quote_source = 'crates/rumoca-phase-flatten/src/connections/tests/member_pairing_tests.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-flatten/src/connections/tests/member_pairing_tests.rs'
+pin_anchor = 'parameter_paired_with_parameter_generates_no_equation'
+pin_polarity = 'PinsDivergence'
+status = 'RecordedDivergence'
+note = 'rumoca generates no equation and no assertion for such a pair, so two connected settings that disagree pass silently. The pinned test asserts the current behavior, which is why this row is a divergence record and not an enforcement.'
+
+[[statements]]
+id = 'FS-STRM-001'
+statement = 'A stream variable carries mixing semantics instead of a connection equation, so a stream and non-stream pair has no defined equation at all.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§15.1'
+quote_kind = 'Paraphrase'
+quote = 'MLS §15.1 gives a stream variable mixing semantics instead of a connection equation, so a stream/non-stream pair has no defined equation at all'
+quote_source = 'crates/rumoca-phase-flatten/src/errors.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-phase-flatten/src/connections/tests/member_pairing_tests.rs'
+pin_anchor = 'non_stream_paired_with_stream_is_rejected_with_both_member_spans'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['STRM-001']
+
+[[statements]]
+id = 'FS-STRM-002'
+statement = 'Every connected outside stream connector owns one connection equation, and inside stream connectors generate none.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§15.1'
+quote_kind = 'Paraphrase'
+quote = 'Inside stream connectors generate no equation'
+quote_source = 'crates/rumoca-phase-flatten/src/connections/equation_generation.rs'
+pin_kind = 'Site'
+pin_file = 'crates/rumoca-phase-flatten/src/connections/equation_generation.rs'
+pin_anchor = 'generate_outside_stream_equations'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['STRM-004', 'STRM-005']
+related_sections = ['§15.2']
+note = 'Per §15.2 the right-hand side is the mixing enthalpy of the connection set declared inside the connector own model with the connector excluded, not inStream() of the connector, which by definition looks in the opposite direction.'
+
+# ---------------------------------------------------------------------------
+# Rows added by the executable-reference track (crates/rumoca-reference).
+#
+# Appended at the end rather than filed into the category blocks above so the
+# addition cannot collide textually with concurrent edits to those blocks. Note
+# that appending does not protect the *identifiers*: these were allocated
+# against the branch head, after a concurrently landed row had already taken
+# FS-SIM-015. Check the highest id in each category before adding a row, not
+# just the end of this file.
+#
+# Two of the three rows (FS-EQN-019, FS-SIM-016) pin the differential harness,
+# which runs one model through the compiler and through an independently
+# written reference semantics and requires them to agree. That makes those pins
+# two-sided: they fail when the compiler changes AND when the reference does.
+# Two-sided is what a differential pin is, and it is weaker than a one-sided pin
+# on exactly one axis — a reader who sees one red must check which side moved
+# before concluding the compiler regressed.
+#
+# FS-SIM-017 is the exception and says so in its own note: it pins a
+# reference-only test, because its statement is about how a §8.6 sentence should
+# be read rather than about what this compiler does. Its compiler-facing
+# consequences are FS-EQN-001 through FS-EQN-004, which carry their own pins in
+# the compiler's own tests. No other row here may follow that pattern without
+# the same justification: a reference-only pin is evidence about the reference,
+# and on its own it says nothing about this tree.
+# ---------------------------------------------------------------------------
+
+[[statements]]
+id = 'FS-EQN-019'
+statement = 'An activation condition is re-evaluated live inside the event iteration while its pre value is seeded once from the instant left limit, so an activation whose operand another activation writes in the same instant still rises, and a guard whose body advances its own threshold still settles.'
+tier = 'SpecSilent'
+rationale = 'MLS Appendix B fixes the answer and leaves the machinery free. Its event iteration says "solve equations for unknowns, with pre(z) and pre(m) fixed", and a condition variable c := f(relation(v)) is among the unknowns it solves — so conditions are live within the instant, and §8.5 freezing relations *between* events says nothing about *within* one. The silence is in the word "solve": for a self-rescheduling guard `when time >= nextTime` whose body advances nextTime, the inner system has no solution at all with pre held fixed, because the condition is true exactly when the body has not run and false once it has. A tool must therefore choose what "solve" means for an inner system that has no solution, and Appendix B does not choose for it. This tree performs one ordered pass per outer iteration and lets the outer loop, which does advance pre, carry the propagation. That reaches the state Appendix B is defined to stop at without searching for a fixed point that does not exist.'
+alternatives_considered = 'An inner fixed point was the first implementation and spins forever on the self-rescheduling shape. Latching every condition at the instant two limits and freezing it for the whole iteration was the second, and it terminates, but it is broader than any section supports and it breaks a cascade: `when time >= 0.5 then x = 3` beside `when x > 2 then y = 1` samples `x > 2` before `x` is written, so the second clause never fires, and never fires afterwards either because by then the condition holds on both limits. Both sessions of this compiler give y = 1, which is what Appendix B gives. Narrowing the latch to only those conditions whose own body writes their operands was considered and refused as unprincipled: it is a syntactic test standing in for a semantic one, and it would have no answer for a condition two activations downstream.'
+oracle_consulted = 'None. OpenModelica settles the values a model takes, and on the cascade above it would agree with the answer this row already reaches, so it cannot separate the candidates on the case that matters. What distinguishes them is the self-rescheduling shape, where the disagreement is not about a value but about whether an inner solve terminates — which is a property of a tool, not of a trajectory, and therefore not something an oracle run can settle.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/differential.rs'
+pin_anchor = 'hand_written_models_agree_between_reference_and_pipeline'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Found by the reference failing twice, not by reasoning, which is why this row is SpecSilent rather than SpecSourced: the first version of the statement asserted the latching rule as though §8.5 required it, and the cascade counterexample above refuted it. The StateConditionCascade and SelfReschedulingCounter cases in the pinned file are the two shapes that pull in opposite directions; a change satisfying only one of them fails the other.'
+
+[[statements]]
+id = 'FS-SIM-016'
+statement = 'A self-rescheduling time-event guard whose first threshold is not met at the start instant fires on its own grid for the whole run.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.3.5.1'
+quote_kind = 'Paraphrase'
+quote = 'A guard whose instant its own body advances re-arms at every crossing.'
+quote_source = 'crates/rumoca-reference/tests/semantics.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/differential.rs'
+pin_anchor = 'the_diffsol_session_fires_a_self_rescheduling_time_event'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+related_sections = ['§8.5']
+note = 'The rk-like plugin, the diffsol BDF plugin, and the independent reference all count 1, 2, 3, 4 on a 0.2 s grid. BDF restarts its multistep history at each event because settled discrete values may change continuous derivatives even when FMI reports unchanged continuous state values. This is not FS-SIM-009, whose subject is a guard already met at the start, and it is not FS-SIM-011, which concerns located state-crossing accuracy.'
+
+[[statements]]
+id = 'FS-SIM-017'
+statement = 'The §8.6 requirement that every variable satisfies v = pre(v) before integration constrains the values pre is seeded from and not the meaning of the operator, so an activation buffer enters the initial instant holding its condition on the start values while initial() is false in that seed.'
+tier = 'SpecSilent'
+rationale = 'MLS §8.6 says "before the start of the integration, it must be guaranteed that for all variables v, v = pre(v)", and it also says the equations of a when-clause are active during initialization if and only if they are explicitly enabled with initial(). Read as an instruction to make pre the identity operator during initialization, the first sentence contradicts the second: edge(b) becomes b and not b, which is false for every buffer, and `when initial() then ...` can never run. §8.6 does not say which reading it means, and the two are not distinguishable from its text — that is the silence. This tree reads the requirement as a constraint on the values pre starts from: committed is seeded from the start environment, so v = pre(v) holds on entry for every declared variable, while a buffer gated on initial() still sees a rising edge because its own seed is evaluated with initial() false.'
+alternatives_considered = 'Making pre the identity during initialization was implemented first and refused when it silently disabled every initial()-gated when-clause — a failure that no start-value test detects, because it changes nothing about start values. Seeding buffers to false unconditionally was refused because it manufactures a rising edge at the initial instant for every already-true condition, which is precisely the defect FS-EQN-001 records having fixed. Evaluating the seed with initial() true was refused because it removes the only edge an initial()-gated clause can have, arriving back at the first alternative by a different route.'
+oracle_consulted = 'None was run for this row. The observable consequences are already settled by omc through FS-EQN-001 to FS-EQN-004, which this reading reproduces; what is unsettled is the interpretation those rows leave implicit, and an oracle returns trajectories rather than interpretations. The row exists so the choice is written down where the next reader of §8.6 will look, rather than being rediscovered from a failing test.'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-reference/tests/semantics.rs'
+pin_anchor = 'an_initial_gated_activation_runs_at_initialization'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+note = 'Unlike the two rows above, this pin exercises the reference alone. It is admissible here because the statement is about an interpretation of §8.6 rather than about compiler behavior — the compiler-facing consequences are FS-EQN-001 through FS-EQN-004, which carry their own pins in crates/rumoca/tests/time_event_when_activation.rs. A reader wanting evidence about this tree should follow those.'
+
+[[statements]]
+id = 'FS-EQN-020'
+statement = 'The pre values used by event iteration at the initial instant are seeded from the values the initialization system settled, not from the declared start values that seeded that solve.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Verbatim'
+quote = 'Before the start of the integration, it must be guaranteed that for all variables `v`, `v = pre(v)`. If this is not the case for some variables `vi`, `pre(vi) := vi` must be set and an event iteration at the initial time must follow, so the model is re-evaluated, until this condition is fulfilled.'
+quote_source = 'crates/rumoca/tests/initialization_ordering.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca/tests/initialization_ordering.rs'
+pin_anchor = 'both_hosts_seed_initial_event_pre_from_the_settled_state'
+pin_polarity = 'Asserts'
+status = 'Enforced'
+contracts = ['EQN-035']
+note = 'The BDF path already took this snapshot after initialization. The FMI 3 ME kernel took it before settle_initialization_system, so a state moved from start = 0 to x = 5 still exposed pre(x) = 0 to when initial(); this row pins both hosts to the same section 8.6 ordering.'
+
+[[statements]]
+id = 'FS-SIM-019'
+statement = 'A structured initial-equation family determines every scalar coordinate selected by its compact domain before integration starts.'
+tier = 'SpecSourced'
+edition = '3.6'
+section = '§8.6'
+quote_kind = 'Paraphrase'
+quote = 'The initialization problem contains all initial equations and solves the variables they determine before integration starts.'
+quote_source = 'crates/rumoca-bind-wasm/src/tests/simulation_runtime_tests.rs'
+pin_kind = 'Test'
+pin_file = 'crates/rumoca-bind-wasm/src/tests/simulation_runtime_tests.rs'
+pin_anchor = 'test_prepare_gpu_simulation_refuses_unowned_structured_initial_equations'
+pin_polarity = 'PinsDivergence'
+status = 'Unimplemented'
+note = 'The checked DAE preserves the compact two-dimensional initial-equation family, but the initialization projection plan does not yet assign each family point to its state coordinate. Runtime preparation now refuses that incomplete ownership proof instead of publishing declared zero starts as though the initial equations had settled.'

@@ -14,13 +14,15 @@
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Span,
-    Statement, StatementBlock, Subscript,
+    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Reference,
+    Span, Statement, StatementBlock, Subscript,
 };
 
-use super::EvalContext;
+use rumoca_core::ExpressionVisitor;
+
 use super::errors::EvalError;
 use super::value::Value;
+use super::{EvalContext, EvalIndexMap};
 
 /// Execution limits for function evaluation.
 #[derive(Debug, Clone)]
@@ -60,6 +62,123 @@ enum FlowControl {
     Return,
 }
 
+/// Which declaration list [`FunctionEnv::declare_all`] is binding.
+#[derive(Clone, Copy)]
+enum DeclaredKind {
+    Output,
+    Local,
+}
+
+/// The order a function's outputs and locals may be bound in on entry.
+///
+/// MLS 3.6 §12.4.4: the declaration bindings "are executed in an order where a
+/// variable is not used before its binding"; the *only* error the rule names is
+/// that no such order exists. So this is a topological sort over "declaration
+/// `d` reads declaration `e`", seeded in written order so an independent set
+/// keeps its declaration order, with a cycle reported by name.
+///
+/// A declaration's reads include the names its written extent mentions
+/// (MLS §12.2), because the shaped default cannot be built before them either.
+fn binding_order(
+    func: &Function,
+    span: Span,
+) -> Result<Vec<(DeclaredKind, &rumoca_core::FunctionParam)>, EvalError> {
+    let declarations: Vec<(DeclaredKind, &rumoca_core::FunctionParam)> = func
+        .outputs
+        .iter()
+        .map(|output| (DeclaredKind::Output, output))
+        .chain(func.locals.iter().map(|local| (DeclaredKind::Local, local)))
+        .collect();
+    if declarations.len() < 2 {
+        return Ok(declarations);
+    }
+    let position: EvalIndexMap<usize> = declarations
+        .iter()
+        .enumerate()
+        .map(|(index, (_, param))| (param.name.clone(), index))
+        .collect();
+
+    let mut ordered = Vec::with_capacity(declarations.len());
+    let mut state = vec![VisitState::Unvisited; declarations.len()];
+    for index in 0..declarations.len() {
+        visit_declaration(
+            index,
+            &declarations,
+            &position,
+            &mut state,
+            &mut ordered,
+            span,
+        )?;
+    }
+    Ok(ordered
+        .into_iter()
+        .map(|index| declarations[index])
+        .collect())
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum VisitState {
+    Unvisited,
+    InProgress,
+    Placed,
+}
+
+fn visit_declaration(
+    index: usize,
+    declarations: &[(DeclaredKind, &rumoca_core::FunctionParam)],
+    position: &EvalIndexMap<usize>,
+    state: &mut [VisitState],
+    ordered: &mut Vec<usize>,
+    span: Span,
+) -> Result<(), EvalError> {
+    match state[index] {
+        VisitState::Placed => return Ok(()),
+        VisitState::InProgress => {
+            return Err(EvalError::CircularDependency {
+                path: declarations[index].1.name.clone(),
+                span,
+            });
+        }
+        VisitState::Unvisited => {}
+    }
+    state[index] = VisitState::InProgress;
+    for read in declaration_reads(declarations[index].1) {
+        let Some(dependency) = position.get(&read).copied() else {
+            continue;
+        };
+        if dependency != index {
+            visit_declaration(dependency, declarations, position, state, ordered, span)?;
+        }
+    }
+    state[index] = VisitState::Placed;
+    ordered.push(index);
+    Ok(())
+}
+
+/// Every name the declaration of `param` reads: its binding and its extents.
+fn declaration_reads(param: &rumoca_core::FunctionParam) -> Vec<String> {
+    let mut reads = ReferenceCollector::default();
+    if let Some(default) = &param.default {
+        reads.visit_expression(default);
+    }
+    for subscript in &param.shape_expr {
+        reads.visit_subscript(subscript);
+    }
+    reads.names
+}
+
+#[derive(Default)]
+struct ReferenceCollector {
+    names: Vec<String>,
+}
+
+impl rumoca_core::ExpressionVisitor for ReferenceCollector {
+    fn visit_var_ref(&mut self, name: &rumoca_core::Reference, subscripts: &[Subscript]) {
+        self.names.push(name.as_str().to_string());
+        self.walk_var_ref(name, subscripts);
+    }
+}
+
 /// Function execution environment with mutable variable bindings.
 struct FunctionEnv {
     /// Input parameters (bound from arguments).
@@ -94,16 +213,16 @@ impl FunctionEnv {
     fn new_with_call_args(
         func: &Function,
         args: Vec<FunctionCallArg>,
-        span: Span,
+        eval: &EvalState<'_>,
     ) -> Result<Self, EvalError> {
-        let inputs = Self::bind_inputs(func, args, span)?;
-        let outputs = Self::init_params(&func.outputs);
-        let locals = Self::init_params(&func.locals);
-        Ok(Self {
+        let inputs = Self::bind_inputs(func, args, eval.span)?;
+        let mut env = Self {
             inputs,
-            outputs,
-            locals,
-        })
+            outputs: IndexMap::new(),
+            locals: IndexMap::new(),
+        };
+        env.declare_all(func, eval)?;
+        Ok(env)
     }
 
     /// Bind input arguments to parameters.
@@ -214,12 +333,128 @@ impl FunctionEnv {
         Ok(())
     }
 
-    /// Initialize parameters with default values.
-    fn init_params(params: &[rumoca_core::FunctionParam]) -> IndexMap<String, Value> {
-        params
+    /// Bind a function's declared outputs and locals on entry.
+    ///
+    /// MLS 3.6 §12.4.4 makes a declaration equation inside a function the value
+    /// the component holds on entry, and fixes the order they run in: the
+    /// bindings "are executed in an order where a variable is not used before
+    /// its binding", an error being reported only when no such order exists.
+    /// That is a topological order over the declarations, not the written one —
+    /// `Integer a = b + 1; Integer b = 2;` is a legal acyclic program OMC folds
+    /// to `3`, so evaluating in declaration order would refuse it. A cycle is
+    /// the one case §12.4.4 calls an error, and it is reported by name.
+    ///
+    /// Substituting a type default for a declaration that *has* a binding is
+    /// what silently folded `Integer mBasic = integer(m/n)` to `0`, so a
+    /// binding that cannot be evaluated propagates its error and the whole call
+    /// refuses to fold: there is no second value the entry state could take.
+    ///
+    /// A declaration without a binding gets the zero of its declared shape,
+    /// which is the value the DAE lowering creates for it and the container a
+    /// later `y[i] := …` writes into.
+    fn declare_all(&mut self, func: &Function, eval: &EvalState<'_>) -> Result<(), EvalError> {
+        for (kind, param) in binding_order(func, eval.span)? {
+            let value = match &param.default {
+                Some(default) => eval_expr_in_function(default, self, eval)?,
+                None => self.shaped_default(param, eval)?,
+            };
+            match kind {
+                DeclaredKind::Output => self.outputs.insert(param.name.clone(), value),
+                DeclaredKind::Local => self.locals.insert(param.name.clone(), value),
+            };
+        }
+        Ok(())
+    }
+
+    /// The zero of `param`'s declared shape, for a declaration with no binding.
+    ///
+    /// A declared extent is now read from the call's own bound inputs
+    /// (MLS §12.2), so the size of the container about to be allocated is
+    /// decided by model values. The evaluator's element budget bounds that
+    /// decision and reports a form it will not fold rather than materializing
+    /// whatever the model asked for.
+    fn shaped_default(
+        &self,
+        param: &rumoca_core::FunctionParam,
+        eval: &EvalState<'_>,
+    ) -> Result<Value, EvalError> {
+        let dimensions = self.declared_dimensions(param, eval)?;
+        let budget = i64::try_from(eval.limits.max_iterations).unwrap_or(i64::MAX);
+        let elements = dimensions
             .iter()
-            .map(|p| (p.name.clone(), type_default_value(&p.type_name, &p.dims)))
+            .try_fold(1_i64, |total, extent| total.checked_mul(*extent));
+        if elements.is_none_or(|elements| elements > budget) {
+            return Err(EvalError::UnsupportedExpression {
+                kind: format!(
+                    "declared extent {dimensions:?} of `{}` is beyond the \
+                     constant-evaluation element budget",
+                    param.name
+                ),
+                span: eval.span,
+            });
+        }
+        Ok(type_default_value(&param.type_name, &dimensions))
+    }
+
+    /// The declared extent of `param` in the environment bound so far.
+    ///
+    /// MLS 3.6 §12.2 admits a function component's array dimension "given by
+    /// the input formal parameters", so `output Real orientation[m]` only has
+    /// an extent once `m` is bound. `effective_type` can only carry the extent
+    /// of a declaration whose dimensions are literal, and reports `0` for the
+    /// rest; the written `shape_expr` is what actually names `m`.
+    ///
+    /// An extent this environment cannot settle refuses the call, exactly as an
+    /// unsettleable binding does. Falling back to the declared `0` built an
+    /// *empty* container that `size()` and a later loop then read as the
+    /// component's real extent — a wrong value, not a missing one.
+    fn declared_dimensions(
+        &self,
+        param: &rumoca_core::FunctionParam,
+        eval: &EvalState<'_>,
+    ) -> Result<Vec<i64>, EvalError> {
+        let declared = param.dimensions();
+        if param.shape_expr.len() != declared.len() {
+            return Ok(declared.to_vec());
+        }
+        param
+            .shape_expr
+            .iter()
+            .zip(declared)
+            .map(|(subscript, fallback)| self.declared_extent(param, subscript, *fallback, eval))
             .collect()
+    }
+
+    /// One declared dimension of `param`.
+    fn declared_extent(
+        &self,
+        param: &rumoca_core::FunctionParam,
+        subscript: &Subscript,
+        fallback: i64,
+        eval: &EvalState<'_>,
+    ) -> Result<i64, EvalError> {
+        let extent = match subscript {
+            Subscript::Index { value, .. } => *value,
+            // A written dimension that is a plain `:` carries no extent at all,
+            // so there is nothing for this environment to settle.
+            Subscript::Colon { .. } => fallback,
+            Subscript::Expr { expr, .. } => {
+                let value = eval_expr_in_function(expr, self, eval)?;
+                value.as_integer().ok_or_else(|| {
+                    EvalError::type_mismatch("Integer", value.type_name(), eval.span)
+                })?
+            }
+        };
+        if extent < 0 {
+            return Err(EvalError::function_error(
+                format!(
+                    "declared dimension of `{}` evaluates to the negative extent {extent}",
+                    param.name
+                ),
+                eval.span,
+            ));
+        }
+        Ok(extent)
     }
 
     /// Look up a variable by name (checks inputs, outputs, locals).
@@ -319,14 +554,17 @@ pub fn eval_function_with_call_args(
         ));
     }
 
-    let mut env = FunctionEnv::new_with_call_args(func, args, span)?;
-    let mut iteration_count = 0;
     let eval = EvalState {
         ctx,
         limits,
         depth,
         span,
     };
+    let mut env = FunctionEnv::new_with_call_args(func, args, &eval)?;
+    if func.is_constructor {
+        return record_constructor_value(func, &env, span);
+    }
+    let mut iteration_count = 0;
     let mut state = StmtState {
         env: &mut env,
         iteration_count: &mut iteration_count,
@@ -347,6 +585,35 @@ pub fn eval_function_with_call_args(
     }
 
     env.return_value(span)
+}
+
+/// The record a record-constructor call folds to.
+///
+/// MLS 3.6 §12.6: the implicitly defined record constructor takes the record's
+/// declared components as its inputs and returns an instance of the record, so
+/// the call is the record built from the bound arguments in declaration order.
+/// It has no algorithm to interpret and no output formal parameter, and reading
+/// it as an ordinary function is what folded `Complex(re, im)` to the empty
+/// tuple of its (absent) outputs.
+fn record_constructor_value(
+    func: &Function,
+    env: &FunctionEnv,
+    span: Span,
+) -> Result<Value, EvalError> {
+    let mut fields = IndexMap::with_capacity(func.inputs.len());
+    for component in &func.inputs {
+        let value = env.inputs.get(&component.name).ok_or_else(|| {
+            EvalError::function_error(
+                format!(
+                    "record constructor {} has no value for component {}",
+                    func.name, component.name
+                ),
+                span,
+            )
+        })?;
+        fields.insert(component.name.clone(), value.clone());
+    }
+    Ok(Value::Record(fields))
 }
 
 /// Mutable state during statement evaluation.
@@ -397,36 +664,40 @@ fn eval_assignment(
     eval: &EvalState<'_>,
 ) -> Result<FlowControl, EvalError> {
     let val = eval_expr_in_function(value, env, eval)?;
-    let name = component_ref_to_name(comp);
-    if env.set(&name, val.clone()) {
+    // MLS 3.6 §10.5 "Indexing": "The array indexing operator `name[…]` is used
+    // to access array elements for retrieval of their values or for updating
+    // these values." So `y[i] := e` and `y[a:b] := e` update elements of `y`;
+    // the whole-value assignment below is reachable only for an unsubscripted
+    // target. Dispatching on the joined name first made `orientation[1:3] := v`
+    // replace the whole vector with `v`, which folded `symmetricOrientation(6)`
+    // to three elements instead of six.
+    if let Some((base_name, subscripts)) = parse_subscripted_assignment(comp) {
+        assign_subscripted(env, &base_name, &subscripts, val, eval)?;
         return Ok(FlowControl::Continue);
     }
-    // Check if it's an array slice assignment (e.g., x[1:n] := ...)
-    if let Some((base_name, subscripts)) = parse_subscripted_assignment(comp) {
-        if has_range_subscript(&subscripts) {
-            assign_array_slice(env, &base_name, &subscripts, val, eval)?;
-            return Ok(FlowControl::Continue);
-        }
-        // Fall through to element assignment for non-range subscripts
-        let indices: Vec<Expression> = subscripts
-            .into_iter()
-            .filter_map(|s| {
-                if let Subscript::Expr { expr: e, .. } = s {
-                    Some(*e)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !indices.is_empty() {
-            assign_array_element(env, &base_name, &indices, val, eval)?;
-            return Ok(FlowControl::Continue);
-        }
+    let name = component_ref_to_name(comp);
+    if env.set(&name, val) {
+        return Ok(FlowControl::Continue);
     }
     Err(EvalError::function_error(
         format!("cannot assign to variable: {}", name),
         eval.span,
     ))
+}
+
+/// Assign through a subscripted target, writing into the component's value.
+fn assign_subscripted(
+    env: &mut FunctionEnv,
+    base_name: &str,
+    subscripts: &[Subscript],
+    value: Value,
+    eval: &EvalState<'_>,
+) -> Result<(), EvalError> {
+    if has_range_subscript(subscripts) {
+        return assign_array_slice(env, base_name, subscripts, value, eval);
+    }
+    let indices = eval_subscript_indices(subscripts, env, eval)?;
+    assign_array_element(env, base_name, &indices, value, eval)
 }
 
 /// Evaluate an if statement.
@@ -469,17 +740,17 @@ fn eval_stmt_list(
 
 /// Evaluate a function call statement.
 fn eval_fn_call_stmt(
-    comp: &ComponentReference,
+    comp: &Reference,
     args: &[Expression],
-    outputs: &[ComponentReference],
+    outputs: &[Option<ComponentReference>],
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<FlowControl, EvalError> {
-    let func_name = component_ref_to_name(comp);
+    let func_name = comp.as_str();
 
     // Skip special built-in statements that appear as function calls
     // These are runtime-only operations that should be no-ops during constant evaluation
-    match func_name.as_str() {
+    match func_name {
         "assert" | "print" | "terminate" | "Modelica.Utilities.Streams.print" => {
             return Ok(FlowControl::Continue);
         }
@@ -490,7 +761,7 @@ fn eval_fn_call_stmt(
         .iter()
         .map(|a| eval_expr_in_function(a, env, eval))
         .collect::<Result<_, _>>()?;
-    let result = call_function(&func_name, arg_values, eval)?;
+    let result = call_function(func_name, arg_values, eval)?;
     if !outputs.is_empty() {
         assign_fn_outputs(outputs, result, env, eval)?;
     }
@@ -499,7 +770,7 @@ fn eval_fn_call_stmt(
 
 /// Assign function outputs to variables.
 fn assign_fn_outputs(
-    outputs: &[ComponentReference],
+    outputs: &[Option<ComponentReference>],
     result: Value,
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
@@ -508,7 +779,13 @@ fn assign_fn_outputs(
         Value::Array(arr) if arr.len() == outputs.len() => {
             assign_multiple_outputs(outputs, arr, env, eval)
         }
-        _ if outputs.len() == 1 => assign_single_output(&outputs[0], result, env, eval),
+        _ if outputs.len() == 1 => {
+            if let Some(output) = &outputs[0] {
+                assign_single_output(output, result, env, eval)
+            } else {
+                Ok(())
+            }
+        }
         _ => Err(EvalError::function_error(
             format!(
                 "function output count mismatch: expected {}, got {:?}",
@@ -522,12 +799,15 @@ fn assign_fn_outputs(
 
 /// Assign multiple outputs from array result.
 fn assign_multiple_outputs(
-    outputs: &[ComponentReference],
+    outputs: &[Option<ComponentReference>],
     arr: &[Value],
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
     for (output, val) in outputs.iter().zip(arr.iter()) {
+        let Some(output) = output else {
+            continue;
+        };
         let name = component_ref_to_name(output);
         if !env.set(&name, val.clone()) {
             return Err(EvalError::function_error(
@@ -696,6 +976,10 @@ fn eval_expr_in_function(
         Expression::Binary { op, lhs, rhs, .. } => eval_binary(op, lhs, rhs, env, eval),
         Expression::Unary { op, rhs, .. } => eval_unary(op, rhs, env, eval),
         Expression::FunctionCall { name, args, .. } => eval_fn_call_expr(name, args, env, eval),
+        Expression::StringConversion { .. } => Err(EvalError::UnsupportedExpression {
+            kind: "predefined String conversion".to_string(),
+            span: eval.span,
+        }),
         Expression::BuiltinCall { function, args, .. } => {
             let arg_values: Vec<Value> = args
                 .iter()
@@ -722,8 +1006,16 @@ fn eval_expr_in_function(
             ..
         } => eval_array_comprehension(expr, indices, filter, env, eval),
         Expression::Tuple { elements, .. } => eval_array_expr(elements, env, eval),
-        Expression::FieldAccess { base, field, .. } => {
+        Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            ..
+        } => {
             let base_val = eval_expr_in_function(base, env, eval)?;
+            if is_exact_single_record_output(base, *field_def_id, eval.ctx) {
+                return Ok(base_val);
+            }
             let record = base_val.as_record().ok_or_else(|| {
                 EvalError::type_mismatch("Record", base_val.type_name(), eval.span)
             })?;
@@ -733,6 +1025,35 @@ fn eval_expr_in_function(
                 .ok_or_else(|| EvalError::unknown_variable(field, eval.span))
         }
     }
+}
+
+/// Whether one Flat field node is the exact output selector around a call that
+/// returns one record value.
+///
+/// Flat keeps function results as output-owned values for DAE lowering, so a
+/// source `f(...).member` may arrive as `f(...).result.member`. The constant
+/// evaluator returns a single output directly. The selector may therefore be
+/// erased only when the resolved call target and the selected output's `DefId`
+/// agree and that output is declared as a record; rendered names prove none of
+/// those facts.
+pub(super) fn is_exact_single_record_output(
+    base: &Expression,
+    field: rumoca_core::DefId,
+    ctx: &EvalContext,
+) -> bool {
+    let Expression::FunctionCall { name, .. } = base else {
+        return false;
+    };
+    let Some(target) = name.target_def_id() else {
+        return false;
+    };
+    let Some(function) = ctx.functions.get(name.as_str()) else {
+        return false;
+    };
+    function.def_id == Some(target)
+        && matches!(function.outputs.as_slice(), [output]
+            if output.def_id == Some(field)
+                && output.type_class == Some(rumoca_core::ClassType::Record))
 }
 
 /// Evaluate a literal expression.
@@ -765,11 +1086,64 @@ fn eval_var_ref(
     if let Some((type_name, literal)) = eval.ctx.get_enum(name) {
         return Ok(Value::Enum(type_name.clone(), literal.clone()));
     }
+    // MLS 3.6 §12.2: a record component's fields are read through the joined
+    // reference Flat renders, so `z.im` names the field `im` of the bound local
+    // `z`. Resolving it here is also what keeps the enumeration fallback below
+    // honest — a reference whose head segment is a component in scope is never
+    // an enumeration literal, and guessing one folded `z.im` to the enumeration
+    // value `z.im` instead of the record field.
+    if let Some(value) = read_bound_field_path(reference, env, eval)? {
+        return apply_subscripts_flat(value, subscripts, env, eval);
+    }
     // Try parsing as qualified enum.
     if let Some((type_name, literal)) = reference.scope_split() {
         return Ok(Value::Enum(type_name.to_string(), literal.to_string()));
     }
     Err(EvalError::unknown_variable(name, eval.span))
+}
+
+/// Read a nested reference as a field path into a component bound in `env`.
+///
+/// The segmentation is [`rumoca_core::Reference::segments`], the reference's own
+/// top-level split, so a dot inside an index expression stays inside its
+/// segment.
+///
+/// `Ok(None)` means the reference does not start at a bound component, so the
+/// caller may still read it as something else. Once the head *is* bound the
+/// reference is settled here, and a segment this evaluator cannot follow —
+/// a subscripted field, or a value it holds as something other than a record —
+/// is reported as a form it has no rule for. That refusal leaves the value for
+/// the runtime; it never lets the enumeration fallback below invent one.
+fn read_bound_field_path(
+    reference: &rumoca_core::Reference,
+    env: &FunctionEnv,
+    eval: &EvalState<'_>,
+) -> Result<Option<Value>, EvalError> {
+    let segments = reference.segments();
+    let Some((head, fields)) = segments.split_first() else {
+        return Ok(None);
+    };
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let Some(root) = env.get(head) else {
+        return Ok(None);
+    };
+    let mut current = root.clone();
+    for field in fields {
+        current = current
+            .as_record()
+            .and_then(|record| record.get(*field))
+            .cloned()
+            .ok_or_else(|| EvalError::UnsupportedExpression {
+                kind: format!(
+                    "field `{field}` of a bound {} value",
+                    current.type_name().to_lowercase()
+                ),
+                span: eval.span,
+            })?;
+    }
+    Ok(Some(current))
 }
 
 /// Evaluate a binary expression.
@@ -782,7 +1156,7 @@ fn eval_binary(
 ) -> Result<Value, EvalError> {
     let lhs_val = eval_expr_in_function(lhs, env, eval)?;
     let rhs_val = eval_expr_in_function(rhs, env, eval)?;
-    super::eval_binary_op(op, &lhs_val, &rhs_val, eval.span)
+    super::operators::eval_binary_op(op, &lhs_val, &rhs_val, eval.span)
 }
 
 /// Evaluate a unary expression.
@@ -793,7 +1167,7 @@ fn eval_unary(
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
     let rhs_val = eval_expr_in_function(rhs, env, eval)?;
-    super::eval_unary_op(op, &rhs_val, eval.span)
+    super::operators::eval_unary_op(op, &rhs_val, eval.span)
 }
 
 /// Evaluate a function call expression.
@@ -1040,20 +1414,9 @@ fn eval_range_values(
             return Err(EvalError::range_error("step cannot be zero", span));
         }
 
-        let mut values = Vec::new();
-        let mut i = s;
-        if step_int > 0 {
-            while i <= e {
-                values.push(Value::Integer(i));
-                i += step_int;
-            }
-        } else {
-            while i >= e {
-                values.push(Value::Integer(i));
-                i += step_int;
-            }
-        }
-        return Ok(Value::Array(values));
+        return Ok(Value::Array(super::range_eval::collect_int_range(
+            s, e, step_int,
+        )));
     }
 
     // Real range
@@ -1073,26 +1436,19 @@ fn eval_range_values(
     if step_f == 0.0 {
         return Err(EvalError::range_error("step cannot be zero", span));
     }
-
-    let mut values = Vec::new();
-    let mut v = s;
-    if step_f > 0.0 {
-        while v <= e + f64::EPSILON {
-            values.push(Value::Real(v));
-            v += step_f;
-        }
-    } else {
-        while v >= e - f64::EPSILON {
-            values.push(Value::Real(v));
-            v += step_f;
-        }
+    if !s.is_finite() || !e.is_finite() || !step_f.is_finite() {
+        return Err(EvalError::range_error(
+            "range bounds and step must be finite",
+            span,
+        ));
     }
-    Ok(Value::Array(values))
+
+    super::range_eval::collect_real_range(s, e, step_f, span).map(Value::Array)
 }
 
 /// Convert a ComponentReference to a simple name string.
 fn component_ref_to_name(cr: &ComponentReference) -> String {
-    cr.parts
+    cr.parts()
         .iter()
         .map(|p| p.ident.to_string())
         .collect::<Vec<_>>()
@@ -1101,10 +1457,10 @@ fn component_ref_to_name(cr: &ComponentReference) -> String {
 
 /// Parse subscripted assignment: x[i], x[i,j], x[1:n] -> (base_name, subscripts)
 fn parse_subscripted_assignment(comp: &ComponentReference) -> Option<(String, Vec<Subscript>)> {
-    if comp.parts.len() != 1 {
+    if comp.parts().len() != 1 {
         return None;
     }
-    let part = &comp.parts[0];
+    let part = &comp.parts()[0];
     if part.subs.is_empty() {
         return None;
     }
@@ -1120,7 +1476,13 @@ fn has_range_subscript(subscripts: &[Subscript]) -> bool {
     })
 }
 
-/// Assign to an array slice (e.g., x[1:n] := values).
+/// Assign through a slice target (`x[a:b] := values`, `x[:] := values`).
+///
+/// Every index the subscript enumerates is computed in signed arithmetic before
+/// anything is written, so a descending range, an empty range and an
+/// out-of-range index are all decided rather than discovered mid-write. The
+/// previous unsigned form panicked on `v[3:-1:1]` and divided by zero on a zero
+/// step; both are subscripts the parser accepts and OMC rejects cleanly.
 fn assign_array_slice(
     env: &mut FunctionEnv,
     base_name: &str,
@@ -1128,62 +1490,22 @@ fn assign_array_slice(
     value: Value,
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
-    let arr = env
+    let target = env
         .get(base_name)
         .ok_or_else(|| EvalError::unknown_variable(base_name, eval.span))?
         .clone();
-
-    // For now, only support single-dimension slice assignment
     if subscripts.len() != 1 {
         return Err(EvalError::function_error(
             "multi-dimensional slice assignment not yet supported".to_string(),
             eval.span,
         ));
     }
-
-    let new_arr = match &subscripts[0] {
-        Subscript::Expr { expr, .. } => {
-            if let Expression::Range {
-                start, step, end, ..
-            } = expr.as_ref()
-            {
-                let start_val = eval_expr_in_function(start, env, eval)?;
-                let end_val = eval_expr_in_function(end, env, eval)?;
-                let step_val = step
-                    .as_ref()
-                    .map(|s| eval_expr_in_function(s, env, eval))
-                    .transpose()?;
-
-                let start_idx = start_val.as_integer().ok_or_else(|| {
-                    EvalError::type_mismatch("Integer", start_val.type_name(), eval.span)
-                })? as usize;
-                let end_idx = end_val.as_integer().ok_or_else(|| {
-                    EvalError::type_mismatch("Integer", end_val.type_name(), eval.span)
-                })? as usize;
-                let step_int = extract_step_value(&step_val, eval.span)?;
-
-                set_array_slice(arr, start_idx, end_idx, step_int, value, eval.span)?
-            } else {
-                return Err(EvalError::function_error(
-                    "expected range subscript for slice assignment".to_string(),
-                    eval.span,
-                ));
-            }
-        }
-        Subscript::Colon { .. } => {
-            // Full slice assignment x[:] := values
-            // Replace entire array with values
-            value
-        }
-        Subscript::Index { .. } => {
-            return Err(EvalError::function_error(
-                "expected range subscript for slice assignment".to_string(),
-                eval.span,
-            ));
-        }
-    };
-
-    if !env.set(base_name, new_arr) {
+    let elements = target
+        .as_array()
+        .ok_or_else(|| EvalError::type_mismatch("Array", target.type_name(), eval.span))?;
+    let indices = slice_indices(&subscripts[0], elements.len(), env, eval)?;
+    let new_value = set_array_slice(target, &indices, value, eval.span)?;
+    if !env.set(base_name, new_value) {
         return Err(EvalError::function_error(
             format!("cannot assign to array: {}", base_name),
             eval.span,
@@ -1192,79 +1514,153 @@ fn assign_array_slice(
     Ok(())
 }
 
-/// Extract step value from an optional Value, defaulting to 1.
-fn extract_step_value(step_val: &Option<Value>, span: Span) -> Result<usize, EvalError> {
-    match step_val {
-        Some(v) => {
-            let step = v
-                .as_integer()
-                .ok_or_else(|| EvalError::type_mismatch("Integer", v.type_name(), span))?;
-            Ok(step as usize)
+/// The 1-based indices a slice subscript enumerates over a container of `len`.
+///
+/// MLS 3.6 §10.5 gives `:` the whole dimension, and §10.4.1 gives `a:s:b` the
+/// values `a, a+s, …` up to `b` — empty when the step points away from `b`, and
+/// undefined for a zero step, which is reported rather than divided by.
+fn slice_indices(
+    subscript: &Subscript,
+    len: usize,
+    env: &FunctionEnv,
+    eval: &EvalState<'_>,
+) -> Result<Vec<i64>, EvalError> {
+    let Subscript::Expr { expr, .. } = subscript else {
+        // `x[:] := …` names every element of the dimension. It is a slice like
+        // any other, so it is size-checked against the container the same way;
+        // treating it as a whole-value replacement is what let
+        // `v[:] := {1,2,3,4}` resize an `Integer v[2]`.
+        if matches!(subscript, Subscript::Colon { .. }) {
+            return Ok((1..=len as i64).collect());
         }
-        None => Ok(1),
+        return Err(EvalError::function_error(
+            "expected range subscript for slice assignment".to_string(),
+            eval.span,
+        ));
+    };
+    let Expression::Range {
+        start, step, end, ..
+    } = expr.as_ref()
+    else {
+        return Err(EvalError::function_error(
+            "expected range subscript for slice assignment".to_string(),
+            eval.span,
+        ));
+    };
+    let start = slice_bound(start, env, eval)?;
+    let end = slice_bound(end, env, eval)?;
+    let step = match step {
+        Some(step) => slice_bound(step, env, eval)?,
+        None => 1,
+    };
+    if step == 0 {
+        return Err(EvalError::range_error(
+            "range step must not be zero in a slice assignment target",
+            eval.span,
+        ));
     }
+    let budget = i64::try_from(eval.limits.max_iterations).unwrap_or(i64::MAX);
+    let mut indices = Vec::new();
+    let mut current = start;
+    while (step > 0 && current <= end) || (step < 0 && current >= end) {
+        indices.push(current);
+        if indices.len() as i64 > budget {
+            return Err(EvalError::UnsupportedExpression {
+                kind: "slice assignment target is beyond the constant-evaluation element budget"
+                    .to_string(),
+                span: eval.span,
+            });
+        }
+        let Some(next) = current.checked_add(step) else {
+            break;
+        };
+        current = next;
+    }
+    Ok(indices)
 }
 
-/// Set a slice of an array (indices are 1-based).
+fn slice_bound(
+    expr: &Expression,
+    env: &FunctionEnv,
+    eval: &EvalState<'_>,
+) -> Result<i64, EvalError> {
+    let value = eval_expr_in_function(expr, env, eval)?;
+    value
+        .as_integer()
+        .ok_or_else(|| EvalError::type_mismatch("Integer", value.type_name(), eval.span))
+}
+
+/// Write `values` into the 1-based `indices` of `target`.
 fn set_array_slice(
-    arr: Value,
-    start: usize,
-    end: usize,
-    step: usize,
+    target: Value,
+    indices: &[i64],
     values: Value,
     span: Span,
 ) -> Result<Value, EvalError> {
-    let mut vec = arr
+    let mut elements = target
         .as_array()
-        .ok_or_else(|| EvalError::type_mismatch("Array", arr.type_name(), span))?
+        .ok_or_else(|| EvalError::type_mismatch("Array", target.type_name(), span))?
         .clone();
-
-    let value_arr = values
+    // MLS 3.6 §10.6.1: an assignment requires both sides to have the same
+    // number of dimensions and the same sizes, so an empty slice takes an empty
+    // array and nothing else — `v[2:1] := {9}` is rejected, not silently
+    // written nowhere.
+    let assigned = values
         .as_array()
         .ok_or_else(|| EvalError::type_mismatch("Array", values.type_name(), span))?;
-
-    // Calculate expected slice length
-    let slice_len = if step == 1 {
-        end.saturating_sub(start) + 1
-    } else {
-        ((end - start) / step) + 1
-    };
-
-    if value_arr.len() != slice_len {
+    if assigned.len() != indices.len() {
         return Err(EvalError::function_error(
             format!(
-                "slice assignment size mismatch: expected {} elements, got {}",
-                slice_len,
-                value_arr.len()
+                "slice assignment size mismatch: target names {} element(s), value has {}",
+                indices.len(),
+                assigned.len()
             ),
             span,
         ));
     }
-
-    // Assign values to slice positions (1-based indexing)
-    let mut value_idx = 0;
-    let mut i = start;
-    while i <= end && value_idx < value_arr.len() {
-        if i < 1 || i > vec.len() {
-            return Err(EvalError::IndexOutOfBounds {
-                index: i as i64,
-                size: vec.len(),
+    for (index, value) in indices.iter().zip(assigned) {
+        let slot = usize::try_from(*index)
+            .ok()
+            .filter(|slot| (1..=elements.len()).contains(slot))
+            .ok_or(EvalError::IndexOutOfBounds {
+                index: *index,
+                size: elements.len(),
                 span,
-            });
-        }
-        vec[i - 1] = value_arr[value_idx].clone();
-        value_idx += 1;
-        i += step;
+            })?;
+        elements[slot - 1] = coerce_to_declared(&elements[slot - 1], value.clone());
     }
+    Ok(Value::Array(elements))
+}
 
-    Ok(Value::Array(vec))
+/// MLS 3.6 §10.6.13: an Integer value written into a Real component is
+/// converted to Real.
+///
+/// The declared element type is carried by the value already in the slot, which
+/// the declaration's shaped default established. Without this,
+/// `orientation[1] := 0` left an `Integer` inside a declared `Real[2]`, and the
+/// mixed array compared unequal to the all-Real value the same function
+/// produces on its other branch.
+fn coerce_to_declared(slot: &Value, value: Value) -> Value {
+    match (slot, value) {
+        (Value::Real(_), Value::Integer(written)) => Value::Real(written as f64),
+        (Value::Array(slots), Value::Array(written)) if slots.len() == written.len() => {
+            Value::Array(
+                slots
+                    .iter()
+                    .zip(written)
+                    .map(|(slot, written)| coerce_to_declared(slot, written))
+                    .collect(),
+            )
+        }
+        (_, value) => value,
+    }
 }
 
 /// Assign to an array element.
 fn assign_array_element(
     env: &mut FunctionEnv,
     base_name: &str,
-    indices: &[Expression],
+    indices: &[i64],
     value: Value,
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
@@ -1272,8 +1668,7 @@ fn assign_array_element(
         .get(base_name)
         .ok_or_else(|| EvalError::unknown_variable(base_name, eval.span))?
         .clone();
-    let idx_values = eval_index_expressions(indices, env, eval)?;
-    let new_arr = set_array_element(arr, &idx_values, value, eval.span)?;
+    let new_arr = set_array_element(arr, indices, value, eval.span)?;
     if !env.set(base_name, new_arr) {
         return Err(EvalError::function_error(
             format!("cannot assign to array: {}", base_name),
@@ -1283,18 +1678,31 @@ fn assign_array_element(
     Ok(())
 }
 
-/// Evaluate index expressions to integer values.
-fn eval_index_expressions(
-    indices: &[Expression],
+/// Evaluate the element indices of an assignment target.
+///
+/// A literal `Subscript::Index` is as much an element index as an evaluated
+/// expression is; reading only the expression form dropped `y[1] := …`
+/// entirely, so the whole subscript list was empty and the target degraded to
+/// the whole component.
+fn eval_subscript_indices(
+    subscripts: &[Subscript],
     env: &FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<Vec<i64>, EvalError> {
-    indices
+    subscripts
         .iter()
-        .map(|e| {
-            let v = eval_expr_in_function(e, env, eval)?;
-            v.as_integer()
-                .ok_or_else(|| EvalError::type_mismatch("Integer", v.type_name(), eval.span))
+        .map(|subscript| match subscript {
+            Subscript::Index { value, .. } => Ok(*value),
+            Subscript::Expr { expr, .. } => {
+                let value = eval_expr_in_function(expr, env, eval)?;
+                value.as_integer().ok_or_else(|| {
+                    EvalError::type_mismatch("Integer", value.type_name(), eval.span)
+                })
+            }
+            Subscript::Colon { .. } => Err(EvalError::function_error(
+                "whole-dimension assignment target mixed with element indices",
+                eval.span,
+            )),
         })
         .collect()
 }
@@ -1315,17 +1723,18 @@ fn set_array_element(
         .ok_or_else(|| EvalError::type_mismatch("Array", arr.type_name(), span))?
         .clone();
 
-    let idx = indices[0] as usize;
-    if idx < 1 || idx > vec.len() {
-        return Err(EvalError::IndexOutOfBounds {
+    let idx = usize::try_from(indices[0])
+        .ok()
+        .filter(|idx| (1..=vec.len()).contains(idx))
+        .ok_or(EvalError::IndexOutOfBounds {
             index: indices[0],
             size: vec.len(),
             span,
-        });
-    }
+        })?;
 
     if indices.len() == 1 {
-        vec[idx - 1] = value;
+        // MLS §10.6.13 again: the slot carries the declared element type.
+        vec[idx - 1] = coerce_to_declared(&vec[idx - 1], value);
     } else {
         vec[idx - 1] = set_array_element(vec[idx - 1].clone(), &indices[1..], value, span)?;
     }
@@ -1392,299 +1801,4 @@ fn apply_single_subscript(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_span() -> Span {
-        Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("function_eval_test.mo"),
-            1,
-            2,
-        )
-    }
-
-    fn make_simple_function() -> Function {
-        // function f(input Real x) output Real y; algorithm y := x * 2; end f;
-        let mut func = Function::new("test.f", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("x", "Real", test_span()));
-        func.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
-        func.pure = true;
-
-        // y := x * 2
-        func.body = vec![rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: rumoca_core::Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "y".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
-            value: rumoca_core::Expression::Binary {
-                op: rumoca_core::OpBinary::Mul,
-                lhs: Box::new(rumoca_core::Expression::VarRef {
-                    name: rumoca_core::Reference::new("x"),
-                    subscripts: Vec::new(),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                rhs: Box::new(rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                span: rumoca_core::Span::DUMMY,
-            },
-            span: rumoca_core::Span::DUMMY,
-        }];
-
-        func
-    }
-
-    #[test]
-    fn test_simple_function() {
-        let func = make_simple_function();
-        let mut ctx = EvalContext::new();
-        ctx.functions.insert("test.f".to_string(), func.clone());
-
-        let result = eval_function(
-            &func,
-            vec![Value::Real(5.0)],
-            &ctx,
-            &EvalLimits::default(),
-            0,
-            Span::DUMMY,
-        )
-        .unwrap();
-
-        assert!((result.to_real().unwrap() - 10.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_named_argument_binding() {
-        let mut func = Function::new("test.third", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("x", "Integer", test_span()));
-        func.add_input(rumoca_core::FunctionParam::new("y", "Integer", test_span()));
-        func.add_input(rumoca_core::FunctionParam::new("z", "Integer", test_span()));
-        func.add_output(rumoca_core::FunctionParam::new(
-            "result",
-            "Integer",
-            test_span(),
-        ));
-        func.pure = true;
-        func.body = vec![rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "result".to_string(),
-                    span: Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
-            value: rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new("z"),
-                subscripts: Vec::new(),
-                span: Span::DUMMY,
-            },
-            span: Span::DUMMY,
-        }];
-
-        let result = eval_function_with_call_args(
-            &func,
-            vec![
-                FunctionCallArg::positional(Value::Integer(1)),
-                FunctionCallArg::positional(Value::Integer(2)),
-                FunctionCallArg::named("z".to_string(), Value::Integer(7)),
-            ],
-            &EvalContext::new(),
-            &EvalLimits::default(),
-            0,
-            Span::DUMMY,
-        )
-        .unwrap();
-
-        assert_eq!(result.as_integer(), Some(7));
-    }
-
-    #[test]
-    fn eval_var_ref_qualified_enum_split_ignores_dots_inside_indices() {
-        let env = FunctionEnv {
-            inputs: IndexMap::new(),
-            outputs: IndexMap::new(),
-            locals: IndexMap::new(),
-        };
-        let ctx = EvalContext::new();
-        let limits = EvalLimits::default();
-        let eval = EvalState {
-            ctx: &ctx,
-            limits: &limits,
-            depth: 0,
-            span: Span::DUMMY,
-        };
-
-        let enum_value = eval_var_ref(
-            &rumoca_core::Reference::new("Modelica.Types.Color.red"),
-            &[],
-            &env,
-            &eval,
-        )
-        .expect("qualified enum fallback");
-        assert_eq!(
-            enum_value,
-            Value::Enum("Modelica.Types.Color".to_string(), "red".to_string())
-        );
-
-        assert!(
-            eval_var_ref(
-                &rumoca_core::Reference::new("data[index.with.dot]"),
-                &[],
-                &env,
-                &eval
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn test_recursion_limit() {
-        // Create a recursive function that will exceed the limit
-        let mut func = Function::new("test.recurse", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("n", "Integer", test_span()));
-        func.add_output(rumoca_core::FunctionParam::new("y", "Integer", test_span()));
-        func.pure = true;
-
-        // Simple function that always returns 0 (to test limit checking)
-        func.body = vec![rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: rumoca_core::Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "y".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
-            value: rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
-            },
-            span: rumoca_core::Span::DUMMY,
-        }];
-
-        let ctx = EvalContext::new();
-        let limits = EvalLimits {
-            recursion_depth: 5,
-            max_iterations: 1000,
-        };
-
-        // This should succeed at depth 5
-        let result = eval_function(
-            &func,
-            vec![Value::Integer(1)],
-            &ctx,
-            &limits,
-            5,
-            Span::DUMMY,
-        );
-        assert!(result.is_ok());
-
-        // This should fail at depth 6
-        let result = eval_function(
-            &func,
-            vec![Value::Integer(1)],
-            &ctx,
-            &limits,
-            6,
-            Span::DUMMY,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_while_loop() {
-        // Test: function countTo4() output Integer count; algorithm count := 0; while count < 4 loop count := count + 1; end while; end countTo4;
-        let mut func = Function::new("test.countTo4", Span::DUMMY);
-        func.add_output(rumoca_core::FunctionParam::new(
-            "count",
-            "Integer",
-            test_span(),
-        ));
-        func.pure = true;
-
-        // count := 0
-        let init_stmt = rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: rumoca_core::Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "count".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
-            value: rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
-            },
-            span: rumoca_core::Span::DUMMY,
-        };
-
-        // while count < 4 loop count := count + 1; end while
-        let while_stmt = rumoca_core::Statement::While {
-            block: rumoca_core::StatementBlock {
-                cond: rumoca_core::Expression::Binary {
-                    op: rumoca_core::OpBinary::Lt,
-                    lhs: Box::new(rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::new("count"),
-                        subscripts: Vec::new(),
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    rhs: Box::new(rumoca_core::Expression::Literal {
-                        value: rumoca_core::Literal::Integer(4),
-                        span: rumoca_core::Span::DUMMY,
-                    }),
-                    span: rumoca_core::Span::DUMMY,
-                },
-                stmts: vec![rumoca_core::Statement::Assignment {
-                    comp: rumoca_core::ComponentReference {
-                        local: false,
-                        span: rumoca_core::Span::DUMMY,
-                        parts: vec![rumoca_core::ComponentRefPart {
-                            ident: "count".to_string(),
-                            span: rumoca_core::Span::DUMMY,
-                            subs: Vec::new(),
-                        }],
-                        def_id: None,
-                    },
-                    value: rumoca_core::Expression::Binary {
-                        op: rumoca_core::OpBinary::Add,
-                        lhs: Box::new(rumoca_core::Expression::VarRef {
-                            name: rumoca_core::Reference::new("count"),
-                            subscripts: Vec::new(),
-                            span: rumoca_core::Span::DUMMY,
-                        }),
-                        rhs: Box::new(rumoca_core::Expression::Literal {
-                            value: rumoca_core::Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
-                        }),
-                        span: rumoca_core::Span::DUMMY,
-                    },
-                    span: rumoca_core::Span::DUMMY,
-                }],
-            },
-            span: rumoca_core::Span::DUMMY,
-        };
-
-        func.body = vec![init_stmt, while_stmt];
-
-        let ctx = EvalContext::new();
-        let result =
-            eval_function(&func, vec![], &ctx, &EvalLimits::default(), 0, Span::DUMMY).unwrap();
-
-        assert_eq!(result.as_integer(), Some(4), "while loop should count to 4");
-    }
-}
+mod tests;

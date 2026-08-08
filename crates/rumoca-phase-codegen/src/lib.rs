@@ -5,12 +5,9 @@
 //!
 //! # Design Philosophy
 //!
-//! Templates receive the full selected IR structure and can walk the expression
-//! tree themselves. This provides maximum flexibility - any target can be
-//! supported by writing a new template, with no Rust code changes needed.
-//!
-//! The selected IR is serialized and passed to minijinja, which allows
-//! templates to access any field using standard Jinja2 syntax.
+//! Templates receive a phase-specific semantic projection. A DAE template sees
+//! dense checked variables, expressions, domains, and owner systems; a Solve
+//! template sees executable blocks and their typed layout.
 //!
 //! # Template Loading
 //!
@@ -25,29 +22,27 @@
 //!
 //! // From built-in (convenience for quick use)
 //! use rumoca_phase_codegen::templates;
-//! let target = templates::builtin_target("casadi-sx").unwrap();
-//! let code = render_template(&dae, target.template_source("casadi_sx.py.jinja").unwrap())?;
+//! let target = templates::builtin_target("dae-modelica").unwrap();
+//! let code = render_template(
+//!     &dae,
+//!     target.template_source("dae_modelica.mo.jinja").unwrap(),
+//! )?;
 //! ```
 //!
 //! # Writing Templates
 //!
 //! Templates use Jinja2 syntax. The DAE is passed as `dae` with fields:
-//! - `dae.x` - State variables
-//! - `dae.y` - Algebraic variables
-//! - `dae.p` - Parameters
-//! - `dae.u` - Input variables
-//! - `dae.variables.constants` - Constants
-//! - `dae.f_x` - Continuous implicit equations (MLS B.1a)
+//! - `dae.variables` - dense variables with explicit `role` and `id`
+//! - `dae.expressions` - dense expressions whose operands are expression IDs
+//! - `dae.domains` - compact structured iteration domains
+//! - `dae.systems` - continuous, initialization, event, clock, and temporal owners
+//! - `dae.modelica` - Modelica presentation derived from the checked arena
 //!
-//! Expression trees are nested dictionaries that templates can walk:
+//! Expression references are stable indices into `dae.expressions`:
 //! ```jinja
-//! {% macro render_expr(expr) -%}
-//! {% if expr.Binary %}
-//! ({{ render_expr(expr.Binary.lhs) }} + {{ render_expr(expr.Binary.rhs) }})
-//! {% elif expr.VarRef %}
-//! {{ expr.VarRef.name | sanitize }}
-//! {% endif %}
-//! {%- endmacro %}
+//! {% for owner in dae.systems.continuous.owners %}
+//! expression {{ owner.residual }}: {{ dae.expressions[owner.residual].operation.kind }}
+//! {% endfor %}
 //! ```
 //!
 //! # Custom Filters
@@ -57,13 +52,14 @@
 
 mod codegen;
 mod errors;
+pub mod views;
 
 pub use codegen::{
-    CodegenInput, SolveTemplateRenderer, dae_template_json, fmi3_native_projection_available,
-    render_ast_template, render_ast_template_with_name, render_flat_template_with_name,
-    render_solve_template_with_name, render_template, render_template_file,
-    render_template_for_input, render_template_with_dae_json,
-    render_template_with_dae_json_and_name, render_template_with_name,
+    AlgorithmCodeTemplateRenderer, CodegenInput, SolveTemplateRenderer, dae_template_json,
+    render_algorithm_code_template_with_artifact, render_ast_template,
+    render_ast_template_with_name, render_checked_algorithm_block_template_with_artifact,
+    render_flat_template_with_name, render_solve_template_with_name, render_template,
+    render_template_file, render_template_for_input, render_template_with_name,
     render_template_with_name_for_input,
 };
 pub use errors::CodegenError;
@@ -80,7 +76,9 @@ pub mod templates {
     pub struct BuiltinTarget {
         pub name: &'static str,
         pub manifest: &'static str,
+        pub readme: &'static str,
         pub templates: &'static [BuiltinTargetTemplate],
+        pub assets: &'static [BuiltinTargetAsset],
     }
 
     /// Built-in template source addressed by a target manifest-local path.
@@ -90,12 +88,35 @@ pub mod templates {
         pub source: &'static str,
     }
 
+    /// Non-template file embedded from a built-in target directory.
+    #[derive(Clone, Copy, Debug)]
+    pub struct BuiltinTargetAsset {
+        pub path: &'static str,
+        pub bytes: &'static [u8],
+    }
+
     impl BuiltinTarget {
         pub fn template_source(&self, path: &str) -> Option<&'static str> {
             self.templates
                 .iter()
                 .find(|template| template.path == path)
                 .map(|template| template.source)
+        }
+
+        pub fn asset_files(&self, source: &str) -> Option<Vec<(&'static str, &'static [u8])>> {
+            let prefix = source.trim_end_matches('/');
+            let prefix_with_separator = format!("{prefix}/");
+            let files = self
+                .assets
+                .iter()
+                .filter_map(|asset| {
+                    asset
+                        .path
+                        .strip_prefix(&prefix_with_separator)
+                        .map(|relative| (relative, asset.bytes))
+                })
+                .collect::<Vec<_>>();
+            (!files.is_empty()).then_some(files)
         }
     }
 

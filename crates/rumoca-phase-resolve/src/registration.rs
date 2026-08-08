@@ -26,6 +26,12 @@ impl Resolver {
             if class.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
+            if class.is_replaceable || class.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
+            if class.expandable {
+                self.expandable_connector_ids.insert(def_id);
+            }
         }
 
         // Recursively register nested classes
@@ -54,10 +60,6 @@ impl Resolver {
         };
         let class_scope = self.scope_tree.create_scope(enclosing, scope_kind);
         class.scope_id = Some(class_scope);
-        if class.encapsulated {
-            self.encapsulated_class_names
-                .insert(qualified_name.to_string());
-        }
         if let Some(class_def_id) = class.def_id {
             self.scope_to_class_def.insert(class_scope, class_def_id);
             self.class_def_scopes.insert(class_def_id, class_scope);
@@ -72,6 +74,9 @@ impl Resolver {
             if comp.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
+            if comp.is_replaceable || comp.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
         }
 
         // Register nested class names
@@ -83,6 +88,26 @@ impl Resolver {
                 .add_member(class_scope, ComponentPath::from_flat_path(name), def_id);
             if nested.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
+            }
+            if nested.is_replaceable || nested.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
+            if nested.expandable {
+                self.expandable_connector_ids.insert(def_id);
+            }
+        }
+
+        // Enumeration literals are declared by the enumeration type rather
+        // than receiving independent DefIds. Register each literal as a
+        // structured member whose exact declaration identity is the owning
+        // enum class, so `L.U` proves its full path without textual fallback.
+        if let Some(class_def_id) = class.def_id {
+            for literal in &class.enum_literals {
+                self.scope_tree.add_member(
+                    class_scope,
+                    ComponentPath::from_flat_path(&literal.ident.text),
+                    class_def_id,
+                );
             }
         }
 

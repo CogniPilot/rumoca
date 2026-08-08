@@ -4,24 +4,20 @@
 
 use diffsol::{OdeSolverMethod, VectorHost};
 use indexmap::IndexMap;
-use rumoca_eval_solve::{self as solve_eval, SolveRuntime};
+use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    SimOptions, SolveStopSchedule, event_solver_step_cap, runtime_root_event_application_time,
-    time_match_with_tol,
+    RuntimeEventStop, SimOptions, SolveRuntime, SolveStopSchedule, event_solver_step_cap,
+    runtime_root_event_application_time, time_match_with_tol,
 };
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::runtime::{
-    NoStateRuntime, advance_no_state_runtime_to, apply_no_state_deadline_tick,
-    initialize_no_state_runtime,
-};
 use crate::{
     LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
     build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
-    settle_algebraics_and_relation_memory, solver_call, validate_model, write_state_to_solver,
+    settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
 };
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
@@ -44,13 +40,15 @@ struct BdfSession {
     time_fn: Box<dyn Fn() -> f64>,
     y_fn: Box<dyn Fn() -> Vec<f64>>,
     event_reset_fn: Box<dyn FnMut(f64) -> Result<(), SimError>>,
-    event_horizon: Rc<Cell<f64>>,
     reset_fn: ResetFn,
     refresh_input_fn: Box<dyn FnMut() -> Result<(), SimError>>,
     project_fn: Box<dyn FnMut() -> Result<(), SimError>>,
     runtime: SolveRuntime,
     runtime_params: RuntimeParameters,
+    stop_schedule: SolveStopSchedule,
+    t_end: f64,
     reset_snapshot: BdfResetSnapshot,
+    event_tolerance: f64,
     input_values: IndexMap<String, f64>,
     inputs_dirty: bool,
 }
@@ -67,11 +65,34 @@ struct StepAdvance {
     hit_root: bool,
 }
 
+#[derive(Debug, Default)]
+struct EventIterationStreak {
+    time: Option<f64>,
+    count: usize,
+}
+
+impl EventIterationStreak {
+    fn record(&mut self, event_time: f64, target_time: f64, kind: &str) -> Result<(), SimError> {
+        if self.time != Some(event_time) {
+            self.time = Some(event_time);
+            self.count = 0;
+        }
+        self.count = self.count.checked_add(1).ok_or_else(|| {
+            SimError::SolverError(format!(
+                "{kind} event iteration counter overflowed at t={event_time}"
+            ))
+        })?;
+        if self.count <= SESSION_ADVANCE_EVENT_LIMIT {
+            return Ok(());
+        }
+        Err(SimError::SolverError(format!(
+            "{kind} event processing did not settle at t={event_time} before t={target_time}"
+        )))
+    }
+}
+
 struct RuntimeOnlyDriver {
-    _runtime_context: solve_eval::SimulationContext,
-    model: solve::SolveModel,
-    opts: SimOptions,
-    runtime: NoStateRuntime,
+    session: rumoca_solver::fmi_me::MeNoStateSession,
     input_values: IndexMap<String, f64>,
 }
 
@@ -188,27 +209,21 @@ impl RuntimeOnlyDriver {
                 "no-state session requires a model with zero continuous states".to_string(),
             ));
         }
-        let runtime_context = solve_eval::SimulationContext::new();
-        runtime_context.hydrate_solve_model(model);
-        validate_model(model)?;
-        let runtime = initialize_no_state_runtime(model, &opts, 1, false)?;
-        Ok(Self {
-            _runtime_context: runtime_context,
-            model: model.clone(),
+        let session = rumoca_solver::fmi_me::MeNoStateSession::instantiate(
+            rumoca_solver::fmi_me::MeModelSource::new(model),
             opts,
-            runtime,
+        )?;
+        Ok(Self {
+            session,
             input_values: IndexMap::new(),
         })
     }
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimError> {
-        let Some(param_idx) = self.model.problem.solve_layout.input_parameter_index(name) else {
+        if !self.session.set_input(name, value)? {
             return Err(SimError::SolverError(format!("unknown input '{name}'")));
-        };
-        self.input_values.insert(name.to_string(), value);
-        if let Some(slot) = self.runtime.params.get_mut(param_idx) {
-            *slot = value;
         }
+        self.input_values.insert(name.to_string(), value);
         Ok(())
     }
 
@@ -220,70 +235,27 @@ impl RuntimeOnlyDriver {
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
-        if target_time <= self.runtime.current_t {
-            return Ok(());
-        }
-        let tol = self.opts.atol.max(1.0e-10);
-        advance_no_state_runtime_to(&self.model, &self.opts, &mut self.runtime, target_time, tol)?;
-        let can_tick_at_target = self.runtime.current_t < target_time
-            || time_match_with_tol(self.runtime.current_t, target_time);
-        let event_at_target = self
-            .runtime
-            .last_event_t
-            .is_some_and(|event_t| time_match_with_tol(event_t, target_time));
-        if can_tick_at_target && !event_at_target {
-            apply_no_state_deadline_tick(&self.model, &mut self.runtime, target_time, tol)?;
-        }
-        Ok(())
+        self.session.advance_to(target_time).map_err(Into::into)
     }
 
     fn set_end_time(&mut self, t_end: f64) {
-        if !t_end.is_finite() || t_end <= self.opts.t_end {
-            return;
-        }
-        self.opts.t_end = t_end;
-        self.runtime.stop_schedule =
-            SolveStopSchedule::new(&self.model.problem, self.runtime.current_t, t_end);
+        self.session.extend_stop_time(t_end);
     }
 
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
-        let mut opts = self.opts.clone();
-        opts.t_start = t_start;
-        self.runtime = initialize_no_state_runtime(&self.model, &opts, 1, false)?;
-        self.opts = opts;
-        Ok(())
+        self.session.reset(t_start).map_err(Into::into)
     }
 
     fn time(&self) -> f64 {
-        self.runtime.current_t
+        self.session.time()
     }
 
     fn get(&self, name: &str) -> Result<Option<f64>, SimError> {
         if let Some(value) = self.input_values.get(name).copied() {
             return Ok(Some(value));
         }
-        let Some(idx) = self
-            .model
-            .visible_names
-            .iter()
-            .position(|visible| visible == name)
-        else {
-            return Ok(None);
-        };
-        let values = self.runtime.runtime.visible_values(
-            &self.runtime.current_y,
-            &self.runtime.params,
-            self.runtime.current_t,
-        )?;
-        values.get(idx).copied().map(Some).ok_or_else(|| {
-            SimError::RuntimeContract {
-                reason: format!(
-                    "visible value '{name}' resolved to index {idx}, but runtime returned {} values",
-                    values.len()
-                ),
-            }
-        })
+        Ok(self.session.output_values()?.get(name).copied())
     }
 
     fn state(&self) -> Result<SessionState, SimError> {
@@ -305,20 +277,15 @@ impl RuntimeOnlyDriver {
     }
 
     fn input_names(&self) -> &[String] {
-        self.model.problem.solve_layout.input_scalar_names()
+        self.session.input_names()
     }
 
     fn variable_names(&self) -> &[String] {
-        &self.model.visible_names
+        self.session.output_names()
     }
 
     fn session_visible_values(&self) -> Result<IndexMap<String, f64>, SimError> {
-        let visible_values = self.runtime.runtime.visible_values(
-            &self.runtime.current_y,
-            &self.runtime.params,
-            self.runtime.current_t,
-        )?;
-        let mut values = collect_visible_values(&self.model.visible_names, visible_values)?;
+        let mut values = self.session.output_values()?;
         values.extend(
             self.input_values
                 .iter()
@@ -340,6 +307,11 @@ impl BdfSession {
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
         let initial_y = settled_initial_y(model, &runtime, &ode_model, &opts, &runtime_params)?;
+        runtime.commit_delay_history(
+            opts.t_start,
+            &initial_y,
+            runtime_params.borrow().as_slice(),
+        )?;
         let ode_model = Arc::new(ode_model);
         let problem = build_ode_problem_with_runtime_params_and_initial(
             model,
@@ -377,7 +349,13 @@ impl BdfSession {
         };
         let solver = Rc::new(RefCell::new(solver));
 
-        let step_fn = make_step_fn(Rc::clone(&solver), model, runtime_params.clone(), &opts)?;
+        let step_fn = make_step_fn(
+            Rc::clone(&solver),
+            model,
+            runtime_params.clone(),
+            &opts,
+            runtime.has_delay_channels(),
+        )?;
         let time_solver = Rc::clone(&solver);
         let time_fn = Box::new(move || time_solver.borrow().state().t);
         let y_solver = Rc::clone(&solver);
@@ -386,53 +364,34 @@ impl BdfSession {
         let event_reset_solver = Rc::clone(&solver);
         let event_reset_model = model.clone();
         let event_reset_opts = opts.clone();
-        let event_horizon = Rc::new(Cell::new(opts.t_end));
-        let event_reset_horizon = Rc::clone(&event_horizon);
+        let event_reset_runtime = runtime.clone();
+        let event_reset_ode_model = ode_model.clone();
         let event_reset_params = runtime_params.clone();
         let event_reset_fn = Box::new(move |t_start: f64| {
-            let mut event_reset_opts = event_reset_opts.clone();
-            event_reset_opts.t_end = event_reset_horizon.get();
             let initial_y = {
                 let solver = event_reset_solver.borrow();
                 solver.state().y.as_slice().to_vec()
             };
-            let ode_model = Arc::new(OdeModel::new(&event_reset_model)?);
-            let reset_runtime = SolveRuntime::new(&event_reset_model)?;
-            let root_runtime = Arc::new(reset_runtime.clone());
             let initial_y = settled_problem_y(
                 &event_reset_model,
-                &reset_runtime,
-                &ode_model,
+                &event_reset_runtime,
+                &event_reset_ode_model,
                 &event_reset_opts,
                 &event_reset_params,
                 t_start,
                 initial_y,
             )?;
-            let problem = build_ode_problem_with_runtime_params_and_initial(
-                &event_reset_model,
-                &event_reset_opts,
-                event_reset_params.clone(),
+            let params = event_reset_params.borrow().to_vec();
+            let dy = bdf_derivative_guess(&event_reset_ode_model, &initial_y, &params, t_start)?;
+            reset_solver_state(
+                &mut *event_reset_solver.borrow_mut(),
+                &event_reset_params,
+                &initial_y,
+                &dy,
+                &params,
                 t_start,
-                initial_y.clone(),
-                ode_model.clone(),
-                root_runtime,
-            )?;
-            let problem_ref = Box::leak(Box::new(problem));
-            let state = {
-                let params = event_reset_params.borrow();
-                initial_bdf_state(
-                    &event_reset_model,
-                    &ode_model,
-                    problem_ref,
-                    &initial_y,
-                    params.as_slice(),
-                )?
-            };
-            let rebuilt = solver_call("BDF new", || {
-                diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(problem_ref, state, newton())
-            })?;
-            *event_reset_solver.borrow_mut() = rebuilt;
-            Ok(())
+                event_solver_step_cap(event_reset_opts.dt),
+            )
         });
         let reset_opts = opts.clone();
         let reset_params = runtime_params.clone();
@@ -468,13 +427,15 @@ impl BdfSession {
             time_fn,
             y_fn,
             event_reset_fn,
-            event_horizon,
             reset_fn,
             refresh_input_fn,
             project_fn,
             runtime,
             runtime_params,
+            stop_schedule: SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end),
+            t_end: opts.t_end,
             reset_snapshot,
+            event_tolerance: opts.atol.max(1.0e-10),
             input_values: IndexMap::new(),
             inputs_dirty: false,
         })
@@ -507,39 +468,121 @@ impl BdfSession {
         Ok(())
     }
 
+    fn process_root_advance(
+        &mut self,
+        target_time: f64,
+        advanced_time: f64,
+        reached_scheduled_event: bool,
+        event_streak: &mut EventIterationStreak,
+    ) -> Result<(), SimError> {
+        event_streak.record(advanced_time, target_time, "root")?;
+        (self.project_fn)()?;
+        let reset_time =
+            runtime_root_event_application_time(self.time(), target_time, self.event_tolerance);
+        (self.event_reset_fn)(reset_time)?;
+        self.commit_delay_point()?;
+        if reached_scheduled_event {
+            self.stop_schedule.advance_past(advanced_time);
+        }
+        Ok(())
+    }
+
+    fn process_scheduled_advance(
+        &mut self,
+        event: RuntimeEventStop,
+        target_time: f64,
+        advanced_time: f64,
+        event_streak: &mut EventIterationStreak,
+    ) -> Result<(), SimError> {
+        event_streak.record(advanced_time, target_time, "scheduled")?;
+        (self.project_fn)()?;
+        let reset_time = if event.observe_right_limit {
+            runtime_root_event_application_time(advanced_time, target_time, self.event_tolerance)
+        } else {
+            advanced_time
+        };
+        (self.event_reset_fn)(reset_time)?;
+        self.commit_delay_point()?;
+        self.stop_schedule.advance_past(advanced_time);
+        Ok(())
+    }
+
     fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
-        for _ in 0..SESSION_ADVANCE_EVENT_LIMIT {
+        let mut event_streak = EventIterationStreak::default();
+        loop {
             let current_time = self.time();
             if target_time <= current_time {
                 return Ok(());
             }
             if self.inputs_dirty {
                 (self.refresh_input_fn)()?;
+                self.commit_delay_point()?;
                 self.inputs_dirty = false;
             }
-            let advance = (self.step_fn)(target_time - current_time)?;
-            if !advance.hit_root {
+
+            let (scheduled_time, scheduled_event) =
+                self.stop_schedule.next_stop(current_time, target_time);
+            let delay_boundary = self
+                .runtime
+                .delay_step_limit()
+                .map(|limit| current_time + limit)
+                .filter(|boundary| *boundary < target_time);
+            let step_target = delay_boundary
+                .into_iter()
+                .chain(scheduled_event.map(|_| scheduled_time))
+                .fold(target_time, f64::min);
+            let advance = (self.step_fn)(step_target - current_time)?;
+            let advanced_time = self.time();
+            if advanced_time <= current_time
+                && !time_match_with_tol(advanced_time, step_target)
+                && !advance.hit_root
+            {
+                return Err(SimError::SolverError(format!(
+                    "BDF session made no progress from t={current_time} toward t={step_target}"
+                )));
+            }
+            self.commit_delay_point()?;
+            let reached_scheduled_event =
+                scheduled_event.filter(|_| time_match_with_tol(scheduled_time, advanced_time));
+            if let Some(event) = reached_scheduled_event {
+                self.activate_terminal_event(event);
+            }
+
+            if advance.hit_root {
+                self.process_root_advance(
+                    target_time,
+                    advanced_time,
+                    reached_scheduled_event.is_some(),
+                    &mut event_streak,
+                )?;
+                continue;
+            }
+
+            if let Some(event) = reached_scheduled_event {
+                self.process_scheduled_advance(
+                    event,
+                    target_time,
+                    advanced_time,
+                    &mut event_streak,
+                )?;
+                continue;
+            }
+
+            if time_match_with_tol(advanced_time, target_time) || advanced_time >= target_time {
                 return Ok(());
             }
-            (self.project_fn)()?;
-            let reset_time = runtime_root_event_application_time(self.time(), target_time);
-            (self.event_reset_fn)(reset_time)?;
-        }
-        Err(SimError::SolverError(format!(
-            "event processing did not settle before t={target_time}"
-        )))
-    }
-
-    fn set_end_time(&mut self, t_end: f64) {
-        if t_end.is_finite() && t_end > self.event_horizon.get() {
-            self.event_horizon.set(t_end);
         }
     }
 
     fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
         self.input_values.clear();
         self.inputs_dirty = false;
-        (self.reset_fn)(t_start, &self.reset_snapshot)
+        self.runtime.reset_delay_history();
+        (self.reset_fn)(t_start, &self.reset_snapshot)?;
+        self.stop_schedule =
+            SolveStopSchedule::new(&self.runtime.model.problem, t_start, self.t_end);
+        (self.refresh_input_fn)()?;
+        self.commit_delay_point()
     }
 
     fn time(&self) -> f64 {
@@ -604,6 +647,57 @@ impl BdfSession {
         &self.runtime.model.visible_names
     }
 
+    fn commit_delay_point(&mut self) -> Result<(), SimError> {
+        if !self.runtime.has_delay_channels() {
+            return Ok(());
+        }
+        let time = self.time();
+        let y = (self.y_fn)();
+        let mut params = self.runtime_params.borrow_mut();
+        self.runtime
+            .refresh_delay_values(time, &y, params.as_mut_slice())?;
+        self.runtime
+            .commit_delay_history(time, &y, params.as_slice())?;
+        Ok(())
+    }
+
+    fn activate_terminal_event(&mut self, event: RuntimeEventStop) {
+        if !event.terminal {
+            return;
+        }
+        let Some(index) = self
+            .runtime
+            .model
+            .problem
+            .solve_layout
+            .terminal_event_parameter_index
+        else {
+            return;
+        };
+        if let Some(slot) = self.runtime_params.borrow_mut().get_mut(index) {
+            *slot = 1.0;
+        }
+    }
+
+    fn set_end_time(&mut self, t_end: f64) {
+        if !t_end.is_finite() || t_end <= self.t_end {
+            return;
+        }
+        self.t_end = t_end;
+        if let Some(index) = self
+            .runtime
+            .model
+            .problem
+            .solve_layout
+            .terminal_event_parameter_index
+            && let Some(slot) = self.runtime_params.borrow_mut().get_mut(index)
+        {
+            *slot = 0.0;
+        }
+        self.stop_schedule =
+            SolveStopSchedule::new(&self.runtime.model.problem, self.time(), t_end);
+    }
+
     fn session_visible_values(
         &self,
         y: &[f64],
@@ -634,7 +728,6 @@ where
 {
     let refresh_model = OdeModel::new(model)?;
     let state_count = model.state_scalar_count();
-    let solve_model = model.clone();
     let tol = opts.atol.max(1.0e-10);
     Ok(Box::new(move || {
         let mut solver = solver.borrow_mut();
@@ -650,7 +743,7 @@ where
             state_count,
             tol,
         )?;
-        let dy = bdf_derivative_guess(&solve_model, &refresh_model, &y, &p, t)?;
+        let dy = bdf_derivative_guess(&refresh_model, &y, &p, t)?;
         write_state_to_solver(&mut *solver, &params, &y, Some(&dy), &p, t);
         Ok(())
     }))
@@ -661,6 +754,7 @@ fn make_step_fn<Eqn, S>(
     model: &solve::SolveModel,
     params: RuntimeParameters,
     opts: &SimOptions,
+    enforce_stop_time: bool,
 ) -> Result<StepFn, SimError>
 where
     Eqn: diffsol::OdeEquations<T = f64> + 'static,
@@ -668,9 +762,18 @@ where
     S: OdeSolverMethod<'static, Eqn> + 'static,
 {
     let step_model = OdeModel::new(model)?;
+    let step_runtime = SolveRuntime::new(model)?;
     let step_opts = opts.clone();
     Ok(Box::new(move |dt: f64| {
-        step_solver_by(&solver, &step_model, &params, &step_opts, dt)
+        step_solver_by(
+            &solver,
+            &step_model,
+            &step_runtime,
+            &params,
+            &step_opts,
+            dt,
+            enforce_stop_time,
+        )
     }))
 }
 
@@ -803,10 +906,12 @@ where
 
 fn step_solver_by<Eqn, S>(
     solver: &Rc<RefCell<S>>,
-    _model: &OdeModel,
-    _params: &RuntimeParameters,
-    _opts: &SimOptions,
+    model: &OdeModel,
+    runtime: &SolveRuntime,
+    params: &RuntimeParameters,
+    opts: &SimOptions,
     dt: f64,
+    enforce_stop_time: bool,
 ) -> Result<StepAdvance, SimError>
 where
     Eqn: diffsol::OdeEquations<T = f64> + 'static,
@@ -821,6 +926,12 @@ where
         solver.state().t
     };
     let target = current_t + dt;
+    let project_manifold = !runtime
+        .model
+        .problem
+        .continuous
+        .manifold_projection_plan
+        .is_empty();
     // NOTE: deliberately no `implicit_residual_is_zero_through_interval`
     // fast-path here. Bumping `state_mut().t = target` to skip a "steady"
     // interval jumps the solver clock forward while leaving the BDF multistep
@@ -830,7 +941,10 @@ where
     // dense-output path (`advance_output_interval` in `lib.rs`) has no such
     // shortcut and completes the full horizon; mirror it.
     let mut solver = solver.borrow_mut();
-    // Advance with the solver's own adaptive steps and land on `target` via
+    if enforce_stop_time || project_manifold {
+        crate::set_solver_stop_time(&mut *solver, target)?;
+    }
+    // Advance with the solver's own adaptive steps and normally land on `target` via
     // dense output (`state_mut_back`), rather than pinning a stop time at every
     // output sample. `set_stop_time(target)` forces a shortened, awkward final
     // step onto each output instant; on stiff models (e.g. the rover thermal
@@ -841,19 +955,42 @@ where
     // size, which is exactly what the batch dense-output path does
     // (`advance_output_interval` / `state_mut_back` in `lib.rs`) and why the
     // batch path completes the full horizon where the simulation session used
-    // to collapse.
+    // to collapse. Manifold projection is the exception: a projection reset
+    // invalidates dense history, so those models use an exact stop at `target`.
     loop {
         if solver.state().t >= target {
-            solver
-                .state_mut_back(target)
-                .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+            land_session_on_target(
+                &mut *solver,
+                model,
+                runtime,
+                params,
+                opts,
+                target,
+                project_manifold,
+            )?;
             return Ok(StepAdvance::default());
         }
         match solver_call("BDF step", || solver.step()) {
             Ok(
                 diffsol::OdeSolverStopReason::TstopReached
                 | diffsol::OdeSolverStopReason::InternalTimestep,
-            ) => continue,
+            ) => {
+                let accepted_t = solver.state().t;
+                if project_manifold {
+                    project_session_accepted_state(
+                        &mut *solver,
+                        model,
+                        runtime,
+                        params,
+                        opts,
+                        accepted_t,
+                    )?;
+                }
+                if project_manifold && accepted_t < target {
+                    crate::set_solver_stop_time(&mut *solver, target)?;
+                }
+                continue;
+            }
             Ok(diffsol::OdeSolverStopReason::RootFound(t_root, _)) => {
                 // The free-running step overshoots the root (the solver state
                 // sits at the natural step end, past `t_root`). The caller's
@@ -882,6 +1019,64 @@ where
     }
 }
 
+fn land_session_on_target<Eqn, S>(
+    solver: &mut S,
+    model: &OdeModel,
+    runtime: &SolveRuntime,
+    params: &RuntimeParameters,
+    opts: &SimOptions,
+    target: f64,
+    project_manifold: bool,
+) -> Result<(), SimError>
+where
+    Eqn: diffsol::OdeEquations<T = f64> + 'static,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'static, Eqn>,
+{
+    if time_match_with_tol(solver.state().t, target) {
+        return Ok(());
+    }
+    solver
+        .state_mut_back(target)
+        .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+    if project_manifold {
+        project_session_accepted_state(solver, model, runtime, params, opts, target)?;
+    }
+    Ok(())
+}
+
+fn project_session_accepted_state<Eqn, S>(
+    solver: &mut S,
+    model: &OdeModel,
+    runtime: &SolveRuntime,
+    runtime_params: &RuntimeParameters,
+    opts: &SimOptions,
+    t: f64,
+) -> Result<(), SimError>
+where
+    Eqn: diffsol::OdeEquations<T = f64> + 'static,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'static, Eqn>,
+{
+    let mut y = solver.state().y.as_slice().to_vec();
+    let params = runtime_params.borrow().to_vec();
+    let tol = opts.atol.max(1.0e-10);
+    if !runtime.project_state_manifold(&mut y, &params, t, tol)? {
+        return Ok(());
+    }
+    rumoca_solver::project_algebraics(
+        model,
+        &mut y,
+        &params,
+        t,
+        model.state_count_for_projection(),
+        tol,
+    )?;
+    let dy = bdf_derivative_guess(model, &y, &params, t)?;
+    let h_cap = solver.state().h.abs().max(1.0e-12);
+    reset_solver_state(solver, runtime_params, &y, &dy, &params, t, h_cap)
+}
+
 fn root_event_time_for_target(root_t: f64, target_t: f64) -> f64 {
     if time_match_with_tol(root_t, target_t) {
         target_t
@@ -904,9 +1099,43 @@ mod tests {
         };
     }
 
+    macro_rules! scalar_program_block {
+        ($rows:expr, $span:expr $(,)?) => {{
+            let span = $span;
+            ScalarProgramBlock::with_source_span(
+                $rows,
+                span.require_provenance("Diffsol session fixture")
+                    .expect("fixture span is source-backed"),
+            )
+            .expect("fixture program is computable")
+        }};
+    }
+
     fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
         let target = session.time() + dt;
         session.advance_to(target).expect(context);
+    }
+
+    #[test]
+    fn event_iteration_streak_resets_when_time_advances() {
+        let mut streak = EventIterationStreak::default();
+        for index in 0..(SESSION_ADVANCE_EVENT_LIMIT * 2) {
+            streak
+                .record(index as f64, 1000.0, "root")
+                .expect("advancing event times must start new streaks");
+        }
+        assert_eq!(streak.count, 1);
+    }
+
+    #[test]
+    fn event_iteration_streak_rejects_same_time_chattering() {
+        let mut streak = EventIterationStreak::default();
+        for _ in 0..SESSION_ADVANCE_EVENT_LIMIT {
+            streak
+                .record(2.0, 3.0, "root")
+                .expect("events up to the cap are allowed");
+        }
+        assert!(streak.record(2.0, 3.0, "root").is_err());
     }
 
     #[test]
@@ -1210,18 +1439,20 @@ mod tests {
         let mut model = solve::SolveModel::default();
         model.problem.solve_layout.compiled_parameter_len = 1;
         model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-        model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-            period_seconds: 0.05,
-            phase_seconds: 0.05,
-        }];
+        model.problem.clocks.periodic_event_schedules =
+            vec![solve::PeriodicEventSchedule::from_seconds(0.05, 0.05).unwrap()];
         model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-        model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
+        model.problem.discrete.rhs = scalar_program_block!(
             vec![vec![
                 LinearOp::Const { dst: 0, value: 3.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
             fixture_span!(),
         );
+        model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent];
+        model.problem.discrete.observation_refresh = vec![false];
+        model.problem.discrete.clock_owners = vec![model.problem.clocks.periodic_clock_id(0)];
         model.parameters = vec![0.0];
         model.visible_names = vec!["m".to_string()];
         let mut session = SimulationSession::new(
@@ -1242,14 +1473,14 @@ mod tests {
     }
 
     fn single_input_integrator() -> solve::SolveModel {
-        let rhs = ScalarProgramBlock::with_source_span(
+        let rhs = scalar_program_block!(
             vec![vec![
                 LinearOp::LoadP { dst: 0, index: 0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
             fixture_span!(),
         );
-        let zero = ScalarProgramBlock::with_source_span(
+        let zero = scalar_program_block!(
             vec![vec![
                 LinearOp::Const { dst: 0, value: 0.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -1265,13 +1496,16 @@ mod tests {
                     implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                     algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     residual: ComputeBlock::from_scalar_program_block(rhs.clone()),
+                    manifold_residual: ComputeBlock::default(),
+                    manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(rhs.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
                     residual: ComputeBlock::from_scalar_program_block(zero.clone()),
                     row_targets: Vec::new(),
-                    projection_indices: Vec::new(),
-                    projection_plan: solve::AlgebraicProjectionPlan::default(),
+                    row_roles: Vec::new(),
+                    projection_unknowns: Vec::new(),
+                    projection_plan: solve::InitializationProjectionPlan::default(),
                     update_rhs: solve::ScalarProgramBlock::default(),
                     update_targets: Vec::new(),
                 },
@@ -1284,6 +1518,8 @@ mod tests {
                         name_to_idx: IndexMap::from([("x".to_string(), 0)]),
                         base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
                     },
+                    variable_declarations: Vec::new(),
+                    variable_storage_runs: Vec::new(),
                     state_scalar_count: 1,
                     algebraic_scalar_count: 0,
                     output_scalar_count: 0,
@@ -1294,19 +1530,27 @@ mod tests {
                     discrete_valued_scalar_names: Vec::new(),
                     relation_memory_parameter_indices: Vec::new(),
                     initial_event_parameter_index: None,
+                    initial_homotopy_parameter_index: None,
+                    terminal_event_parameter_index: None,
                     pre_param_bindings: Vec::new(),
                 },
             },
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
-                    mass_matrix: vec![vec![1.0]],
+                    structural: solve::ContinuousStructuralArtifacts::default(),
+                    mass_matrix: solve::MassMatrix::Identity,
                     implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
                     implicit_jacobian_v_scalar: zero.clone(),
+                    manifold_jacobian_v: ComputeBlock::default(),
                     full_jacobian_v: zero.clone(),
                 },
-                ..solve::SolveArtifacts::default()
+                initialization: solve::InitializationSolveArtifacts {
+                    structural: solve::InitializationStructuralArtifacts::default(),
+                    residual_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
+                },
             },
             initial_y: vec![0.0],
+            solver_nominals: vec![1.0],
             parameters: vec![0.0],
             external_tables: solve::ExternalTables::default(),
             visible_names: vec!["x".to_string()],
@@ -1350,6 +1594,8 @@ mod tests {
                         }],
                     },
                     residual: ComputeBlock::from_scalar_program_block(derivative.clone()),
+                    manifold_residual: ComputeBlock::default(),
+                    manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(derivative.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
@@ -1358,8 +1604,9 @@ mod tests {
                         zero_row(),
                     ])),
                     row_targets: Vec::new(),
-                    projection_indices: Vec::new(),
-                    projection_plan: solve::AlgebraicProjectionPlan::default(),
+                    row_roles: Vec::new(),
+                    projection_unknowns: Vec::new(),
+                    projection_plan: solve::InitializationProjectionPlan::default(),
                     update_rhs: solve::ScalarProgramBlock::default(),
                     update_targets: Vec::new(),
                 },
@@ -1369,7 +1616,7 @@ mod tests {
                         LinearOp::LoadY { dst: 0, index: 0 },
                         LinearOp::StoreOutput { src: 0 },
                     ]]),
-                    root_relation_memory_targets: vec![None],
+                    root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
                     root_zero_domains: vec![solve::RootZeroDomain::Previous],
                     ..Default::default()
                 },
@@ -1378,16 +1625,24 @@ mod tests {
             },
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
-                    mass_matrix: vec![vec![1.0]],
+                    structural: solve::ContinuousStructuralArtifacts::default(),
+                    mass_matrix: solve::MassMatrix::Identity,
                     implicit_jacobian_v: ComputeBlock::from_scalar_program_block(
                         jacobian_v.clone(),
                     ),
                     implicit_jacobian_v_scalar: jacobian_v.clone(),
+                    manifold_jacobian_v: ComputeBlock::default(),
                     full_jacobian_v: jacobian_v.clone(),
                 },
-                ..solve::SolveArtifacts::default()
+                initialization: solve::InitializationSolveArtifacts {
+                    structural: solve::InitializationStructuralArtifacts::default(),
+                    residual_jacobian_v: ComputeBlock::from_scalar_program_block(scalar_block(
+                        vec![zero_row(), zero_row()],
+                    )),
+                },
             },
             initial_y: vec![0.1, 0.0],
+            solver_nominals: vec![1.0, 1.0],
             parameters: vec![0.0],
             external_tables: solve::ExternalTables::default(),
             visible_names: vec!["z".to_string(), "force".to_string()],
@@ -1406,6 +1661,8 @@ mod tests {
                     ("force".to_string(), vec![1]),
                 ]),
             },
+            variable_declarations: Vec::new(),
+            variable_storage_runs: Vec::new(),
             state_scalar_count: 1,
             algebraic_scalar_count: 1,
             output_scalar_count: 0,
@@ -1416,12 +1673,14 @@ mod tests {
             discrete_valued_scalar_names: vec!["c".to_string()],
             relation_memory_parameter_indices: vec![0],
             initial_event_parameter_index: None,
+            initial_homotopy_parameter_index: None,
+            terminal_event_parameter_index: None,
             pre_param_bindings: Vec::new(),
         }
     }
 
     fn scalar_block(rows: Vec<Vec<LinearOp>>) -> ScalarProgramBlock {
-        ScalarProgramBlock::with_source_span(rows, fixture_span!())
+        scalar_program_block!(rows, fixture_span!())
     }
 
     fn algebraic_contact_residual_row() -> Vec<LinearOp> {

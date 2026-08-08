@@ -600,6 +600,11 @@ fn func_013_partial_function_call_rejected() {
     // flatten-time diagnostic is not possible because flatten legitimately
     // converts partial base functions that redeclares later make concrete
     // (the MSL Media pattern).
+    //
+    // `ED005` (`UnresolvedFunctionCall`) was retired when DAE construction
+    // became valid-by-construction. SPEC_0008 requires retiring rather than
+    // reusing a code, so the surviving DAE-boundary code for a call whose
+    // callee has no resolved owner is `ED008` (`UnresolvedReference`).
     expect_failure_in_phase_with_code(
         r#"
         model M
@@ -612,7 +617,7 @@ fn func_013_partial_function_call_rejected() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 
@@ -821,26 +826,19 @@ fn func_023_cyclic_function_bindings_rejected() {
     );
 }
 
-// =============================================================================
-// FUNC-029: Conditional components in target record: it is an error
-// =============================================================================
-
 #[test]
-fn func_029_constructor_for_conditional_record_rejected() {
-    expect_failure_in_phase_with_code(
+fn record_constructor_with_statically_present_conditional_field_accepted() {
+    expect_success(
         r#"
         model M
-            parameter Boolean has = true;
             record R
                 Real x;
-                Real y if has;
+                Real y if true;
             end R;
             R r = R(1.0, 2.0);
         end M;
     "#,
         "M",
-        FailedPhase::Flatten,
-        "EF018",
     );
 }
 
@@ -959,6 +957,215 @@ fn func_032_external_function_without_purity_warns() {
     "#,
         "M",
         "WR001",
+    );
+}
+
+/// MLS 3.7 §12.3 states two facts about the deprecated bare external form, and
+/// the compiler must carry both from the declaration to the DAE: such a
+/// function "shall be treated as impure", while writing no prefix "is
+/// deprecated" — reported, not rejected. MLS 3.6 §12.3 (historical; 3.7
+/// deprecates the bare form) put both in one sentence: "assumed to be impure,
+/// but without any restriction on calling them".
+///
+/// So the body of `F` is impure — never pure by omission, which would license
+/// the optimizations MLS forbids on impure calls — while the continuous-time
+/// call to it is still accepted. `G` proves the written `pure` prefix is not
+/// lost along the same path.
+#[test]
+fn func_032_external_function_without_purity_is_impure_but_unrestricted() {
+    let result = expect_success(
+        r#"
+        model M
+            function F
+                input Real u;
+                output Real y;
+            external "C" y = my_func(u);
+            end F;
+            pure function G
+                input Real u;
+                output Real y;
+            external "C" y = my_pure_func(u);
+            end G;
+            Real z = F(time) + G(time);
+        end M;
+    "#,
+        "M",
+    );
+
+    let purities = result.dae.inspect(|view| {
+        (0..view.function_count())
+            .filter_map(|index| {
+                let function = view.function(view.function_id(index)?)?;
+                let external = function.external()?;
+                Some((
+                    function.name().as_str().to_string(),
+                    external.purity().is_pure(),
+                ))
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let bare = purities
+        .iter()
+        .find(|(name, _)| name.ends_with('F'))
+        .expect("the bare external function reaches the DAE");
+    assert!(
+        !bare.1,
+        "an external function declaring no purity prefix has an impure body (MLS §12.3)"
+    );
+    let declared = purities
+        .iter()
+        .find(|(name, _)| name.ends_with('G'))
+        .expect("the pure external function reaches the DAE");
+    assert!(
+        declared.1,
+        "the written `pure` prefix is the only thing that makes an external body pure"
+    );
+}
+
+/// MLS 3.7 §12.3 makes an external function without explicit purity "treated as
+/// impure", and impurity is a fact about the body, so an initial algorithm that
+/// determines a discrete value with such a call is rejected by the owner that
+/// knows why: initialization applies its updates until they stop changing, and
+/// an impure call never settles. The bare form must fail there — with the
+/// initial-algorithm owner naming the call — rather than surviving to a later,
+/// vaguer rejection.
+#[test]
+fn func_032_bare_external_cannot_determine_a_discrete_initial_value() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model BareDiscInit
+            function f
+                input Real u;
+                output Real y;
+            external "C" y = my_func(u);
+            end f;
+            discrete Real d;
+            Real z;
+        initial algorithm
+            d := f(1.0);
+        equation
+            when time > 0.5 then
+                d = pre(d) + 1;
+            end when;
+            z = d * time;
+        end BareDiscInit;
+    "#,
+        "BareDiscInit",
+        FailedPhase::ToDae,
+        "ED013",
+    );
+}
+
+/// MLS §12.3 lists `pure(impureFunction(…))` among the contexts an impure call
+/// may occupy: "which allows calling impure functions in any pure context".
+/// Rumoca does not accept it yet, and this test pins the exact deviation so it
+/// is visible rather than assumed working.
+///
+/// The wrapper is recognized and erased during lowering, but suppressing the
+/// callee's purity check needs a fact Flat can still see at DAE construction,
+/// where the rule is re-proven by callee identity. Carrying it takes a call-site
+/// marker on the Flat call node (144 construction sites) or a new builtin
+/// variant threaded through every exhaustive builtin match — filed as task #57.
+/// Until then the impure case is rejected by its earliest owner, Resolve, with
+/// the call's own span.
+#[test]
+fn func_022_pure_wrapper_around_an_impure_call_is_not_yet_accepted() {
+    expect_resolve_failure_with_code(
+        r#"
+        model PureWrap
+            impure function f
+                input Real u;
+                output Real y;
+            external "C" y = my_func(u);
+            end f;
+            Real z;
+        equation
+            z = pure(f(time));
+        end PureWrap;
+    "#,
+        "PureWrap",
+        "ER088",
+    );
+}
+
+/// The wrapper is not a purity blanket: wrapping a pure call is legal and
+/// changes nothing about it.
+#[test]
+fn func_022_pure_wrapper_around_a_pure_call_is_transparent() {
+    let result = expect_success(
+        r#"
+        model PureOfPure
+            pure function g
+                input Real u;
+                output Real y;
+            external "C" y = my_pure(u);
+            end g;
+            Real z;
+        equation
+            z = pure(g(time));
+        end PureOfPure;
+    "#,
+        "PureOfPure",
+    );
+
+    assert!(
+        result.dae.inspect(|view| {
+            view.function_id(0)
+                .and_then(|id| view.function(id))
+                .and_then(|function| function.external())
+                .is_some_and(|external| external.purity().is_pure())
+        }),
+        "a wrapped pure external body is still pure"
+    );
+}
+
+/// The wrapper is typed by what it wraps, whatever that is. MLS §12.3 spells
+/// it around a call, but the grammar admits any expression, and one that
+/// contains no call bypasses nothing and must still mean its own value — the
+/// type checker gives `pure(1 + 2)` the type of `1 + 2` and lowering erases the
+/// wrapper, so the model is an ordinary one.
+#[test]
+fn func_022_pure_wrapper_around_a_call_free_expression_is_transparent() {
+    let result = expect_success(
+        r#"
+        model PureLiteral
+            Real z;
+        equation
+            z = pure(1 + 2) * time;
+        end PureLiteral;
+    "#,
+        "PureLiteral",
+    );
+
+    assert_eq!(
+        result.dae.inspect(|view| view.function_count()),
+        0,
+        "the wrapper is erased, so nothing about it survives as a callable"
+    );
+}
+
+/// MLS §12.3 spells the wrapper `pure(impureFunction(…))`: exactly one call.
+/// The grammar admits other argument lists, and those bypass nothing, so they
+/// are rejected with their own span instead of being lowered to a guess.
+#[test]
+fn func_022_pure_wrapper_without_exactly_one_argument_is_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model PureArity
+            pure function g
+                input Real u;
+                output Real y;
+            external "C" y = my_pure(u);
+            end g;
+            Real z;
+        equation
+            z = pure(g(time), g(time));
+        end PureArity;
+    "#,
+        "PureArity",
+        FailedPhase::Typecheck,
+        "ET008",
     );
 }
 

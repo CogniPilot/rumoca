@@ -1,360 +1,306 @@
-//! Render tests for the real eFMI manifest jinja templates (WI-2).
-//!
-//! These are the shipping `galec-production` manifest templates
-//! (`src/templates/galec-production/`), which the switch-dispatch build step
-//! renders for the `galec`/`galec-production` targets (contract §9 WI-5; the
-//! AC-only `galec` target ships a byte-identical copy as `manifest.xml.jinja`).
-//! They are loaded here with `include_str!` and rendered through the shared
-//! [`create_environment`] (which registers the `xml_escape` / `xs_double`
-//! filters), against a serde context whose shape matches
-//! `rumoca_galec_codegen::manifest_context::EfmiManifestContext`.
-//!
-//! These are structural checks (child order, wrapper cardinality, 1-based-AC
-//! vs 0-based-PC `Dimension/@number`, `origin="true"`, only-when-true
-//! booleans, `<Target>` as text, escaping, `xs_double`). Full XSD validation
-//! and checksum-web correctness are the container/CLI tests of later work
-//! items.
+//! Architecture checks for the checked Algorithm Code template surface.
 
-use super::*;
+use super::{create_environment, xs_double_str};
+use crate::templates;
+use rumoca_ir_galec::ast as galec;
+use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use serde_json::json;
 
-const AC_TEMPLATE: &str = include_str!("../templates/galec-production/ac_manifest.xml.jinja");
-const PC_TEMPLATE: &str = include_str!("../templates/galec-production/pc_manifest.xml.jinja");
-const CONTENT_TEMPLATE: &str = include_str!("../templates/galec-production/__content.xml.jinja");
-
-/// The AC-only `galec` target ships its own copy of the Algorithm Code
-/// manifest template (each `target.toml` bundle is self-contained). It must
-/// stay byte-identical to the `galec-production` copy this file validates, so
-/// the equivalence proof here covers both — a divergence is a drift bug.
-const GALEC_AC_TEMPLATE: &str = include_str!("../templates/galec/manifest.xml.jinja");
-const GALEC_CONTENT_TEMPLATE: &str = include_str!("../templates/galec/__content.xml.jinja");
+#[test]
+fn galec_templates_parse_in_the_strict_shared_environment() {
+    let mut env = create_environment();
+    for target in ["galec", "galec-production", "embedded-c-galec"] {
+        let bundle = templates::builtin_target(target).expect("built-in GALEC target");
+        for template in bundle.templates {
+            env.add_template_owned(
+                format!("{target}/{}", template.path),
+                template.source.to_owned(),
+            )
+            .unwrap_or_else(|error| panic!("{target}/{}: {error}", template.path));
+        }
+    }
+}
 
 #[test]
-fn galec_and_galec_production_share_identical_manifest_templates() {
-    assert_eq!(
-        GALEC_AC_TEMPLATE, AC_TEMPLATE,
-        "galec/manifest.xml.jinja must stay byte-identical to \
-         galec-production/ac_manifest.xml.jinja"
-    );
-    assert_eq!(
-        GALEC_CONTENT_TEMPLATE, CONTENT_TEMPLATE,
-        "galec/__content.xml.jinja must stay byte-identical to \
-         galec-production/__content.xml.jinja"
-    );
+fn galec_templates_consume_checked_algorithm_code_and_artifact_facts() {
+    for target in ["galec", "galec-production", "embedded-c-galec"] {
+        let bundle = templates::builtin_target(target).expect("built-in GALEC target");
+        for template in bundle.templates {
+            assert!(
+                !template.source.contains("ctx."),
+                "{target}/{} retains the removed dynamic manifest context",
+                template.path
+            );
+            assert!(
+                !template.source.contains("galec_alg_source")
+                    && !template.source.contains("galec_c_source")
+                    && !template.source.contains("galec_c_header"),
+                "{target}/{} retains a pre-rendered target-language passthrough",
+                template.path
+            );
+        }
+    }
 }
 
-fn render(template: &str, ctx: serde_json::Value) -> String {
-    let env = create_environment();
-    let ctx_value = minijinja::Value::from_serialize(&ctx);
-    env.render_str(template, minijinja::context! { ctx => ctx_value })
-        .unwrap_or_else(|error| panic!("template render failed: {error:#}"))
+fn is_conformant_real_literal(text: &str) -> bool {
+    let text = text.strip_prefix('-').unwrap_or(text);
+    let Some(decimal_index) = text.find('.') else {
+        return false;
+    };
+    let (integer, fraction_with_separator) = text.split_at(decimal_index);
+    let fraction = &fraction_with_separator[1..];
+    if integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || integer.starts_with('0') && integer.len() != 1
+    {
+        return false;
+    }
+    let (fraction, exponent) = fraction.split_once('e').unwrap_or((fraction, ""));
+    if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    exponent.is_empty()
+        || exponent.strip_prefix(['+', '-']).is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
-fn assert_before(haystack: &str, first: &str, second: &str) {
-    let a = haystack
-        .find(first)
-        .unwrap_or_else(|| panic!("missing {first:?}\n{haystack}"));
-    let b = haystack
-        .find(second)
-        .unwrap_or_else(|| panic!("missing {second:?}\n{haystack}"));
-    assert!(a < b, "{first:?} must precede {second:?}\n{haystack}");
+#[test]
+fn portable_real_filter_preserves_expected_galec_spellings() {
+    for (value, expected) in [
+        (0.0, "0.0"),
+        (-0.0, "-0.0"),
+        (0.5, "0.5"),
+        (-2.5, "-2.5"),
+        (100_000.0, "100000.0"),
+        (0.000_001, "0.000001"),
+        (1.0e300, "1.0e+300"),
+        (-1.5e300, "-1.5e+300"),
+        (1.0e-300, "1.0e-300"),
+        (1.0e21, "1.0e+21"),
+    ] {
+        assert_eq!(xs_double_str(value).unwrap(), expected);
+    }
 }
 
-fn attributes(id: &str) -> serde_json::Value {
-    json!({
-        "id": id,
-        "name": "TestBlock",
-        "description": serde_json::Value::Null,
-        "version": serde_json::Value::Null,
-        "generation_date_and_time": "2026-07-03T12:00:00Z",
-        "generation_tool": serde_json::Value::Null,
-        "copyright": serde_json::Value::Null,
-        "license": serde_json::Value::Null,
-    })
+#[test]
+fn portable_real_filter_is_conformant_and_round_trips() {
+    for value in [
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        0.1 + 0.2,
+        std::f64::consts::PI,
+        1.0e-42,
+        -3.25e17,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        5e-324,
+    ] {
+        let rendered = xs_double_str(value).unwrap();
+        assert!(is_conformant_real_literal(&rendered), "{rendered}");
+        assert_eq!(rendered.parse::<f64>().unwrap(), value);
+    }
 }
 
-fn ac_context() -> serde_json::Value {
-    json!({
-        "ac": {
-            "attributes": {
-                "id": "{7d6b1a52-4f0e-4d59-9d3b-215f8e5b6a20}",
-                "name": "TestBlock",
-                // Angle brackets exercise xml_escape.
-                "description": "period <b>",
-                "version": serde_json::Value::Null,
-                "generation_date_and_time": "2026-07-03T12:00:00Z",
-                "generation_tool": serde_json::Value::Null,
-                "copyright": serde_json::Value::Null,
-                "license": serde_json::Value::Null,
-            },
-            "file_ref_id": "F_ALG",
-            "files": [{
-                "id": "F_ALG", "name": "TestBlock.alg", "path": "",
-                "needs_checksum": true, "checksum": "abc123",
-                "role": "Code", "description": serde_json::Value::Null,
-            }],
-            "clock": { "id": "CLK", "variable_ref_id": "V_T" },
-            "block_methods": {
-                "startup": { "id": "BM_STARTUP", "kind": "Startup", "signals": [] },
-                "recalibrate": { "id": "BM_RECALIBRATE", "kind": "Recalibrate", "signals": [] },
-                "do_step": { "id": "BM_DOSTEP", "kind": "DoStep", "signals": ["NAN"] },
-            },
-            "error_signal_status_id": "ESS",
-            "variables": [
-                {
-                    "kind": "Real", "id": "V_T", "name": "samplePeriod",
-                    "description": serde_json::Value::Null,
-                    "block_causality": "constant", "dimensions": [],
-                    "start": "0.001", "annotations": [],
-                    "unit_ref_id": "U_S", "relative_quantity": false,
-                    "min": serde_json::Value::Null, "max": serde_json::Value::Null,
-                    "nominal": "0.001",
-                },
-                {
-                    "kind": "Integer", "id": "V_A", "name": "arr",
-                    "description": serde_json::Value::Null,
-                    "block_causality": "state", "dimensions": [2, 3],
-                    "start": "0 0 0 0 0 0",
-                    "annotations": [{ "annotation_type": "com.example" }],
-                    "unit_ref_id": serde_json::Value::Null,
-                    "relative_quantity": false,
-                    "min": serde_json::Value::Null, "max": "10",
-                    "nominal": serde_json::Value::Null,
-                },
-            ],
-            "annotations": [],
+#[test]
+fn portable_real_filter_rejects_non_finite_values() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(xs_double_str(value).is_err());
+    }
+}
+
+fn collision_block() -> CheckedAlgorithmBlock {
+    let input = |name| galec::InterfaceVariable {
+        kind: galec::InterfaceKind::Input,
+        decl: galec::VariableDeclaration::scalar(galec::ScalarType::Real, name),
+        start: None,
+    };
+    let mut block = galec::Block::new(galec::Name::ident("constexpr"));
+    block.interface = vec![
+        input(galec::Name::quoted("a.b")),
+        input(galec::Name::ident("a_b")),
+        input(galec::Name::ident("volatile")),
+        input(galec::Name::ident("imu_valid")),
+    ];
+    block.do_step.locals = vec![galec::VariableDeclaration::scalar(
+        galec::ScalarType::Real,
+        galec::Name::quoted("imu.valid"),
+    )];
+    CheckedAlgorithmBlock::construct(block).expect("valid collision fixture")
+}
+
+fn render_fixture(template: &str) -> String {
+    let artifact = json!({
+        "generated_at": "2026-01-01T00:00:00Z",
+        "generation_tool": "rumoca-test",
+        "identities": {
+            "pc_manifest": "10000000-0000-0000-0000-000000000001",
+            "ac_manifest": "10000000-0000-0000-0000-000000000002"
         },
-        "units": [{
-            "id": "U_S", "name": "s",
-            // factor != 1.0 exercises xs_double; offset 0.0 stays omitted.
-            "base_unit": {
-                "kg": 0, "m": 0, "s": 1, "ampere": 0, "kelvin": 0,
-                "mol": 0, "cd": 0, "rad": 0, "factor": 2.0, "offset": 0.0,
-            },
-        }],
-    })
-}
-
-#[test]
-fn ac_manifest_reproduces_the_serializer_structure() {
-    let out = render(AC_TEMPLATE, ac_context());
-
-    assert!(out.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
-    // xs:sequence child order is load-bearing.
-    assert_before(&out, "<Files", "<Clock");
-    assert_before(&out, "<Clock", "<BlockMethods");
-    assert_before(&out, "<BlockMethods", "<ErrorSignalStatus");
-    assert_before(&out, "<ErrorSignalStatus", "<Units");
-    assert_before(&out, "<Units", "<Variables");
-
-    // Escaping (autoescape OFF -> explicit filter on every text value).
-    assert!(out.contains("description=\"period &lt;b&gt;\""));
-
-    // AC Dimension/@number is 1-based.
-    assert!(out.contains("<Dimension number=\"1\" size=\"2\"/>"));
-    assert!(out.contains("<Dimension number=\"2\" size=\"3\"/>"));
-
-    // xs_double on the raw BaseUnit factor; nondefault-only exponents/offset.
-    assert!(out.contains("factor=\"2.0\""));
-    assert!(out.contains(" s=\"1\""));
-    assert!(!out.contains("offset="));
-    assert!(!out.contains(" kg="));
-
-    // Scalar Real is self-closing; unitRefId + nominal present.
-    assert!(out.contains("unitRefId=\"U_S\""));
-    assert!(out.contains("nominal=\"0.001\""));
-
-    // BlockMethod self-closes without signals, opens with them.
-    assert!(out.contains("kind=\"Startup\"/>"));
-    assert!(out.contains("<Signal value=\"NAN\"/>"));
-
-    // Integer array variable carries its state causality + max only.
-    assert!(out.contains("<IntegerVariable"));
-    assert!(out.contains("max=\"10\""));
-}
-
-#[test]
-fn ac_manifest_always_emits_empty_files_and_units_wrappers() {
-    let mut ctx = ac_context();
-    ctx["ac"]["files"] = json!([]);
-    ctx["units"] = json!([]);
-    let out = render(AC_TEMPLATE, ctx);
-    assert!(
-        out.contains("<Files/>"),
-        "empty Files must self-close:\n{out}"
-    );
-    assert!(
-        out.contains("<Units/>"),
-        "empty Units must self-close:\n{out}"
-    );
-}
-
-#[test]
-fn content_registry_loops_representations() {
-    let ctx = json!({
-        "content": {
-            "attributes": attributes("{2f1a03de-9f14-4a3d-8b1e-73c60d0a1c11}"),
-            "active_fmu": serde_json::Value::Null,
-            "representations": [{
-                "name": "AlgorithmCode", "kind": "AlgorithmCode",
-                "manifest": "manifest.xml", "checksum": "deadbeef",
-                "manifest_ref_id": "{7d6b1a52-4f0e-4d59-9d3b-215f8e5b6a20}",
-            }],
+        "checksums": {
+            "ac_manifest_sha1": "0000000000000000000000000000000000000000",
+            "c_header_sha1": "0000000000000000000000000000000000000000",
+            "c_source_sha1": "0000000000000000000000000000000000000000"
         }
     });
-    let out = render(CONTENT_TEMPLATE, ctx);
-    assert!(out.contains("<Content "));
-    assert!(
-        !out.contains("activeFmu"),
-        "rumoca never emits activeFmu:\n{out}"
-    );
-    assert!(out.contains("kind=\"AlgorithmCode\""));
-    assert!(out.contains("checksum=\"deadbeef\""));
-    assert!(out.contains("manifestRefId=\"{7d6b1a52-4f0e-4d59-9d3b-215f8e5b6a20}\""));
+    crate::render_checked_algorithm_block_template_with_artifact(
+        &collision_block(),
+        &artifact,
+        template,
+        "fixture",
+    )
+    .expect("render collision fixture")
 }
 
-fn pc_context() -> serde_json::Value {
-    json!({
-        "pc": {
-            "attributes": attributes("{3c9aa74e-1d2f-4b6a-9e07-51c4f0d88b31}"),
-            "manifest_reference": {
-                "id": "MR_AC",
-                "manifest_ref_id": "{7d6b1a52-4f0e-4d59-9d3b-215f8e5b6a20}",
-                "checksum": "acsha1",
-            },
-            "files": [{
-                "id": "F_H", "name": "TestBlock.h", "path": "",
-                "needs_checksum": true, "checksum": "hsha",
-                "role": "Code", "description": serde_json::Value::Null,
-            }],
-            "code_container": {
-                "language": "C", "standard": "C99", "platform": "Legacy",
-                "float_precision": "64-bit",
-                "description": serde_json::Value::Null,
-                "target": "Generic",
-                "target_types": [
-                    { "id": "TT_F64", "kind": "efmiFloat64", "coded_type": "double" },
-                    { "id": "TT_VOID", "kind": "efmiVoid", "coded_type": "void" },
-                ],
-                "code_files": [
-                    {
-                        "id": "CF_H", "file_type": "ProductionCode",
-                        "code_type": "HeaderFile", "file_ref_id": "F_H",
-                        "file_ref_kind": serde_json::Value::Null,
-                        "includes": [],
-                        "typedefs": [
-                            {
-                                "id": "TD_F64", "name": "double",
-                                "alias": { "target_type_ref_id": "TT_F64",
-                                           "type_def_ref_id": serde_json::Value::Null },
-                                "components": serde_json::Value::Null,
-                            },
-                            {
-                                "id": "TD_STATE", "name": "TestBlock_state",
-                                "alias": serde_json::Value::Null,
-                                "components": [
-                                    { "id": "CO_0", "name": "x",
-                                      "type_def_ref_id": "TD_F64",
-                                      "dimensions": [], "pointer": false },
-                                    { "id": "CO_1", "name": "arr",
-                                      "type_def_ref_id": "TD_F64",
-                                      "dimensions": [2, 3], "pointer": false },
-                                ],
-                            },
-                        ],
-                        "functions": [],
-                    },
-                    {
-                        "id": "CF_C", "file_type": "ProductionCode",
-                        "code_type": "SourceFile", "file_ref_id": "F_H",
-                        "file_ref_kind": serde_json::Value::Null,
-                        "includes": ["CF_H"],
-                        "typedefs": [],
-                        "functions": [{
-                            "id": "FN_DOSTEP", "name": "TestBlock_dostep",
-                            "return_parameter": {
-                                "id": "RP", "type_def_ref_id": "TD_F64",
-                                "constant": false, "pointer": false,
-                                "const_pointer": false, "dimensions": [],
-                            },
-                            "formal_parameters": [{
-                                "name": "self",
-                                "core": {
-                                    "id": "FP_SELF", "type_def_ref_id": "TD_STATE",
-                                    "constant": false, "pointer": true,
-                                    "const_pointer": false, "dimensions": [],
-                                },
-                            }],
-                        }],
-                    },
-                ],
-                "logical_data": {
-                    "data_references": [{
-                        "manifest_reference_ref_id": "MR_AC",
-                        "foreign_ref_id": "V_T",
-                        "formal_parameter_ref_id": "FP_SELF",
-                        "component_identifier": "x",
-                    }],
-                    "function_references": [{
-                        "manifest_reference_ref_id": "MR_AC",
-                        "foreign_ref_id": "BM_DOSTEP",
-                        "function_ref_id": "FN_DOSTEP",
-                    }],
-                },
-            },
-            "annotations": [],
+#[test]
+fn galec_c_symbols_are_collision_safe_reserved_disjoint_and_consistent() {
+    let header = render_fixture(
+        templates::builtin_template_source("embedded-c-galec", "model.h.jinja")
+            .expect("C header template"),
+    );
+    let source = render_fixture(
+        templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
+            .expect("C source template"),
+    );
+    let manifest = render_fixture(
+        templates::builtin_template_source("galec-production", "pc_manifest.xml.jinja")
+            .expect("Production Code manifest template"),
+    );
+
+    assert_eq!(header.matches("float b; /* declaration 1: a.b").count(), 1);
+    assert_eq!(
+        header.matches("float a_b; /* declaration 2: a_b").count(),
+        1
+    );
+    assert_eq!(
+        header
+            .matches("float volatile_2; /* declaration 3: volatile")
+            .count(),
+        1
+    );
+    assert_eq!(
+        header
+            .matches("float imu_valid; /* declaration 4: imu_valid")
+            .count(),
+        1,
+        "a function-local collision must not rename a state field: {header}"
+    );
+    assert!(!header.contains("float imu_valid_2;"), "{header}");
+    assert!(header.contains("constexpr_2State"), "{header}");
+    assert!(source.contains("void constexpr_2_startup"), "{source}");
+    assert!(manifest.contains("name=\"constexpr_2State\""), "{manifest}");
+    assert!(
+        manifest.contains("<Component id=\"CO_1\" name=\"b\" typeDefRefId=\"TD_F32\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("<Component id=\"CO_2\" name=\"a_b\" typeDefRefId=\"TD_F32\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("<Component id=\"CO_3\" name=\"volatile_2\" typeDefRefId=\"TD_F32\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("componentIdentifier=\"a_b\""),
+        "{manifest}"
+    );
+    assert!(manifest.contains("componentIdentifier=\"b\""), "{manifest}");
+    assert!(
+        manifest.contains("componentIdentifier=\"volatile_2\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("componentIdentifier=\"imu_valid\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("id=\"TT_U32\" kind=\"efmiUnsignedInteger32\" codedType=\"uint32_t\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains(
+            "id=\"CO_ERROR_SIGNAL_STATUS\" name=\"rumoca_galec_error_signal_status\" typeDefRefId=\"TD_U32\""
+        ),
+        "{manifest}"
+    );
+    assert!(manifest.contains("foreignRefId=\"ESS\""), "{manifest}");
+    assert!(
+        manifest.contains("componentIdentifier=\"rumoca_galec_error_signal_status\""),
+        "{manifest}"
+    );
+}
+
+#[test]
+fn galec_c_templates_do_not_use_lossy_sanitization() {
+    for target in ["embedded-c-galec", "galec-production"] {
+        let bundle = templates::builtin_target(target).expect("built-in C target");
+        for template in bundle.templates {
+            assert!(
+                !template.source.contains("| sanitize"),
+                "{target}/{} uses lossy symbol sanitization",
+                template.path
+            );
         }
-    })
+    }
 }
 
 #[test]
-fn pc_manifest_reproduces_the_serializer_structure() {
-    let out = render(PC_TEMPLATE, pc_context());
+fn galec_real_min_max_are_relational_target_helpers() {
+    let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
+        .expect("C source template");
 
-    assert_before(&out, "<ManifestReferences", "<Files");
-    assert_before(&out, "<Files", "<CodeContainer");
-    assert_before(&out, "<Target>", "<TargetTypes");
-    assert_before(&out, "<TargetTypes", "<CodeFiles");
-    assert_before(&out, "<CodeFiles", "<LogicalData");
-
-    // origin is unconditional on the single ManifestReference.
-    assert!(out.contains("origin=\"true\""));
-    // Target is a text element, not an attribute.
-    assert!(out.contains("<Target>Generic</Target>"));
-
-    // PC Dimension/@number is 0-based (CO_1 arr[2,3]).
-    assert!(out.contains("<Dimension number=\"0\" size=\"2\"/>"));
-    assert!(out.contains("<Dimension number=\"1\" size=\"3\"/>"));
-
-    // FormalParameter/@number is 0-based; pointer emitted only when true.
-    assert!(out.contains("number=\"0\""));
-    assert!(out.contains("pointer=\"true\""));
-    // const / constPointer are false here, so must not appear.
-    assert!(!out.contains("const=\"true\""));
-    assert!(!out.contains("constPointer=\"true\""));
-
-    // Includes wrapper appears (CF_C has one) and componentIdentifier passes.
-    assert!(out.contains("<Include codeFileRefId=\"CF_H\"/>"));
-    assert!(out.contains("componentIdentifier=\"x\""));
-
-    // LogicalData inner wrappers present with children.
-    assert!(out.contains("<DataReferences>"));
-    assert!(out.contains("<FunctionReferences>"));
-    assert!(out.contains("<GlobalFunction functionRefId=\"FN_DOSTEP\"/>"));
+    assert!(!source.contains(r#"function == "min" -%}fmin"#), "{source}");
+    assert!(!source.contains(r#"function == "max" -%}fmax"#), "{source}");
+    assert!(
+        source.contains(r#"function == "min" -%}rumoca_galec_min"#),
+        "{source}"
+    );
+    assert!(
+        source.contains(r#"function == "max" -%}rumoca_galec_max"#),
+        "{source}"
+    );
+    assert!(source.contains("if (u1 < u2)"), "{source}");
+    assert!(source.contains("if (u1 > u2)"), "{source}");
+    assert!(
+        source.contains("static inline int32_t rumoca_galec_imin"),
+        "Integer min must retain its distinct builtin mapping"
+    );
+    assert!(
+        source.contains("static inline int32_t rumoca_galec_imax"),
+        "Integer max must retain its distinct builtin mapping"
+    );
 }
 
 #[test]
-fn pc_manifest_always_emits_empty_logical_data_wrappers() {
-    let mut ctx = pc_context();
-    ctx["pc"]["code_container"]["logical_data"]["data_references"] = json!([]);
-    ctx["pc"]["code_container"]["logical_data"]["function_references"] = json!([]);
-    let out = render(PC_TEMPLATE, ctx);
-    assert!(
-        out.contains("<DataReferences/>"),
-        "empty DataReferences must self-close:\n{out}"
-    );
-    assert!(
-        out.contains("<FunctionReferences/>"),
-        "empty FunctionReferences must self-close:\n{out}"
-    );
+fn galec_c_templates_enforce_the_assurance_profile_without_claiming_compliance() {
+    let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
+        .expect("C source template");
+    let header = templates::builtin_template_source("embedded-c-galec", "model.h.jinja")
+        .expect("C header template");
+
+    for forbidden in [
+        "malloc(",
+        "calloc(",
+        "realloc(",
+        "free(",
+        "#define rumoca_galec_",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "forbidden `{forbidden}` in C template"
+        );
+        assert!(
+            !header.contains(forbidden),
+            "forbidden `{forbidden}` in H template"
+        );
+    }
+    assert!(!header.contains("#  define EFMI_"), "{header}");
+    assert!(header.contains("RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED"));
+    assert!(source.contains("MISRA compliance and DO-178C compliance are not claimed"));
+    assert!(header.contains("MISRA compliance and DO-178C compliance are not claimed"));
+    assert!(source.contains("dimensions|length == 1 %}const"));
+    assert!(source.contains("rank > 1 therefore stays unqualified"));
 }

@@ -16,57 +16,44 @@ use std::{
 };
 
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
-    SolveEventMessagePart, SolveEventPartition, SolveProblemShapeContractError, UnaryOp,
-    resolve_indexed_slot,
+    BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, ScalarProgramRegisterFlow,
+    SolveEventActionKind, SolveEventMessagePart, SolveEventPartition,
+    SolveProblemShapeContractError, SolveStringConversionFormat, SolveStringConversionSource,
+    UnaryOp, resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
-pub mod eval_at;
-mod inspect_alloc;
-mod iterative_solve;
-pub mod jacobian;
-mod linear_solve;
+pub mod linear_solve;
 pub mod nan_trace;
+mod ops;
 mod prepared;
 mod random_runtime;
-mod refresh_plan;
-mod reverse;
-mod runtime;
-mod runtime_events;
-pub mod sim_driver;
+pub mod refresh_plan;
+pub mod reverse;
+#[cfg(test)]
+mod scalar_program_contract_tests;
 mod sparsity;
 mod table_runtime;
+pub mod tensor_policy;
 mod update_rows;
 pub use compute_block_scalarize::{
     ScalarizeError, checked_contiguous_output_count, checked_tensor_output_count,
     scalar_program_output_count, scalar_program_output_indices, tensor_output_indices,
     to_scalar_program_block,
 };
-pub use eval_at::{EvalAtReport, EvalAtSlot};
-pub use jacobian::{
-    JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
-};
 use linear_solve::{solve_component_op, solve_component_unchecked};
+pub(crate) use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
-    PreparedComputeBlock, PreparedScalarProgramBlock, TargetAssignmentShape,
-    target_assignment_shape,
+    ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
+    TargetAssignmentShape, target_assignment_shape, target_assignment_shapes,
 };
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
-pub use runtime::{
-    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
-    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    SolveRuntime, apply_discrete_slot_value,
-};
-pub use runtime_events::{
-    apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
-    next_runtime_event_stop, visible_values_with_context,
-};
 pub use sparsity::{
-    JacobianSparsity, jacobian_sparsity_from_jvp, jacobian_sparsity_from_scalar_jvp,
+    derive_column_coloring, derive_jacobian_pattern_from_jvp,
+    derive_jacobian_pattern_from_scalar_jvp, derive_solve_structural_artifacts,
     row_seed_dependencies,
 };
 pub use table_runtime::{
@@ -74,9 +61,42 @@ pub use table_runtime::{
     eval_table_lookup_value_in, eval_time_table_next_event_value_in,
 };
 pub use update_rows::{
-    UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_values,
-    eval_and_apply_update_rows,
+    UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_value_exact,
+    apply_scalar_slot_values, apply_scalar_slot_values_exact, eval_and_apply_update_rows,
 };
+
+#[cfg(test)]
+pub(crate) fn fixture_pattern(
+    rows: usize,
+    columns: usize,
+    diagonal: bool,
+) -> rumoca_ir_solve::StructuralPattern {
+    let dependencies = (0..rows)
+        .map(|row| {
+            if diagonal {
+                (row < columns).then_some(row).into_iter().collect()
+            } else {
+                (0..columns).collect()
+            }
+        })
+        .collect::<Vec<_>>();
+    let provenance = rumoca_ir_solve::PatternProvenance::derived(
+        rumoca_ir_solve::PatternDerivation::TensorOperand,
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("eval_solve_pattern_fixture.mo"),
+            0,
+            1,
+        ),
+    )
+    .expect("fixture provenance");
+    rumoca_ir_solve::StructuralPattern::from_row_dependencies(
+        rows,
+        columns,
+        &dependencies,
+        provenance,
+    )
+    .expect("fixture pattern")
+}
 
 static ROW_EVAL_CALLS: AtomicU64 = AtomicU64::new(0);
 static ROW_EVAL_NANOS: AtomicU64 = AtomicU64::new(0);
@@ -464,6 +484,15 @@ pub struct SimulationRuntimeState {
     impure_random: Arc<Mutex<ImpureRandomState>>,
 }
 
+/// Opaque continuation state for one solve evaluator instance.
+///
+/// The contents deliberately remain evaluator-owned: callers can only apply
+/// them through [`SimulationRuntimeState::restore`].
+#[derive(Clone)]
+pub struct SimulationRuntimeStateSnapshot {
+    impure_random: ImpureRandomState,
+}
+
 impl SimulationRuntimeState {
     pub fn new() -> Self {
         Self::default()
@@ -475,6 +504,30 @@ impl SimulationRuntimeState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.clear();
+    }
+
+    pub fn snapshot(&self) -> SimulationRuntimeStateSnapshot {
+        let impure_random = self
+            .impure_random
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        SimulationRuntimeStateSnapshot { impure_random }
+    }
+
+    pub fn restore(&self, snapshot: &SimulationRuntimeStateSnapshot) {
+        let mut state = self
+            .impure_random
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.clone_from(&snapshot.impure_random);
+    }
+
+    pub fn matches_snapshot(&self, snapshot: &SimulationRuntimeStateSnapshot) -> bool {
+        self.impure_random
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .bit_eq(&snapshot.impure_random)
     }
 }
 
@@ -569,8 +622,8 @@ pub fn eval_scalar_program_block_with_context(
     validate_scalar_program_block_io(block, y, p, context.seed, out)?;
     out.fill(0.0);
     let mut scratch = RowEvalScratch::default();
-    let mut sink = OutputCursor::with_output_indices(out, &block.output_indices);
-    for (row_idx, row) in block.programs.iter().enumerate() {
+    let mut sink = OutputCursor::with_output_indices(out, block.output_indices());
+    for (row_idx, row) in block.programs().iter().enumerate() {
         eval_row_prepared_with_context(
             PreparedRowEval::new(
                 row,
@@ -650,6 +703,7 @@ impl<'out> OutputCursor<'out> {
 pub(crate) struct RowEvalScratch {
     pub(crate) regs: Vec<f64>,
     pub(crate) initialized: Vec<bool>,
+    pub(crate) affine_ops: Vec<LinearOp>,
 }
 
 #[derive(Clone, Copy)]
@@ -771,26 +825,221 @@ fn eval_event_action_message(
     context: RowEvalContext<'_>,
 ) -> Result<String, EvalSolveError> {
     let mut message = String::new();
+    let eval = MessageEvalContext {
+        y,
+        p,
+        t,
+        row: context,
+        span: action.span,
+    };
     for part in &action.message.parts {
         match part {
-            SolveEventMessagePart::Text(text) => message.push_str(text),
-            SolveEventMessagePart::Number(row) => {
-                message.push_str(&eval_event_message_number(row, y, p, t, context)?);
+            SolveEventMessagePart::Text(text) => {
+                append_event_message_part(&mut message, text, action.span)?;
+            }
+            SolveEventMessagePart::Conversion {
+                value,
+                source,
+                format,
+            } => {
+                let rendered = eval_event_message_conversion(value, *source, format, eval)?;
+                append_event_message_part(&mut message, &rendered, action.span)?;
             }
         }
     }
     Ok(message)
 }
 
-fn eval_event_message_number(
-    row: &[LinearOp],
-    y: &[f64],
-    p: &[f64],
+#[derive(Clone, Copy)]
+struct MessageEvalContext<'a> {
+    y: &'a [f64],
+    p: &'a [f64],
     t: f64,
-    context: RowEvalContext<'_>,
+    row: RowEvalContext<'a>,
+    span: rumoca_core::Span,
+}
+
+const MAX_EVENT_MESSAGE_BYTES: usize = 1_048_576;
+const MAX_STRING_SIGNIFICANT_DIGITS: i64 = 1_024;
+
+fn eval_event_message_conversion(
+    row: &[LinearOp],
+    source: SolveStringConversionSource,
+    format: &SolveStringConversionFormat,
+    eval: MessageEvalContext<'_>,
 ) -> Result<String, EvalSolveError> {
-    let value = eval_row_with_context(row, y, p, t, context)?;
-    Ok(format!("{value}"))
+    let value = eval_row_with_context(row, eval.y, eval.p, eval.t, eval.row)?;
+    let SolveStringConversionFormat::Options {
+        minimum_length,
+        left_justified,
+        significant_digits,
+    } = format;
+    let minimum_length =
+        eval_message_integer_option(minimum_length.as_deref(), 0, "minimumLength", eval)?;
+    let left_justified =
+        eval_message_boolean_option(left_justified.as_deref(), true, "leftJustified", eval)?;
+    let significant_digits =
+        eval_message_integer_option(significant_digits.as_deref(), 6, "significantDigits", eval)?;
+    if !(1..=MAX_STRING_SIGNIFICANT_DIGITS).contains(&significant_digits) {
+        return Err(invalid_message_option(
+            format!("significantDigits must be in 1..={MAX_STRING_SIGNIFICANT_DIGITS}"),
+            eval.span,
+        ));
+    }
+    let converted = match source {
+        SolveStringConversionSource::Real => {
+            format_significant_digits(value, significant_digits as usize)
+        }
+        SolveStringConversionSource::Integer => {
+            if !value.is_finite() || value.fract() != 0.0 {
+                return Err(invalid_message_option(
+                    "Integer String conversion received a non-integer runtime value",
+                    eval.span,
+                ));
+            }
+            format!("{value:.0}")
+        }
+        SolveStringConversionSource::Boolean => {
+            if value == 0.0 {
+                "false".to_string()
+            } else if value == 1.0 {
+                "true".to_string()
+            } else {
+                return Err(invalid_message_option(
+                    "Boolean String conversion received a value outside {0,1}",
+                    eval.span,
+                ));
+            }
+        }
+    };
+    let width = usize::try_from(minimum_length)
+        .map_err(|_| invalid_message_option("minimumLength must be nonnegative", eval.span))?;
+    if width > MAX_EVENT_MESSAGE_BYTES {
+        return Err(invalid_message_option(
+            format!("minimumLength exceeds the {MAX_EVENT_MESSAGE_BYTES}-byte message limit"),
+            eval.span,
+        ));
+    }
+    if converted.len() >= width {
+        return Ok(converted);
+    }
+    let padding_len = width - converted.len();
+    let mut padded = String::new();
+    padded
+        .try_reserve_exact(width)
+        .map_err(|_| invalid_message_option("event message allocation failed", eval.span))?;
+    if left_justified {
+        padded.push_str(&converted);
+        padded.extend(std::iter::repeat_n(' ', padding_len));
+    } else {
+        padded.extend(std::iter::repeat_n(' ', padding_len));
+        padded.push_str(&converted);
+    }
+    Ok(padded)
+}
+
+fn eval_message_integer_option(
+    row: Option<&[LinearOp]>,
+    default: i64,
+    name: &'static str,
+    eval: MessageEvalContext<'_>,
+) -> Result<i64, EvalSolveError> {
+    let Some(row) = row else {
+        return Ok(default);
+    };
+    let value = eval_row_with_context(row, eval.y, eval.p, eval.t, eval.row)?;
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || value < i64::MIN as f64
+        || value >= 9_223_372_036_854_775_808.0
+    {
+        return Err(invalid_message_option(
+            format!("{name} must evaluate to an Integer"),
+            eval.span,
+        ));
+    }
+    Ok(value as i64)
+}
+
+fn eval_message_boolean_option(
+    row: Option<&[LinearOp]>,
+    default: bool,
+    name: &'static str,
+    eval: MessageEvalContext<'_>,
+) -> Result<bool, EvalSolveError> {
+    let Some(row) = row else {
+        return Ok(default);
+    };
+    match eval_row_with_context(row, eval.y, eval.p, eval.t, eval.row)? {
+        0.0 => Ok(false),
+        1.0 => Ok(true),
+        _ => Err(invalid_message_option(
+            format!("{name} must evaluate to a Boolean"),
+            eval.span,
+        )),
+    }
+}
+
+fn append_event_message_part(
+    message: &mut String,
+    part: &str,
+    span: rumoca_core::Span,
+) -> Result<(), EvalSolveError> {
+    let total = message
+        .len()
+        .checked_add(part.len())
+        .filter(|total| *total <= MAX_EVENT_MESSAGE_BYTES)
+        .ok_or_else(|| {
+            invalid_message_option(
+                format!("event message exceeds the {MAX_EVENT_MESSAGE_BYTES}-byte limit"),
+                span,
+            )
+        })?;
+    message
+        .try_reserve_exact(total - message.len())
+        .map_err(|_| invalid_message_option("event message allocation failed", span))?;
+    message.push_str(part);
+    Ok(())
+}
+
+fn invalid_message_option(message: impl Into<String>, span: rumoca_core::Span) -> EvalSolveError {
+    EvalSolveError::InvalidRow {
+        message: message.into(),
+        span: Some(span),
+    }
+}
+
+fn format_significant_digits(value: f64, digits: usize) -> String {
+    if !value.is_finite() || value == 0.0 {
+        return value.to_string();
+    }
+    let exponent = value.abs().log10().floor() as i32;
+    if exponent < -4 || exponent >= digits as i32 {
+        let mut formatted = format!("{:.*e}", digits.saturating_sub(1), value);
+        trim_fraction_zeros(&mut formatted, 'e');
+        return formatted;
+    }
+    let fractional = (digits as i32 - exponent - 1).max(0) as usize;
+    let mut formatted = format!("{value:.fractional$}");
+    trim_fraction_zeros(&mut formatted, '\0');
+    formatted
+}
+
+fn trim_fraction_zeros(value: &mut String, exponent_marker: char) {
+    let exponent = (exponent_marker != '\0')
+        .then(|| value.find(exponent_marker))
+        .flatten()
+        .unwrap_or(value.len());
+    let mut end = exponent;
+    while end > 0 && value.as_bytes()[end - 1] == b'0' {
+        end -= 1;
+    }
+    if end > 0 && value.as_bytes()[end - 1] == b'.' {
+        end -= 1;
+    }
+    if end != exponent {
+        value.replace_range(end..exponent, "");
+    }
 }
 
 pub fn eval_row(
@@ -840,9 +1089,23 @@ pub fn eval_row_with_context(
 ///
 /// Convenience for callers that operate on programs with exactly one
 /// `StoreOutput` (residual rows, root conditions, event-message numbers,
-/// target-assignment rows). Returns the last value stored, matching the
-/// historical "last `StoreOutput` wins" behavior for those programs.
+/// target-assignment rows).
 pub(crate) fn eval_program_single(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<f64, EvalSolveError> {
+    require_program_output_count(input.row, 1, input.source_span)?;
+    eval_prevalidated_single_output_program(input, register_safe, scratch)
+}
+
+/// Evaluate a program whose prepared block metadata already proves that it
+/// stores exactly one output.
+///
+/// Construction through `PreparedScalarProgramBlock` owns that proof. Keeping
+/// the unchecked primitive crate-private prevents an unprepared row from
+/// bypassing the ordinary shape check.
+pub(crate) fn eval_prevalidated_single_output_program(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
     scratch: &mut RowEvalScratch,
@@ -853,6 +1116,41 @@ pub(crate) fn eval_program_single(
         eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)?;
     }
     Ok(buf[0])
+}
+
+pub(crate) fn eval_program_no_output(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<(), EvalSolveError> {
+    require_program_output_count(input.row, 0, input.source_span)?;
+    eval_prevalidated_no_output_program(input, register_safe, scratch)
+}
+
+/// Evaluate a program prefix whose prepared assignment shape proves that it
+/// stores no outputs.
+pub(crate) fn eval_prevalidated_no_output_program(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<(), EvalSolveError> {
+    let mut sink = OutputCursor::new(&mut []);
+    eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)
+}
+
+fn require_program_output_count(
+    row: &[LinearOp],
+    expected: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let actual = ScalarProgramBlock::program_output_count(row);
+    if actual == expected {
+        return Ok(());
+    }
+    Err(EvalSolveError::InvalidRow {
+        message: format!("single-program evaluation expected {expected} outputs, found {actual}"),
+        span,
+    })
 }
 
 #[inline(always)]
@@ -1415,20 +1713,9 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
 }
 
 pub(crate) fn required_registers(row: &[LinearOp]) -> Result<usize, EvalSolveError> {
-    row.iter()
-        .map(max_register)
-        .try_fold(None, |max_reg: Option<u32>, reg| {
-            let reg = reg?;
-            Ok::<Option<u32>, EvalSolveError>(Some(max_reg.map_or(reg, |current| current.max(reg))))
-        })?
-        .map_or(Ok(0), checked_required_register_count)
-}
-
-fn checked_required_register_count(reg: Reg) -> Result<usize, EvalSolveError> {
-    usize::try_from(reg)
-        .ok()
-        .and_then(|reg| reg.checked_add(1))
-        .ok_or_else(|| invalid_row(format!("register index {reg} overflows register count")))
+    ScalarProgramRegisterFlow::derive(row)
+        .map(ScalarProgramRegisterFlow::register_count)
+        .map_err(|error| invalid_row(error.to_string()))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1452,7 +1739,7 @@ pub fn scalar_program_block_input_requirements(
     block: &ScalarProgramBlock,
 ) -> Result<RowInputRequirements, EvalSolveError> {
     block
-        .programs
+        .programs()
         .iter()
         .enumerate()
         .map(|(row_idx, row)| (row_idx, row_input_requirements(row)))
@@ -1525,7 +1812,6 @@ pub fn validate_scalar_program_block_io(
     seed: Option<&[f64]>,
     out: &[f64],
 ) -> Result<(), EvalSolveError> {
-    block.validate_shape_contract("scalar program block eval")?;
     validate_output_len(out, block.output_count())?;
     validate_input_requirements(scalar_program_block_input_requirements(block)?, y, p, seed)
 }
@@ -1550,7 +1836,11 @@ pub(crate) fn validate_output_len(out: &[f64], required: usize) -> Result<(), Ev
     })
 }
 
-pub(crate) fn validate_input_requirements(
+/// Validate that `y`/`p`/`seed` are long enough for `requirements`.
+///
+/// `pub` for `rumoca_solver::runtime::solve_runtime`, which validates solver
+/// vectors before handing them to a prepared row.
+pub fn validate_input_requirements(
     requirements: RowInputRequirements,
     y: &[f64],
     p: &[f64],
@@ -1596,114 +1886,6 @@ fn validate_input_len(
     })
 }
 
-fn max_register(op: &LinearOp) -> Result<u32, EvalSolveError> {
-    match *op {
-        LinearOp::Const { dst, .. }
-        | LinearOp::LoadTime { dst }
-        | LinearOp::LoadY { dst, .. }
-        | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. } => Ok(dst),
-        LinearOp::LoadIndexedP { dst, index, .. }
-        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(dst.max(index)),
-        LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => Ok(dst.max(src)),
-        LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
-            Ok(dst.max(lhs).max(rhs))
-        }
-        LinearOp::Select {
-            dst,
-            cond,
-            if_true,
-            if_false,
-        } => Ok(dst.max(cond).max(if_true).max(if_false)),
-        LinearOp::LinearSolveComponent {
-            dst,
-            matrix_start,
-            rhs_start,
-            n,
-            ..
-        } => Ok(dst
-            .max(checked_reg_range_last(
-                matrix_start,
-                checked_square_len(n, "linear solve matrix")?,
-                "linear solve matrix",
-            )?)
-            .max(checked_reg_range_last(rhs_start, n, "linear solve rhs")?)),
-        LinearOp::TableBounds { dst, table_id, .. } => Ok(dst.max(table_id)),
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        }
-        | LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => Ok(dst.max(table_id).max(column).max(input)),
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => Ok(dst.max(table_id).max(time)),
-        LinearOp::RandomInitialState {
-            dst,
-            local_seed,
-            global_seed,
-            ..
-        } => Ok(dst.max(local_seed).max(global_seed)),
-        LinearOp::RandomResult {
-            dst,
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            dst,
-            state_start,
-            state_len,
-            ..
-        } => Ok(dst.max(checked_reg_range_last(
-            state_start,
-            state_len,
-            "random state",
-        )?)),
-        LinearOp::ImpureRandomInit { dst, seed } => Ok(dst.max(seed)),
-        LinearOp::ImpureRandom { dst, id, .. } => Ok(dst.max(id)),
-        LinearOp::ImpureRandomInteger {
-            dst,
-            id,
-            imin,
-            imax,
-            ..
-        } => Ok(dst.max(id).max(imin).max(imax)),
-        LinearOp::StoreOutput { src } => Ok(src),
-    }
-}
-
-fn checked_square_len(n: usize, kind: &'static str) -> Result<usize, EvalSolveError> {
-    n.checked_mul(n)
-        .ok_or_else(|| invalid_row(format!("{kind} size overflow")))
-}
-
-fn checked_reg_range_last(
-    start: Reg,
-    len: usize,
-    kind: &'static str,
-) -> Result<Reg, EvalSolveError> {
-    let Some(offset) = len.checked_sub(1) else {
-        return Ok(start);
-    };
-    let offset = Reg::try_from(offset).map_err(|_| {
-        invalid_row(format!(
-            "{kind} offset {offset} exceeds register index type"
-        ))
-    })?;
-    start
-        .checked_add(offset)
-        .ok_or_else(|| invalid_row(format!("{kind} range starting at {start} overflows")))
-}
-
 fn invalid_row(message: impl Into<String>) -> EvalSolveError {
     EvalSolveError::InvalidRow {
         message: message.into(),
@@ -1721,16 +1903,6 @@ fn eval_solve_f64_values(
     Ok(values)
 }
 
-fn eval_solve_bool_values(
-    len: usize,
-    value: bool,
-    context: &'static str,
-) -> Result<Vec<bool>, EvalSolveError> {
-    let mut values = eval_solve_vec_with_capacity(len, context)?;
-    values.resize(len, value);
-    Ok(values)
-}
-
 fn eval_solve_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,
@@ -1740,121 +1912,6 @@ fn eval_solve_vec_with_capacity<T>(
         .try_reserve_exact(capacity)
         .map_err(|_| invalid_row(format!("{context} exceeds host memory limits")))?;
     Ok(values)
-}
-
-pub(crate) fn row_register_flow_is_valid(row: &[LinearOp]) -> Result<bool, EvalSolveError> {
-    let register_count = required_registers(row)?;
-    let mut initialized = eval_solve_bool_values(register_count, false, "row register flow state")?;
-    for op in row {
-        if !op_sources_initialized(op, &initialized) {
-            return Ok(false);
-        }
-        mark_op_dests_initialized(op, &mut initialized);
-    }
-    Ok(true)
-}
-
-fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
-    match *op {
-        LinearOp::Const { .. }
-        | LinearOp::LoadTime { .. }
-        | LinearOp::LoadY { .. }
-        | LinearOp::LoadP { .. }
-        | LinearOp::LoadSeed { .. } => true,
-        LinearOp::Move { src, .. }
-        | LinearOp::Unary { arg: src, .. }
-        | LinearOp::LoadIndexedP { index: src, .. }
-        | LinearOp::LoadIndexedSeed { index: src, .. }
-        | LinearOp::StoreOutput { src } => reg_initialized(initialized, src),
-        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
-            reg_initialized(initialized, lhs) && reg_initialized(initialized, rhs)
-        }
-        LinearOp::Select {
-            cond,
-            if_true,
-            if_false,
-            ..
-        } => {
-            reg_initialized(initialized, cond)
-                && reg_initialized(initialized, if_true)
-                && reg_initialized(initialized, if_false)
-        }
-        LinearOp::LinearSolveComponent {
-            matrix_start,
-            rhs_start,
-            n,
-            component,
-            ..
-        } => {
-            let Some(matrix_len) = n.checked_mul(n) else {
-                return false;
-            };
-            component < n
-                && reg_range_initialized(initialized, matrix_start, matrix_len)
-                && reg_range_initialized(initialized, rhs_start, n)
-        }
-        LinearOp::TableBounds { table_id, .. } => reg_initialized(initialized, table_id),
-        LinearOp::TableLookup {
-            table_id,
-            column,
-            input,
-            ..
-        }
-        | LinearOp::TableLookupSlope {
-            table_id,
-            column,
-            input,
-            ..
-        } => {
-            reg_initialized(initialized, table_id)
-                && reg_initialized(initialized, column)
-                && reg_initialized(initialized, input)
-        }
-        LinearOp::TableNextEvent { table_id, time, .. } => {
-            reg_initialized(initialized, table_id) && reg_initialized(initialized, time)
-        }
-        LinearOp::RandomInitialState {
-            local_seed,
-            global_seed,
-            ..
-        } => reg_initialized(initialized, local_seed) && reg_initialized(initialized, global_seed),
-        LinearOp::RandomResult {
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            state_start,
-            state_len,
-            ..
-        } => reg_range_initialized(initialized, state_start, state_len),
-        LinearOp::ImpureRandomInit { seed, .. } => reg_initialized(initialized, seed),
-        LinearOp::ImpureRandom { id, .. } => reg_initialized(initialized, id),
-        LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
-            reg_initialized(initialized, id)
-                && reg_initialized(initialized, imin)
-                && reg_initialized(initialized, imax)
-        }
-    }
-}
-
-fn mark_op_dests_initialized(op: &LinearOp, initialized: &mut [bool]) {
-    if let Some(dst) = op.dst_register()
-        && let Some(slot) = initialized.get_mut(dst as usize)
-    {
-        *slot = true;
-    }
-}
-
-fn reg_initialized(initialized: &[bool], reg: Reg) -> bool {
-    initialized.get(reg as usize).copied().unwrap_or(false)
-}
-
-fn reg_range_initialized(initialized: &[bool], start: Reg, len: usize) -> bool {
-    let start = start as usize;
-    start
-        .checked_add(len)
-        .is_some_and(|end| end <= initialized.len() && initialized[start..end].iter().all(|v| *v))
 }
 
 fn set(
@@ -1904,58 +1961,6 @@ fn get(
         });
     }
     Ok(value)
-}
-
-pub(crate) fn eval_unary(op: UnaryOp, value: f64) -> f64 {
-    match op {
-        UnaryOp::Neg => -value,
-        UnaryOp::Not => (value == 0.0) as u8 as f64,
-        UnaryOp::Abs => value.abs(),
-        UnaryOp::Sign => value.signum(),
-        UnaryOp::Sqrt => value.sqrt(),
-        UnaryOp::Floor => value.floor(),
-        UnaryOp::Ceil => value.ceil(),
-        UnaryOp::Trunc => value.trunc(),
-        UnaryOp::Sin => value.sin(),
-        UnaryOp::Cos => value.cos(),
-        UnaryOp::Tan => value.tan(),
-        UnaryOp::Asin => value.asin(),
-        UnaryOp::Acos => value.acos(),
-        UnaryOp::Atan => value.atan(),
-        UnaryOp::Sinh => value.sinh(),
-        UnaryOp::Cosh => value.cosh(),
-        UnaryOp::Tanh => value.tanh(),
-        UnaryOp::Exp => value.exp(),
-        UnaryOp::Log => value.ln(),
-        UnaryOp::Log10 => value.log10(),
-    }
-}
-
-pub(crate) fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
-    match op {
-        BinaryOp::Add => lhs + rhs,
-        BinaryOp::Sub => lhs - rhs,
-        BinaryOp::Mul => lhs * rhs,
-        BinaryOp::Div => guarded_division(lhs, rhs),
-        BinaryOp::Pow => lhs.powf(rhs),
-        BinaryOp::And => ((lhs != 0.0) && (rhs != 0.0)) as u8 as f64,
-        BinaryOp::Or => ((lhs != 0.0) || (rhs != 0.0)) as u8 as f64,
-        BinaryOp::Atan2 => lhs.atan2(rhs),
-        BinaryOp::Min => lhs.min(rhs),
-        BinaryOp::Max => lhs.max(rhs),
-    }
-}
-
-fn guarded_division(lhs: f64, rhs: f64) -> f64 {
-    if rhs == 0.0 {
-        if lhs == 0.0 { 0.0 } else { f64::INFINITY }
-    } else {
-        lhs / rhs
-    }
-}
-
-pub(crate) fn eval_compare(op: CompareOp, lhs: f64, rhs: f64) -> f64 {
-    op.compare_as_f64(lhs, rhs)
 }
 
 #[cfg(test)]

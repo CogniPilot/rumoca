@@ -1,11 +1,16 @@
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+
+type BuildResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Debug)]
 struct TargetDir {
     name: String,
     manifest_path: PathBuf,
+    readme_path: PathBuf,
     templates: Vec<TemplateFile>,
+    assets: Vec<AssetFile>,
 }
 
 #[derive(Debug)]
@@ -15,77 +20,273 @@ struct TemplateFile {
     source_path: PathBuf,
 }
 
-fn main() {
-    let manifest_dir =
-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"));
+#[derive(Debug)]
+struct AssetFile {
+    path: String,
+    const_name: String,
+    source_path: PathBuf,
+}
+
+fn main() -> BuildResult<()> {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let templates_dir = manifest_dir.join("src/templates");
     println!("cargo:rerun-if-changed={}", templates_dir.display());
 
-    let targets = discover_targets(&templates_dir);
+    let targets = discover_targets(&templates_dir)?;
     let generated = render_generated_templates_module(&manifest_dir, &targets);
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR must be set"));
-    fs::write(out_dir.join("templates_generated.rs"), generated)
-        .expect("write generated codegen template registry");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
+    fs::write(out_dir.join("templates_generated.rs"), generated)?;
+    Ok(())
 }
 
-fn discover_targets(templates_dir: &Path) -> Vec<TargetDir> {
-    let mut targets = fs::read_dir(templates_dir)
-        .expect("read codegen templates directory")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && path.join("target.toml").is_file())
-        .map(|dir| discover_target_dir(&dir))
-        .collect::<Vec<_>>();
+fn discover_targets(templates_dir: &Path) -> BuildResult<Vec<TargetDir>> {
+    let mut targets = Vec::new();
+    for entry in fs::read_dir(templates_dir)? {
+        let entry = entry.map_err(|error| {
+            build_error(format!(
+                "read entry in codegen templates directory {}: {error}",
+                templates_dir.display()
+            ))
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| build_error(format!("stat {}: {error}", entry.path().display())))?;
+        if file_type.is_symlink() {
+            return Err(build_error(format!(
+                "built-in target roots may not be symlinks: {}",
+                entry.path().display()
+            ))
+            .into());
+        }
+        if file_type.is_dir() && entry.path().join("target.toml").is_file() {
+            targets.push(discover_target_dir(&entry.path())?);
+        }
+    }
     targets.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
-    targets
+    Ok(targets)
 }
 
-fn discover_target_dir(dir: &Path) -> TargetDir {
+fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
     let name = dir
         .file_name()
         .and_then(|name| name.to_str())
-        .expect("target directory must have UTF-8 name")
+        .ok_or_else(|| build_error("target directory must have a UTF-8 name"))?
         .to_string();
     let manifest_path = dir.join("target.toml");
-    let mut templates = fs::read_dir(dir)
-        .expect("read target template directory")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jinja"))
-        .map(|source_path| {
+    let readme_path = dir.join("README.md");
+    validate_target_readme(&readme_path, &name)?;
+    let mut templates = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry.map_err(|error| {
+            build_error(format!("read target entry in {}: {error}", dir.display()))
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| build_error(format!("stat {}: {error}", entry.path().display())))?;
+        if file_type.is_symlink() {
+            return Err(build_error(format!(
+                "built-in targets may not contain symlinks: {}",
+                entry.path().display()
+            ))
+            .into());
+        }
+        let source_path = entry.path();
+        if file_type.is_file()
+            && source_path.extension().and_then(|ext| ext.to_str()) == Some("jinja")
+        {
             let path = source_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .expect("template file must have UTF-8 name")
+                .ok_or_else(|| build_error("template file must have a UTF-8 name"))?
                 .to_string();
-            TemplateFile {
+            templates.push(TemplateFile {
                 const_name: generated_template_const_name(&name, &path),
                 path,
                 source_path,
-            }
-        })
-        .collect::<Vec<_>>();
+            });
+        }
+    }
     templates.sort_by(|lhs, rhs| lhs.path.cmp(&rhs.path));
-    validate_manifest_templates(&manifest_path, &templates);
-    TargetDir {
+    let mut asset_paths = Vec::new();
+    collect_asset_files(dir, dir, &mut asset_paths)?;
+    let assets = asset_paths
+        .into_iter()
+        .map(|source_path| {
+            let path = relative_path(dir, &source_path)?;
+            Ok(AssetFile {
+                const_name: generated_asset_const_name(&name, &path),
+                path,
+                source_path,
+            })
+        })
+        .collect::<BuildResult<Vec<_>>>()?;
+    validate_manifest_templates(&manifest_path, &templates)?;
+    validate_manifest_assets(&manifest_path, dir, &assets)?;
+    Ok(TargetDir {
         name,
         manifest_path,
+        readme_path,
         templates,
-    }
+        assets,
+    })
 }
 
-fn validate_manifest_templates(manifest_path: &Path, templates: &[TemplateFile]) {
-    let manifest = fs::read_to_string(manifest_path).expect("read target manifest");
+fn validate_target_readme(path: &Path, target: &str) -> BuildResult<()> {
+    let readme = fs::read_to_string(path).map_err(|error| {
+        build_error(format!(
+            "built-in target {target} requires README.md at {}: {error}",
+            path.display()
+        ))
+    })?;
+    let required = [
+        format!("# `{target}`"),
+        "## Use case".to_string(),
+        "## Contract".to_string(),
+        "## Unsupported".to_string(),
+        "## Verification".to_string(),
+        "## Example".to_string(),
+    ];
+    let missing = required
+        .iter()
+        .filter(|heading| !readme.lines().any(|line| line == heading.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(build_error(format!(
+            "{} is missing required target documentation headings: {}",
+            path.display(),
+            missing.join(", ")
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn collect_asset_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> BuildResult<()> {
+    let mut entries = fs::read_dir(dir)
+        .map_err(|error| {
+            build_error(format!(
+                "read target asset directory {}: {error}",
+                dir.display()
+            ))
+        })?
+        .map(|entry| {
+            entry.map_err(|error| {
+                build_error(format!(
+                    "read target asset entry in {}: {error}",
+                    dir.display()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            build_error(format!("stat target asset {}: {error}", path.display()))
+        })?;
+        if file_type.is_symlink() {
+            return Err(build_error(format!(
+                "built-in targets may not contain symlinks: {}",
+                path.display()
+            ))
+            .into());
+        }
+        if file_type.is_dir() {
+            collect_asset_files(root, &path, out)?;
+        } else if file_type.is_file()
+            && path != root.join("target.toml")
+            && path != root.join("README.md")
+            && path.extension().and_then(|extension| extension.to_str()) != Some("jinja")
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn validate_manifest_assets(
+    manifest_path: &Path,
+    target_dir: &Path,
+    assets: &[AssetFile],
+) -> BuildResult<()> {
+    let manifest = fs::read_to_string(manifest_path)?;
+    for source in manifest_asset_sources(&manifest) {
+        let prefix = format!("{}/", source.trim_end_matches('/'));
+        if !target_dir.join(&source).is_dir() {
+            return Err(build_error(format!(
+                "{} references missing asset source {source}",
+                manifest_path.display()
+            ))
+            .into());
+        }
+        if !assets.iter().any(|asset| asset.path.starts_with(&prefix)) {
+            return Err(build_error(format!(
+                "{} asset source {source} contains no regular files",
+                manifest_path.display()
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn manifest_asset_sources(manifest: &str) -> Vec<String> {
+    manifest
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let value = trimmed.strip_prefix("source")?.trim();
+            let value = value.strip_prefix('=')?.trim();
+            let value = value.strip_prefix('"')?;
+            let end = value.find('"')?;
+            Some(value[..end].to_string())
+        })
+        .collect()
+}
+
+fn relative_path(root: &Path, path: &Path) -> BuildResult<String> {
+    let components = path
+        .strip_prefix(root)
+        .map_err(|error| {
+            build_error(format!(
+                "target asset {} is not under target root {}: {error}",
+                path.display(),
+                root.display()
+            ))
+        })?
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| build_error("target asset paths must be UTF-8"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(components.join("/"))
+}
+
+fn validate_manifest_templates(
+    manifest_path: &Path,
+    templates: &[TemplateFile],
+) -> BuildResult<()> {
+    let manifest = fs::read_to_string(manifest_path)?;
     for referenced in manifest_template_references(&manifest) {
         if !templates.iter().any(|template| template.path == referenced) {
-            eprintln!(
+            return Err(build_error(format!(
                 "{} references missing template {}",
                 manifest_path.display(),
                 referenced
-            );
-            std::process::exit(1);
+            ))
+            .into());
         }
     }
+    Ok(())
+}
+
+fn build_error(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 fn manifest_template_references(manifest: &str) -> Vec<String> {
@@ -109,6 +310,7 @@ fn render_generated_templates_module(manifest_dir: &Path, targets: &[TargetDir])
     }
     for target in targets {
         render_target_template_array(&mut out, target);
+        render_target_asset_array(&mut out, target);
     }
     render_builtin_targets(&mut out, targets);
     out
@@ -117,14 +319,26 @@ fn render_generated_templates_module(manifest_dir: &Path, targets: &[TargetDir])
 fn render_target_constants(out: &mut String, manifest_dir: &Path, target: &TargetDir) {
     let manifest_const = generated_manifest_const_name(&target.name);
     let manifest_path = include_path(manifest_dir, &target.manifest_path);
+    let readme_const = generated_readme_const_name(&target.name);
+    let readme_path = include_path(manifest_dir, &target.readme_path);
     out.push_str(&format!(
         "const {manifest_const}: &str = include_str!(\"{manifest_path}\");\n"
+    ));
+    out.push_str(&format!(
+        "const {readme_const}: &str = include_str!(\"{readme_path}\");\n"
     ));
     for template in &target.templates {
         let include_path = include_path(manifest_dir, &template.source_path);
         out.push_str(&format!(
             "const {}: &str = include_str!(\"{}\");\n",
             template.const_name, include_path
+        ));
+    }
+    for asset in &target.assets {
+        let include_path = include_path(manifest_dir, &asset.source_path);
+        out.push_str(&format!(
+            "const {}: &[u8] = include_bytes!(\"{}\");\n",
+            asset.const_name, include_path
         ));
     }
     out.push('\n');
@@ -144,14 +358,30 @@ fn render_target_template_array(out: &mut String, target: &TargetDir) {
     out.push_str("];\n\n");
 }
 
+fn render_target_asset_array(out: &mut String, target: &TargetDir) {
+    let array_const = generated_target_assets_const_name(&target.name);
+    out.push_str(&format!(
+        "const {array_const}: &[BuiltinTargetAsset] = &[\n"
+    ));
+    for asset in &target.assets {
+        out.push_str(&format!(
+            "    BuiltinTargetAsset {{ path: \"{}\", bytes: {} }},\n",
+            asset.path, asset.const_name
+        ));
+    }
+    out.push_str("];\n\n");
+}
+
 fn render_builtin_targets(out: &mut String, targets: &[TargetDir]) {
     out.push_str("pub const BUILTIN_TARGETS: &[BuiltinTarget] = &[\n");
     for target in targets {
         out.push_str(&format!(
-            "    BuiltinTarget {{ name: \"{}\", manifest: {}, templates: {} }},\n",
+            "    BuiltinTarget {{ name: \"{}\", manifest: {}, readme: {}, templates: {}, assets: {} }},\n",
             target.name,
             generated_manifest_const_name(&target.name),
-            generated_target_templates_const_name(&target.name)
+            generated_readme_const_name(&target.name),
+            generated_target_templates_const_name(&target.name),
+            generated_target_assets_const_name(&target.name)
         ));
     }
     out.push_str("];\n");
@@ -166,8 +396,16 @@ fn generated_manifest_const_name(target: &str) -> String {
     format!("{}_TARGET_MANIFEST", screaming_identifier(target))
 }
 
+fn generated_readme_const_name(target: &str) -> String {
+    format!("{}_TARGET_README", screaming_identifier(target))
+}
+
 fn generated_target_templates_const_name(target: &str) -> String {
     format!("{}_TARGET_TEMPLATES", screaming_identifier(target))
+}
+
+fn generated_target_assets_const_name(target: &str) -> String {
+    format!("{}_TARGET_ASSETS", screaming_identifier(target))
 }
 
 fn generated_template_const_name(target: &str, template: &str) -> String {
@@ -175,6 +413,14 @@ fn generated_template_const_name(target: &str, template: &str) -> String {
         "{}_{}",
         screaming_identifier(target),
         screaming_identifier(template)
+    )
+}
+
+fn generated_asset_const_name(target: &str, asset: &str) -> String {
+    format!(
+        "{}_ASSET_{}",
+        screaming_identifier(target),
+        screaming_identifier(asset)
     )
 }
 

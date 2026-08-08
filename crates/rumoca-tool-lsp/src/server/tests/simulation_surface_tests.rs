@@ -304,7 +304,10 @@ fn compile_model_for_simulation_ignores_unrelated_local_parse_errors() {
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("compile should ignore unrelated local parse errors");
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -362,7 +365,10 @@ fn compile_model_for_simulation_ignores_unreferenced_library_typecheck_errors() 
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
             .await
             .expect("focus model must compile despite unreferenced library typecheck errors");
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -424,7 +430,10 @@ fn compile_model_for_simulation_ignores_sibling_pulled_library_typecheck_errors(
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
             .await
             .expect("focus model must compile despite sibling-pulled library typecheck errors");
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -474,7 +483,11 @@ fn compile_model_for_simulation_handles_real_examples_ball_with_msl_root() {
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
             .await
             .expect("Ball must compile with the editor-configured MSL source root");
-        assert_eq!(compiled.dae.variables.states.len(), 2, "Ball has x and v");
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            2,
+            "Ball has x and v"
+        );
     });
 }
 
@@ -561,7 +574,10 @@ fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_e
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("first focused compile should succeed");
-        assert_eq!(first.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&first.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
 
         std::fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
 
@@ -569,7 +585,10 @@ fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_e
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("second focused compile should ignore unrelated local parse errors");
-        assert_eq!(second.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&second.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -668,7 +687,7 @@ fn render_target_command_renders_compiled_open_document_model() {
                         .expect("file uri")
                         .to_string(),
                     "model": "Decay",
-                    "target": "sympy",
+                    "target": "c-ode",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
@@ -685,75 +704,118 @@ fn render_target_command_renders_compiled_open_document_model() {
                 .get("files")
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|files| files.iter().any(|file| {
-                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_sympy.py")
+                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_ode.c")
                 })),
-            "render target command should return the built-in SymPy model file"
+            "render target command should return the checked ODE RHS C model file"
+        );
+    });
+}
+
+async fn render_sampled_galec_target(target: &str, temp_name: &str) -> serde_json::Value {
+    let temp = new_temp_dir(temp_name);
+    let focus = temp.join("Sampler.mo");
+    // A fixed-sample discrete model (GALEC rejects continuous der()).
+    std::fs::write(
+        &focus,
+        "model Sampler\n  constant Real dt = 0.001;\n  parameter Real gain = 2.0;\n  \
+         discrete Integer n(start = 0);\n  discrete output Real y(start = 0.0);\nequation\n  \
+         when sample(0.0, dt) then\n    n = pre(n) + 1;\n    y = gain * n;\n  end when;\nend Sampler;\n",
+    )
+    .expect("write focus");
+
+    let service = new_test_service();
+    let server = service.inner();
+    {
+        let mut session = server.session.write().await;
+        session.update_document(
+            &focus.to_string_lossy(),
+            &std::fs::read_to_string(&focus).expect("read focus"),
+        );
+    }
+
+    server
+        .execute_command(ExecuteCommandParams {
+            command: "rumoca.workspace.renderTarget".to_string(),
+            arguments: vec![serde_json::json!({
+                "uri": Url::from_file_path(&focus).expect("file uri").to_string(),
+                "model": "Sampler",
+                "target": target,
+            })],
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("execute command should succeed")
+        .expect("execute command should return a payload")
+}
+
+fn rendered_target_paths(response: &serde_json::Value) -> Vec<&str> {
+    response
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .expect("files array")
+        .iter()
+        .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
+        .collect()
+}
+
+fn rendered_target_content<'a>(response: &'a serde_json::Value, path: &str) -> &'a str {
+    response
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .expect("files array")
+        .iter()
+        .find(|file| file.get("path").and_then(serde_json::Value::as_str) == Some(path))
+        .and_then(|file| file.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("missing rendered content for {path}"))
+}
+
+#[test]
+fn render_target_command_renders_manifest_declared_embedded_c_galec_sources() {
+    run_async_test(async {
+        let response =
+            render_sampled_galec_target("embedded-c-galec", "render-target-embedded-c-galec").await;
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "GALEC-derived C codegen should succeed: {response}"
+        );
+        assert_eq!(
+            rendered_target_paths(&response),
+            ["Sampler.h", "Sampler.c"],
+            "the non-eFMI GAL-024 target emits only its manifest-declared C sources"
+        );
+        assert!(
+            rendered_target_content(&response, "Sampler.h").contains("} SamplerState;"),
+            "the declared header artifact must contain the checked block state"
+        );
+        assert!(
+            rendered_target_content(&response, "Sampler.c")
+                .contains("void Sampler_dostep(SamplerState *self)"),
+            "the declared source artifact must contain the checked DoStep implementation"
         );
     });
 }
 
 #[test]
-fn render_target_command_renders_galec_embedded_c_from_compiled_model() {
+fn render_target_command_renders_manifest_declared_galec_algorithm_source() {
     run_async_test(async {
-        let temp = new_temp_dir("render-target-galec");
-        let focus = temp.join("Sampler.mo");
-        // A fixed-sample discrete model (GALEC rejects continuous der()).
-        std::fs::write(
-            &focus,
-            "model Sampler\n  constant Real dt = 0.001;\n  parameter Real gain = 2.0;\n  \
-             discrete Integer n(start = 0);\n  discrete output Real y(start = 0.0);\nequation\n  \
-             when sample(0.0, dt) then\n    n = pre(n) + 1;\n    y = gain * n;\n  end when;\nend Sampler;\n",
-        )
-        .expect("write focus");
-
-        let service = new_test_service();
-        let server = service.inner();
-        {
-            let mut session = server.session.write().await;
-            session.update_document(
-                &focus.to_string_lossy(),
-                &std::fs::read_to_string(&focus).expect("read focus"),
-            );
-        }
-
-        let response = server
-            .execute_command(ExecuteCommandParams {
-                command: "rumoca.workspace.renderTarget".to_string(),
-                arguments: vec![serde_json::json!({
-                    "uri": Url::from_file_path(&focus).expect("file uri").to_string(),
-                    "model": "Sampler",
-                    "target": "embedded-c-galec",
-                })],
-                work_done_progress_params: WorkDoneProgressParams::default(),
-            })
-            .await
-            .expect("execute command should succeed")
-            .expect("execute command should return a payload");
+        let response = render_sampled_galec_target("galec", "render-target-galec").await;
 
         assert_eq!(
             response.get("ok").and_then(serde_json::Value::as_bool),
             Some(true),
-            "GALEC codegen should succeed natively: {response}"
+            "GALEC Algorithm Code rendering should succeed: {response}"
         );
-        let paths: Vec<&str> = response
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .expect("files array")
-            .iter()
-            .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
-            .collect();
-        assert!(
-            paths.contains(&"Sampler.alg"),
-            "expected the .alg: {paths:?}"
+        assert_eq!(
+            rendered_target_paths(&response),
+            ["AlgorithmCode/Sampler.alg"],
+            "the Algorithm Code target exposes its manifest-declared .alg source"
         );
-        assert!(
-            paths.contains(&"Sampler.h"),
-            "expected the C header: {paths:?}"
-        );
-        assert!(
-            paths.contains(&"Sampler.c"),
-            "expected the C source: {paths:?}"
-        );
+        let algorithm = rendered_target_content(&response, "AlgorithmCode/Sampler.alg");
+        assert!(algorithm.contains("block Sampler"), "{algorithm}");
+        assert!(algorithm.contains("method DoStep"), "{algorithm}");
     });
 }
 
@@ -780,7 +842,7 @@ fn render_target_command_renders_relative_raw_jinja_from_rum_scenario() {
         .expect("write scenario");
         std::fs::write(
             &template_path,
-            "model={{ model_name }} f_x={{ dae.f_x | length }}",
+            "model={{ model_name }} variables={{ dae.variables | length }}",
         )
         .expect("write template");
 
@@ -838,7 +900,7 @@ fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
         let temp = new_temp_dir("render-target-directory-scenario");
         let model_dir = temp.join("models");
         let scenario_dir = temp.join("codegen");
-        let target_dir = scenario_dir.join("standalone_web");
+        let target_dir = scenario_dir.join("custom_report");
         std::fs::create_dir_all(&model_dir).expect("mkdir models");
         std::fs::create_dir_all(&target_dir).expect("mkdir target");
         let model_path = model_dir.join("Decay.mo");
@@ -850,17 +912,37 @@ fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
         .expect("write model");
         std::fs::write(
             &scenario_path,
-            "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nfile = \"../models/Decay.mo\"\nname = \"Decay\"\n\n[codegen]\ntarget = \"standalone_web\"\n",
+            "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nfile = \"../models/Decay.mo\"\nname = \"Decay\"\n\n[codegen]\ntarget = \"custom_report\"\n",
         )
         .expect("write scenario");
         std::fs::write(
             target_dir.join("target.toml"),
-            "version = 1\nir = \"dae\"\n\n[[files]]\npath = \"{{ model_name }}.txt\"\ntemplate = \"model.txt.jinja\"\n",
+            r#"version = 1
+ir = "dae"
+
+[capabilities]
+continuous_states = true
+residual_equations = true
+structured_equation_families = true
+external_functions = true
+external_tables = true
+random = true
+initialization = true
+events = true
+runtime_events = true
+clocks = true
+dynamic_ranges = true
+dynamic_derivative_subscripts = true
+
+[[files]]
+path = "{{ model_name }}.txt"
+template = "model.txt.jinja"
+"#,
         )
         .expect("write target manifest");
         std::fs::write(
             target_dir.join("model.txt.jinja"),
-            "target={{ model_name }} f_x={{ dae.f_x | length }}",
+            "target={{ model_name }} variables={{ dae.variables | length }}",
         )
         .expect("write target template");
 
@@ -882,7 +964,7 @@ fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
                         .expect("scenario file uri")
                         .to_string(),
                     "model": "Decay",
-                    "target": "standalone_web",
+                    "target": "custom_report",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
@@ -949,7 +1031,10 @@ fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document
             .expect("simulation compile should reuse warmed save artifacts");
         let delta = session_cache_stats().delta_since(before);
 
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
         assert_eq!(
             delta.strict_resolved_builds, 0,
             "simulation compile should not rebuild strict resolved state when save diagnostics already warmed it"
@@ -1271,7 +1356,10 @@ fn simulation_compile_keeps_sibling_namespace_fingerprint_warm_after_subtree_ref
             .await
             .expect("simulation compile after subtree refresh should succeed");
 
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
         let session = server.session.read().await;
         assert!(
             session.dirty_source_root_keys().is_empty(),

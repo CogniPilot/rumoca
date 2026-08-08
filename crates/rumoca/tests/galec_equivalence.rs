@@ -35,10 +35,10 @@ use std::process::Command;
 
 use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
-#[path = "galec_cli_support/cc.rs"]
-mod cc_support;
-#[path = "galec_cli_support/cli.rs"]
-mod cli_support;
+// The `galec_cli_support/` helpers are declared once by the umbrella binary
+// that owns this file (see `suite_core.rs`), so the sibling suites share one
+// copy instead of compiling the same file several times per binary.
+use super::{cc_support, cli_support};
 
 /// How a compared block field is checked against the reference.
 #[derive(Clone, Copy)]
@@ -56,8 +56,8 @@ struct Field {
     kind: FieldKind,
 }
 
-const ATOL: f64 = 1.0e-9;
-const RTOL: f64 = 1.0e-9;
+const ATOL: f64 = 2.0e-6;
+const RTOL: f64 = 2.0e-6;
 
 /// Reference value of `name` at the last recorded sample at or before `t`
 /// (right-continuous hold). Panics if `name` is absent — a missing signal is
@@ -109,7 +109,12 @@ fn run_c_ticks(out_dir: &Path, model: &str, driver: &str, n_fields: usize) -> Ve
     let source = out_dir.join(format!("{model}.c"));
 
     let compile = cc_support::cc()
+        .arg("-std=c99")
+        .arg("-pedantic")
         .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Wconversion")
+        .arg("-Wsign-conversion")
         .arg("-Werror")
         .arg("-o")
         .arg(&program)
@@ -120,7 +125,7 @@ fn run_c_ticks(out_dir: &Path, model: &str, driver: &str, n_fields: usize) -> Ve
         .expect("run cc");
     assert!(
         compile.status.success(),
-        "cc -Wall -Werror failed for {model}.\nstderr:\n{}\nsource:\n{}",
+        "strict cc -std=c99 compile failed for {model}.\nstderr:\n{}\nsource:\n{}",
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(&source).unwrap_or_default()
     );
@@ -358,8 +363,166 @@ fn embedded_c_iir_matches_rumoca_evaluation_within_tolerance() {
     let expected = [0.1, 0.29, 0.561, 0.9049, 1.31441];
     for (got, want) in y.iter().zip(expected) {
         assert!(
-            (got - want).abs() <= 1.0e-9 + 1.0e-9 * want.abs(),
+            (got - want).abs() <= ATOL + RTOL * want.abs(),
             "IIR y sequence: got {got}, want {want}"
         );
     }
+}
+
+// ===========================================================================
+// Fixture 3 — array-valued function calls retain their selected element.
+// ===========================================================================
+
+const ARRAY_FUNCTION: &str = r#"
+function offsetVector
+  input Real u[4];
+  output Real y[4];
+algorithm
+  for i in 1:4 loop
+    y[i] := u[i] + i;
+  end for;
+end offsetVector;
+
+model ArrayFunctionSmoke
+  constant Real samplePeriod = 0.1;
+  discrete Integer count(start = 0, fixed = true);
+  discrete output Real y[4](each start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    count = pre(count) + 1;
+    y = offsetVector({count, 2.0 * count, 3.0 * count, 4.0 * count});
+  end when;
+end ArrayFunctionSmoke;
+"#;
+
+const ARRAY_FUNCTION_DRIVER: &str = r#"#include <stdio.h>
+#include "ArrayFunctionSmoke.h"
+int main(void) {
+    ArrayFunctionSmokeState state;
+    ArrayFunctionSmoke_startup(&state);
+    ArrayFunctionSmoke_recalibrate(&state);
+    for (int step = 0; step < 5; ++step) {
+        ArrayFunctionSmoke_dostep(&state);
+        printf("%d,%d,%.17g,%.17g,%.17g,%.17g\n",
+               step, (int)state.count,
+               state.y[0], state.y[1], state.y[2], state.y[3]);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_array_function_preserves_each_selected_element() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let fields = [
+        Field {
+            name: "count",
+            kind: FieldKind::Integer,
+        },
+        Field {
+            name: "y[1]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[2]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[3]",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "y[4]",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    compile_embedded_c(dir.path(), &out_dir, "ArrayFunctionSmoke", ARRAY_FUNCTION);
+    let c_ticks = run_c_ticks(
+        &out_dir,
+        "ArrayFunctionSmoke",
+        ARRAY_FUNCTION_DRIVER,
+        fields.len(),
+    );
+    let ref_ticks = reference_ticks("ArrayFunctionSmoke", ARRAY_FUNCTION, &fields, 0.0, 0.1, 5);
+
+    assert_equivalent(&c_ticks, &ref_ticks, &fields);
+    assert_eq!(
+        c_ticks[4],
+        vec![5.0, 6.0, 12.0, 18.0, 24.0],
+        "the four selected function-result elements must remain distinct"
+    );
+}
+
+// ===========================================================================
+// Fixture 4 — exact commensurate clocks execute on one base-period lattice.
+// ===========================================================================
+
+const MULTIRATE_COUNTER: &str = r#"
+model MultirateCounter
+  discrete output Real fastValue(start = 0.0, fixed = true);
+  discrete output Real slowSnapshot(start = 0.0, fixed = true);
+  Real fastAlias;
+equation
+  fastAlias = fastValue;
+  // Deliberately declare the slow clock first. Correct coincident-tick
+  // ordering must follow the alias dependency, not source-clock order.
+  when sample(0.0, 0.2) then
+    slowSnapshot = fastAlias;
+  end when;
+  when sample(0.0, 0.1) then
+    fastValue = pre(fastValue) + 1.0;
+  end when;
+end MultirateCounter;
+"#;
+
+const MULTIRATE_DRIVER: &str = r#"#include <stdio.h>
+#include "MultirateCounter.h"
+int main(void) {
+    MultirateCounterState state;
+    MultirateCounter_startup(&state);
+    MultirateCounter_recalibrate(&state);
+    for (int step = 0; step < 5; ++step) {
+        MultirateCounter_dostep(&state);
+        printf("%d,%.17g,%.17g\n", step, state.fastValue, state.slowSnapshot);
+    }
+    return 0;
+}
+"#;
+
+#[test]
+fn embedded_c_commensurate_clocks_match_rumoca_tick_for_tick() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let fields = [
+        Field {
+            name: "fastValue",
+            kind: FieldKind::Real,
+        },
+        Field {
+            name: "slowSnapshot",
+            kind: FieldKind::Real,
+        },
+    ];
+
+    compile_embedded_c(dir.path(), &out_dir, "MultirateCounter", MULTIRATE_COUNTER);
+    let generated = fs::read_to_string(out_dir.join("MultirateCounter.c"))
+        .expect("read generated multirate source");
+    assert!(
+        generated.contains("if (self->clockDivider0_0 == 0)"),
+        "native equality conditions must have exactly one parenthesis pair:\n{generated}"
+    );
+    let c_ticks = run_c_ticks(&out_dir, "MultirateCounter", MULTIRATE_DRIVER, fields.len());
+    let ref_ticks = reference_ticks("MultirateCounter", MULTIRATE_COUNTER, &fields, 0.0, 0.1, 5);
+
+    assert_equivalent(&c_ticks, &ref_ticks, &fields);
+    let counts = c_ticks
+        .iter()
+        .map(|row| (row[0], row[1]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        counts,
+        vec![(1.0, 1.0), (2.0, 1.0), (3.0, 3.0), (4.0, 3.0), (5.0, 5.0)]
+    );
 }

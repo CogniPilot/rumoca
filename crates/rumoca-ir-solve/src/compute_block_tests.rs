@@ -3,8 +3,7 @@ use rumoca_core::{SourceId, Span, StructuredIndexBinder, StructuredIndexDomain};
 use crate::{
     AffineStencilConstStride, AffineStencilConstStrideTerm, AffineStencilIndexStrideTerm,
     AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock, SolveProblem,
-    SolveProblemShapeContractError, SparsityPattern, TensorNodeMetadata, TensorOutputMap,
-    TensorOutputMapError,
+    SolveProblemShapeContractError, TensorNodeMetadata, TensorOutputMap, TensorOutputMapError,
 };
 
 fn test_domain(count: usize) -> StructuredIndexDomain {
@@ -23,6 +22,11 @@ fn fixture_span() -> Span {
     Span::from_offsets(SourceId::from_source_name(file!()), 0, 1)
 }
 
+fn provenance(span: Span) -> rumoca_core::ProvenanceSpan {
+    span.require_provenance("Solve compute-block fixture")
+        .expect("fixture span is source-backed")
+}
+
 fn tensor_node(output_width: usize) -> ComputeNode {
     ComputeNode::MatMul {
         lhs_ops: vec![LinearOp::Const { dst: 0, value: 1.0 }],
@@ -32,8 +36,8 @@ fn tensor_node(output_width: usize) -> ComputeNode {
         m: 1,
         k: 1,
         n: output_width,
-        lhs_sparsity: SparsityPattern::Dense,
-        rhs_sparsity: SparsityPattern::Dense,
+        lhs_pattern: crate::fixture_pattern(1, 1, false),
+        rhs_pattern: crate::fixture_pattern(1, output_width, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -77,6 +81,7 @@ fn linsolve_node() -> ComputeNode {
         rhs_start: 1,
         n: 1,
         next_reg: 2,
+        matrix_pattern: crate::fixture_pattern(1, 1, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -133,7 +138,7 @@ fn scalar_node(output_indices: Vec<usize>) -> ComputeNode {
                 LinearOp::Const { dst: 0, value: 3.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            vec![Span::DUMMY],
+            vec![fixture_span()],
             output_indices,
         )
         .expect("scalar fixture metadata should match row count"),
@@ -143,13 +148,16 @@ fn scalar_node(output_indices: Vec<usize>) -> ComputeNode {
 #[test]
 fn compute_block_len_places_mixed_scalar_and_tensor_outputs() {
     let tensor = tensor_node(2);
-    let scalar = ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::Const { dst: 0, value: 3.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]],
-        fixture_span(),
-    ));
+    let scalar = ComputeNode::ScalarPrograms(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 3.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            provenance(fixture_span()),
+        )
+        .expect("scalar fixture is computable"),
+    );
     let block = ComputeBlock {
         nodes: vec![tensor.clone(), scalar, tensor],
     };
@@ -217,8 +225,8 @@ fn compute_block_len_rejects_matmul_output_count_overflow_with_span() {
             m: usize::MAX,
             k: 1,
             n: 2,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, false),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: TensorNodeMetadata::default(),
             span,
         }],
@@ -247,15 +255,21 @@ fn compute_block_len_rejects_scalar_cursor_overflow_with_span() {
                 m: usize::MAX,
                 k: 1,
                 n: 1,
-                lhs_sparsity: SparsityPattern::Dense,
-                rhs_sparsity: SparsityPattern::Dense,
+                lhs_pattern: crate::fixture_pattern(1, 1, false),
+                rhs_pattern: crate::fixture_pattern(1, 1, false),
                 metadata: TensorNodeMetadata::default(),
                 span: Span::DUMMY,
             },
-            ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-                vec![vec![LinearOp::StoreOutput { src: 0 }]],
-                span,
-            )),
+            ComputeNode::ScalarPrograms(
+                ScalarProgramBlock::with_source_span(
+                    vec![vec![
+                        LinearOp::Const { dst: 0, value: 0.0 },
+                        LinearOp::StoreOutput { src: 0 },
+                    ]],
+                    provenance(span),
+                )
+                .expect("scalar fixture is computable"),
+            ),
         ],
     };
 
@@ -334,13 +348,16 @@ fn compute_block_is_not_empty_for_rank_zero_tensor_domain() {
 
 #[test]
 fn compute_node_counts_cover_blocks_and_problem() {
-    let scalar = ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]],
-        fixture_span(),
-    ));
+    let scalar = ComputeNode::ScalarPrograms(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            provenance(fixture_span()),
+        )
+        .expect("scalar fixture is computable"),
+    );
     let matmul = tensor_node(1);
     let linsolve = linsolve_node();
     let map = map_node();
@@ -382,6 +399,7 @@ fn linear_solve_component_query_covers_scalar_programs_and_nodes() {
     let scalar_linsolve = ScalarProgramBlock::with_source_span(
         vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::Const { dst: 1, value: 2.0 },
             LinearOp::LinearSolveComponent {
                 dst: 1,
                 matrix_start: 0,
@@ -391,8 +409,9 @@ fn linear_solve_component_query_covers_scalar_programs_and_nodes() {
             },
             LinearOp::StoreOutput { src: 1 },
         ]],
-        fixture_span(),
-    );
+        provenance(fixture_span()),
+    )
+    .expect("scalar linear-solve fixture is computable");
     assert!(scalar_linsolve.uses_linear_solve_component());
 
     let scalar_block = ComputeBlock {

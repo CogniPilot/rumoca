@@ -1,6 +1,5 @@
 use super::*;
-use crate::strip_array_index;
-use std::borrow::Borrow;
+use crate::{EffectiveType, strip_array_index};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComprehensionIndex {
@@ -12,18 +11,98 @@ pub struct ComprehensionIndex {
 pub struct ComponentRefPart {
     pub ident: String,
     pub span: Span,
-    #[serde(default)]
     pub subs: Vec<Subscript>,
+    pub def_id: DefId,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ComponentReference {
-    #[serde(default)]
-    pub local: bool,
-    pub span: Span,
-    pub parts: Vec<ComponentRefPart>,
-    #[serde(default)]
-    pub def_id: Option<DefId>,
+    local: bool,
+    span: Span,
+    parts: Vec<ComponentRefPart>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentReferenceError {
+    Empty,
+    MissingStructuredBase,
+    MissingPartIdentity { part_index: usize },
+}
+
+impl std::fmt::Display for ComponentReferenceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => formatter
+                .write_str("component reference requires at least one identity-bearing part"),
+            Self::MissingStructuredBase => {
+                formatter.write_str("component projection requires a structured base reference")
+            }
+            Self::MissingPartIdentity { part_index } => write!(
+                formatter,
+                "component reference part {part_index} has the reserved unresolved DefId(0)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ComponentReferenceError {}
+
+impl ComponentReference {
+    pub fn construct(
+        local: bool,
+        span: Span,
+        parts: Vec<ComponentRefPart>,
+    ) -> Result<Self, ComponentReferenceError> {
+        if parts.is_empty() {
+            return Err(ComponentReferenceError::Empty);
+        }
+        if let Some(part_index) = parts.iter().position(|part| part.def_id.index() == 0) {
+            return Err(ComponentReferenceError::MissingPartIdentity { part_index });
+        }
+        Ok(Self { local, span, parts })
+    }
+
+    pub fn local(&self) -> bool {
+        self.local
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    pub fn parts(&self) -> &[ComponentRefPart] {
+        &self.parts
+    }
+
+    /// Rebuild this reference with replacement parts under the same source
+    /// span and locality.
+    ///
+    /// The original reference remains unchanged, and the replacement is
+    /// admitted only after replaying the checked construction contract.
+    pub fn with_replaced_parts(
+        &self,
+        parts: Vec<ComponentRefPart>,
+    ) -> Result<Self, ComponentReferenceError> {
+        Self::construct(self.local, self.span, parts)
+    }
+}
+
+impl<'de> Deserialize<'de> for ComponentReference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            local: bool,
+            span: Span,
+            parts: Vec<ComponentRefPart>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::construct(wire.local, wire.span, wire.parts).map_err(serde::de::Error::custom)
+    }
 }
 
 impl ComponentReference {
@@ -39,72 +118,13 @@ impl ComponentReference {
         self.parts.last().map(|part| part.ident.as_str())
     }
 
-    /// Build a reference from a rendered flat declaration path.
-    ///
-    /// Each top-level segment becomes one part; subscript text (if any) stays
-    /// embedded in the ident, matching how declaration paths are rendered.
-    pub fn from_flat_segments(path: &str, span: Span, def_id: Option<DefId>) -> Self {
-        Self {
-            local: false,
-            span,
-            parts: split_path_with_indices(path)
-                .into_iter()
-                .map(|segment| ComponentRefPart {
-                    ident: segment.to_string(),
-                    span,
-                    subs: Vec::new(),
-                })
-                .collect(),
-            def_id,
-        }
+    pub fn root_def_id(&self) -> DefId {
+        self.parts[0].def_id
     }
-}
 
-pub fn component_reference_from_flat_name(
-    name: &VarName,
-    span: Span,
-) -> Option<ComponentReference> {
-    let parts = name
-        .segments()
-        .into_iter()
-        .map(|segment| component_ref_part_from_flat_segment(segment, span))
-        .collect::<Option<Vec<_>>>()?;
-    (!parts.is_empty()).then_some(ComponentReference {
-        local: false,
-        span,
-        parts,
-        def_id: None,
-    })
-}
-
-fn component_ref_part_from_flat_segment(segment: &str, span: Span) -> Option<ComponentRefPart> {
-    let mut base = segment;
-    let mut groups = Vec::new();
-    while let Some((next_base, raw_subscripts)) = split_trailing_subscript_suffix(base) {
-        groups.push(component_ref_subscripts_from_flat_suffix(
-            raw_subscripts,
-            span,
-        )?);
-        base = next_base;
+    pub fn target_def_id(&self) -> DefId {
+        self.parts[self.parts.len() - 1].def_id
     }
-    (!base.is_empty()).then_some(ComponentRefPart {
-        ident: base.to_string(),
-        span,
-        subs: groups.into_iter().rev().flatten().collect(),
-    })
-}
-
-fn component_ref_subscripts_from_flat_suffix(raw: &str, span: Span) -> Option<Vec<Subscript>> {
-    raw.split(',')
-        .map(str::trim)
-        .map(|subscript| match subscript {
-            ":" => Some(Subscript::colon(span)),
-            _ => subscript
-                .parse::<i64>()
-                .ok()
-                .map(|value| Subscript::index(value, span)),
-        })
-        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -146,6 +166,10 @@ impl<'a> ComponentReferenceScope<'a> {
 /// This type keeps path segmentation centralized so phases do not recover
 /// scope by ad hoc string splitting. Its textual rendering is still the flat
 /// IR spelling because Flat/DAE maps are serialized by name.
+///
+/// **Invariant:** `name` is the interned form of `parts.join(".")`, maintained
+/// by every constructor. `name` is the path's identity (see the `PartialEq` and
+/// `Hash` impls below); `parts` is the segmentation payload.
 #[derive(Debug, Clone)]
 pub struct ComponentPath {
     name: VarName,
@@ -285,16 +309,21 @@ impl ComponentPath {
         Self::from_parts(parts)
     }
 
-    pub fn suffixes_excluding_self(&self) -> impl Iterator<Item = Self> + '_ {
-        (1..self.parts.len()).map(|start| Self::from_parts(self.parts[start..].iter().cloned()))
-    }
-
     pub fn to_flat_string(&self) -> String {
         self.name.as_str().to_string()
     }
 
     pub fn as_str(&self) -> &str {
         self.name.as_str()
+    }
+
+    /// Interned identity of this path, computed once at construction.
+    ///
+    /// Callers that key a map on a path prefix should hold this rather than a
+    /// `&[String]` slice: comparing the id is one `u32` compare, comparing the
+    /// slice walks every segment.
+    pub fn var_name(&self) -> &VarName {
+        &self.name
     }
 }
 
@@ -304,9 +333,21 @@ impl Default for ComponentPath {
     }
 }
 
+// Identity is the interned `name`, not the `parts` vector. Both constructors
+// keep `name == parts.join(".")` (`from_parts` joins; `from_flat_path` splits
+// on the interner's own segmentation and falls back to `from_parts` whenever
+// re-joining would not reproduce the input), so the two are the same partition
+// — but `parts` is a `Vec<String>`, and comparing or hashing it walks every
+// segment of a flattened component path on every map probe. `name` is a
+// `VarName`, whose identity is a `VarNameId(u32)` the interner assigned once.
+//
+// `parts` therefore stays as the *segmentation payload* (rendering, prefixing,
+// scope walks) and is no longer identity. Interning the parts individually was
+// the alternative, and is worse on both counts: it would intern N segments per
+// path instead of one whole path, and callers ask for `&[String]` slices.
 impl PartialEq for ComponentPath {
     fn eq(&self, other: &Self) -> bool {
-        self.parts == other.parts
+        self.name == other.name
     }
 }
 
@@ -314,13 +355,7 @@ impl Eq for ComponentPath {}
 
 impl Hash for ComponentPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.parts.hash(state);
-    }
-}
-
-impl Borrow<[String]> for ComponentPath {
-    fn borrow(&self) -> &[String] {
-        &self.parts
+        self.name.hash(state);
     }
 }
 
@@ -454,9 +489,13 @@ pub enum Statement {
         span: Span,
     },
     FunctionCall {
-        comp: ComponentReference,
+        /// Callable identity. Flattening resolves this to the exact collected
+        /// function instance before the statement crosses the Flat boundary.
+        comp: Reference,
         args: Vec<Expression>,
-        outputs: Vec<ComponentReference>,
+        /// Positional output targets. `None` preserves an MLS skipped output
+        /// slot such as the middle entry in `(x, , z) := f()`.
+        outputs: Vec<Option<ComponentReference>>,
         #[serde(
             default = "Span::source_free_serde_default",
             skip_serializing_if = "Span::is_dummy"
@@ -542,20 +581,20 @@ pub fn extract_algorithm_outputs(statements: &[Statement]) -> Vec<Reference> {
 }
 
 pub fn component_ref_to_base_reference(comp: &ComponentReference) -> Reference {
-    let component_ref = ComponentReference {
-        local: comp.local,
-        span: comp.span,
-        parts: comp
-            .parts
+    let component_ref = ComponentReference::construct(
+        comp.local(),
+        comp.span(),
+        comp.parts()
             .iter()
             .map(|part| ComponentRefPart {
                 ident: part.ident.clone(),
                 span: part.span,
                 subs: Vec::new(),
+                def_id: part.def_id,
             })
             .collect(),
-        def_id: comp.def_id,
-    };
+    )
+    .expect("a nonempty reference remains nonempty when subscripts are removed");
     Reference::from_component_reference(component_ref)
 }
 
@@ -639,7 +678,7 @@ fn collect_statement_outputs(statement: &Statement, outputs: &mut Vec<Reference>
         Statement::FunctionCall {
             outputs: values, ..
         } => {
-            for output in values {
+            for output in values.iter().flatten() {
                 insert_unique(outputs, component_ref_to_base_reference(output));
             }
         }
@@ -677,7 +716,29 @@ pub struct Function {
     pub locals: Vec<FunctionParam>,
     pub body: Vec<Statement>,
     pub is_constructor: bool,
+    /// Constructor-proven MLS §6.4 fact required by automatic function
+    /// vectorization (MLS §12.4.6).
+    ///
+    /// `false` is the conservative wire/default value: an exact selected
+    /// function identity alone does not prove that its class and inherited
+    /// interface contain no replaceable element.
+    #[serde(default)]
+    pub transitively_non_replaceable: bool,
+    /// MLS 3.7 §12.3 written purity prefix: `false` exactly when the
+    /// declaration wrote `impure`.
+    ///
+    /// This is the fact that restricts call contexts, because §12.3 states the
+    /// restriction of the prefix itself: "With the prefix keyword impure it is
+    /// stated that a Modelica function is impure and it is only allowed to call
+    /// such a function from within: …". A declaration that wrote no prefix is
+    /// not restricted by that sentence, whatever its body turns out to be.
     pub pure: bool,
+    /// MLS 3.7 §12.3: whether the declaration wrote `pure` or `impure` at all.
+    ///
+    /// "External functions not explicitly declared with pure or impure is
+    /// deprecated." The bare form is reported (WR001) and compiled, and its
+    /// *body* is impure regardless of `pure`; see [`Function::body_is_pure`].
+    pub purity_declared: bool,
     pub external: Option<ExternalFunction>,
     pub derivatives: Vec<DerivativeAnnotation>,
     pub span: Span,
@@ -694,11 +755,47 @@ impl Function {
             locals: Vec::new(),
             body: Vec::new(),
             is_constructor: false,
+            transitively_non_replaceable: false,
             pure: true,
+            purity_declared: false,
             external: None,
             derivatives: Vec::new(),
             span,
         }
+    }
+
+    /// MLS 3.7 §12.3 purity of this function *body*, as far as one declaration
+    /// can state it.
+    ///
+    /// [`Function::pure`] records the written prefix. Purity of the body is a
+    /// different question, and §12.3 answers it normatively: "For purposes of
+    /// symbolic transformations and optimizations, the deprecated semantics
+    /// above imply that not only the functions explicitly declared impure are
+    /// the ones which cannot be treated as pure. Instead, a function shall be
+    /// treated as impure in the following cases (applied recursively): It is
+    /// declared impure. It is an external function without explicit purity. It
+    /// calls another function treated as impure, except when wrapped in
+    /// pure(…)."
+    ///
+    /// This accessor decides the first two cases, which one declaration owns.
+    /// The third is a call-graph closure no single declaration carries, so it
+    /// is *not* answered here and a caller that needs it must close over the
+    /// call graph it owns (rumoca task #76). Until that lands, a Modelica
+    /// function that only reaches an impure body through its own calls reads as
+    /// pure here, which is exactly the gap #76 names.
+    ///
+    /// Callability is a separate fact and stays with [`Function::pure`]: the
+    /// hard restriction §12.3 states is stated of the written `impure` prefix,
+    /// and for the bare external form §12.3 states a *deprecation*, not an
+    /// error — the transitional MLS 3.6 wording made that explicit ("assumed to
+    /// be impure, but without any restriction on calling them"), and 3.7 keeps
+    /// the call legal while deprecating it. So the compiler reports the bare
+    /// form and compiles it.
+    pub fn body_is_pure(&self) -> bool {
+        if self.external.is_some() && !self.purity_declared {
+            return false;
+        }
+        self.pure
     }
 
     pub fn add_input(&mut self, param: FunctionParam) {
@@ -800,6 +897,21 @@ pub fn resolve_record_constructor<'a>(
     {
         return Ok(*constructor);
     }
+    if exact.is_empty()
+        && let Some(first) = candidates.first().copied()
+        && candidates
+            .iter()
+            .copied()
+            .all(|candidate| same_record_layout(first, candidate))
+    {
+        return candidates
+            .into_iter()
+            .min_by_key(|function| function.name.as_str())
+            .ok_or_else(|| RecordConstructorLookupError::Missing {
+                type_name: type_name.to_string(),
+                type_def_id,
+            });
+    }
     if candidates.is_empty() {
         return Err(RecordConstructorLookupError::Missing {
             type_name: type_name.to_string(),
@@ -814,6 +926,16 @@ pub fn resolve_record_constructor<'a>(
             .map(|function| function.name.clone())
             .collect(),
     })
+}
+
+fn same_record_layout(lhs: &Function, rhs: &Function) -> bool {
+    lhs.inputs.len() == rhs.inputs.len()
+        && lhs.inputs.iter().zip(&rhs.inputs).all(|(lhs, rhs)| {
+            lhs.name == rhs.name
+                && lhs.type_def_id == rhs.type_def_id
+                && lhs.effective_type == rhs.effective_type
+                && lhs.type_class == rhs.type_class
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -906,9 +1028,13 @@ pub struct FunctionParam {
     pub type_def_id: Option<DefId>,
     pub name: String,
     pub span: Span,
+    /// Exact resolved nominal/canonical type and declared dimensions.
+    ///
+    /// `type_name` is retained only for readable display. Semantic consumers
+    /// classify the value through this checked descriptor.
+    pub effective_type: EffectiveType,
     pub type_name: String,
     pub type_class: Option<ClassType>,
-    pub dims: Vec<i64>,
     pub shape_expr: Vec<Subscript>,
     pub default: Option<Expression>,
     /// Optional lower bound from the parameter declaration (for example
@@ -923,15 +1049,20 @@ pub struct FunctionParam {
 }
 
 impl FunctionParam {
-    pub fn new(name: impl Into<String>, type_name: impl Into<String>, span: Span) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        type_name: impl Into<String>,
+        effective_type: EffectiveType,
+        span: Span,
+    ) -> Self {
         Self {
             def_id: None,
             type_def_id: None,
             name: name.into(),
             span,
+            effective_type,
             type_name: type_name.into(),
             type_class: None,
-            dims: Vec::new(),
             shape_expr: Vec::new(),
             default: None,
             min: None,
@@ -940,8 +1071,12 @@ impl FunctionParam {
         }
     }
 
-    pub fn with_dims(mut self, dims: Vec<i64>) -> Self {
-        self.dims = dims;
+    pub fn dimensions(&self) -> &[i64] {
+        self.effective_type.dimensions()
+    }
+
+    pub fn with_effective_type(mut self, effective_type: EffectiveType) -> Self {
+        self.effective_type = effective_type;
         self
     }
 
@@ -991,22 +1126,15 @@ impl FunctionParam {
                 span: self.span,
             });
         }
-        if !self.shape_expr.is_empty() && self.shape_expr.len() != self.dims.len() {
+        if !self.shape_expr.is_empty()
+            && self.shape_expr.len() != self.effective_type.dimensions().len()
+        {
             return Err(FunctionParamShapeContractError::ShapeExprLengthMismatch {
                 param: self.name.clone(),
-                dims: self.dims.len(),
+                dims: self.effective_type.dimensions().len(),
                 shape_expr: self.shape_expr.len(),
                 span: self.span,
             });
-        }
-        for &dimension in &self.dims {
-            if dimension < 0 {
-                return Err(FunctionParamShapeContractError::NegativeDimension {
-                    param: self.name.clone(),
-                    dimension,
-                    span: self.span,
-                });
-            }
         }
         for subscript in &self.shape_expr {
             if let Subscript::Index { value, .. } = subscript
@@ -1032,11 +1160,6 @@ pub enum FunctionParamShapeContractError {
         param: String,
         span: Span,
     },
-    NegativeDimension {
-        param: String,
-        dimension: i64,
-        span: Span,
-    },
     NegativeShapeIndex {
         param: String,
         index: i64,
@@ -1055,7 +1178,6 @@ impl FunctionParamShapeContractError {
         match self {
             Self::EmptyName { span }
             | Self::EmptyTypeName { span, .. }
-            | Self::NegativeDimension { span, .. }
             | Self::NegativeShapeIndex { span, .. }
             | Self::ShapeExprLengthMismatch { span, .. } => *span,
         }
@@ -1069,12 +1191,6 @@ impl std::fmt::Display for FunctionParamShapeContractError {
             Self::EmptyTypeName { param, .. } => {
                 write!(f, "function parameter `{param}` has an empty type name")
             }
-            Self::NegativeDimension {
-                param, dimension, ..
-            } => write!(
-                f,
-                "function parameter `{param}` has negative dimension {dimension}"
-            ),
             Self::NegativeShapeIndex { param, index, .. } => write!(
                 f,
                 "function parameter `{param}` has negative shape index {index}"
@@ -1099,6 +1215,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checked_component_reference_rejects_empty_parts() {
+        assert_eq!(
+            ComponentReference::construct(false, Span::DUMMY, Vec::new()),
+            Err(ComponentReferenceError::Empty)
+        );
+    }
+
+    #[test]
+    fn checked_component_reference_rejects_reserved_identity() {
+        assert_eq!(
+            ComponentReference::construct(
+                false,
+                Span::DUMMY,
+                vec![ComponentRefPart {
+                    ident: "unresolved".to_string(),
+                    span: Span::DUMMY,
+                    subs: Vec::new(),
+                    def_id: DefId::new(0),
+                }],
+            ),
+            Err(ComponentReferenceError::MissingPartIdentity { part_index: 0 })
+        );
+    }
+
+    #[test]
+    fn replacing_parts_replays_identity_contract_and_preserves_owner_metadata() {
+        let span = Span::from_offsets(SourceId::from_source_name("rewrite.mo"), 4, 10);
+        let reference = ComponentReference::construct(
+            true,
+            span,
+            vec![ComponentRefPart {
+                ident: "value".to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: DefId::new(17),
+            }],
+        )
+        .expect("test reference is resolved");
+
+        let mut indexed_parts = reference.parts().to_vec();
+        indexed_parts[0]
+            .subs
+            .push(Subscript::Index { value: 2, span });
+        let indexed = reference
+            .with_replaced_parts(indexed_parts)
+            .expect("adding a subscript preserves exact identity");
+
+        assert!(indexed.local());
+        assert_eq!(indexed.span(), span);
+        assert_eq!(indexed.target_def_id(), DefId::new(17));
+        assert_eq!(
+            indexed.parts()[0].subs,
+            vec![Subscript::Index { value: 2, span }]
+        );
+        assert!(reference.parts()[0].subs.is_empty());
+
+        let mut unresolved_parts = indexed.parts().to_vec();
+        unresolved_parts[0].def_id = DefId::new(0);
+        assert_eq!(
+            indexed.with_replaced_parts(unresolved_parts),
+            Err(ComponentReferenceError::MissingPartIdentity { part_index: 0 })
+        );
+    }
+
+    #[test]
     fn component_path_from_reference_uses_structured_component_reference() {
         let component_ref = ComponentReference {
             local: false,
@@ -1108,6 +1289,7 @@ mod tests {
                     ident: "plant".to_string(),
                     span: Span::DUMMY,
                     subs: Vec::new(),
+                    def_id: DefId::new(7),
                 },
                 ComponentRefPart {
                     ident: "motor".to_string(),
@@ -1116,14 +1298,15 @@ mod tests {
                         value: 2,
                         span: Span::DUMMY,
                     }],
+                    def_id: DefId::new(8),
                 },
                 ComponentRefPart {
                     ident: "tau".to_string(),
                     span: Span::DUMMY,
                     subs: Vec::new(),
+                    def_id: DefId::new(9),
                 },
             ],
-            def_id: Some(DefId::new(7)),
         };
         let reference =
             Reference::with_component_reference("flat_display_is_not_authoritative", component_ref);
@@ -1155,6 +1338,58 @@ mod tests {
             .expect("exposure name disambiguates a shared declaration");
 
         assert_eq!(resolved.name.as_str(), "Second.State");
+    }
+
+    #[test]
+    fn record_constructor_lookup_accepts_equivalent_shared_exposures() {
+        let def_id = DefId::new(78);
+        let field_type = EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap();
+        let mut first = Function::new("First.State", Span::DUMMY);
+        first.def_id = Some(def_id);
+        first.is_constructor = true;
+        first.add_input(FunctionParam::new(
+            "x",
+            "Real",
+            field_type.clone(),
+            Span::DUMMY,
+        ));
+        let mut second = Function::new("Second.State", Span::DUMMY);
+        second.def_id = Some(def_id);
+        second.is_constructor = true;
+        second.add_input(FunctionParam::new("x", "Real", field_type, Span::DUMMY));
+
+        let resolved = resolve_record_constructor([&second, &first], "Canonical.State", def_id)
+            .expect("one declaration may have equivalent flattened exposures");
+
+        assert_eq!(resolved.name.as_str(), "First.State");
+    }
+
+    #[test]
+    fn record_constructor_lookup_rejects_distinct_shared_layouts() {
+        let def_id = DefId::new(79);
+        let mut first = Function::new("First.State", Span::DUMMY);
+        first.def_id = Some(def_id);
+        first.is_constructor = true;
+        first.add_input(FunctionParam::new(
+            "x",
+            "Real",
+            EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap(),
+            Span::DUMMY,
+        ));
+        let mut second = Function::new("Second.State", Span::DUMMY);
+        second.def_id = Some(def_id);
+        second.is_constructor = true;
+        second.add_input(FunctionParam::new(
+            "y",
+            "Real",
+            EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap(),
+            Span::DUMMY,
+        ));
+
+        assert!(matches!(
+            resolve_record_constructor([&first, &second], "Canonical.State", def_id),
+            Err(RecordConstructorLookupError::Ambiguous { .. })
+        ));
     }
 
     #[test]

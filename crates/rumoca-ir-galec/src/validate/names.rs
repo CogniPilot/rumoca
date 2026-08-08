@@ -18,7 +18,7 @@
 //! reserved things (builtin calls, predefined signals) and are covered by
 //! resolution in the other analyses. Matching `end` names (S-2.1) are
 //! guaranteed by construction: the AST stores each block/compartment/
-//! function name exactly once and the printer emits it at both ends.
+//! function name exactly once and templates render that identity at both ends.
 
 use crate::ast::{
     Condition, Identifier, InterfaceKind, Name, Spanned, Statement, UserFunction,

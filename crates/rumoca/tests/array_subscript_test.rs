@@ -54,7 +54,7 @@ end ArrayTest;
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let model = "ArrayTest.TestArray";
-    let tree = &resolved.0;
+    let tree = resolved.inner();
 
     let mut overlay = instantiate_model(tree, model).expect("instantiate should succeed");
     typecheck_instanced(tree, &mut overlay, model).expect("typecheck should succeed");

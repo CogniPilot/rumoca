@@ -10,9 +10,9 @@
 //! - Generating globally unique variable names from resolved instance paths
 //! - Expanding connection equations per MLS §9
 //! - Converting equations to residual form (0 = residual)
-//! - Preserving algorithm sections per SPEC_0020
+//! - Preserving algorithm sections per SPEC_0007 and MLS §11
 //!
-//! # Tracing (SPEC_0024)
+//! # Tracing (SPEC_0008)
 //!
 //! Enable the `tracing` feature for detailed diagnostic output:
 //! ```bash
@@ -52,9 +52,12 @@ mod pipeline;
 mod postprocess;
 pub mod qualify;
 pub(crate) mod record_constant_arrays;
+#[cfg(test)]
+mod reference_contract_tests;
 mod source_spans;
 mod static_subscripts;
-mod structured_refs;
+#[cfg(test)]
+mod test_support;
 mod variables;
 mod vcg;
 mod when_equations;
@@ -103,14 +106,13 @@ pub(crate) use function_precollect::{
 use pipeline::*;
 use postprocess::*;
 use record_constant_arrays::{
-    is_record_like_type, synthesize_component_modification_binding,
+    component_type_is_record, synthesize_component_modification_binding,
     try_extract_record_array_constructor_constant,
 };
 use rumoca_eval_flat::phase_constant::{
-    ParamEvalContext, build_eval_context, eval_user_func_real, infer_array_dimensions,
+    ParamEvalContext, ParamEvaluator, eval_user_func_real, infer_array_dimensions,
     infer_array_dimensions_full_with_functions, looks_like_enum_literal_path,
-    try_eval_flat_expr_boolean_with_context, try_eval_flat_expr_enum,
-    try_eval_integer_with_context, try_eval_real_with_context, try_infer_better_dims,
+    try_eval_flat_expr_enum, try_eval_integer_with_context, try_infer_better_dims,
 };
 
 /// Options controlling flatten strictness.
@@ -340,6 +342,10 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    ctx.predefined_string_declaration = tree
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
+    ctx.predefined_intrinsics = ast_lower::PredefinedIntrinsicIds::from_tree(tree);
     ctx.materialize_structured_families = options.materialize_structured_families;
     if !model_name.is_empty() {
         ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
@@ -353,6 +359,16 @@ pub fn flatten_ref_with_options(
         .collect();
     ctx.seed_component_member_scopes(overlay);
     let mut flat = flat::Model::new();
+    flat.predefined_string_declaration = tree
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
+    flat.predefined_types = flat::PredefinedTypeIds {
+        real: tree.type_table.real(),
+        integer: tree.type_table.integer(),
+        boolean: tree.type_table.boolean(),
+        string: tree.type_table.string(),
+        clock: tree.type_table.clock(),
+    };
     let component_override_map =
         build_component_override_map(overlay, tree, &class_index, model_name)?;
 
@@ -397,6 +413,34 @@ pub fn flatten_ref_with_options(
     Ok(flat)
 }
 
+/// Connection-set construction is intentionally scalar today, but the
+/// instantiate IR keeps regular vectorized connects compact and authoritative
+/// (SPEC_0032 §1). Each consumer boundary derives the scalar projection view
+/// on demand through `rumoca_eval_ast::connection::scalar_connection_view`
+/// instead of materializing a second copy of the whole overlay.
+/// Only classes that actually carry a compact family pay for a materialized
+/// scalar list; everything else borrows the stored slice.
+pub(crate) fn scalar_connections_of(
+    class_data: &ast::ClassInstanceData,
+) -> Result<std::borrow::Cow<'_, [ast::InstanceConnection]>, FlattenError> {
+    if !class_data
+        .connections
+        .iter()
+        .any(|connection| connection.family.is_some())
+    {
+        return Ok(std::borrow::Cow::Borrowed(&class_data.connections));
+    }
+    let mut connections = Vec::new();
+    for member in rumoca_eval_ast::connection::scalar_connection_view(&class_data.connections) {
+        connections.push(member.map_err(structured_connection_error)?.into_owned());
+    }
+    Ok(std::borrow::Cow::Owned(connections))
+}
+
+pub(crate) fn structured_connection_error(reason: String) -> FlattenError {
+    FlattenError::internal(format!("invalid structured connection: {reason}"))
+}
+
 fn seed_flat_functions_from_context(ctx: &Context, flat: &mut flat::Model) {
     for func in ctx.functions.values() {
         if !flat.functions.contains_key(&func.name) {
@@ -432,7 +476,9 @@ mod seed_function_tests {
         ));
 
         seed_flat_functions_from_context(&ctx, &mut flat);
-        functions::canonicalize_collected_function_calls(&mut flat)
+        let tree = ast::ClassTree::new();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        functions::canonicalize_collected_function_calls(&mut flat, &class_index)
             .expect("precollected function identity should canonicalize");
 
         let instance_id = flat.functions[&rumoca_core::VarName::new("Pkg.f")]
@@ -818,17 +864,24 @@ mod nested_class_constant_scope_tests {
     }
 
     fn component_ref_expr(path: &[&str], def_id: rumoca_core::DefId) -> ast::Expression {
+        let final_index = path.len().saturating_sub(1);
         ast::Expression::ComponentReference(ast::ComponentReference {
             local: false,
             parts: path
                 .iter()
-                .map(|part| ast::ComponentRefPart {
+                .enumerate()
+                .map(|(index, part)| ast::ComponentRefPart {
                     ident: token(part),
                     subs: None,
+                    def_id: Some(if index == final_index {
+                        def_id
+                    } else {
+                        rumoca_core::DefId::new(20_001 + index as u32)
+                    }),
                 })
                 .collect(),
             span: test_span(),
-            def_id: Some(def_id),
+            qualified_display_name: None,
         })
     }
 
@@ -842,7 +895,7 @@ mod nested_class_constant_scope_tests {
         );
         let mut overlay = ast::InstanceOverlay::default();
         overlay.components.insert(
-            ast::InstanceId::new(1),
+            rumoca_core::InstanceId::new(1),
             ast::InstanceData {
                 dims_expr: vec![ast::Subscript::Expression(component_ref_expr(
                     &["generator", "nState"],
@@ -852,8 +905,14 @@ mod nested_class_constant_scope_tests {
             },
         );
         let mut scopes = HashSet::new();
-        collect_dimension_referenced_class_scopes(&overlay, &HashSet::new(), &def_map, &mut scopes)
-            .expect("dimension references should lower for class-scope collection");
+        collect_dimension_referenced_class_scopes(
+            &overlay,
+            &HashSet::new(),
+            &def_map,
+            ast_lower::PredefinedIntrinsicIds::default(),
+            &mut scopes,
+        )
+        .expect("dimension references should lower for class-scope collection");
 
         assert!(scopes.contains("Modelica.Math.Random.Generators.Xorshift128plus"));
     }

@@ -1,0 +1,11 @@
+[rumoca]
+version = "1"
+task = "codegen"
+
+[model]
+file = "../models/SympyDecay.mo"
+name = "SympyDecay"
+
+[codegen]
+target = "custom_checked_variables.jinja"
+output_dir = "gen/sympy_decay_custom_checked_variables.txt"

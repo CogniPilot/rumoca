@@ -11,6 +11,10 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
             "/../../examples/models/NeuralODETensor.mo"
         ))
         .expect("NeuralODETensor should compile");
+    result.dae.inspect(|view| {
+        assert_eq!(view.root_count(), 0);
+        assert_eq!(view.structured_root_count(), 0);
+    });
     let opts = SimOptions {
         t_end: 0.2,
         dt: Some(0.02),
@@ -99,7 +103,7 @@ fn check_event_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<Strin
     );
     for (action_idx, action) in solve.problem.events.actions.iter().enumerate() {
         for (part_idx, part) in action.message.parts.iter().enumerate() {
-            if let rumoca_ir_solve::SolveEventMessagePart::Number(ops) = part {
+            if let rumoca_ir_solve::SolveEventMessagePart::Conversion { value: ops, .. } = part {
                 check_ops(
                     &format!("events.actions[{action_idx}].message[{part_idx}]"),
                     ops,
@@ -138,7 +142,7 @@ fn check_program(
     p_len: usize,
     failures: &mut Vec<String>,
 ) {
-    for (row_idx, row) in program.programs.iter().enumerate() {
+    for (row_idx, row) in program.programs().iter().enumerate() {
         check_ops(&format!("{label}.row[{row_idx}]"), row, p_len, failures);
     }
 }
@@ -148,7 +152,7 @@ fn check_block(label: &str, block: &ComputeBlock, p_len: usize, failures: &mut V
         let node_label = format!("{label}.node[{node_idx}]");
         match node {
             ComputeNode::ScalarPrograms(programs) => {
-                for (row_idx, row) in programs.programs.iter().enumerate() {
+                for (row_idx, row) in programs.programs().iter().enumerate() {
                     check_ops(
                         &format!("{node_label}.row[{row_idx}]"),
                         row,

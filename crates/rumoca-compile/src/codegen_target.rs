@@ -1,32 +1,33 @@
+mod feature_analysis;
+#[cfg(test)]
+mod tests;
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rumoca_core::ExpressionVisitor;
-use rumoca_core::{BuiltinFunction, Expression, Subscript};
 use rumoca_ir_dae as dae;
 use rumoca_phase_codegen::templates;
 use serde::{Deserialize, Serialize};
+
+use feature_analysis::{
+    dae_has_clocks, dae_has_dynamic_derivative_subscripts, dae_has_dynamic_ranges, dae_has_events,
+    dae_has_external_functions, dae_has_initialization, dae_has_runtime_events,
+    dae_has_unlowered_source_temporal_operators, dae_uses_external_tables, dae_uses_random,
+    solve_has_algebraic_projection, solve_has_clocks, solve_has_events, solve_has_initialization,
+    solve_has_runtime_events,
+};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetTemplateIr {
     Dae,
     Solve,
+    Fmi,
     Flat,
     Ast,
-}
-
-/// Post-render packaging step selected by a target's `build` field. The
-/// build kind is the packaging mechanism — there is no CLI flag: `fmu`
-/// compiles + zips an FMU, `efmu` assembles a schema-valid eFMU container
-/// (directory + `.efmu` zip forms) from the invocation's rendered files.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TargetBuildKind {
-    Fmu,
-    Efmu,
+    AlgorithmCode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,25 +40,65 @@ pub struct TargetManifest {
     pub execution_mode: Option<String>,
     pub deployment_class: Option<String>,
     pub readiness_level: Option<u8>,
-    pub build: Option<TargetBuildKind>,
+    pub package: Option<TargetPackage>,
+    pub integer: Option<TargetIntegerDomain>,
     pub completion_message: Option<String>,
     #[serde(alias = "requirements", alias = "requires")]
     pub capabilities: Option<TargetCapabilities>,
     #[serde(default)]
     pub files: Vec<TargetFile>,
-    /// Declared asset bundles the packaging build step copies verbatim into
-    /// the product (contract §4d): e.g. the vendored eFMI XSD tree. Assets
-    /// are NOT graph nodes — nothing checksums them, so they sit outside the
-    /// render/hash DAG. A product needing no bundled assets declares none.
+    /// Declared target-relative asset trees copied verbatim into the product.
     #[serde(default)]
     pub assets: Vec<AssetBundle>,
 }
 
-#[derive(Debug, Deserialize)]
+/// Target-declared product layout. All paths are target templates rendered
+/// against the same semantic context as `[[files]]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetPackage {
+    pub root: String,
+    #[serde(default)]
+    pub required_files: Vec<String>,
+    pub archive: Option<TargetArchive>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetArchive {
+    pub path: String,
+    pub format: TargetArchiveFormat,
+    pub root: TargetArchiveRoot,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetArchiveFormat {
+    Zip,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetArchiveRoot {
+    Flat,
+}
+
+/// Integer range whose operations a target promises to represent.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetIntegerDomain {
+    pub minimum: i64,
+    pub maximum: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetCapabilities {
     pub continuous_states: Option<bool>,
     pub residual_equations: Option<bool>,
+    /// The target consumes compact DAE `structured_equations` as the
+    /// authoritative body instead of blindly iterating placeholder scalar rows.
+    pub structured_equation_families: Option<bool>,
     pub scalar_fallback: Option<bool>,
     pub external_functions: Option<bool>,
     pub external_tables: Option<bool>,
@@ -75,7 +116,7 @@ pub struct TargetCapabilities {
     pub tensor: Option<TensorCapabilities>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TensorCapabilities {
     pub matmul: Option<TensorCapability>,
@@ -108,7 +149,6 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
-    pub render_context: Option<TargetFileRenderContext>,
     pub mode: Option<String>,
     /// Stable logical identity of this rendered file within the target
     /// (contract §4a). Only files a checksum edge points at (`of = <id>`)
@@ -125,13 +165,6 @@ pub struct TargetFile {
     pub checksums: Vec<ChecksumNeed>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TargetFileRenderContext {
-    FmiModelDescription,
-    FmiImplementation,
-}
-
 /// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
 /// under my context key `as`" (contract §4a). Modeled as the directed edge
 /// `of -> this` ("`of` rendered + hashed before this file") by the packaging
@@ -142,22 +175,26 @@ pub enum TargetFileRenderContext {
 pub struct ChecksumNeed {
     /// The producer file's `id` whose exact rendered bytes are hashed.
     pub of: String,
+    /// Hash algorithm selected by the target format.
+    pub algorithm: ChecksumAlgorithm,
     /// The context key this file's templates read the producer's SHA-1 from.
     /// `as` is a Rust keyword, so the field is renamed for the struct.
     #[serde(rename = "as")]
     pub as_key: String,
 }
 
-/// A declared asset bundle: copy the named embedded/vendored `bundle` into
-/// the product under `dest` (contract §4d). The bundle payload is declared
-/// here; the copy mechanism is coded once, generically, in the build step.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChecksumAlgorithm {
+    Sha1,
+}
+
+/// A declared asset tree copied from `source` under the target directory to
+/// `dest` under the package root.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssetBundle {
-    /// Logical name of the embedded/vendored bundle (e.g. `efmi-schemas`).
-    pub bundle: String,
-    /// Destination directory (product-root-relative) the bundle is copied
-    /// into, e.g. `schemas/`.
+    pub source: String,
     pub dest: String,
 }
 
@@ -256,6 +293,119 @@ impl TargetBundle {
             Self::Directory { dir, .. } => dir.to_str().unwrap_or("custom"),
         })
     }
+
+    pub fn asset_files(&self, source: &str) -> Result<Vec<TargetAssetFile>> {
+        match self {
+            Self::Builtin { target } => target
+                .asset_files(source)
+                .map(|files| {
+                    files
+                        .into_iter()
+                        .map(|(relative_path, bytes)| TargetAssetFile {
+                            relative_path: relative_path.to_owned(),
+                            bytes: bytes.to_vec(),
+                        })
+                        .collect()
+                })
+                .with_context(|| {
+                    format!(
+                        "Built-in target '{}' contains no asset source '{source}'",
+                        target.name
+                    )
+                }),
+            Self::Directory { dir, .. } => {
+                let root = safe_target_join(dir, source)?;
+                collect_target_assets(&root)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TargetAssetFile {
+    pub relative_path: String,
+    pub bytes: Vec<u8>,
+}
+
+fn collect_target_assets(root: &Path) -> Result<Vec<TargetAssetFile>> {
+    if !root.is_dir() {
+        bail!(
+            "Target asset source '{}' is not a directory",
+            root.display()
+        );
+    }
+    let mut paths = Vec::new();
+    collect_target_asset_paths(root, root, &mut paths)?;
+    paths.sort_by(|left, right| left.0.cmp(&right.0));
+    paths
+        .into_iter()
+        .map(|(relative_path, path)| {
+            Ok(TargetAssetFile {
+                relative_path,
+                bytes: std::fs::read(&path)
+                    .with_context(|| format!("Read target asset '{}'", path.display()))?,
+            })
+        })
+        .collect()
+}
+
+fn collect_target_asset_paths(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Read target asset directory '{}'", dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("Read target asset entry in '{}'", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("Stat target asset '{}'", entry.path().display()))?;
+        if file_type.is_symlink() {
+            bail!(
+                "Target asset source may not contain symlinks: '{}'",
+                entry.path().display()
+            );
+        }
+        if file_type.is_dir() {
+            collect_target_asset_paths(root, &entry.path(), out)?;
+        } else if file_type.is_file() {
+            let relative_path = target_asset_relative_path(root, &entry.path())?;
+            out.push((relative_path, entry.path()));
+        }
+    }
+    Ok(())
+}
+
+fn target_asset_relative_path(root: &Path, path: &Path) -> Result<String> {
+    let relative = path.strip_prefix(root).with_context(|| {
+        format!(
+            "Target asset '{}' is not beneath source root '{}'",
+            path.display(),
+            root.display()
+        )
+    })?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            bail!(
+                "Target asset path must contain only normal components: '{}'",
+                path.display()
+            );
+        };
+        let part = part
+            .to_str()
+            .with_context(|| format!("Target asset path must be UTF-8: '{}'", path.display()))?;
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        bail!(
+            "Target asset path must identify a file beneath source root: '{}'",
+            path.display()
+        );
+    }
+    Ok(parts.join("/"))
 }
 
 impl TargetTemplateSource for TargetBundle {
@@ -379,9 +529,11 @@ fn tensor_dtypes(tensor: Option<&TensorCapabilities>) -> Vec<String> {
 fn scalar_program_support(ir: TargetTemplateIr) -> TargetFeatureSupport {
     match ir {
         TargetTemplateIr::Solve => TargetFeatureSupport::Native,
-        TargetTemplateIr::Dae | TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
-            TargetFeatureSupport::Unsupported
-        }
+        TargetTemplateIr::Dae
+        | TargetTemplateIr::Fmi
+        | TargetTemplateIr::Flat
+        | TargetTemplateIr::Ast
+        | TargetTemplateIr::AlgorithmCode => TargetFeatureSupport::Unsupported,
     }
 }
 
@@ -390,7 +542,7 @@ fn tensor_feature_support(
     scalar_fallback: bool,
     capability: Option<TensorCapability>,
 ) -> TargetFeatureSupport {
-    if ir != TargetTemplateIr::Solve {
+    if !matches!(ir, TargetTemplateIr::Solve | TargetTemplateIr::Fmi) {
         return TargetFeatureSupport::Unsupported;
     }
     match capability {
@@ -423,7 +575,7 @@ pub fn target_manifest_ir(source: &str) -> Option<TargetTemplateIr> {
 }
 
 pub fn target_ir_is_dae_renderable(ir: TargetTemplateIr) -> bool {
-    matches!(ir, TargetTemplateIr::Dae)
+    matches!(ir, TargetTemplateIr::Dae | TargetTemplateIr::Fmi)
 }
 
 pub fn render_dae_target_files(
@@ -439,7 +591,11 @@ pub fn render_dae_target_files(
             manifest.ir
         );
     }
-
+    let capabilities = manifest
+        .capabilities
+        .as_ref()
+        .context("DAE target manifest must declare a [capabilities] table")?;
+    validate_dae_target_capabilities(dae, manifest, capabilities)?;
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
         let path = render_dae_target_str(dae, &file.path, model_name)
@@ -460,24 +616,57 @@ pub fn validate_dae_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
-    if capabilities.continuous_states == Some(false)
-        && (!dae.variables.states.is_empty() || !dae.continuous.equations.is_empty())
+    if dae_has_unlowered_source_temporal_operators(dae) {
+        bail!(
+            "invalid canonical DAE for target '{}': a source temporal or synchronous operator survived the Phase-DAE boundary",
+            manifest.name.as_deref().unwrap_or("<unnamed>")
+        );
+    }
+    let (state_count, residual_owner_count, continuous_family_count) = dae.inspect(|view| {
+        let state_count = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
+            .count();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        (
+            state_count,
+            definitions.remaining_owner_count(),
+            view.continuous_family_count(),
+        )
+    });
+    // DAE templates must explicitly consume compact families. Algorithm Code
+    // targets own a stronger, target-specific projection proof and re-check
+    // every family before lowering; the generic renderer must not reject that
+    // canonical input before the projection can inspect it.
+    if manifest.ir == TargetTemplateIr::Dae
+        && capabilities.structured_equation_families != Some(true)
+        && continuous_family_count != 0
     {
         unsupported_feature(
             manifest,
-            "continuous_states",
-            format!(
-                "{} state(s), {} residual derivative equation(s)",
-                dae.variables.states.len(),
-                dae.continuous.equations.len()
-            ),
+            "structured_equation_families",
+            format!("{continuous_family_count} compact equation family owner(s)"),
         )?;
     }
-    if capabilities.residual_equations == Some(false) && !dae.continuous.equations.is_empty() {
+    if capabilities.continuous_states == Some(false) && state_count != 0 {
+        unsupported_feature(
+            manifest,
+            "continuous_states",
+            format!("{state_count} state(s)"),
+        )?;
+    }
+    // A Solve/FMI target does not emit DAE owners directly. Its later checked
+    // projection distinguishes explicit derivative rows from retained
+    // algebraic residuals; rejecting every source equation here would make a
+    // plain explicit ODE impossible to export.
+    if manifest.ir == TargetTemplateIr::Dae
+        && capabilities.residual_equations == Some(false)
+        && residual_owner_count != 0
+    {
         unsupported_feature(
             manifest,
             "residual_equations",
-            format!("{} equation(s)", dae.continuous.equations.len()),
+            format!("{residual_owner_count} equation(s)"),
         )?;
     }
     if capabilities.external_functions == Some(false) && dae_has_external_functions(dae) {
@@ -496,10 +685,17 @@ pub fn validate_dae_target_capabilities(
     if capabilities.initialization == Some(false) && dae_has_initialization(dae) {
         unsupported_feature(manifest, "initialization", "initial equations present")?;
     }
-    if capabilities.events == Some(false) && dae_has_events(dae) {
+    if capabilities.events != Some(true) && dae_has_events(dae) {
         unsupported_feature(manifest, "events", "event or condition partitions present")?;
     }
-    if capabilities.clocks == Some(false) && dae_has_clocks(dae) {
+    if capabilities.runtime_events == Some(false) && dae_has_runtime_events(dae) {
+        unsupported_feature(
+            manifest,
+            "runtime_events",
+            "delay-history or terminal-event runtime support is required",
+        )?;
+    }
+    if capabilities.clocks != Some(true) && dae_has_clocks(dae) {
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
     }
     if capabilities.dynamic_ranges == Some(false) && dae_has_dynamic_ranges(dae) {
@@ -519,6 +715,146 @@ pub fn validate_dae_target_capabilities(
         )?;
     }
     Ok(())
+}
+
+pub fn validate_solve_target_capabilities(
+    solve: &rumoca_ir_solve::SolveProblem,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
+    if capabilities.residual_equations != Some(true) && solve_has_algebraic_projection(solve) {
+        unsupported_feature(
+            manifest,
+            "residual_equations",
+            "algebraic projection or implicit residual rows present",
+        )?;
+    }
+    if capabilities.initialization == Some(false) && solve_has_initialization(solve) {
+        unsupported_feature(
+            manifest,
+            "initialization",
+            "initialization residual, projection, or assignment owners present",
+        )?;
+    }
+    if capabilities.events != Some(true) && solve_has_events(solve) {
+        unsupported_feature(manifest, "events", "event or discrete partitions present")?;
+    }
+    if capabilities.runtime_events == Some(false) && solve_has_runtime_events(solve) {
+        unsupported_feature(
+            manifest,
+            "runtime_events",
+            "delay-history or terminal-event runtime support is required",
+        )?;
+    }
+    if capabilities.clocks != Some(true) && solve_has_clocks(solve) {
+        unsupported_feature(manifest, "clocks", "clock partition entries present")?;
+    }
+    let mut inventory = solve.compute_node_counts();
+    inventory.add_assign(solve.initialization.residual.compute_node_counts());
+    let uses_linear_solve_component = solve.uses_linear_solve_component()
+        || solve.initialization.residual.uses_linear_solve_component();
+    validate_solve_tensor_inventory(
+        manifest,
+        capabilities,
+        inventory,
+        uses_linear_solve_component,
+    )
+}
+
+pub fn validate_solve_tensor_inventory(
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+    inventory: rumoca_ir_solve::ComputeNodeCounts,
+    uses_linear_solve_component: bool,
+) -> Result<()> {
+    let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
+    let tensor = capabilities.tensor.as_ref();
+
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.matmul",
+        "MatMul",
+        inventory.matmul,
+        tensor.and_then(|tensor| tensor.matmul),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.linsolve",
+        "LinSolve",
+        inventory
+            .linsolve
+            .saturating_add(usize::from(uses_linear_solve_component)),
+        tensor.and_then(|tensor| tensor.linsolve),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.elementwise",
+        "Map",
+        inventory.map,
+        tensor.and_then(|tensor| tensor.elementwise),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.stencil",
+        "AffineStencil",
+        inventory.affine_stencil,
+        tensor.and_then(|tensor| tensor.stencil),
+        scalar_fallback,
+    )
+}
+
+fn validate_solve_tensor_feature(
+    manifest: &TargetManifest,
+    feature: &str,
+    display_name: &str,
+    count: usize,
+    capability: Option<TensorCapability>,
+    scalar_fallback: bool,
+) -> Result<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    match capability {
+        Some(TensorCapability::Native) => Ok(()),
+        Some(TensorCapability::Scalar) if scalar_fallback => Ok(()),
+        Some(TensorCapability::Scalar) => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} is configured for scalar fallback but scalar fallback is disabled"
+            ),
+        ),
+        Some(TensorCapability::Unsupported) => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} nodes are present but the target declares {feature} unsupported"
+            ),
+        ),
+        None if scalar_fallback => Ok(()),
+        None => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} nodes are present but the target does not declare native \
+                 {display_name} support and scalar fallback is disabled"
+            ),
+        ),
+    }
+}
+
+fn unsupported_tensor_feature(
+    manifest: &TargetManifest,
+    feature: &str,
+    detail: impl std::fmt::Display,
+) -> Result<()> {
+    bail!(
+        "unsupported-feature:{feature}: Target '{}' does not support feature '{feature}': {detail}",
+        manifest.name.as_deref().unwrap_or("custom")
+    )
 }
 
 pub fn safe_target_join(root: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
@@ -572,8 +908,15 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
     {
         bail!("target readiness_level must be between 0 and 5");
     }
-    if manifest.files.is_empty() && manifest.readiness_level != Some(0) {
+    if manifest.files.is_empty() {
         bail!("target.toml must contain at least one file entry");
+    }
+    if matches!(
+        manifest.ir,
+        TargetTemplateIr::Dae | TargetTemplateIr::Fmi | TargetTemplateIr::AlgorithmCode
+    ) && manifest.capabilities.is_none()
+    {
+        bail!("DAE-derived target manifest must declare a [capabilities] table");
     }
     if let Some(capabilities) = &manifest.capabilities {
         validate_target_capabilities(manifest, capabilities)?;
@@ -586,6 +929,36 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
     }
     validate_checksum_web(&manifest.files)?;
     validate_asset_bundles(&manifest.assets)?;
+    validate_package(manifest.package.as_ref())?;
+    if let Some(integer) = manifest.integer
+        && integer.minimum > integer.maximum
+    {
+        bail!(
+            "[integer] minimum ({}) must not exceed maximum ({})",
+            integer.minimum,
+            integer.maximum
+        );
+    }
+    Ok(())
+}
+
+fn validate_package(package: Option<&TargetPackage>) -> Result<()> {
+    let Some(package) = package else {
+        return Ok(());
+    };
+    if package.root.trim().is_empty() {
+        bail!("[package] root must not be empty");
+    }
+    for required in &package.required_files {
+        if required.trim().is_empty() {
+            bail!("[package] required_files entries must not be empty");
+        }
+    }
+    if let Some(archive) = &package.archive
+        && archive.path.trim().is_empty()
+    {
+        bail!("[package.archive] path must not be empty");
+    }
     Ok(())
 }
 
@@ -649,17 +1022,16 @@ fn validate_checksum_web(files: &[TargetFile]) -> Result<()> {
     Ok(())
 }
 
-/// Fail-early checks on declared `[[assets]]` bundles: bundle name and dest
-/// must be non-empty (the copy mechanism resolves the bundle payload by name).
+/// Fail-early checks on declared target-relative asset trees.
 fn validate_asset_bundles(assets: &[AssetBundle]) -> Result<()> {
     for asset in assets {
-        if asset.bundle.trim().is_empty() {
-            bail!("[[assets]] bundle name must not be empty");
+        if asset.source.trim().is_empty() {
+            bail!("[[assets]] source must not be empty");
         }
         if asset.dest.trim().is_empty() {
             bail!(
-                "[[assets]] dest must not be empty (bundle '{}')",
-                asset.bundle
+                "[[assets]] dest must not be empty (source '{}')",
+                asset.source
             );
         }
     }
@@ -680,8 +1052,13 @@ fn validate_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
-    if capabilities.tensor.is_some() && manifest.ir != TargetTemplateIr::Solve {
-        bail!("tensor capabilities are only valid for ir = \"solve\" targets");
+    if capabilities.structured_equation_families.is_some() && manifest.ir != TargetTemplateIr::Dae {
+        bail!("structured_equation_families capability is only valid for ir = \"dae\" targets");
+    }
+    if capabilities.tensor.is_some()
+        && !matches!(manifest.ir, TargetTemplateIr::Solve | TargetTemplateIr::Fmi)
+    {
+        bail!("tensor capabilities are only valid for Solve-derived targets");
     }
     if capabilities.scalar_fallback == Some(false) {
         let Some(tensor) = &capabilities.tensor else {
@@ -734,1034 +1111,4 @@ fn unsupported_feature(
         detail,
         feature
     )
-}
-
-fn dae_has_external_functions(dae: &dae::Dae) -> bool {
-    dae.symbols
-        .functions
-        .values()
-        .any(|function| function.external.is_some())
-}
-
-fn dae_uses_external_tables(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(|expr| expression_has_named_call(expr, is_external_table_call))
-}
-
-fn is_external_table_call(name: &str) -> bool {
-    matches!(
-        rumoca_core::top_level_last_segment(name),
-        "ExternalCombiTimeTable"
-            | "ExternalCombiTable1D"
-            | "ExternalCombiTable2D"
-            | "getTimeTableTmax"
-            | "getTimeTableTmin"
-            | "getTimeTableValueNoDer"
-            | "getTimeTableValueNoDer2"
-            | "getTimeTableValue"
-            | "getTable1DAbscissaUmax"
-            | "getTable1DAbscissaUmin"
-            | "getTable1DValueNoDer"
-            | "getTable1DValueNoDer2"
-            | "getTable1DValue"
-            | "getNextTimeEvent"
-            | "isValidTable"
-    )
-}
-
-fn dae_uses_random(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(|expr| expression_has_named_call(expr, is_random_call))
-}
-
-fn is_random_call(name: &str) -> bool {
-    let short = rumoca_core::top_level_last_segment(name);
-    short.contains("Xorshift")
-        || matches!(
-            short,
-            "initialState"
-                | "random"
-                | "impureRandom"
-                | "impureRandomInteger"
-                | "initializeImpureRandom"
-        )
-}
-
-fn dae_has_initialization(dae: &dae::Dae) -> bool {
-    !dae.initialization.equations.is_empty() || !dae.initialization.structured_equations.is_empty()
-}
-
-fn dae_has_events(dae: &dae::Dae) -> bool {
-    !dae.conditions.equations.is_empty()
-        || !dae.conditions.relations.is_empty()
-        || !dae.events.synthetic_root_conditions.is_empty()
-        || !dae.events.scheduled_time_events.is_empty()
-        || !dae.discrete.real_updates.is_empty()
-        || !dae.discrete.valued_updates.is_empty()
-}
-
-fn dae_has_clocks(dae: &dae::Dae) -> bool {
-    !dae.clocks.constructor_exprs.is_empty()
-        || !dae.clocks.schedules.is_empty()
-        || !dae.clocks.triggered_conditions.is_empty()
-        || !dae.clocks.intervals.is_empty()
-        || !dae.clocks.timings.is_empty()
-}
-
-fn dae_has_dynamic_ranges(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(expression_has_dynamic_range)
-}
-
-fn dae_has_dynamic_derivative_subscripts(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(expression_has_dynamic_derivative_subscripts)
-}
-
-fn dae_expressions(dae: &dae::Dae) -> impl Iterator<Item = &Expression> {
-    dae.continuous
-        .equations
-        .iter()
-        .map(|equation| &equation.rhs)
-        .chain(
-            dae.initialization
-                .equations
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(
-            dae.discrete
-                .real_updates
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(
-            dae.discrete
-                .valued_updates
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(
-            dae.conditions
-                .equations
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(dae.conditions.relations.iter())
-        .chain(dae.events.synthetic_root_conditions.iter())
-        .chain(dae.clocks.constructor_exprs.iter())
-        .chain(dae.clocks.triggered_conditions.iter())
-        .chain(dae.metadata.variable_starts.values())
-}
-
-fn expression_has_named_call(expr: &Expression, predicate: fn(&str) -> bool) -> bool {
-    struct Checker {
-        predicate: fn(&str) -> bool,
-        found: bool,
-    }
-
-    impl ExpressionVisitor for Checker {
-        fn visit_expression(&mut self, expr: &Expression) {
-            if !self.found {
-                self.walk_expression(expr);
-            }
-        }
-
-        fn visit_function_call(
-            &mut self,
-            name: &rumoca_core::Reference,
-            args: &[Expression],
-            _: bool,
-        ) {
-            if (self.predicate)(name.as_str()) {
-                self.found = true;
-                return;
-            }
-            for arg in args {
-                self.visit_expression(arg);
-            }
-        }
-    }
-
-    let mut checker = Checker {
-        predicate,
-        found: false,
-    };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-fn expression_has_dynamic_range(expr: &Expression) -> bool {
-    struct Checker {
-        found: bool,
-    }
-
-    impl ExpressionVisitor for Checker {
-        fn visit_expression(&mut self, expr: &Expression) {
-            if !self.found {
-                self.walk_expression(expr);
-            }
-        }
-
-        fn visit_range(&mut self, start: &Expression, step: Option<&Expression>, end: &Expression) {
-            if !is_integer_literal(start)
-                || step.is_some_and(|step| !is_integer_literal(step))
-                || !is_integer_literal(end)
-            {
-                self.found = true;
-                return;
-            }
-            self.visit_expression(start);
-            if let Some(step) = step {
-                self.visit_expression(step);
-            }
-            self.visit_expression(end);
-        }
-    }
-
-    let mut checker = Checker { found: false };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-fn expression_has_dynamic_derivative_subscripts(expr: &Expression) -> bool {
-    struct Checker {
-        found: bool,
-    }
-
-    impl ExpressionVisitor for Checker {
-        fn visit_expression(&mut self, expr: &Expression) {
-            if !self.found {
-                self.walk_expression(expr);
-            }
-        }
-
-        fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
-            if *function == BuiltinFunction::Der
-                && args.iter().any(expression_target_has_dynamic_subscript)
-            {
-                self.found = true;
-                return;
-            }
-            for arg in args {
-                self.visit_expression(arg);
-            }
-        }
-    }
-
-    let mut checker = Checker { found: false };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-fn expression_target_has_dynamic_subscript(expr: &Expression) -> bool {
-    match expr {
-        Expression::VarRef { subscripts, .. } | Expression::Index { subscripts, .. } => {
-            subscripts.iter().any(|subscript| match subscript {
-                Subscript::Expr { expr, .. } => !is_integer_literal(expr),
-                Subscript::Colon { .. } => true,
-                Subscript::Index { .. } => false,
-            })
-        }
-        Expression::FieldAccess { base, .. } => expression_target_has_dynamic_subscript(base),
-        _ => false,
-    }
-}
-
-fn is_integer_literal(expr: &Expression) -> bool {
-    matches!(
-        expr,
-        Expression::Literal {
-            value: rumoca_core::Literal::Integer(_),
-            ..
-        }
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        TargetFeatureSupport, TargetFileRenderContext, TargetManifest, TargetTemplateIr,
-        TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix,
-        ensure_target_has_rendered_files, parse_target_manifest, safe_target_join, templates,
-        validate_dae_target_capabilities, validate_target_manifest,
-    };
-    use rumoca_core::{
-        BuiltinFunction, Expression, ExternalFunction, Function, Literal, Reference, Span,
-        Subscript, VarName,
-    };
-    use rumoca_ir_dae::{Dae, Equation};
-    use std::path::Path;
-
-    fn function_call(name: &str) -> Expression {
-        Expression::FunctionCall {
-            name: Reference::new(name),
-            args: Vec::new(),
-            is_constructor: false,
-            span: Span::DUMMY,
-        }
-    }
-
-    fn var(name: &str) -> Expression {
-        Expression::VarRef {
-            name: Reference::new(name),
-            subscripts: Vec::new(),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn int(value: i64) -> Expression {
-        Expression::Literal {
-            value: Literal::Integer(value),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn residual(rhs: Expression, origin: &str) -> Equation {
-        Equation::residual(rhs, Span::DUMMY, origin)
-    }
-
-    fn manifest_with_capabilities(capabilities: &str) -> TargetManifest {
-        toml::from_str(&format!(
-            r#"
-version = 1
-ir = "dae"
-name = "custom"
-readiness_level = 3
-
-{capabilities}
-
-[[files]]
-path = "model.out"
-template = "model.out.jinja"
-"#
-        ))
-        .expect("parse target manifest")
-    }
-
-    fn parse_manifest_with_ir_capabilities(ir: &str, capabilities: &str) -> TargetManifest {
-        super::parse_target_manifest(&format!(
-            r#"
-version = 1
-ir = "{ir}"
-name = "custom"
-readiness_level = 1
-
-{capabilities}
-
-[[files]]
-path = "model.out"
-template = "model.out.jinja"
-"#
-        ))
-        .expect("parse and validate target manifest")
-    }
-
-    #[test]
-    fn target_manifest_rejects_escaping_paths() {
-        let root = Path::new("out");
-        assert!(safe_target_join(root, "../escape").is_err());
-        assert!(safe_target_join(root, "/absolute").is_err());
-        assert_eq!(
-            safe_target_join(root, "nested/file.c").unwrap(),
-            root.join("nested/file.c")
-        );
-    }
-
-    #[test]
-    fn target_manifest_parses_capabilities_table() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-external_functions = false
-events = true
-runtime_events = false
-forward_ad = true
-reverse_ad = false
-dynamic_control_flow = true
-host_callbacks = false
-"#,
-        );
-        let capabilities = manifest.capabilities.expect("capabilities table");
-
-        assert_eq!(manifest.readiness_level, Some(3));
-        assert_eq!(capabilities.external_functions, Some(false));
-        assert_eq!(capabilities.external_tables, None);
-        assert_eq!(capabilities.events, Some(true));
-        assert_eq!(capabilities.runtime_events, Some(false));
-        assert_eq!(capabilities.forward_ad, Some(true));
-        assert_eq!(capabilities.reverse_ad, Some(false));
-        assert_eq!(capabilities.dynamic_control_flow, Some(true));
-        assert_eq!(capabilities.host_callbacks, Some(false));
-    }
-
-    #[test]
-    fn target_manifest_parses_file_render_context() {
-        let manifest = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "custom"
-
-[[files]]
-path = "modelDescription.xml"
-template = "modelDescription.xml.jinja"
-render_context = "fmi-model-description"
-"#,
-        )
-        .expect("parse target manifest with file render context");
-
-        assert_eq!(
-            manifest.files[0].render_context,
-            Some(TargetFileRenderContext::FmiModelDescription)
-        );
-    }
-
-    #[test]
-    fn target_manifest_parses_fmi_implementation_render_context() {
-        let manifest = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "custom"
-
-[[files]]
-path = "sources/model.c"
-template = "model.c.jinja"
-render_context = "fmi-implementation"
-"#,
-        )
-        .expect("parse target manifest with FMI implementation context");
-
-        assert_eq!(
-            manifest.files[0].render_context,
-            Some(TargetFileRenderContext::FmiImplementation)
-        );
-    }
-
-    #[test]
-    fn all_builtin_target_manifests_parse() {
-        for target in templates::builtin_targets() {
-            parse_target_manifest(target.manifest).unwrap_or_else(|err| {
-                panic!("built-in target '{}' failed to parse: {err}", target.name)
-            });
-        }
-    }
-
-    #[test]
-    fn all_builtin_target_manifests_describe_matrix_axes() {
-        for target in templates::builtin_targets() {
-            let manifest = parse_target_manifest(target.manifest).unwrap_or_else(|err| {
-                panic!("built-in target '{}' failed to parse: {err}", target.name)
-            });
-            assert!(
-                manifest.execution_mode.is_some(),
-                "built-in target '{}' must declare execution_mode",
-                target.name
-            );
-            assert!(
-                manifest.deployment_class.is_some(),
-                "built-in target '{}' must declare deployment_class",
-                target.name
-            );
-        }
-    }
-
-    #[test]
-    fn builtin_target_compatibility_matrix_reports_solve_tensor_fallback() {
-        let matrix = builtin_target_compatibility_matrix()
-            .expect("built-in target compatibility matrix should build");
-        let c_solve = matrix
-            .iter()
-            .find(|entry| entry.id == "c-solve")
-            .expect("c-solve target should be listed");
-        assert_eq!(c_solve.ir, TargetTemplateIr::Solve);
-        assert_eq!(c_solve.readiness_level, Some(2));
-        assert_eq!(c_solve.scalar_programs, TargetFeatureSupport::Native);
-        assert_eq!(c_solve.matmul, TargetFeatureSupport::Scalar);
-        assert_eq!(c_solve.linsolve, TargetFeatureSupport::Scalar);
-        assert_eq!(c_solve.elementwise, TargetFeatureSupport::Unknown);
-        assert_eq!(c_solve.sparse, TargetFeatureSupport::Unsupported);
-        assert_eq!(c_solve.dtypes, vec!["f64"]);
-        assert_eq!(c_solve.events, TargetFeatureSupport::Unsupported);
-        assert_eq!(c_solve.runtime_events, TargetFeatureSupport::Unsupported);
-        assert_eq!(c_solve.forward_ad, TargetFeatureSupport::Unsupported);
-        assert_eq!(c_solve.reverse_ad, TargetFeatureSupport::Unsupported);
-        assert_eq!(
-            c_solve.dynamic_control_flow,
-            TargetFeatureSupport::Unsupported
-        );
-        assert_eq!(c_solve.host_callbacks, TargetFeatureSupport::Unsupported);
-
-        let mlir = matrix
-            .iter()
-            .find(|entry| entry.id == "mlir")
-            .expect("mlir target should be listed");
-        assert_eq!(mlir.readiness_level, Some(1));
-        assert_eq!(mlir.forward_ad, TargetFeatureSupport::Native);
-        assert_eq!(mlir.reverse_ad, TargetFeatureSupport::Unsupported);
-
-        let rust_solve = matrix
-            .iter()
-            .find(|entry| entry.id == "rust-solve")
-            .expect("rust-solve target should be listed");
-        assert_eq!(rust_solve.readiness_level, Some(2));
-        assert_eq!(rust_solve.matmul, TargetFeatureSupport::Scalar);
-
-        let rust_fixed_solve = matrix
-            .iter()
-            .find(|entry| entry.id == "rust-fixed-solve")
-            .expect("rust-fixed-solve target should be listed");
-        assert_eq!(rust_fixed_solve.readiness_level, Some(2));
-        assert_eq!(rust_fixed_solve.deployment_class.as_deref(), Some("cpu"));
-        assert_eq!(rust_fixed_solve.execution_mode.as_deref(), Some("compiled"));
-        assert_eq!(rust_fixed_solve.matmul, TargetFeatureSupport::Scalar);
-        assert_eq!(rust_fixed_solve.linsolve, TargetFeatureSupport::Unsupported);
-        assert_eq!(rust_fixed_solve.sparse, TargetFeatureSupport::Unsupported);
-        assert_eq!(rust_fixed_solve.dtypes, vec!["f64"]);
-
-        let cuda_c = matrix
-            .iter()
-            .find(|entry| entry.id == "cuda-c")
-            .expect("cuda-c target should be listed");
-        assert_eq!(cuda_c.readiness_level, Some(1));
-        assert_eq!(cuda_c.deployment_class.as_deref(), Some("gpu"));
-        assert_eq!(cuda_c.matmul, TargetFeatureSupport::Scalar);
-        assert_eq!(cuda_c.linsolve, TargetFeatureSupport::Scalar);
-        assert_eq!(cuda_c.sparse, TargetFeatureSupport::Unsupported);
-        assert_eq!(cuda_c.dtypes, vec!["f64"]);
-
-        let cranelift = matrix
-            .iter()
-            .find(|entry| entry.id == "cranelift-solve-jit")
-            .expect("cranelift-solve-jit target should be listed");
-        assert_eq!(cranelift.readiness_level, Some(0));
-        assert_eq!(cranelift.execution_mode.as_deref(), Some("jit"));
-        assert_eq!(cranelift.matmul, TargetFeatureSupport::Scalar);
-
-        let cuda_nvrtc = matrix
-            .iter()
-            .find(|entry| entry.id == "cuda-nvrtc-solve-jit")
-            .expect("cuda-nvrtc-solve-jit target should be listed");
-        assert_eq!(cuda_nvrtc.readiness_level, Some(0));
-        assert_eq!(cuda_nvrtc.deployment_class.as_deref(), Some("gpu"));
-        assert_eq!(cuda_nvrtc.matmul, TargetFeatureSupport::Native);
-
-        let wgsl_solve = matrix
-            .iter()
-            .find(|entry| entry.id == "wgsl-solve")
-            .expect("wgsl-solve target should be listed");
-        assert_eq!(wgsl_solve.readiness_level, Some(0));
-        assert_eq!(wgsl_solve.deployment_class.as_deref(), Some("gpu"));
-        assert_eq!(wgsl_solve.matmul, TargetFeatureSupport::Scalar);
-        assert_eq!(wgsl_solve.elementwise, TargetFeatureSupport::Native);
-        assert_eq!(wgsl_solve.stencil, TargetFeatureSupport::Native);
-
-        let sympy = matrix
-            .iter()
-            .find(|entry| entry.id == "sympy")
-            .expect("sympy target should be listed");
-        assert_eq!(sympy.ir, TargetTemplateIr::Dae);
-        assert_eq!(sympy.scalar_programs, TargetFeatureSupport::Unsupported);
-        assert_eq!(sympy.matmul, TargetFeatureSupport::Unsupported);
-    }
-
-    #[test]
-    fn target_manifest_parses_solve_tensor_capabilities() {
-        let manifest = parse_manifest_with_ir_capabilities(
-            "solve",
-            r#"
-[capabilities]
-scalar_fallback = true
-
-[capabilities.tensor]
-matmul = "native"
-linsolve = "scalar"
-stencil = "native"
-layout = "row-major"
-supports_dynamic_shapes = false
-sparse = false
-dtypes = ["f32", "f64"]
-"#,
-        );
-        let capabilities = manifest.capabilities.expect("capabilities table");
-        let tensor = capabilities.tensor.expect("tensor capabilities");
-
-        assert_eq!(manifest.ir, TargetTemplateIr::Solve);
-        assert_eq!(capabilities.scalar_fallback, Some(true));
-        assert_eq!(tensor.matmul, Some(TensorCapability::Native));
-        assert_eq!(tensor.linsolve, Some(TensorCapability::Scalar));
-        assert_eq!(tensor.stencil, Some(TensorCapability::Native));
-        assert_eq!(tensor.layout, Some(TensorLayoutCapability::RowMajor));
-        assert_eq!(tensor.supports_dynamic_shapes, Some(false));
-        assert_eq!(tensor.sparse, Some(false));
-        assert_eq!(
-            tensor.dtypes,
-            Some(vec!["f32".to_string(), "f64".to_string()])
-        );
-    }
-
-    #[test]
-    fn target_manifest_rejects_tensor_capabilities_for_non_solve_ir() {
-        let err = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "dae"
-name = "custom"
-
-[capabilities.tensor]
-matmul = "native"
-
-[[files]]
-path = "model.out"
-template = "model.out.jinja"
-"#,
-        )
-        .expect_err("tensor capabilities should require solve IR");
-
-        assert!(
-            err.to_string()
-                .contains("tensor capabilities are only valid")
-        );
-    }
-
-    #[test]
-    fn target_manifest_rejects_scalar_tensor_ops_without_scalar_fallback() {
-        let manifest = parse_manifest_with_ir_capabilities(
-            "solve",
-            r#"
-[capabilities]
-scalar_fallback = false
-
-[capabilities.tensor]
-matmul = "native"
-linsolve = "native"
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        validate_target_manifest(&manifest).expect("native tensor ops need no scalar fallback");
-        assert_eq!(capabilities.scalar_fallback, Some(false));
-
-        let err = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "custom"
-
-[capabilities]
-scalar_fallback = false
-
-[capabilities.tensor]
-matmul = "scalar"
-
-[[files]]
-path = "model.out"
-template = "model.out.jinja"
-"#,
-        )
-        .expect_err("scalar tensor op should require scalar fallback");
-
-        assert!(err.to_string().contains("scalar_fallback = false"));
-    }
-
-    #[test]
-    fn target_manifest_rejects_invalid_readiness_level() {
-        let err = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "invalid"
-readiness_level = 6
-
-[[files]]
-path = "model.out"
-template = "model.out.jinja"
-"#,
-        )
-        .expect_err("readiness level above 5 should fail");
-
-        assert!(err.to_string().contains("readiness_level"), "{err}");
-    }
-
-    #[test]
-    fn target_manifest_accepts_manifest_only_readiness_zero() {
-        let manifest = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "future-target"
-readiness_level = 0
-"#,
-        )
-        .expect("readiness level 0 target may be manifest-only");
-
-        assert!(manifest.files.is_empty());
-        let err = ensure_target_has_rendered_files(&manifest)
-            .expect_err("manifest-only targets should not render files");
-        assert!(err.to_string().contains("manifest-only"), "{err}");
-    }
-
-    #[test]
-    fn target_manifest_rejects_missing_files_after_readiness_zero() {
-        let err = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "unfinished"
-readiness_level = 1
-"#,
-        )
-        .expect_err("readiness level above 0 requires generated files");
-
-        assert!(err.to_string().contains("file entry"), "{err}");
-    }
-
-    #[test]
-    fn target_manifest_rejects_empty_tensor_dtype() {
-        let err = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "invalid-dtypes"
-
-[capabilities.tensor]
-dtypes = ["f64", ""]
-
-[[files]]
-path = "model.out"
-template = "model.out.jinja"
-"#,
-        )
-        .expect_err("empty tensor dtype should fail");
-
-        assert!(err.to_string().contains("dtypes"), "{err}");
-    }
-
-    #[test]
-    fn target_manifest_accepts_requirements_as_capabilities_alias() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[requirements]
-continuous_states = false
-residual_equations = false
-"#,
-        );
-        let capabilities = manifest.capabilities.expect("requirements alias");
-
-        assert_eq!(capabilities.continuous_states, Some(false));
-        assert_eq!(capabilities.residual_equations, Some(false));
-    }
-
-    #[test]
-    fn target_capabilities_reject_external_functions_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-external_functions = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        let mut function = Function::new("ExternalUser", rumoca_core::Span::DUMMY);
-        function.external = Some(ExternalFunction::default());
-        dae.symbols
-            .functions
-            .insert(VarName::new("ExternalUser"), function);
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("external function should be rejected");
-
-        let message = err.to_string();
-        assert!(message.contains("custom"));
-        assert!(message.contains("external_functions"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_events_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-events = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.events.scheduled_time_events.push(0.1);
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("events should be rejected");
-
-        assert!(err.to_string().contains("events"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_external_tables_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-external_tables = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.continuous.equations.push(residual(
-            function_call("ModelicaStandardTables.CombiTable1D.getTable1DValue"),
-            "external table call",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("external table calls should be rejected");
-
-        assert!(err.to_string().contains("external_tables"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_random_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-random = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.discrete.valued_updates.push(residual(
-            function_call("Modelica.Math.Random.Utilities.initializeImpureRandom"),
-            "random call",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("random calls should be rejected");
-
-        assert!(err.to_string().contains("random"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_dynamic_ranges_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-dynamic_ranges = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.continuous.equations.push(residual(
-            Expression::Range {
-                start: Box::new(int(1)),
-                step: None,
-                end: Box::new(var("n")),
-                span: Span::DUMMY,
-            },
-            "dynamic range",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("dynamic ranges should be rejected");
-
-        assert!(err.to_string().contains("dynamic_ranges"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_dynamic_derivative_subscripts_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-dynamic_derivative_subscripts = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.continuous.equations.push(residual(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![Expression::VarRef {
-                    name: Reference::new("x"),
-                    subscripts: vec![Subscript::generated_expr(
-                        Box::new(var("i")),
-                        rumoca_core::Span::DUMMY,
-                    )],
-                    span: Span::DUMMY,
-                }],
-                span: Span::DUMMY,
-            },
-            "dynamic derivative subscript",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("dynamic derivative subscripts should be rejected");
-
-        assert!(err.to_string().contains("dynamic_derivative_subscripts"));
-    }
-
-    // --- checksum-web / asset-bundle validators (each fail-early branch) ---
-
-    /// A well-formed checksum web (one producer, one consumer edge) parses and
-    /// validates — the positive control for the rejection tests below.
-    #[test]
-    fn checksum_web_accepts_a_wellformed_declaration() {
-        super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "checksum-web"
-[[files]]
-path = "a.txt"
-template = "a.jinja"
-id = "a"
-[[files]]
-path = "b.txt"
-template = "b.jinja"
-[[files.checksums]]
-of = "a"
-as = "a_sha1"
-"#,
-        )
-        .expect("a well-formed checksum web validates");
-    }
-
-    fn expect_target_error(source: &str, needle: &str) {
-        let err = super::parse_target_manifest(source)
-            .expect_err("malformed target.toml must be rejected");
-        assert!(
-            err.to_string().contains(needle),
-            "error `{err}` should mention `{needle}`"
-        );
-    }
-
-    #[test]
-    fn checksum_web_rejects_duplicate_file_ids() {
-        expect_target_error(
-            r#"
-version = 1
-ir = "solve"
-name = "dup-id"
-[[files]]
-path = "a.txt"
-template = "a.jinja"
-id = "x"
-[[files]]
-path = "b.txt"
-template = "b.jinja"
-id = "x"
-"#,
-            "duplicate [[files]] id",
-        );
-    }
-
-    #[test]
-    fn checksum_web_rejects_dangling_of() {
-        expect_target_error(
-            r#"
-version = 1
-ir = "solve"
-name = "dangling"
-[[files]]
-path = "b.txt"
-template = "b.jinja"
-[[files.checksums]]
-of = "ghost"
-as = "ghost_sha1"
-"#,
-            "names no [[files]] id",
-        );
-    }
-
-    #[test]
-    fn checksum_web_rejects_self_hash() {
-        expect_target_error(
-            r#"
-version = 1
-ir = "solve"
-name = "self-hash"
-[[files]]
-path = "a.txt"
-template = "a.jinja"
-id = "a"
-[[files.checksums]]
-of = "a"
-as = "a_sha1"
-"#,
-            "checksums itself",
-        );
-    }
-
-    #[test]
-    fn checksum_web_rejects_empty_as_key() {
-        expect_target_error(
-            r#"
-version = 1
-ir = "solve"
-name = "empty-as"
-[[files]]
-path = "a.txt"
-template = "a.jinja"
-id = "a"
-[[files]]
-path = "b.txt"
-template = "b.jinja"
-[[files.checksums]]
-of = "a"
-as = ""
-"#,
-            "`as` must not be empty",
-        );
-    }
-
-    #[test]
-    fn checksum_web_rejects_duplicate_as_key_on_one_file() {
-        expect_target_error(
-            r#"
-version = 1
-ir = "solve"
-name = "dup-as"
-[[files]]
-path = "a.txt"
-template = "a.jinja"
-id = "a"
-[[files]]
-path = "c.txt"
-template = "c.jinja"
-id = "c"
-[[files]]
-path = "b.txt"
-template = "b.jinja"
-[[files.checksums]]
-of = "a"
-as = "sha1"
-[[files.checksums]]
-of = "c"
-as = "sha1"
-"#,
-            "declared twice",
-        );
-    }
-
-    #[test]
-    fn asset_bundle_rejects_empty_bundle_and_dest() {
-        expect_target_error(
-            r#"
-version = 1
-ir = "solve"
-name = "empty-bundle"
-[[files]]
-path = "a.txt"
-template = "a.jinja"
-[[assets]]
-bundle = ""
-dest = "schemas/"
-"#,
-            "bundle name must not be empty",
-        );
-        expect_target_error(
-            r#"
-version = 1
-ir = "solve"
-name = "empty-dest"
-[[files]]
-path = "a.txt"
-template = "a.jinja"
-[[assets]]
-bundle = "efmi-schemas"
-dest = ""
-"#,
-            "dest",
-        );
-    }
 }

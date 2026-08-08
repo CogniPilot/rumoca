@@ -45,8 +45,11 @@ use rumoca_ir_solve::{
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR Monte Carlo fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 fn compile_to_gpu_blob(
@@ -126,10 +129,17 @@ fn drone_solve() -> SolveProblem {
     // Row 5: der(omega) = 0
     let row5 = vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }];
 
-    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
-        vec![row0, row1, row2, row3, row4, row5],
-        "drone_monte_carlo_derivative.mo",
-    )))
+    SolveProblem::with_derivative_rhs(
+        ComputeBlock::from_scalar_program_block(spb(
+            vec![row0, row1, row2, row3, row4, row5],
+            "drone_monte_carlo_derivative.mo",
+        )),
+        // Six states (x, y, theta, vx, vy, omega) and four parameters
+        // (m, J, F, g): the derivative seed space is state columns followed by
+        // parameter columns, so both extents belong to the fixture.
+        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+    )
+    .expect("fixture derivative problem is valid by construction")
 }
 
 fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::SolveModel {
@@ -159,12 +169,15 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                 residual: zero_block.clone(),
                 derivative_rhs: solve.continuous.derivative_rhs.clone(),
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
                 row_targets: Vec::new(),
-                projection_indices: Vec::new(),
-                projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                row_roles: Vec::new(),
+                projection_unknowns: Vec::new(),
+                projection_plan: rumoca_ir_solve::InitializationProjectionPlan::default(),
                 update_rhs: ScalarProgramBlock::default(),
                 update_targets: Vec::new(),
             },
@@ -190,6 +203,8 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                         .map(|(i, n)| (n, vec![i]))
                         .collect(),
                 },
+                variable_declarations: Vec::new(),
+                variable_storage_runs: Vec::new(),
                 state_scalar_count: 6,
                 algebraic_scalar_count: 0,
                 output_scalar_count: 0,
@@ -200,19 +215,24 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                 discrete_valued_scalar_names: Vec::new(),
                 relation_memory_parameter_indices: Vec::new(),
                 initial_event_parameter_index: None,
+                initial_homotopy_parameter_index: None,
+                terminal_event_parameter_index: None,
                 pre_param_bindings: Vec::new(),
             },
         },
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
-                mass_matrix: vec![vec![1.0; 6]],
+                structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),
+                mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: zero_rb.clone(),
             },
             ..Default::default()
         },
         initial_y: vec![0.0; 6], // start at origin, hover
+        solver_nominals: vec![1.0; 6],
         parameters: vec![m, j, f, g],
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: names,

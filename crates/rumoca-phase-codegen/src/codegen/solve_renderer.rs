@@ -9,57 +9,12 @@ use rumoca_ir_solve as solve;
 use super::render_solve;
 use super::{
     CodegenError, LazyDerivativeNodesValue, LazyScalarRowsValue, create_environment,
-    dae_template_json, reject_external_functions_for_simulation_template,
-    solve_template_blocks_value,
+    dae_template_json_for_solve_context, solve_template_blocks_value,
 };
-
-/// Lazily materialized `dae` template entry for solve-target contexts.
-///
-/// FMI-style solve targets read DAE metadata in the `dae_template_json`
-/// shape; building that JSON costs seconds on large models while most solve
-/// targets never touch `dae` at all, so it is computed on first access.
-#[derive(Debug)]
-struct LazyDaeTemplateJson {
-    dae: std::sync::Arc<dae::Dae>,
-    value: std::sync::OnceLock<Option<Value>>,
-}
-
-impl LazyDaeTemplateJson {
-    /// Materialization failure surfaces as `None`/empty here, which the
-    /// strict-undefined template environment turns into a render error at
-    /// the access site — a visible failure, not a silent default.
-    fn materialized(&self) -> Option<&Value> {
-        self.value
-            .get_or_init(|| match dae_template_json(&self.dae) {
-                Ok(json) => Some(Value::from_serialize(&json)),
-                Err(_) => None,
-            })
-            .as_ref()
-    }
-}
-
-impl minijinja::value::Object for LazyDaeTemplateJson {
-    fn repr(self: &std::sync::Arc<Self>) -> minijinja::value::ObjectRepr {
-        minijinja::value::ObjectRepr::Map
-    }
-
-    fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
-        self.materialized()?.get_item(key).ok()
-    }
-
-    fn enumerate(self: &std::sync::Arc<Self>) -> minijinja::value::Enumerator {
-        match self.materialized().map(Value::try_iter) {
-            Some(Ok(iter)) => minijinja::value::Enumerator::Values(iter.collect()),
-            _ => minijinja::value::Enumerator::Empty,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct SolveTemplateRenderer {
     context: Value,
-    /// Scalarized DAE retained for the per-template external-function guard.
-    guard_dae: Option<std::sync::Arc<dae::Dae>>,
 }
 
 impl SolveTemplateRenderer {
@@ -70,7 +25,6 @@ impl SolveTemplateRenderer {
     ) -> Result<Self, CodegenError> {
         Ok(Self {
             context: solve_render_context_value(problem, artifacts, Some(model_name))?,
-            guard_dae: None,
         })
     }
 
@@ -80,16 +34,11 @@ impl SolveTemplateRenderer {
     pub fn new_with_dae(
         problem: &solve::SolveProblem,
         artifacts: &solve::SolveArtifacts,
-        dae_model: dae::Dae,
+        dae_model: &dae::Dae,
     ) -> Result<Self, CodegenError> {
-        let dae_model = std::sync::Arc::new(dae_model);
-        let dae_entry = Value::from_object(LazyDaeTemplateJson {
-            dae: dae_model.clone(),
-            value: std::sync::OnceLock::new(),
-        });
+        let dae_entry = checked_dae_template_value(dae_model)?;
         Ok(Self {
             context: solve_render_context_value_with_dae(problem, artifacts, None, dae_entry)?,
-            guard_dae: Some(dae_model),
         })
     }
 
@@ -99,28 +48,39 @@ impl SolveTemplateRenderer {
     pub fn new_owned_with_dae(
         problem: solve::SolveProblem,
         artifacts: solve::SolveArtifacts,
-        dae_model: dae::Dae,
+        dae_model: &dae::Dae,
     ) -> Result<Self, CodegenError> {
-        Self::new_owned_with_shared_dae(problem, artifacts, std::sync::Arc::new(dae_model))
-    }
-
-    pub fn new_owned_with_shared_dae(
-        problem: solve::SolveProblem,
-        artifacts: solve::SolveArtifacts,
-        dae_model: std::sync::Arc<dae::Dae>,
-    ) -> Result<Self, CodegenError> {
-        let dae_entry = Value::from_object(LazyDaeTemplateJson {
-            dae: dae_model.clone(),
-            value: std::sync::OnceLock::new(),
-        });
+        let dae_entry = checked_dae_template_value(dae_model)?;
         Ok(Self {
             context: solve_render_context_value_with_arcs(
                 std::sync::Arc::new(problem),
                 std::sync::Arc::new(artifacts),
                 None,
                 dae_entry,
+                Value::default(),
             )?,
-            guard_dae: Some(dae_model),
+        })
+    }
+
+    /// Renderer for one checked FMI component. The FMI entry is the opaque
+    /// constructor-validated metadata/storage binding; Solve operations remain
+    /// lazy so large tensor programs are not materialized as template maps.
+    pub fn new_owned_with_fmi(
+        component: rumoca_ir_fmi::FmiComponent,
+        artifacts: solve::SolveArtifacts,
+        dae_model: &dae::Dae,
+    ) -> Result<Self, CodegenError> {
+        let dae_entry = checked_dae_template_value(dae_model)?;
+        let fmi_entry = Value::from_serialize(&component);
+        let solve = component.into_solve();
+        Ok(Self {
+            context: solve_render_context_value_with_arcs(
+                std::sync::Arc::new(solve),
+                std::sync::Arc::new(artifacts),
+                None,
+                dae_entry,
+                fmi_entry,
+            )?,
         })
     }
 
@@ -136,17 +96,34 @@ impl SolveTemplateRenderer {
         template: &str,
         model_name: &str,
     ) -> Result<String, CodegenError> {
-        if let Some(dae_model) = &self.guard_dae {
-            reject_external_functions_for_simulation_template(dae_model, template)?;
-        }
+        self.render_with_name_and_artifact(template, model_name, &())
+    }
+
+    /// Render with immutable package metadata in addition to the checked FMI
+    /// and Solve products. Package identities are minted once by the generic
+    /// artifact layer; FMI templates consume them without inventing a second
+    /// identity source.
+    pub fn render_with_name_and_artifact<T: serde::Serialize>(
+        &self,
+        template: &str,
+        model_name: &str,
+        artifact: &T,
+    ) -> Result<String, CodegenError> {
         let mut env = create_environment();
         env.add_template("inline", template)?;
         let tmpl = env.get_template("inline")?;
         Ok(tmpl.render(minijinja::context! {
             model_name => model_name,
+            artifact => Value::from_serialize(artifact),
             ..self.context.clone()
         })?)
     }
+}
+
+fn checked_dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
+    Ok(Value::from_serialize(dae_template_json_for_solve_context(
+        dae,
+    )?))
 }
 
 pub(super) fn solve_render_context_value(
@@ -168,6 +145,7 @@ fn solve_render_context_value_with_dae(
         std::sync::Arc::new(artifacts.clone()),
         model_name,
         dae_entry,
+        Value::default(),
     )
 }
 
@@ -176,6 +154,7 @@ fn solve_render_context_value_with_arcs(
     artifacts_arc: std::sync::Arc<solve::SolveArtifacts>,
     model_name: Option<&str>,
     dae_entry: Value,
+    fmi_entry: Value,
 ) -> Result<Value, CodegenError> {
     // Lazy `solve` / `solve_derivative_nodes` (see `solve_lazy`): structural
     // fields serialize on demand and op lists materialize one op at a time, so a
@@ -198,7 +177,7 @@ fn solve_render_context_value_with_arcs(
     } else if artifacts
         .continuous
         .implicit_jacobian_v_scalar
-        .programs
+        .programs()
         .is_empty()
     {
         Value::from_object(LazyScalarRowsValue::new(
@@ -209,17 +188,18 @@ fn solve_render_context_value_with_arcs(
             artifacts
                 .continuous
                 .implicit_jacobian_v_scalar
-                .programs
-                .clone(),
+                .programs()
+                .to_vec(),
         ))
     };
     let full_jacobian_rows = artifacts.continuous.full_jacobian_v.clone();
     let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
-        full_jacobian_rows.programs,
+        full_jacobian_rows.programs().to_vec(),
     ));
     Ok(match model_name {
         Some(name) => minijinja::context! {
             dae => dae_entry.clone(),
+            fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
             ir => solve_value,
@@ -233,6 +213,7 @@ fn solve_render_context_value_with_arcs(
         },
         None => minijinja::context! {
             dae => dae_entry.clone(),
+            fmi => fmi_entry.clone(),
             solve => solve_value.clone(),
             solve_artifacts => artifacts_value,
             ir => solve_value,

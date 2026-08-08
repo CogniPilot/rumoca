@@ -4,7 +4,7 @@
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
 //! generic capability gate → GALEC projection facade → a product-agnostic
 //! context validated in Rust → jinja templates (the eFMI manifests + C) plus
-//! the typed GALEC `.alg` printer → the declared-checksum-web `build = "efmu"`
+//! the typed GALEC `.alg` view → the declared checksum and `[package]` graph
 //! two-representation container packaging. The target claims the "eFMI Production Code export"
 //! rung of the SPEC_0034 conformance ladder, so these tests machine-check
 //! that rung:
@@ -41,20 +41,17 @@ use std::process::{Command, Output};
 
 use tempfile::tempdir;
 
-#[path = "galec_cli_support/cc.rs"]
-mod cc_support;
-#[path = "galec_cli_support/cli.rs"]
-mod cli_support;
-#[path = "galec_cli_support/container_xml.rs"]
-mod container_xml_support;
-
-use cc_support::cc;
-use cli_support::{run_compile_target, strip_ansi, write_fixture};
-use container_xml_support::{
+// The `galec_cli_support/` helpers are declared once by the umbrella binary
+// that owns this file (see `suite_galec_fmu.rs`), so the sibling suites share
+// one copy instead of compiling the same file several times per binary.
+use super::cc_support::assurance_c99_cc;
+use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
+use super::container_xml_support::{
     assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
     vendored_schemas_dir, without_block, without_line,
 };
+use super::metadata_support::{assert_manifest_id, assert_strict_utc_timestamp};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the GALEC projection
@@ -204,7 +201,7 @@ algorithm
   when sample(0.0, dt) then
     filtered := lowPass(sample, pre(filtered), 0.5);
     segmentStart := waypoints[currentWaypoint, :];
-    horizontal := sample[1:2];
+    horizontal := lowPass(sample[1:2], pre(horizontal), 0.5);
     bounded := clip(vectorNorm(sample[1:2]), -1.0, 1.0);
     yaw := wrapAngle(pre(yaw) + 0.25);
     roll := rateLimit(clip(yaw, -1.0, 1.0), pre(roll), 0.1);
@@ -212,6 +209,44 @@ algorithm
     currentWaypoint := pre(currentWaypoint);
   end when;
 end GalecProdHelperIdioms;
+";
+
+const GUARDED_TENSOR_CONTRACTION_FIXTURE: &str = "\
+function updateSlice
+  input Real J[3, 3];
+  input Real xi[6];
+  output Real result[6];
+algorithm
+  result := zeros(6);
+  result[1:3] := J * xi[1:3];
+end updateSlice;
+
+function blockCovariance
+  input Real rotation[3, 3];
+  input Real positionCovariance[3, 3];
+  input Real velocityCovariance[3, 3];
+  output Real covariance[6, 6];
+algorithm
+  covariance := cat(1,
+    cat(2, transpose(rotation) * positionCovariance * rotation, zeros(3, 3)),
+    cat(2, zeros(3, 3), transpose(rotation) * velocityCovariance * rotation));
+end blockCovariance;
+
+model GalecProdGuardedTensorContraction
+  constant Real dt = 0.02;
+  parameter Real rotation[3, 3] = identity(3);
+  parameter Real positionCovariance[3, 3] = diagonal({1.0, 1.0, 1.0});
+  parameter Real velocityCovariance[3, 3] = diagonal({2.0, 2.0, 2.0});
+  parameter Real xi[6] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+  discrete output Real slice[6](each start = 0.0);
+  discrete output Real covariance[6, 6](each start = 0.0);
+algorithm
+  when sample(0.0, dt) then
+    slice := updateSlice(rotation, xi);
+    covariance := blockCovariance(
+      rotation, positionCovariance, velocityCovariance);
+  end when;
+end GalecProdGuardedTensorContraction;
 ";
 
 const UNSUPPORTED_GALEC_BUILTIN_FIXTURE: &str = "\
@@ -233,11 +268,11 @@ const DRIVER_MAIN: &str = "\
 #include \"GalecProdCliSmoke.h\"
 
 int main(void) {
-    EFMI_STATE_TYPE(GalecProdCliSmoke) state;
-    EFMI_INIT(GalecProdCliSmoke, &state);
-    EFMI_RECALIBRATE(GalecProdCliSmoke, &state);
+    GalecProdCliSmokeState state;
+    GalecProdCliSmoke_startup(&state);
+    GalecProdCliSmoke_recalibrate(&state);
     for (int step = 0; step < 3; ++step) {
-        EFMI_STEP(GalecProdCliSmoke, &state);
+        GalecProdCliSmoke_dostep(&state);
         printf(\"%.1f\\n\", state.y);
     }
     return 0;
@@ -294,7 +329,8 @@ fn corrupted_production_code_manifest_is_rejected_by_the_xsd() {
     let out_dir = dir.path().join("out");
     let container = build_container(dir.path(), &out_dir);
     let manifest = fs::read_to_string(container.pc_manifest()).expect("read PC manifest");
-    let xsd = vendored_schemas_dir().join("ProductionCode/efmiProductionCodeManifest.xsd");
+    let xsd = vendored_schemas_dir("galec-production")
+        .join("ProductionCode/efmiProductionCodeManifest.xsd");
 
     validate_against_xsd(&container.pc_manifest(), &xsd)
         .expect("pristine rendered PC manifest must be schema-valid");
@@ -369,7 +405,7 @@ fn algebraic_component_output_read_by_sampled_parent_compiles() {
 }
 
 #[test]
-fn inline_helpers_vector_return_and_row_slice_compile() {
+fn helper_specializations_multi_output_calls_and_row_slices_compile() {
     let dir = tempdir().expect("tempdir");
     let out_dir = dir.path().join("out");
     let model = "GalecProdHelperIdioms";
@@ -391,13 +427,54 @@ fn inline_helpers_vector_return_and_row_slice_compile() {
     .expect("read generated Algorithm Code");
     assert!(alg.contains("self.sample[1]"), "{alg}");
     assert!(alg.contains("self.waypoints["), "{alg}");
-    assert!(!alg.contains("lowPass("), "{alg}");
-    assert!(!alg.contains("vectorNorm("), "{alg}");
-    assert!(!alg.contains("rateLimit("), "{alg}");
-    assert!(!alg.contains("splitCommand("), "{alg}");
-    assert!(!alg.contains("clip("), "{alg}");
-    assert!(!alg.contains("wrapAngle("), "{alg}");
-    assert!(!alg.contains("1:2"), "{alg}");
+    assert!(alg.contains("self.segmentStart[3] :="), "{alg}");
+    assert!(alg.contains("self.splitHigh :="), "{alg}");
+    assert!(alg.contains("self.currentWaypoint :="), "{alg}");
+    assert!(alg.contains("function lowPass_specialization_0"), "{alg}");
+    assert!(alg.contains("function lowPass_specialization_1"), "{alg}");
+    assert!(alg.contains("lowPass_specialization_0("), "{alg}");
+    assert!(alg.contains("lowPass_specialization_1("), "{alg}");
+    assert!(alg.contains("vectorNorm("), "{alg}");
+    assert!(alg.contains("rateLimit("), "{alg}");
+    assert!(alg.contains("function splitCommand"), "{alg}");
+    assert!(alg.contains(") := splitCommand("), "{alg}");
+    assert!(alg.contains("clip("), "{alg}");
+    assert!(alg.contains("wrapAngle("), "{alg}");
+    assert!(alg.contains(" in 1:2 loop"), "{alg}");
+}
+
+#[test]
+fn guarded_tensor_contractions_compile_as_strict_c99_without_eager_out_of_bounds_access() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let model = "GalecProdGuardedTensorContraction";
+    let file = write_fixture(dir.path(), model, GUARDED_TENSOR_CONTRACTION_FIXTURE);
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "guarded tensor contraction fixture failed to export.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let source = out_dir
+        .join(model)
+        .join("ProductionCode")
+        .join(format!("{model}.c"));
+    let object = dir.path().join("guarded-tensor-contraction.o");
+    let compile = assurance_c99_cc()
+        .arg("-c")
+        .arg(&source)
+        .arg("-o")
+        .arg(&object)
+        .output()
+        .expect("run strict C compiler");
+    assert!(
+        compile.status.success(),
+        "strict C99 rejected guarded tensor contractions.\nstderr:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        fs::read_to_string(source).expect("read generated source")
+    );
 }
 
 #[test]
@@ -412,7 +489,7 @@ fn unsupported_galec_projection_diagnostic_points_at_source_expression() {
         "unsupported GALEC builtin should be rejected"
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(stderr.contains("[ET017]"), "{stderr}");
+    assert!(stderr.contains("[EGT017]"), "{stderr}");
     assert!(stderr.contains("builtin:mod"), "{stderr}");
     assert!(
         stderr.contains("mod(3, 2)"),
@@ -594,14 +671,14 @@ fn compile_target_galec_production_emits_schema_valid_two_representation_efmu() 
         "ProductionCode/ must hold exactly the C pair and its manifest"
     );
 
-    // schemas/ is the complete vendored Beta-1 tree, byte for byte
-    // (GAL-023; the repository-only README.md is not part of the copies).
-    let mut vendored = relative_file_paths(&vendored_schemas_dir());
-    vendored.remove("README.md");
+    // schemas/ is the complete target-owned Beta-1 asset tree, byte for byte
+    // (GAL-023), including its origin/license README.
+    let schemas = vendored_schemas_dir("galec-production");
+    let vendored = relative_file_paths(&schemas);
     let emitted = relative_file_paths(&container.root.join("schemas"));
     assert_eq!(emitted, vendored, "schemas/ must mirror the vendored tree");
     for relative in &vendored {
-        let vendored_bytes = fs::read(vendored_schemas_dir().join(relative)).unwrap();
+        let vendored_bytes = fs::read(schemas.join(relative)).unwrap();
         let emitted_bytes = fs::read(container.root.join("schemas").join(relative)).unwrap();
         assert_eq!(
             emitted_bytes, vendored_bytes,
@@ -614,19 +691,34 @@ fn compile_target_galec_production_emits_schema_valid_two_representation_efmu() 
     // never skips schema validation (GAL-012/GAL-021).
     validate_against_xsd(
         &container.content_xml(),
-        &vendored_schemas_dir().join("efmiContainerManifest.xsd"),
+        &vendored_schemas_dir("galec-production").join("efmiContainerManifest.xsd"),
     )
     .expect("__content.xml must validate against the vendored container XSD");
     validate_against_xsd(
         &container.ac_manifest(),
-        &vendored_schemas_dir().join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
+        &vendored_schemas_dir("galec-production")
+            .join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
     )
     .expect("AlgorithmCode/manifest.xml must validate against the vendored AC XSD");
     validate_against_xsd(
         &container.pc_manifest(),
-        &vendored_schemas_dir().join("ProductionCode/efmiProductionCodeManifest.xsd"),
+        &vendored_schemas_dir("galec-production")
+            .join("ProductionCode/efmiProductionCodeManifest.xsd"),
     )
     .expect("ProductionCode/manifest.xml must validate against the vendored PC XSD");
+    let production_manifest =
+        fs::read_to_string(container.pc_manifest()).expect("read Production Code manifest");
+    assert!(
+        production_manifest.contains("floatPrecision=\"32-bit\"")
+            && production_manifest.contains("kind=\"efmiFloat32\"")
+            && production_manifest.contains("codedType=\"float\""),
+        "Production Code precision metadata must exactly match generated float storage"
+    );
+    assert!(
+        !production_manifest.contains("efmiFloat64")
+            && !production_manifest.contains("codedType=\"double\""),
+        "the embedded Production Code target must not claim or expose binary64 storage"
+    );
 }
 
 /// Row E2: the full checksum web recomputes from the bytes actually on
@@ -672,7 +764,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         );
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(manifest_bytes).as_str()),
+            Some(rumoca::sha1_hex(manifest_bytes).as_str()),
             "__content.xml {name} checksum must be the SHA-1 of the written manifest.xml"
         );
         assert_eq!(
@@ -686,7 +778,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let alg_bytes = fs::read(container.alg_file()).expect("read .alg bytes");
     assert_eq!(
         sole_attribute_value(&container.ac_manifest(), "checksum"),
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).as_str(),
+        rumoca::sha1_hex(&alg_bytes),
         "AC manifest File checksum must be the SHA-1 of the written .alg"
     );
 
@@ -705,7 +797,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         let code_bytes = fs::read(&path).expect("read code file bytes");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&code_bytes).as_str()),
+            Some(rumoca::sha1_hex(&code_bytes).as_str()),
             "PC manifest File checksum for {name} must be the SHA-1 of the written bytes"
         );
     }
@@ -716,7 +808,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let reference = sole_element_attributes(&container.pc_manifest(), "ManifestReference");
     assert_eq!(
         reference.get("checksum").map(String::as_str),
-        Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&ac_manifest_bytes).as_str()),
+        Some(rumoca::sha1_hex(&ac_manifest_bytes).as_str()),
         "PC ManifestReference checksum must be the SHA-1 of the written AC manifest"
     );
     assert_eq!(
@@ -746,8 +838,9 @@ fn logical_data_cross_references_resolve_and_cover_the_algorithm_code() {
     ac_method_ids.sort();
     assert_eq!(
         ac_variable_ids.len(),
-        4,
-        "fixture projects four block variables, got {ac_variable_ids:?}"
+        5,
+        "fixture projects four model variables plus the explicit checked clock-period variable, \
+         got {ac_variable_ids:?}"
     );
     assert_eq!(
         ac_method_ids.len(),
@@ -770,8 +863,17 @@ fn logical_data_cross_references_resolve_and_cover_the_algorithm_code() {
         );
     }
 
-    // Exactly-once coverage: sorted multiset equality catches both
-    // unmapped and doubly-mapped AC entities.
+    // Exactly-once coverage: sorted multiset equality catches both unmapped
+    // and doubly-mapped AC entities. ErrorSignalStatus is a sibling of the
+    // Variables wrapper in the Algorithm Code schema, but it is runtime data
+    // and therefore participates in the same LogicalData mapping proof.
+    let error_signal_status =
+        sole_element_attributes(&container.ac_manifest(), "ErrorSignalStatus")
+            .get("id")
+            .expect("ErrorSignalStatus id")
+            .clone();
+    ac_variable_ids.push(error_signal_status);
+    ac_variable_ids.sort();
     let mut data_foreign_ids: Vec<String> = data_refs
         .iter()
         .map(|attrs| attrs.get("foreignRefId").expect("foreignRefId").clone())
@@ -854,23 +956,12 @@ fn container_ids_unique_and_generation_metadata_strict() {
 
     for path in [container.ac_manifest(), container.pc_manifest()] {
         let id = root_id(&path);
-        rumoca_galec_codegen::ManifestId::parse(&id).unwrap_or_else(|error| {
-            panic!(
-                "manifest root id `{id}` in {} must be a brace-wrapped UUID: {error}",
-                path.display()
-            )
-        });
+        assert_manifest_id(&id, &path);
     }
 
     for path in &documents {
         let timestamp = sole_attribute_value(path, "generationDateAndTime");
-        rumoca_galec_codegen::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
-            panic!(
-                "generationDateAndTime `{timestamp}` in {} must match the strict \
-                 UTC pattern: {error}",
-                path.display()
-            )
-        });
+        assert_strict_utc_timestamp(&timestamp, path);
         let tool = sole_attribute_value(path, "generationTool");
         assert!(
             tool.starts_with("rumoca "),
@@ -1034,7 +1125,7 @@ fn rerunning_same_command_replaces_previous_container() {
         let manifest_bytes = fs::read(&manifest_path).expect("read replaced manifest");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).as_str()),
+            Some(rumoca::sha1_hex(&manifest_bytes).as_str()),
             "the replaced container's {name} checksum must recompute from its own bytes"
         );
     }
@@ -1089,9 +1180,7 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
     let driver = dir.path().join("main.c");
     fs::write(&driver, DRIVER_MAIN).expect("write driver");
     let program = dir.path().join("smoke");
-    let compile = cc()
-        .arg("-Wall")
-        .arg("-Werror")
+    let compile = assurance_c99_cc()
         .arg("-I")
         .arg(container.root.join("ProductionCode"))
         .arg("-o")
@@ -1103,7 +1192,7 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
         .expect("run cc");
     assert!(
         compile.status.success(),
-        "cc -Wall -Werror failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
+        "strict cc -std=c99 compile failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(container.c_header()).unwrap_or_default(),
         fs::read_to_string(container.c_source()).unwrap_or_default()

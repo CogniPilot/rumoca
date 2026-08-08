@@ -1,8 +1,10 @@
 //! Shared eFMU-container XML inspection helpers for the packaging suites
 //! (`cli_target_galec.rs`, `cli_target_galec_production.rs`).
 //!
-//! Included per suite via `#[path = "galec_cli_support/container_xml.rs"]`
-//! — see `galec_cli_support/cli.rs` for the include-pattern rationale.
+//! Declared once per umbrella test binary via
+//! `#[path = "galec_cli_support/container_xml.rs"]` and reached as
+//! `super::container_xml_support` — see `galec_cli_support/cli.rs` for the
+//! include-pattern rationale.
 //! All XML readers work over the exact on-disk bytes (quick-xml), because
 //! the eFMI checksum web is defined over written bytes, never re-serialized
 //! documents.
@@ -12,11 +14,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The vendored eFMI Beta-1 schema tree (GAL-023). Lives beside the generic
-/// container build step in the `rumoca` crate now that the eFMI packaging crate is
-/// dissolved (contract §6).
-pub(super) fn vendored_schemas_dir() -> PathBuf {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/efmi-schemas");
+/// The target-owned eFMI Beta-1 schema tree (GAL-023).
+pub(super) fn vendored_schemas_dir(target: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rumoca-phase-codegen/src/templates")
+        .join(target)
+        .join("schemas");
     assert!(
         dir.is_dir(),
         "vendored schema tree missing at {}",

@@ -12,7 +12,7 @@ impl TypeChecker {
         if modifier_name.is_empty() {
             return None;
         }
-        let source_id = self.source_map.get_id(&comp.location.file_name)?;
+        let source_id = comp.location.source;
         let (_name, source) = self.source_map.get_source(source_id)?;
         let start = comp.location.start as usize;
         let mut end = comp.location.end as usize;

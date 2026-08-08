@@ -934,7 +934,7 @@ category = 'Connection'
 name = 'Expandable input deduction'
 mls_ref = '§9.1.3'
 requirement = 'Multiple inputs in expandable connectors deduced as input is error'
-status = 'Implemented'
+status = 'Deferred'
 tier = 1
 
 [[contracts]]
@@ -1015,7 +1015,7 @@ category = 'Connection'
 name = 'Expandable input source'
 mls_ref = '§9.1.3'
 requirement = 'If variable appears as input in expandable, should appear as non-input in at least one other'
-status = 'Implemented'
+status = 'Deferred'
 tier = 1
 
 [[contracts]]
@@ -1087,6 +1087,15 @@ category = 'Connection'
 name = 'Connect arguments are connectors'
 mls_ref = '§9.3'
 requirement = 'Both arguments of connect must be connector references'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'CONN-030'
+category = 'Connection'
+name = 'Stream-to-stream'
+mls_ref = '§9.3'
+requirement = 'Stream variables may only connect to other stream variables'
 status = 'Implemented'
 tier = 1
 
@@ -2373,8 +2382,8 @@ id = 'FUNC-029'
 category = 'Function'
 name = 'Record cast conditional error'
 mls_ref = '§12.6.1'
-requirement = 'Conditional components in target record: it is an error'
-status = 'Implemented'
+requirement = 'A record cast is erroneous if a corresponding source model/block/connector component is conditional'
+status = 'Deferred'
 tier = 1
 
 [[contracts]]
@@ -3319,7 +3328,8 @@ category = 'StateMachine'
 name = 'Same clock'
 mls_ref = '§17.1'
 requirement = 'All state machine components must have the same clock'
-status = 'Implemented'
+status = 'NotImplemented'
+notes = 'All MLS §17 operators are rejected with ER073; no state-machine clock partition is elaborated yet.'
 tier = 1
 
 [[contracts]]
@@ -3328,7 +3338,8 @@ category = 'StateMachine'
 name = 'Different priorities'
 mls_ref = '§17.1'
 requirement = 'All transitions leaving one state must have different priorities'
-status = 'Implemented'
+status = 'Partial'
+notes = 'Resolve validates literal transition priorities, but executable state-machine elaboration is not implemented and ER073 rejects the model.'
 tier = 1
 
 [[contracts]]
@@ -3337,7 +3348,8 @@ category = 'StateMachine'
 name = 'Single initial state'
 mls_ref = '§17.1'
 requirement = 'One and only one instance in each state machine must be marked as initial'
-status = 'Implemented'
+status = 'Partial'
+notes = 'Resolve validates the syntactic transition graph, but executable state-machine elaboration is not implemented and ER073 rejects the model.'
 tier = 1
 
 [[contracts]]
@@ -3346,7 +3358,8 @@ category = 'StateMachine'
 name = 'Priority minimum'
 mls_ref = '§17.1'
 requirement = 'Priority ≥ 1 required'
-status = 'Implemented'
+status = 'Partial'
+notes = 'Resolve validates literal priorities, but executable state-machine elaboration is not implemented and ER073 rejects the model.'
 tier = 1
 
 [[contracts]]
@@ -3355,7 +3368,8 @@ category = 'StateMachine'
 name = 'Not in functions'
 mls_ref = '§17.1'
 requirement = 'None of these operators allowed inside function classes (transition, initialState, activeState, etc.)'
-status = 'Implemented'
+status = 'Partial'
+notes = 'The function-context restriction is diagnosed, but all otherwise valid MLS §17 operator uses are also rejected with ER073.'
 tier = 1
 
 [[contracts]]
@@ -3364,7 +3378,8 @@ category = 'StateMachine'
 name = 'Equation context only'
 mls_ref = '§17.1'
 requirement = 'transition/initialState can only be used in equations, not in non-parameter if-equations or when-equations'
-status = 'Implemented'
+status = 'Partial'
+notes = 'Resolve validates forbidden equation contexts, but executable state-machine elaboration is not implemented and ER073 rejects the model.'
 tier = 1
 
 [[contracts]]
@@ -3373,7 +3388,8 @@ category = 'StateMachine'
 name = 'activeState instance check'
 mls_ref = '§17.3.1'
 requirement = 'Error if the instance is not a state of a state machine'
-status = 'Implemented'
+status = 'Partial'
+notes = 'Resolve validates activeState targets against the syntactic transition graph, but executable state-machine elaboration is not implemented.'
 tier = 1
 
 [[contracts]]
@@ -3382,7 +3398,8 @@ category = 'StateMachine'
 name = 'Parallel assignment error'
 mls_ref = '§17'
 requirement = 'Error if parallel state machines assign to same variable at same clock tick'
-status = 'Implemented'
+status = 'NotImplemented'
+notes = 'All MLS §17 operators are rejected with ER073; parallel state machines and their assignments are not elaborated yet.'
 tier = 1
 
 [[contracts]]
@@ -3499,7 +3516,7 @@ category = 'Type'
 name = 'Plug-compatible modifier'
 mls_ref = '§6.5'
 requirement = 'Redeclarations must be plug-compatible with constraining interface'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -3508,7 +3525,7 @@ category = 'Type'
 name = 'Default-connectable'
 mls_ref = '§6.5'
 requirement = 'Additional public components must be default-connectable'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -3679,7 +3696,7 @@ category = 'Type'
 name = 'Transitively non-replaceable'
 mls_ref = '§6.4'
 requirement = 'If B is transitively non-replaceable then A must be transitively non-replaceable'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -3879,4 +3896,3 @@ mls_ref = '§19.1'
 requirement = "Multiplication uses dot notation: 'N.m' for newton-meter, not 'Nm'"
 status = 'Implemented'
 tier = 1
-

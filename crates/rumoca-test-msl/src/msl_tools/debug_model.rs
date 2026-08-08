@@ -17,9 +17,6 @@ pub struct Args {
     /// Run simulation after successful DAE/Solve lowering.
     #[arg(long)]
     simulate: bool,
-    /// Materialize DAE artifacts even when strict balance validation rejects the model.
-    #[arg(long)]
-    allow_unbalanced: bool,
     /// Record a perf.data profile around the worker process.
     #[arg(long)]
     perf: bool,
@@ -61,8 +58,8 @@ pub fn run(args: Args) -> Result<()> {
         run_simulation: args.simulate,
         selected_for_simulation: args.simulate,
         explicit_sim_target: args.simulate,
+        sim_timeout_secs: Some(args.timeout_secs),
         emit_json: args.json,
-        allow_unbalanced_for_diagnostics: args.allow_unbalanced,
         nan_trace: args.nan_trace,
         emit_modelica: true,
         source_root_path: paths.msl_dir.clone(),
@@ -79,12 +76,42 @@ pub fn run(args: Args) -> Result<()> {
         .with_context(|| format!("failed to read {}", result_json.display()))?;
     println!("model: {}", response.result.model_name);
     println!("phase: {}", response.result.phase_reached);
+    if let Some(code) = &response.result.error_code {
+        println!("error_code: {code}");
+    }
     if let Some(error) = &response.result.error {
         println!("error: {error}");
     }
+    print_balance_breakdown(response.result.balance_detail.as_deref());
     println!("elapsed: {:.3}s", response.elapsed_secs);
     println!("artifacts: {}", output_dir.display());
     Ok(())
+}
+
+/// Print the exact checked-construction balance inputs for a single model.
+fn print_balance_breakdown(detail: Option<&rumoca_compile::analysis::BalanceDetail>) {
+    let Some(detail) = detail else {
+        return;
+    };
+    let (equations, unknowns) = detail.equations_unknowns();
+    println!(
+        "balance: {} ({equations} equations, {unknowns} unknowns)",
+        detail.balance()
+    );
+    println!(
+        "  unknowns: state={} algebraic={} output={} discrete_real={} discrete_value={}",
+        detail.state_unknowns,
+        detail.algebraic_unknowns,
+        detail.output_unknowns,
+        detail.discrete_real_unknowns,
+        detail.discrete_value_unknowns,
+    );
+    println!(
+        "  equations: continuous={} discrete_real={} b1c_definition={}",
+        detail.continuous_equations,
+        detail.discrete_real_equations,
+        detail.discrete_value_definitions,
+    );
 }
 
 fn ensure_msl_cache_exists(paths: &MslPaths) -> Result<()> {

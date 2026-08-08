@@ -4,6 +4,12 @@ use std::process::Command;
 
 use tempfile::tempdir;
 
+fn formatter_stability_is_required() -> bool {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/msl/formatter-stability-required")
+        .is_file()
+}
+
 fn write_model(path: &Path, source: &str) {
     fs::write(path, source).expect("write model file");
 }
@@ -403,7 +409,7 @@ fn fmt_common_cli_options_control_rewrites() {
 fn fmt_msl_copy_has_no_drift_and_bad_file_is_rewritten() {
     let Some(msl_root) = cached_msl_root() else {
         let message = "cached MSL not found under target/msl; skipping MSL formatter drift test";
-        if std::env::var_os("REQUIRE_MSL_FMT_DRIFT").is_some() {
+        if formatter_stability_is_required() {
             panic!("{message}");
         }
         eprintln!("{message}");
@@ -573,6 +579,65 @@ fn lint_warnings_as_errors_fails_on_warning() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[warning]"));
+}
+
+/// MLS 3.7 §12.3: "External functions not explicitly declared with pure or
+/// impure is deprecated." The compile path and the lint path must both say so;
+/// a diagnostic only the editor can see reaches nobody who runs the compiler.
+#[test]
+fn lint_and_compile_report_an_undeclared_external_purity() {
+    let dir = tempdir().expect("tempdir");
+    let file = dir.path().join("BareExternal.mo");
+    write_model(
+        &file,
+        "model BareExternal \"deprecated external purity\"\n  function f \"bare external\"\n    input Real u;\n    output Real y;\n  external \"C\" y = my_func(u);\n  end f;\n  Real z;\nequation\n  z = f(time);\nend BareExternal;\n",
+    );
+
+    let lint = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("lint")
+        .arg(&file)
+        .output()
+        .expect("run rumoca lint");
+    let lint_stdout = String::from_utf8_lossy(&lint.stdout);
+    assert!(
+        lint_stdout.contains("external-purity-undeclared"),
+        "lint must report the deprecated bare external form: {lint_stdout}"
+    );
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(&file)
+        .arg("--model")
+        .arg("BareExternal")
+        .arg("--emit")
+        .arg("dae-json")
+        .arg("--output")
+        .arg(dir.path().join("dae.json"))
+        .output()
+        .expect("run rumoca compile");
+    assert!(
+        compile.status.success(),
+        "the deprecated form is reported, not rejected: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    // The declaration is `  function f "bare external"` on the second line, so
+    // the warning must point at `f` there. The location is asserted exactly:
+    // an off-by-one in the one-based `file:line:col` convention is invisible to
+    // a test that only greps for the code.
+    let compile_stderr = String::from_utf8_lossy(&compile.stderr);
+    let expected_location = format!("{}:2:12", file.display());
+    assert!(
+        compile_stderr.contains("WR001"),
+        "compile must surface the resolve warning: {compile_stderr}"
+    );
+    assert!(
+        compile_stderr.contains(&expected_location),
+        "the warning must name the declaration at {expected_location}: {compile_stderr}"
+    );
+    assert!(
+        lint_stdout.contains(&format!("{}:2:12", file.display())),
+        "lint must name the same one-based location: {lint_stdout}"
+    );
 }
 
 #[test]

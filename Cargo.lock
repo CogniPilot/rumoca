@@ -310,6 +310,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
+]
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
 name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -560,6 +575,15 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "codespan-reporting"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
+dependencies = [
+ "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
@@ -740,7 +764,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "log",
  "regalloc2",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "serde",
  "smallvec",
  "target-lexicon 0.13.5",
@@ -2102,6 +2126,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hexf-parse"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2843,6 +2873,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "naga"
+version = "27.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "066cf25f0e8b11ee0df221219010f213ad429855f57c494f995590c861a9a7d8"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bitflags 2.13.0",
+ "cfg-if",
+ "cfg_aliases",
+ "codespan-reporting 0.12.0",
+ "half",
+ "hashbrown 0.16.1",
+ "hexf-parse",
+ "indexmap 2.14.0",
+ "libm",
+ "log",
+ "num-traits",
+ "once_cell",
+ "rustc-hash 1.1.0",
+ "thiserror 2.0.18",
+ "unicode-ident",
+]
+
+[[package]]
 name = "nalgebra"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3296,7 +3351,7 @@ dependencies = [
  "rayon",
  "regex",
  "regex-syntax",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "scnr2",
  "serde",
  "serde_json",
@@ -3322,7 +3377,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "730ad4d9a5de274892b65349e8c05fb651aa4d5d762ec475dcc0668e850c14a9"
 dependencies = [
  "anyhow",
- "codespan-reporting",
+ "codespan-reporting 0.13.1",
  "derive_builder",
  "function_name",
  "log",
@@ -3660,6 +3715,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
+dependencies = [
+ "bit-set",
+ "bit-vec 0.8.0",
+ "bitflags 2.13.0",
+ "num-traits",
+ "rand 0.9.4",
+ "rand_chacha 0.9.0",
+ "rand_xorshift",
+ "regex-syntax",
+ "rusty-fork",
+ "tempfile",
+ "unarray",
+]
+
+[[package]]
 name = "pulp"
 version = "0.22.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3771,6 +3845,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-error"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
+
+[[package]]
 name = "quick-xml"
 version = "0.37.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3790,7 +3870,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "rustls",
  "socket2 0.6.4",
  "thiserror 2.0.18",
@@ -3812,7 +3892,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_pcg",
  "ring",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
@@ -3964,6 +4044,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_xorshift"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
+dependencies = [
+ "rand_core 0.9.5",
+]
+
+[[package]]
 name = "raw-cpuid"
 version = "11.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4081,7 +4170,7 @@ dependencies = [
  "bumpalo",
  "hashbrown 0.15.5",
  "log",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "smallvec",
 ]
 
@@ -4204,33 +4293,40 @@ dependencies = [
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-solve",
- "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-ir-fmi",
+ "rumoca-ir-galec",
  "rumoca-ir-solve",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
+ "rumoca-phase-fmi",
+ "rumoca-phase-galec",
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
  "rumoca-phase-solve",
  "rumoca-phase-typecheck",
  "rumoca-sim",
+ "rumoca-solver",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
  "serde_json",
+ "sha1",
  "sigpipe",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "toml",
  "tracing",
  "tracing-subscriber",
  "tungstenite 0.26.2",
  "ureq",
+ "uuid",
  "walkdir",
  "zip",
 ]
@@ -4255,6 +4351,7 @@ dependencies = [
 name = "rumoca-bind-wasm"
 version = "0.9.20"
 dependencies = [
+ "anyhow",
  "bincode",
  "console_error_panic_hook",
  "getrandom 0.3.4",
@@ -4265,6 +4362,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-solve",
+ "rumoca-phase-galec",
  "rumoca-sim",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
@@ -4295,12 +4393,12 @@ name = "rumoca-bind-wasm-galec"
 version = "0.9.20"
 dependencies = [
  "console_error_panic_hook",
- "getrandom 0.3.4",
  "lsp-types",
  "rumoca-compile",
- "rumoca-galec-codegen",
- "rumoca-ir-galec",
- "rumoca-tool-galec-lsp",
+ "rumoca-phase-codegen",
+ "rumoca-phase-galec",
+ "rumoca-phase-parse-galec",
+ "rumoca-tool-lsp-galec",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -4331,16 +4429,16 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
+ "flate2",
  "indexmap 2.14.0",
  "miette",
  "minijinja",
  "rayon",
  "rumoca-core",
- "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rumoca-ir-galec",
+ "rumoca-ir-solve",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
@@ -4374,9 +4472,11 @@ dependencies = [
 name = "rumoca-core"
 version = "0.9.20"
 dependencies = [
+ "bincode",
  "indexmap 2.14.0",
  "miette",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4386,19 +4486,16 @@ dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
  "rumoca-ir-ast",
- "rustc-hash",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
 name = "rumoca-eval-dae"
 version = "0.9.20"
 dependencies = [
- "blake3",
- "indexmap 2.14.0",
  "rumoca-core",
  "rumoca-ir-dae",
- "rustc-hash",
- "tracing",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4408,9 +4505,17 @@ dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
  "rumoca-ir-flat",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "rumoca-eval-galec"
+version = "0.9.20"
+dependencies = [
+ "rumoca-ir-galec",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4419,11 +4524,7 @@ version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
- "rumoca-eval-dae",
- "rumoca-ir-dae",
  "rumoca-ir-solve",
- "rumoca-solver",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -4468,21 +4569,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-galec-codegen"
-version = "0.9.20"
-dependencies = [
- "rumoca-core",
- "rumoca-ir-dae",
- "rumoca-ir-galec",
- "serde",
- "serde_json",
- "sha1",
- "thiserror 2.0.18",
- "time",
- "uuid",
-]
-
-[[package]]
 name = "rumoca-input"
 version = "0.9.20"
 dependencies = [
@@ -4518,7 +4604,7 @@ version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "serde",
 ]
 
@@ -4528,10 +4614,12 @@ version = "0.9.20"
 dependencies = [
  "bincode",
  "indexmap 2.14.0",
+ "proptest",
  "rumoca-core",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4541,19 +4629,28 @@ dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
  "rumoca-ir-ast",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rumoca-ir-fmi"
+version = "0.9.20"
+dependencies = [
+ "rumoca-core",
+ "rumoca-ir-solve",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "rumoca-ir-galec"
 version = "0.9.20"
 dependencies = [
- "anyhow",
- "parol",
- "parol_runtime",
  "rumoca-core",
- "scnr2",
+ "rustc-hash 2.1.3",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -4566,13 +4663,6 @@ dependencies = [
  "rumoca-core",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "rumoca-lsp-position"
-version = "0.9.20"
-dependencies = [
- "lsp-types",
 ]
 
 [[package]]
@@ -4596,14 +4686,19 @@ dependencies = [
  "indexmap 2.14.0",
  "miette",
  "minijinja",
+ "naga",
  "rumoca-core",
  "rumoca-eval-solve",
- "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-ir-fmi",
+ "rumoca-ir-galec",
  "rumoca-ir-solve",
+ "rumoca-phase-dae",
+ "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -4611,13 +4706,12 @@ dependencies = [
 name = "rumoca-phase-dae"
 version = "0.9.20"
 dependencies = [
- "indexmap 2.14.0",
  "miette",
  "rumoca-core",
  "rumoca-eval-dae",
+ "rumoca-eval-flat",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rustc-hash",
  "serde",
  "thiserror 2.0.18",
  "tracing",
@@ -4634,9 +4728,38 @@ dependencies = [
  "rumoca-eval-flat",
  "rumoca-ir-ast",
  "rumoca-ir-flat",
- "rustc-hash",
+ "rumoca-phase-dae",
+ "rumoca-phase-instantiate",
+ "rumoca-phase-parse",
+ "rumoca-phase-resolve",
+ "rumoca-phase-typecheck",
+ "rustc-hash 2.1.3",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "rumoca-phase-fmi"
+version = "0.9.20"
+dependencies = [
+ "rumoca-ir-dae",
+ "rumoca-ir-fmi",
+ "rumoca-ir-solve",
+ "rumoca-phase-dae",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rumoca-phase-galec"
+version = "0.9.20"
+dependencies = [
+ "rumoca-core",
+ "rumoca-eval-dae",
+ "rumoca-ir-dae",
+ "rumoca-ir-galec",
+ "rumoca-phase-structural",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4648,7 +4771,9 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-ast",
- "rustc-hash",
+ "rumoca-phase-parse",
+ "rumoca-phase-resolve",
+ "rustc-hash 2.1.3",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4662,9 +4787,25 @@ dependencies = [
  "miette",
  "parol",
  "parol_runtime",
+ "proptest",
  "rumoca-core",
  "rumoca-ir-ast",
  "scnr2",
+ "tempfile",
+]
+
+[[package]]
+name = "rumoca-phase-parse-galec"
+version = "0.9.20"
+dependencies = [
+ "anyhow",
+ "parol",
+ "parol_runtime",
+ "rumoca-core",
+ "rumoca-ir-galec",
+ "rumoca-phase-codegen",
+ "scnr2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4687,12 +4828,10 @@ version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
- "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
  "rumoca-phase-structural",
- "tracing",
 ]
 
 [[package]]
@@ -4701,7 +4840,9 @@ version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-ir-dae",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -4714,10 +4855,20 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-ast",
+ "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rumoca-reference"
+version = "0.9.20"
+dependencies = [
+ "proptest",
+ "rumoca-compile",
+ "rumoca-sim",
 ]
 
 [[package]]
@@ -4734,6 +4885,7 @@ dependencies = [
  "anyhow",
  "indexmap 2.14.0",
  "libc",
+ "proptest",
  "rumoca-codec",
  "rumoca-compile",
  "rumoca-core",
@@ -4765,9 +4917,13 @@ dependencies = [
 name = "rumoca-solver"
 version = "0.9.20"
 dependencies = [
+ "faer",
+ "indexmap 2.14.0",
  "instant",
  "nalgebra",
+ "proptest",
  "rumoca-core",
+ "rumoca-eval-solve",
  "rumoca-ir-solve",
  "serde",
  "serde_json",
@@ -4781,7 +4937,6 @@ version = "0.9.20"
 dependencies = [
  "diffsol",
  "indexmap 2.14.0",
- "rumoca-core",
  "rumoca-eval-solve",
  "rumoca-ir-solve",
  "rumoca-solver",
@@ -4794,8 +4949,6 @@ name = "rumoca-solver-rk45"
 version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
- "rumoca-core",
- "rumoca-eval-solve",
  "rumoca-ir-solve",
  "rumoca-solver",
  "thiserror 2.0.18",
@@ -4818,6 +4971,7 @@ dependencies = [
  "rayon",
  "regex",
  "rumoca-compile",
+ "rumoca-eval-dae",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
@@ -4842,19 +4996,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-tool-docs"
-version = "0.9.20"
-dependencies = [
- "anyhow",
- "bincode",
- "clap",
- "flate2",
- "mimalloc",
- "rayon",
- "rumoca-compile",
-]
-
-[[package]]
 name = "rumoca-tool-fmt"
 version = "0.9.20"
 dependencies = [
@@ -4863,19 +5004,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
-]
-
-[[package]]
-name = "rumoca-tool-galec-lsp"
-version = "0.9.20"
-dependencies = [
- "clap",
- "futures-util",
- "lsp-types",
- "rumoca-ir-galec",
- "rumoca-lsp-position",
- "tokio",
- "tower-lsp",
 ]
 
 [[package]]
@@ -4899,8 +5027,9 @@ dependencies = [
  "futures-util",
  "lsp-types",
  "rumoca-compile",
- "rumoca-lsp-position",
+ "rumoca-phase-codegen",
  "rumoca-phase-dae",
+ "rumoca-phase-galec",
  "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
@@ -4910,6 +5039,19 @@ dependencies = [
  "toml",
  "tower-lsp",
  "tracing",
+]
+
+[[package]]
+name = "rumoca-tool-lsp-galec"
+version = "0.9.20"
+dependencies = [
+ "clap",
+ "futures-util",
+ "lsp-types",
+ "rumoca-core",
+ "rumoca-phase-parse-galec",
+ "tokio",
+ "tower-lsp",
 ]
 
 [[package]]
@@ -4949,6 +5091,8 @@ dependencies = [
  "mimalloc",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-phase-solve",
+ "rumoca-phase-structural",
  "rumoca-sim",
  "serde",
  "serde_json",
@@ -4959,6 +5103,12 @@ name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
@@ -5101,6 +5251,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "rusty-fork"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+dependencies = [
+ "fnv",
+ "quick-error",
+ "tempfile",
+ "wait-timeout",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5191,7 +5353,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex-syntax",
- "rustc-hash",
+ "rustc-hash 2.1.3",
  "syn 2.0.118",
 ]
 
@@ -6359,6 +6521,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11c524dc90cd71769e23e877ffdcb128f867970f1febdb8eb11a776f5f49e7fc"
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7239,6 +7407,7 @@ dependencies = [
  "clap_complete",
  "lsp-types",
  "mimalloc",
+ "num_cpus",
  "serde",
  "serde_json",
  "sha2",
@@ -7265,7 +7434,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.9.1",
  "time",
 ]
 

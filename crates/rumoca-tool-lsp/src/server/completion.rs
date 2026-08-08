@@ -429,7 +429,7 @@ fn strict_compile_failure_title(report: &StrictCompileReport) -> String {
 
 fn balanced_code_lens_title(result: &rumoca_compile::compile::CompilationResult) -> String {
     let detail = &result.balance_detail;
-    let unknowns = detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
+    let unknowns = detail.state_unknowns + detail.algebraic_unknowns + detail.output_unknowns;
     let balance = detail.balance();
     let equations = (unknowns as i64 + balance).max(0) as usize;
     if balance == 0 {

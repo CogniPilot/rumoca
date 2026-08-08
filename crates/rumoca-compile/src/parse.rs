@@ -44,6 +44,22 @@ pub type ParseResult = Result<ParseSuccess>;
 /// Combined results from lenient parsing: (successes, failures)
 pub type LenientParseResult = (Vec<ParseSuccess>, Vec<ParseFailure>);
 
+/// Rebuild the canonical source map for a parsed filesystem batch.
+///
+/// `StoredDefinition` deliberately does not duplicate source text. Callers
+/// handing pre-parsed trees to [`crate::compile::CompiledSourceRoot`] must
+/// carry this map beside them so downstream provenance remains resolvable.
+pub fn source_map_for_parsed_files(
+    documents: &[(String, ast::StoredDefinition)],
+) -> Result<rumoca_core::SourceMap> {
+    let mut source_map = rumoca_core::SourceMap::new();
+    for (path, _) in documents {
+        let source = std::fs::read_to_string(path)?;
+        source_map.add(path, &source);
+    }
+    Ok(source_map)
+}
+
 /// Structured parse errors surfaced by the parser phase.
 pub use rumoca_phase_parse::ParseError;
 /// Recoverable syntax artifact surfaced by the parser phase.

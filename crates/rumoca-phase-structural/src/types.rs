@@ -1,75 +1,155 @@
-//! Types for BLT-sorted DAE structure.
+//! Branded structural-analysis products over one checked DAE.
 
-use rumoca_core::Diagnostic;
+use rumoca_core::{Diagnostic, Label, PhaseError, PrimaryLabel, Span};
 use rumoca_ir_dae as dae;
 
-/// Reference to a continuous equation in the original DAE `f_x` list.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct EquationRef(pub usize);
 
 impl std::fmt::Display for EquationRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "f_x[{}]", self.0)
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "f_x[{}]", self.0)
     }
 }
 
-/// Unknown variable in the DAE system.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub enum UnknownId {
-    /// Derivative of a state variable: `der(x_i)`.
-    DerState(rumoca_core::VarName),
-    /// Algebraic or output variable: `z_j` or `w_k`.
-    Variable(rumoca_core::VarName),
-    /// Solver-vector scalar used by structural consumers outside DAE source.
-    SolverY(usize),
+/// One scalar unknown, carrying the branded declaration identity that owns it.
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum UnknownId<'dae> {
+    Derivative {
+        state: dae::StateId<'dae>,
+        scalar: u32,
+    },
+    Algebraic {
+        variable: dae::AlgebraicId<'dae>,
+        scalar: u32,
+    },
+    /// Solver-only incidence has no DAE declaration identity.
+    Solver(usize),
+    Unmatched {
+        equation: usize,
+    },
 }
 
-impl std::fmt::Display for UnknownId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+#[derive(Debug, Clone)]
+pub struct StructuredScalarBlock {
+    pub span: Span,
+    pub first_equation_index: usize,
+    pub equations_per_point: usize,
+    pub point_count: usize,
+    pub extents: Vec<usize>,
+    pub cell_strides: Vec<usize>,
+    pub base_unknowns: Vec<usize>,
+    pub unknown_steps: Vec<Vec<i64>>,
+}
+
+impl StructuredScalarBlock {
+    #[must_use]
+    pub fn scalar_block_count(&self) -> usize {
+        self.point_count
+            .checked_mul(self.equations_per_point)
+            .expect("checked structured block row count is representable")
+    }
+
+    pub fn scalar_rows(
+        &self,
+    ) -> impl Iterator<Item = Result<(EquationRef, usize), StructuralError>> + '_ {
+        (0..self.point_count).flat_map(move |point| {
+            (0..self.equations_per_point).map(move |position| {
+                self.scalar_row(point, position)
+                    .ok_or_else(|| StructuralError::ContractViolation {
+                        reason: format!(
+                            "compact family at f_x[{}] cannot address point {point}, body {position}",
+                            self.first_equation_index
+                        ),
+                        span: self.span,
+                    })
+            })
+        })
+    }
+
+    fn scalar_row(&self, point: usize, position: usize) -> Option<(EquationRef, usize)> {
+        let equation = point
+            .checked_mul(self.equations_per_point)?
+            .checked_add(position)?
+            .checked_add(self.first_equation_index)?;
+        let mut unknown = i64::try_from(*self.base_unknowns.get(position)?).ok()?;
+        for (dimension, step) in self.unknown_steps.get(position)?.iter().enumerate() {
+            let stride = *self.cell_strides.get(dimension)?;
+            let extent = *self.extents.get(dimension)?;
+            let coordinate = if stride == 0 || extent == 0 {
+                0
+            } else {
+                (point / stride) % extent
+            };
+            unknown = unknown.checked_add(i64::try_from(coordinate).ok()?.checked_mul(*step)?)?;
+        }
+        Some((EquationRef(equation), usize::try_from(unknown).ok()?))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum BltBlock<'dae> {
+    Scalar {
+        equation: EquationRef,
+        unknown: UnknownId<'dae>,
+    },
+    AlgebraicLoop {
+        equations: Vec<EquationRef>,
+        unknowns: Vec<UnknownId<'dae>>,
+    },
+    StructuredScalar(StructuredScalarBlock),
+}
+
+impl BltBlock<'_> {
+    #[must_use]
+    pub fn scalar_block_count(&self) -> usize {
         match self {
-            Self::DerState(name) => write!(f, "der({name})"),
-            Self::Variable(name) => write!(f, "{name}"),
-            Self::SolverY(index) => write!(f, "y[{index}]"),
+            Self::Scalar { .. } => 1,
+            Self::AlgebraicLoop { .. } => 0,
+            Self::StructuredScalar(block) => block.scalar_block_count(),
+        }
+    }
+
+    #[must_use]
+    pub fn loop_size(&self) -> Option<usize> {
+        match self {
+            Self::AlgebraicLoop { equations, .. } => Some(equations.len()),
+            Self::Scalar { .. } | Self::StructuredScalar(_) => None,
         }
     }
 }
 
-/// A single block in the BLT (Block Lower Triangular) decomposition.
-#[derive(Debug, Clone)]
-pub enum BltBlock {
-    /// A scalar block: one equation matched to one unknown.
-    Scalar {
-        equation: EquationRef,
-        unknown: UnknownId,
-    },
-    /// An algebraic loop: a set of equations that must be solved simultaneously.
-    AlgebraicLoop {
-        equations: Vec<EquationRef>,
-        unknowns: Vec<UnknownId>,
-    },
-}
-
-/// A DAE sorted into BLT block form for sequential simulation.
 #[derive(Debug)]
-pub struct SortedDae<'a> {
-    /// Reference to the original DAE.
-    pub dae: &'a dae::Dae,
-    /// BLT blocks in evaluation order.
-    pub blocks: Vec<BltBlock>,
-    /// Full matching: each pair `(equation, unknown)` from the maximum matching.
-    pub matching: Vec<(EquationRef, UnknownId)>,
-    /// Diagnostic warnings (e.g. algebraic loop notifications).
+pub struct SortedDae<'dae> {
+    pub blocks: Vec<BltBlock<'dae>>,
+    pub matching: Vec<(EquationRef, UnknownId<'dae>)>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// Errors from structural analysis that prevent simulation code generation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SingularBlockWitness {
+    pub equations: usize,
+    pub unknowns: usize,
+    pub sample: Vec<String>,
+}
+
+impl std::fmt::Display for SingularBlockWitness {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.equations == 0 {
+            return Ok(());
+        }
+        write!(
+            formatter,
+            "; over-determined block: {} equations over {} unknowns",
+            self.equations, self.unknowns
+        )
+    }
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StructuralError {
-    /// The system is structurally singular: no perfect matching exists.
     #[error(
-        "structurally singular system: {n_matched} matched out of {n_equations} equations and {n_unknowns} unknowns; unmatched equations: {}; unmatched unknowns: {}",
-        summarize_singular_names(unmatched_equations),
-        summarize_singular_names(unmatched_unknowns)
+        "structurally singular system: {n_matched} matched out of {n_equations} equations and {n_unknowns} unknowns"
     )]
     Singular {
         n_equations: usize,
@@ -77,68 +157,125 @@ pub enum StructuralError {
         n_matched: usize,
         unmatched_equations: Vec<String>,
         unmatched_unknowns: Vec<String>,
-        /// Source spans of the unmatched unknowns, parallel to
-        /// `unmatched_unknowns`, so the failure is traceable back to source
-        /// when the unknown has source provenance.
-        unmatched_unknown_spans: Vec<Option<rumoca_core::Span>>,
+        unmatched_unknown_spans: Vec<Span>,
+        over_determined_block: Box<SingularBlockWitness>,
     },
-    /// The system has no equations or unknowns.
+    /// Span-free: an empty whole-model system has no equation or variable owner.
     #[error("empty system: no equations or unknowns")]
     EmptySystem,
-    /// An IC plan referenced an unknown that cannot be mapped to the solver vector.
-    #[error("invalid IC plan: unresolved unknown `{name}`")]
-    InvalidIcPlanUnknown { name: String },
-    /// A source equation has a compiler-known nonzero residual and therefore
-    /// cannot hold for any value of the continuous unknowns.
-    #[error("inconsistent equation `{origin}`: constant residual is {residual}")]
-    InconsistentEquation {
-        residual: f64,
-        origin: String,
-        span: rumoca_core::Span,
+    /// The only index reduction available demoted a state whose `fixed = true`
+    /// start MLS 3.6 §8.6 turns into an initialization equation, and no equation
+    /// the reduction keeps reproduces that equation. Reducing anyway would
+    /// answer with a guess in place of a stated initial condition, so the phase
+    /// reports the condition it would have had to drop instead.
+    #[error(
+        "index reduction would discard the stated initial value of `{variable}`: MLS 3.6 section 8.6 adds `{variable} = {variable}.start` to the initialization equations for a `fixed = true` variable, and demoting `{variable}` leaves no equation that states it"
+    )]
+    DroppedStatedInitialValue { variable: String, span: Span },
+    /// Two coordinates the system proves equal — up to sign and a time-invariant
+    /// displacement — each carry a `fixed = true` start, and the two starts do
+    /// not state the same value. MLS 3.6 §8.6 adds both as initialization
+    /// equations, so the initialization system they describe has no solution;
+    /// picking one silently would answer with an initial condition the model
+    /// never stated.
+    #[error(
+        "conflicting stated initial values: `{variable}` and `{other}` are the same quantity, and MLS 3.6 section 8.6 adds both `fixed = true` starts to the initialization equations"
+    )]
+    ConflictingStatedInitialValues {
+        variable: String,
+        other: String,
+        span: Span,
+        other_span: Span,
     },
-    /// DAE IR metadata required by structural analysis is missing or inconsistent.
+    #[error("checked DAE scalar projection failed: {reason}")]
+    Projection { reason: String, span: Span },
     #[error("invalid structural IR contract: {reason}")]
-    ContractViolation {
-        reason: String,
-        span: rumoca_core::Span,
-    },
-    /// DAE IR metadata required by structural analysis is missing or
-    /// inconsistent, and the malformed metadata has no honest source span.
+    ContractViolation { reason: String, span: Span },
+    /// Span-free: the violated aggregate contract has no single honest source owner.
     #[error("invalid structural IR contract without source span: {reason}")]
     UnspannedContractViolation { reason: String },
 }
 
 impl StructuralError {
-    /// Source span of the first unmatched unknown carrying one, so a structural
-    /// singularity can be reported against the offending model variable.
     #[must_use]
-    pub fn source_span(&self) -> Option<rumoca_core::Span> {
+    pub const fn code(&self) -> &'static str {
+        use crate::diagnostic_codes as codes;
+        match self {
+            Self::Singular { .. } => codes::ES010_SINGULAR_SYSTEM,
+            Self::EmptySystem => codes::ES011_EMPTY_SYSTEM,
+            Self::DroppedStatedInitialValue { .. } => codes::ES012_DROPPED_STATED_INITIAL_VALUE,
+            Self::ConflictingStatedInitialValues { .. } => {
+                codes::ES013_CONFLICTING_STATED_INITIAL_VALUES
+            }
+            Self::Projection { .. }
+            | Self::ContractViolation { .. }
+            | Self::UnspannedContractViolation { .. } => codes::ES014_CONTRACT_VIOLATION,
+        }
+    }
+
+    #[must_use]
+    pub fn source_span(&self) -> Option<Span> {
         match self {
             Self::Singular {
                 unmatched_unknown_spans,
                 ..
-            } => unmatched_unknown_spans
-                .iter()
-                .find_map(|span| span.and_then(|span| (!span.is_dummy()).then_some(span))),
-            Self::ContractViolation { span, .. } if !span.is_dummy() => Some(*span),
-            Self::InconsistentEquation { span, .. } if !span.is_dummy() => Some(*span),
+            } => unmatched_unknown_spans.first().copied(),
+            Self::DroppedStatedInitialValue { span, .. }
+            | Self::ConflictingStatedInitialValues { span, .. }
+            | Self::Projection { span, .. }
+            | Self::ContractViolation { span, .. }
+                if !span.is_dummy() =>
+            {
+                Some(*span)
+            }
             Self::EmptySystem
-            | Self::InvalidIcPlanUnknown { .. }
-            | Self::InconsistentEquation { .. }
+            | Self::DroppedStatedInitialValue { .. }
+            | Self::ConflictingStatedInitialValues { .. }
+            | Self::Projection { .. }
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => None,
         }
     }
 }
 
-fn summarize_singular_names(names: &[String]) -> String {
-    const LIMIT: usize = 12;
-    if names.is_empty() {
-        return "-".to_string();
+impl PhaseError for StructuralError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        let label = match self {
+            Self::DroppedStatedInitialValue { .. } => {
+                "this stated initial value has no equation left after index reduction"
+            }
+            Self::ConflictingStatedInitialValues { .. } => {
+                "this stated initial value contradicts the one below"
+            }
+            _ => "structural analysis failed here",
+        };
+        let mut diagnostic = match self.source_span() {
+            Some(span) => Diagnostic::error(
+                self.code(),
+                self.to_string(),
+                PrimaryLabel::new(span).with_message(label),
+            ),
+            None => Diagnostic::global_error(self.code(), self.to_string()),
+        };
+        if let Self::Singular {
+            unmatched_unknown_spans,
+            ..
+        } = self
+        {
+            for span in unmatched_unknown_spans.iter().copied().skip(1) {
+                diagnostic = diagnostic.with_label(
+                    Label::secondary(span).with_message("unmatched structural unknown"),
+                );
+            }
+        }
+        if let Self::ConflictingStatedInitialValues { other_span, .. } = self
+            && !other_span.is_dummy()
+        {
+            diagnostic = diagnostic.with_label(
+                Label::secondary(*other_span)
+                    .with_message("the same quantity is pinned to a different value here"),
+            );
+        }
+        diagnostic
     }
-    let mut summary: Vec<String> = names.iter().take(LIMIT).cloned().collect();
-    if names.len() > LIMIT {
-        summary.push(format!("... +{}", names.len() - LIMIT));
-    }
-    summary.join(", ")
 }

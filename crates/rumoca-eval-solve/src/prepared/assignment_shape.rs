@@ -1,6 +1,6 @@
 use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, UnaryOp};
 
-use super::dependency::reg_depends_on_y_index;
+use super::dependency::{YDependencyAnalyzer, reg_depends_on_y_index};
 use super::{invalid_prepared_row, producer};
 use crate::EvalSolveError;
 
@@ -24,22 +24,29 @@ pub enum TargetAssignmentShape {
         coefficient_scale: f64,
         expr_eval_len: usize,
     },
+    AffineResidual {
+        target_y_index: usize,
+        target_reg: u32,
+        residual_reg: u32,
+        coefficient: f64,
+        expr_eval_len: usize,
+    },
 }
 
 impl TargetAssignmentShape {
     pub fn target_y_index(self) -> usize {
         match self {
-            Self::Direct { target_y_index, .. } | Self::Affine { target_y_index, .. } => {
-                target_y_index
-            }
+            Self::Direct { target_y_index, .. }
+            | Self::Affine { target_y_index, .. }
+            | Self::AffineResidual { target_y_index, .. } => target_y_index,
         }
     }
 
     pub fn expr_eval_len(self) -> usize {
         match self {
-            Self::Direct { expr_eval_len, .. } | Self::Affine { expr_eval_len, .. } => {
-                expr_eval_len
-            }
+            Self::Direct { expr_eval_len, .. }
+            | Self::Affine { expr_eval_len, .. }
+            | Self::AffineResidual { expr_eval_len, .. } => expr_eval_len,
         }
     }
 
@@ -72,6 +79,25 @@ impl TargetAssignmentShape {
                 }
                 Ok(-offset / coefficient)
             }
+            Self::AffineResidual {
+                target_y_index,
+                target_reg,
+                residual_reg,
+                coefficient,
+                ..
+            } => {
+                if coefficient == 0.0 || !coefficient.is_finite() {
+                    return Err(EvalSolveError::SingularTargetAssignment {
+                        row: row_idx,
+                        target_y_index,
+                        coefficient,
+                        span,
+                    });
+                }
+                let target = read_shape_reg(regs, target_reg, span)?;
+                let residual = read_shape_reg(regs, residual_reg, span)?;
+                Ok(target - residual / coefficient)
+            }
         }
     }
 }
@@ -83,7 +109,7 @@ pub fn target_assignment_shape(
     Ok(target_assignment_shapes(row)?.into_iter().next())
 }
 
-pub(super) fn target_assignment_shapes(
+pub fn target_assignment_shapes(
     row: &[LinearOp],
 ) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
     if ScalarProgramBlock::program_output_count(row) > 1 {
@@ -104,7 +130,102 @@ pub(super) fn target_assignment_shapes(
             shapes.push(shape);
         }
     }
+    for shape in affine_residual_shapes(row, output_reg)? {
+        if shapes
+            .iter()
+            .all(|existing| existing.target_y_index() != shape.target_y_index())
+        {
+            shapes.push(shape);
+        }
+    }
     Ok(shapes)
+}
+
+fn affine_residual_shapes(
+    row: &[LinearOp],
+    residual_reg: u32,
+) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
+    let Some(residual_pos) = producer_pos(row, residual_reg) else {
+        return Ok(Vec::new());
+    };
+    let expr_eval_len = checked_expr_eval_len(residual_pos)?;
+    let mut targets = Vec::new();
+    let mut dependencies = YDependencyAnalyzer::new(row, 0);
+    for op in row {
+        let LinearOp::LoadY {
+            dst: target_reg,
+            index: target_y_index,
+        } = *op
+        else {
+            continue;
+        };
+        if targets
+            .iter()
+            .any(|shape: &TargetAssignmentShape| shape.target_y_index() == target_y_index)
+        {
+            continue;
+        }
+        dependencies.set_target(target_y_index);
+        let Some(coefficient) =
+            additive_target_coefficient(row, residual_reg, target_y_index, &mut dependencies)
+        else {
+            continue;
+        };
+        if coefficient == 0.0 || !coefficient.is_finite() {
+            continue;
+        }
+        targets.push(TargetAssignmentShape::AffineResidual {
+            target_y_index,
+            target_reg,
+            residual_reg,
+            coefficient,
+            expr_eval_len,
+        });
+    }
+    Ok(targets)
+}
+
+fn additive_target_coefficient(
+    row: &[LinearOp],
+    reg: u32,
+    target_y_index: usize,
+    dependencies: &mut YDependencyAnalyzer<'_>,
+) -> Option<f64> {
+    if !dependencies.depends_on(reg) {
+        return Some(0.0);
+    }
+    match producer(row, reg)? {
+        LinearOp::LoadY { index, .. } if *index == target_y_index => Some(1.0),
+        LinearOp::Move { src, .. } => {
+            additive_target_coefficient(row, *src, target_y_index, dependencies)
+        }
+        LinearOp::Unary {
+            op: UnaryOp::Neg,
+            arg,
+            ..
+        } => {
+            additive_target_coefficient(row, *arg, target_y_index, dependencies).map(|value| -value)
+        }
+        LinearOp::Binary {
+            op: BinaryOp::Add,
+            lhs,
+            rhs,
+            ..
+        } => Some(
+            additive_target_coefficient(row, *lhs, target_y_index, dependencies)?
+                + additive_target_coefficient(row, *rhs, target_y_index, dependencies)?,
+        ),
+        LinearOp::Binary {
+            op: BinaryOp::Sub,
+            lhs,
+            rhs,
+            ..
+        } => Some(
+            additive_target_coefficient(row, *lhs, target_y_index, dependencies)?
+                - additive_target_coefficient(row, *rhs, target_y_index, dependencies)?,
+        ),
+        _ => None,
+    }
 }
 
 fn read_shape_reg(
@@ -151,6 +272,7 @@ fn affine_assignment_shapes(
     row: &[LinearOp],
     output_reg: u32,
 ) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
+    let (output_reg, output_scale) = strip_affine_output_wrappers(row, output_reg);
     let Some(output_op) = producer(row, output_reg) else {
         return Ok(Vec::new());
     };
@@ -160,37 +282,106 @@ fn affine_assignment_shapes(
             lhs,
             rhs,
             ..
-        } => (lhs, rhs, 1.0, 1.0),
+        } => (lhs, rhs, output_scale, output_scale),
         LinearOp::Binary {
             op: BinaryOp::Sub,
             lhs,
             rhs,
             ..
-        } => (lhs, rhs, 1.0, -1.0),
+        } => (lhs, rhs, output_scale, -output_scale),
         _ => return Ok(Vec::new()),
     };
     let mut shapes = Vec::new();
-    if let Some((target_reg, coefficient_reg)) = affine_target_term(row, lhs) {
-        shapes.extend(affine_sum_side_shape(
+    for (target_reg, coefficient_reg) in affine_target_terms(row, lhs).into_iter().flatten() {
+        push_affine_sum_side_shape(
+            &mut shapes,
             row,
             target_reg,
             coefficient_reg,
             lhs_scale,
             rhs,
             rhs_scale,
-        )?);
+        )?;
     }
-    if let Some((target_reg, coefficient_reg)) = affine_target_term(row, rhs) {
-        shapes.extend(affine_sum_side_shape(
+    for (target_reg, coefficient_reg) in affine_target_terms(row, rhs).into_iter().flatten() {
+        push_affine_sum_side_shape(
+            &mut shapes,
             row,
             target_reg,
             coefficient_reg,
             rhs_scale,
             lhs,
             lhs_scale,
-        )?);
+        )?;
     }
     Ok(shapes)
+}
+
+fn strip_affine_output_wrappers(row: &[LinearOp], mut reg: u32) -> (u32, f64) {
+    let mut scale = 1.0;
+    loop {
+        match producer(row, reg) {
+            Some(LinearOp::Unary {
+                op: UnaryOp::Neg,
+                arg,
+                ..
+            }) => {
+                reg = *arg;
+                scale = -scale;
+            }
+            Some(LinearOp::Binary {
+                op: BinaryOp::Sub,
+                lhs,
+                rhs,
+                ..
+            }) if is_zero_literal(row, *lhs) => {
+                reg = *rhs;
+                scale = -scale;
+            }
+            Some(LinearOp::Binary {
+                op: BinaryOp::Sub,
+                lhs,
+                rhs,
+                ..
+            }) if is_zero_literal(row, *rhs) => {
+                reg = *lhs;
+            }
+            _ => return (reg, scale),
+        }
+    }
+}
+
+fn is_zero_literal(row: &[LinearOp], reg: u32) -> bool {
+    matches!(producer(row, reg), Some(LinearOp::Const { value: 0.0, .. }))
+}
+
+fn push_affine_sum_side_shape(
+    shapes: &mut Vec<TargetAssignmentShape>,
+    row: &[LinearOp],
+    target_reg: u32,
+    coefficient_reg: Option<u32>,
+    coefficient_scale: f64,
+    offset_reg: u32,
+    offset_scale: f64,
+) -> Result<(), EvalSolveError> {
+    let Some(shape) = affine_sum_side_shape(
+        row,
+        target_reg,
+        coefficient_reg,
+        coefficient_scale,
+        offset_reg,
+        offset_scale,
+    )?
+    else {
+        return Ok(());
+    };
+    if shapes
+        .iter()
+        .all(|existing| existing.target_y_index() != shape.target_y_index())
+    {
+        shapes.push(shape);
+    }
+    Ok(())
 }
 
 fn affine_sum_side_shape(
@@ -231,23 +422,27 @@ pub(super) fn checked_expr_eval_len(pos: usize) -> Result<usize, EvalSolveError>
         .ok_or_else(|| invalid_prepared_row("target assignment expression length overflows"))
 }
 
-fn affine_target_term(row: &[LinearOp], reg: u32) -> Option<(u32, Option<u32>)> {
+fn affine_target_terms(row: &[LinearOp], reg: u32) -> [Option<(u32, Option<u32>)>; 2] {
     if is_y_load(row, reg) {
-        return Some((reg, None));
+        return [Some((reg, None)), None];
     }
+    let Some(producer) = producer(row, reg) else {
+        return [None, None];
+    };
     let LinearOp::Binary {
         op: BinaryOp::Mul,
         lhs,
         rhs,
         ..
-    } = *producer(row, reg)?
+    } = *producer
     else {
-        return None;
+        return [None, None];
     };
     match (is_y_load(row, lhs), is_y_load(row, rhs)) {
-        (true, false) => Some((lhs, Some(rhs))),
-        (false, true) => Some((rhs, Some(lhs))),
-        _ => None,
+        (true, false) => [Some((lhs, Some(rhs))), None],
+        (false, true) => [Some((rhs, Some(lhs))), None],
+        (true, true) => [Some((lhs, Some(rhs))), Some((rhs, Some(lhs)))],
+        (false, false) => [None, None],
     }
 }
 

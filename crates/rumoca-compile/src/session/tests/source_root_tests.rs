@@ -1,5 +1,55 @@
 use super::*;
+use rumoca_core::SourceId;
 use std::path::Path;
+
+#[test]
+fn in_memory_source_root_text_reaches_checked_dae_provenance() {
+    const PACKAGE_SOURCE: &str = "within ;\npackage NewFolder\nend NewFolder;\n";
+    const TEST_SOURCE: &str =
+        "within NewFolder;\nmodel Test\n  Real x;\nequation\n  der(x) = 1;\nend Test;\n";
+    const MODEL_SOURCE: &str = "model UsesWorkspacePackage\n  import NewFolder.Test;\n  Test test;\n  Real y;\nequation\n  der(y) = test.x;\nend UsesWorkspacePackage;\n";
+
+    let mut session = Session::default();
+    let inserted = session.replace_in_memory_source_set(
+        "workspace",
+        SourceRootKind::Workspace,
+        vec![
+            parse_source_document(PACKAGE_SOURCE, "NewFolder/package.mo"),
+            parse_source_document(TEST_SOURCE, "NewFolder/Test.mo"),
+        ],
+        None,
+    );
+    assert_eq!(inserted, 2);
+    assert!(session.update_document("input.mo", MODEL_SOURCE).is_none());
+
+    let result = match session
+        .compile_model_phases("UsesWorkspacePackage")
+        .expect("workspace-backed model should compile")
+    {
+        PhaseResult::Success(result) => result,
+        other => panic!("expected successful checked DAE construction, got {other:?}"),
+    };
+    let source_id = SourceId::from_source_name("NewFolder/Test.mo");
+    assert_eq!(
+        result.dae.source_map().get_source(source_id),
+        Some(("NewFolder/Test.mo", TEST_SOURCE)),
+        "the canonical DAE source map must retain imported in-memory text"
+    );
+    let imported_literal_is_exact = result.dae.inspect(|view| {
+        (0..view.expression_count()).any(|index| {
+            let expression = view
+                .expression_id(index)
+                .and_then(|id| view.expression(id))
+                .expect("dense expression resolves");
+            expression.provenance().span().source == source_id
+                && view.source_text(expression.provenance()) == Some("1")
+        })
+    });
+    assert!(
+        imported_literal_is_exact,
+        "an imported expression must resolve to its exact source occurrence"
+    );
+}
 
 #[test]
 fn removing_live_source_root_document_restores_latest_detached_source_root_document() {

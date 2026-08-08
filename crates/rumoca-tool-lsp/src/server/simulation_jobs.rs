@@ -1,16 +1,53 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
+use rumoca_compile::compile::VarName;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use tower_lsp::lsp_types;
 
+/// Identity of one background simulation compile.
+///
+/// The two text parts are interned rather than owned: the model name and the
+/// focus document key are editor-supplied strings, not compiler identities, so
+/// there is no `DefId` to key on — but they still decide cache hits, and the
+/// interner turns each into a `u32` that hashes in constant time however long
+/// the qualified model path or workspace-absolute document path is. Interning
+/// is exact (the map is a bijection), so unlike a digest of the path it cannot
+/// serve one document's compiled DAE for another's.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct SimulationCompileKey {
-    model_name: String,
-    focus_document_path: String,
+    model_name: VarName,
+    focus_document_path: VarName,
     source_root_epoch: u64,
     local_source_fingerprint: u64,
+}
+
+/// Simulate a compiled DAE, honoring tunable-parameter overrides by re-settling
+/// the lowered model's prepared vectors before integration.
+///
+/// Every failure keeps the identity of the defect that produced it (SPEC_0008:
+/// a code identifies the defect, not the reporting surface). In particular a
+/// rejected override converts to `SimulationDiagnosticError::InvalidOverride`
+/// (`EX003`) and a prepared-vector settle/runtime failure to
+/// `RuntimePreparation` (`EX002`, span preserved) — collapsing them into
+/// `Solver` would publish `EX001` ("numeric solver reported a failure while
+/// integrating") for a user mistake the solver never saw.
+pub(super) fn simulate_dae_with_parameter_overrides(
+    dae: &rumoca_compile::compile::Dae,
+    opts: &SimOptions,
+    parameter_overrides: &[(String, f64)],
+) -> std::result::Result<rumoca_sim::SimResult, SimulationDiagnosticError> {
+    if parameter_overrides.is_empty() {
+        return simulate_dae_with_diagnostics(dae, opts);
+    }
+    let mut solve_model = rumoca_sim::lower_dae_for_simulation(dae, opts)?;
+    let (initial_y, parameters) =
+        rumoca_sim::refresh_prepared_vectors(&solve_model, opts.t_start, parameter_overrides)
+            .map_err(SimulationDiagnosticError::from)?;
+    solve_model.initial_y = initial_y;
+    solve_model.parameters = parameters;
+    rumoca_sim::simulate_solve_model(&solve_model, opts)
 }
 
 fn stable_u64_from_hash(hash: blake3::Hash) -> u64 {
@@ -33,17 +70,19 @@ fn simulation_models_from_scenario_config_source(
     Ok(vec![model.to_string()])
 }
 
+/// Identity of one in-flight simulation prewarm, interned for the same reason
+/// as [`SimulationCompileKey`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct SimulationPrewarmKey {
-    model_name: String,
-    focus_document_path: String,
+    model_name: VarName,
+    focus_document_path: VarName,
 }
 
 impl SimulationPrewarmKey {
     pub(super) fn new(model: &str, focus_document_path: &str) -> Self {
         Self {
-            model_name: model.to_string(),
-            focus_document_path: focus_document_path.to_string(),
+            model_name: VarName::intern(model),
+            focus_document_path: VarName::intern(focus_document_path),
         }
     }
 }
@@ -76,7 +115,7 @@ impl SimulationPrewarmState {
 }
 
 #[derive(Debug)]
-struct SimulationCompileContext {
+pub(super) struct SimulationCompileContext {
     base_session: Session,
     focus_key: String,
     local_source_fingerprint: u64,
@@ -170,6 +209,9 @@ impl ModelicaLanguageServer {
     pub(super) async fn clear_simulation_compile_cache(&self) {
         self.simulation_compile_cache.write().await.clear();
         self.simulation_prewarm_state.write().await.clear();
+        // Hover previews are keyed by the same compile identity, so they go
+        // stale for exactly the same reasons.
+        self.clear_hover_preview_cache().await;
     }
 
     fn next_background_request_id(&self, prefix: &str) -> String {
@@ -191,7 +233,7 @@ impl ModelicaLanguageServer {
         stable_u64_from_hash(hasher.finalize())
     }
 
-    fn simulation_compile_key(
+    pub(super) fn simulation_compile_key(
         model: &str,
         context: &SimulationCompileContext,
         source_root_epoch: u64,
@@ -211,8 +253,8 @@ impl ModelicaLanguageServer {
         local_source_fingerprint: u64,
     ) -> SimulationCompileKey {
         SimulationCompileKey {
-            model_name: model.to_string(),
-            focus_document_path: focus_key.to_string(),
+            model_name: VarName::intern(model),
+            focus_document_path: VarName::intern(focus_key),
             source_root_epoch,
             local_source_fingerprint,
         }
@@ -494,7 +536,7 @@ impl ModelicaLanguageServer {
         })
     }
 
-    async fn prepare_simulation_compile_context(
+    pub(super) async fn prepare_simulation_compile_context(
         &self,
         focus_document_path: &str,
         rebuild_dirty_source_roots: bool,
@@ -522,6 +564,36 @@ impl ModelicaLanguageServer {
         })
     }
 
+    /// Build a compile context from the in-memory session alone.
+    ///
+    /// [`Self::prepare_simulation_compile_context`] walks the on-disk package
+    /// layout, so it fails for a document that has never been written — a
+    /// brand-new editor buffer. Interactive surfaces (hover preview) still have
+    /// to work there, so this variant treats the focus document's in-session
+    /// text as the whole local compile unit.
+    pub(super) async fn prepare_in_memory_compile_context(
+        &self,
+        focus_document_path: &str,
+    ) -> Option<SimulationCompileContext> {
+        let content = self
+            .session
+            .read()
+            .await
+            .get_document(focus_document_path)?
+            .content
+            .to_string();
+        let local_compile_unit_sources = vec![(focus_document_path.to_string(), content)];
+        let base_session = self
+            .base_session_for_simulation_compile(&local_compile_unit_sources)
+            .await;
+        Some(SimulationCompileContext {
+            base_session,
+            focus_key: canonical_path_key(focus_document_path),
+            local_source_fingerprint: Self::local_source_fingerprint(&local_compile_unit_sources),
+            local_compile_unit_sources,
+        })
+    }
+
     async fn base_session_for_simulation_compile(
         &self,
         local_compile_unit_sources: &[(String, String)],
@@ -545,7 +617,7 @@ impl ModelicaLanguageServer {
         session.clone_for_isolated_work()
     }
 
-    fn build_simulation_snapshot(
+    pub(super) fn build_simulation_snapshot(
         &self,
         context: SimulationCompileContext,
     ) -> StrictSessionSnapshot {

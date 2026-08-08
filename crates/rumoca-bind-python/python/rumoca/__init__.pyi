@@ -17,8 +17,7 @@ from ._magic import (
 )
 
 Stage = Literal["ast", "flat", "dae", "solve"]
-Form = Literal["dae", "solve"]
-Solver = Literal["auto", "rk-like", "bdf", "esdirk34", "trbdf2"] | str
+Solver = Literal["auto", "rk-like", "bdf"] | str
 Level = Literal["error", "warning", "note", "help"]
 ParamKind = Literal["tunable", "structural"]
 Input = float | tuple[Any, Any] | Callable[[float], float]
@@ -83,11 +82,8 @@ class Model:
     def save_json(self, path: Pathish, stage: Stage = ...) -> None: ...
     def render(self, target: str) -> str: ...
     def codegen(self, target: str) -> CodegenResult: ...
-    def to_casadi(
-        self, form: Form = ..., *, mode: Literal["mx", "sx"] = ...
-    ) -> CasadiModel | SolveExport: ...
-    def to_jax(self, form: Form = ...) -> JaxModel | SolveExport: ...
-    def to_sympy(self) -> SympyModel: ...
+    def to_casadi(self) -> SolveExport: ...
+    def to_jax(self) -> SolveExport: ...
     def with_params(self, *, recompile: bool = ..., **overrides: float) -> Model: ...
     def with_start(self, **overrides: float) -> Model: ...
     def simulate(
@@ -264,54 +260,7 @@ class SolverInfo:
     family: Literal["explicit", "implicit"]
     available: bool
 
-# ── live symbolic exports ───────────────────────────────────────────────────
-class CasadiModel:
-    name: str
-    x: Any
-    xdot: Any
-    z: Any
-    u: Any
-    p: Any
-    f_x: Any
-    ode: Any
-    alg: Any
-    dae: dict[str, Any] | None
-    dae_fn: Any
-    x0: Any
-    p0: Any
-    state_names: list[str]
-    algebraic_names: list[str]
-    input_names: list[str]
-    parameter_names: list[str]
-    functions: dict[str, Any]
-    module: Any
-    def integrator(self, dt: Any = ..., *, method: str = ..., **opts: Any) -> Any: ...
-    def jacobian(self, of: str, wrt: str) -> Any: ...
-
-class JaxModel:
-    name: str
-    x0: Any
-    p0: Any
-    ode_fn: Any
-    state_names: list[str]
-    parameter_names: list[str]
-    input_names: list[str]
-    module: Any
-    def simulate(self, *args: Any, **kwargs: Any) -> Any: ...
-
-class SympyModel:
-    name: str
-    model: Any
-    module: Any
-    x: Any
-    y: Any
-    u: Any
-    w: Any
-    p: Any
-    f_x: Any
-    def solve_explicit(self) -> Any: ...
-    def summary(self) -> dict[str, Any]: ...
-
+# ── live checked-Solve exports ──────────────────────────────────────────────
 class SolveExport:
     name: str
     target: str
@@ -320,6 +269,8 @@ class SolveExport:
     state_names: list[str]
     input_names: list[str]
     parameter_names: list[str]
+    default_states: list[float | None]
+    default_parameters: list[float | None]
     n_states: int
     n_inputs: int
     n_parameters: int

@@ -1,0 +1,6 @@
+//! Target-neutral read-only template views over proven-valid IR.
+
+pub mod algorithm_code;
+mod algorithm_code_scopes;
+mod algorithm_code_symbols;
+mod algorithm_code_typed;

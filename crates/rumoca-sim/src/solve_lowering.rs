@@ -1,37 +1,24 @@
-//! DAE → simulation solve-model lowering, organized into cohesive stages:
+//! Checked DAE → simulation Solve-model assembly.
 //!
-//! - [`diagnostics`] — the [`SimulationDiagnosticError`] surfaced by every entry.
-//! - [`direct`] — the guarded explicit/direct fast path before structural work.
-//! - [`overrides`] — solver-neutral tunable-parameter / state-start overrides.
-//! - [`entry`] — the public lowering entry points and per-stage timings.
-//! - [`probe`] — the `--inspect eval` / `--inspect jacobian` debug probes.
-//! - [`structure_report`] — the `--inspect structure` report and singularity triage.
-//! - [`structural_lowering`] — the shared structural preparation + elimination funnel.
-//! - [`timing`] / [`expr_util`] — stage-timer and expression helpers shared above.
-//!
-//! The root keeps only module wiring and a curated set of re-exports so the sim
-//! facade (`lib.rs`) and the solver backends keep referring to the same paths.
+//! The phase-solve boundary produces computable register programs. This module
+//! adds runtime vectors by evaluating checked variable attributes and rejects
+//! any value it cannot establish; it never rewrites the DAE or substitutes a
+//! guessed value.
 
 mod diagnostics;
-mod direct;
 mod entry;
-mod expr_util;
+mod initial_values;
 mod overrides;
 mod probe;
-mod structural_lowering;
 mod structure_report;
-mod timing;
 
 // Re-exported through the sim facade so the root stays a curated same-crate
 // facade (see `architecture_hardening_test::test_sim_facade_cross_crate_exports_are_curated`).
-pub use rumoca_eval_solve::{EvalAtReport, EvalAtSlot, JacobianReport};
 pub use rumoca_phase_structural::{BlockReport, StructuralReport, TearingReport};
+pub use rumoca_solver::{EvalAtReport, EvalAtSlot, JacobianReport};
 
 pub use diagnostics::SimulationDiagnosticError;
-pub use entry::{
-    lower_dae_for_gpu_preparation, lower_dae_for_simulation,
-    structurally_lowered_dae_for_simulation_artifact,
-};
+pub use entry::{lower_dae_for_gpu_preparation, lower_dae_for_simulation};
 pub use probe::{
     EvalAtProbe, JacobianProbe, ObjectiveGradientProbe, ParameterJacobianProbe,
     StateAndParameterJacobianProbe, SteadyStateSensitivityProbe, eval_dae_at, jacobian_for_dae,

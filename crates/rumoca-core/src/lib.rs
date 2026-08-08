@@ -6,15 +6,14 @@
 //!
 //! This crate provides common error infrastructure for compiler phases:
 //!
-//! - [`SourceSpan`] - Re-exported from miette for span conversion
+//! - [`Span`] - Source-identified spans retained by phase errors
 //! - [`BoxedResult`] - Type alias for `Result<T, Box<E>>` pattern
 //! - [`error_constructor!`] - Macro for generating error constructors
 //!
 //! ## Example Usage
 //!
 //! ```ignore
-//! use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
-//! use rumoca_core::Span;
+//! use rumoca_core::{BoxedResult, Span, error_constructor};
 //!
 //! pub type FlattenResult<T> = BoxedResult<T, FlattenError>;
 //!
@@ -22,7 +21,7 @@
 //! pub enum FlattenError {
 //!     #[error("undefined variable: {name}")]
 //!     #[diagnostic(code(rumoca::flatten::EF001))]
-//!     UndefinedVariable { name: String, span: SourceSpan },
+//!     UndefinedVariable { name: String, span: Span },
 //! }
 //!
 //! impl FlattenError {
@@ -33,33 +32,52 @@
 use indexmap::IndexSet;
 use miette::{Diagnostic as MietteDiagnostic, LabeledSpan, NamedSource, Severity};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 // IR vocabulary and foundation primitives (DefId, Span, Expression, ...).
 // Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
+mod clock_lattice;
+pub mod dependency_graph;
+mod effective_type;
 mod expression_rewriter;
 mod expression_visitor;
 mod ir_primitives;
 mod modelica_builtins;
+mod source_map;
 mod statement_rewriter;
 mod structured_domain;
 mod subscript;
+pub mod text_position;
+pub use clock_lattice::{
+    ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockPhaseAnchor, ClockRational,
+    PeriodicClockSchedule,
+};
+pub use dependency_graph::{DependencyGraphError, DependencyScc, dependency_first_sccs};
+pub use effective_type::{EffectiveType, EffectiveTypeError};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
 pub use ir_primitives::*;
 pub use modelica_builtins::*;
+pub use source_map::{SourceMap, placeholder_source_name, source_id_for_name};
 pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
-    AffineForm, ArrayAccess, ComprehensionTemplate, RegularForFamily, StructuredIndexBinder,
-    StructuredIndexDomain, StructuredIndexDomainError, row_major_strides,
+    AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, RegularForFamily,
+    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, row_major_strides,
 };
 pub use subscript::Subscript;
 
 /// Internal DAE-level sample tick callable emitted after source `sample(...)`
 /// has been lowered out of the DAE expression language.
 pub const INTERNAL_SAMPLE_FUNCTION_NAME: &str = "__rumoca_sample";
+/// Relative tolerance used by the scheduler and lowered clock-tick predicates.
+///
+/// Both compare dimensionless tick coordinates using
+/// `tol * (1 + max(abs(a), abs(b)))`; keeping the constant here prevents
+/// clocked rows and runtime scheduling from recognizing different instants.
+pub const SCHEDULE_TIME_RELATIVE_TOLERANCE: f64 = 1.0e-12;
+
+/// Relative tolerance for accepting a compile-time clock ratio as an integer.
+pub const CLOCK_FACTOR_INTEGER_TOLERANCE: f64 = 1.0e-9;
 
 /// MLS §16.5.1: `sample(u)` is the clocked value-sampling operator with an
 /// inferred clock. It is not the event-generating `sample(start, interval)`
@@ -80,6 +98,26 @@ pub fn source_temporal_function_name(name: &str) -> Option<&'static str> {
         "reinit" => Some("reinit"),
         _ => None,
     }
+}
+
+/// Return the canonical name for any source-level temporal or synchronous
+/// function-call operator forbidden in solver-facing DAE expressions.
+///
+/// Callers with a structured [`Reference`] should pass `reference.last_segment()`;
+/// this exact-name table is the shared vocabulary owner and does not recover
+/// hierarchy from rendered strings.
+pub fn source_dae_forbidden_function_name(name: &str) -> Option<&'static str> {
+    source_temporal_function_name(name).or(match name {
+        "Clock" => Some("Clock"),
+        "hold" => Some("hold"),
+        "subSample" => Some("subSample"),
+        "superSample" => Some("superSample"),
+        "shiftSample" => Some("shiftSample"),
+        "backSample" => Some("backSample"),
+        "noClock" => Some("noClock"),
+        "firstTick" => Some("firstTick"),
+        _ => None,
+    })
 }
 
 /// Return the canonical name for source temporal function-call operators after
@@ -104,15 +142,24 @@ pub fn runtime_flow_action_function_short_name(name: &str) -> Option<&'static st
     runtime_flow_action_function_name(top_level_last_segment(name))
 }
 
-/// Return the canonical name for source temporal builtin operators that must
-/// be lowered before DAE/Solve exits.
-pub fn source_temporal_builtin_name(function: BuiltinFunction) -> Option<&'static str> {
+/// Return the canonical name for typed source temporal or synchronous
+/// intrinsics that must be lowered before DAE/Solve exits.
+pub fn source_dae_forbidden_builtin_name(function: BuiltinFunction) -> Option<&'static str> {
     match function {
         BuiltinFunction::Pre => Some("pre"),
         BuiltinFunction::Edge => Some("edge"),
         BuiltinFunction::Change => Some("change"),
         BuiltinFunction::Sample => Some("sample"),
         BuiltinFunction::Reinit => Some("reinit"),
+        BuiltinFunction::Clock => Some("Clock"),
+        BuiltinFunction::Hold => Some("hold"),
+        BuiltinFunction::Previous => Some("previous"),
+        BuiltinFunction::Interval => Some("interval"),
+        BuiltinFunction::SubSample => Some("subSample"),
+        BuiltinFunction::SuperSample => Some("superSample"),
+        BuiltinFunction::ShiftSample => Some("shiftSample"),
+        BuiltinFunction::BackSample => Some("backSample"),
+        BuiltinFunction::NoClock => Some("noClock"),
         _ => None,
     }
 }
@@ -141,6 +188,101 @@ pub fn workspace_root_from_manifest_dir(manifest_dir: &str) -> PathBuf {
 /// Resolve the MSL cache directory: `<workspace>/target/msl`.
 pub fn msl_cache_dir_from_manifest(manifest_dir: &str) -> PathBuf {
     workspace_root_from_manifest_dir(manifest_dir).join("target/msl")
+}
+
+// =============================================================================
+// Solver names (the single authority every entry point resolves through)
+// =============================================================================
+
+/// Every solver a user may name, in the spelling reports and errors use.
+///
+/// This is the whole set. A solver that cannot run today carries no name here:
+/// a surface that still offered one would be advertising a method the tree
+/// cannot deliver, and the caller would have no way to tell the difference
+/// until the run silently used another one.
+pub const SOLVER_NAMES: [&str; 3] = ["auto", "bdf", "rk-like"];
+
+/// A solver name that is not one this tree can run.
+///
+/// Reported rather than absorbed. The alternative — dropping an unrecognized
+/// name and keeping whatever solver was already in effect — is a silent
+/// downgrade: the caller asked for one integrator and a different one ran, with
+/// nothing in the output saying so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSolverName {
+    pub requested: String,
+}
+
+impl std::fmt::Display for UnknownSolverName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown solver '{}'; valid solvers are: {}",
+            self.requested,
+            SOLVER_NAMES.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownSolverName {}
+
+/// Canonicalize a user-supplied solver name, or say it is not one we run.
+///
+/// Matching ignores case and `-` / `_` / space, so `RK_Like` and `rk-like` are
+/// the same request; the returned spelling is always the canonical one from
+/// [`SOLVER_NAMES`], so a name recorded downstream is comparable by equality.
+///
+/// Every surface that accepts a solver as free text — scenario configs, the
+/// editor preset, `experiment(Solver=...)` — resolves through this, so an
+/// unrunnable name is reported the same way everywhere instead of being
+/// rejected on one route and quietly ignored on another.
+pub fn canonical_solver_name(raw: &str) -> Result<&'static str, UnknownSolverName> {
+    let trimmed = raw.trim();
+    let normalized = trimmed.to_ascii_lowercase().replace(['-', '_', ' '], "");
+    SOLVER_NAMES
+        .into_iter()
+        .find(|name| name.replace(['-', '_', ' '], "") == normalized)
+        .ok_or_else(|| UnknownSolverName {
+            requested: trimmed.to_string(),
+        })
+}
+
+#[cfg(test)]
+mod solver_name_tests {
+    use super::{SOLVER_NAMES, canonical_solver_name};
+
+    #[test]
+    fn spelling_variants_resolve_to_the_canonical_name() {
+        for (raw, canonical) in [
+            ("auto", "auto"),
+            ("  AUTO ", "auto"),
+            ("bdf", "bdf"),
+            ("BDF", "bdf"),
+            ("rk-like", "rk-like"),
+            ("RK_Like", "rk-like"),
+            ("rk like", "rk-like"),
+        ] {
+            assert_eq!(canonical_solver_name(raw), Ok(canonical));
+        }
+    }
+
+    /// A name we cannot run is reported, never silently replaced by whichever
+    /// solver happened to be in effect.
+    #[test]
+    fn an_unrunnable_name_is_reported_with_the_valid_set() {
+        for raw in ["esdirk34", "trbdf2", "dassl", "cvode", ""] {
+            let error = canonical_solver_name(raw)
+                .expect_err("only the names this tree can run may resolve");
+            let rendered = error.to_string();
+            assert!(rendered.contains("unknown solver"), "{rendered}");
+            for name in SOLVER_NAMES {
+                assert!(
+                    rendered.contains(name),
+                    "the report must list every valid solver; missing {name}: {rendered}"
+                );
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -486,6 +628,12 @@ pub fn span_to_source_span(span: Span) -> SourceSpan {
     (start, len).into()
 }
 
+impl From<Span> for SourceSpan {
+    fn from(span: Span) -> Self {
+        span_to_source_span(span)
+    }
+}
+
 // =============================================================================
 // Modelica Built-in Types and Functions (MLS §3.7, §4.9, §16)
 // =============================================================================
@@ -597,7 +745,19 @@ pub const BUILTIN_FUNCTIONS: &[&str] = &[
     // Special (MLS §3.7.4)
     "noEvent",
     "connect",
+    // MLS §12.3 purity wrapper; see [`PURITY_WRAPPER`].
+    PURITY_WRAPPER,
 ];
+
+/// MLS 3.7 §12.3 purity wrapper: `pure(impureFunction(…))`.
+///
+/// `pure` is a keyword, so this name can never be shadowed by a declaration.
+/// The wrapper "only by-passes the purity checking of the callee
+/// impureFunction; the argument expressions of the function call are not
+/// affected", so it carries no value of its own: the purity checks skip the
+/// callee it wraps, the type checker gives it the type of what it wraps, and
+/// lowering erases it.
+pub const PURITY_WRAPPER: &str = "pure";
 
 /// Built-in variables/constants available in all scopes.
 ///
@@ -703,150 +863,13 @@ pub fn is_builtin_function(name: &str) -> bool {
             | "array"
             | "noEvent"
             | "connect"
+            | "pure"
     )
 }
 
 /// Check if a name is a built-in variable.
 pub fn is_builtin_variable(name: &str) -> bool {
     matches!(name, "time" | "Connections")
-}
-
-// =============================================================================
-// Source Map
-// =============================================================================
-
-/// Maps file names to SourceIds and stores source content for diagnostics.
-///
-/// This enables diagnostics to point to the correct source file when
-/// compiling models that span multiple files.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SourceMap {
-    /// (stable source id, name, content) in deterministic insertion order.
-    files: Vec<(SourceId, String, Arc<str>)>,
-    /// Reverse lookup from file name to SourceId.
-    #[serde(skip)]
-    name_to_id: HashMap<String, SourceId>,
-    /// Reverse lookup from SourceId to `files` index.
-    #[serde(skip)]
-    id_to_index: HashMap<SourceId, usize>,
-}
-
-impl SourceMap {
-    /// Create a new empty source map.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Add a source file and return its SourceId.
-    ///
-    /// If the file was already added, returns the existing SourceId.
-    pub fn add(&mut self, name: &str, content: &str) -> SourceId {
-        self.add_shared(name, Arc::<str>::from(content))
-    }
-
-    /// Add a source file using shared source content and return its SourceId.
-    ///
-    /// This lets LSP/session caches share source text with diagnostics instead
-    /// of copying whole files into every `SourceMap`.
-    pub fn add_shared(&mut self, name: &str, content: Arc<str>) -> SourceId {
-        if let Some(&id) = self.name_to_id.get(name) {
-            return id;
-        }
-        if let Some((id, _, _)) = self
-            .files
-            .iter()
-            .find(|(_, file_name, _)| file_name == name)
-        {
-            self.name_to_id.insert(name.to_string(), *id);
-            return *id;
-        }
-        let id = SourceId::from_source_name(name);
-        if self.id_to_index.contains_key(&id)
-            || self.files.iter().any(|(source_id, _, _)| *source_id == id)
-        {
-            self.name_to_id.insert(name.to_string(), id);
-            return id;
-        }
-        let index = self.files.len();
-        self.files.push((id, name.to_string(), content));
-        self.name_to_id.insert(name.to_string(), id);
-        self.id_to_index.insert(id, index);
-        id
-    }
-
-    /// Look up a SourceId by file name.
-    pub fn get_id(&self, name: &str) -> Option<SourceId> {
-        self.name_to_id.get(name).copied().or_else(|| {
-            self.files
-                .iter()
-                .find(|(_, file_name, _)| file_name == name)
-                .map(|(id, _, _)| *id)
-                .or_else(|| {
-                    let id = SourceId::from_source_name(name);
-                    self.get_source(id).map(|_| id)
-                })
-        })
-    }
-
-    /// Get (name, content) for a SourceId.
-    pub fn get_source(&self, id: SourceId) -> Option<(&str, &str)> {
-        self.id_to_index
-            .get(&id)
-            .and_then(|&index| self.files.get(index))
-            .or_else(|| self.files.iter().find(|(source_id, _, _)| *source_id == id))
-            .map(|(_, name, content)| (name.as_str(), content.as_ref()))
-    }
-
-    /// Get the first source id in deterministic map order.
-    pub fn first_source_id(&self) -> Option<SourceId> {
-        self.files.first().map(|(id, _, _)| *id)
-    }
-
-    /// Try to create a Span from a file name and byte offsets.
-    pub fn try_location_to_span(&self, file_name: &str, start: usize, end: usize) -> Option<Span> {
-        let source_id = self.name_to_id.get(file_name).copied().or_else(|| {
-            self.get_source(SourceId::from_source_name(file_name))
-                .map(|_| SourceId::from_source_name(file_name))
-        })?;
-        Some(Span::from_offsets(source_id, start, end))
-    }
-
-    /// Rebuild the name_to_id index after deserialization.
-    pub fn rebuild_index(&mut self) {
-        self.name_to_id.clear();
-        self.id_to_index.clear();
-        for (i, (id, name, _)) in self.files.iter().enumerate() {
-            self.name_to_id.insert(name.clone(), *id);
-            self.id_to_index.insert(*id, i);
-        }
-    }
-
-    /// Snapshot file-name to source-id mappings.
-    pub fn source_ids(&self) -> HashMap<String, SourceId> {
-        if !self.name_to_id.is_empty() {
-            return self.name_to_id.clone();
-        }
-        self.files
-            .iter()
-            .map(|(id, name, _)| (name.clone(), *id))
-            .collect()
-    }
-
-    /// Return a copy that preserves source-id/name mappings but omits source text.
-    pub fn without_source_contents(&self) -> Self {
-        let files = self
-            .files
-            .iter()
-            .map(|(id, name, _)| (*id, name.clone(), Arc::<str>::from("")))
-            .collect();
-        let mut source_map = Self {
-            files,
-            name_to_id: HashMap::new(),
-            id_to_index: HashMap::new(),
-        };
-        source_map.rebuild_index();
-        source_map
-    }
 }
 
 /// Severity level for diagnostics.
@@ -921,6 +944,20 @@ impl From<PrimaryLabel> for Label {
             message: value.message,
             primary: true,
         }
+    }
+}
+
+/// Normalize a miette-namespaced diagnostic code to its bare SPEC_0008 form.
+///
+/// Phase errors render their codes as `rumoca::<phase>::<CODE>` (for example
+/// `rumoca::todae::ED001`), but SPEC_0008 defines the canonical code as the
+/// bare `ED001`. Artifact writers that key maps or taxonomies by code must
+/// normalize first, otherwise the same failure appears under two names.
+/// Codes that are already bare pass through unchanged.
+pub fn short_phase_error_code(code: &str) -> &str {
+    match code.rsplit("::").next() {
+        Some(short) if !short.is_empty() => short,
+        _ => code,
     }
 }
 
@@ -1128,6 +1165,65 @@ pub trait PhaseError {
     fn to_diagnostic(&self) -> Diagnostic;
 }
 
+/// Convert a miette-derived phase error without discarding Rumoca source ids.
+///
+/// Miette labels retain byte offsets but do not identify which source in a
+/// multi-file [`SourceMap`] owns those offsets. Phase-local error enums keep
+/// the original [`Span`] values and pass them here in the same order as their
+/// `#[label]` fields. The miette representation remains useful for standalone
+/// rendering while the common diagnostic remains source-identifiable.
+#[must_use]
+pub fn miette_phase_error_to_diagnostic(
+    error: &dyn MietteDiagnostic,
+    source_spans: &[Span],
+) -> Diagnostic {
+    let code = error
+        .code()
+        .map(|code| short_phase_error_code(&code.to_string()).to_string())
+        .expect("phase-local user errors must have a SPEC_0008 diagnostic code");
+    let severity = match error.severity().unwrap_or(Severity::Error) {
+        Severity::Error => DiagnosticSeverity::Error,
+        Severity::Warning => DiagnosticSeverity::Warning,
+        Severity::Advice => DiagnosticSeverity::Note,
+    };
+    let mut labels = Vec::new();
+    if let Some(miette_labels) = error.labels() {
+        for (index, miette_label) in miette_labels.enumerate() {
+            let Some(span) = source_spans.get(index).copied() else {
+                continue;
+            };
+            if span.is_dummy() {
+                continue;
+            }
+            debug_assert_eq!(miette_label.offset(), span.start.0);
+            debug_assert_eq!(miette_label.len(), span.end.0.saturating_sub(span.start.0));
+            labels.push(Label {
+                span,
+                message: miette_label.label().map(str::to_string),
+                primary: miette_label.primary() || index == 0,
+            });
+        }
+    }
+    let mut notes = Vec::new();
+    if let Some(help) = error.help() {
+        notes.push(help.to_string());
+    }
+    if !source_spans.is_empty() && labels.is_empty() {
+        notes.push(
+            "source provenance was unavailable for this diagnostic; the producing phase must \
+             preserve a non-dummy owner span"
+                .to_string(),
+        );
+    }
+    Diagnostic {
+        severity,
+        code: Some(code),
+        message: error.to_string(),
+        labels,
+        notes,
+    }
+}
+
 /// A collection of diagnostics.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Diagnostics {
@@ -1196,12 +1292,12 @@ pub use miette::SourceSpan;
 /// ```
 pub type BoxedResult<T, E> = Result<T, Box<E>>;
 
-/// Macro for generating error constructor methods with span conversion.
+/// Macro for generating error constructor methods.
 ///
 /// This macro generates constructor methods for error enum variants that
-/// contain a `span: SourceSpan` field. It handles the common pattern of:
+/// contain a `span: Span` field. It handles the common pattern of:
 /// 1. Taking `impl Into<String>` for string fields
-/// 2. Taking `Span` and converting to `SourceSpan`
+/// 2. Retaining the source-identified `Span`
 ///
 /// # Syntax
 ///
@@ -1209,7 +1305,7 @@ pub type BoxedResult<T, E> = Result<T, Box<E>>;
 /// error_constructor!(method_name, VariantName { field1: Type1, field2: Type2 });
 /// ```
 ///
-/// The last field is assumed to be `span: Span` which gets converted to `SourceSpan`.
+/// The last field is assumed to be `span: Span`, retaining source identity.
 ///
 /// # Example
 ///
@@ -1230,7 +1326,7 @@ macro_rules! error_constructor {
         pub fn $fn_name($field: impl Into<String>, span: $crate::Span) -> Self {
             Self::$variant {
                 $field: $field.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1246,7 +1342,7 @@ macro_rules! error_constructor {
             Self::$variant {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1264,7 +1360,7 @@ macro_rules! error_constructor {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
                 $f3: $f3.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1284,7 +1380,7 @@ macro_rules! error_constructor {
                 $f2: $f2.into(),
                 $f3: $f3.into(),
                 $f4: $f4.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1306,7 +1402,7 @@ macro_rules! error_constructor {
                 $f3: $f3.into(),
                 $f4: $f4.into(),
                 $f5: $f5.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1315,9 +1411,7 @@ macro_rules! error_constructor {
     ($fn_name:ident, $variant:ident {}) => {
         /// Create an error with the given span.
         pub fn $fn_name(span: $crate::Span) -> Self {
-            Self::$variant {
-                span: $crate::span_to_source_span(span),
-            }
+            Self::$variant { span }
         }
     };
 
@@ -1459,73 +1553,15 @@ mod path_utils_tests {
 }
 
 #[cfg(test)]
-mod source_map_tests {
-    use super::*;
-
-    #[test]
-    fn try_location_to_span_does_not_misattribute_unknown_files_to_source_zero() {
-        let mut source_map = SourceMap::new();
-        let source = source_map.add("known.mo", "model Known end Known;");
-
-        assert_eq!(
-            source_map.try_location_to_span("known.mo", 1, 5),
-            Some(Span::from_offsets(source, 1, 5))
-        );
-        assert_eq!(source_map.try_location_to_span("missing.mo", 1, 5), None);
-    }
-
-    #[test]
-    fn source_ids_are_stable_across_source_map_insertion_order() {
-        let mut first_order = SourceMap::new();
-        let first_known = first_order.add("known.mo", "model Known end Known;");
-        first_order.add("other.mo", "model Other end Other;");
-
-        let mut second_order = SourceMap::new();
-        second_order.add("other.mo", "model Other end Other;");
-        let second_known = second_order.add("known.mo", "model Known end Known;");
-
-        assert_eq!(first_known, second_known);
-        assert_eq!(first_known, SourceId::from_source_name("known.mo"));
-    }
-
-    #[test]
-    fn miette_report_uses_primary_label_source_before_first_label() {
-        let mut source_map = SourceMap::new();
-        let first = source_map.add("first.mo", "model First end First;");
-        let second = source_map.add("second.mo", "model Second end Second;");
-        let diagnostic = Diagnostic::error(
-            "E000",
-            "primary source selection",
-            PrimaryLabel::new(Span::from_offsets(second, 6, 12)).with_message("primary source"),
-        )
-        .with_label(Label::secondary(Span::from_offsets(first, 0, 5)).with_message("secondary"));
-
-        let report = diagnostic.to_miette_with_source_map(&source_map);
-        assert_eq!(report.labels.len(), 1);
-        assert_eq!(report.labels[0].label(), Some("primary source"));
-        assert_eq!(report.labels[0].offset(), 6);
-    }
-}
-
-#[cfg(test)]
 pub mod error_macro_tests {
     use super::*;
 
     // Test enum for the macro
     #[derive(Debug, Clone)]
     pub enum TestError {
-        SingleField {
-            name: String,
-            span: SourceSpan,
-        },
-        TwoFields {
-            a: String,
-            b: String,
-            span: SourceSpan,
-        },
-        SpanOnly {
-            span: SourceSpan,
-        },
+        SingleField { name: String, span: Span },
+        TwoFields { a: String, b: String, span: Span },
+        SpanOnly { span: Span },
     }
 
     impl TestError {
@@ -1547,8 +1583,9 @@ pub mod error_macro_tests {
         match err {
             TestError::SingleField { name, span: s } => {
                 assert_eq!(name, "test_name");
-                assert_eq!(s.offset(), 10);
-                assert_eq!(s.len(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1562,7 +1599,9 @@ pub mod error_macro_tests {
             TestError::TwoFields { a, b, span: s } => {
                 assert_eq!(a, "first");
                 assert_eq!(b, "second");
-                assert_eq!(s.offset(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1574,8 +1613,9 @@ pub mod error_macro_tests {
         let err = TestError::span_only(span);
         match err {
             TestError::SpanOnly { span: s } => {
-                assert_eq!(s.offset(), 10);
-                assert_eq!(s.len(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1595,5 +1635,24 @@ mod builtin_registry_tests {
                 builtin.name()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod short_phase_error_code_tests {
+    use super::short_phase_error_code;
+
+    #[test]
+    fn short_phase_error_code_strips_miette_namespace() {
+        assert_eq!(short_phase_error_code("rumoca::todae::ED001"), "ED001");
+        assert_eq!(short_phase_error_code("rumoca::resolve::ER003"), "ER003");
+    }
+
+    #[test]
+    fn short_phase_error_code_passes_bare_codes_through() {
+        assert_eq!(short_phase_error_code("ED001"), "ED001");
+        assert_eq!(short_phase_error_code(""), "");
+        // A trailing separator has no bare code to extract; keep the input.
+        assert_eq!(short_phase_error_code("rumoca::todae::"), "rumoca::todae::");
     }
 }

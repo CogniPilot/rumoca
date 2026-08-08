@@ -7,10 +7,32 @@
 //!
 //! Run with:
 //! `cargo test --release --package rumoca-test-msl --features msl-full-test --test msl_tests balance_pipeline::balance_pipeline_core::test_msl_all -- --nocapture`
+//!
+//! # Per-model resource acceptance contract
+//!
+//! Every model attempt runs under five declared per-model ceilings. Each is
+//! raise-only from the parity config (a config may buy a bigger budget for a
+//! diagnostic lane; it can never shrink one below the value the committed
+//! baseline was measured with), and each overrun is loud, carries a typed
+//! [`rumoca_worker::ModelFailureBucket`] with a named owner, and cannot hang:
+//!
+//! | ceiling | default | override | overrun bucket |
+//! |---|---|---|---|
+//! | per-phase compile wall | 10 s | `model_attempt_timeout_secs` | `Timeout` |
+//! | simulation/solver wall | 10 s | `sim_timeout_secs` | `Timeout` |
+//! | worker resident+swap | 6 GiB | `model_worker_memory_mb` | `MemoryLimit` |
+//! | total compile wall | 40 s | `model_compile_wall_limit_secs` | `ResourceBudget` |
+//! | Solve-IR serialized size | 32 MB | `solve_ir_size_limit_mb` | `ResourceBudget` |
+//!
+//! A model is **accepted** when it fits all five. Nothing else about it is
+//! judged here: shape, node kinds, op counts, and equation counts are all free.
+//! `rumoca_test_msl::resource_budget` states the two `ResourceBudget` ceilings
+//! in full, including why measurement stops at the ceiling rather than
+//! discovering how far past it a model went.
 
 use rayon::prelude::*;
 use rumoca_compile::{
-    compile::core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir},
+    compile::core::{VarName, msl_cache_dir_from_manifest, workspace_root_from_manifest_dir},
     compile::{
         CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,
         compile_phase_timing_stats, reset_compile_phase_timing_stats,
@@ -19,7 +41,7 @@ use rumoca_compile::{
 };
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -230,83 +252,175 @@ fn names_match_via_component_prefix(active_name: &str, discrete_name: &str) -> b
         || has_component_boundary_prefix(active_name, discrete_name)
 }
 
-fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
-    for eq in &dae.continuous.equations {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
+/// A sorted, deduplicated index of every variable name that appears anywhere in
+/// the DAE or the flat model's `when` clauses.
+///
+/// The naive form of this check was `O(D x A)`: for each discrete variable it
+/// scanned every active name and re-ran a prefix comparison. On large MSL models
+/// (thousands of active names, hundreds of discrete variables) that dominated
+/// the per-model accounting. Sorting once turns each lookup into a bounded
+/// number of binary searches.
+struct ActiveNameIndex {
+    names: Vec<VarName>,
+}
+
+impl ActiveNameIndex {
+    fn build(flat: &rumoca_ir_flat::Model, dae: &Dae) -> Self {
+        let mut names = Vec::new();
+        collect_active_refs_from_dae(dae, &mut names);
+        collect_active_refs_from_flat(flat, &mut names);
+        names.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+        names.dedup_by(|a, b| a.as_str() == b.as_str());
+        Self { names }
+    }
+
+    /// True when `name` is active: equal to an indexed name, an ancestor of one,
+    /// or a descendant of one, with `.`/`[` as the component boundary.
+    ///
+    /// Equivalent to `self.names.iter().any(|active|
+    /// names_match_via_component_prefix(active.as_str(), name))`, which
+    /// `active_name_index_matches_reference_prefix_semantics` pins.
+    fn matches_component(&self, name: &str) -> bool {
+        self.contains_exact(name) || self.has_indexed_ancestor(name) || self.has_descendant(name)
+    }
+
+    fn contains_exact(&self, name: &str) -> bool {
+        self.names
+            .binary_search_by(|probe| probe.as_str().cmp(name))
+            .is_ok()
+    }
+
+    /// Some indexed name is a strict component-boundary prefix of `name`.
+    fn has_indexed_ancestor(&self, name: &str) -> bool {
+        name.char_indices()
+            .filter(|(_, ch)| *ch == '.' || *ch == '[')
+            .any(|(offset, _)| self.contains_exact(&name[..offset]))
+    }
+
+    /// Some indexed name extends `name` past a component boundary. Names sharing
+    /// a prefix are contiguous under lexicographic order, so one probe per
+    /// separator is exhaustive.
+    fn has_descendant(&self, name: &str) -> bool {
+        ['.', '['].into_iter().any(|sep| {
+            let key = format!("{name}{sep}");
+            let idx = self
+                .names
+                .partition_point(|probe| probe.as_str() < key.as_str());
+            self.names
+                .get(idx)
+                .is_some_and(|probe| probe.as_str().starts_with(&key))
+        })
+    }
+}
+
+fn push_var_ref(names: &mut Vec<VarName>, name: &VarName) {
+    names.push(name.clone());
+}
+
+fn collect_checked_expr_refs<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    root: rumoca_ir_dae::ExprId<'dae>,
+    active: &mut Vec<VarName>,
+) {
+    rumoca_ir_dae::for_each_expression(view, root, |_, expression| {
+        let Some(variable_id) = expression.variable_coordinate() else {
+            return;
+        };
+        let variable = view
+            .variable(variable_id)
+            .expect("checked coordinate resolves to its declared variable");
+        push_var_ref(active, variable.name());
+    });
+}
+
+fn collect_checked_b1c_owner_refs<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    owner: rumoca_ir_dae::DiscreteValueOwnerView<'dae>,
+    active: &mut Vec<VarName>,
+) {
+    for target in owner.targets().iter() {
+        let variable = view
+            .variable(target.into())
+            .expect("checked B.1c target resolves");
+        push_var_ref(active, variable.name());
+    }
+    for (value, _) in owner
+        .branches()
+        .iter()
+        .flat_map(|branch| branch.values().iter())
+    {
+        collect_checked_expr_refs(view, value, active);
+    }
+}
+
+fn collect_active_refs_from_dae(dae: &Dae, active: &mut Vec<VarName>) {
+    dae.inspect(|view| {
+        for index in 0..view.continuous_equation_count() {
+            let equation = view
+                .continuous_equation(index)
+                .expect("dense checked continuous equation resolves");
+            collect_checked_expr_refs(view, equation.residual(), active);
         }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-    }
-    for eq in &dae.initialization.equations {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
+        for index in 0..view.initialization_equation_count() {
+            let equation = view
+                .initialization_equation(index)
+                .expect("dense checked initialization equation resolves");
+            collect_checked_expr_refs(view, equation.residual(), active);
         }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-    }
-    for eq in &dae.discrete.real_updates {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
+        for index in 0..view.discrete_real_equation_count() {
+            let equation = view
+                .discrete_real_equation(index)
+                .expect("dense checked discrete equation resolves");
+            collect_checked_expr_refs(view, equation.residual(), active);
         }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-    }
-    for eq in &dae.discrete.valued_updates {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
+        for index in 0..view.discrete_value_owner_count() {
+            let owner_id = view
+                .discrete_value_owner_id(index)
+                .expect("dense checked B.1c owner identity resolves");
+            let owner = view
+                .discrete_value_owner(owner_id)
+                .expect("dense checked B.1c owner resolves");
+            collect_checked_b1c_owner_refs(view, owner, active);
         }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-    }
-    for eq in &dae.conditions.equations {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
+        for index in 0..view.relation_count() {
+            let relation_id = view
+                .relation_id(index)
+                .expect("dense checked relation identity resolves");
+            let relation = view
+                .relation(relation_id)
+                .expect("dense checked relation resolves");
+            collect_checked_expr_refs(view, relation.expression(), active);
         }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-    }
-    for relation in &dae.conditions.relations {
-        let mut refs = HashSet::new();
-        relation.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-    }
+    });
 }
 
 fn collect_active_refs_from_flat_when_equation(
     equation: &rumoca_ir_flat::WhenEquation,
-    active: &mut HashSet<String>,
+    active: &mut Vec<VarName>,
 ) {
     match equation {
         rumoca_ir_flat::WhenEquation::Assign { target, value, .. } => {
-            active.insert(target.as_str().to_string());
-            let mut refs = HashSet::new();
-            value.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            push_var_ref(active, target);
+            value.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Reinit { state, value, .. } => {
-            active.insert(state.as_str().to_string());
-            let mut refs = HashSet::new();
-            value.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            push_var_ref(active, state);
+            value.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
-            let mut refs = HashSet::new();
-            condition.collect_var_refs(&mut refs);
-            message.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            condition.collect_var_refs(active);
+            message.collect_var_refs(active);
+            if let Some(level) = level {
+                level.collect_var_refs(active);
+            }
         }
         rumoca_ir_flat::WhenEquation::Terminate { message, .. } => {
-            let mut refs = HashSet::new();
-            message.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            message.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Conditional {
             branches,
@@ -314,68 +428,54 @@ fn collect_active_refs_from_flat_when_equation(
             ..
         } => {
             for (condition, equations) in branches {
-                let mut refs = HashSet::new();
-                condition.collect_var_refs(&mut refs);
-                active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+                condition.collect_var_refs(active);
                 for nested in equations {
                     collect_active_refs_from_flat_when_equation(nested, active);
                 }
             }
-            for nested in else_branch {
-                collect_active_refs_from_flat_when_equation(nested, active);
+            if let Some(else_branch) = else_branch {
+                for nested in else_branch {
+                    collect_active_refs_from_flat_when_equation(nested, active);
+                }
             }
         }
         rumoca_ir_flat::WhenEquation::FunctionCallOutputs {
             outputs, function, ..
         } => {
             for out in outputs {
-                active.insert(out.as_str().to_string());
+                push_var_ref(active, out);
             }
-            let mut refs = HashSet::new();
-            function.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            function.collect_var_refs(active);
         }
     }
 }
 
-fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut HashSet<String>) {
-    for when in &flat.when_clauses {
-        let mut refs = HashSet::new();
-        when.condition.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        for equation in &when.equations {
-            collect_active_refs_from_flat_when_equation(equation, active);
+fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut Vec<VarName>) {
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            branch.condition.collect_var_refs(active);
+            for equation in &branch.equations {
+                collect_active_refs_from_flat_when_equation(equation, active);
+            }
         }
     }
 }
 
 fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 {
-    let mut active: HashSet<String> = HashSet::new();
-    collect_active_refs_from_dae(dae, &mut active);
-    collect_active_refs_from_flat(flat, &mut active);
+    let active = ActiveNameIndex::build(flat, dae);
 
-    let active_discrete = dae
-        .variables
-        .discrete_reals
-        .iter()
-        .filter(|(name, _)| {
-            active
-                .iter()
-                .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
-        })
-        .map(|(_, v)| v.size())
-        .sum::<usize>()
-        + dae
-            .variables
-            .discrete_valued
-            .iter()
-            .filter(|(name, _)| {
-                active
-                    .iter()
-                    .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
+    let active_discrete = dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| {
+                matches!(
+                    variable.role(),
+                    rumoca_ir_dae::VariableRole::DiscreteReal
+                        | rumoca_ir_dae::VariableRole::DiscreteValue
+                ) && active.matches_component(variable.name().as_str())
             })
-            .map(|(_, v)| v.size())
-            .sum::<usize>();
+            .map(|(_, variable)| variable.scalar_count())
+            .sum::<usize>()
+    });
 
     active_discrete as i64
 }
@@ -401,12 +501,17 @@ fn initialization_balance_check(
     scalar_equations: i64,
 ) -> InitializationBalanceCheck {
     let deficit_before = (scalar_unknowns - scalar_equations).max(0);
-    let initial_equation_scalars = dae
-        .initialization
-        .equations
-        .iter()
-        .map(|eq| eq.scalar_count as i64)
-        .sum::<i64>();
+    let initial_equation_scalars = dae.inspect(|view| {
+        let residual_rows = view.initialization_equation_count() as i64;
+        let structured_rows = (0..view.initialization_family_count())
+            .map(|index| {
+                view.initialization_family(index)
+                    .expect("dense checked initialization family resolves")
+                    .scalar_rows() as i64
+            })
+            .sum::<i64>();
+        residual_rows + structured_rows
+    });
     let initial_algorithm_scalars = 0;
     let initial_available = initial_equation_scalars + initial_algorithm_scalars;
     let closure_used = initial_available.min(deficit_before);
@@ -458,6 +563,7 @@ fn extract_undefined_var(error: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MslModelResult {
     model_name: String,
     phase_reached: String,
@@ -508,6 +614,8 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim_error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_error_span: Option<rumoca_compile::compile::core::Span>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ic_status: Option<String>,
@@ -528,6 +636,16 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ir_solve_lower_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_preserved_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_scalarized_family_rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_preservation_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_preservation_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_backend_build_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_run_seconds: Option<f64>,
@@ -546,9 +664,27 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ir_solve_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_solve_error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_phase: Option<rumoca_worker::WorkerProgressPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_seconds: Option<f64>,
+    /// Component breakdown for an unbalanced (ED001) ToDae failure. Present
+    /// only for balance failures; this is what makes the balance cohort
+    /// distinguishable from every other ToDae failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    balance_detail: Option<Box<rumoca_compile::analysis::BalanceDetail>>,
+    /// Machine-readable failure classification. Additive and optional: a result
+    /// recorded before these fields existed, or a successful attempt, simply
+    /// omits them, so historical `msl_results.json` baselines still parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_phase: Option<rumoca_worker::WorkerProgressPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_bucket: Option<rumoca_worker::ModelFailureBucket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_category: Option<rumoca_worker::ModelFailureOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -663,6 +799,186 @@ fn msl_cache_layout_valid_requires_complex_and_modelica_package() {
         msl_cache_layout_valid(&cache_root),
         "cache root with Complex.mo and Modelica package must be accepted"
     );
+}
+
+/// The machine-readable classification fields are optional in the record
+/// shape: successful models carry none of them, so their absence must parse
+/// as `None` rather than growing null columns or failing decode.
+#[test]
+fn model_results_without_classification_fields_parse_as_none() {
+    let record = serde_json::json!({
+        "model_name": "Modelica.A",
+        "phase_reached": "ToDae",
+        "error": "M failed in ToDae: unbalanced model",
+        "error_code": "ED001",
+        "num_states": null,
+        "num_algebraics": null,
+        "num_f_x": null,
+        "balance": -2,
+        "is_balanced": false,
+        "is_partial": null,
+    });
+    let parsed: MslModelResult =
+        serde_json::from_value(record).expect("record without classification fields parses");
+    assert_eq!(parsed.failure_bucket, None);
+    assert_eq!(parsed.owner_category, None);
+    assert_eq!(parsed.failure_phase, None);
+    assert_eq!(parsed.failure_error_code, None);
+    // And a record without them serializes without them, so the schema does not
+    // grow null columns for successful models.
+    let re_encoded = serde_json::to_value(&parsed).expect("re-encodes");
+    assert!(re_encoded.get("failure_bucket").is_none());
+    assert!(re_encoded.get("owner_category").is_none());
+}
+
+/// The classification must survive a JSON round trip by *name*, because the
+/// names are what triage tooling and archived sweeps group on.
+#[test]
+fn classification_fields_round_trip_by_name() {
+    let mut worker_row = rumoca_worker::WorkerModelResult::phase_failure(
+        "Modelica.A".to_string(),
+        "Success",
+        "",
+        None,
+    );
+    worker_row.error = None;
+    worker_row.set_failure_classification(
+        rumoca_worker::ModelFailureClassification::new(
+            rumoca_worker::WorkerProgressPhase::Sim,
+            rumoca_worker::ModelFailureBucket::RuntimeManifoldProjection,
+        ),
+        Some("EX002".to_string()),
+    );
+    let encoded = serde_json::to_value(&worker_row).expect("worker row encodes");
+    assert_eq!(encoded["failure_bucket"], "RuntimeManifoldProjection");
+    assert_eq!(encoded["owner_category"], "Runtime");
+    assert_eq!(encoded["failure_phase"], "Sim");
+    assert_eq!(encoded["failure_error_code"], "EX002");
+
+    let parsed: MslModelResult = serde_json::from_value(encoded).expect("harness record parses");
+    assert_eq!(
+        parsed.failure_bucket,
+        Some(rumoca_worker::ModelFailureBucket::RuntimeManifoldProjection)
+    );
+    assert_eq!(
+        parsed.owner_category,
+        Some(rumoca_worker::ModelFailureOwner::Runtime)
+    );
+    let re_encoded = serde_json::to_value(&parsed).expect("harness record re-encodes");
+    assert_eq!(re_encoded["failure_bucket"], "RuntimeManifoldProjection");
+}
+
+/// A bucket name the harness does not know must fail loudly rather than being
+/// silently dropped: a producer/consumer skew has to be visible.
+#[test]
+fn an_unknown_classification_name_is_rejected_by_the_result_schema() {
+    let record = serde_json::json!({
+        "model_name": "Modelica.A",
+        "phase_reached": "Success",
+        "error": null,
+        "error_code": null,
+        "num_states": null,
+        "num_algebraics": null,
+        "num_f_x": null,
+        "balance": null,
+        "is_balanced": null,
+        "is_partial": null,
+        "failure_bucket": "SomethingFromTheFuture",
+    });
+    let error = serde_json::from_value::<MslModelResult>(record)
+        .expect_err("an unknown bucket name must not parse");
+    assert!(
+        error.to_string().contains("unknown variant"),
+        "unexpected error: {error}"
+    );
+}
+
+/// `ActiveNameIndex` replaces an `O(D x A)` scan with binary searches, so it has
+/// to agree with the retained reference predicate on every probe — a subtle
+/// prefix-boundary bug here would silently shift the `active_discrete_scalar`
+/// column of `msl_results.json` and with it the balance accounting.
+#[test]
+fn active_name_index_matches_reference_prefix_semantics() {
+    let active_names = [
+        "a",
+        "a.b",
+        "a.b[2]",
+        "a.bc",
+        "ab",
+        "controller.pid.I.y",
+        "tank[1].level",
+        "z",
+    ];
+    let index = ActiveNameIndex {
+        names: active_names
+            .iter()
+            .map(|name| VarName::new(*name))
+            .collect(),
+    };
+    // Sorted + deduplicated is the index's invariant; the literal above is
+    // already in lexicographic byte order, so assert it rather than re-sorting.
+    let mut sorted = index.names.clone();
+    sorted.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert_eq!(
+        index.names.iter().map(VarName::as_str).collect::<Vec<_>>(),
+        sorted.iter().map(VarName::as_str).collect::<Vec<_>>(),
+        "fixture must already be sorted"
+    );
+
+    let probes = [
+        "a",
+        "a.b",
+        "a.b[2]",
+        "a.b[3]",
+        "a.bc",
+        "a.bcd",
+        "ab",
+        "abc",
+        "b",
+        "controller",
+        "controller.pid",
+        "controller.pid.I",
+        "controller.pid.I.y",
+        "controller.pid.I.yy",
+        "tank",
+        "tank[1]",
+        "tank[1].level",
+        "tank[2]",
+        "z",
+        "zz",
+        "",
+    ];
+    for probe in probes {
+        let expected = index
+            .names
+            .iter()
+            .any(|active| names_match_via_component_prefix(active.as_str(), probe));
+        assert_eq!(
+            index.matches_component(probe),
+            expected,
+            "index disagreed with the reference predicate for probe '{probe}'"
+        );
+    }
+}
+
+#[test]
+fn active_name_index_deduplicates_and_sorts_on_build() {
+    let mut names = ["b.c", "a", "b.c", "a"]
+        .iter()
+        .map(|name| VarName::new(*name))
+        .collect::<Vec<_>>();
+    names.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    names.dedup_by(|a, b| a.as_str() == b.as_str());
+    let index = ActiveNameIndex { names };
+
+    assert_eq!(
+        index.names.iter().map(VarName::as_str).collect::<Vec<_>>(),
+        vec!["a", "b.c"]
+    );
+    assert!(index.matches_component("a"));
+    assert!(index.matches_component("b"));
+    assert!(index.matches_component("b.c"));
+    assert!(!index.matches_component("c"));
 }
 
 mod balance_pipeline;

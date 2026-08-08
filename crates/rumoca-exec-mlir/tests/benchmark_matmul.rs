@@ -16,9 +16,12 @@ use rumoca_exec_mlir::{
     CompiledMlirResidual, MlirError, compile_derivative_rhs as exec_compile_derivative_rhs,
 };
 use rumoca_ir_solve::{
-    ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock, SolveProblem, SparsityPattern,
+    ComputeBlock, ComputeNode, LinearOp, PatternDerivation, PatternProvenance, ScalarProgramBlock,
+    SolveProblem, StructuralPattern,
 };
 use std::time::Instant;
+
+mod support;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,7 +33,28 @@ fn fixture_span(label: &str) -> Span {
 ///
 /// A = [[-1, 0], [0, -2]]  (2×2 dense or diagonal)
 /// x  = [x1, x2]           (loaded from y[0], y[1])
-fn matmul_block(sparsity: SparsityPattern) -> ComputeBlock {
+fn pattern(
+    rows: usize,
+    columns: usize,
+    dependencies: Vec<Vec<usize>>,
+    span: Span,
+) -> StructuralPattern {
+    let provenance = PatternProvenance::derived(PatternDerivation::TensorOperand, span)
+        .expect("fixture provenance");
+    StructuralPattern::from_row_dependencies(rows, columns, &dependencies, provenance)
+        .expect("fixture structural pattern")
+}
+
+fn full_pattern(rows: usize, columns: usize, span: Span) -> StructuralPattern {
+    pattern(
+        rows,
+        columns,
+        (0..rows).map(|_| (0..columns).collect()).collect(),
+        span,
+    )
+}
+
+fn matmul_block(diagonal: bool) -> ComputeBlock {
     let span = fixture_span("benchmark_matmul_node.mo");
     // lhs_ops: fill registers 0-3 with A row-major: -1, 0, 0, -2
     let lhs_ops = vec![
@@ -59,8 +83,12 @@ fn matmul_block(sparsity: SparsityPattern) -> ComputeBlock {
             m: 2,
             k: 2,
             n: 1,
-            lhs_sparsity: sparsity,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: if diagonal {
+                pattern(2, 2, vec![vec![0], vec![1]], span)
+            } else {
+                full_pattern(2, 2, span)
+            },
+            rhs_pattern: full_pattern(2, 1, span),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
             span,
         }],
@@ -102,14 +130,28 @@ fn scalar_block() -> ComputeBlock {
         },
         LinearOp::StoreOutput { src: 2 },
     ];
-    ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
-        vec![row0, row1],
-        fixture_span("benchmark_matmul_scalar.mo"),
-    ))
+    ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_source_span(
+            vec![row0, row1],
+            fixture_span("benchmark_matmul_scalar.mo")
+                .require_provenance("MLIR matrix benchmark fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable"),
+    )
 }
 
 fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
-    SolveProblem::with_derivative_rhs(derivative_rhs)
+    // Every fixture here is `xdot = A * x` over as many states as it has
+    // outputs, with no parameters.
+    let state_scalar_count = derivative_rhs
+        .len()
+        .expect("fixture derivative output shape is computable");
+    SolveProblem::with_derivative_rhs(
+        derivative_rhs,
+        rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), state_scalar_count, 0),
+    )
+    .expect("fixture derivative problem is valid by construction")
 }
 
 fn compile_derivative_rhs(
@@ -131,13 +173,13 @@ fn eval_at(compiled: &rumoca_exec_mlir::CompiledMlirResidual, y: &[f64]) -> Vec<
 
 #[test]
 fn matmul_dense_numerics_match_analytical() {
-    let problem = solve_problem_for(matmul_block(SparsityPattern::Dense));
+    let problem = solve_problem_for(matmul_block(false));
 
     let t0 = Instant::now();
     let compiled = match compile_derivative_rhs(&problem, "matmul_dense") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -166,13 +208,13 @@ fn matmul_dense_numerics_match_analytical() {
 
 #[test]
 fn matmul_diagonal_numerics_match_analytical() {
-    let problem = solve_problem_for(matmul_block(SparsityPattern::Diagonal));
+    let problem = solve_problem_for(matmul_block(true));
 
     let t0 = Instant::now();
     let compiled = match compile_derivative_rhs(&problem, "matmul_diag") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -206,7 +248,7 @@ fn matmul_scalar_path_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "matmul_scalar") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -234,8 +276,8 @@ fn matmul_scalar_path_numerics_match_analytical() {
 
 #[test]
 fn all_three_paths_agree_at_multiple_points() {
-    let dense_p = solve_problem_for(matmul_block(SparsityPattern::Dense));
-    let diag_p = solve_problem_for(matmul_block(SparsityPattern::Diagonal));
+    let dense_p = solve_problem_for(matmul_block(false));
+    let diag_p = solve_problem_for(matmul_block(true));
     let scalar_p = solve_problem_for(scalar_block());
 
     let (dense, diag, scalar) = match (
@@ -247,7 +289,7 @@ fn all_three_paths_agree_at_multiple_points() {
         (Err(MlirError::ToolNotFound { tool, .. }), _, _)
         | (_, Err(MlirError::ToolNotFound { tool, .. }), _)
         | (_, _, Err(MlirError::ToolNotFound { tool, .. })) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => panic!("compile failed: {e}"),
@@ -278,12 +320,12 @@ fn all_three_paths_agree_at_multiple_points() {
 
 #[test]
 fn matmul_euler_integration_matches_analytical() {
-    let problem = solve_problem_for(matmul_block(SparsityPattern::Dense));
+    let problem = solve_problem_for(matmul_block(false));
 
     let compiled = match compile_derivative_rhs(&problem, "matmul_euler") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -322,7 +364,7 @@ fn matmul_euler_integration_matches_analytical() {
 
 // ── Phase 6.4: Explicit sparsity tests ───────────────────────────────────────
 
-/// Build a 3×3 sparse `ComputeBlock` using `SparsityPattern::Explicit`.
+/// Build a 3×3 sparse `ComputeBlock` with checked structural dependencies.
 ///
 /// B = [[1, 0, 2],       nnz = {(0,0), (0,2), (1,1), (2,0), (2,2)}
 ///      [0, 3, 0],
@@ -358,10 +400,13 @@ fn sparse_explicit_block() -> ComputeBlock {
             m: 3,
             k: 3,
             n: 1,
-            lhs_sparsity: SparsityPattern::Explicit {
-                nnz: vec![(0, 0), (0, 2), (1, 1), (2, 0), (2, 2)],
-            },
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: pattern(
+                3,
+                3,
+                vec![vec![0, 2], vec![1], vec![0, 2]],
+                fixture_span("benchmark_matmul_sparse.mo"),
+            ),
+            rhs_pattern: full_pattern(3, 1, fixture_span("benchmark_matmul_sparse.mo")),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
             span: fixture_span("benchmark_matmul_sparse.mo"),
         }],
@@ -395,8 +440,8 @@ fn sparse_dense_block() -> ComputeBlock {
             m: 3,
             k: 3,
             n: 1,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: full_pattern(3, 3, fixture_span("benchmark_matmul_dense_3x3.mo")),
+            rhs_pattern: full_pattern(3, 1, fixture_span("benchmark_matmul_dense_3x3.mo")),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
             span: fixture_span("benchmark_matmul_dense_3x3.mo"),
         }],
@@ -411,7 +456,7 @@ fn explicit_sparse_numerics_match_expected() {
     let compiled = match compile_derivative_rhs(&problem, "sparse_explicit") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -455,7 +500,7 @@ fn explicit_sparse_agrees_with_dense_at_multiple_points() {
         (Ok(a), Ok(b)) => (a, b),
         (Err(MlirError::ToolNotFound { tool, .. }), _)
         | (_, Err(MlirError::ToolNotFound { tool, .. })) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         (Err(e), _) | (_, Err(e)) => panic!("compile failed: {e}"),

@@ -4,6 +4,7 @@ use crate::source_spans::required_location_span;
 pub(crate) struct FlattenGraphData {
     pub(crate) vcg_data: vcg::VcgPreScanData,
     pub(crate) optional_edges: Vec<(String, String)>,
+    pub(crate) required_forest: vcg::RequiredEdgeForest,
 }
 
 pub(crate) struct OverlayScopeIndex<'a> {
@@ -36,10 +37,27 @@ impl<'a> OverlayScopeIndex<'a> {
             components,
         }
     }
+
+    /// Class-body occurrence that instantiation created for the instance path
+    /// `scope`, if that path names one.
+    ///
+    /// The root model's body answers the empty path. A path that names no
+    /// class body — a lexical class name, or a component with no instantiated
+    /// body — answers `None`, because no occurrence identity exists for it.
+    pub(crate) fn class_occurrence(
+        &self,
+        scope: &ast::QualifiedName,
+    ) -> Option<rumoca_core::InstanceId> {
+        self.classes.get(scope).map(|class| class.instance_id)
+    }
 }
 
 pub(crate) fn initialize_flat_metadata(flat: &mut flat::Model, overlay: &ast::InstanceOverlay) {
     // MLS §4.7: Propagate partial status and class type from overlay
+    flat.effective_types = overlay.effective_types.clone();
+    flat.enumeration_types = overlay.enumeration_types.clone();
+    flat.type_ids_by_def_id = overlay.type_ids_by_def_id.clone();
+    flat.enumeration_type_roots = overlay.enumeration_type_roots.clone();
     flat.is_partial = overlay.is_partial;
     flat.class_type = overlay.class_type.clone();
     flat.model_description = overlay.root_description.clone();
@@ -71,11 +89,9 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
         import_cache,
         scope_index,
     );
-    add_package_override_aliases(
-        class_index,
-        &declaration_override_imports.aliases,
-        &mut declaration,
-    );
+    // A replaceable package alias is an instance occurrence, not an import.
+    // Keep the alias spelling so the already-resolved declaration target and
+    // the owning InstanceId remain paired through Flat construction.
     collect_lexical_constant_aliases_for_scope(
         tree,
         class_index,
@@ -186,11 +202,6 @@ fn binding_import_context_for_instance(
     );
     let binding_override_imports =
         override_import_data_for_qualified_scope(binding_scope, request.component_override_map);
-    add_package_override_aliases(
-        request.class_index,
-        &binding_override_imports.aliases,
-        &mut imports,
-    );
     collect_lexical_constant_aliases_for_scope(
         request.tree,
         request.class_index,
@@ -219,11 +230,6 @@ fn attribute_import_contexts_for_instance(
             );
             let override_imports =
                 override_import_data_for_qualified_scope(scope, request.component_override_map);
-            add_package_override_aliases(
-                request.class_index,
-                &override_imports.aliases,
-                &mut imports,
-            );
             collect_lexical_constant_aliases_for_scope(
                 request.tree,
                 request.class_index,
@@ -275,7 +281,6 @@ fn semantic_function_scope_for_instance_scope(
 
 struct OverrideImportData {
     package_names: Vec<String>,
-    aliases: Vec<(String, String)>,
 }
 
 fn override_import_data_for_instance(
@@ -318,7 +323,6 @@ fn override_import_data_for_component_path_with_preferred_aliases(
     let (packages, _) = override_context_for_component_path(scope, component_override_map);
     OverrideImportData {
         package_names: override_package_names_with_preferred_aliases(&packages, preferred_aliases),
-        aliases: override_aliases_for_component_path(scope, component_override_map),
     }
 }
 
@@ -765,7 +769,7 @@ pub(crate) fn process_component_instances_for_flatten(
 ) -> Result<(), FlattenError> {
     let mut import_cache = ImportCaches::default();
     let scope_index = OverlayScopeIndex::new(overlay);
-    let identity_space = InstanceIdentitySpace::from_tree(tree);
+    transfer_instance_relations(flat, overlay)?;
     for instance_data in overlay.components.values() {
         if is_in_disabled_component(&instance_data.qualified_name, &overlay.disabled_components) {
             continue;
@@ -773,6 +777,7 @@ pub(crate) fn process_component_instances_for_flatten(
         process_component_instance(ComponentInstanceProcess {
             flat,
             instance_data,
+            effective_type_id: instance_data.type_id,
             canonical_type_id: overlay
                 .type_roots
                 .get(&instance_data.type_id)
@@ -784,7 +789,7 @@ pub(crate) fn process_component_instances_for_flatten(
             import_cache: &mut import_cache,
             scope_index: &scope_index,
             component_members,
-            identity_space,
+            function_types: functions::FunctionTypeCatalog::new(overlay),
         })?;
         track_top_level_component_markers(flat, instance_data);
     }
@@ -792,7 +797,7 @@ pub(crate) fn process_component_instances_for_flatten(
 }
 
 fn track_top_level_component_markers(flat: &mut flat::Model, instance_data: &ast::InstanceData) {
-    if instance_data.qualified_name.parts.len() != 1 {
+    if instance_data.qualified_name.parts.len() != 1 || instance_data.is_protected {
         return;
     }
     let name = &instance_data.qualified_name.parts[0].0;
@@ -867,21 +872,19 @@ pub(crate) fn prepare_context_for_equation_flattening(
         );
 
     let vcg_data = vcg::pre_collect_vcg_data(overlay, ctx)?;
-    let optional_edges = vcg::derive_optional_edges(overlay, &vcg_data);
+    let optional_edges = vcg::derive_optional_edges(overlay, &vcg_data)?;
+    vcg::validate_component_roots(&vcg_data, &optional_edges)?;
     flat.optional_edges = optional_edges.clone();
-    let vcg_result = vcg::build_vcg(
-        &vcg_data.definite_roots,
-        &vcg_data.potential_roots,
-        &vcg_data.branches,
-        &optional_edges,
-    );
+    let required_forest = vcg::RequiredEdgeForest::construct(&vcg_data, &optional_edges)?;
+    let vcg_result = vcg::build_vcg(&vcg_data, &optional_edges, &required_forest);
     ctx.vcg_is_root = vcg_result.is_root;
     ctx.vcg_rooted = vcg_result.rooted;
-    compute_cardinality_counts(ctx, overlay);
+    compute_cardinality_counts(ctx, overlay)?;
 
     Ok(FlattenGraphData {
         vcg_data,
         optional_edges,
+        required_forest,
     })
 }
 
@@ -939,21 +942,29 @@ pub(crate) fn finalize_flat_model(
     outer_refs::redirect_outer_refs(flat, &overlay.outer_prefix_to_inner);
 
     let connections_start = maybe_start_timer();
-    let connections_result =
-        connections::process_connections(flat, overlay, options.strict_connection_validation);
+    let mut oc_forest =
+        vcg::OverconstrainedEquationForest::new(flatten_graph.required_forest.clone());
+    let connections_result = connections::process_connections(
+        flat,
+        overlay,
+        options.strict_connection_validation,
+        &mut oc_forest,
+    );
     maybe_record_connections_timing(connections_start);
     connections_result?;
 
     seed_flat_functions_from_context(ctx, flat);
-    functions::collect_functions(flat, tree, class_index, Some(model_name))?;
+    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
     rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
-    functions::collect_functions(flat, tree, class_index, Some(model_name))?;
+    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
     mark_record_constructor_calls(flat, tree);
-    functions::lower_record_function_params(flat)?;
+    // Attach callable identity before the rewrite fixed point so rewritten
+    // calls retain the exact collected target.
+    functions::canonicalize_collected_function_calls(flat, class_index)?;
     functions::specialize_static_function_params(flat);
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
-    canonicalize_varrefs_via_instantiated_def_ids(flat);
+    normalize_record_array_field_access_bindings(flat);
     drop_invalid_field_access_bindings(flat);
     propagate_unexpanded_record_array_dims(flat, overlay);
     flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(
@@ -966,6 +977,7 @@ pub(crate) fn finalize_flat_model(
 
     collapse_index_refs_to_known_varrefs(flat);
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
+    ctx.seed_expanded_component_keys(flat);
     substitute_known_constants_in_flat(flat, ctx)?;
     ctx.build_parameter_lookup(flat, tree);
     if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
@@ -975,6 +987,7 @@ pub(crate) fn finalize_flat_model(
     mark_record_constructor_calls(flat, tree);
     let collected_new_functions = collect_rewritten_functions_to_fixed_point(
         flat,
+        overlay,
         tree,
         class_index,
         model_name,
@@ -995,69 +1008,41 @@ pub(crate) fn finalize_flat_model(
         mark_record_constructor_calls(flat, tree);
         collapse_index_refs_to_known_varrefs(flat);
     }
-    canonicalize_varrefs_via_instantiated_def_ids(flat);
-    // Re-run constant substitution after late function collection and DefId
-    // canonicalization: both can expose inherited constant aliases in model
-    // equations (for example `nX = nS` in a redeclared Medium package).
+    functions::canonicalize_collected_function_calls(flat, class_index)?;
+    // Materialize source-level defaults while record inputs still have their
+    // source signatures. Record-field bindings belong to the constructor and
+    // must not be copied onto the scalar ABI parameters created below.
+    functions::materialize_flat_function_call_args(flat)?;
+    // Record parameter signatures and every call site must change together.
+    // Run this only after the rewrite fixed point: earlier lowering allowed a
+    // later rewrite to reintroduce source-shaped record arguments against an
+    // already decomposed signature.
+    functions::lower_record_function_params(flat)?;
+    // Recheck the decomposed ABI and materialize defaults of any scalar calls
+    // introduced by record projection.
+    functions::materialize_flat_function_call_args(flat)?;
+    // Late collection and default-argument materialization can each make a
+    // qualified constant newly reachable.
+    // Inject and substitute only after both producers have run so final
+    // executable call slots cannot reintroduce an unresolved constant.
+    inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     substitute_known_constants_in_flat(flat, ctx)?;
-    functions::canonicalize_collected_function_calls(flat)?;
     resolve_nested_constructor_field_access_bindings(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
-    functions::validate_flat_function_call_args(flat)?;
-    validate_overconstrained_roots(flat)?;
-
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
     if options.simplify_variable_names {
         name_simplify::simplify_flat_names(flat)?;
     }
-    // Final boundary pass: every rendered variable reference leaves flatten
-    // with its structured component reference attached, so downstream phases
-    // never re-derive structure from names.
-    crate::structured_refs::attach_structured_references(flat)?;
 
-    Ok(())
-}
-
-/// MLS §9.4 / CONN-013: every subgraph of the virtual connection graph needs
-/// at least one definite or potential root. Tier-1 check: a model that uses
-/// Connections.branch() but declares no root anywhere cannot satisfy this.
-fn validate_overconstrained_roots(flat: &flat::Model) -> Result<(), FlattenError> {
-    if !flat.branches.is_empty()
-        && flat.definite_roots.is_empty()
-        && flat.potential_roots.is_empty()
-    {
-        let (from, to) = &flat.branches[0];
-        // Point the user at the branch endpoint: branch names are connector
-        // paths, so the variable declared under that prefix carries the span.
-        let span = flat
-            .variables
-            .values()
-            .find(|var| {
-                var.name.as_str().starts_with(from.as_str())
-                    || var.name.as_str().starts_with(to.as_str())
-            })
-            .and_then(|var| (!var.source_span.is_dummy()).then_some(var.source_span))
-            .ok_or_else(|| {
-                FlattenError::missing_source_context(format!(
-                    "Connections.branch({from}, {to}) has no source span on either endpoint"
-                ))
-            })?;
-        return Err(FlattenError::UnsupportedEquation {
-            description: format!(
-                "Connections.branch({from}, {to}) is used but no Connections.root() or \
-                 Connections.potentialRoot() is declared; every subgraph needs a root (MLS §9.4)"
-            ),
-            span: rumoca_core::span_to_source_span(span),
-        });
-    }
     Ok(())
 }
 
 fn collect_rewritten_functions_to_fixed_point(
     flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     model_name: &str,
@@ -1076,7 +1061,7 @@ fn collect_rewritten_functions_to_fixed_point(
             component_override_map,
             component_members,
         )?;
-        functions::collect_functions(flat, tree, class_index, Some(model_name))?;
+        functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
         if flat.functions.len() == function_count_before {
             return Ok(flat.functions.len() != initial_function_count);
         }

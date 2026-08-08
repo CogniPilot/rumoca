@@ -3,12 +3,11 @@
 //! Provides convenience functions for compiling Modelica models
 //! and asserting success/failure/balance conditions.
 
-use rumoca_compile::compile::{CompilationResult, FailedPhase, PhaseResult};
+use rumoca_compile::compile::{CompilationResult, FailedPhase, PhaseResult, VariableRole};
 use rumoca_compile::parsing::{
     ParseError, parse_source_to_ast as parse_to_ast, parse_source_to_ast_with_errors,
 };
 use rumoca_compile::{Session, SessionConfig};
-use rumoca_phase_dae::balance as dae_balance;
 
 /// Compile a model from source, expecting success.
 /// Returns the CompilationResult for further assertions.
@@ -100,6 +99,97 @@ pub fn expect_failure_in_phase_with_code(
     );
 }
 
+/// Compile a model from source, expecting failure in a specific compile phase
+/// that *reports* a specific diagnostic code.
+///
+/// Use this instead of [`expect_failure_in_phase_with_code`] when the phase
+/// legitimately reports several distinct diagnostics for one source construct.
+/// `PhaseResult::error_code` is a *summary*: `summarize_typecheck_error_code`
+/// (`rumoca-compile`) collapses a set of differing codes to the `ET000`
+/// sentinel, so the summary is not the code of any individual violation. This
+/// helper therefore asserts on the phase's diagnostic list, which is where the
+/// contract violation is actually recorded.
+///
+/// # Panics
+/// Panics if parsing fails, compilation succeeds, needs synthesized inner bindings,
+/// fails in a different phase, or no reported diagnostic carries the code.
+pub fn expect_failure_in_phase_reporting_code(
+    source: &str,
+    model: &str,
+    expected_phase: FailedPhase,
+    expected_code: &str,
+) {
+    let phase_result = compile_model_phases_or_panic(source, model);
+    let (actual_phase, codes) = extract_failed_phase_and_diagnostic_codes(phase_result, model);
+    assert_eq!(
+        actual_phase, expected_phase,
+        "Expected failure in phase {expected_phase} for model {model}, got {actual_phase}"
+    );
+    assert!(
+        codes
+            .iter()
+            .any(|code| error_code_matches(code, expected_code)),
+        "Expected phase {actual_phase} to report error code {expected_code} for model {model}, got {codes:?}"
+    );
+}
+
+/// Compile a model from source, expecting failure in a specific compile phase
+/// with a diagnostic that carries a code *and* states a specific detail.
+///
+/// Use this when the code alone does not distinguish the rejection the contract
+/// is about. `ET009` is reported both for a subscript the declaration has no
+/// dimension for and for a subscript outside a dimension it does have, and a
+/// wrong declared rank is reported with the same code as a right one — so a
+/// test that only reads the code cannot tell a correct rejection from a
+/// rejection that named the wrong shape.
+///
+/// # Panics
+/// Panics if parsing fails, compilation succeeds, needs synthesized inner
+/// bindings, fails in a different phase, reports no diagnostic with the code, or
+/// no such diagnostic states `expected_detail`.
+pub fn expect_failure_in_phase_with_detail(
+    source: &str,
+    model: &str,
+    expected_phase: FailedPhase,
+    expected_code: &str,
+    expected_detail: &str,
+) {
+    let phase_result = compile_model_phases_or_panic(source, model);
+    let (actual_phase, messages) = match phase_result {
+        PhaseResult::Success(_) => {
+            panic!("Expected compilation failure for model {model}, but it succeeded")
+        }
+        PhaseResult::NeedsInner { .. } => panic!(
+            "Expected compile-phase failure for model {model}, got NeedsInner (missing inner declarations)"
+        ),
+        PhaseResult::Failed {
+            phase, diagnostics, ..
+        } => {
+            let messages: Vec<String> = diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .code
+                        .as_deref()
+                        .is_some_and(|code| error_code_matches(code, expected_code))
+                })
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect();
+            (phase, messages)
+        }
+    };
+    assert_eq!(
+        actual_phase, expected_phase,
+        "Expected failure in phase {expected_phase} for model {model}, got {actual_phase}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains(expected_detail)),
+        "Expected a {expected_code} diagnostic stating {expected_detail:?} for model {model}, got {messages:?}"
+    );
+}
+
 fn compile_model_phases_or_panic(source: &str, model: &str) -> PhaseResult {
     let mut session = Session::new(SessionConfig::default());
     session
@@ -143,6 +233,32 @@ fn extract_failed_phase_and_code(
     (phase, code)
 }
 
+fn extract_failed_phase_and_diagnostic_codes(
+    phase_result: PhaseResult,
+    model: &str,
+) -> (FailedPhase, Vec<String>) {
+    match phase_result {
+        PhaseResult::Success(_) => {
+            panic!("Expected compilation failure for model {model}, but it succeeded")
+        }
+        PhaseResult::NeedsInner { .. } => {
+            panic!(
+                "Expected compile-phase failure for model {model}, got NeedsInner (missing inner declarations)"
+            )
+        }
+        PhaseResult::Failed {
+            phase, diagnostics, ..
+        } => {
+            let codes: Vec<String> = diagnostics.iter().filter_map(|d| d.code.clone()).collect();
+            assert!(
+                !codes.is_empty(),
+                "Expected coded diagnostics for model {model} in phase {phase}, got none"
+            );
+            (phase, codes)
+        }
+    }
+}
+
 fn error_code_matches(actual: &str, expected: &str) -> bool {
     actual == expected || actual.ends_with(expected)
 }
@@ -154,8 +270,7 @@ fn error_code_matches(actual: &str, expected: &str) -> bool {
 /// Panics if compilation fails or the system is not balanced.
 pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
     let result = expect_success(source, model);
-    let balance =
-        dae_balance(&result.dae).expect("balanced test support requires valid DAE metadata");
+    let balance = result.balance_detail.balance();
     assert_eq!(
         balance, 0,
         "Expected balanced system for {model}, got balance={balance}"
@@ -170,8 +285,12 @@ pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
 /// - no top-level unbound input variables
 /// - no unbound fixed parameters (fixed=true by default for parameters)
 pub fn is_standalone_simulatable(result: &CompilationResult) -> bool {
-    !result.dae.metadata.is_partial
-        && result.dae.variables.inputs.is_empty()
+    !result.flat.is_partial
+        && !result.dae.inspect(|view| {
+            view.variables().any(|(_, variable)| {
+                variable.role() == VariableRole::Input && variable.binding().is_none()
+            })
+        })
         && !result.flat.has_unbound_fixed_parameters()
 }
 

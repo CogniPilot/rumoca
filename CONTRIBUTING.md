@@ -70,6 +70,34 @@ Cargo builds must remain Rust-only. If a selected package/web command reports a
 missing `node` or `npm`, install Node 20 using your platform package manager,
 Volta, nvm, or the official Node installer, then retry that command.
 
+### Kani bounded verification
+
+The SPEC_0037 verification track carries bounded-verification harnesses in
+`rumoca-ir-dae` and `rumoca-solver`. Each property is written once as a plain
+function with two drivers: `#[cfg(kani)]` proof harnesses and, under
+`#[cfg(not(kani))]`, a `proptest` fallback stating the identical property.
+
+The official Linux flake pins Kani 0.67.0 and its matching Rust nightly in a
+dedicated shell, leaving the ordinary development toolchain unchanged. Run the
+required proof set with:
+
+```bash
+nix develop .#kani --command cargo xtask verify kani
+```
+
+The command rejects any other Kani version and drives the solver harnesses from
+the checked-in `verification/kani-proofs.json` manifest. Add a harness to that
+manifest in the same change that makes it required. GitHub CI runs this exact
+gate with a bounded Linux job and uploads the versioned, per-harness result at
+`target/verification/kani-summary.json`.
+
+The gate verifies one Kani harness at a time as required by SPEC_0037. Cargo's
+build jobs still use the repository's normal host-aware resource budget.
+
+Ordinary `cargo test -p rumoca-solver` still runs the `proptest` fallbacks. A
+green fallback is validation evidence, never proof evidence; only a successful
+`cargo xtask verify kani` run under the pinned verifier is Kani proof evidence.
+
 ## Common Commands
 
 Typical local verification:
@@ -89,7 +117,7 @@ expect the same local prerequisites that CI installs: `cargo-llvm-cov`, Node
 20/npm for package/web tasks, and the wasm Rust target/tooling.
 `cargo xtask verify template-runtimes` wraps
 Cargo-native opt-in example-template execution checks such as
-`cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression -- --nocapture`.
+`cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime backend_template_runtime_regression:: -- --nocapture`.
 
 Editor validation:
 
@@ -114,6 +142,28 @@ cargo xtask repo msl flamegraph --model Modelica.Electrical.Digital.Examples.DFF
 cargo xtask repo msl promote-quality-baseline
 ```
 
+Verification-surface classification:
+
+- `cargo xtask verify workspace` includes the two required
+  `rumoca/msl-sim-tests` MSL simulation regressions. It needs the pinned MSL
+  tree at `target/msl/ModelicaStandardLibrary-4.1.0`, which the CI workspace
+  job stages before running.
+- `backend-stress-tests` is an opt-in 30-model diagnostic survey, not a
+  correctness gate: it reports per-model failures and only requires one
+  end-to-end comparison for each selected backend.
+- `msl-external-tests` contains opt-in MSL corpus cross-checks for generated
+  backends. Nightly CI surveys the checked C Solve and CasADi targets under the
+  Nix development shell. FMI 2/3 packaging is intentionally absent until it is
+  rebuilt against the checked kernel. `fmu_target_discovery` is a manual
+  target-list maintenance workflow, not a pass/fail verification gate.
+
+```bash
+nix develop --command cargo test --release -p rumoca-test-msl \
+  --features backend-stress-tests --test backend_stress_test -- --nocapture
+nix develop --command cargo test --release -p rumoca-test-msl \
+  --features msl-external-tests --test c_ode_msl_test -- --nocapture
+```
+
 Command discovery:
 
 ```bash
@@ -126,9 +176,10 @@ cargo xtask help repo cli install
 ## Parser Grammar Regeneration
 
 The Modelica parser is generated from
-`crates/rumoca-phase-parse/src/modelica.par` by the crate build script. The
-generated Rust files are checked in under
-`crates/rumoca-phase-parse/src/generated/` so parser changes are reviewable.
+`crates/rumoca-phase-parse/src/modelica.par`, and the GALEC parser is generated
+from `crates/rumoca-phase-parse-galec/src/parse/galec.par`, by their phase-crate
+build scripts. Generated Rust files are checked in beside each grammar so
+parser changes are reviewable.
 
 When changing the grammar or parser generator settings, regenerate and test
 with:
@@ -136,7 +187,10 @@ with:
 ```bash
 cargo check -p rumoca-phase-parse
 cargo test -p rumoca-phase-parse --test recovery_corpus --quiet
+cargo check -p rumoca-phase-parse-galec
+cargo test -p rumoca-phase-parse-galec --quiet
 git diff -- crates/rumoca-phase-parse/src/generated
+git diff -- crates/rumoca-phase-parse-galec/src/parse/generated
 ```
 
 The workspace pins `parol` and `parol_runtime` to exact patch versions in

@@ -110,7 +110,7 @@ pub(super) fn resolve_component_dimensions(
     let mut dims = Vec::new();
     let mut dims_expr = Vec::new();
     let mut shape_eval_succeeded = false;
-    let qualified_shape_expr = qualify_shape_subscripts_imports(&comp.shape_expr, imports);
+    let qualified_shape_expr = qualify_shape_subscripts_imports(tree, &comp.shape_expr, imports);
     let needs_late_recompute =
         !qualified_shape_expr.is_empty() && shape_expr_needs_late_recompute(&qualified_shape_expr);
 
@@ -200,7 +200,7 @@ fn eval_shape_expr_dims(
         let ast::Subscript::Expression(expr) = sub else {
             return None;
         };
-        let expr = qualify_shape_expr_imports(expr, imports);
+        let expr = qualify_shape_expr_imports(tree, expr, imports);
         // MLS §10.1: structural dimension expressions may use compile-time `if`
         // branches over parameter/constant conditions.
         let dim = try_eval_integer_shape_expr(
@@ -219,6 +219,7 @@ fn eval_shape_expr_dims(
 }
 
 pub(super) fn qualify_shape_subscripts_imports(
+    tree: &ast::ClassTree,
     shape_expr: &[ast::Subscript],
     imports: &[(String, String)],
 ) -> Vec<ast::Subscript> {
@@ -226,7 +227,7 @@ pub(super) fn qualify_shape_subscripts_imports(
         .iter()
         .map(|subscript| match subscript {
             ast::Subscript::Expression(expr) => {
-                ast::Subscript::Expression(qualify_shape_expr_imports(expr, imports))
+                ast::Subscript::Expression(qualify_shape_expr_imports(tree, expr, imports))
             }
             ast::Subscript::Range { token } => ast::Subscript::Range {
                 token: token.clone(),
@@ -236,13 +237,55 @@ pub(super) fn qualify_shape_subscripts_imports(
         .collect()
 }
 
+/// True when [`qualify_shape_expr_imports`] would rewrite something in `expr`.
+///
+/// Rewriting builds a fresh expression tree, so callers that only qualify as a
+/// retry ask this first and skip the retry entirely when no name in the
+/// expression is an import alias.
+pub(super) fn expr_mentions_import_alias(
+    expr: &ast::Expression,
+    imports: &[(String, String)],
+) -> bool {
+    let names_alias = |cref: &ast::ComponentReference| {
+        cref.parts.first().is_some_and(|first| {
+            let alias = first.ident.text.as_ref();
+            imports.iter().any(|(candidate, _)| candidate == alias)
+        })
+    };
+    let recurse = |expr| expr_mentions_import_alias(expr, imports);
+    match expr {
+        ast::Expression::ComponentReference(cref) => names_alias(cref),
+        ast::Expression::Range {
+            start, step, end, ..
+        } => recurse(start) || step.as_ref().is_some_and(|expr| recurse(expr)) || recurse(end),
+        ast::Expression::Unary { rhs, .. } => recurse(rhs),
+        ast::Expression::Binary { lhs, rhs, .. } => recurse(lhs) || recurse(rhs),
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(cond, body)| recurse(cond) || recurse(body))
+                || recurse(else_branch)
+        }
+        ast::Expression::Parenthesized { inner, .. } => recurse(inner),
+        ast::Expression::FunctionCall { comp, args, .. } => {
+            names_alias(comp) || args.iter().any(recurse)
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn qualify_shape_expr_imports(
+    tree: &ast::ClassTree,
     expr: &ast::Expression,
     imports: &[(String, String)],
 ) -> ast::Expression {
     match expr {
         ast::Expression::ComponentReference(cref) => {
-            ast::Expression::ComponentReference(qualify_component_ref_imports(cref, imports))
+            ast::Expression::ComponentReference(qualify_component_ref_imports(tree, cref, imports))
         }
         ast::Expression::Range {
             start,
@@ -250,22 +293,22 @@ pub(super) fn qualify_shape_expr_imports(
             end,
             span,
         } => ast::Expression::Range {
-            start: Arc::new(qualify_shape_expr_imports(start, imports)),
+            start: Arc::new(qualify_shape_expr_imports(tree, start, imports)),
             step: step
                 .as_ref()
-                .map(|expr| Arc::new(qualify_shape_expr_imports(expr, imports))),
-            end: Arc::new(qualify_shape_expr_imports(end, imports)),
+                .map(|expr| Arc::new(qualify_shape_expr_imports(tree, expr, imports))),
+            end: Arc::new(qualify_shape_expr_imports(tree, end, imports)),
             span: *span,
         },
         ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
             op: op.clone(),
-            rhs: Arc::new(qualify_shape_expr_imports(rhs, imports)),
+            rhs: Arc::new(qualify_shape_expr_imports(tree, rhs, imports)),
             span: *span,
         },
         ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
             op: op.clone(),
-            lhs: Arc::new(qualify_shape_expr_imports(lhs, imports)),
-            rhs: Arc::new(qualify_shape_expr_imports(rhs, imports)),
+            lhs: Arc::new(qualify_shape_expr_imports(tree, lhs, imports)),
+            rhs: Arc::new(qualify_shape_expr_imports(tree, rhs, imports)),
             span: *span,
         },
         ast::Expression::If {
@@ -277,31 +320,45 @@ pub(super) fn qualify_shape_expr_imports(
                 .iter()
                 .map(|(cond, body)| {
                     (
-                        qualify_shape_expr_imports(cond, imports),
-                        qualify_shape_expr_imports(body, imports),
+                        qualify_shape_expr_imports(tree, cond, imports),
+                        qualify_shape_expr_imports(tree, body, imports),
                     )
                 })
                 .collect(),
-            else_branch: Arc::new(qualify_shape_expr_imports(else_branch, imports)),
+            else_branch: Arc::new(qualify_shape_expr_imports(tree, else_branch, imports)),
             span: *span,
         },
         ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
-            inner: Arc::new(qualify_shape_expr_imports(inner, imports)),
+            inner: Arc::new(qualify_shape_expr_imports(tree, inner, imports)),
             span: *span,
         },
-        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
-            comp: qualify_component_ref_imports(comp, imports),
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => ast::Expression::FunctionCall {
+            comp: qualify_component_ref_imports(tree, comp, imports),
             args: args
                 .iter()
-                .map(|arg| qualify_shape_expr_imports(arg, imports))
+                .map(|arg| qualify_shape_expr_imports(tree, arg, imports))
                 .collect(),
+            is_partial_application: *is_partial_application,
             span: *span,
         },
         _ => expr.clone(),
     }
 }
 
+/// Expand an import alias root into the segments of its target path.
+///
+/// The expanded prefix segments name real declarations, so each one carries the
+/// declaration identity Resolve recorded for that qualified name (SPEC_0036: a
+/// rewritten reference must not lose per-segment identity). The alias segment
+/// itself keeps the identity Resolve proved for the alias, which already names
+/// the imported declaration.
 fn qualify_component_ref_imports(
+    tree: &ast::ClassTree,
     cref: &ast::ComponentReference,
     imports: &[(String, String)],
 ) -> ast::ComponentReference {
@@ -317,27 +374,36 @@ fn qualify_component_ref_imports(
         return cref.clone();
     };
 
+    let mut qualified_prefix = String::new();
     let mut parts = rumoca_core::ComponentPath::from_flat_path(target)
         .into_parts()
         .into_iter()
-        .map(|segment| ast::ComponentRefPart {
-            ident: rumoca_core::Token {
-                text: Arc::from(segment.as_str()),
-                ..rumoca_core::Token::default()
-            },
-            subs: None,
+        .map(|segment| {
+            if !qualified_prefix.is_empty() {
+                qualified_prefix.push('.');
+            }
+            qualified_prefix.push_str(segment.as_str());
+            ast::ComponentRefPart {
+                ident: rumoca_core::Token {
+                    text: Arc::from(segment.as_str()),
+                    ..rumoca_core::Token::default()
+                },
+                subs: None,
+                def_id: tree.get_def_id_by_name(&qualified_prefix),
+            }
         })
         .collect::<Vec<_>>();
     if let Some(last) = parts.last_mut() {
         last.subs = first.subs.clone();
+        last.def_id = first.def_id.or(last.def_id);
     }
     parts.extend(cref.parts.iter().skip(1).cloned());
 
     ast::ComponentReference {
         local: cref.local,
         parts,
-        def_id: cref.def_id,
         span: cref.span,
+        qualified_display_name: cref.qualified_display_name.clone(),
     }
 }
 
@@ -390,10 +456,11 @@ mod tests {
                     .map(|part| ast::ComponentRefPart {
                         ident: make_token(&part),
                         subs: None,
+                        def_id: None,
                     })
                     .collect(),
-                def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
         ))
     }

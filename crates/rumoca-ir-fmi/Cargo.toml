@@ -1,0 +1,16 @@
+[package]
+name = "rumoca-ir-fmi"
+description = "Checked tensor-native FMI component projection IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

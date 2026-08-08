@@ -22,5 +22,12 @@ thiserror = "2.0"
 miette = "7.4"
 tracing = { workspace = true, optional = true }
 
+[dev-dependencies]
+rumoca-phase-dae = { workspace = true }
+rumoca-phase-instantiate = { workspace = true }
+rumoca-phase-parse = { workspace = true }
+rumoca-phase-resolve = { workspace = true }
+rumoca-phase-typecheck = { workspace = true }
+
 [lints]
 workspace = true

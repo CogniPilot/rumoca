@@ -158,3 +158,21 @@ fn noelse_if_branch_still_fires_when_condition_true() {
     // Dynamic x[k] must read the merged conditional x[1], not the stale pre-if binding.
     assert_eq!(der_value(report, "der(e)"), 0.9);
 }
+
+#[test]
+fn runtime_array_index_out_of_range_fails_instead_of_clamping() {
+    let source = NOELSE_MODEL_NEG
+        .replace("Integer k(start = 1", "Integer k(start = 5")
+        .replace("k = 1;", "k = 5;");
+    let compiled = Compiler::new()
+        .model("NoElseIfNeg")
+        .compile_str(&source, "NoElseIfOutOfRange.mo")
+        .expect("runtime-bounded index model remains structurally computable");
+
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("evaluation returns a diagnostic report");
+    assert!(
+        probe.report.error.is_some(),
+        "an out-of-range runtime index must not clamp to a plausible array value"
+    );
+}

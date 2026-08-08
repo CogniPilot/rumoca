@@ -1,5 +1,68 @@
 use super::*;
 use crate::source_spans::required_location_span;
+use std::ops::ControlFlow;
+
+#[derive(Clone, Copy)]
+pub(super) struct FunctionExpressionContext<'types> {
+    pub(super) predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
+    pub(super) type_catalog: FunctionTypeCatalog<'types>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct FunctionTypeCatalog<'types> {
+    type_ids_by_def_id: &'types flat::TypeIdentityMap,
+    type_roots: &'types ast::AstIndexMap<rumoca_core::TypeId, rumoca_core::TypeId>,
+}
+
+impl<'types> FunctionTypeCatalog<'types> {
+    pub(crate) fn new(overlay: &'types ast::InstanceOverlay) -> Self {
+        Self {
+            type_ids_by_def_id: &overlay.type_ids_by_def_id,
+            type_roots: &overlay.type_roots,
+        }
+    }
+
+    fn effective_type(
+        self,
+        component: &ast::Component,
+        type_def_id: Option<rumoca_core::DefId>,
+        dimensions: Vec<i64>,
+        span: rumoca_core::Span,
+    ) -> Result<rumoca_core::EffectiveType, FlattenError> {
+        let type_def_id = type_def_id.ok_or_else(|| {
+            FlattenError::missing_resolved_class_metadata(
+                &component.name,
+                "function value type declaration identity",
+                span,
+            )
+        })?;
+        let nominal_type = self
+            .type_ids_by_def_id
+            .get(&type_def_id)
+            .copied()
+            .ok_or_else(|| {
+                FlattenError::missing_resolved_class_metadata(
+                    &component.name,
+                    "function value nominal TypeId",
+                    span,
+                )
+            })?;
+        let canonical_type = self.type_roots.get(&nominal_type).copied().ok_or_else(|| {
+            FlattenError::missing_resolved_class_metadata(
+                &component.name,
+                "function value canonical TypeId",
+                span,
+            )
+        })?;
+        rumoca_core::EffectiveType::new(nominal_type, canonical_type, dimensions).map_err(|error| {
+            FlattenError::missing_resolved_class_metadata(
+                &component.name,
+                format!("checked function value type: {error}"),
+                span,
+            )
+        })
+    }
+}
 
 pub(super) fn effective_function_param_class_type(
     class_index: &ast::ClassDefIndex<'_>,
@@ -35,12 +98,167 @@ pub(super) fn effective_function_param_class_type(
     class_def.class_type.clone()
 }
 
+/// The class a component's declared type names, together with that class's
+/// declaration identity.
+///
+/// `class_def` is absent for the predefined types, which have a `DefId` but no
+/// source class declaration.
+#[derive(Clone, Copy)]
+pub(super) struct ComponentTypeIdentity<'tree> {
+    pub(super) def_id: Option<rumoca_core::DefId>,
+    pub(super) class_def: Option<&'tree ast::ClassDef>,
+}
+
+/// Resolve the exact class identity a component's declared type names.
+///
+/// [`ast::Name::def_id`] is allowed to hold a *partial* resolution: for a
+/// qualified type name whose first segment is a replaceable or aliased package,
+/// name resolution records that first segment's class and leaves the trailing
+/// segments for a later phase (MLS §7.3). Taking that partial identity as the
+/// component's type silently names the enclosing package instead of the
+/// declared class, so the trailing segments are completed here through the
+/// declared members and inherited scopes of the partially resolved class.
+pub(super) fn component_type_identity<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    component: &ast::Component,
+) -> ComponentTypeIdentity<'tree> {
+    if let Some(def_id) = component.type_def_id {
+        return ComponentTypeIdentity {
+            def_id: Some(def_id),
+            class_def: class_index.get(def_id),
+        };
+    }
+    let Some(def_id) = component.type_name.def_id else {
+        let class_def = class_index.get_by_qualified_name(&component.type_name.to_string());
+        return ComponentTypeIdentity {
+            def_id: class_def.and_then(|class_def| class_def.def_id),
+            class_def,
+        };
+    };
+    let Some(class_def) = class_index.get(def_id) else {
+        return ComponentTypeIdentity {
+            def_id: Some(def_id),
+            class_def: None,
+        };
+    };
+    match complete_partial_type_resolution(class_index, component, def_id, class_def) {
+        Some(completed) => ComponentTypeIdentity {
+            def_id: completed.def_id,
+            class_def: Some(completed),
+        },
+        None => ComponentTypeIdentity {
+            def_id: Some(def_id),
+            class_def: Some(class_def),
+        },
+    }
+}
+
+/// Complete a qualified type name whose recorded identity covers only its first
+/// segment, returning `None` when the recorded identity is not such a prefix.
+fn complete_partial_type_resolution<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    component: &ast::Component,
+    def_id: rumoca_core::DefId,
+    class_def: &'tree ast::ClassDef,
+) -> Option<&'tree ast::ClassDef> {
+    let segments = component
+        .type_name
+        .name
+        .iter()
+        .map(|token| token.text.as_ref())
+        .collect::<Vec<&str>>();
+    let (first, trailing) = segments.split_first()?;
+    if trailing.is_empty() || class_index.local_name(def_id)? != *first {
+        return None;
+    }
+    let written_name = component.type_name.to_string();
+    if class_index.qualified_name(def_id)?.ends_with(&written_name) {
+        // The recorded class already is the written path's leaf.
+        return None;
+    }
+    trailing.iter().try_fold(class_def, |scope, segment| {
+        nested_class_in_scope(class_index, scope, segment)
+    })
+}
+
+/// Look up `name` as a class declared by `scope` or by one of the classes it
+/// extends, including the short-class-definition alias chain that a package
+/// alias such as `package Rotation = Quaternion` records as its base class.
+fn nested_class_in_scope<'a>(
+    class_index: &ast::ClassDefIndex<'a>,
+    scope: &'a ast::ClassDef,
+    name: &str,
+) -> Option<&'a ast::ClassDef> {
+    let mut visited = HashSet::new();
+    nested_class_in_scope_inner(class_index, scope, name, &mut visited)
+}
+
+fn nested_class_in_scope_inner<'a>(
+    class_index: &ast::ClassDefIndex<'a>,
+    scope: &'a ast::ClassDef,
+    name: &str,
+    visited: &mut HashSet<usize>,
+) -> Option<&'a ast::ClassDef> {
+    if !visited.insert(scope as *const ast::ClassDef as usize) {
+        return None;
+    }
+    if let Some(class_def) = scope.classes.get(name) {
+        return Some(class_def);
+    }
+    scope.extends.iter().find_map(|ext| {
+        let base_name = ext.base_name.to_string();
+        let base = class_by_name_or_def_id(class_index, &base_name, ext.base_def_id)?;
+        nested_class_in_scope_inner(class_index, base, name, visited)
+    })
+}
+
+fn primitive_type_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Real" => Some("Real"),
+        "Integer" => Some("Integer"),
+        "Boolean" => Some("Boolean"),
+        "String" => Some("String"),
+        _ => None,
+    }
+}
+
+fn effective_function_param_primitive_type(
+    class_index: &ast::ClassDefIndex<'_>,
+    component: &ast::Component,
+    declared_name: &str,
+) -> Option<&'static str> {
+    if let Some(name) = primitive_type_name(declared_name) {
+        return Some(name);
+    }
+    let mut current = component
+        .type_def_id
+        .or(component.type_name.def_id)
+        .and_then(|def_id| class_index.get(def_id));
+    let mut visited = HashSet::new();
+    const MAX_ALIAS_DEPTH: usize = 32;
+    for _ in 0..MAX_ALIAS_DEPTH {
+        let class = current?;
+        if let Some(def_id) = class.def_id
+            && !visited.insert(def_id)
+        {
+            return None;
+        }
+        let base = class.extends.first()?;
+        let base_name = base.base_name.to_string();
+        if let Some(name) = primitive_type_name(&base_name) {
+            return Some(name);
+        }
+        current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
+    }
+    None
+}
+
 /// Convert an AST ExternalFunction to ExternalFunction.
 pub(super) fn convert_external_function(
     ext: &rumoca_ir_ast::ExternalFunction,
-    _default_name: &str,
-) -> rumoca_core::ExternalFunction {
-    rumoca_core::ExternalFunction {
+    predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
+) -> Result<rumoca_core::ExternalFunction, FlattenError> {
+    Ok(rumoca_core::ExternalFunction {
         language: ext.language.clone().unwrap_or_else(|| "C".to_string()),
         function_name: ext.function_name.as_ref().map(|t| t.text.to_string()),
         output_name: ext.output.as_ref().map(|o| {
@@ -50,25 +268,95 @@ pub(super) fn convert_external_function(
                 .collect::<Vec<_>>()
                 .join(".")
         }),
-        arg_names: ext
+        args: ext
             .args
             .iter()
-            .filter_map(|arg| {
-                // Extract variable names from expressions
-                if let ast::Expression::ComponentReference(cr) = arg {
-                    Some(
-                        cr.parts
-                            .iter()
-                            .map(|p| p.ident.text.to_string())
-                            .collect::<Vec<_>>()
-                            .join("."),
-                    )
-                } else {
-                    None
-                }
+            .map(|argument| {
+                ast_lower::expression_from_ast_with_intrinsics(argument, predefined_intrinsics)
             })
-            .collect(),
+            .collect::<Result<Vec<_>, _>>()?,
+        annotations: ext
+            .annotation
+            .iter()
+            .map(|annotation| convert_external_annotation(annotation, predefined_intrinsics))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn convert_external_annotation(
+    annotation: &ast::Expression,
+    predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
+) -> Result<rumoca_core::ExternalFunctionAnnotation, FlattenError> {
+    let ast::Expression::Modification {
+        target,
+        value,
+        span,
+    } = annotation
+    else {
+        return Err(unsupported_external_annotation(
+            annotation,
+            "expected a named annotation modification",
+        ));
+    };
+    if target.parts.is_empty()
+        || target
+            .parts
+            .iter()
+            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return Err(unsupported_external_annotation(
+            annotation,
+            "annotation names must be non-indexed name paths",
+        ));
     }
+    reject_lossy_external_annotation_value(value)?;
+    Ok(rumoca_core::ExternalFunctionAnnotation {
+        name: target
+            .parts
+            .iter()
+            .map(|part| part.ident.text.to_string())
+            .collect(),
+        value: ast_lower::expression_from_ast_with_intrinsics(value, predefined_intrinsics)?,
+        span: *span,
+    })
+}
+
+fn reject_lossy_external_annotation_value(value: &ast::Expression) -> Result<(), FlattenError> {
+    struct LossySyntax {
+        kind: Option<&'static str>,
+    }
+
+    impl ast::Visitor for LossySyntax {
+        fn visit_expression(&mut self, expr: &ast::Expression) -> ControlFlow<()> {
+            self.kind = match expr {
+                ast::Expression::Empty { .. } => Some("empty modification"),
+                ast::Expression::ClassModification { .. } => Some("class modification"),
+                ast::Expression::NamedArgument { .. } => Some("named argument"),
+                ast::Expression::Modification { .. } => Some("nested modification"),
+                _ => None,
+            };
+            if self.kind.is_some() {
+                return ControlFlow::Break(());
+            }
+            ast::walk_expression_default(self, expr)
+        }
+    }
+
+    let mut visitor = LossySyntax { kind: None };
+    let _ = <LossySyntax as ast::Visitor>::visit_expression(&mut visitor, value);
+    visitor.kind.map_or(Ok(()), |kind| {
+        Err(unsupported_external_annotation(
+            value,
+            &format!("cannot preserve {kind} in Flat metadata"),
+        ))
+    })
+}
+
+fn unsupported_external_annotation(expression: &ast::Expression, reason: &str) -> FlattenError {
+    FlattenError::Internal(format!(
+        "unsupported external-function annotation at {:?}: {reason}",
+        expression.span()
+    ))
 }
 
 /// Extract derivative annotations from function annotation expressions (MLS §12.7.1).
@@ -348,13 +636,27 @@ fn ast_subscript_span(
     }
 }
 
+fn apply_component_description(param: &mut rumoca_core::FunctionParam, component: &ast::Component) {
+    if component.description.is_empty() {
+        return;
+    }
+    param.description = Some(
+        component
+            .description
+            .iter()
+            .map(|token| token.text.as_ref())
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+}
+
 /// Convert a component declaration to a function parameter.
 pub(super) fn convert_component_to_param(
     class_index: &ast::ClassDefIndex<'_>,
     name: &str,
     component: &ast::Component,
     source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
+    expressions: FunctionExpressionContext<'_>,
     imports: &qualify::ImportMap,
     locals: &HashSet<String>,
 ) -> Result<rumoca_core::FunctionParam, FlattenError> {
@@ -372,41 +674,80 @@ pub(super) fn convert_component_to_param(
         &component.location,
         "function parameter declaration",
     )?;
-    let mut param = rumoca_core::FunctionParam::new(name, type_name, span);
-    if let Some(def_id) = component.def_id {
-        param = param.with_def_id(def_id);
-    }
-    if let Some(type_def_id) = component.type_def_id.or(component.type_name.def_id) {
-        param = param.with_type_def_id(type_def_id);
-    }
-    if let Some(type_class) = function_param_type_class(class_index, component) {
-        param = param.with_type_class(type_class);
-    }
-
     // Get array dimensions from shape (resolved) or shape_expr (expressions).
     // For variable-size arrays (e.g., `Real x[:]`), use [0] as a sentinel
     // so that code generators know the parameter is an array even when
     // the exact size is unknown at compile time.
     let type_alias_dims = function_param_type_alias_dims(class_index, component, source_map)?;
     let mut param_dims = Vec::new();
-    if !component.shape_expr.is_empty() {
+    let shape_expr = if !component.shape_expr.is_empty() {
         let shape_expr = component
             .shape_expr
             .iter()
             .map(|sub| {
-                lower_function_shape_subscript(sub, class_index, imports, locals, def_map, span)
+                lower_function_shape_subscript(sub, class_index, imports, locals, expressions, span)
             })
             .collect::<Result<Vec<_>, FlattenError>>()?;
         param_dims = shape_expr.iter().map(function_shape_dim).collect();
-        param = param.with_shape_expr(shape_expr);
+        Some(shape_expr)
     } else if !component.shape.is_empty() {
         param_dims = component.shape.iter().map(|&d| d as i64).collect();
-    }
+        None
+    } else {
+        None
+    };
     if !type_alias_dims.is_empty() {
         param_dims.extend(type_alias_dims);
     }
-    if !param_dims.is_empty() {
-        param = param.with_dims(param_dims);
+    // The declared type identity is resolved once, so the effective type, the
+    // recorded `type_def_id`, and the class type all name the same class.
+    let type_identity = component_type_identity(class_index, component);
+    let effective_type = expressions.type_catalog.effective_type(
+        component,
+        type_identity.def_id,
+        param_dims,
+        span,
+    )?;
+    let mut param = rumoca_core::FunctionParam::new(name, type_name, effective_type, span);
+    if let Some(shape_expr) = shape_expr {
+        param = param.with_shape_expr(shape_expr);
+    }
+    finish_function_param(
+        class_index,
+        component,
+        type_identity,
+        expressions,
+        imports,
+        locals,
+        param,
+    )
+}
+
+fn finish_function_param(
+    class_index: &ast::ClassDefIndex<'_>,
+    component: &ast::Component,
+    type_identity: ComponentTypeIdentity<'_>,
+    expressions: FunctionExpressionContext<'_>,
+    imports: &qualify::ImportMap,
+    locals: &HashSet<String>,
+    mut param: rumoca_core::FunctionParam,
+) -> Result<rumoca_core::FunctionParam, FlattenError> {
+    if let Some(def_id) = component.def_id {
+        param = param.with_def_id(def_id);
+    }
+    if let Some(type_def_id) = type_identity.def_id {
+        param = param.with_type_def_id(type_def_id);
+    }
+    if let Some(type_class) = type_identity
+        .class_def
+        .map(|class_def| effective_function_param_class_type(class_index, class_def))
+    {
+        param = param.with_type_class(type_class);
+    }
+    if let Some(type_name) =
+        effective_function_param_primitive_type(class_index, component, &param.type_name)
+    {
+        param.type_name = type_name.to_string();
     }
 
     // Preserve declared scalar bounds on function parameters.  Besides being
@@ -418,7 +759,10 @@ pub(super) fn convert_component_to_param(
         .get("min")
         .map(|expr| {
             let qualified = qualify_function_expr(expr, imports, locals);
-            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+            ast_lower::expression_from_ast_with_intrinsics(
+                &qualified,
+                expressions.predefined_intrinsics,
+            )
         })
         .transpose()?;
     let upper_bound = component
@@ -426,7 +770,10 @@ pub(super) fn convert_component_to_param(
         .get("max")
         .map(|expr| {
             let qualified = qualify_function_expr(expr, imports, locals);
-            ast_lower::expression_from_ast_with_def_map(&qualified, Some(def_map))
+            ast_lower::expression_from_ast_with_intrinsics(
+                &qualified,
+                expressions.predefined_intrinsics,
+            )
         })
         .transpose()?;
     param = param.with_bounds(lower_bound, upper_bound);
@@ -438,28 +785,20 @@ pub(super) fn convert_component_to_param(
             && !matches!(binding_expr, ast::Expression::Empty { .. })
         {
             let qualified = qualify_function_expr(binding_expr, imports, locals);
-            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
+            param = param.with_default(ast_lower::expression_from_ast_with_intrinsics(
                 &qualified,
-                Some(def_map),
+                expressions.predefined_intrinsics,
             )?);
         } else if !matches!(component.start, ast::Expression::Empty { .. }) {
             let qualified = qualify_function_expr(&component.start, imports, locals);
-            param = param.with_default(ast_lower::expression_from_ast_with_def_map(
+            param = param.with_default(ast_lower::expression_from_ast_with_intrinsics(
                 &qualified,
-                Some(def_map),
+                expressions.predefined_intrinsics,
             )?);
         }
     }
 
-    // Get description
-    if !component.description.is_empty() {
-        let desc: Vec<_> = component
-            .description
-            .iter()
-            .map(|t| t.text.to_string())
-            .collect();
-        param.description = Some(desc.join(" "));
-    }
+    apply_component_description(&mut param, component);
 
     Ok(param)
 }
@@ -476,7 +815,7 @@ pub(super) fn lower_function_shape_subscript(
     class_index: &ast::ClassDefIndex<'_>,
     imports: &qualify::ImportMap,
     locals: &HashSet<String>,
-    def_map: &crate::ResolveDefMap,
+    expressions: FunctionExpressionContext<'_>,
     owner_span: rumoca_core::Span,
 ) -> Result<rumoca_core::Subscript, FlattenError> {
     match subscript {
@@ -487,9 +826,9 @@ pub(super) fn lower_function_shape_subscript(
             }
             let qualified = qualify_function_expr(expr, imports, locals);
             Ok(rumoca_core::Subscript::expr(
-                Box::new(ast_lower::expression_from_ast_with_def_map(
+                Box::new(ast_lower::expression_from_ast_with_intrinsics(
                     &qualified,
-                    Some(def_map),
+                    expressions.predefined_intrinsics,
                 )?),
                 span,
             ))
@@ -550,7 +889,7 @@ pub(super) fn resolve_compile_time_integer_expr_inner(
             }
         }
         ast::Expression::ComponentReference(reference) => reference
-            .def_id
+            .target_def_id()
             .and_then(|def_id| resolve_component_constant_integer(def_id, class_index, visiting)),
         _ => None,
     }
@@ -592,27 +931,7 @@ pub(super) fn component_by_def_id<'a>(
         .filter(|component| component.def_id == Some(def_id))
 }
 
-pub(super) fn function_param_type_class(
-    class_index: &ast::ClassDefIndex<'_>,
-    component: &ast::Component,
-) -> Option<rumoca_core::ClassType> {
-    component
-        .type_name
-        .def_id
-        .and_then(|def_id| class_index.get(def_id))
-        .map(|class_def| effective_function_param_class_type(class_index, class_def))
-        .or_else(|| {
-            let type_name = component.type_name.to_string();
-            class_index
-                .get_by_qualified_name(&type_name)
-                .map(|class_def| effective_function_param_class_type(class_index, class_def))
-        })
-}
-
-const FUNCTION_QUALIFY_OPTS: qualify::QualifyOptions = qualify::QualifyOptions {
-    skip_local: true,
-    preserve_def_id: true,
-};
+const FUNCTION_QUALIFY_OPTS: qualify::QualifyOptions = qualify::QualifyOptions { skip_local: true };
 
 pub(super) fn qualify_function_expr(
     expr: &ast::Expression,

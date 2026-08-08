@@ -1,0 +1,1161 @@
+//! Connector-shaped singular systems the equality closure has to see through.
+//!
+//! Each fixture is written in the exact shape MSL produces: a component body
+//! states `phi - flange.phi`, a `connect` states `flange_a.phi - flange_b.phi`,
+//! and a node balance states `p.i + n.i`. The fixtures stay small enough to
+//! reason about by hand while keeping those spellings literal, so a regression
+//! in the closure shows up as a system that stops reducing rather than as a
+//! wrong number deep inside a real machine model.
+
+use super::*;
+use crate::dae_transform::constraints::explicit_derivative_definitions;
+use crate::dae_transform::equalities::{EqualityAnchor, EqualitySign, SystemEqualities};
+
+/// One declared fixture variable, keeping the role it was declared with.
+#[derive(Clone, Copy)]
+enum Declared<'dae> {
+    Parameter(dae::ParameterId<'dae>),
+    State(dae::StateId<'dae>),
+    Algebraic(dae::AlgebraicId<'dae>),
+}
+
+impl<'dae> Declared<'dae> {
+    fn value(self) -> dae::CoordinateInput<'dae> {
+        match self {
+            Self::Parameter(id) => dae::CoordinateInput::Parameter(id),
+            Self::State(id) => dae::CoordinateInput::State(id),
+            Self::Algebraic(id) => dae::CoordinateInput::Algebraic(id),
+        }
+    }
+
+    fn derivative(self) -> dae::CoordinateInput<'dae> {
+        let Self::State(id) = self else {
+            panic!("only a fixture state has a derivative coordinate")
+        };
+        dae::CoordinateInput::Derivative(id)
+    }
+}
+
+/// Declare `names` in order, reading the role off a one-character prefix:
+/// `p` parameter, `s` state, `a` algebraic.
+fn declare<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    real: dae::ValueTypeId<'dae>,
+    declaration: dae::DaeProvenance,
+    names: &[&str],
+) -> Result<Vec<Declared<'dae>>, dae::DaeConstructionError> {
+    model.variables(|variables| {
+        names
+            .iter()
+            .map(|entry| {
+                let (role, name) = entry.split_at(1);
+                let name = VarName::new(name);
+                let attributes = dae::VariableAttributes::default();
+                Ok(match role {
+                    "p" => Declared::Parameter(variables.parameter(
+                        name,
+                        real,
+                        declaration,
+                        attributes,
+                    )?),
+                    "s" => Declared::State(variables.state(name, real, declaration, attributes)?),
+                    _ => Declared::Algebraic(variables.algebraic(
+                        name,
+                        real,
+                        declaration,
+                        attributes,
+                    )?),
+                })
+            })
+            .collect()
+    })
+}
+
+/// A fixture body, branded to the construction it fills in.
+type FixtureBody = for<'borrow, 'dae> fn(
+    &'borrow mut dae::DaeConstruction<'dae>,
+    &[Declared<'dae>],
+    &[dae::DaeProvenance],
+) -> Result<(), dae::DaeConstructionError>;
+
+/// Build one whole-model fixture from its source text, declarations, and the
+/// residual bodies its equation spans own.
+fn connector_fixture(
+    text: &'static str,
+    names: &'static [&'static str],
+    equations: &'static [&'static str],
+    build: FixtureBody,
+) -> dae::Dae {
+    let mut sources = SourceMap::new();
+    let source = sources.add("checked_connector_closure.mo", text);
+    dae::Dae::construct(sources, |model| {
+        let declaration = source_provenance(source, text, "equation");
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let declared = declare(model, real, declaration, names)?;
+        let spans = equations
+            .iter()
+            .map(|equation| source_provenance(source, text, equation))
+            .collect::<Vec<_>>();
+        build(model, &declared, &spans)
+    })
+    .expect("connector fixture DAE is valid")
+}
+
+/// Name one declared coordinate at `span`.
+fn coordinate<'dae>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    span: dae::DaeProvenance,
+    coordinate: dae::CoordinateInput<'dae>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    expressions.at(span).coordinate(coordinate)
+}
+
+/// Turn `lhs = rhs` pairs into the subtractive residuals a DAE stores.
+fn residuals<'dae, const N: usize>(
+    expressions: &mut dae::Expressions<'_, 'dae>,
+    terms: [(dae::DaeProvenance, dae::ExprId<'dae>, dae::ExprId<'dae>); N],
+) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    terms
+        .into_iter()
+        .map(|(span, lhs, rhs)| {
+            expressions
+                .at(span)
+                .binary(dae::BinaryOperator::Subtract, lhs, rhs)
+        })
+        .collect()
+}
+
+/// Register `residuals` as this fixture's continuous equations, one per span.
+fn register<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    spans: &[dae::DaeProvenance],
+    residuals: Vec<dae::ExprId<'dae>>,
+) -> Result<(), dae::DaeConstructionError> {
+    model.continuous(|continuous| {
+        for (span, residual) in spans.iter().copied().zip(residuals) {
+            continuous.value_equation(span, residual)?;
+        }
+        Ok(())
+    })
+}
+
+/// `phi1 = flange.phi; phi2 = flange.phi; der(phi1) = a; der(phi2) = b; b = 1`
+///
+/// Two states are the same angle, connected only through the shared connector
+/// algebraic. Nothing here names both states in one residual, so the redundancy
+/// is invisible without transitive closure.
+const ALIAS_CHAIN_TEXT: &str = "Real phi1; Real phi2; Real flange; Real a; Real b; equation phi1 = flange; phi2 = flange; der(phi1) = a; der(phi2) = b; b = 1;";
+const ALIAS_CHAIN_NAMES: &[&str] = &["sphi1", "sphi2", "aflange", "aa", "ab"];
+const ALIAS_CHAIN_EQUATIONS: &[&str] = &[
+    "phi1 = flange",
+    "phi2 = flange",
+    "der(phi1) = a",
+    "der(phi2) = b",
+    "b = 1",
+];
+
+fn alias_chain_model() -> dae::Dae {
+    connector_fixture(
+        ALIAS_CHAIN_TEXT,
+        ALIAS_CHAIN_NAMES,
+        ALIAS_CHAIN_EQUATIONS,
+        |model, declared, spans| {
+            let [phi1, phi2, flange, a, b] = *declared else {
+                unreachable!("fixture declares five variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let flange_value = coordinate(expressions, spans[0], flange.value())?;
+                let one = expressions
+                    .at(spans[4])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                let terms = [
+                    (
+                        spans[0],
+                        coordinate(expressions, spans[0], phi1.value())?,
+                        flange_value,
+                    ),
+                    (
+                        spans[1],
+                        coordinate(expressions, spans[1], phi2.value())?,
+                        flange_value,
+                    ),
+                    (
+                        spans[2],
+                        coordinate(expressions, spans[2], phi1.derivative())?,
+                        coordinate(expressions, spans[2], a.value())?,
+                    ),
+                    (
+                        spans[3],
+                        coordinate(expressions, spans[3], phi2.derivative())?,
+                        coordinate(expressions, spans[3], b.value())?,
+                    ),
+                    (spans[4], coordinate(expressions, spans[4], b.value())?, one),
+                ];
+                residuals(expressions, terms)
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `phi1 = angle1; phi2 = angle2; angle1 = 2*angle2;`
+/// `der(phi1) = w1; der(phi2) = w2; der(w1) = acc1;`
+/// `der(w2) = acc2; acc1 = 1`
+///
+/// The position constraint is written entirely in connector algebraics. The
+/// two adjacent component equations prove which state each endpoint names,
+/// while the acceleration equations make the second derivative exact.
+const HIDDEN_HOLONOMIC_TEXT: &str = "Real phi1; Real w1; Real phi2; Real w2; Real angle1; Real angle2; Real acc1; Real acc2; equation phi1 = angle1; phi2 = angle2; angle1 = 2*angle2; der(phi1) = w1; der(phi2) = w2; der(w1) = acc1; der(w2) = acc2; acc1 = 1;";
+const HIDDEN_HOLONOMIC_NAMES: &[&str] = &[
+    "sphi1", "sw1", "sphi2", "sw2", "aangle1", "aangle2", "aacc1", "aacc2",
+];
+const HIDDEN_HOLONOMIC_EQUATIONS: &[&str] = &[
+    "phi1 = angle1",
+    "phi2 = angle2",
+    "angle1 = 2*angle2",
+    "der(phi1) = w1",
+    "der(phi2) = w2",
+    "der(w1) = acc1",
+    "der(w2) = acc2",
+    "acc1 = 1",
+];
+
+fn hidden_holonomic_model() -> dae::Dae {
+    connector_fixture(
+        HIDDEN_HOLONOMIC_TEXT,
+        HIDDEN_HOLONOMIC_NAMES,
+        HIDDEN_HOLONOMIC_EQUATIONS,
+        |model, declared, spans| {
+            let [phi1, w1, phi2, w2, angle1, angle2, acc1, acc2] = *declared else {
+                unreachable!("fixture declares eight variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let two = expressions
+                    .at(spans[2])
+                    .literal(dae::DaeLiteral::Real(2.0))?;
+                let one = expressions
+                    .at(spans[7])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                let angle2_value = coordinate(expressions, spans[2], angle2.value())?;
+                let twice_angle2 = expressions.at(spans[2]).binary(
+                    dae::BinaryOperator::Multiply,
+                    two,
+                    angle2_value,
+                )?;
+                let terms = [
+                    (
+                        spans[0],
+                        coordinate(expressions, spans[0], phi1.value())?,
+                        coordinate(expressions, spans[0], angle1.value())?,
+                    ),
+                    (
+                        spans[1],
+                        coordinate(expressions, spans[1], phi2.value())?,
+                        coordinate(expressions, spans[1], angle2.value())?,
+                    ),
+                    (
+                        spans[2],
+                        coordinate(expressions, spans[2], angle1.value())?,
+                        twice_angle2,
+                    ),
+                    (
+                        spans[3],
+                        coordinate(expressions, spans[3], phi1.derivative())?,
+                        coordinate(expressions, spans[3], w1.value())?,
+                    ),
+                    (
+                        spans[4],
+                        coordinate(expressions, spans[4], phi2.derivative())?,
+                        coordinate(expressions, spans[4], w2.value())?,
+                    ),
+                    (
+                        spans[5],
+                        coordinate(expressions, spans[5], w1.derivative())?,
+                        coordinate(expressions, spans[5], acc1.value())?,
+                    ),
+                    (
+                        spans[6],
+                        coordinate(expressions, spans[6], w2.derivative())?,
+                        coordinate(expressions, spans[6], acc2.value())?,
+                    ),
+                    (
+                        spans[7],
+                        coordinate(expressions, spans[7], acc1.value())?,
+                        one,
+                    ),
+                ];
+                residuals(expressions, terms)
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `pi + ni = 0; ni + q = 0; q = I; psi = pi; der(psi) = v; v = w`
+///
+/// The flux state is pinned to a constant excitation current through two node
+/// balances, which only prove `pi = q` once their signs cancel.
+const FLOW_BALANCE_TEXT: &str = "parameter Real I; Real pi; Real ni; Real q; Real psi; Real v; Real w; equation pi + ni = 0; ni + q = 0; q = I; psi = pi; der(psi) = v; v = w;";
+const FLOW_BALANCE_NAMES: &[&str] = &["pI", "api", "ani", "aq", "spsi", "av", "aw"];
+const FLOW_BALANCE_EQUATIONS: &[&str] = &[
+    "pi + ni = 0",
+    "ni + q = 0",
+    "q = I",
+    "psi = pi",
+    "der(psi) = v",
+    "v = w",
+];
+
+fn flow_balance_model() -> dae::Dae {
+    connector_fixture(
+        FLOW_BALANCE_TEXT,
+        FLOW_BALANCE_NAMES,
+        FLOW_BALANCE_EQUATIONS,
+        |model, declared, spans| {
+            let [current, pin, node, q, psi, v, w] = *declared else {
+                unreachable!("fixture declares seven variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let pin_value = coordinate(expressions, spans[0], pin.value())?;
+                let node_value = coordinate(expressions, spans[0], node.value())?;
+                let q_value = coordinate(expressions, spans[1], q.value())?;
+                let v_value = coordinate(expressions, spans[4], v.value())?;
+                let current_value = coordinate(expressions, spans[2], current.value())?;
+                let psi_value = coordinate(expressions, spans[3], psi.value())?;
+                let psi_derivative = coordinate(expressions, spans[4], psi.derivative())?;
+                let w_value = coordinate(expressions, spans[5], w.value())?;
+                let zero = expressions
+                    .at(spans[0])
+                    .literal(dae::DaeLiteral::Real(0.0))?;
+                let pin_node = expressions.at(spans[0]).binary(
+                    dae::BinaryOperator::Add,
+                    pin_value,
+                    node_value,
+                )?;
+                let node_q = expressions.at(spans[1]).binary(
+                    dae::BinaryOperator::Add,
+                    node_value,
+                    q_value,
+                )?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], pin_node, zero),
+                        (spans[1], node_q, zero),
+                        (spans[2], q_value, current_value),
+                        (spans[3], psi_value, pin_value),
+                        (spans[4], psi_derivative, v_value),
+                        (spans[5], v_value, w_value),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `w = der(phi)` — the orientation MSL components actually use.
+const REVERSE_DERIVATIVE_TEXT: &str = "Real phi; Real w; equation w = der(phi); der(w) = 1;";
+const REVERSE_DERIVATIVE_NAMES: &[&str] = &["sphi", "sw"];
+const REVERSE_DERIVATIVE_EQUATIONS: &[&str] = &["w = der(phi)", "der(w) = 1"];
+
+fn reverse_derivative_model() -> dae::Dae {
+    connector_fixture(
+        REVERSE_DERIVATIVE_TEXT,
+        REVERSE_DERIVATIVE_NAMES,
+        REVERSE_DERIVATIVE_EQUATIONS,
+        |model, declared, spans| {
+            let [phi, w] = *declared else {
+                unreachable!("fixture declares two variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let w_value = coordinate(expressions, spans[0], w.value())?;
+                let phi_derivative = coordinate(expressions, spans[0], phi.derivative())?;
+                let w_derivative = coordinate(expressions, spans[1], w.derivative())?;
+                let one = expressions
+                    .at(spans[1])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], w_value, phi_derivative),
+                        (spans[1], w_derivative, one),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `support = 0; hold = support; w = der(hold)`
+///
+/// The shape every MSL component with an unused support flange produces: the
+/// support angle is pinned to a bare literal rather than to a parameter, and a
+/// state is tied to it through a connector algebraic.
+const PINNED_SUPPORT_TEXT: &str =
+    "Real hold; Real support; Real w; equation support = 0; hold = support; w = der(hold);";
+const PINNED_SUPPORT_NAMES: &[&str] = &["shold", "asupport", "aw"];
+const PINNED_SUPPORT_EQUATIONS: &[&str] = &["support = 0", "hold = support", "w = der(hold)"];
+
+fn pinned_support_model() -> dae::Dae {
+    connector_fixture(
+        PINNED_SUPPORT_TEXT,
+        PINNED_SUPPORT_NAMES,
+        PINNED_SUPPORT_EQUATIONS,
+        |model, declared, spans| {
+            let [hold, support, w] = *declared else {
+                unreachable!("fixture declares three variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let support_value = coordinate(expressions, spans[0], support.value())?;
+                let hold_value = coordinate(expressions, spans[1], hold.value())?;
+                let hold_derivative = coordinate(expressions, spans[2], hold.derivative())?;
+                let w_value = coordinate(expressions, spans[2], w.value())?;
+                let zero = expressions
+                    .at(spans[0])
+                    .literal(dae::DaeLiteral::Real(0.0))?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], support_value, zero),
+                        (spans[1], hold_value, support_value),
+                        (spans[2], w_value, hold_derivative),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `flange = s - L; port = flange; support = 0; hold = port - support;`
+/// `w = der(hold); v = der(s); w = 1`
+///
+/// The shape a rigid body produces: `flange = s - L` states the same position
+/// as the body centre displaced by a constant half-length, so the chain from
+/// the prescribing component down to the body state is only continuous once
+/// that displacement is read as an offset rather than as a third unknown.
+const DISPLACED_BODY_TEXT: &str = "parameter Real L; Real s; Real hold; Real flange; Real port; Real support; Real w; Real v; equation flange = s - L; port = flange; support = 0; hold = port - support; w = der(hold); v = der(s); w = 1;";
+const DISPLACED_BODY_NAMES: &[&str] = &[
+    "pL", "ss", "shold", "aflange", "aport", "asupport", "aw", "av",
+];
+const DISPLACED_BODY_EQUATIONS: &[&str] = &[
+    "flange = s - L",
+    "port = flange",
+    "support = 0",
+    "hold = port - support",
+    "w = der(hold)",
+    "v = der(s)",
+    "w = 1",
+];
+
+fn displaced_body_model() -> dae::Dae {
+    connector_fixture(
+        DISPLACED_BODY_TEXT,
+        DISPLACED_BODY_NAMES,
+        DISPLACED_BODY_EQUATIONS,
+        |model, declared, spans| {
+            let [length, s, hold, flange, port, support, w, v] = *declared else {
+                unreachable!("fixture declares eight variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let length_value = coordinate(expressions, spans[0], length.value())?;
+                let s_value = coordinate(expressions, spans[0], s.value())?;
+                let displaced = expressions.at(spans[0]).binary(
+                    dae::BinaryOperator::Subtract,
+                    s_value,
+                    length_value,
+                )?;
+                let flange_value = coordinate(expressions, spans[0], flange.value())?;
+                let port_value = coordinate(expressions, spans[1], port.value())?;
+                let support_value = coordinate(expressions, spans[2], support.value())?;
+                let zero = expressions
+                    .at(spans[2])
+                    .literal(dae::DaeLiteral::Real(0.0))?;
+                let hold_value = coordinate(expressions, spans[3], hold.value())?;
+                let relative = expressions.at(spans[3]).binary(
+                    dae::BinaryOperator::Subtract,
+                    port_value,
+                    support_value,
+                )?;
+                let w_value = coordinate(expressions, spans[4], w.value())?;
+                let hold_derivative = coordinate(expressions, spans[4], hold.derivative())?;
+                let v_value = coordinate(expressions, spans[5], v.value())?;
+                let s_derivative = coordinate(expressions, spans[5], s.derivative())?;
+                let one = expressions
+                    .at(spans[6])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], flange_value, displaced),
+                        (spans[1], port_value, flange_value),
+                        (spans[2], support_value, zero),
+                        (spans[3], hold_value, relative),
+                        (spans[4], w_value, hold_derivative),
+                        (spans[5], v_value, s_derivative),
+                        (spans[6], w_value, one),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `b - L = a; u = der(a); y = der(b); u = 1`
+///
+/// Two states separated by a constant. Their derivatives are the same quantity
+/// and their values are not, and no residual states either state on its own, so
+/// the only thing the closure may report here is the derivative.
+const DISPLACED_STATES_TEXT: &str = "parameter Real L; Real a; Real b; Real u; Real y; equation b - L = a; u = der(a); y = der(b); u = 1;";
+const DISPLACED_STATES_NAMES: &[&str] = &["pL", "sa", "sb", "au", "ay"];
+const DISPLACED_STATES_EQUATIONS: &[&str] = &["b - L = a", "u = der(a)", "y = der(b)", "u = 1"];
+
+fn displaced_states_model() -> dae::Dae {
+    connector_fixture(
+        DISPLACED_STATES_TEXT,
+        DISPLACED_STATES_NAMES,
+        DISPLACED_STATES_EQUATIONS,
+        |model, declared, spans| {
+            let [length, a, b, u, y] = *declared else {
+                unreachable!("fixture declares five variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let length_value = coordinate(expressions, spans[0], length.value())?;
+                let b_value = coordinate(expressions, spans[0], b.value())?;
+                let displaced = expressions.at(spans[0]).binary(
+                    dae::BinaryOperator::Subtract,
+                    b_value,
+                    length_value,
+                )?;
+                let a_value = coordinate(expressions, spans[0], a.value())?;
+                let u_value = coordinate(expressions, spans[1], u.value())?;
+                let a_derivative = coordinate(expressions, spans[1], a.derivative())?;
+                let y_value = coordinate(expressions, spans[2], y.value())?;
+                let b_derivative = coordinate(expressions, spans[2], b.derivative())?;
+                let one = expressions
+                    .at(spans[3])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], displaced, a_value),
+                        (spans[1], u_value, a_derivative),
+                        (spans[2], y_value, b_derivative),
+                        (spans[3], u_value, one),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `q + I = 0; psi = q; der(psi) = v; v = 1`
+///
+/// The pin is written with the sign the other way round, so the class is
+/// constant at `-I` rather than at `I`.
+const OPPOSED_PIN_TEXT: &str =
+    "parameter Real I; Real q; Real psi; Real v; equation q + I = 0; psi = q; der(psi) = v; v = 1;";
+const OPPOSED_PIN_NAMES: &[&str] = &["pI", "aq", "spsi", "av"];
+const OPPOSED_PIN_EQUATIONS: &[&str] = &["q + I = 0", "psi = q", "der(psi) = v", "v = 1"];
+
+fn opposed_pin_model() -> dae::Dae {
+    connector_fixture(
+        OPPOSED_PIN_TEXT,
+        OPPOSED_PIN_NAMES,
+        OPPOSED_PIN_EQUATIONS,
+        |model, declared, spans| {
+            let [current, q, psi, v] = *declared else {
+                unreachable!("fixture declares four variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let q_value = coordinate(expressions, spans[0], q.value())?;
+                let current_value = coordinate(expressions, spans[0], current.value())?;
+                let opposed = expressions.at(spans[0]).binary(
+                    dae::BinaryOperator::Add,
+                    q_value,
+                    current_value,
+                )?;
+                let zero = expressions
+                    .at(spans[0])
+                    .literal(dae::DaeLiteral::Real(0.0))?;
+                let psi_value = coordinate(expressions, spans[1], psi.value())?;
+                let psi_derivative = coordinate(expressions, spans[2], psi.derivative())?;
+                let v_value = coordinate(expressions, spans[2], v.value())?;
+                let one = expressions
+                    .at(spans[3])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], opposed, zero),
+                        (spans[1], psi_value, q_value),
+                        (spans[2], psi_derivative, v_value),
+                        (spans[3], v_value, one),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `a + b = 0; der(a) = v; der(b) = w; v = 1`
+///
+/// Two *states* the balance proves opposite, the anti-series shape a pair of
+/// opposed inductors or a differential gear writes. The class is exact — no
+/// displacement — so everything the closure needs to demote one of them is
+/// present except the sign.
+const OPPOSED_STATES_TEXT: &str =
+    "Real a; Real b; Real v; Real w; equation a + b = 0; der(a) = v; der(b) = w; v = 1;";
+const OPPOSED_STATES_NAMES: &[&str] = &["sa", "sb", "av", "aw"];
+const OPPOSED_STATES_EQUATIONS: &[&str] = &["a + b = 0", "der(a) = v", "der(b) = w", "v = 1"];
+
+fn opposed_states_model() -> dae::Dae {
+    connector_fixture(
+        OPPOSED_STATES_TEXT,
+        OPPOSED_STATES_NAMES,
+        OPPOSED_STATES_EQUATIONS,
+        |model, declared, spans| {
+            let [a, b, v, w] = *declared else {
+                unreachable!("fixture declares four variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let a_value = coordinate(expressions, spans[0], a.value())?;
+                let b_value = coordinate(expressions, spans[0], b.value())?;
+                let balance =
+                    expressions
+                        .at(spans[0])
+                        .binary(dae::BinaryOperator::Add, a_value, b_value)?;
+                let zero = expressions
+                    .at(spans[0])
+                    .literal(dae::DaeLiteral::Real(0.0))?;
+                let a_derivative = coordinate(expressions, spans[1], a.derivative())?;
+                let v_value = coordinate(expressions, spans[1], v.value())?;
+                let b_derivative = coordinate(expressions, spans[2], b.derivative())?;
+                let w_value = coordinate(expressions, spans[2], w.value())?;
+                let one = expressions
+                    .at(spans[3])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], balance, zero),
+                        (spans[1], a_derivative, v_value),
+                        (spans[2], b_derivative, w_value),
+                        (spans[3], v_value, one),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+/// `a - b = 0; a + b = 0; der(a) = v; v = 1`
+///
+/// Two residuals that assert both `a ≡ b` and `a ≡ -b`. Only `a = b = 0`
+/// satisfies both, which is not something a closure over signed edges may
+/// assume: the class is contradictory, and the closure has to say so rather
+/// than pick whichever edge it read last.
+const CONTRADICTORY_TEXT: &str =
+    "Real a; Real b; Real v; equation a - b = 0; a + b = 0; der(a) = v; v = 1;";
+const CONTRADICTORY_NAMES: &[&str] = &["sa", "sb", "av"];
+const CONTRADICTORY_EQUATIONS: &[&str] = &["a - b = 0", "a + b = 0", "der(a) = v", "v = 1"];
+
+fn contradictory_equalities_model() -> dae::Dae {
+    connector_fixture(
+        CONTRADICTORY_TEXT,
+        CONTRADICTORY_NAMES,
+        CONTRADICTORY_EQUATIONS,
+        |model, declared, spans| {
+            let [a, b, v] = *declared else {
+                unreachable!("fixture declares three variables")
+            };
+            let residuals = model.expressions(|expressions| {
+                let a_value = coordinate(expressions, spans[0], a.value())?;
+                let b_value = coordinate(expressions, spans[0], b.value())?;
+                let difference = expressions.at(spans[0]).binary(
+                    dae::BinaryOperator::Subtract,
+                    a_value,
+                    b_value,
+                )?;
+                let sum =
+                    expressions
+                        .at(spans[1])
+                        .binary(dae::BinaryOperator::Add, a_value, b_value)?;
+                let zero = expressions
+                    .at(spans[0])
+                    .literal(dae::DaeLiteral::Real(0.0))?;
+                let a_derivative = coordinate(expressions, spans[2], a.derivative())?;
+                let v_value = coordinate(expressions, spans[2], v.value())?;
+                let one = expressions
+                    .at(spans[3])
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                residuals(
+                    expressions,
+                    [
+                        (spans[0], difference, zero),
+                        (spans[1], sum, zero),
+                        (spans[2], a_derivative, v_value),
+                        (spans[3], v_value, one),
+                    ],
+                )
+            })?;
+            register(model, spans, residuals)
+        },
+    )
+}
+
+fn variable_index(view: dae::DaeView<'_>, name: &str) -> u32 {
+    view.variables()
+        .find(|(_, variable)| variable.name().as_str() == name)
+        .map(|(id, _)| id.index())
+        .unwrap_or_else(|| panic!("fixture declares `{name}`"))
+}
+
+fn role(dae: &dae::Dae, name: &str) -> dae::VariableRole {
+    dae.inspect(|view| {
+        view.variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .map(|(_, variable)| variable.role())
+            .unwrap_or_else(|| panic!("reconstructed DAE keeps `{name}`"))
+    })
+}
+
+/// Every derivative coordinate the reconstructed DAE still names.
+fn derivative_coordinates(view: dae::DaeView<'_>) -> Vec<u32> {
+    (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .filter_map(|expression| match expression.operation() {
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state)) => {
+                Some(state.index())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn algebraic_coordinate<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<u32> {
+    let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(id)) =
+        view.expression(expression)?.operation()
+    else {
+        return None;
+    };
+    Some(id.index())
+}
+
+fn negated_algebraic_coordinate<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<u32> {
+    let dae::ExpressionOperation::Unary {
+        operator: dae::UnaryOperator::Negate,
+        mut operand,
+    } = view.expression(expression)?.operation()
+    else {
+        return None;
+    };
+    if let dae::ExpressionOperation::Unary {
+        operator: dae::UnaryOperator::Plus,
+        operand: inner,
+    } = view.expression(operand)?.operation()
+    {
+        operand = inner;
+    }
+    algebraic_coordinate(view, operand)
+}
+
+fn is_signed_definition<'dae>(
+    view: dae::DaeView<'dae>,
+    equation: dae::ResidualEquationView<'dae>,
+    signed: u32,
+    rhs_coordinate: u32,
+) -> bool {
+    let Some(residual) = view.expression(equation.residual()) else {
+        return false;
+    };
+    let dae::ExpressionOperation::Binary {
+        operator: dae::BinaryOperator::Subtract,
+        lhs,
+        rhs,
+    } = residual.operation()
+    else {
+        return false;
+    };
+    negated_algebraic_coordinate(view, lhs) == Some(signed)
+        && algebraic_coordinate(view, rhs) == Some(rhs_coordinate)
+}
+
+#[test]
+fn connector_alias_chain_demotes_the_redundant_state_and_matches() {
+    let model = alias_chain_model();
+    assert!(
+        model.inspect(|view| sort(view).is_err()),
+        "two angles sharing one connector are structurally singular"
+    );
+    let prepared = prepare_for_solve(&model).expect("alias chain is reducible");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed { .. } => panic!("alias chain requires a state demotion"),
+    };
+    assert_eq!(role(&transformed, "phi1"), dae::VariableRole::State);
+    assert_eq!(role(&transformed, "phi2"), dae::VariableRole::Algebraic);
+    transformed.inspect(|view| {
+        assert!(sort(view).is_ok(), "replacement DAE matches perfectly");
+        assert!(
+            !derivative_coordinates(view).contains(&variable_index(view, "phi2")),
+            "the demoted angle keeps no derivative coordinate"
+        );
+    });
+}
+
+#[test]
+fn alias_closure_reports_the_anchor_state_of_a_connector_chain() {
+    let model = alias_chain_model();
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        let phi1 = variable_index(view, "phi1");
+        let phi2 = variable_index(view, "phi2");
+        let flange = variable_index(view, "flange");
+        for member in [phi1, phi2, flange] {
+            assert_eq!(
+                equalities.anchor_of(member),
+                Some((EqualityAnchor::State(phi1), EqualitySign::Same)),
+                "every chain member resolves to the kept angle with the same sign"
+            );
+        }
+        assert_eq!(
+            equalities
+                .redundant_states()
+                .map(|(state, _, _)| state)
+                .collect::<Vec<_>>(),
+            vec![phi2],
+            "only the non-anchor state is reported redundant"
+        );
+    });
+}
+
+#[test]
+fn opposed_node_balances_pin_a_flux_state_to_its_parameter() {
+    let model = flow_balance_model();
+    assert!(
+        model.inspect(|view| sort(view).is_err()),
+        "a flux state pinned to a constant current is structurally singular"
+    );
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        let anchor = equalities
+            .anchor_of(variable_index(view, "pi"))
+            .expect("the pinned current class reports an anchor");
+        assert!(
+            matches!(
+                anchor,
+                (EqualityAnchor::Invariant { .. }, EqualitySign::Same)
+            ),
+            "a class pinned to a parameter reports that invariant"
+        );
+        assert_eq!(
+            equalities.anchor_of(variable_index(view, "ni")),
+            Some(anchor),
+            "both signs of the node balance land in the same pinned class"
+        );
+    });
+    let prepared = prepare_for_solve(&model).expect("pinned flux state is reducible");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed { .. } => panic!("pinned flux state requires a demotion"),
+    };
+    assert_eq!(role(&transformed, "psi"), dae::VariableRole::Algebraic);
+    transformed.inspect(|view| {
+        assert!(sort(view).is_ok(), "replacement DAE matches perfectly");
+        assert!(
+            derivative_coordinates(view).is_empty(),
+            "a constant flux leaves no derivative coordinate behind"
+        );
+    });
+}
+
+#[test]
+fn derivative_definitions_are_read_in_either_orientation() {
+    let model = reverse_derivative_model();
+    model.inspect(|view| {
+        let definitions = explicit_derivative_definitions(view);
+        let phi = variable_index(view, "phi") as usize;
+        let w = variable_index(view, "w") as usize;
+        let phi_definition = definitions[phi].expect("`w = der(phi)` defines d/dt phi");
+        let definition = view
+            .expression(
+                view.expression_id(phi_definition as usize)
+                    .expect("definition ordinal resolves"),
+            )
+            .expect("definition identity resolves");
+        assert!(
+            matches!(
+                definition.operation(),
+                dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(state))
+                    if state.index() as usize == w
+            ),
+            "the reverse orientation supplies the other side as the definition"
+        );
+        assert!(
+            definitions[w].is_some(),
+            "the forward orientation keeps working"
+        );
+    });
+}
+
+#[test]
+fn a_state_pinned_to_a_bare_zero_reduces_like_one_pinned_to_a_parameter() {
+    let model = pinned_support_model();
+    assert!(
+        model.inspect(|view| sort(view).is_err()),
+        "a state tied to a pinned support is structurally singular"
+    );
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        assert!(
+            matches!(
+                equalities.anchor_of(variable_index(view, "hold")),
+                Some((EqualityAnchor::Invariant { .. }, EqualitySign::Same))
+            ),
+            "a literal pin anchors the class just as a parameter does"
+        );
+    });
+    let prepared = prepare_for_solve(&model).expect("pinned support is reducible");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed { .. } => panic!("pinned support requires a demotion"),
+    };
+    assert_eq!(role(&transformed, "hold"), dae::VariableRole::Algebraic);
+    transformed.inspect(|view| {
+        assert!(sort(view).is_ok(), "replacement DAE matches perfectly");
+        assert!(
+            derivative_coordinates(view).is_empty(),
+            "a pinned angle leaves no derivative coordinate behind"
+        );
+    });
+}
+
+#[test]
+fn a_displaced_body_chain_supplies_the_derivative_a_demotion_needs() {
+    let model = displaced_body_model();
+    assert!(
+        model.inspect(|view| sort(view).is_err()),
+        "a prescribed position tied to a displaced body is structurally singular"
+    );
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        let anchored = variable_index(view, "s");
+        for member in [variable_index(view, "port"), variable_index(view, "flange")] {
+            assert_eq!(
+                equalities.anchor_of(member),
+                Some((EqualityAnchor::State(anchored), EqualitySign::Same)),
+                "the connector chain reaches the body state across the displacement"
+            );
+        }
+        assert!(
+            equalities.redundant_states().next().is_none(),
+            "no state is proven equal in value to another one here"
+        );
+    });
+    let prepared = prepare_for_solve(&model).expect("displaced body chain is reducible");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed { .. } => panic!("displaced body chain requires a state demotion"),
+    };
+    assert_eq!(role(&transformed, "hold"), dae::VariableRole::Algebraic);
+    assert_eq!(role(&transformed, "s"), dae::VariableRole::State);
+    transformed.inspect(|view| {
+        assert!(sort(view).is_ok(), "replacement DAE matches perfectly");
+        assert!(
+            !derivative_coordinates(view).contains(&variable_index(view, "hold")),
+            "the demoted position keeps no derivative coordinate"
+        );
+    });
+}
+
+#[test]
+fn a_displaced_equality_never_reports_a_redundant_state() {
+    let model = displaced_states_model();
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        assert_eq!(
+            equalities
+                .redundant_states()
+                .map(|(state, _, _)| state)
+                .collect::<Vec<_>>(),
+            Vec::<u32>::new(),
+            "`b - L = a` proves a shared derivative, never a shared value"
+        );
+    });
+}
+
+#[test]
+fn an_opposite_signed_state_pair_carries_its_sign_into_demotion() {
+    let model = opposed_states_model();
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        let a = variable_index(view, "a");
+        let b = variable_index(view, "b");
+        assert_eq!(
+            equalities.anchor_of(b),
+            Some((EqualityAnchor::State(a), EqualitySign::Opposite)),
+            "`a + b = 0` proves the second state is the first one negated"
+        );
+        assert_eq!(
+            equalities.anchor_of(a),
+            Some((EqualityAnchor::State(a), EqualitySign::Same)),
+            "the anchor signs against itself"
+        );
+        assert_eq!(
+            equalities.redundant_states().collect::<Vec<_>>(),
+            vec![(b, EqualityAnchor::State(a), EqualitySign::Opposite)],
+            "the non-anchor state carries the exact sign its class proves"
+        );
+    });
+    assert!(
+        model.inspect(|view| sort(view).is_err()),
+        "an anti-series state pair is structurally singular"
+    );
+    let prepared = prepare_for_solve(&model).expect("opposed state pair is reducible");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed { .. } => panic!("opposed state pair requires a state demotion"),
+    };
+    assert_eq!(role(&transformed, "a"), dae::VariableRole::State);
+    assert_eq!(role(&transformed, "b"), dae::VariableRole::Algebraic);
+    transformed.inspect(|view| {
+        assert!(sort(view).is_ok(), "replacement DAE matches perfectly");
+        assert!(
+            !derivative_coordinates(view).contains(&variable_index(view, "b")),
+            "the demoted state keeps no derivative coordinate"
+        );
+        let w = variable_index(view, "w");
+        let v = variable_index(view, "v");
+        let signed_definition = view.continuous_owners().any(|owner| {
+            let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
+                return false;
+            };
+            is_signed_definition(view, equation, v, w)
+        });
+        assert!(
+            signed_definition,
+            "`der(b) = w` becomes the proved signed definition `-v = w`"
+        );
+    });
+}
+
+#[test]
+fn a_connector_hidden_holonomic_constraint_carries_an_anchor_proof() {
+    let model = hidden_holonomic_model();
+    assert!(
+        model.inspect(|view| sort(view).is_err()),
+        "the position constraint leaves one acceleration structurally undefined"
+    );
+    model.inspect(|view| {
+        let constraints = holonomic_constraints(view);
+        assert_eq!(
+            constraints.len(),
+            1,
+            "only the two-body constraint qualifies"
+        );
+        let constraint = &constraints[0];
+        assert_eq!(
+            view.source_text(
+                view.expression(view.expression_id(constraint.residual as usize).unwrap())
+                    .unwrap()
+                    .provenance()
+            ),
+            Some("angle1 = 2*angle2")
+        );
+        assert_eq!(constraint.proof.maximum_order, 2);
+        assert_eq!(constraint.proof.residual, constraint.residual);
+        assert_eq!(
+            &*constraint.proof.anchored_states,
+            &[variable_index(view, "phi1"), variable_index(view, "phi2")],
+            "the certificate records both distinct state anchors"
+        );
+    });
+
+    let prepared = prepare_for_solve(&model).expect("hidden constraint is reducible");
+    let (transformed, manifold) = match prepared {
+        PreparedDae::Transformed { dae, manifold, .. } => (dae, manifold),
+        PreparedDae::Borrowed { .. } => panic!("hidden constraint requires index reduction"),
+    };
+    assert_eq!(
+        manifold.len(),
+        2,
+        "value and first derivative stay on the manifold"
+    );
+    for variable in ["phi1", "w1", "phi2", "w2"] {
+        assert_eq!(
+            role(&transformed, variable),
+            dae::VariableRole::State,
+            "holonomic reduction must not demote {variable}"
+        );
+    }
+    transformed.inspect(|view| {
+        assert!(
+            sort(view).is_ok(),
+            "second derivative completes the matching"
+        );
+    });
+}
+
+#[test]
+fn contradicting_equalities_prove_nothing_about_their_class() {
+    let model = contradictory_equalities_model();
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        for member in ["a", "b"] {
+            assert_eq!(
+                equalities.anchor_of(variable_index(view, member)),
+                None,
+                "a class asserting both `a = b` and `a = -b` reports no anchor"
+            );
+        }
+        assert_eq!(
+            equalities
+                .redundant_states()
+                .map(|(state, _, _)| state)
+                .collect::<Vec<_>>(),
+            Vec::<u32>::new(),
+            "and offers no state as redundant"
+        );
+    });
+}
+
+#[test]
+fn an_opposed_pin_proves_constancy_without_naming_the_pinned_value() {
+    let model = opposed_pin_model();
+    model.inspect(|view| {
+        let equalities = SystemEqualities::collect(view);
+        let (anchor, sign) = equalities
+            .anchor_of(variable_index(view, "q"))
+            .expect("the opposed pin still proves the class constant");
+        assert_eq!(sign, EqualitySign::Same, "a pinned class carries no sign");
+        assert!(
+            matches!(anchor, EqualityAnchor::Invariant { .. }),
+            "`q + I = 0` pins the class to a time-invariant value"
+        );
+        assert_eq!(
+            equalities.anchor_expression(anchor),
+            None,
+            "the class sits at `-I`, which no source expression names"
+        );
+    });
+}

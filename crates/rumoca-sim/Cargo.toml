@@ -59,6 +59,10 @@ serde_json = { workspace = true, features = ["unbounded_depth"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+rumoca-compile = { workspace = true }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rumoca-codec = { workspace = true, optional = true }
 rumoca-input = { workspace = true, optional = true }

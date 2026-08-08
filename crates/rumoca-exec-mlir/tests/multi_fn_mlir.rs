@@ -11,14 +11,42 @@ use rumoca_core::{SourceId, Span};
 ///   implicit_jac_v:  J*seed   = -seed[0]   (because dg/dy[0] = -1)
 use rumoca_exec_mlir::{MlirError, compile_derivative_rhs as exec_compile_derivative_rhs};
 use rumoca_ir_solve::{
-    ComputeBlock, ContinuousSolveSystem, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp,
+    ComputeBlock, ContinuousSolveSystem, LinearOp, ScalarProgramBlock, SolveLayout, SolveProblem,
+    SolverNameIndexMaps, UnaryOp, VarLayout,
 };
+
+mod support;
+
+/// Every fixture in this file is the one-state decay model `xdot = -y[0]`
+/// with no parameters, so the derivative seed space is exactly one column.
+fn fixture_layout() -> VarLayout {
+    VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0)
+}
+
+/// The solver unknown vector for the same one-state model. The implicit
+/// Jacobian column space is the solver vector, so the residual fixtures must
+/// name their unknown rather than inherit an empty solver map.
+fn fixture_solve_layout() -> SolveLayout {
+    let state = "x".to_string();
+    SolveLayout {
+        solver_maps: SolverNameIndexMaps {
+            names: vec![state.clone()],
+            name_to_idx: [(state.clone(), 0)].into_iter().collect(),
+            base_to_indices: [(state, vec![0])].into_iter().collect(),
+        },
+        state_scalar_count: 1,
+        ..SolveLayout::default()
+    }
+}
 
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR multi-function fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 fn decay_solve_problem() -> SolveProblem {
@@ -34,7 +62,9 @@ fn decay_solve_problem() -> SolveProblem {
     ];
     // implicit_rhs: g = -y[0]  (same computation, residual form)
     let impl_row = drv_row.clone();
-    SolveProblem {
+    let problem = SolveProblem {
+        layout: fixture_layout(),
+        solve_layout: fixture_solve_layout(),
         continuous: ContinuousSolveSystem {
             derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
                 vec![drv_row],
@@ -44,10 +74,15 @@ fn decay_solve_problem() -> SolveProblem {
                 vec![impl_row],
                 "multi_fn_implicit.mo",
             )),
+            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
             ..Default::default()
         },
         ..Default::default()
-    }
+    };
+    problem
+        .validate()
+        .expect("fixture problem is valid by construction");
+    problem
 }
 
 fn compile_or_skip(
@@ -59,7 +94,7 @@ fn compile_or_skip(
     match exec_compile_derivative_rhs(solve, &artifacts, name) {
         Ok(c) => Some(c),
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             None
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -162,13 +197,17 @@ fn multi_fn_derivative_still_correct() {
 #[test]
 fn multi_fn_empty_implicit_no_symbol() {
     // A SolveProblem with no implicit_rhs rows should NOT export eval_implicit_rhs.
-    let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
-        vec![vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]],
-        "multi_fn_empty_implicit.mo",
-    )));
+    let solve = SolveProblem::with_derivative_rhs(
+        ComputeBlock::from_scalar_program_block(spb(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            "multi_fn_empty_implicit.mo",
+        )),
+        fixture_layout(),
+    )
+    .expect("fixture derivative problem is valid by construction");
     // implicit_rhs left as default (empty)
 
     let compiled = match compile_or_skip(&solve, "multi_empty_impl") {

@@ -26,6 +26,7 @@ model MiniGear
   Real fb;
   Real ga;
   Real gb;
+  Real z[2];
 equation
   w1 = ratio * w2;
   der(w2) = a2;
@@ -34,6 +35,9 @@ equation
   fb + ga = 0;
   gb + J2 * a2 + d * w2 = 0;
   fa = tau;
+  for i in 1:2 loop
+    z[i] = i;
+  end for;
 end MiniGear;
 "#;
 
@@ -42,6 +46,11 @@ fn gear_torque_loop_converges_to_physical_solution() -> Result<(), Box<dyn std::
     let compiled = Compiler::new()
         .model("MiniGear")
         .compile_str(MINI_GEAR, "MiniGear.mo")?;
+    assert_eq!(
+        compiled.dae.inspect(|view| view.continuous_family_count()),
+        1,
+        "the source for-equation must reach structural lowering as one compact family"
+    );
 
     let opts = SimOptions {
         t_end: 1.0,

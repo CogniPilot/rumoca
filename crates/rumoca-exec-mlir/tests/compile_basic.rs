@@ -3,8 +3,10 @@ use rumoca_exec_mlir::{
     CompiledMlirResidual, MlirError, compile_derivative_rhs as exec_compile_derivative_rhs,
 };
 use rumoca_ir_solve::{
-    BinaryOp, ComputeBlock, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp,
+    BinaryOp, ComputeBlock, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp, VarLayout,
 };
+
+mod support;
 
 fn compile_derivative_rhs(
     solve: &SolveProblem,
@@ -15,11 +17,29 @@ fn compile_derivative_rhs(
     exec_compile_derivative_rhs(solve, &artifacts, name)
 }
 
+/// The storage each fixture program addresses.
+///
+/// Forward-mode AD seeds the parameters after the states, so the derivative
+/// Jacobian column space is `y_scalars + p_scalars` wide. Understating either
+/// extent aliases parameter columns onto state columns, so every fixture
+/// declares exactly the storage its own `LoadY`/`LoadP` ops read.
+fn fixture_layout(y_scalars: usize, p_scalars: usize) -> VarLayout {
+    VarLayout::from_parts(indexmap::IndexMap::new(), y_scalars, p_scalars)
+}
+
+fn derivative_problem(derivative_rhs: ComputeBlock, layout: VarLayout) -> SolveProblem {
+    SolveProblem::with_derivative_rhs(derivative_rhs, layout)
+        .expect("fixture derivative problem is valid by construction")
+}
+
 fn scalar_program_block(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR compile fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 /// Build a SolveProblem whose derivative_rhs computes:
@@ -41,9 +61,13 @@ fn simple_decay_solve() -> SolveProblem {
         },
         LinearOp::StoreOutput { src: 3 },
     ];
-    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![row], "compile_basic_decay.mo"),
-    ))
+    derivative_problem(
+        ComputeBlock::from_scalar_program_block(scalar_program_block(
+            vec![row],
+            "compile_basic_decay.mo",
+        )),
+        fixture_layout(1, 1),
+    )
 }
 
 #[test]
@@ -54,7 +78,7 @@ fn mlir_derivative_rhs_matches_expected() {
     let compiled = match result {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found — install mlir-18-tools to run this test");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -77,15 +101,20 @@ fn mlir_derivative_rhs_time_dependency() {
         LinearOp::LoadTime { dst: 0 },
         LinearOp::StoreOutput { src: 0 },
     ];
-    let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![row], "compile_basic_time.mo"),
-    ));
+    // xdot = t reads neither state nor parameter storage.
+    let solve = derivative_problem(
+        ComputeBlock::from_scalar_program_block(scalar_program_block(
+            vec![row],
+            "compile_basic_time.mo",
+        )),
+        fixture_layout(0, 0),
+    );
 
     let result = compile_derivative_rhs(&solve, "time_dep");
     let compiled = match result {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found — install mlir-18-tools to run this test");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -111,15 +140,19 @@ fn mlir_derivative_rhs_trig() {
         },
         LinearOp::StoreOutput { src: 1 },
     ];
-    let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![row], "compile_basic_trig.mo"),
-    ));
+    let solve = derivative_problem(
+        ComputeBlock::from_scalar_program_block(scalar_program_block(
+            vec![row],
+            "compile_basic_trig.mo",
+        )),
+        fixture_layout(1, 0),
+    );
 
     let result = compile_derivative_rhs(&solve, "trig");
     let compiled = match result {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found — install mlir-18-tools to run this test");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),

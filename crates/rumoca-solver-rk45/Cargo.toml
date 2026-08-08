@@ -7,16 +7,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Sim-core owns backend-neutral simulation contracts and runtime helpers.
+# SPEC_0038 §Internal Solver Boundary: this crate is an FMI 3 ME *host*. It
+# depends on the ME contract only. `rumoca-ir-solve` and `rumoca-eval-solve`
+# are deliberately absent so naming a Solve row, layout, opcode, event, or
+# runtime object here does not compile.
 rumoca-solver = { workspace = true }
-rumoca-eval-solve = { workspace = true }
-rumoca-ir-solve = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-rumoca-core = { workspace = true }
+# Unit-test fixtures build Solve models by hand. A dev-dependency is not
+# linked into the library, so the SPEC_0038 boundary above still holds for
+# every production path in this crate.
+rumoca-ir-solve = { workspace = true }
 
 [lints]
 workspace = true

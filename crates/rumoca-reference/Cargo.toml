@@ -1,0 +1,26 @@
+[package]
+name = "rumoca-reference"
+description = "Executable reference semantics for the Modelica discrete/event core, written to be audited rather than run fast"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The reference has no production dependencies, on purpose. It is the
+# denotational model the compiler is checked against, so anything it imported
+# would become part of what it is supposed to be independent of.
+[dependencies]
+
+# The differential harness needs the real pipeline. These are dev-only, so the
+# independence above survives: nothing a consumer links pulls the compiler in.
+[dev-dependencies]
+proptest = { workspace = true }
+rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
+rumoca-sim = { workspace = true, features = [
+    "solver-diffsol",
+    "solver-rk45",
+    "strict-ir-validation",
+] }
+
+[lints]
+workspace = true

@@ -1,929 +1,848 @@
-//! Optional structural analysis phase for DAE systems.
+//! Structural analysis over one immutable, valid-by-construction DAE.
 //!
-//! This phase is **not required** for CasADi targets (CasADi handles matching
-//! and implicit systems internally). It provides diagnostic information about
-//! the DAE structure and is required for Rust/C simulation code generation.
-//!
-//! Provides two entry points:
-//! - [`sort_dae`]: Transform a DAE into BLT-sorted block form (errors on singular systems).
-//! - [`analyze_structure`]: Diagnostic-only analysis (for CasADi workflows).
+//! Entry points accept [`rumoca_ir_dae::DaeView`], so every structural product
+//! carrying DAE identities remains branded to the inspected root and cannot be
+//! mixed with another model.
 
 mod blt;
-pub mod dae_prepare;
+mod causal_definitions;
+mod dae_transform;
+pub mod diagnostic_codes;
 mod diagnostics;
-pub mod eliminate;
-mod function_arguments;
-pub mod ic_plan;
 pub mod incidence;
 mod matching;
-pub mod projection_maps;
 pub mod report;
 pub mod runtime_defined;
-pub mod scalarize;
-mod static_eval;
 mod tarjan;
 pub mod tearing;
 mod types;
-mod variable_scope;
 
+use std::collections::HashSet;
+
+use rumoca_ir_dae as dae;
+
+pub use causal_definitions::CausalDefinitions;
+pub use dae_transform::{
+    InitialValuePin, InitialValueRole, PinTerm, PreparedDae, PreparedSystem, prepare_for_solve,
+};
+pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
-pub use eliminate::{EliminationResult, Substitution};
-pub use ic_plan::{CausalStep, IcBlock, IcRelaxationHint, build_ic_plan, build_ic_relaxation_hint};
-pub use incidence::{Incidence, build_solver_sparsity_triplets};
+pub use incidence::{Incidence, solver_incidence};
 pub use report::{BlockReport, StructuralReport, TearingReport};
 pub use runtime_defined::{
     runtime_defined_continuous_unknown_names, runtime_defined_unknown_names,
 };
-pub use tearing::{TearingResult, tear_algebraic_loop};
-pub use types::{BltBlock, EquationRef, SortedDae, StructuralError, UnknownId};
+pub use tearing::{TearingResult, tear_algebraic_loop, tear_algebraic_loop_with_causal_candidates};
+pub use types::{
+    BltBlock, EquationRef, SingularBlockWitness, SortedDae, StructuralError, StructuredScalarBlock,
+    UnknownId,
+};
 
-use rumoca_ir_dae as dae;
-
-#[cfg(feature = "tracing")]
-pub(crate) fn structural_trace_enabled() -> bool {
-    tracing::enabled!(tracing::Level::DEBUG)
+/// Analyze and BLT-sort a checked DAE view.
+pub fn sort<'dae>(view: dae::DaeView<'dae>) -> Result<SortedDae<'dae>, StructuralError> {
+    #[cfg(feature = "tracing")]
+    let stage_start = std::time::Instant::now();
+    let incidence = incidence::build_incidence(view)?;
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "rumoca_phase_structural::timing",
+        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
+        equations = incidence.n_eq,
+        unknowns = incidence.n_var,
+        "built scalar incidence"
+    );
+    if incidence.n_eq == 0 && incidence.n_var == 0 {
+        return Err(StructuralError::EmptySystem);
+    }
+    let preferences = explicit_derivative_preferences(view, &incidence);
+    let (match_eq, match_var) = maximum_matching(&incidence, &preferences);
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "rumoca_phase_structural::timing",
+        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
+        "completed structural matching"
+    );
+    require_perfect_matching(view, &incidence, &match_eq, &match_var)?;
+    let adjacency =
+        incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
+    let diagnostics = diagnostics::collect_warnings(view, &incidence, &match_eq, &adjacency);
+    let blocks = blt::build_blt_blocks(&incidence, &match_eq, &adjacency);
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "rumoca_phase_structural::timing",
+        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
+        blocks = blocks.len(),
+        "completed BLT analysis"
+    );
+    let matching = match_eq
+        .iter()
+        .enumerate()
+        .filter_map(|(equation, unknown)| {
+            unknown.map(|unknown| {
+                (
+                    incidence.equation_refs[equation],
+                    incidence.unknowns[unknown],
+                )
+            })
+        })
+        .collect();
+    Ok(SortedDae {
+        blocks,
+        matching,
+        diagnostics,
+    })
 }
 
-#[cfg(not(feature = "tracing"))]
-pub(crate) fn structural_trace_enabled() -> bool {
-    false
+fn explicit_derivative_preferences<'dae>(
+    view: dae::DaeView<'dae>,
+    incidence: &Incidence<'dae>,
+) -> Vec<Option<usize>> {
+    incidence
+        .equation_refs
+        .iter()
+        .map(|equation| {
+            let dae::ContinuousOwnerView::Residual { equation, .. } =
+                view.continuous_owner_for_scalar_row(equation.0)?
+            else {
+                return None;
+            };
+            let residual = view.expression(equation.residual())?;
+            if !residual.value_type().is_scalar() {
+                return None;
+            }
+            let dae::ExpressionOperation::Binary {
+                operator: dae::BinaryOperator::Subtract,
+                lhs,
+                ..
+            } = residual.operation()
+            else {
+                return None;
+            };
+            let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state)) =
+                view.expression(lhs)?.operation()
+            else {
+                return None;
+            };
+            incidence.unknowns.iter().position(|unknown| {
+                matches!(
+                    unknown,
+                    UnknownId::Derivative {
+                        state: candidate,
+                        scalar: 0
+                    } if *candidate == state
+                )
+            })
+        })
+        .collect()
 }
 
-#[cfg(feature = "tracing")]
-macro_rules! structural_trace {
-    ($($arg:tt)*) => {
-        tracing::debug!(target: "rumoca_phase_structural", $($arg)*)
+/// Produce diagnostic-only structural results without inventing a fallback
+/// matching for a singular model.
+pub fn analyze(view: dae::DaeView<'_>) -> StructuralDiagnostics {
+    let mut result = StructuralDiagnostics::default();
+    let incidence = match incidence::build_incidence(view) {
+        Ok(incidence) => incidence,
+        Err(error) => {
+            use rumoca_core::PhaseError;
+            result.diagnostics.push(error.to_diagnostic());
+            return result;
+        }
     };
+    result.n_equations = incidence.n_eq;
+    result.n_unknowns = incidence.n_var;
+    if incidence.n_eq == 0 && incidence.n_var == 0 {
+        return result;
+    }
+
+    let preferences = explicit_derivative_preferences(view, &incidence);
+    let (match_eq, match_var) = maximum_matching(&incidence, &preferences);
+    result.matching_size = match_eq.iter().filter(|matched| matched.is_some()).count();
+    result.unmatched_equations = match_eq
+        .iter()
+        .enumerate()
+        .filter(|(_, matched)| matched.is_none())
+        .map(|(index, _)| equation_label(view, &incidence.equation_refs[index]))
+        .collect();
+    result.unmatched_unknowns = match_var
+        .iter()
+        .enumerate()
+        .filter(|(_, matched)| matched.is_none())
+        .map(|(index, _)| unknown_label(view, incidence.unknowns[index]))
+        .collect();
+    if result.matching_size < incidence.n_eq || result.matching_size < incidence.n_var {
+        let span = unmatched_span(&incidence, &match_eq, &match_var);
+        result.diagnostics.push(diagnostics::singular_warning(
+            span,
+            &result.unmatched_equations,
+            &result.unmatched_unknowns,
+            result.matching_size,
+            incidence.n_eq,
+            incidence.n_var,
+        ));
+        return result;
+    }
+
+    let adjacency =
+        incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
+    result.diagnostics.extend(diagnostics::collect_warnings(
+        view, &incidence, &match_eq, &adjacency,
+    ));
+    result
 }
 
-#[cfg(not(feature = "tracing"))]
-macro_rules! structural_trace {
-    ($($arg:tt)*) => {
-        let _ = format_args!($($arg)*);
-    };
+pub fn build_structural_report(
+    view: dae::DaeView<'_>,
+) -> Result<StructuralReport, StructuralError> {
+    let sorted = sort(view)?;
+    let matching = sorted
+        .matching
+        .iter()
+        .map(|(equation, unknown)| {
+            (
+                equation_label(view, equation),
+                unknown_label(view, *unknown),
+            )
+        })
+        .collect();
+    let blocks = sorted
+        .blocks
+        .iter()
+        .map(|block| block_report(view, block))
+        .collect();
+    Ok(StructuralReport {
+        n_equations: sorted.matching.len(),
+        n_unknowns: sorted.matching.len(),
+        matching,
+        blocks,
+    })
 }
 
-pub(crate) use structural_trace;
+fn block_report<'dae>(view: dae::DaeView<'dae>, block: &BltBlock<'dae>) -> BlockReport {
+    match block {
+        BltBlock::Scalar { equation, unknown } => BlockReport::Scalar {
+            equation: equation_label(view, equation),
+            unknown: unknown_label(view, *unknown),
+        },
+        BltBlock::AlgebraicLoop {
+            equations,
+            unknowns,
+        } => BlockReport::Coupled {
+            equations: equations
+                .iter()
+                .map(|equation| equation_label(view, equation))
+                .collect(),
+            unknowns: unknowns
+                .iter()
+                .map(|unknown| unknown_label(view, *unknown))
+                .collect(),
+            tearing: None,
+        },
+        BltBlock::StructuredScalar(family) => BlockReport::StructuredScalar {
+            origin: equation_label(view, &EquationRef(family.first_equation_index)),
+            point_count: family.point_count,
+            equations_per_point: family.equations_per_point,
+        },
+    }
+}
 
-/// Build BLT blocks from a raw incidence matrix.
-///
-/// Used by the IC solver to decompose arbitrary subsystems (e.g. algebraic-only).
-/// Wraps: maximum matching → dependency graph → Tarjan SCC → BLT blocks.
-///
-/// Returns `Err` if the incidence is structurally singular.
-pub fn build_blt_from_incidence(incidence: &Incidence) -> Result<Vec<BltBlock>, StructuralError> {
+pub fn build_blt_from_incidence<'dae>(
+    incidence: &Incidence<'dae>,
+) -> Result<Vec<BltBlock<'dae>>, StructuralError> {
     if incidence.n_eq == 0 && incidence.n_var == 0 {
         return Ok(Vec::new());
     }
-
-    let (match_eq, match_var) =
-        matching::maximum_matching(incidence.n_eq, incidence.n_var, &incidence.eq_unknowns, &[]);
-    let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
-
-    if matching_size < incidence.n_eq || matching_size < incidence.n_var {
-        return Err(singular_from_matching(incidence, &match_eq, &match_var));
+    let (match_eq, match_var) = maximum_matching(incidence, &[]);
+    let matched = match_eq.iter().filter(|entry| entry.is_some()).count();
+    if matched < incidence.n_eq || matched < incidence.n_var {
+        return Err(unlabeled_singular(incidence, &match_eq, &match_var));
     }
-
-    let adj = incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
-    let blocks = blt::build_blt_blocks(incidence, &match_eq, &adj);
-
-    Ok(blocks)
+    let adjacency =
+        incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
+    Ok(blt::build_blt_blocks(incidence, &match_eq, &adjacency))
 }
 
-/// A maximum square subsystem selected from a rectangular or singular
-/// incidence matrix.
 #[derive(Debug)]
-pub struct RegularSubsystem {
-    pub incidence: Incidence,
-    pub blocks: Vec<BltBlock>,
+pub struct RegularSubsystem<'dae> {
+    pub incidence: Incidence<'dae>,
+    pub blocks: Vec<BltBlock<'dae>>,
     pub dropped_equations: Vec<EquationRef>,
-    pub dropped_unknowns: Vec<UnknownId>,
+    pub dropped_unknowns: Vec<UnknownId<'dae>>,
 }
 
-/// Select the largest structurally regular square subsystem supported by the
-/// incidence matrix's maximum matching.
-///
-/// Initialization projection can contain redundant rows and unconstrained
-/// variables (for example visualization aliases). This function exposes the
-/// structurally regular core explicitly so callers can solve the meaningful
-/// subsystem without relying on string sentinels or unmatched `???` BLT blocks.
-pub fn maximum_regular_subsystem(
-    incidence: &Incidence,
+pub fn maximum_regular_subsystem<'dae>(
+    incidence: &Incidence<'dae>,
     preferred_unknowns: &[Option<usize>],
-) -> Result<RegularSubsystem, StructuralError> {
-    let (match_eq, match_var) = matching::maximum_matching(
+) -> Result<RegularSubsystem<'dae>, StructuralError> {
+    let (match_eq, match_var) = maximum_matching(incidence, preferred_unknowns);
+    let matched_equations = matched_indices(&match_eq);
+    let matched_unknowns = matched_indices(&match_var);
+    if matched_equations.is_empty() || matched_equations.len() != matched_unknowns.len() {
+        return Err(unlabeled_singular(incidence, &match_eq, &match_var));
+    }
+    let mut old_to_new = vec![None; incidence.n_var];
+    for (new, old) in matched_unknowns.iter().copied().enumerate() {
+        old_to_new[old] = Some(new);
+    }
+    let rows = matched_equations
+        .iter()
+        .map(|equation| {
+            incidence
+                .eq_unknowns
+                .row(*equation)
+                .iter()
+                .filter_map(|unknown| old_to_new[*unknown])
+                .collect::<HashSet<_>>()
+        })
+        .collect();
+    let regular = Incidence {
+        n_eq: matched_equations.len(),
+        n_var: matched_unknowns.len(),
+        eq_unknowns: incidence::rows::IncidenceRows::from_sets(rows),
+        unknowns: matched_unknowns
+            .iter()
+            .map(|index| incidence.unknowns[*index])
+            .collect(),
+        unknown_spans: matched_unknowns
+            .iter()
+            .filter_map(|index| incidence.unknown_spans.get(*index).copied())
+            .collect(),
+        equation_refs: matched_equations
+            .iter()
+            .map(|index| incidence.equation_refs[*index])
+            .collect(),
+        equation_spans: matched_equations
+            .iter()
+            .filter_map(|index| incidence.equation_spans.get(*index).copied())
+            .collect(),
+        structured_matching: Vec::new(),
+    };
+    let blocks = build_blt_from_incidence(&regular)?;
+    let matched_equation_set = matched_equations.iter().copied().collect::<HashSet<_>>();
+    let matched_unknown_set = matched_unknowns.iter().copied().collect::<HashSet<_>>();
+    Ok(RegularSubsystem {
+        incidence: regular,
+        blocks,
+        dropped_equations: incidence
+            .equation_refs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, equation)| {
+                (!matched_equation_set.contains(&index)).then_some(*equation)
+            })
+            .collect(),
+        dropped_unknowns: incidence
+            .unknowns
+            .iter()
+            .enumerate()
+            .filter_map(|(index, unknown)| {
+                (!matched_unknown_set.contains(&index)).then_some(*unknown)
+            })
+            .collect(),
+    })
+}
+
+fn maximum_matching(
+    incidence: &Incidence<'_>,
+    preferred_unknowns: &[Option<usize>],
+) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
+    matching::maximum_matching_with_structured(
         incidence.n_eq,
         incidence.n_var,
         &incidence.eq_unknowns,
         preferred_unknowns,
-    );
-    let matched_equations = match_eq
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, matched)| matched.is_some().then_some(idx))
-        .collect::<Vec<_>>();
-    let matched_unknowns = match_var
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, matched)| matched.is_some().then_some(idx))
-        .collect::<Vec<_>>();
-    if matched_equations.is_empty() || matched_equations.len() != matched_unknowns.len() {
-        return Err(singular_from_matching(incidence, &match_eq, &match_var));
+        &incidence.structured_matching,
+    )
+}
+
+fn require_perfect_matching<'dae>(
+    view: dae::DaeView<'dae>,
+    incidence: &Incidence<'dae>,
+    match_eq: &[Option<usize>],
+    match_var: &[Option<usize>],
+) -> Result<(), StructuralError> {
+    let matched = match_eq.iter().filter(|entry| entry.is_some()).count();
+    if matched == incidence.n_eq && matched == incidence.n_var {
+        return Ok(());
     }
-
-    let mut old_to_new_var = vec![None; incidence.n_var];
-    for (new_idx, old_idx) in matched_unknowns.iter().copied().enumerate() {
-        old_to_new_var[old_idx] = Some(new_idx);
-    }
-
-    let eq_unknowns = matched_equations
-        .iter()
-        .map(|old_eq_idx| {
-            incidence.eq_unknowns[*old_eq_idx]
-                .iter()
-                .filter_map(|old_var_idx| old_to_new_var[*old_var_idx])
-                .collect()
-        })
-        .collect::<Vec<_>>();
-    let equation_refs = matched_equations
-        .iter()
-        .map(|old_eq_idx| incidence.equation_refs[*old_eq_idx].clone())
-        .collect::<Vec<_>>();
-    let unknown_names = matched_unknowns
-        .iter()
-        .map(|old_var_idx| incidence.unknown_names[*old_var_idx].clone())
-        .collect::<Vec<_>>();
-
-    let matched_eq_set = matched_equations
-        .iter()
-        .copied()
-        .collect::<std::collections::HashSet<_>>();
-    let matched_var_set = matched_unknowns
-        .iter()
-        .copied()
-        .collect::<std::collections::HashSet<_>>();
-    let dropped_equations = incidence
-        .equation_refs
+    let unmatched_equations = match_eq
         .iter()
         .enumerate()
-        .filter_map(|(idx, eq)| (!matched_eq_set.contains(&idx)).then_some(eq.clone()))
-        .collect::<Vec<_>>();
-    let dropped_unknowns = incidence
-        .unknown_names
+        .filter(|(_, matched)| matched.is_none())
+        .map(|(index, _)| equation_label(view, &incidence.equation_refs[index]))
+        .collect();
+    let unmatched_unknowns = match_var
         .iter()
         .enumerate()
-        .filter_map(|(idx, unknown)| (!matched_var_set.contains(&idx)).then_some(unknown.clone()))
-        .collect::<Vec<_>>();
-
-    let regular_incidence = Incidence::new(eq_unknowns, equation_refs, unknown_names);
-    let regular_match_eq = matched_equations
-        .iter()
-        .map(|old_eq_idx| match_eq[*old_eq_idx].and_then(|old_var_idx| old_to_new_var[old_var_idx]))
-        .collect::<Vec<_>>();
-    let regular_match_var = matching_inverse(&regular_match_eq, regular_incidence.n_var);
-    let adjacency = incidence::build_dependency_graph(
-        &regular_incidence.eq_unknowns,
-        &regular_match_var,
-        regular_incidence.n_eq,
-    );
-    let blocks = blt::build_blt_blocks(&regular_incidence, &regular_match_eq, &adjacency);
-
-    Ok(RegularSubsystem {
-        incidence: regular_incidence,
-        blocks,
-        dropped_equations,
-        dropped_unknowns,
+        .filter(|(_, matched)| matched.is_none())
+        .map(|(index, _)| unknown_label(view, incidence.unknowns[index]))
+        .collect();
+    Err(StructuralError::Singular {
+        n_equations: incidence.n_eq,
+        n_unknowns: incidence.n_var,
+        n_matched: matched,
+        unmatched_equations,
+        unmatched_unknowns,
+        unmatched_unknown_spans: match_var
+            .iter()
+            .enumerate()
+            .filter_map(|(index, matched)| {
+                matched
+                    .is_none()
+                    .then(|| incidence.unknown_spans.get(index).copied())
+                    .flatten()
+            })
+            .collect(),
+        over_determined_block: Box::new(over_determined_block(incidence, match_eq, match_var)),
     })
 }
 
-fn matching_inverse(match_eq: &[Option<usize>], n_var: usize) -> Vec<Option<usize>> {
-    let mut match_var = vec![None; n_var];
-    for (eq_idx, var_idx) in match_eq.iter().copied().enumerate() {
-        if let Some(var_idx) = var_idx {
-            match_var[var_idx] = Some(eq_idx);
-        }
-    }
-    match_var
-}
-
-fn singular_from_matching(
-    incidence: &Incidence,
+fn unlabeled_singular(
+    incidence: &Incidence<'_>,
     match_eq: &[Option<usize>],
     match_var: &[Option<usize>],
 ) -> StructuralError {
     StructuralError::Singular {
         n_equations: incidence.n_eq,
         n_unknowns: incidence.n_var,
-        n_matched: match_eq.iter().filter(|m| m.is_some()).count(),
+        n_matched: match_eq.iter().filter(|entry| entry.is_some()).count(),
         unmatched_equations: match_eq
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.is_none())
-            .map(|(i, _)| incidence.equation_refs[i].to_string())
+            .filter(|(_, matched)| matched.is_none())
+            .map(|(index, _)| format!("f_x[{index}]"))
             .collect(),
         unmatched_unknowns: match_var
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.is_none())
-            .map(|(i, _)| incidence.unknown_names[i].to_string())
+            .filter(|(_, matched)| matched.is_none())
+            .map(|(index, _)| format!("unknown[{index}]"))
             .collect(),
         unmatched_unknown_spans: match_var
             .iter()
             .enumerate()
-            .filter(|(_, m)| m.is_none())
-            .map(|(i, _)| incidence.unknown_spans.get(i).copied().flatten())
-            .collect(),
-    }
-}
-
-/// Transform a DAE into BLT-sorted block form for sequential simulation.
-///
-/// Returns `Err` if the system is structurally singular or empty.
-pub fn sort_dae(dae: &dae::Dae) -> Result<SortedDae<'_>, StructuralError> {
-    let inc = incidence::build_incidence(dae);
-
-    if inc.n_eq == 0 && inc.n_var == 0 {
-        return Err(StructuralError::EmptySystem);
-    }
-
-    let (match_eq, match_var) =
-        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
-    let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
-
-    if matching_size < inc.n_eq || matching_size < inc.n_var {
-        return Err(singular_from_matching(&inc, &match_eq, &match_var));
-    }
-
-    let adj = incidence::build_dependency_graph(&inc.eq_unknowns, &match_var, inc.n_eq);
-
-    let equations: Vec<_> = dae.continuous.equations.iter().collect();
-
-    let diagnostics_warnings = diagnostics::collect_warnings(&inc, &match_eq, &adj, &equations);
-    let blocks = blt::build_blt_blocks(&inc, &match_eq, &adj);
-
-    let matching_pairs: Vec<(EquationRef, UnknownId)> = match_eq
-        .iter()
-        .enumerate()
-        .filter_map(|(eq_idx, var_idx)| {
-            var_idx.map(|v| {
-                (
-                    inc.equation_refs[eq_idx].clone(),
-                    inc.unknown_names[v].clone(),
-                )
-            })
-        })
-        .collect();
-
-    Ok(SortedDae {
-        dae,
-        blocks,
-        matching: matching_pairs,
-        diagnostics: diagnostics_warnings,
-    })
-}
-
-/// Build a named structural report: the matching (which equation determines
-/// which variable), the BLT blocks in evaluation order, the coupled SCCs
-/// (algebraic loops), and the tearing of each coupled block. Backs the
-/// `rumoca sim --structure` debug dump. Errors identically to [`sort_dae`] on
-/// singular / empty systems.
-pub fn build_structural_report(dae: &dae::Dae) -> Result<StructuralReport, StructuralError> {
-    use std::collections::HashMap;
-
-    let inc = incidence::build_incidence(dae);
-    if inc.n_eq == 0 && inc.n_var == 0 {
-        return Err(StructuralError::EmptySystem);
-    }
-
-    let (match_eq, match_var) =
-        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
-    let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
-    if matching_size < inc.n_eq || matching_size < inc.n_var {
-        return Err(singular_from_matching(&inc, &match_eq, &match_var));
-    }
-
-    let adj = incidence::build_dependency_graph(&inc.eq_unknowns, &match_var, inc.n_eq);
-    let blocks_raw = blt::build_blt_blocks(&inc, &match_eq, &adj);
-
-    let matching = match_eq
-        .iter()
-        .enumerate()
-        .filter_map(|(eq_idx, var_idx)| {
-            var_idx.map(|v| {
-                (
-                    equation_label(dae, &inc.equation_refs[eq_idx]),
-                    inc.unknown_names[v].to_string(),
-                )
-            })
-        })
-        .collect();
-
-    // Map each unknown to its global incidence index, for per-loop tearing.
-    let unknown_index: HashMap<&UnknownId, usize> = inc
-        .unknown_names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| (name, idx))
-        .collect();
-
-    let blocks = blocks_raw
-        .iter()
-        .map(|block| match block {
-            BltBlock::Scalar { equation, unknown } => BlockReport::Scalar {
-                equation: equation_label(dae, equation),
-                unknown: unknown.to_string(),
-            },
-            BltBlock::AlgebraicLoop {
-                equations,
-                unknowns,
-            } => BlockReport::Coupled {
-                equations: equations.iter().map(|eq| equation_label(dae, eq)).collect(),
-                unknowns: unknowns.iter().map(UnknownId::to_string).collect(),
-                tearing: tear_loop(dae, &inc, equations, unknowns, &unknown_index),
-            },
-        })
-        .collect();
-
-    Ok(StructuralReport {
-        n_equations: inc.n_eq,
-        n_unknowns: inc.n_var,
-        matching,
-        blocks,
-    })
-}
-
-/// Tear a single coupled block, mapping the local tearing indices back to names.
-fn tear_loop(
-    dae: &dae::Dae,
-    inc: &Incidence,
-    equations: &[EquationRef],
-    unknowns: &[UnknownId],
-    unknown_index: &std::collections::HashMap<&UnknownId, usize>,
-) -> Option<report::TearingReport> {
-    // Local var index for each block unknown (by its global incidence index).
-    let var_local: std::collections::HashMap<usize, usize> = unknowns
-        .iter()
-        .enumerate()
-        .filter_map(|(local, name)| unknown_index.get(name).map(|&global| (global, local)))
-        .collect();
-
-    // Restrict the global incidence to this block: per block-equation, the set
-    // of block-local unknown indices it touches.
-    let local_eq_unknowns: Vec<std::collections::HashSet<usize>> = equations
-        .iter()
-        .map(|eq| {
-            inc.eq_unknowns[eq.0]
-                .iter()
-                .filter_map(|global_var| var_local.get(global_var).copied())
-                .collect()
-        })
-        .collect();
-
-    let result = tear_algebraic_loop(unknowns.len(), &local_eq_unknowns)?;
-    Some(report::TearingReport {
-        tear_vars: result
-            .tear_var_local_indices
-            .iter()
-            .map(|&local| unknowns[local].to_string())
-            .collect(),
-        residual_equations: result
-            .residual_eq_local_indices
-            .iter()
-            .map(|&local| equation_label(dae, &equations[local]))
-            .collect(),
-        causal_sequence: result
-            .causal_sequence
-            .iter()
-            .map(|&(eq_local, var_local)| {
-                (
-                    equation_label(dae, &equations[eq_local]),
-                    unknowns[var_local].to_string(),
-                )
+            .filter_map(|(index, matched)| {
+                matched
+                    .is_none()
+                    .then(|| incidence.unknown_spans.get(index).copied())
+                    .flatten()
             })
             .collect(),
-    })
+        over_determined_block: Box::new(over_determined_block(incidence, match_eq, match_var)),
+    }
 }
 
-/// Human label for a continuous equation: its `f_x` slot plus origin (when the
-/// origin carries useful context).
-fn equation_label(dae: &dae::Dae, equation: &EquationRef) -> String {
-    match dae.continuous.equations.get(equation.0) {
-        Some(eq) if !eq.origin.trim().is_empty() => {
-            format!("{equation} ({})", eq.origin.trim())
+fn over_determined_block(
+    incidence: &Incidence<'_>,
+    match_eq: &[Option<usize>],
+    match_var: &[Option<usize>],
+) -> SingularBlockWitness {
+    let mut seen_equations = vec![false; incidence.n_eq];
+    let mut seen_unknowns = vec![false; incidence.n_var];
+    let mut pending = match_eq
+        .iter()
+        .enumerate()
+        .filter_map(|(equation, matched)| matched.is_none().then_some(equation))
+        .collect::<Vec<_>>();
+    for equation in pending.iter().copied() {
+        seen_equations[equation] = true;
+    }
+    while let Some(equation) = pending.pop() {
+        for unknown in incidence.eq_unknowns.row(equation).iter().copied() {
+            if seen_unknowns[unknown] {
+                continue;
+            }
+            seen_unknowns[unknown] = true;
+            if let Some(owner) = match_var[unknown]
+                && !seen_equations[owner]
+            {
+                seen_equations[owner] = true;
+                pending.push(owner);
+            }
         }
+    }
+    SingularBlockWitness {
+        equations: seen_equations.iter().filter(|seen| **seen).count(),
+        unknowns: seen_unknowns.iter().filter(|seen| **seen).count(),
+        sample: seen_equations
+            .iter()
+            .enumerate()
+            .filter(|(_, seen)| **seen)
+            .map(|(index, _)| format!("f_x[{index}]"))
+            .take(24)
+            .collect(),
+    }
+}
+
+fn unmatched_span(
+    incidence: &Incidence<'_>,
+    match_eq: &[Option<usize>],
+    match_var: &[Option<usize>],
+) -> Option<rumoca_core::Span> {
+    match_eq
+        .iter()
+        .enumerate()
+        .find_map(|(index, matched)| {
+            matched
+                .is_none()
+                .then(|| incidence.equation_spans.get(index).copied())
+                .flatten()
+        })
+        .or_else(|| {
+            match_var.iter().enumerate().find_map(|(index, matched)| {
+                matched
+                    .is_none()
+                    .then(|| incidence.unknown_spans.get(index).copied())
+                    .flatten()
+            })
+        })
+}
+
+fn matched_indices(matching: &[Option<usize>]) -> Vec<usize> {
+    matching
+        .iter()
+        .enumerate()
+        .filter_map(|(index, matched)| matched.is_some().then_some(index))
+        .collect()
+}
+
+pub(crate) fn equation_label(view: dae::DaeView<'_>, equation: &EquationRef) -> String {
+    let Some(owner) = view.continuous_owner_for_scalar_row(equation.0) else {
+        return equation.to_string();
+    };
+    let provenance = match owner {
+        dae::ContinuousOwnerView::Residual { equation, .. } => equation.provenance(),
+        dae::ContinuousOwnerView::Structured { family, .. } => family.provenance(),
+    };
+    match view.source_text(provenance) {
+        Some(text) if !text.trim().is_empty() => format!("{equation} ({})", text.trim()),
         _ => equation.to_string(),
     }
 }
 
-/// Perform diagnostic-only structural analysis on a DAE system.
-///
-/// Builds the incidence matrix, computes maximum matching, detects
-/// structural singularity and algebraic loops. Returns diagnostics
-/// as warnings (these don't prevent compilation).
-pub fn analyze_structure(dae: &dae::Dae) -> StructuralDiagnostics {
-    let mut result = StructuralDiagnostics::default();
-
-    let inc = incidence::build_incidence(dae);
-
-    result.n_equations = inc.n_eq;
-    result.n_unknowns = inc.n_var;
-
-    if inc.n_eq == 0 && inc.n_var == 0 {
-        return result;
+pub(crate) fn unknown_label<'dae>(view: dae::DaeView<'dae>, unknown: UnknownId<'dae>) -> String {
+    match unknown {
+        UnknownId::Derivative { state, scalar } => {
+            let variable = view
+                .variable(state.into())
+                .expect("branded state identity resolves");
+            let name = variable
+                .scalar_name(scalar as usize)
+                .expect("checked state scalar ordinal resolves");
+            format!("der({name})")
+        }
+        UnknownId::Algebraic { variable, scalar } => view
+            .variable(variable.into())
+            .expect("branded algebraic identity resolves")
+            .scalar_name(scalar as usize)
+            .expect("checked algebraic scalar ordinal resolves"),
+        UnknownId::Solver(index) => format!("y[{index}]"),
+        UnknownId::Unmatched { equation } => format!("<unmatched f_x[{equation}]>"),
     }
-
-    let (match_eq, match_var) =
-        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
-    let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
-    result.matching_size = matching_size;
-
-    let equations: Vec<_> = dae.continuous.equations.iter().collect();
-
-    let ctx = diagnostics::MatchingContext {
-        equations: &equations,
-        unknown_names: &inc.unknown_names,
-        eq_unknowns: &inc.eq_unknowns,
-        match_eq: &match_eq,
-        match_var: &match_var,
-    };
-
-    if matching_size < inc.n_eq || matching_size < inc.n_var {
-        ctx.check_singularity(&mut result, inc.n_eq, inc.n_var, matching_size);
-    }
-
-    if matching_size > 0 {
-        ctx.detect_algebraic_loops(&mut result, inc.n_eq);
-    }
-
-    result
 }
 
 #[cfg(test)]
-mod tests {
+mod checked_tests {
+    use rumoca_core::{
+        ComprehensionScalarView, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
+        TypeId, VarName,
+    };
+
     use super::*;
-    use rumoca_core::{SourceId, Span};
-    use rumoca_ir_dae as dae;
 
-    #[test]
-    fn test_analyze_empty_dae() {
-        let dae = dae::Dae::new();
-        let result = analyze_structure(&dae);
-        assert!(result.diagnostics.is_empty(), "empty DAE has no issues");
-        assert_eq!(result.n_equations, 0);
-        assert_eq!(result.n_unknowns, 0);
+    fn at(source: rumoca_core::SourceId, start: usize, end: usize) -> dae::DaeProvenance {
+        dae::DaeProvenance::source(Span::from_offsets(source, start, end)).unwrap()
     }
 
     #[test]
-    fn test_analyze_simple_ode() {
-        let mut dae = dae::Dae::new();
-
-        let x_name = rumoca_core::VarName::from("x");
-        dae.variables.states.insert(
-            x_name.clone(),
-            dae::Variable::new(
-                x_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
+    fn scalar_structure_uses_branded_state_and_algebraic_identities() {
+        let mut sources = SourceMap::new();
+        let source = sources.add(
+            "scalar_structure.mo",
+            "Real x; Real y; equation der(x) - y = 0; y - x = 0;",
         );
+        let x_at = at(source, 0, 6);
+        let y_at = at(source, 8, 14);
+        let first_at = at(source, 25, 39);
+        let second_at = at(source, 41, 50);
+        let model = dae::Dae::construct(sources, |model| {
+            let real = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    x_at,
+                )
+            })?;
+            let (x, y) = model.variables(|variables| {
+                Ok((
+                    variables.state(
+                        VarName::new("x"),
+                        real,
+                        x_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.algebraic(
+                        VarName::new("y"),
+                        real,
+                        y_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+            let (first, second) = model.expressions(|expressions| {
+                let derivative = expressions
+                    .at(first_at)
+                    .coordinate(dae::CoordinateInput::Derivative(x))?;
+                let y_first = expressions
+                    .at(first_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(y))?;
+                let first = expressions.at(first_at).binary(
+                    dae::BinaryOperator::Subtract,
+                    derivative,
+                    y_first,
+                )?;
+                let y_second = expressions
+                    .at(second_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(y))?;
+                let x_current = expressions
+                    .at(second_at)
+                    .coordinate(dae::CoordinateInput::State(x))?;
+                let second = expressions.at(second_at).binary(
+                    dae::BinaryOperator::Subtract,
+                    y_second,
+                    x_current,
+                )?;
+                Ok((first, second))
+            })?;
+            model.continuous(|continuous| {
+                continuous.equation(first_at, |equation| equation.residual(first))?;
+                continuous.equation(second_at, |equation| equation.residual(second))?;
+                Ok(())
+            })
+        })
+        .unwrap();
 
-        let span = Span::from_offsets(
-            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
-            0,
-            10,
-        );
-        let der_x = rumoca_core::Expression::BuiltinCall {
-            function: rumoca_core::BuiltinFunction::Der,
-            args: vec![rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::from_var_name(x_name.clone()),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let one = rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let residual = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(der_x),
-            rhs: Box::new(one),
-            span: rumoca_core::Span::DUMMY,
-        };
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(residual, span, "der(x) = 1.0"));
-
-        let result = analyze_structure(&dae);
-        assert_eq!(result.n_equations, 1);
-        assert_eq!(result.n_unknowns, 1);
-        assert_eq!(result.matching_size, 1, "perfect matching for simple ODE");
-        assert!(
-            result.diagnostics.is_empty(),
-            "simple ODE should have no warnings"
-        );
-        assert!(result.algebraic_loops.is_empty(), "no algebraic loops");
+        model.inspect(|view| {
+            let sorted = sort(view).unwrap();
+            assert_eq!(sorted.matching.len(), 2);
+            assert!(sorted.matching.iter().any(|(_, unknown)| {
+                matches!(unknown, UnknownId::Derivative { scalar: 0, .. })
+            }));
+            assert!(
+                sorted.matching.iter().any(|(_, unknown)| {
+                    matches!(unknown, UnknownId::Algebraic { scalar: 0, .. })
+                })
+            );
+        });
     }
 
     #[test]
-    fn test_analyze_algebraic_loop() {
-        let mut dae = dae::Dae::new();
+    fn row_major_array_family_stays_one_compact_structural_block() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("array_structure.mo", "Real x[3]; equation x = {0,0,0};");
+        let x_at = at(source, 0, 10);
+        let equation_at = at(source, 20, 31);
+        let model = dae::Dae::construct(sources, |model| {
+            let array = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [3]),
+                    x_at,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    array,
+                    x_at,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let domain = model.domains(|domains| {
+                domains.structured(
+                    StructuredIndexDomain {
+                        binders: vec![StructuredIndexBinder {
+                            id: 0,
+                            display_name: "i".to_string(),
+                            lower: 1,
+                            upper: 3,
+                            step: 1,
+                        }],
+                    },
+                    equation_at,
+                )
+            })?;
+            let x = model.expressions(|expressions| {
+                expressions
+                    .at(equation_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))
+            })?;
+            model.continuous(|continuous| {
+                continuous.structured_family(
+                    equation_at,
+                    domain,
+                    ComprehensionScalarView::RowMajorProjection,
+                    |family| family.body(x),
+                )?;
+                Ok(())
+            })
+        })
+        .unwrap();
 
-        let y_name = rumoca_core::VarName::from("y");
-        let z_name = rumoca_core::VarName::from("z");
-        dae.variables.algebraics.insert(
-            y_name.clone(),
-            dae::Variable::new(
-                y_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-        dae.variables.algebraics.insert(
-            z_name.clone(),
-            dae::Variable::new(
-                z_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-
-        let span = Span::from_offsets(
-            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
-            0,
-            10,
-        );
-
-        let y_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(y_name.clone()),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let z_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(z_name.clone()),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let two_z = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(2.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(z_ref.clone()),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let eq1 = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(y_ref.clone()),
-            rhs: Box::new(two_z),
-            span: rumoca_core::Span::DUMMY,
-        };
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(eq1, span, "y = 2*z"));
-
-        let three_y = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(3.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(y_ref),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let eq2 = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(z_ref),
-            rhs: Box::new(three_y),
-            span: rumoca_core::Span::DUMMY,
-        };
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(eq2, span, "z = 3*y"));
-
-        let result = analyze_structure(&dae);
-        assert_eq!(result.matching_size, 2, "should find perfect matching");
-        assert_eq!(
-            result.algebraic_loops.len(),
-            1,
-            "should detect one algebraic loop"
-        );
-        assert_eq!(
-            result.algebraic_loops[0].unknown_names.len(),
-            2,
-            "loop involves 2 unknowns"
-        );
+        model.inspect(|view| {
+            let sorted = sort(view).unwrap();
+            assert_eq!(sorted.blocks.len(), 1);
+            let BltBlock::StructuredScalar(block) = &sorted.blocks[0] else {
+                panic!("checked affine family should remain compact");
+            };
+            assert_eq!(block.scalar_block_count(), 3);
+        });
     }
 
     #[test]
-    fn build_structural_report_names_coupled_block_and_tearing() {
-        // Coupled 2x2 algebraic loop: y = 2*z, z = 3*y.
-        let mut dae = dae::Dae::new();
-        let y_name = rumoca_core::VarName::from("y");
-        let z_name = rumoca_core::VarName::from("z");
-        dae.variables.algebraics.insert(
-            y_name.clone(),
-            dae::Variable::new(
-                y_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
+    fn dynamic_structural_subscript_contributes_all_potential_incidence() {
+        let mut sources = SourceMap::new();
+        let source = sources.add(
+            "dynamic_structure.mo",
+            "Real x[3]; input Integer i; equation x[i] = 0;",
         );
-        dae.variables.algebraics.insert(
-            z_name.clone(),
-            dae::Variable::new(
-                z_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-        let span = Span::from_offsets(
-            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
-            0,
-            10,
-        );
-        let y_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(y_name),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let z_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(z_name),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let scale = |k: f64, inner: rumoca_core::Expression| rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Mul,
-            lhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(k),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            rhs: Box::new(inner),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let sub = |lhs, rhs| rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
-        };
-        dae.continuous.equations.push(dae::Equation::residual(
-            sub(y_ref.clone(), scale(2.0, z_ref.clone())),
-            span,
-            "y = 2*z",
-        ));
-        dae.continuous.equations.push(dae::Equation::residual(
-            sub(z_ref, scale(3.0, y_ref)),
-            span,
-            "z = 3*y",
-        ));
+        let x_at = at(source, 0, 10);
+        let i_at = at(source, 11, 27);
+        let equation_at = at(source, 38, 46);
+        let model = dae::Dae::construct(sources, |model| {
+            let array = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [3]),
+                    x_at,
+                )
+            })?;
+            let integer = model.types(|types| {
+                types.intern(
+                    TypeId::new(1),
+                    dae::ValueType::scalar(dae::ScalarType::Integer),
+                    i_at,
+                )
+            })?;
+            let (x, i) = model.variables(|variables| {
+                Ok((
+                    variables.algebraic(
+                        VarName::new("x"),
+                        array,
+                        x_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.input(
+                        VarName::new("i"),
+                        integer,
+                        dae::InputVariability::Discrete,
+                        i_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+            let indexed = model.expressions(|expressions| {
+                let x = expressions
+                    .at(equation_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                let i = expressions
+                    .at(equation_at)
+                    .coordinate(dae::CoordinateInput::Input(i))?;
+                expressions.at(equation_at).index(
+                    x,
+                    [dae::Subscript::Index {
+                        expression: i,
+                        provenance: equation_at,
+                    }],
+                )
+            })?;
+            model.continuous(|continuous| {
+                continuous.equation(equation_at, |equation| equation.residual(indexed))?;
+                Ok(())
+            })
+        })
+        .unwrap();
 
-        let report = build_structural_report(&dae).expect("report should build");
-        assert_eq!(report.n_equations, 2);
-        assert_eq!(report.matching.len(), 2);
-        assert_eq!(
-            report.coupled_block_count(),
-            1,
-            "y/z form one coupled block"
-        );
-        assert_eq!(report.largest_coupled_block(), 2);
-
-        let BlockReport::Coupled {
-            unknowns, tearing, ..
-        } = &report.blocks[0]
-        else {
-            panic!("first block should be coupled: {:?}", report.blocks);
-        };
-        assert_eq!(unknowns.len(), 2);
-        assert!(unknowns.iter().any(|name| name == "y"));
-        assert!(unknowns.iter().any(|name| name == "z"));
-        let tearing = tearing.as_ref().expect("loop should tear");
-        assert_eq!(
-            tearing.tear_vars.len(),
-            1,
-            "2x2 loop tears to 1 iteration var"
-        );
-        assert_eq!(tearing.residual_equations.len(), 1);
-        // Rendered report should mention the coupled block.
-        assert!(report.to_string().contains("coupled"));
+        model.inspect(|view| {
+            let error = sort(view).unwrap_err();
+            assert!(matches!(
+                error,
+                StructuralError::Singular {
+                    n_equations: 1,
+                    n_unknowns: 3,
+                    n_matched: 1,
+                    ref unmatched_unknowns,
+                    ref unmatched_unknown_spans,
+                    ..
+                } if unmatched_unknowns == &["x[2]", "x[3]"]
+                    && unmatched_unknown_spans == &[x_at.span(), x_at.span()]
+            ));
+        });
     }
 
     #[test]
-    fn test_analyze_singular_system() {
-        let mut dae = dae::Dae::new();
+    fn projection_failure_retains_the_exact_subscript_occurrence() {
+        use rumoca_core::PhaseError;
 
-        let y_name = rumoca_core::VarName::from("y");
-        let z_name = rumoca_core::VarName::from("z");
-        dae.variables.algebraics.insert(
-            y_name.clone(),
-            dae::Variable::new(
-                y_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-        dae.variables.algebraics.insert(
-            z_name.clone(),
-            dae::Variable::new(
-                z_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-
-        let span = Span::from_offsets(
-            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
-            0,
-            10,
-        );
-
-        let y_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(y_name.clone()),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+        let text = "Real x[3]; equation x[4] = 0;";
+        let mut sources = SourceMap::new();
+        let source = sources.add("projection_occurrence.mo", text);
+        let span_of = |snippet: &str| {
+            let start = text.find(snippet).expect("fixture snippet exists");
+            at(source, start, start + snippet.len())
         };
-        let eq1 = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(y_ref.clone()),
-            rhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let eq2 = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(y_ref),
-            rhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(2.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        };
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(eq1, span, "y = 1"));
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(eq2, span, "y = 2"));
+        let declaration_at = span_of("Real x[3]");
+        let equation_at = span_of("x[4] = 0");
+        let index_at = span_of("x[4]");
+        let subscript_at = span_of("4");
+        let model = dae::Dae::construct(sources, |model| {
+            let array = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [3]),
+                    declaration_at,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    array,
+                    declaration_at,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let indexed = model.expressions(|expressions| {
+                let base = expressions
+                    .at(index_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                let index = expressions
+                    .at(subscript_at)
+                    .literal(dae::DaeLiteral::Integer(4))?;
+                expressions.at(index_at).index(
+                    base,
+                    [dae::Subscript::Index {
+                        expression: index,
+                        provenance: subscript_at,
+                    }],
+                )
+            })?;
+            model.continuous(|continuous| {
+                continuous.equation(equation_at, |equation| equation.residual(indexed))?;
+                Ok(())
+            })
+        })
+        .expect("out-of-bounds runtime indexes remain a projection concern");
 
-        let result = analyze_structure(&dae);
-        assert_eq!(result.matching_size, 1, "only one variable can be matched");
-        assert!(!result.diagnostics.is_empty(), "should report singularity");
-        assert_eq!(result.unmatched_unknowns.len(), 1, "z is unmatched");
-        assert!(
-            result.unmatched_unknowns[0].contains('z'),
-            "unmatched unknown should be z"
-        );
-    }
-
-    #[test]
-    fn test_sort_dae_empty() {
-        let dae = dae::Dae::new();
-        let result = sort_dae(&dae);
-        assert!(matches!(result, Err(StructuralError::EmptySystem)));
-    }
-
-    #[test]
-    fn test_sort_dae_simple_ode() {
-        let mut dae = dae::Dae::new();
-
-        let x_name = rumoca_core::VarName::from("x");
-        dae.variables.states.insert(
-            x_name.clone(),
-            dae::Variable::new(
-                x_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-
-        let span = Span::from_offsets(
-            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
-            0,
-            10,
-        );
-        let der_x = rumoca_core::Expression::BuiltinCall {
-            function: rumoca_core::BuiltinFunction::Der,
-            args: vec![rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::from_var_name(x_name.clone()),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let one = rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let residual = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(der_x),
-            rhs: Box::new(one),
-            span: rumoca_core::Span::DUMMY,
-        };
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(residual, span, "der(x) = 1.0"));
-
-        let sorted = sort_dae(&dae).expect("should succeed");
-        assert_eq!(sorted.blocks.len(), 1, "one scalar block");
-        assert!(matches!(&sorted.blocks[0], BltBlock::Scalar { .. }));
-        assert_eq!(sorted.matching.len(), 1);
-        assert!(sorted.diagnostics.is_empty());
-    }
-
-    #[test]
-    fn test_sort_dae_singular() {
-        let mut dae = dae::Dae::new();
-
-        let y_name = rumoca_core::VarName::from("y");
-        let z_name = rumoca_core::VarName::from("z");
-        dae.variables.algebraics.insert(
-            y_name.clone(),
-            dae::Variable::new(
-                y_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-        dae.variables.algebraics.insert(
-            z_name.clone(),
-            dae::Variable::new(
-                z_name.clone(),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-
-        let span = Span::from_offsets(
-            SourceId::from_source_name("phase_structural_lib_source_0.mo"),
-            0,
-            10,
-        );
-        let y_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_var_name(y_name.clone()),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        };
-        let eq1 = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(y_ref.clone()),
-            rhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let eq2 = rumoca_core::Expression::Binary {
-            op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(y_ref),
-            rhs: Box::new(rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(2.0),
-                span: rumoca_core::Span::DUMMY,
-            }),
-            span: rumoca_core::Span::DUMMY,
-        };
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(eq1, span, "y = 1"));
-        dae.continuous
-            .equations
-            .push(dae::Equation::residual(eq2, span, "y = 2"));
-
-        let result = sort_dae(&dae);
-        assert!(matches!(result, Err(StructuralError::Singular { .. })));
+        model.inspect(|view| {
+            let error = sort(view).expect_err("constant index exceeds the checked array extent");
+            assert!(matches!(
+                &error,
+                StructuralError::Projection { span, .. } if *span == subscript_at.span()
+            ));
+            let diagnostic = error.to_diagnostic();
+            assert_eq!(diagnostic.labels.len(), 1);
+            assert_eq!(diagnostic.labels[0].span, subscript_at.span());
+            assert_eq!(view.source_text(subscript_at), Some("4"));
+            assert_ne!(subscript_at.span(), equation_at.span());
+        });
     }
 }

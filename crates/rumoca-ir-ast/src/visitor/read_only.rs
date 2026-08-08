@@ -74,6 +74,7 @@ pub enum ExpressionContext {
     StatementFunctionOutput,
     ExtendModification,
     ExternalArgument,
+    ExternalAnnotation,
 }
 
 pub enum VisitScope<'a> {
@@ -227,7 +228,9 @@ pub fn walk_equation_default<V: Visitor + ?Sized>(
             cond_blocks,
             else_block,
         } => visitor.visit_if_equation(cond_blocks, else_block.as_deref()),
-        Equation::FunctionCall { comp, args } => visitor.visit_equation_function_call(comp, args),
+        Equation::FunctionCall { comp, args, .. } => {
+            visitor.visit_equation_function_call(comp, args)
+        }
         Equation::Assert {
             condition,
             message,
@@ -809,6 +812,9 @@ pub trait Visitor {
         }
         for arg in &external.args {
             self.visit_expression_ctx(arg, ExpressionContext::ExternalArgument)?;
+        }
+        for annotation in &external.annotation {
+            self.visit_expression_ctx(annotation, ExpressionContext::ExternalAnnotation)?;
         }
         Continue(())
     }

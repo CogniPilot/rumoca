@@ -1,1132 +1,1375 @@
-//! Unit tests for the solve-lowering stages, exercising the lowering entry
-//! points, the inspection probes, and the structural diagnosis through the
-//! re-exported stage modules.
+use rumoca_compile::compile::{Session, SessionConfig};
 
-use rumoca_core::{BuiltinFunction, Expression, OpBinary, SourceId, Span, Subscript, VarName};
-use rumoca_ir_dae as dae;
-use rumoca_solver::{SimOptions, SimSolverMode};
+use super::entry::lower_dae_for_simulation;
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+use crate::SimulationSession;
+use crate::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnostics};
 
-use super::diagnostics::SimulationDiagnosticError;
-use super::entry::{lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing};
-use super::probe::{eval_dae_at, jacobian_for_dae};
-use super::structural_lowering::{
-    metadata_attachment_lower_error, structurally_lower_dae_for_simulation,
-};
+mod coincident_strict;
 
-fn sim_source_span(source: u64, start: usize, end: usize) -> Span {
-    let source_name = format!("sim_solve_lowering_source_{source}.mo");
-    Span::from_offsets(SourceId::from_source_name(&source_name), start, end)
+fn compile(source: &str, model: &str) -> std::sync::Arc<rumoca_ir_dae::Dae> {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("simulation_checked_dae.mo", source)
+        .expect("fixture parses");
+    session
+        .compile_model(model)
+        .expect("fixture compiles through checked ToDAE")
+        .dae
+}
+
+/// Source-ordered plan of the checked B.1c discrete-value owners: each entry pairs an
+/// owner's target names with the number of `when` branches it retains.
+///
+/// Discrete assignments used to be flattened into the event-action arena, so the
+/// when/elsewhen retention tests below counted `event_action_count()`. The checked DAE now
+/// models them as discrete-value owners carrying an ordered branch list, and the event
+/// action arena holds only `assert`/`terminate`/`reinit`. Counting retained `when` branches
+/// per owner asserts the same property more precisely: it proves both that no chain branch
+/// was dropped and that the branches stayed attached to their own target.
+fn when_branch_plan(dae: &rumoca_ir_dae::Dae) -> Vec<(Vec<String>, usize)> {
+    dae.inspect(|view| {
+        (0..view.discrete_value_owner_count())
+            .map(|index| {
+                let id = view
+                    .discrete_value_owner_id(index)
+                    .expect("dense discrete-value owner identity resolves");
+                let owner = view
+                    .discrete_value_owner(id)
+                    .expect("checked discrete-value owner resolves");
+                let targets = owner
+                    .targets()
+                    .iter()
+                    .map(|target| {
+                        view.variable(rumoca_ir_dae::VariableId::from(target))
+                            .expect("checked discrete-value target resolves")
+                            .name()
+                            .as_str()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>();
+                let when_branches = owner
+                    .branches()
+                    .iter()
+                    .filter(|branch| {
+                        matches!(
+                            branch.activation(),
+                            rumoca_ir_dae::DiscreteBranchActivation::When { .. }
+                        )
+                    })
+                    .count();
+                (targets, when_branches)
+            })
+            .collect()
+    })
 }
 
 #[test]
-fn simulation_structural_lowering_keeps_observations_for_torn_variables() {
-    let dae = symbolic_loop_dae();
-    let model = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("torn loop should lower to solve IR");
+fn simulation_lowering_consumes_checked_todae_output_end_to_end() {
+    let dae = compile(
+        "model Decay Real x(start=1); equation der(x) = -x; end Decay;",
+        "Decay",
+    );
 
-    assert_eq!(model.visible_names, ["a", "b", "c"]);
-    assert_eq!(model.visible_value_rows.len(), model.visible_names.len());
-    assert_eq!(model.problem.solve_layout.solver_maps.names.len(), 1);
+    let solve = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("checked scalar DAE lowers to a computable Solve model");
+
+    assert_eq!(solve.problem.layout.y_scalars(), 1);
+    assert_eq!(solve.initial_y, vec![1.0]);
 }
 
 #[test]
-fn simulation_structural_lowering_reports_blt_singularity() {
-    let mut dae = dae::Dae::new();
-    dae.variables.algebraics.insert(
-        VarName::new("a"),
-        dae::Variable::new(
-            VarName::new("a"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+fn checked_algebraic_projection_executes_end_to_end() {
+    let dae = compile(
+        concat!(
+            "model Coupled\n",
+            "  Real x(start=1);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = -x;\n",
+            "  y = 2*x;\n",
+            "end Coupled;\n",
         ),
+        "Coupled",
     );
-    dae.variables.algebraics.insert(
-        VarName::new("b"),
-        dae::Variable::new(
-            VarName::new("b"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    dae.continuous.equations.push(dae::Equation {
-        lhs: None,
-        rhs: Expression::Binary {
-            op: OpBinary::Add,
-            lhs: Box::new(var("a")),
-            rhs: Box::new(var("b")),
-            span: fixture_span(),
-        },
-        span: fixture_span(),
-        origin: "singular test".to_string(),
-        scalar_count: 1,
-    });
-
-    let mut dae = dae;
-    rumoca_phase_dae::attach_dae_reference_metadata(&mut dae)
-        .expect("fixture DAE reference metadata should normalize");
-    let err = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect_err("BLT singularity must not be silently skipped");
-
-    assert!(
-        err.to_string().contains("structural lowering failed"),
-        "got: {err}"
-    );
-    assert!(err.to_string().contains("structurally singular system"));
-}
-
-#[test]
-fn metadata_attachment_lower_error_preserves_dae_source_span() {
-    let span = sim_source_span(9, 21, 34);
-    let err = metadata_attachment_lower_error(
-        rumoca_phase_dae::ToDaeError::runtime_metadata_violation_at(
-            "missing reference metadata",
-            span,
-        ),
-    );
-
-    assert_eq!(err.source_span(), Some(span));
-    assert!(
-        matches!(
-            err,
-            rumoca_phase_solve::SolveModelLowerError::Lower(
-                rumoca_phase_solve::lower::LowerError::ContractViolation {
-                    span: actual,
-                    ..
-                }
-            ) if actual == span
-        ),
-        "metadata attachment error should preserve the DAE error span"
-    );
-}
-
-#[test]
-fn metadata_attachment_lower_error_keeps_unspanned_dae_error_unspanned() {
-    let err = metadata_attachment_lower_error(
-        rumoca_phase_dae::ToDaeError::runtime_metadata_violation("metadata-only corruption"),
-    );
-
-    assert_eq!(err.source_span(), None);
-    assert!(
-        matches!(
-            err,
-            rumoca_phase_solve::SolveModelLowerError::Lower(
-                rumoca_phase_solve::lower::LowerError::UnspannedContractViolation { .. }
-            )
-        ),
-        "metadata-only error must not receive fabricated provenance"
-    );
-}
-
-#[test]
-fn simulation_structural_singularity_carries_unmatched_variable_span() {
-    let span = sim_source_span(7, 100, 110);
-    let mut dae = dae::Dae::new();
-    for name in ["a", "b"] {
-        dae.variables.algebraics.insert(
-            VarName::new(name),
-            dae::Variable {
-                source_span: span,
-                ..dae::Variable::new(
-                    VarName::new(name),
-                    rumoca_core::Span::from_offsets(
-                        rumoca_core::SourceId::from_source_name(file!()),
-                        1,
-                        2,
-                    ),
-                )
-            },
-        );
-    }
-    // One equation (`0 = a + b`), two unknowns -> structurally singular
-    // (an additive constraint cannot be alias-eliminated).
-    dae.continuous.equations.push(eq(Expression::Binary {
-        op: OpBinary::Add,
-        lhs: Box::new(var("a")),
-        rhs: Box::new(var("b")),
-        span: fixture_span(),
-    }));
-
-    let mut dae = dae;
-    rumoca_phase_dae::attach_dae_reference_metadata(&mut dae)
-        .expect("fixture DAE reference metadata should normalize");
-    let err = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect_err("singular system should error");
-    assert_eq!(
-        err.source_span(),
-        Some(span),
-        "structural singularity should carry the unmatched variable span: {err:?}"
-    );
-}
-
-#[test]
-fn simulation_structural_lowering_demotes_unresolved_derivative_alias_state() {
-    let mut dae = derivative_alias_state_dae();
-    rumoca_phase_dae::attach_dae_reference_metadata(&mut dae)
-        .expect("fixture DAE reference metadata should normalize");
-    let model = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("derivative alias state should lower without an underdetermined solver slot");
-
-    assert_eq!(model.state_scalar_count(), 0);
-    assert!(
-        !model
-            .problem
-            .solve_layout
-            .solver_maps
-            .names
-            .contains(&"dx".to_string())
-    );
-}
-
-#[test]
-fn simulation_structural_lowering_keeps_cross_coupled_ode_states() {
-    let dae = oscillator_dae();
-    let model = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("cross-coupled ODE states should lower");
-
-    assert_eq!(model.state_scalar_count(), 2);
-    assert_eq!(model.problem.solve_layout.solver_maps.names, ["x", "v"]);
-}
-
-#[test]
-fn simulation_direct_lowering_accepts_state_only_ode() {
-    let dae = state_only_ode_dae();
-    let opts = SimOptions {
-        solver_mode: SimSolverMode::RkLike,
-        ..Default::default()
+    let options = SimOptions {
+        t_end: 0.1,
+        dt: Some(0.05),
+        ..SimOptions::default()
     };
-    let mut stages = Vec::new();
-    let (model, timings) =
-        lower_dae_for_simulation_with_stage_timing(&dae, &opts, |stage| stages.push(stage))
-            .expect("state-only ODE should lower directly");
 
-    assert_eq!(timings.structural_dae_seconds, 0.0);
-    assert_eq!(model.state_scalar_count(), 1);
-    assert_eq!(model.problem.solve_layout.algebraic_scalar_count(), 0);
-    assert!(stages.contains(&"ir_solve_direct"));
-    assert!(!stages.contains(&"ir_solve_structural_dae"));
-}
+    let result =
+        simulate_dae(&dae, &options).expect("checked algebraic projection must be executable");
+    let x = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("state result column");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .expect("algebraic result column");
 
-#[test]
-fn simulation_direct_lowering_falls_back_for_projected_derivative_dependency() {
-    let dae = explicit_algebraic_ode_dae();
-    let opts = SimOptions {
-        solver_mode: SimSolverMode::RkLike,
-        ..Default::default()
-    };
-    let mut stages = Vec::new();
-    let (model, _) =
-        lower_dae_for_simulation_with_stage_timing(&dae, &opts, |stage| stages.push(stage))
-            .expect("algebraic derivative dependency should structurally lower for now");
-
-    assert_eq!(model.state_scalar_count(), 1);
-    assert!(stages.contains(&"ir_solve_direct"));
-    assert!(stages.contains(&"ir_solve_structural_dae"));
-}
-
-#[test]
-fn simulation_direct_lowering_falls_back_for_state_selection() {
-    let dae = constrained_state_dae();
-    let opts = SimOptions {
-        solver_mode: SimSolverMode::RkLike,
-        ..Default::default()
-    };
-    let mut stages = Vec::new();
-    let (model, _) =
-        lower_dae_for_simulation_with_stage_timing(&dae, &opts, |stage| stages.push(stage))
-            .expect("constrained state model should fall back to structural lowering");
-
-    assert_eq!(model.state_scalar_count(), 2);
-    assert!(stages.contains(&"ir_solve_direct"));
-    assert!(stages.contains(&"ir_solve_structural_dae"));
-}
-
-#[test]
-fn simulation_state_selection_prefers_physical_coordinates_for_conservation_states() {
-    let mut dae = preferred_conservation_state_dae();
-    dae.variables
-        .states
-        .get_mut(&VarName::new("mass"))
-        .expect("mass fixture state exists")
-        .fixed = Some(true);
-    dae.variables
-        .algebraics
-        .get_mut(&VarName::new("level"))
-        .expect("level fixture algebraic exists")
-        .fixed = Some(false);
-    dae.initialization.equations.push(dae::Equation {
-        origin: "fixed start initialization for mass".to_string(),
-        ..eq(sub(var("mass"), real(1.0)))
-    });
-    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("preferred physical coordinates should structurally lower");
-
-    assert_eq!(lowered.dae.variables.states.len(), 2);
-    for name in ["level", "temperature"] {
+    assert_eq!(result.data[x].len(), result.data[y].len());
+    for (&x_value, &y_value) in result.data[x].iter().zip(&result.data[y]) {
         assert!(
-            lowered
-                .dae
-                .variables
-                .states
-                .contains_key(&VarName::new(name)),
-            "preferred physical coordinate `{name}` should be selected as a state"
+            (y_value - 2.0 * x_value).abs() <= 1.0e-8,
+            "algebraic output must be refreshed from its matched residual: x={x_value}, y={y_value}"
         );
     }
-    for name in ["mass", "energy"] {
-        assert!(
-            !lowered
-                .dae
-                .variables
-                .states
-                .contains_key(&VarName::new(name)),
-            "conserved quantity `{name}` should not remain an independent state"
-        );
-    }
-    assert_eq!(
-        lowered
-            .dae
-            .variables
-            .algebraics
-            .get(&VarName::new("mass"))
-            .and_then(|variable| variable.fixed),
-        Some(true)
-    );
-    assert_eq!(
-        lowered
-            .dae
-            .variables
-            .states
-            .get(&VarName::new("level"))
-            .and_then(|variable| variable.fixed),
-        Some(false)
-    );
-    assert_eq!(lowered.dae.initialization.equations.len(), 1);
-    assert_eq!(
-        lowered.dae.initialization.equations[0].origin,
-        "fixed start initialization for mass"
-    );
 }
 
 #[test]
-fn simulation_structural_lowering_demotes_vector_state_with_only_alias_rows() {
-    let dae = vector_alias_state_dae();
-    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("vector alias state should structurally lower");
+fn checked_transcendental_builtins_execute_end_to_end() {
+    let dae = compile(
+        concat!(
+            "model TranscendentalBuiltins\n",
+            "  Real x(start=0.5);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  y = asin(x) + atan2(x, 2);\n",
+            "end TranscendentalBuiltins;\n",
+        ),
+        "TranscendentalBuiltins",
+    );
+
+    let result = simulate_dae(&dae, &SimOptions::default())
+        .expect("checked transcendental builtin programs must execute");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .expect("builtin result column");
+    let expected = 0.5_f64.asin() + 0.5_f64.atan2(2.0);
 
     assert!(
-        !lowered
-            .dae
-            .variables
-            .states
-            .contains_key(&VarName::new("imc.is")),
-        "vector alias state without retained derivative rows should be demoted"
-    );
-    assert!(
-        lowered
-            .dae
-            .variables
-            .algebraics
-            .contains_key(&VarName::new("imc.is"))
+        result.data[y]
+            .iter()
+            .all(|value| (value - expected).abs() <= 1.0e-10)
     );
 }
 
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
 #[test]
-fn simulation_structural_lowering_keeps_metadata_equations_compact() {
-    let mut dae = dae::Dae::new();
-    dae.variables.states.insert(
-        VarName::new("x"),
-        dae::Variable::new(VarName::new("x"), fixture_span()),
+fn auto_selects_explicit_host_for_undefined_initial_directional_derivative() {
+    let dae = compile(
+        concat!(
+            "model UndefinedInitialLinearization\n",
+            "  Real x(start=0, fixed=true);\n",
+            "  output Real angle;\n",
+            "equation\n",
+            "  angle = atan2(x, x);\n",
+            "  der(x) = angle;\n",
+            "end UndefinedInitialLinearization;\n",
+        ),
+        "UndefinedInitialLinearization",
     );
-    let mut values = dae::Variable::new(VarName::new("values"), fixture_span());
-    values.dims = vec![2];
-    dae.variables
-        .algebraics
-        .insert(VarName::new("values"), values);
-    dae.continuous.equations.push(dae::Equation {
-        origin: "binding equation for values".to_string(),
-        ..eq_with_scalar_count(sub(var("values"), array(vec![real(1.0), real(2.0)])), 2)
-    });
-    dae.continuous
-        .equations
-        .push(eq(sub(der(var("x")), time())));
-
-    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("compact metadata must not participate in solve scalarization");
-
-    let binding = lowered
-        .metadata_dae
-        .continuous
-        .equations
-        .iter()
-        .find(|equation| equation.origin == "binding equation for values")
-        .expect("metadata retains the source binding");
-    assert_eq!(binding.scalar_count, 2);
-    assert!(matches!(
-        &binding.rhs,
-        Expression::Binary { rhs, .. } if matches!(rhs.as_ref(), Expression::Array { elements, .. } if elements.len() == 2)
-    ));
-}
-
-#[test]
-fn simulation_structural_lowering_differentiates_vector_function_constraint_for_coupled_state() {
-    let dae = quaternion_constraint_dae();
-    let model = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("vector function constraint should provide the missing coupled state row");
-
-    assert_eq!(model.state_scalar_count(), 4);
-    assert!(["Q[1]", "Q[2]", "Q[3]", "Q[4]"].iter().all(|name| {
-        model
-            .problem
-            .solve_layout
-            .solver_maps
-            .names
-            .contains(&name.to_string())
-    }));
-}
-
-#[test]
-fn simulation_structural_lowering_reports_state_metadata_before_elimination() {
-    let dae = exact_alias_state_dae();
-    let model = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("exact alias state model should lower");
-
-    let x_meta = model
-        .variable_meta
-        .iter()
-        .find(|meta| meta.name == "x")
-        .expect("x should remain visible");
-    let y_meta = model
-        .variable_meta
-        .iter()
-        .find(|meta| meta.name == "y")
-        .expect("y should remain visible");
-
-    let selected_count = usize::from(x_meta.is_state) + usize::from(y_meta.is_state);
-    assert_eq!(
-        selected_count, 1,
-        "exact alias component should report one selected state"
-    );
-}
-
-#[test]
-fn simulation_metadata_reports_constrained_state_as_unselected() {
-    let dae = constrained_state_dae();
-    let model = lower_dae_for_simulation(&dae, &SimOptions::default())
-        .expect("direct constrained state model should lower");
-
-    let x1_meta = model
-        .variable_meta
-        .iter()
-        .find(|meta| meta.name == "x1")
-        .expect("x1 should remain visible");
-    let x2_meta = model
-        .variable_meta
-        .iter()
-        .find(|meta| meta.name == "x2")
-        .expect("x2 should remain visible");
-    let x3_meta = model
-        .variable_meta
-        .iter()
-        .find(|meta| meta.name == "x3")
-        .expect("x3 should remain visible");
-
-    assert_eq!(model.state_scalar_count(), 2);
-    assert!(!x1_meta.is_state);
-    assert_eq!(x1_meta.role, "algebraic");
-    assert!(x2_meta.is_state);
-    assert!(x3_meta.is_state);
-}
-
-#[test]
-fn simulation_lowering_preserves_source_span_for_shape_errors() {
-    let mut model = dae::Dae::new();
-    model.variables.algebraics.insert(
-        VarName::new("A"),
-        dae::Variable {
-            dims: vec![3, 3],
-            ..dae::Variable::new(
-                VarName::new("A"),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            )
-        },
-    );
-    model.variables.algebraics.insert(
-        VarName::new("b"),
-        dae::Variable {
-            dims: vec![2],
-            ..dae::Variable::new(
-                VarName::new("b"),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            )
-        },
-    );
-    let span = sim_source_span(4, 40, 45);
-    let rhs = sub(var("A").with_span(span), var("b").with_span(span));
-    model.continuous.equations.push(dae::Equation {
-        lhs: None,
-        rhs,
-        span,
-        origin: "shape mismatch".to_string(),
-        scalar_count: 9,
-    });
-
-    let mut model = model;
-    rumoca_phase_dae::attach_dae_reference_metadata(&mut model)
-        .expect("fixture DAE reference metadata should normalize");
-    let err = lower_dae_for_simulation(&model, &SimOptions::default())
-        .expect_err("shape mismatch should fail during simulation lowering");
-    assert_eq!(err.source_span(), Some(span), "unexpected error: {err:?}");
-    let diagnostic = SimulationDiagnosticError::SolveLowering(err);
-    assert_eq!(diagnostic.diagnostic_code(), "lowering");
-    assert_eq!(
-        diagnostic.diagnostic_label(),
-        "array operands have incompatible shapes [3, 3] and [2]"
-    );
-}
-
-#[test]
-fn simulation_diagnostic_preserves_runtime_preparation_span() {
-    let span = sim_source_span(8, 12, 18);
-    let error = rumoca_eval_solve::EvalSolveError::Scalarization {
-        message: "invalid native map metadata".to_string(),
-        span: Some(span),
+    let options = SimOptions {
+        t_end: 0.01,
+        dt: Some(0.005),
+        solver_mode: SimSolverMode::Auto,
+        ..SimOptions::default()
     };
-    let diagnostic = SimulationDiagnosticError::from(error);
 
-    assert_eq!(diagnostic.diagnostic_code(), "simulation");
-    assert_eq!(diagnostic.source_span(), Some(span));
-    assert_eq!(
-        diagnostic.to_string(),
-        "Solve-IR scalarization failed: invalid native map metadata"
-    );
-}
-
-fn symbolic_loop_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    for name in ["a", "b", "c"] {
-        model.variables.algebraics.insert(
-            VarName::new(name),
-            dae::Variable::new(
-                VarName::new(name),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-    }
-    model.continuous.equations.push(eq(sub(var("a"), var("b"))));
-    model.continuous.equations.push(eq(sub(var("b"), var("c"))));
-    model.continuous.equations.push(eq(sub(
-        var("c"),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Sin,
-            args: vec![var("a")],
-            span: fixture_span(),
-        },
-    )));
-    model
-}
-
-fn derivative_alias_state_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    model.variables.states.insert(
-        VarName::new("x"),
-        dae::Variable::new(
-            VarName::new("x"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    model.variables.algebraics.insert(
-        VarName::new("dx"),
-        dae::Variable::new(
-            VarName::new("dx"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    model.continuous.equations.push(eq(sub(var("x"), time())));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(var("dx"), der(var("x")))));
-    model
-}
-
-fn oscillator_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    for name in ["x", "v"] {
-        model.variables.states.insert(
-            VarName::new(name),
-            dae::Variable::new(
-                VarName::new(name),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-    }
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x")), var("v"))));
-    model.continuous.equations.push(eq(sub(
-        der(var("v")),
-        Expression::Unary {
-            op: rumoca_core::OpUnary::Minus,
-            rhs: Box::new(var("x")),
-            span: fixture_span(),
-        },
-    )));
-    model
-}
-
-fn exact_alias_state_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    for name in ["x", "y"] {
-        model.variables.states.insert(
-            VarName::new(name),
-            dae::Variable::new(
-                VarName::new(name),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-    }
-    model.variables.algebraics.insert(
-        VarName::new("a"),
-        dae::Variable::new(
-            VarName::new("a"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    model.continuous.equations.push(eq(sub(var("x"), var("a"))));
-    model.continuous.equations.push(eq(sub(var("y"), var("a"))));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x")), time())));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("y")), time())));
-    model
-}
-
-fn vector_alias_state_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    model.variables.states.insert(
-        VarName::new("imc.is"),
-        dae::Variable {
-            dims: vec![3],
-            ..dae::Variable::new(
-                VarName::new("imc.is"),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            )
-        },
-    );
-    model.variables.states.insert(
-        VarName::new("x"),
-        dae::Variable::new(
-            VarName::new("x"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    for idx in 1..=3 {
-        model.variables.algebraics.insert(
-            VarName::new(format!("imc.plug_sp.pin[{idx}].i")),
-            dae::Variable::new(
-                VarName::new(format!("imc.plug_sp.pin[{idx}].i")),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-        model.continuous.equations.push(eq(sub(
-            var_idx("imc.is", idx),
-            var(&format!("imc.plug_sp.pin[{idx}].i")),
-        )));
-    }
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x")), time())));
-    model
-}
-
-fn constrained_state_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    for name in ["x1", "x2", "x3"] {
-        model.variables.states.insert(
-            VarName::new(name),
-            dae::Variable::new(
-                VarName::new(name),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-    }
-    model.variables.algebraics.insert(
-        VarName::new("a"),
-        dae::Variable::new(
-            VarName::new("a"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-
-    model
-        .continuous
-        .equations
-        .push(eq(sub(var("a"), sub(neg(var("x2")), var("x3")))));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(var("x1"), var("a"))));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x1")), sub(neg(time()), time()))));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x2")), time())));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x3")), time())));
-    model
-}
-
-fn preferred_conservation_state_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    for name in ["mass", "energy"] {
-        model.variables.states.insert(
-            VarName::new(name),
-            dae::Variable::new(VarName::new(name), fixture_span()),
-        );
-    }
-    for name in ["level", "temperature"] {
-        model.variables.algebraics.insert(
-            VarName::new(name),
-            dae::Variable {
-                state_select: rumoca_core::StateSelect::Prefer,
-                ..dae::Variable::new(VarName::new(name), fixture_span())
-            },
-        );
-    }
-
-    model.continuous.equations.push(eq(sub(
-        var("mass"),
-        Expression::Binary {
-            op: OpBinary::Add,
-            lhs: Box::new(mul(real(2.0), var("level"))),
-            rhs: Box::new(real(1.0)),
-            span: fixture_span(),
-        },
-    )));
-    model.continuous.equations.push(eq(sub(
-        var("energy"),
-        mul(
-            var("mass"),
-            mul(real(3.0), sub(var("temperature"), real(273.15))),
-        ),
-    )));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("mass")), real(1.0))));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("energy")), real(2.0))));
-    model
-}
-
-fn explicit_algebraic_ode_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    model.variables.states.insert(
-        VarName::new("x"),
-        dae::Variable::new(
-            VarName::new("x"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    model.variables.algebraics.insert(
-        VarName::new("a"),
-        dae::Variable::new(
-            VarName::new("a"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    model
-        .continuous
-        .equations
-        .push(eq(sub(var("a"), mul(real(2.0), var("x")))));
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x")), var("a"))));
-    model
-}
-
-fn state_only_ode_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    model.variables.states.insert(
-        VarName::new("x"),
-        dae::Variable::new(
-            VarName::new("x"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        ),
-    );
-    model
-        .continuous
-        .equations
-        .push(eq(sub(der(var("x")), mul(real(2.0), var("x")))));
-    model
-}
-
-fn quaternion_constraint_dae() -> dae::Dae {
-    let mut model = dae::Dae::new();
-    model.variables.states.insert(
-        VarName::new("Q"),
-        dae::Variable {
-            dims: vec![4],
-            ..dae::Variable::new(
-                VarName::new("Q"),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            )
-        },
-    );
-    model.symbols.functions.insert(
-        VarName::new("orientationConstraint"),
-        orientation_constraint_function(),
-    );
-    for idx in 1..=3 {
-        model
-            .continuous
-            .equations
-            .push(eq(sub(der(var_idx("Q", idx)), time())));
-    }
-    model.continuous.equations.push(eq(sub(
-        array(vec![int(0)]),
-        call("orientationConstraint", vec![var("Q")]),
-    )));
-    model
-}
-
-fn orientation_constraint_function() -> rumoca_core::Function {
-    let span = fixture_span();
-    let mut function = rumoca_core::Function::new("orientationConstraint", span);
-    function.instance_id = Some(orientation_constraint_instance_id());
-    function
-        .inputs
-        .push(rumoca_core::FunctionParam::new("Q", "Orientation", span));
-    let mut output = rumoca_core::FunctionParam::new("residue", "Real", span);
-    output.dims = vec![1];
-    function.outputs.push(output);
-    function.body.push(rumoca_core::Statement::Assignment {
-        comp: rumoca_core::ComponentReference {
-            local: false,
-            span,
-            parts: vec![rumoca_core::ComponentRefPart {
-                ident: "residue".to_string(),
-                span,
-                subs: Vec::new(),
-            }],
-            def_id: None,
-        },
-        value: array(vec![sub(mul(var("Q"), var("Q")), int(1))]),
-        span,
-    });
-    function
-}
-
-fn fixture_span() -> Span {
-    sim_source_span(10_001, 1, 2)
-}
-
-fn eq(rhs: Expression) -> dae::Equation {
-    eq_with_scalar_count(rhs, 1)
-}
-
-fn eq_with_scalar_count(rhs: Expression, scalar_count: usize) -> dae::Equation {
-    dae::Equation {
-        lhs: None,
-        rhs,
-        span: fixture_span(),
-        origin: "test".to_string(),
-        scalar_count,
-    }
-}
-
-fn sub(lhs: Expression, rhs: Expression) -> Expression {
-    Expression::Binary {
-        op: OpBinary::Sub,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-        span: fixture_span(),
-    }
-}
-
-fn mul(lhs: Expression, rhs: Expression) -> Expression {
-    Expression::Binary {
-        op: OpBinary::Mul,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-        span: fixture_span(),
-    }
-}
-
-fn neg(rhs: Expression) -> Expression {
-    Expression::Unary {
-        op: rumoca_core::OpUnary::Minus,
-        rhs: Box::new(rhs),
-        span: fixture_span(),
-    }
-}
-
-fn array(elements: Vec<Expression>) -> Expression {
-    Expression::Array {
-        elements,
-        is_matrix: false,
-        span: fixture_span(),
-    }
-}
-
-fn call(name: &str, args: Vec<Expression>) -> Expression {
-    Expression::FunctionCall {
-        name: reference(name).with_resolved_function(rumoca_core::ResolvedFunctionReference {
-            instance_id: orientation_constraint_instance_id(),
-            base_part_count: 1,
-        }),
-        args,
-        is_constructor: false,
-        span: fixture_span(),
-    }
-}
-
-fn orientation_constraint_instance_id() -> rumoca_core::FunctionInstanceId {
-    rumoca_core::FunctionInstanceId::new(1)
-}
-
-fn component_ref(name: &str) -> rumoca_core::ComponentReference {
-    let span = fixture_span();
-    rumoca_core::ComponentReference {
-        local: false,
-        span,
-        parts: vec![rumoca_core::ComponentRefPart {
-            ident: name.to_string(),
-            span,
-            subs: Vec::new(),
-        }],
-        def_id: None,
-    }
-}
-
-fn reference(name: &str) -> rumoca_core::Reference {
-    rumoca_core::Reference::with_component_reference(name, component_ref(name))
-}
-
-fn int(value: i64) -> Expression {
-    Expression::Literal {
-        value: rumoca_core::Literal::Integer(value),
-        span: fixture_span(),
-    }
-}
-
-fn var(name: &str) -> Expression {
-    let span = fixture_span();
-    Expression::VarRef {
-        name: reference(name),
-        subscripts: Vec::new(),
-        span,
-    }
-}
-
-fn var_idx(name: &str, idx: i64) -> Expression {
-    let span = fixture_span();
-    Expression::VarRef {
-        name: reference(name),
-        subscripts: vec![Subscript::generated_index(idx, span)],
-        span,
-    }
-}
-
-fn time() -> Expression {
-    var("time")
-}
-
-fn der(arg: Expression) -> Expression {
-    Expression::BuiltinCall {
-        function: BuiltinFunction::Der,
-        args: vec![arg],
-        span: fixture_span(),
-    }
-}
-
-fn real(value: f64) -> Expression {
-    Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: fixture_span(),
-    }
-}
-
-fn div(lhs: Expression, rhs: Expression) -> Expression {
-    Expression::Binary {
-        op: OpBinary::Div,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-        span: fixture_span(),
-    }
-}
-
-#[test]
-fn eval_dae_at_names_nonfinite_state_derivative() {
-    // der(x) = 1 / y ; der(y) = -1. At y = 0 the first derivative is inf,
-    // and the probe must name it so a NaN/inf is one command away.
-    let mut dae = dae::Dae::new();
-    for name in ["x", "y"] {
-        dae.variables.states.insert(
-            VarName::new(name),
-            dae::Variable::new(
-                VarName::new(name),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-    }
-    dae.continuous
-        .equations
-        .push(eq(sub(der(var("x")), div(real(1.0), var("y")))));
-    dae.continuous
-        .equations
-        .push(eq(sub(der(var("y")), real(-1.0))));
-
-    // Override the state `y` by name (positional ordering is never used).
-    let probe = eval_dae_at(&dae, &SimOptions::default(), &[("y".to_string(), 0.0)], 0.5)
-        .expect("model should lower and evaluate");
-    let report = &probe.report;
-
-    assert_eq!(report.state_count, 2);
-    assert_eq!(probe.state_names, vec!["x".to_string(), "y".to_string()]);
-    let y_index = probe.state_names.iter().position(|s| s == "y").unwrap();
-    assert_eq!(probe.state_used[y_index], 0.0);
-
-    let der_x = report
-        .derivatives
+    let result = simulate_dae_with_diagnostics(&dae, &options)
+        .expect("auto must select the finite explicit value path before integration");
+    let x = result
+        .names
         .iter()
-        .find(|slot| slot.name == "der(x)")
-        .expect("der(x) present");
-    assert!(!der_x.is_finite(), "der(x)=1/0 should be non-finite");
+        .position(|name| name == "x")
+        .expect("state output");
+    assert!(result.data[x].iter().all(|value| *value == 0.0));
 
-    assert!(report.has_nonfinite());
-    let nonfinite_names: Vec<_> = report
-        .nonfinite()
-        .map(|(_, slot)| slot.name.clone())
-        .collect();
-    assert!(
-        nonfinite_names.iter().any(|name| name == "der(x)"),
-        "non-finite report should name der(x): {nonfinite_names:?}"
-    );
+    let mut session = SimulationSession::new(&dae, options.clone())
+        .expect("an automatic live session must make the same capability decision");
+    session
+        .advance_to(options.t_end)
+        .expect("the selected explicit live session advances");
+    assert_eq!(session.get("x").expect("state query"), Some(0.0));
 
-    let der_y = report
-        .derivatives
-        .iter()
-        .find(|slot| slot.name == "der(y)")
-        .expect("der(y) present");
-    assert!(der_y.is_finite(), "der(y) should stay finite");
-}
-
-#[test]
-fn jacobian_for_dae_assembles_named_matrix_and_flags_zero_pivots() {
-    // Oscillator der(x)=v, der(v)=-x -> J = [[0,1],[-1,0]]: both diagonal
-    // pivots are zero, no structurally-singular columns.
-    let probe = jacobian_for_dae(&oscillator_dae(), &SimOptions::default(), &[], 0.0)
-        .expect("oscillator jacobian should assemble");
-    let report = &probe.report;
-
-    assert_eq!(report.dim(), 2);
-    assert_eq!(probe.state_names, vec!["x".to_string(), "v".to_string()]);
-    assert!(
-        report.singular_columns().is_empty(),
-        "both states affect a derivative"
-    );
-    assert_eq!(
-        report.zero_pivots(),
-        vec![0, 1],
-        "d(der(x))/dx and d(der(v))/dv are both zero"
-    );
-    // Off-diagonal structure: d(der(x))/dv = 1, d(der(v))/dx = -1.
-    let entries: std::collections::HashMap<(usize, usize), f64> = report
-        .nonzero_entries()
-        .map(|(r, c, v)| ((r, c), v))
-        .collect();
-    assert!((entries[&(0, 1)] - 1.0).abs() < 1e-4, "{entries:?}");
-    assert!((entries[&(1, 0)] + 1.0).abs() < 1e-4, "{entries:?}");
-    assert!(report.error.is_none());
-}
-
-#[test]
-fn eval_dae_at_rejects_unknown_state_name() {
-    let err = eval_dae_at(
-        &oscillator_dae(),
-        &SimOptions::default(),
-        &[("nope".to_string(), 1.0)],
-        0.0,
+    let bdf_error = simulate_dae_with_diagnostics(
+        &dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::Bdf,
+            ..options
+        },
     )
-    .expect_err("unknown state name should error");
-    let message = err.to_string();
-    assert!(message.contains("`nope` is not a state"), "{message}");
-    assert!(message.contains('x') && message.contains('v'), "{message}");
+    .expect_err("an explicit BDF request must retain the unavailable derivative failure");
+    assert!(
+        bdf_error
+            .to_string()
+            .contains("directional derivative is unavailable"),
+        "unexpected BDF error: {bdf_error}"
+    );
 }
 
 #[test]
-fn eval_dae_at_reports_finite_values_from_initial_state() {
-    // No overrides: states keep their model initial value (here 0).
-    let probe = eval_dae_at(&oscillator_dae(), &SimOptions::default(), &[], 0.0)
-        .expect("oscillator should lower and evaluate");
-    let report = &probe.report;
+fn smooth_and_no_event_remain_typed_and_execute_end_to_end() {
+    let dae = compile(
+        concat!(
+            "model EventSuppressionBuiltins\n",
+            "  Real x(start=-0.5);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  y = smooth(1, noEvent(if x > 0 then x else -x));\n",
+            "end EventSuppressionBuiltins;\n",
+        ),
+        "EventSuppressionBuiltins",
+    );
 
-    assert_eq!(report.state_count, 2);
-    assert!(!report.has_nonfinite());
-    assert!(report.error.is_none());
-    // der(x) = v, der(v) = -x; at the zero initial state both are 0.
-    let der_x = report
-        .derivatives
+    dae.inspect(|view| {
+        let builtins = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .filter_map(|expression| match expression.operation() {
+                rumoca_ir_dae::ExpressionOperation::Builtin { builtin, .. } => {
+                    Some((builtin, expression.provenance()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for expected in [
+            rumoca_ir_dae::PureBuiltin::Smooth,
+            rumoca_ir_dae::PureBuiltin::NoEvent,
+        ] {
+            let (_, provenance) = builtins
+                .iter()
+                .find(|(builtin, _)| *builtin == expected)
+                .expect("checked DAE retains the typed builtin");
+            assert_eq!(
+                provenance.origin(),
+                rumoca_ir_dae::DaeProvenanceOrigin::Source
+            );
+            assert!(
+                dae.source_text(*provenance)
+                    .is_some_and(|source| source.contains(match expected {
+                        rumoca_ir_dae::PureBuiltin::Smooth => "smooth",
+                        rumoca_ir_dae::PureBuiltin::NoEvent => "noEvent",
+                        _ => unreachable!(),
+                    }))
+            );
+        }
+    });
+
+    let result = simulate_dae(&dae, &SimOptions::default())
+        .expect("typed smooth/noEvent programs must execute");
+    let y = result
+        .names
         .iter()
-        .find(|s| s.name == "der(x)")
-        .unwrap();
-    let der_v = report
-        .derivatives
+        .position(|name| name == "y")
+        .expect("builtin result column");
+    assert!(
+        result.data[y]
+            .iter()
+            .all(|value| (value - 0.5).abs() <= 1.0e-10)
+    );
+}
+
+#[test]
+fn checked_relation_root_and_reinitialization_execute_end_to_end() {
+    let dae = compile(
+        concat!(
+            "model ClocklessReinit\n",
+            "  Real x(start=0);\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  when x >= 1 then\n",
+            "    reinit(x, 0);\n",
+            "  end when;\n",
+            "end ClocklessReinit;\n",
+        ),
+        "ClocklessReinit",
+    );
+    let options = SimOptions {
+        t_end: 2.2,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+
+    let result =
+        simulate_dae(&dae, &options).expect("checked relation event and reinit must execute");
+    let x = result
+        .names
         .iter()
-        .find(|s| s.name == "der(v)")
-        .unwrap();
-    assert_eq!(der_x.value, 0.0);
-    assert_eq!(der_v.value, 0.0);
+        .position(|name| name == "x")
+        .expect("state result column");
+    let final_x = result.data[x].last().copied().expect("final state value");
+
+    assert!(
+        (final_x - 0.2).abs() <= 2.0e-3,
+        "two checked root-triggered reinitializations should leave x≈0.2, found {final_x}"
+    );
+}
+
+#[test]
+fn checked_termination_action_preserves_message_and_event_time() {
+    let dae = compile(
+        concat!(
+            "model StopAtThreshold\n",
+            "  Real x(start=0);\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  when x >= 0.25 then\n",
+            "    terminate(\"threshold reached\");\n",
+            "  end when;\n",
+            "end StopAtThreshold;\n",
+        ),
+        "StopAtThreshold",
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.05),
+        ..SimOptions::default()
+    };
+
+    let result = simulate_dae(&dae, &options).expect("checked termination action must execute");
+    let termination = result
+        .termination
+        .expect("termination action must stop the simulation");
+
+    assert!((termination.time - 0.25).abs() <= 2.0e-5);
+    assert_eq!(termination.message, "threshold reached");
+}
+
+#[test]
+fn checked_assertion_fails_with_its_source_message() {
+    let dae = compile(
+        concat!(
+            "model CheckedAssertion\n",
+            "  Real x(start=0);\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  assert(x < 0.25, \"bound violated\");\n",
+            "end CheckedAssertion;\n",
+        ),
+        "CheckedAssertion",
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.05),
+        ..SimOptions::default()
+    };
+
+    let error = simulate_dae(&dae, &options)
+        .expect_err("a checked failing assertion must stop instead of returning a plausible trace");
+
+    assert!(error.to_string().contains("bound violated"), "{error}");
+}
+
+#[test]
+fn checked_constant_false_assertion_fails_at_initial_event() {
+    let dae = compile(
+        concat!(
+            "model InitialAssertion\n",
+            "  Real x(start=0);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  assert(false, \"initial invariant violated\");\n",
+            "end InitialAssertion;\n",
+        ),
+        "InitialAssertion",
+    );
+
+    let error = simulate_dae(&dae, &SimOptions::default())
+        .expect_err("a constant false assertion must not be consumed while seeding discrete rows");
+
+    assert!(
+        error.to_string().contains("initial invariant violated"),
+        "{error}"
+    );
+}
+
+#[test]
+fn checked_pre_value_drives_self_rescheduling_discrete_updates() {
+    let dae = compile(
+        concat!(
+            "model EventCounter\n",
+            "  discrete Integer n(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  y = n;\n",
+            "  when time >= pre(n) + 1 then\n",
+            "    n = pre(n) + 1;\n",
+            "  end when;\n",
+            "end EventCounter;\n",
+        ),
+        "EventCounter",
+    );
+    let options = SimOptions {
+        t_end: 2.2,
+        dt: Some(0.1),
+        ..SimOptions::default()
+    };
+
+    let result =
+        simulate_dae(&dae, &options).expect("checked pre-value update must execute at each root");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("output result column; available={:?}", result.names));
+
+    assert_eq!(result.data[y].last().copied(), Some(2.0));
+}
+
+#[test]
+fn checked_event_trigger_does_not_reapply_at_a_branch_guard_root() {
+    let dae = compile(
+        concat!(
+            "model TriggerDistinctFromBranch\n",
+            "  discrete Integer n(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  y = n;\n",
+            "  when x >= 0.25 then\n",
+            "    if x < 0.75 then\n",
+            "      n = pre(n) + 1;\n",
+            "    else\n",
+            "      n = pre(n) + 10;\n",
+            "    end if;\n",
+            "  end when;\n",
+            "end TriggerDistinctFromBranch;\n",
+        ),
+        "TriggerDistinctFromBranch",
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.05),
+        ..SimOptions::default()
+    };
+
+    let result = simulate_dae(&dae, &options)
+        .expect("a branch-selection root must not retrigger its enclosing when");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("output result column; available={:?}", result.names));
+
+    assert_eq!(
+        result.data[y].last().copied(),
+        Some(1.0),
+        "the persistent outer condition must not fire again when only its branch guard changes"
+    );
+}
+
+/// An `elsewhen` branch runs at its own rising edge even while the earlier
+/// branch's condition is still true.
+///
+/// MLS §8.3.5 activates the equations of a when-equation *"only at the instant
+/// when the scalar expression or any of the elements of the vector expression
+/// becomes true"*, and §8.3.5.1 writes the chain as one if-expression per
+/// assigned variable over `edge(b1)`, `edge(b2)`, …. `x >= 0.25` stays true past
+/// `t = 0.75`, but it stopped *becoming* true at `t = 0.25`, so it holds no
+/// claim on the later instant.
+///
+/// `omc` (dassl, `stopTime = 1.0`, `numberOfIntervals = 20`) runs the second
+/// branch: `selected` is `0` through `t = 0.25`, `1` from the `0.25` right-limit
+/// row, and `2` from the `0.75` right-limit row, alongside the independent
+/// `secondSeen` witness which also steps to `1` there. rumoca used to hold
+/// `selected = 1` for the whole run, because the branch guard subtracted the
+/// earlier branch's *level* rather than its edge.
+///
+/// The `secondSeen` witness is kept because it is what separates the two ways
+/// the second branch can fail to run: a condition that never rose at all, and a
+/// condition that rose but was outranked. Only the second is the branch guard.
+#[test]
+fn checked_when_elsewhen_runs_its_later_branch_while_the_first_is_still_true() {
+    let dae = compile(
+        concat!(
+            "model PersistentFirstPriority\n",
+            "  discrete Integer selected(start=0);\n",
+            "  discrete Integer secondSeen(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real selectedOut;\n",
+            "  output Real secondSeenOut;\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  selectedOut = selected;\n",
+            "  secondSeenOut = secondSeen;\n",
+            "  when x >= 0.25 then\n",
+            "    selected = 1;\n",
+            "  elsewhen x >= 0.75 then\n",
+            "    selected = 2;\n",
+            "  end when;\n",
+            "  when x >= 0.75 then\n",
+            "    secondSeen = 1;\n",
+            "  end when;\n",
+            "end PersistentFirstPriority;\n",
+        ),
+        "PersistentFirstPriority",
+    );
+    assert_eq!(
+        when_branch_plan(&dae),
+        vec![
+            (vec!["selected".to_string()], 2),
+            (vec!["secondSeen".to_string()], 1),
+        ],
+        "the checked DAE must retain both chain branches and the independent witness"
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.05),
+        solver_mode: crate::SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+
+    let result = crate::rk45::simulate_dae(&dae, &options)
+        .expect("checked when/elsewhen priority must execute");
+    let selected = result
+        .names
+        .iter()
+        .position(|name| name == "selectedOut")
+        .unwrap_or_else(|| panic!("selected output column; available={:?}", result.names));
+    let second_seen = result
+        .names
+        .iter()
+        .position(|name| name == "secondSeenOut")
+        .unwrap_or_else(|| panic!("second-event witness column; available={:?}", result.names));
+
+    assert_eq!(
+        result.data[second_seen].last().copied(),
+        Some(1.0),
+        "the independent witness must prove that the later condition rose"
+    );
+    assert_eq!(
+        result.data[selected].last().copied(),
+        Some(2.0),
+        "the elsewhen branch runs at its own rising edge, as omc does: an earlier \
+         condition that merely remains true has no edge left to outrank it with"
+    );
+}
+
+#[test]
+fn checked_when_elsewhen_priority_selects_first_on_simultaneous_rise() {
+    let dae = compile(
+        concat!(
+            "model SimultaneousPriority\n",
+            "  discrete Integer selected(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  y = selected;\n",
+            "  when x >= 0.5 then\n",
+            "    selected = 1;\n",
+            "  elsewhen x >= 0.5 then\n",
+            "    selected = 2;\n",
+            "  end when;\n",
+            "end SimultaneousPriority;\n",
+        ),
+        "SimultaneousPriority",
+    );
+    assert_eq!(
+        when_branch_plan(&dae),
+        vec![(vec!["selected".to_string()], 2)],
+        "the checked DAE must retain both simultaneous source branches"
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.05),
+        solver_mode: crate::SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+
+    let result = crate::rk45::simulate_dae(&dae, &options)
+        .expect("simultaneous checked when/elsewhen roots must execute");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("priority output column; available={:?}", result.names));
+
+    assert_eq!(
+        result.data[y].last().copied(),
+        Some(1.0),
+        "the first source branch must win when multiple conditions rise simultaneously"
+    );
+}
+
+#[test]
+fn checked_when_elsewhen_later_branch_executes_after_first_becomes_false() {
+    let dae = compile(
+        concat!(
+            "model SequentialPriority\n",
+            "  discrete Integer selected(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  y = selected;\n",
+            "  when x >= 0.2 and x < 0.4 then\n",
+            "    selected = 1;\n",
+            "  elsewhen x >= 0.6 then\n",
+            "    selected = 2;\n",
+            "  end when;\n",
+            "end SequentialPriority;\n",
+        ),
+        "SequentialPriority",
+    );
+    assert_eq!(
+        when_branch_plan(&dae),
+        vec![(vec!["selected".to_string()], 2)],
+        "the checked DAE must retain both sequential source branches"
+    );
+    let options = SimOptions {
+        t_end: 0.8,
+        dt: Some(0.05),
+        solver_mode: crate::SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+
+    let result = crate::rk45::simulate_dae(&dae, &options)
+        .expect("both checked when/elsewhen branches must execute in source order");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("priority output column; available={:?}", result.names));
+
+    assert!(
+        result.data[y].contains(&1.0),
+        "the trace must show the first branch executing before its condition becomes false; \
+         times={:?}, y={:?}",
+        result.times,
+        result.data[y]
+    );
+    assert_eq!(
+        result.data[y].last().copied(),
+        Some(2.0),
+        "the same chain's later branch must execute after the first condition becomes false; \
+         times={:?}, y={:?}",
+        result.times,
+        result.data[y]
+    );
+}
+
+#[test]
+fn unprovided_input_is_rejected_instead_of_receiving_a_default_value() {
+    let dae = compile(
+        "model NeedsInput input Real u; output Real y; equation y = u; end NeedsInput;",
+        "NeedsInput",
+    );
+
+    let error = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect_err("an input without a provider must fail before simulation");
+
+    // Checked inputs may now carry a declaration default, so the rejection names the two
+    // sources it looked for instead of only the missing runtime provider.
+    assert!(
+        error
+            .to_string()
+            .contains("input `u` has neither a checked default nor a runtime value"),
+        "{error}"
+    );
+}
+
+/// GPU preparation hands the browser each input's `P` slot and the browser writes it
+/// before every dispatch, so the prepared vectors only have to state the value that slot
+/// holds until the first write: the declared `start` (MLS §4.4.2.1). Reading only the
+/// binding rejected every shipped interactive model — `input Real throttle(start = 0)` in
+/// `examples/interactive/rover` — and aborted `prepare_gpu_simulation` before any shader
+/// was rendered.
+#[test]
+fn gpu_preparation_seeds_host_driven_inputs_from_their_declared_start() {
+    let dae = compile(
+        concat!(
+            "model HostDrivenInput\n",
+            "  parameter Real u0 = 2.0;\n",
+            "  input Real u_cmd(start = u0);\n",
+            "  Real x(start = u0, fixed = true);\n",
+            "equation\n",
+            "  der(x) = u_cmd - x;\n",
+            "end HostDrivenInput;\n",
+        ),
+        "HostDrivenInput",
+    );
+
+    let prepared = super::entry::lower_dae_for_gpu_preparation(&dae, &SimOptions::default())
+        .expect("a host-driven input carries its declared start into the prepared vectors");
+    let slot = prepared
+        .problem
+        .layout
+        .binding("u_cmd")
+        .expect("the input keeps a storage slot the host can write");
+    let rumoca_ir_solve::ScalarSlot::P { index, .. } = slot else {
+        panic!("a host-driven input belongs in parameter storage, got {slot:?}");
+    };
+    assert_eq!(
+        prepared.parameters.get(index).copied(),
+        Some(2.0),
+        "the seeded slot must hold the declared start, not a stand-in"
+    );
+
+    // The strict rule for headless simulation is untouched: the same model still has no
+    // provider when nothing drives it.
+    let error = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect_err("plain simulation still refuses an undriven input");
+    assert!(
+        error
+            .to_string()
+            .contains("input `u_cmd` has neither a checked default nor a runtime value"),
+        "{error}"
+    );
+}
+
+/// A `String` declaration carries no numeric value (MLS §3.8.4), so it must not be asked
+/// for one while the runtime vectors are built. Every clocked partition in the MSL
+/// declares `Modelica.Clocked.Types.SolverMethod solverMethod`, which made this the
+/// failure mode of `Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep`.
+#[test]
+fn string_declaration_does_not_block_numeric_runtime_vectors() {
+    let dae = compile(
+        concat!(
+            "model StringParameter\n",
+            "  parameter String method = \"ExplicitEuler\";\n",
+            "  Real x(start=1);\n",
+            "equation\n",
+            "  der(x) = -x;\n",
+            "end StringParameter;\n",
+        ),
+        "StringParameter",
+    );
+
+    let solve = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("a String declaration must not be evaluated as a numeric runtime value");
+
+    assert!(
+        !solve.visible_names.iter().any(|name| name == "method"),
+        "a String declaration has no numeric trace column: {:?}",
+        solve.visible_names
+    );
+
+    let result = simulate_dae(&dae, &SimOptions::default())
+        .expect("a model carrying a String parameter must still simulate");
+    let x = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("state result column");
+    let final_x = result.data[x].last().copied();
+    assert!(
+        final_x.is_some_and(|value| (value - (-1.0_f64).exp()).abs() <= 1.0e-6),
+        "expected x(1)≈exp(-1), found {final_x:?} at {:?}",
+        result.times.last()
+    );
+}
+
+/// MLS §8.6 leaves a `parameter` declared `fixed = false` without a value of its own: the
+/// initialization equations determine it and `start` is only the iteration guess. This is
+/// `Modelica.Electrical.Analog.Basic.SaturatingInductor.Ipar`, and the whole reason
+/// `ShowSaturatingInductor` could not initialize.
+#[test]
+fn fixed_false_parameter_is_solved_from_its_initial_equation() {
+    let dae = compile(
+        concat!(
+            "model UnsolvedParameter\n",
+            "  parameter Real q(start=3, fixed=false);\n",
+            "  Real x(start=1);\n",
+            "initial equation\n",
+            "  q*q = 4;\n",
+            "equation\n",
+            "  der(x) = -q*x;\n",
+            "end UnsolvedParameter;\n",
+        ),
+        "UnsolvedParameter",
+    );
+
+    let solve = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("a `fixed = false` parameter is an initialization unknown, not a constant");
+    let [block] = solve
+        .problem
+        .initialization
+        .projection_plan
+        .blocks
+        .as_slice()
+    else {
+        panic!(
+            "one initialization projection block expected, got {:?}",
+            solve.problem.initialization.projection_plan.blocks
+        );
+    };
+    assert_eq!(block.rows.len(), 1);
+    assert_eq!(block.unknowns.len(), 1);
+    assert!(matches!(
+        block.unknowns[0],
+        rumoca_ir_solve::ScalarSlot::P { .. }
+    ));
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.5),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options)
+        .expect("the initialization system must solve the `fixed = false` parameter");
+    let x = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("state result column");
+    // q solves to 2 (the positive root nearest the start guess), so x(t) = exp(-2 t).
+    assert!(
+        result.data[x]
+            .last()
+            .is_some_and(|value| (value - (-2.0_f64).exp()).abs() <= 1.0e-5),
+        "x must decay at the solved parameter rate, got {:?}",
+        result.data[x].last()
+    );
+}
+
+/// The predefined Real `start = 0.0` is still the initialization guess when a
+/// `fixed = false` parameter does not spell a `start` modifier. It is not the
+/// parameter's value: the initialization row remains its sole value owner.
+#[test]
+fn fixed_false_parameter_without_explicit_start_uses_the_checked_default_guess() {
+    let dae = compile(
+        concat!(
+            "model DefaultParameterGuess\n",
+            "  parameter Real q(fixed=false);\n",
+            "  Real x(start=1);\n",
+            "initial equation\n",
+            "  q = 2;\n",
+            "equation\n",
+            "  der(x) = -q*x;\n",
+            "end DefaultParameterGuess;\n",
+        ),
+        "DefaultParameterGuess",
+    );
+
+    let solve = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("the default start is a guess for the initialization unknown");
+    assert!(matches!(
+        solve
+            .problem
+            .initialization
+            .projection_plan
+            .blocks
+            .as_slice(),
+        [block]
+            if matches!(
+                block.unknowns.as_slice(),
+                [rumoca_ir_solve::ScalarSlot::P { .. }]
+            )
+    ));
+
+    let options = SimOptions {
+        t_end: 0.5,
+        dt: Some(0.5),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options)
+        .expect("the initialization equation, not the default guess, determines q");
+    assert!(
+        column(&result, "x")
+            .last()
+            .is_some_and(|value| (value - (-1.0_f64).exp()).abs() <= 1.0e-5),
+        "q = 2 must determine the trajectory"
+    );
+}
+
+/// The column of a simulation result, by variable name.
+fn column<'result>(result: &'result crate::SimResult, name: &str) -> &'result [f64] {
+    let index = result
+        .names
+        .iter()
+        .position(|column| column == name)
+        .unwrap_or_else(|| panic!("`{name}` has a result column, got {:?}", result.names));
+    &result.data[index]
+}
+
+/// The initialization projection blocks a model lowers to, as
+/// `(row count, unknown slots)` pairs.
+fn projection_blocks(dae: &rumoca_ir_dae::Dae) -> Vec<(usize, Vec<rumoca_ir_solve::ScalarSlot>)> {
+    let solve = lower_dae_for_simulation(dae, &SimOptions::default())
+        .expect("the fixture lowers to a Solve problem");
+    solve
+        .problem
+        .initialization
+        .projection_plan
+        .blocks
+        .iter()
+        .map(|block| (block.rows.len(), block.unknowns.clone()))
+        .collect()
+}
+
+/// MLS 3.6 §8.6 makes the *states* unknowns of the initialization system too, not
+/// only the `fixed = false` parameters: §4.8.1 gives `fixed` the default `false`
+/// for everything that is not a parameter, and §8.6 says of such a start only that
+/// it "is used as a guess value". So `initial equation x = 5` determines `x(0)`,
+/// and the declared `start = 0` is the guess the projection begins from.
+///
+/// OpenModelica (`omc`) simulates the same source to `x(0) = 5`.
+#[test]
+fn state_is_solved_from_its_initial_equation() {
+    let dae = compile(
+        concat!(
+            "model InitState\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = -x;\n",
+            "initial equation\n",
+            "  x = 5;\n",
+            "end InitState;\n",
+        ),
+        "InitState",
+    );
+
+    assert!(
+        matches!(
+            projection_blocks(&dae).as_slice(),
+            [(1, unknowns)] if matches!(unknowns.as_slice(), [rumoca_ir_solve::ScalarSlot::Y { .. }])
+        ),
+        "the initial equation owns one block over the state's solver slot, got {:?}",
+        projection_blocks(&dae)
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.5),
+        ..SimOptions::default()
+    };
+    let result =
+        simulate_dae(&dae, &options).expect("the initialization system must solve the state");
+    let x = column(&result, "x");
+    assert!(
+        (x[0] - 5.0).abs() <= 1.0e-12,
+        "`initial equation x = 5` fixes x(0) exactly, got {}",
+        x[0]
+    );
+    assert!(
+        x.last()
+            .is_some_and(|value| (value - 5.0 * (-1.0_f64).exp()).abs() <= 1.0e-5),
+        "x decays from the solved initial value, got {:?}",
+        x.last()
+    );
+}
+
+/// MLS 3.6 §8.6: "For every Real variable `vc` with `fixed = true`, the equation
+/// `vc = startExpression` is added to the initialization equations." That start is
+/// therefore an *equation*, and the coordinate it determines must never also be a
+/// projection unknown — the runtime seeds it and the projection would be a second
+/// owner of the same storage slot. The stated value stands, and the initial
+/// equation restating it stays a consistency check the residual test still has to
+/// satisfy.
+#[test]
+fn fixed_true_state_is_not_an_initialization_projection_unknown() {
+    let dae = compile(
+        concat!(
+            "model PinnedState\n",
+            "  Real x(start=2, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x = 2;\n",
+            "end PinnedState;\n",
+        ),
+        "PinnedState",
+    );
+
+    assert_eq!(
+        projection_blocks(&dae),
+        Vec::new(),
+        "a `fixed = true` state is determined by its own declaration"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the restated value is consistent");
+    assert!((column(&result, "x")[0] - 2.0).abs() <= 1.0e-12);
+}
+
+/// One §8.6 system solving a state and a `fixed = false` parameter together.
+///
+/// The two coordinates live in different runtime storage — the state in the solver
+/// vector, the parameter in the parameter vector — so this is also what proves the
+/// projection plans one block across both.
+#[test]
+fn a_state_and_a_fixed_false_parameter_are_solved_by_one_initialization_system() {
+    let dae = compile(
+        concat!(
+            "model MixedInit\n",
+            "  parameter Real q(start=1, fixed=false);\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x + q = 5;\n",
+            "  x - q = 1;\n",
+            "end MixedInit;\n",
+        ),
+        "MixedInit",
+    );
+
+    let blocks = projection_blocks(&dae);
+    let [(rows, unknowns)] = blocks.as_slice() else {
+        panic!("one coupled initialization block expected, got {blocks:?}");
+    };
+    assert_eq!(*rows, 2);
+    assert_eq!(unknowns.len(), 2);
+    assert!(
+        unknowns
+            .iter()
+            .any(|slot| matches!(slot, rumoca_ir_solve::ScalarSlot::P { .. }))
+            && unknowns
+                .iter()
+                .any(|slot| matches!(slot, rumoca_ir_solve::ScalarSlot::Y { .. })),
+        "the block owns both the parameter and the state slot, got {unknowns:?}"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the 2x2 initialization system is solvable");
+    assert!(
+        (column(&result, "x")[0] - 3.0).abs() <= 1.0e-9,
+        "x + q = 5 and x - q = 1 give x = 3, got {}",
+        column(&result, "x")[0]
+    );
+}
+
+/// MLS 3.6 §8.6 makes `der(x)` an unknown of the initialization system, and the
+/// der-equations active at the initial instant. The Solve lowering discharges that
+/// by substitution rather than by extra rows: the structural matching already named
+/// the continuous row that determines `der(x)`, so `initial equation der(x) = 0` is
+/// a residual over `x` alone and solves the steady state.
+#[test]
+fn a_steady_state_initial_equation_solves_the_state_it_constrains() {
+    let dae = compile(
+        concat!(
+            "model SteadyInit\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 3 - 2*x;\n",
+            "initial equation\n",
+            "  der(x) = 0;\n",
+            "end SteadyInit;\n",
+        ),
+        "SteadyInit",
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the steady-state condition is solvable");
+    let x = column(&result, "x");
+    assert!(
+        (x[0] - 1.5).abs() <= 1.0e-9,
+        "der(x) = 0 with der(x) = 3 - 2x gives x(0) = 1.5, got {}",
+        x[0]
+    );
+    assert!(
+        x.last().is_some_and(|value| (value - 1.5).abs() <= 1.0e-6),
+        "a steady state must not drift, got {:?}",
+        x.last()
+    );
+}
+
+/// A component whose rows cannot cover every state falls back, for the states left
+/// over, to the guess their `start` carries — MLS 3.6 §4.8.1's default-`fixed`
+/// reading, and the value the runtime already seeds. The rest of the component is
+/// still planned around them, so one row still determines one state instead of the
+/// whole system reverting to a residual nothing can satisfy.
+///
+/// *Which* state keeps its guess is a choice no part of MLS §8.6 makes, and it
+/// diverges from OpenModelica; `rumoca_phase_solve`'s `initial_projection` module
+/// header records the divergence and why neither answer is more correct. The
+/// assertions below pin *this* choice so it stays a recorded fact rather than
+/// silent drift.
+#[test]
+fn an_under_determined_state_component_keeps_the_remaining_start_guesses() {
+    let dae = compile(
+        concat!(
+            "model ShortRows\n",
+            "  Real x(start=0, fixed=false);\n",
+            "  Real y(start=3, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  der(y) = 0;\n",
+            "initial equation\n",
+            "  x + y = 5;\n",
+            "end ShortRows;\n",
+        ),
+        "ShortRows",
+    );
+
+    let blocks = projection_blocks(&dae);
+    let [(rows, unknowns)] = blocks.as_slice() else {
+        panic!("one square block expected, got {blocks:?}");
+    };
+    assert_eq!(
+        (*rows, unknowns.len()),
+        (1, 1),
+        "a block is square: one row determines one state, never two in least squares"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the reduced system is solvable");
+    assert!(
+        (column(&result, "y")[0] - 3.0).abs() <= 1.0e-12,
+        "the unmatched state keeps its start guess, got {}",
+        column(&result, "y")[0]
+    );
+    assert!(
+        (column(&result, "x")[0] - 2.0).abs() <= 1.0e-9,
+        "the matched state satisfies the row, got {}",
+        column(&result, "x")[0]
+    );
+}
+
+/// When one row must choose, the `fixed = false` parameter takes it.
+///
+/// MLS 3.6 §8.6 gives such a parameter no value at all without an initialization
+/// equation ("there must be additional equations for them"), while §4.8.1 leaves a
+/// state's unstated `fixed` at `false`, whose `start` §8.6 still calls a guess the
+/// runtime seeds. So spending the single row on the parameter determines both
+/// coordinates, and spending it on the state would leave the parameter's guess
+/// masquerading as its value.
+#[test]
+fn one_row_between_a_parameter_and_a_state_is_spent_on_the_parameter() {
+    let dae = compile(
+        concat!(
+            "model ShortParameterRows\n",
+            "  parameter Real q(start=1, fixed=false);\n",
+            "  Real x(start=0, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x + q = 5;\n",
+            "end ShortParameterRows;\n",
+        ),
+        "ShortParameterRows",
+    );
+
+    let blocks = projection_blocks(&dae);
+    let [(rows, unknowns)] = blocks.as_slice() else {
+        panic!("one square block expected, got {blocks:?}");
+    };
+    assert_eq!(*rows, 1);
+    assert!(
+        matches!(unknowns.as_slice(), [rumoca_ir_solve::ScalarSlot::P { .. }]),
+        "the row determines the parameter, not the state, got {unknowns:?}"
+    );
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options).expect("the reduced system is solvable");
+    assert!(
+        (column(&result, "x")[0]).abs() <= 1.0e-12,
+        "the state keeps its start guess, got {}",
+        column(&result, "x")[0]
+    );
+}
+
+/// A `fixed = false` parameter has no fallback: MLS 3.6 §8.6 says "there must be
+/// additional equations for them". A component whose rows cannot determine one is
+/// therefore left entirely unplanned, keeping the typed residual failure rather
+/// than shipping the parameter's guess as if it were its value.
+#[test]
+fn a_component_that_cannot_determine_a_fixed_false_parameter_is_left_unplanned() {
+    let dae = compile(
+        concat!(
+            "model TwoUnsolvedParameters\n",
+            "  parameter Real q(start=1, fixed=false);\n",
+            "  parameter Real r(start=1, fixed=false);\n",
+            "  Real x(start=0, fixed=true);\n",
+            "equation\n",
+            "  der(x) = q + r;\n",
+            "initial equation\n",
+            "  q + r = 5;\n",
+            "end TwoUnsolvedParameters;\n",
+        ),
+        "TwoUnsolvedParameters",
+    );
+
+    assert_eq!(
+        projection_blocks(&dae),
+        Vec::new(),
+        "one row cannot determine two `fixed = false` parameters"
+    );
+    let error = simulate_dae(&dae, &SimOptions::default())
+        .expect_err("the unowned parameter leaves a residual the initialization cannot satisfy")
+        .to_string();
+    assert!(
+        error.contains("outside the planned initialization unknown space")
+            && error.contains("could not give a row of its own"),
+        "an under-determined initialization names the unknown nothing solved, got: {error}"
+    );
+}
+
+/// A failed initialization must name a coordinate, never only a residual row
+/// index. The two answers the planner can give are both diagnostics: a row a
+/// block solves reports the coordinate that block owns, and a row no block solves
+/// reports that it is a §8.6 consistency check the rest of the system contradicts.
+#[test]
+fn a_failed_initialization_names_the_coordinate_its_row_was_planned_to_determine() {
+    let unsolvable = compile(
+        concat!(
+            "model NoRoot\n",
+            "  Real x(start=1, fixed=false);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x*x + 1 = 0;\n",
+            "end NoRoot;\n",
+        ),
+        "NoRoot",
+    );
+    let error = simulate_dae(&unsolvable, &SimOptions::default())
+        .expect_err("x*x + 1 = 0 has no real root")
+        .to_string();
+    assert!(
+        error.contains("target=x"),
+        "the failure names the state the block was planned to determine, got: {error}"
+    );
+
+    let contradicted = compile(
+        concat!(
+            "model Contradicted\n",
+            "  Real x(start=0, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "initial equation\n",
+            "  x = 5;\n",
+            "end Contradicted;\n",
+        ),
+        "Contradicted",
+    );
+    let error = simulate_dae(&contradicted, &SimOptions::default())
+        .expect_err("a `fixed = true` start of 0 contradicts `initial equation x = 5`")
+        .to_string();
+    assert!(
+        error.contains("owner=surplus-check"),
+        "a row over coordinates the rest of the system determined is a §8.6 consistency \
+         check, got: {error}"
+    );
+}
+
+/// A row no block solves is not automatically a surplus check, and calling it one
+/// names the wrong defect. MLS 3.6 §8.6 makes a surplus row legal — a coordinate a
+/// declaration determines may still be read by another initialization equation —
+/// so failing one means two declarations contradict each other. A row over a
+/// coordinate the projection never owned is the opposite: nothing solved that
+/// coordinate. The two must not share a message.
+///
+/// `Modelica.Electrical.Analog.Examples.IdealTriacCircuit` is the MSL model this
+/// separates: its failing row reads a discrete coordinate, and the old message
+/// called it a consistency check.
+#[test]
+fn an_unowned_initialization_row_is_not_reported_as_a_surplus_check() {
+    let discrete_read = compile(
+        concat!(
+            "model UnownedDiscrete\n",
+            "  Real x(start=0, fixed=false);\n",
+            "  discrete Real d(start=0, fixed=true);\n",
+            "equation\n",
+            "  der(x) = 0;\n",
+            "  when time > 0.5 then\n",
+            "    d = 1;\n",
+            "  end when;\n",
+            "initial equation\n",
+            "  x = d + 2;\n",
+            "end UnownedDiscrete;\n",
+        ),
+        "UnownedDiscrete",
+    );
+    let error = simulate_dae(&discrete_read, &SimOptions::default())
+        .expect_err("a discrete coordinate is outside the planned unknown space")
+        .to_string();
+    assert!(
+        error.contains("outside the planned initialization unknown space")
+            && error.contains("discrete-time coordinate"),
+        "an unowned discrete read names its kind, got: {error}"
+    );
+    assert!(
+        !error.contains("surplus-check"),
+        "a row nothing solved must not be reported as a surplus check, got: {error}"
+    );
+
+    let algebraic_read = compile(
+        concat!(
+            "model UnownedAlgebraic\n",
+            "  Real x(start=0, fixed=false);\n",
+            "  Real a;\n",
+            "equation\n",
+            "  a = 2*time + 5;\n",
+            "  der(x) = a - x;\n",
+            "initial equation\n",
+            "  x = a + 7;\n",
+            "end UnownedAlgebraic;\n",
+        ),
+        "UnownedAlgebraic",
+    );
+    let error = simulate_dae(&algebraic_read, &SimOptions::default())
+        .expect_err("the reduced initialization solve does not own the algebraic dependency")
+        .to_string();
+    assert!(
+        error.contains("algebraic/output") && error.contains("total derivative"),
+        "an unowned algebraic read names the missing reduced-solve capability, got: {error}"
+    );
+}
+
+/// Initialization residual certification observes settled algebraic/output
+/// values, never their declaration seeds. This does not pretend that an
+/// algebraic-reading row is already part of the reduced projection unknown
+/// space: the unsupported steady-state shape fails closed with its typed owner,
+/// while a system the existing projection can solve is certified against the
+/// freshly reconstructed algebraic value.
+#[test]
+fn an_algebraic_reading_initialization_row_cannot_certify_against_a_stale_seed() {
+    const SOURCE: &str = concat!(
+        "model AlgebraicSeed\n",
+        "  Real x(start=0, fixed=false);\n",
+        "  Real a;\n",
+        "equation\n",
+        "  a = 2*time + 5;\n",
+        "  der(x) = a - x;\n",
+        "initial equation\n",
+    );
+
+    let steady = compile(
+        &format!("{SOURCE}  der(x) = 0;\nend AlgebraicSeed;\n"),
+        "AlgebraicSeed",
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..SimOptions::default()
+    };
+    let error = simulate_dae(&steady, &options)
+        .expect_err("the stale zero seeds must not certify x(0) = 0")
+        .to_string();
+    assert!(
+        error.contains("algebraic/output") && error.contains("planned initialization unknown"),
+        "the unsupported coupled shape must fail with its typed capability owner, got: {error}"
+    );
+
+    let consistent = compile(
+        &format!("{SOURCE}  x = 5;\n  x = a;\nend AlgebraicSeed;\n"),
+        "AlgebraicSeed",
+    );
+    let result = simulate_dae(&consistent, &options)
+        .expect("x = 5 and x = a agree after the algebraic is reconstructed at a(0) = 5");
+    assert!((column(&result, "x")[0] - 5.0).abs() <= 1.0e-12);
 }

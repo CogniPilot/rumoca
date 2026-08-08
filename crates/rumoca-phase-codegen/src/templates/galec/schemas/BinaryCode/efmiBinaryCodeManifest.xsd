@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiManifestAttributes.xsd"/>
+	<xs:include schemaLocation="../efmiAnnotation.xsd"/>
+	<xs:include schemaLocation="../efmiManifestReferences.xsd"/>
+	<xs:include schemaLocation="../efmiModelRepresentationKind.xsd"/>
+	<xs:include schemaLocation="../efmiFiles.xsd"/>
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="efmiBuildInformation.xsd"/>
+	<xs:include schemaLocation="efmiModules.xsd"/>
+	<xs:include schemaLocation="efmiBinaryContainerInfoFileReferences.xsd"/>
+	<xs:element name="Manifest">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element ref="ManifestReferences" minOccurs="1" maxOccurs="1">
+					<xs:annotation>
+						<xs:documentation>Reference to Production Code manifest.</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+				<xs:element ref="Files" minOccurs="1" maxOccurs="1"/>
+				<xs:element name="BinaryContainer" minOccurs="1" maxOccurs="1">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element ref="BuildConfiguration" minOccurs="1" maxOccurs="1"/>
+							<xs:element ref="Modules" minOccurs="1" maxOccurs="1"/>
+							<xs:element ref="BinaryContainerInfo" minOccurs="1" maxOccurs="1"/>
+						</xs:sequence>
+						<xs:attribute name="toolVersion" type="xs:normalizedString"/>
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="Annotations" type="efmiAnnotation" minOccurs="0" maxOccurs="1"/>
+			</xs:sequence>
+			<xs:attribute name="xsdVersion" type="xs:normalizedString" use="required" fixed="0.12.0"/>
+			<xs:attribute name="kind" type="ModelRepresentationKind" use="required" fixed="BinaryCode"/>
+			<xs:attributeGroup ref="efmiManifestAttributesBase"/>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>

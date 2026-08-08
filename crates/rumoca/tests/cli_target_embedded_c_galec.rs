@@ -22,13 +22,11 @@ use std::process::{Command, Output};
 
 use tempfile::tempdir;
 
-#[path = "galec_cli_support/cc.rs"]
-mod cc_support;
-#[path = "galec_cli_support/cli.rs"]
-mod cli_support;
-
-use cc_support::cc;
-use cli_support::{run_compile_target, strip_ansi, write_fixture};
+// The `galec_cli_support/` helpers are declared once by the umbrella binary
+// that owns this file (see `suite_core.rs`), so the sibling suites share one
+// copy instead of compiling the same file several times per binary.
+use super::cc_support::assurance_c99_cc;
+use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the GALEC projection
@@ -46,6 +44,20 @@ end EmbeddedGalecSmoke;
 ";
 
 const MODEL: &str = "EmbeddedGalecSmoke";
+
+const MIN_MAX_MODEL: &str = "EmbeddedGalecMinMax";
+
+const MIN_MAX_FIXTURE: &str = "\
+model EmbeddedGalecMinMax
+  constant Real samplePeriod = 0.1;
+  input Real u;
+  discrete output Real y(start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    y = min(u, max(u, 0.0));
+  end when;
+end EmbeddedGalecMinMax;
+";
 
 /// Continuous model the capability gate must reject (GAL-006).
 const CONTINUOUS_FIXTURE: &str = "\
@@ -65,16 +77,45 @@ const DRIVER_MAIN: &str = "\
 #include \"EmbeddedGalecSmoke.h\"
 
 int main(void) {
-    EFMI_STATE_TYPE(EmbeddedGalecSmoke) state;
-    EFMI_INIT(EmbeddedGalecSmoke, &state);
-    EFMI_RECALIBRATE(EmbeddedGalecSmoke, &state);
+    EmbeddedGalecSmokeState state;
+    EmbeddedGalecSmoke_startup(&state);
+    EmbeddedGalecSmoke_recalibrate(&state);
     for (int step = 0; step < 3; ++step) {
-        EFMI_STEP(EmbeddedGalecSmoke, &state);
+        EmbeddedGalecSmoke_dostep(&state);
         printf(\"%.1f\\n\", state.y);
     }
     return 0;
 }
 ";
+
+const MIN_MAX_DRIVER: &str = r#"
+#include <math.h>
+#include "EmbeddedGalecMinMax.c"
+
+int main(void) {
+    const float qnan = NAN;
+
+    if (rumoca_galec_min(2.0f, 3.0f) != 2.0f
+        || rumoca_galec_min(3.0f, 2.0f) != 2.0f
+        || rumoca_galec_max(2.0f, 3.0f) != 3.0f
+        || rumoca_galec_max(3.0f, 2.0f) != 3.0f) {
+        return 1;
+    }
+    if (rumoca_galec_min(2.0f, 2.0f) != 2.0f
+        || rumoca_galec_max(2.0f, 2.0f) != 2.0f) {
+        return 2;
+    }
+    if (rumoca_galec_min(qnan, 2.0f) != 2.0f
+        || rumoca_galec_max(qnan, 2.0f) != 2.0f) {
+        return 3;
+    }
+    if (!isnan(rumoca_galec_min(2.0f, qnan))
+        || !isnan(rumoca_galec_max(2.0f, qnan))) {
+        return 4;
+    }
+    return 0;
+}
+"#;
 
 fn run_compile_embedded_c_galec(file: &Path, out_dir: &Path) -> Output {
     run_compile_target(file, "embedded-c-galec", out_dir)
@@ -95,7 +136,51 @@ fn build_sources(work_dir: &Path, out_dir: &Path) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// The emitted sources compile under `-Wall -Werror`, link against libm
+#[test]
+fn real_min_max_use_order_sensitive_relational_nan_semantics() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    let file = write_fixture(dir.path(), MIN_MAX_MODEL, MIN_MAX_FIXTURE);
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "min/max fixture failed to compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let driver = out_dir.join("min_max.c");
+    fs::write(&driver, MIN_MAX_DRIVER).expect("write min/max driver");
+    let generated_source = fs::read_to_string(out_dir.join(format!("{MIN_MAX_MODEL}.c")))
+        .expect("read generated C source");
+    assert!(
+        generated_source.contains("static inline float rumoca_galec_min")
+            && generated_source.contains("static inline float rumoca_galec_max"),
+        "reachable min/max helpers were not emitted"
+    );
+    let program = out_dir.join("min_max");
+    let compile = assurance_c99_cc()
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver)
+        .arg("-lm")
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "strict min/max probe compile failed.\nstderr:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        generated_source
+    );
+
+    let run = Command::new(&program).output().expect("run min/max probe");
+    assert!(
+        run.status.success(),
+        "GALEC relational min/max probe exited with {:?}",
+        run.status.code()
+    );
+}
+
+/// The emitted sources compile under strict ISO C99 warnings, link against libm
 /// with a real driver, and the executed block reproduces the discrete
 /// dynamics tick for tick.
 #[test]
@@ -108,13 +193,34 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
     let source = out_dir.join(format!("{MODEL}.c"));
     assert!(header.is_file(), "missing {}", header.display());
     assert!(source.is_file(), "missing {}", source.display());
+    let source_text = fs::read_to_string(&source).expect("read generated C source");
+    for unused_helper in [
+        "static inline float rumoca_galec_sign",
+        "static inline float rumoca_galec_min",
+        "static inline float rumoca_galec_max",
+        "static inline bool rumoca_galec_compare_",
+        "static inline int32_t rumoca_galec_imin",
+        "static inline int32_t rumoca_galec_imax",
+        "static inline int32_t rumoca_galec_division_towards_zero",
+    ] {
+        assert!(
+            !source_text.contains(unused_helper),
+            "unreachable helper `{unused_helper}` was emitted"
+        );
+    }
+    for generated in [&header, &source] {
+        let bytes = fs::read(generated).expect("read generated C artifact");
+        assert!(
+            bytes.ends_with(b"\n"),
+            "{} must end with a newline for strict C toolchains",
+            generated.display()
+        );
+    }
 
     let driver = out_dir.join("main.c");
     fs::write(&driver, DRIVER_MAIN).expect("write driver");
     let program = out_dir.join("smoke");
-    let compile = cc()
-        .arg("-Wall")
-        .arg("-Werror")
+    let compile = assurance_c99_cc()
         .arg("-o")
         .arg(&program)
         .arg(&driver)
@@ -124,7 +230,7 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
         .expect("run cc");
     assert!(
         compile.status.success(),
-        "cc -Wall -Werror failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
+        "strict cc -std=c99 compile failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(&header).unwrap_or_default(),
         fs::read_to_string(&source).unwrap_or_default()
@@ -146,8 +252,7 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
     );
 }
 
-/// GAL-024 honesty: the emitted header and the CLI completion message both
-/// self-describe as NOT an eFMI Production Code container.
+/// GAL-024/GAL-029 honesty: target scope and assurance claims stay explicit.
 #[test]
 fn export_self_describes_as_not_an_efmi_production_code_container() {
     let dir = tempdir().expect("tempdir");
@@ -159,20 +264,25 @@ fn export_self_describes_as_not_an_efmi_production_code_container() {
         header.contains("NOT an eFMI Production Code container"),
         "header must carry the GAL-024 self-description:\n{header}"
     );
-    for macro_name in [
-        "EFMI_STATE_TYPE",
-        "EFMI_INIT",
-        "EFMI_RECALIBRATE",
-        "EFMI_STEP",
+    for api_name in [
+        "EmbeddedGalecSmokeState",
+        "EmbeddedGalecSmoke_startup",
+        "EmbeddedGalecSmoke_recalibrate",
+        "EmbeddedGalecSmoke_dostep",
     ] {
         assert!(
-            header.contains(macro_name),
-            "header must expose {macro_name}:\n{header}"
+            header.contains(api_name),
+            "header must expose {api_name}:\n{header}"
         );
     }
+    assert!(!header.contains("#  define EFMI_"), "{header}");
+    assert!(header.contains("MISRA compliance and DO-178C compliance are not claimed"));
     assert!(
         strip_ansi(&stderr).contains("NOT an eFMI Production Code"),
         "completion message must carry the GAL-024 self-description, got:\n{stderr}"
+    );
+    assert!(
+        strip_ansi(&stderr).contains("MISRA compliance and DO-178C compliance are not claimed")
     );
 }
 

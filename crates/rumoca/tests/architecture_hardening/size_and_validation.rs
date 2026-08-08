@@ -10,12 +10,6 @@ mod helpers;
 #[path = "size_and_validation/span_debt.rs"]
 mod span_debt;
 
-#[path = "size_and_validation/fixture_provenance_a.rs"]
-mod fixture_provenance_a;
-
-#[path = "size_and_validation/fixture_provenance_b.rs"]
-mod fixture_provenance_b;
-
 #[path = "size_and_validation/architecture_boundaries.rs"]
 mod architecture_boundaries;
 

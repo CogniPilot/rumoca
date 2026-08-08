@@ -1,0 +1,32 @@
+# Standalone cargo-fuzz crate.
+#
+# Deliberately NOT a member of the root workspace: `cargo fuzz` builds with
+# `-Z sanitizer=address` on the pinned nightly, which must not leak into normal
+# `cargo build`/`cargo test` invocations. The root manifest also lists `fuzz` in
+# `[workspace].exclude`, and `flake.nix`'s source filter keeps only `crates`,
+# `examples`, `.cargo` and the root manifests, so this directory is invisible to
+# `nix flake check` and the crane builds.
+[package]
+name = "rumoca-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rumoca-phase-parse = { path = "../crates/rumoca-phase-parse" }
+
+[[bin]]
+name = "parse_modelica"
+path = "fuzz_targets/parse_modelica.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

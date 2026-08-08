@@ -20,20 +20,20 @@ fn test_eval_enum_params_resolves_conditional_enum_binding_from_known_boolean() 
                     Expression::VarRef {
                         name: rumoca_core::Reference::new("Medium.singleState"),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                     Expression::VarRef {
                         name: rumoca_core::Reference::new("Dynamics.SteadyState"),
                         subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                     },
                 )],
                 else_branch: Box::new(Expression::VarRef {
                     name: rumoca_core::Reference::new("Dynamics.SteadyStateInitial"),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         ),
         (
@@ -41,7 +41,7 @@ fn test_eval_enum_params_resolves_conditional_enum_binding_from_known_boolean() 
             Expression::VarRef {
                 name: rumoca_core::Reference::new("systemMassDynamics"),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         ),
         (
@@ -49,7 +49,7 @@ fn test_eval_enum_params_resolves_conditional_enum_binding_from_known_boolean() 
             Expression::VarRef {
                 name: rumoca_core::Reference::new("pipe1.system.massDynamics"),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         ),
         (
@@ -57,7 +57,7 @@ fn test_eval_enum_params_resolves_conditional_enum_binding_from_known_boolean() 
             Expression::VarRef {
                 name: rumoca_core::Reference::new("pipe1.massDynamics"),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         ),
     ];
@@ -99,15 +99,32 @@ fn test_try_eval_const_flat_expr_with_scope_resolves_enum_alias_component_ref() 
         "Modelica.Electrical.Digital.Tables.L.'U'".to_string(),
         "Modelica.Electrical.Digital.Interfaces.Logic.'U'".to_string(),
     );
-    let expr = component_ref_expr("L.'U'");
+    let enum_type = rumoca_core::DefId::new(154);
+    let mut expr = component_ref_expr("L.'U'");
+    let rumoca_ir_ast::Expression::ComponentReference(source_reference) = &mut expr else {
+        panic!("fixture is an enum component reference");
+    };
+    for part in &mut source_reference.parts {
+        part.def_id = Some(enum_type);
+    }
+    let rumoca_ir_ast::Expression::ComponentReference(source_reference) = &expr else {
+        panic!("fixture is an enum component reference");
+    };
+    let expected_type = source_reference
+        .target_def_id()
+        .expect("resolved fixture carries its enum declaration identity");
 
     let got =
         try_eval_const_flat_expr_with_scope(&expr, &ctx, "Modelica.Electrical.Digital.Tables");
-    assert!(matches!(
-        got,
-        Some(Expression::VarRef { ref name, .. })
-            if name.as_str() == "Modelica.Electrical.Digital.Interfaces.Logic.'U'"
-    ));
+    let Some(Expression::VarRef { name, .. }) = got else {
+        panic!("enum alias settles to a Flat reference");
+    };
+    assert_eq!(
+        name.as_str(),
+        "Modelica.Electrical.Digital.Interfaces.Logic.'U'"
+    );
+    assert!(!name.is_generated());
+    assert_eq!(name.target_def_id(), Some(expected_type));
 }
 
 #[test]
@@ -233,33 +250,33 @@ fn test_infer_expr_dims_handles_array_comprehension() {
             elements: vec![
                 Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 Expression::Literal {
                     value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
             name: "i".to_string(),
             range: Expression::Range {
                 start: Box::new(Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 step: None,
                 end: Box::new(Expression::Literal {
                     value: rumoca_core::Literal::Integer(3),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         }],
         filter: None,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     assert_eq!(
@@ -273,29 +290,29 @@ fn test_infer_expr_dims_array_comprehension_with_filter_returns_none() {
     let expr = Expression::ArrayComprehension {
         expr: Box::new(Expression::Literal {
             value: rumoca_core::Literal::Integer(1),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }),
         indices: vec![rumoca_core::ComprehensionIndex {
             name: "i".to_string(),
             range: Expression::Range {
                 start: Box::new(Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 step: None,
                 end: Box::new(Expression::Literal {
                     value: rumoca_core::Literal::Integer(3),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         }],
         filter: Some(Box::new(Expression::VarRef {
             name: "cond".to_string().into(),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         })),
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     };
 
     assert_eq!(infer_expr_dims(&expr, &DimMap::new(), &DimMap::new()), None);

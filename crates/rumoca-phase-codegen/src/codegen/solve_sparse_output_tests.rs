@@ -1,7 +1,7 @@
 use super::*;
 use rumoca_ir_solve as solve;
 
-use super::codegen_tests::builtin_template;
+use super::codegen_test_support::builtin_template;
 
 fn fixture_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
@@ -62,39 +62,39 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     let c = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("c-solve", "model_solve.c.jinja"),
+        builtin_template("c-ode", "model_ode.c.jinja"),
         "SparseDemo",
     )
-    .expect("c-solve template should render");
-    assert!(c.contains("out[i] = 0.0;"));
-    assert!(c.contains("out[2] ="));
-    assert!(c.contains("out[4] ="));
-    assert!(c.contains("out[6] ="));
-    assert!(!c.contains("out[0] ="), "C ignored output_indices:\n{c}");
+    .expect("c-ode template should render");
+    assert!(c.contains("__out[i] = 0.0;"));
+    assert!(c.contains("__out[2] ="));
+    assert!(c.contains("__out[4] ="));
+    assert!(c.contains("__out[6] ="));
+    assert!(!c.contains("__out[0] ="), "C ignored output_indices:\n{c}");
 
     let rust = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("rust-solve", "model_solve.rs.jinja"),
+        builtin_template("rust-ode", "model_ode.rs.jinja"),
         "SparseDemo",
     )
-    .expect("rust-solve template should render");
-    assert!(rust.contains("out[..DERIVATIVE_LEN].fill(0.0);"));
-    assert!(rust.contains("out[2] ="));
-    assert!(rust.contains("out[4] ="));
-    assert!(rust.contains("out[6] ="));
+    .expect("rust-ode template should render");
+    assert!(rust.contains("let mut __out = vec![0.0; DERIVATIVE_LEN];"));
+    assert!(rust.contains("__out[2] ="));
+    assert!(rust.contains("__out[4] ="));
+    assert!(rust.contains("__out[6] ="));
     assert!(
-        !rust.contains("out[0] ="),
+        !rust.contains("__out[0] ="),
         "Rust ignored output_indices:\n{rust}"
     );
 
     let cuda = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("cuda-c", "model_solve.cu.jinja"),
+        builtin_template("cuda-ode", "model_ode.cu.jinja"),
         "SparseDemo",
     )
-    .expect("cuda-c template should render");
+    .expect("cuda-ode template should render");
     assert!(cuda.contains("batch_out[i] = 0.0;"));
     assert!(cuda.contains("batch_out[2] ="));
     assert!(cuda.contains("batch_out[4] ="));
@@ -102,27 +102,6 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     assert!(
         !cuda.contains("batch_out[0] ="),
         "CUDA ignored output_indices:\n{cuda}"
-    );
-
-    let embedded = render_solve_template_with_name(
-        &problem,
-        &artifacts,
-        builtin_template("embedded-c", "model.c.jinja"),
-        "SparseDemo",
-    )
-    .expect("embedded-c template should render");
-    assert!(embedded.contains("out[i] = 0.0;"));
-    assert!(
-        embedded
-            .contains("real_t dx[SPARSEDEMO_DERIVATIVE_LEN > 0 ? SPARSEDEMO_DERIVATIVE_LEN : 1]")
-    );
-    assert!(embedded.contains("for (int i = 0; i < SPARSEDEMO_STATE_LEN; ++i)"));
-    assert!(embedded.contains("out[2] ="));
-    assert!(embedded.contains("out[4] ="));
-    assert!(embedded.contains("out[6] ="));
-    assert!(
-        !embedded.contains("out[0] ="),
-        "embedded C ignored output_indices:\n{embedded}"
     );
 
     let mlir = render_solve_template_with_name(
@@ -133,20 +112,20 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     )
     .expect("mlir template should render");
     assert!(mlir.contains("%drv_zero = arith.constant 0.0 : f64"));
-    assert!(mlir.contains("%drv_zero_i6 = arith.constant 6 : index"));
-    assert!(mlir.contains("%outi0 = arith.constant 2 : index"));
-    assert!(mlir.contains("%outi1 = arith.constant 4 : index"));
-    assert!(mlir.contains("%outi2 = arith.constant 6 : index"));
+    assert!(mlir.contains("%drv_zero_end = arith.constant 7 : index"));
+    assert!(mlir.contains("scf.for %drv_nf0_row"));
+    assert!(mlir.contains("%drv_nf0_output_base = arith.constant 2 : i64"));
+    assert!(mlir.contains("%drv_nf0_output_scale0 = arith.constant 2 : i64"));
 
     let layout = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("wgsl-solve", "model_layout.json.jinja"),
+        builtin_template("wgsl-ode", "model_layout.json.jinja"),
         "SparseDemo",
     )
-    .expect("wgsl-solve layout manifest should render");
+    .expect("wgsl-ode layout manifest should render");
     let layout: serde_json::Value =
-        serde_json::from_str(&layout).expect("wgsl-solve layout manifest should be valid JSON");
+        serde_json::from_str(&layout).expect("wgsl-ode layout manifest should be valid JSON");
     let expected_strides = serde_json::json!([{ "dimension": 0, "stride": 2 }]);
     assert_eq!(
         layout["kernels"][0]["output_map"]["strides"], expected_strides,
@@ -160,10 +139,10 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     let wgsl = render_solve_template_with_name(
         &problem,
         &artifacts,
-        builtin_template("wgsl-solve", "model_solve.wgsl.jinja"),
+        builtin_template("wgsl-ode", "model_ode.wgsl.jinja"),
         "SparseDemo",
     )
-    .expect("wgsl-solve source should render");
+    .expect("wgsl-ode source should render");
     assert!(
         wgsl.contains("Native map family: affine output map start 2, rows 3"),
         "native WGSL source should describe sparse output maps without implying contiguity:\n{wgsl}"

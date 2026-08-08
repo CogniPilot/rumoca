@@ -7,9 +7,9 @@
 //! `DefId`s whenever structure is available.
 
 /// The enclosing scope of a rendered instance or type-name string
-/// (`A.B.C` -> `A.B`). Boundary helper for the String-keyed instance-scope
-/// and overlay type-name tables; prefer `ClassTree::enclosing_class_names_of`
-/// or `ComponentPath::parent` when structure is available.
+/// (`A.B.C` -> `A.B`). Boundary helper for evaluator and overlay
+/// type-name tables; prefer `ClassTree::enclosing_class_names_of` or
+/// `ComponentPath::parent` when structure is available.
 pub(crate) fn enclosing_scope_str(name: &str) -> Option<&str> {
     rumoca_core::parent_scope(name)
 }

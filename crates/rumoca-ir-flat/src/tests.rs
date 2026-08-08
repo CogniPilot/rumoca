@@ -1,33 +1,96 @@
-//! Tests for flat expression conversion and analysis.
+//! Tests for Flat-owned invariants and analysis.
 
 use super::*;
-use rumoca_core::{ComponentRefPart, DefId, Token, extract_algorithm_outputs};
-use rumoca_ir_ast as ast;
-use std::sync::Arc;
+use rumoca_core::{ComponentRefPart, ProvenanceSpan, Token, extract_algorithm_outputs};
 
-const DUMMY: rumoca_core::Span = rumoca_core::Span::DUMMY;
-
-fn test_span() -> rumoca_core::Span {
-    rumoca_core::Span::from_offsets(
+fn test_span() -> Span {
+    Span::from_offsets(
         rumoca_core::SourceId::from_source_name("flat_ir_test.mo"),
         1,
         2,
     )
 }
 
-fn make_var(name: &str) -> ast::Expression {
-    ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![ast::ComponentRefPart {
-            ident: rumoca_core::Token {
-                text: Arc::from(name),
-                ..Default::default()
-            },
-            subs: None,
+fn test_provenance() -> ProvenanceSpan {
+    test_span()
+        .require_provenance("Flat IR test")
+        .expect("test span has provenance")
+}
+
+fn component_reference(name: &str, def_id: DefId, subs: Vec<Subscript>) -> ComponentReference {
+    ComponentReference::construct(
+        false,
+        test_span(),
+        vec![ComponentRefPart {
+            ident: name.to_string(),
+            span: test_span(),
+            subs,
+            def_id,
         }],
-        def_id: None,
-        span: DUMMY,
-    })
+    )
+    .expect("test reference is nonempty and resolved")
+}
+
+#[test]
+fn when_chain_is_nonempty_and_preserves_source_order_and_provenance() {
+    let source = rumoca_core::SourceId::from_source_name("when_chain_ir_test.mo");
+    let owner_span = Span::from_offsets(source, 1, 80);
+    let first_span = Span::from_offsets(source, 6, 15);
+    let second_span = Span::from_offsets(source, 35, 45);
+    let first = WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: first_span,
+        },
+        first_span,
+    );
+    let second = WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(false),
+            span: second_span,
+        },
+        second_span,
+    );
+    let mut chain = WhenChain::new(first, owner_span);
+    chain.push_else_when(second);
+
+    assert_eq!(chain.span(), owner_span);
+    assert_eq!(chain.first().span, first_span);
+    assert_eq!(chain.branch_count(), 2);
+    assert_eq!(
+        chain
+            .branches()
+            .map(|branch| branch.span)
+            .collect::<Vec<_>>(),
+        [first_span, second_span]
+    );
+}
+
+#[test]
+fn when_chain_deserialization_requires_its_first_branch() {
+    let span = test_span();
+    let chain = WhenChain::new(
+        WhenBranch::new(
+            Expression::Literal {
+                value: Literal::Boolean(true),
+                span,
+            },
+            span,
+        ),
+        span,
+    );
+    let mut value = serde_json::to_value(chain).expect("serialize nonempty when chain");
+    assert!(
+        value
+            .as_object_mut()
+            .expect("when chain serializes as a record")
+            .remove("first")
+            .is_some()
+    );
+
+    let error = serde_json::from_value::<WhenChain>(value)
+        .expect_err("serialized when chain requires its mandatory first branch");
+    assert!(error.to_string().contains("missing field `first`"));
 }
 
 #[test]
@@ -36,439 +99,29 @@ fn flat_variable_and_clock_constructors_preserve_owner_span() {
         Variable::empty_with_span(test_span()).source_span,
         test_span()
     );
-    assert_eq!(BaseClock::inferred(test_span()).source_span, test_span());
+    assert_eq!(BaseClock::inferred(test_span()).source_span(), test_span());
     assert_eq!(
-        BaseClock::periodic(0.1, test_span()).source_span,
+        BaseClock::periodic(0.1, test_span())
+            .expect("positive periodic clock")
+            .source_span(),
         test_span()
     );
     assert_eq!(
-        SubClock::empty_with_span(test_span()).source_span,
+        SubClock::identity(test_provenance()).source_span(),
         test_span()
     );
     assert_eq!(
-        SubClock::sub_sample(2, test_span()).source_span,
+        SubClock::sub_sample(2, test_provenance())
+            .expect("positive sub-sample factor")
+            .source_span(),
         test_span()
     );
     assert_eq!(
-        SubClock::super_sample(2, test_span()).source_span,
+        SubClock::super_sample(2, test_provenance())
+            .expect("positive super-sample factor")
+            .source_span(),
         test_span()
     );
-}
-
-fn make_int(value: i64) -> ast::Expression {
-    ast::Expression::Terminal {
-        terminal_type: ast::TerminalType::UnsignedInteger,
-        token: rumoca_core::Token {
-            text: Arc::from(value.to_string()),
-            ..Default::default()
-        },
-        span: DUMMY,
-    }
-}
-
-fn make_binary(
-    op: rumoca_core::OpBinary,
-    lhs: ast::Expression,
-    rhs: ast::Expression,
-) -> ast::Expression {
-    ast::Expression::Binary {
-        op,
-        lhs: Arc::new(lhs),
-        rhs: Arc::new(rhs),
-        span: DUMMY,
-    }
-}
-
-fn make_named_arg(name: &str, value: ast::Expression) -> ast::Expression {
-    ast::Expression::NamedArgument {
-        name: rumoca_core::Token {
-            text: Arc::from(name),
-            ..Default::default()
-        },
-        value: Arc::new(value),
-        span: DUMMY,
-    }
-}
-
-fn make_der(var_name: &str) -> ast::Expression {
-    ast::Expression::FunctionCall {
-        comp: ast::ComponentReference {
-            local: false,
-            parts: vec![ast::ComponentRefPart {
-                ident: rumoca_core::Token {
-                    text: Arc::from("der"),
-                    ..Default::default()
-                },
-                subs: None,
-            }],
-            def_id: None,
-            span: DUMMY,
-        },
-        args: vec![make_var(var_name)],
-        span: DUMMY,
-    }
-}
-
-fn make_for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
-    ast::ForIndex {
-        ident: rumoca_core::Token {
-            text: Arc::from(name),
-            ..Default::default()
-        },
-        range: ast::Expression::Range {
-            start: Arc::new(make_int(start)),
-            step: None,
-            end: Arc::new(make_int(end)),
-            span: DUMMY,
-        },
-    }
-}
-
-fn make_component_ref_part(name: &str) -> ast::ComponentRefPart {
-    ast::ComponentRefPart {
-        ident: rumoca_core::Token {
-            text: Arc::from(name),
-            ..Default::default()
-        },
-        subs: None,
-    }
-}
-
-fn make_subscripted_ref_expr(name: &str, subscript_value: i64) -> ast::Expression {
-    ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![ast::ComponentRefPart {
-            ident: rumoca_core::Token {
-                text: Arc::from(name),
-                ..Default::default()
-            },
-            subs: Some(vec![ast::Subscript::Expression(make_int(subscript_value))]),
-        }],
-        def_id: None,
-        span: DUMMY,
-    })
-}
-
-#[test]
-fn test_flat_expression_from_variable() {
-    let expr = make_var("x");
-    let flat = expression_from_ast(&expr);
-
-    match flat {
-        Expression::VarRef {
-            name, subscripts, ..
-        } => {
-            assert_eq!(name.as_str(), "x");
-            assert!(subscripts.is_empty());
-        }
-        _ => panic!("Expected VarRef"),
-    }
-}
-
-#[test]
-fn test_flat_expression_from_integer() {
-    let expr = make_int(42);
-    let flat = expression_from_ast(&expr);
-
-    match flat {
-        Expression::Literal {
-            value: Literal::Integer(v),
-            ..
-        } => {
-            assert_eq!(v, 42);
-        }
-        _ => panic!("Expected Integer literal"),
-    }
-}
-
-#[test]
-fn test_flat_expression_from_der() {
-    let expr = make_der("x");
-    let flat = expression_from_ast(&expr);
-
-    match flat {
-        Expression::BuiltinCall { function, args, .. } => {
-            assert_eq!(function, BuiltinFunction::Der);
-            assert_eq!(args.len(), 1);
-            match &args[0] {
-                Expression::VarRef { name, .. } => {
-                    assert_eq!(name.as_str(), "x");
-                }
-                _ => panic!("Expected VarRef in der() argument"),
-            }
-        }
-        _ => panic!("Expected BuiltinCall"),
-    }
-}
-
-#[test]
-fn test_class_modification_uses_def_map_for_constructor_name() {
-    let constructor_def_id = DefId::new(42);
-    let mut def_map = IndexMap::new();
-    def_map.insert(
-        constructor_def_id,
-        "Modelica.Clocked.RealSignals.Sampler.Utilities.Internal.UniformNoise".to_string(),
-    );
-
-    let expr = ast::Expression::ClassModification {
-        target: ast::ComponentReference {
-            local: false,
-            parts: vec![make_component_ref_part("noise")],
-            def_id: Some(constructor_def_id),
-            span: DUMMY,
-        },
-        modifications: vec![make_int(1)],
-        each_flags: vec![false],
-        final_flags: vec![false],
-        redeclare_flags: vec![false],
-        span: DUMMY,
-    };
-    let flat = expression_from_ast_with_def_map(&expr, Some(&def_map));
-
-    match flat {
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-            ..
-        } => {
-            assert_eq!(
-                name.as_str(),
-                "Modelica.Clocked.RealSignals.Sampler.Utilities.Internal.UniformNoise"
-            );
-            assert!(is_constructor);
-            assert_eq!(args.len(), 1);
-        }
-        _ => panic!("Expected constructor FunctionCall"),
-    }
-}
-
-#[test]
-fn test_class_modification_falls_back_to_textual_constructor_name_without_def_id() {
-    let expr = ast::Expression::ClassModification {
-        target: ast::ComponentReference {
-            local: false,
-            parts: vec![make_component_ref_part("noise")],
-            def_id: None,
-            span: DUMMY,
-        },
-        modifications: vec![make_int(1)],
-        each_flags: vec![false],
-        final_flags: vec![false],
-        redeclare_flags: vec![false],
-        span: DUMMY,
-    };
-    let flat = expression_from_ast_with_def_map(&expr, None);
-
-    match flat {
-        Expression::FunctionCall {
-            name,
-            is_constructor,
-            ..
-        } => {
-            assert_eq!(name.as_str(), "noise");
-            assert!(is_constructor);
-        }
-        _ => panic!("Expected constructor FunctionCall"),
-    }
-}
-
-#[test]
-fn test_function_call_named_arguments_preserved_as_internal_named_args() {
-    let expr = ast::Expression::FunctionCall {
-        comp: ast::ComponentReference {
-            local: false,
-            parts: vec![
-                make_component_ref_part("Modelica"),
-                make_component_ref_part("Electrical"),
-                make_component_ref_part("Machines"),
-                make_component_ref_part("Losses"),
-                make_component_ref_part("CoreParameters"),
-            ],
-            def_id: None,
-            span: DUMMY,
-        },
-        args: vec![
-            make_named_arg("PRef", make_int(410)),
-            make_named_arg("VRef", make_int(388)),
-        ],
-        span: DUMMY,
-    };
-
-    let flat = expression_from_ast(&expr);
-    let Expression::FunctionCall {
-        args,
-        is_constructor,
-        ..
-    } = flat
-    else {
-        panic!("Expected function call");
-    };
-    assert!(!is_constructor);
-    assert_eq!(args.len(), 2);
-
-    let Expression::FunctionCall {
-        name: first_name,
-        args: first_args,
-        is_constructor: first_is_constructor,
-        ..
-    } = &args[0]
-    else {
-        panic!("Expected wrapped named argument");
-    };
-    assert!(first_is_constructor);
-    assert_eq!(first_name.as_str(), "__rumoca_named_arg__.PRef");
-    assert!(matches!(
-        first_args.first(),
-        Some(Expression::Literal {
-            value: Literal::Integer(410),
-            span: rumoca_core::Span::DUMMY
-        })
-    ));
-
-    let Expression::FunctionCall {
-        name: second_name,
-        args: second_args,
-        is_constructor: second_is_constructor,
-        ..
-    } = &args[1]
-    else {
-        panic!("Expected wrapped named argument");
-    };
-    assert!(second_is_constructor);
-    assert_eq!(second_name.as_str(), "__rumoca_named_arg__.VRef");
-    assert!(matches!(
-        second_args.first(),
-        Some(Expression::Literal {
-            value: Literal::Integer(388),
-            span: rumoca_core::Span::DUMMY
-        })
-    ));
-}
-
-#[test]
-fn test_flat_expression_binary() {
-    let expr = ast::Expression::Binary {
-        op: rumoca_core::OpBinary::Add,
-        lhs: Arc::new(make_var("x")),
-        rhs: Arc::new(make_int(1)),
-        span: DUMMY,
-    };
-    let flat = expression_from_ast(&expr);
-
-    match flat {
-        Expression::Binary { lhs, rhs, .. } => {
-            assert!(matches!(*lhs, Expression::VarRef { .. }));
-            assert!(matches!(
-                *rhs,
-                Expression::Literal {
-                    value: Literal::Integer(1),
-                    ..
-                }
-            ));
-        }
-        _ => panic!("Expected Binary"),
-    }
-}
-
-#[test]
-fn test_flat_expression_preserves_array_comprehension_structure() {
-    let expr = ast::Expression::ArrayComprehension {
-        expr: Arc::new(make_var("i")),
-        indices: vec![make_for_index("i", 1, 3)],
-        filter: None,
-        span: DUMMY,
-    };
-    let flat = expression_from_ast(&expr);
-
-    match flat {
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => {
-            assert!(filter.is_none());
-            assert_eq!(indices.len(), 1);
-            assert_eq!(indices[0].name, "i");
-            match expr.as_ref() {
-                Expression::VarRef { name, .. } => assert_eq!(name.as_str(), "i"),
-                _ => panic!("Expected comprehension body VarRef"),
-            }
-        }
-        _ => panic!("Expected ArrayComprehension"),
-    }
-}
-
-#[test]
-fn test_flat_expression_contains_der() {
-    let expr_with_der = ast::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs: Arc::new(make_der("x")),
-        rhs: Arc::new(make_var("y")),
-        span: DUMMY,
-    };
-    let flat = expression_from_ast(&expr_with_der);
-    assert!(flat.contains_der());
-
-    let expr_without_der = ast::Expression::Binary {
-        op: rumoca_core::OpBinary::Add,
-        lhs: Arc::new(make_var("x")),
-        rhs: Arc::new(make_int(1)),
-        span: DUMMY,
-    };
-    let flat = expression_from_ast(&expr_without_der);
-    assert!(!flat.contains_der());
-}
-
-#[test]
-fn test_flat_expression_collect_state_variables() {
-    // der(x) + der(y) - z
-    let expr = ast::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs: Arc::new(ast::Expression::Binary {
-            op: rumoca_core::OpBinary::Add,
-            lhs: Arc::new(make_der("x")),
-            rhs: Arc::new(make_der("y")),
-            span: DUMMY,
-        }),
-        rhs: Arc::new(make_var("z")),
-        span: DUMMY,
-    };
-    let flat = expression_from_ast(&expr);
-
-    let mut states = std::collections::HashSet::new();
-    flat.collect_state_variables(&mut states);
-
-    assert_eq!(states.len(), 2);
-    assert!(states.contains(&VarName::new("x")));
-    assert!(states.contains(&VarName::new("y")));
-    assert!(!states.contains(&VarName::new("z")));
-}
-
-#[test]
-fn test_builtin_function_from_name() {
-    assert_eq!(
-        BuiltinFunction::from_name("der"),
-        Some(BuiltinFunction::Der)
-    );
-    assert_eq!(
-        BuiltinFunction::from_name("sin"),
-        Some(BuiltinFunction::Sin)
-    );
-    assert_eq!(
-        BuiltinFunction::from_name("cos"),
-        Some(BuiltinFunction::Cos)
-    );
-    assert_eq!(
-        BuiltinFunction::from_name("pre"),
-        Some(BuiltinFunction::Pre)
-    );
-    assert_eq!(
-        BuiltinFunction::from_name("linspace"),
-        Some(BuiltinFunction::Linspace)
-    );
-    assert_eq!(BuiltinFunction::from_name("unknown"), None);
 }
 
 fn make_parameter_var(name: &str, fixed: Option<bool>, has_binding: bool) -> Variable {
@@ -478,14 +131,14 @@ fn make_parameter_var(name: &str, fixed: Option<bool>, has_binding: bool) -> Var
         fixed,
         binding: has_binding.then_some(Expression::Literal {
             value: Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }),
         ..Variable::empty_with_span(test_span())
     }
 }
 
 #[test]
-fn test_unbound_fixed_parameters_detects_missing_bindings() {
+fn unbound_fixed_parameters_detect_missing_bindings() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("p_missing"),
@@ -508,258 +161,167 @@ fn test_unbound_fixed_parameters_detects_missing_bindings() {
 }
 
 #[test]
-fn test_extract_algorithm_outputs_drops_assignment_subscripts() {
-    let stmts = vec![Statement::Assignment {
-        comp: ComponentReference {
-            local: false,
-            span: rumoca_core::Span::DUMMY,
-            parts: vec![ComponentRefPart {
-                ident: "x".to_string(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
-            }],
-            def_id: None,
-        },
+fn unbound_fixed_parameters_ignore_zero_sized_parameters() {
+    let mut flat = Model::new();
+    let mut empty = make_parameter_var("p_empty", None, false);
+    empty.dims = vec![0, 3];
+    flat.add_variable(VarName::new("p_empty"), empty);
+
+    assert!(!flat.has_unbound_fixed_parameters());
+    assert!(flat.unbound_fixed_parameters().is_empty());
+
+    let mut nonempty = make_parameter_var("p_nonempty", None, false);
+    nonempty.dims = vec![1];
+    flat.add_variable(VarName::new("p_nonempty"), nonempty);
+    assert!(flat.has_unbound_fixed_parameters());
+    assert_eq!(
+        flat.unbound_fixed_parameters(),
+        vec![VarName::new("p_nonempty")]
+    );
+}
+
+#[test]
+fn algorithm_outputs_drop_assignment_subscripts() {
+    let statements = vec![Statement::Assignment {
+        comp: component_reference(
+            "x",
+            DefId::new(1),
+            vec![Subscript::generated_index(1, test_span())],
+        ),
         value: Expression::Literal {
             value: Literal::Real(1.0),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         },
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }];
 
-    let outputs = extract_algorithm_outputs(&stmts);
+    let outputs = extract_algorithm_outputs(&statements);
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_str(), "x");
     assert!(outputs[0].has_structure());
 }
 
+/// The Flat wire carries references, so it inherits their one current shape:
+/// no bare-name spelling, and no field the producer may leave for the decoder
+/// to invent.
 #[test]
-fn test_extract_algorithm_outputs_keeps_function_call_targets() {
-    let stmts = vec![Statement::FunctionCall {
-        comp: ComponentReference {
-            local: false,
-            span: rumoca_core::Span::DUMMY,
-            parts: vec![ComponentRefPart {
-                ident: "f".to_string(),
-                span: rumoca_core::Span::DUMMY,
-                subs: Vec::new(),
-            }],
-            def_id: None,
+fn flat_wire_accepts_only_the_current_reference_shape() {
+    let reference = Reference::with_component_reference(
+        "x",
+        component_reference("x", DefId::new(4), Vec::new()),
+    )
+    .with_instance_id(InstanceId::new(1));
+    let mut flat = Model::new();
+    flat.equations.push(Equation {
+        residual: Expression::VarRef {
+            name: reference.clone(),
+            subscripts: Vec::new(),
+            span: test_span(),
         },
+        span: test_span(),
+        origin: EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+        scalar_count: 1,
+    });
+    let encoded = serde_json::to_value(&flat).expect("serialize flat model");
+
+    let decoded: Model =
+        serde_json::from_value(encoded.clone()).expect("the current Flat wire decodes");
+    match &decoded.equations[0].residual {
+        Expression::VarRef { name, .. } => assert_eq!(name, &reference),
+        other => panic!("expected the equation residual to stay a variable reference: {other:?}"),
+    }
+
+    let mut bare_name = encoded.clone();
+    bare_name["equations"][0]["residual"]["VarRef"]["name"] = serde_json::json!("x");
+    let error = serde_json::from_value::<Model>(bare_name)
+        .expect_err("the deleted bare-name reference shape must not decode inside a Flat payload");
+    assert!(
+        error.to_string().contains("invalid type: string"),
+        "unexpected rejection: {error}"
+    );
+
+    let mut without_instance_id = encoded;
+    assert!(
+        without_instance_id["equations"][0]["residual"]["VarRef"]["name"]
+            .as_object_mut()
+            .expect("a reference serializes as one record")
+            .remove("instance_id")
+            .is_some()
+    );
+    let error = serde_json::from_value::<Model>(without_instance_id)
+        .expect_err("an omitted occurrence identity is a decode error, not a default");
+    assert!(
+        error.to_string().contains("missing field `instance_id`"),
+        "unexpected rejection: {error}"
+    );
+}
+
+/// MLS §12.3 purity reaches Flat as two declaration facts, and neither may be
+/// invented by the decoder: a payload that omits `purity_declared` cannot say
+/// whether an external function wrote `pure`, and defaulting it would silently
+/// turn a pure external body into an impure one (or the reverse) on replay.
+#[test]
+fn flat_wire_requires_the_declared_purity_of_an_external_function() {
+    let mut function = Function::new("f", test_span());
+    function.pure = true;
+    function.purity_declared = true;
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("my_func".to_string()),
+        output_name: None,
         args: Vec::new(),
-        outputs: vec![ComponentReference {
-            local: false,
-            span: rumoca_core::Span::DUMMY,
-            parts: vec![ComponentRefPart {
-                ident: "y".to_string(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
-            }],
-            def_id: None,
-        }],
-        span: rumoca_core::Span::DUMMY,
+        annotations: Vec::new(),
+    });
+    let mut flat = Model::new();
+    flat.add_function(function);
+
+    let encoded = serde_json::to_value(&flat).expect("serialize flat model");
+    let decoded: Model =
+        serde_json::from_value(encoded.clone()).expect("the current Flat wire decodes");
+    assert!(
+        decoded.functions[&VarName::new("f")].body_is_pure(),
+        "a declared `pure` external body stays pure across the wire"
+    );
+
+    let mut without_purity_declared = encoded;
+    assert!(
+        without_purity_declared["functions"]["f"]
+            .as_object_mut()
+            .expect("a function serializes as one record")
+            .remove("purity_declared")
+            .is_some()
+    );
+    let error = serde_json::from_value::<Model>(without_purity_declared)
+        .expect_err("an omitted purity declaration is a decode error, not a default");
+    assert!(
+        error
+            .to_string()
+            .contains("missing field `purity_declared`"),
+        "unexpected rejection: {error}"
+    );
+}
+
+#[test]
+fn algorithm_outputs_keep_function_call_targets() {
+    let statements = vec![Statement::FunctionCall {
+        comp: rumoca_core::Reference::from_component_reference(component_reference(
+            "f",
+            DefId::new(2),
+            Vec::new(),
+        )),
+        args: Vec::new(),
+        outputs: vec![Some(component_reference(
+            "y",
+            DefId::new(3),
+            vec![Subscript::generated_index(2, test_span())],
+        ))],
+        span: test_span(),
     }];
 
-    let outputs = extract_algorithm_outputs(&stmts);
+    let outputs = extract_algorithm_outputs(&statements);
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].as_str(), "y");
     assert!(outputs[0].has_structure());
-}
-
-#[test]
-fn test_component_ref_from_ast_uses_def_map_when_parts_empty() {
-    let def_id = DefId::new(42);
-    let ast_ref = ast::ComponentReference {
-        local: false,
-        parts: Vec::new(),
-        def_id: Some(def_id),
-        span: DUMMY,
-    };
-
-    let mut def_map = indexmap::IndexMap::new();
-    def_map.insert(def_id, "Model.y".to_string());
-
-    let flat = component_reference_from_ast_with_def_map(&ast_ref, Some(&def_map));
-    assert_eq!(flat.to_var_name().as_str(), "Model.y");
-}
-
-#[test]
-fn test_component_ref_from_ast_preserves_non_empty_parts_over_def_map() {
-    let def_id = DefId::new(7);
-    let ast_ref = ast::ComponentReference {
-        local: false,
-        parts: vec![
-            make_component_ref_part("inst"),
-            make_component_ref_part("y"),
-        ],
-        def_id: Some(def_id),
-        span: DUMMY,
-    };
-
-    let mut def_map = indexmap::IndexMap::new();
-    def_map.insert(def_id, "Declaration.y".to_string());
-
-    let flat = component_reference_from_ast_with_def_map(&ast_ref, Some(&def_map));
-    assert_eq!(flat.to_var_name().as_str(), "inst.y");
-}
-
-#[test]
-fn test_flat_expression_component_ref_canonicalizes_enum_literal_with_def_map() {
-    let def_id = DefId::new(314);
-    let expr = ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![make_component_ref_part("L"), make_component_ref_part("'1'")],
-        def_id: Some(def_id),
-        span: DUMMY,
-    });
-
-    let mut def_map = indexmap::IndexMap::new();
-    def_map.insert(
-        def_id,
-        "Modelica.Electrical.Digital.Interfaces.Logic.'1'".to_string(),
-    );
-
-    let flat = expression_from_ast_with_def_map(&expr, Some(&def_map));
-    let Expression::VarRef { name, .. } = flat else {
-        panic!("expected enum literal var ref");
-    };
-    assert_eq!(
-        name.as_str(),
-        "Modelica.Electrical.Digital.Interfaces.Logic.'1'"
-    );
-    assert_eq!(name.target_def_id(), Some(def_id));
-    assert!(name.has_structure());
-}
-
-#[test]
-fn test_flat_expression_component_ref_preserves_non_enum_textual_path() {
-    let def_id = DefId::new(2718);
-    let expr = ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![
-            make_component_ref_part("inst"),
-            make_component_ref_part("y"),
-        ],
-        def_id: Some(def_id),
-        span: DUMMY,
-    });
-
-    let mut def_map = indexmap::IndexMap::new();
-    def_map.insert(def_id, "Declaration.y".to_string());
-
-    let flat = expression_from_ast_with_def_map(&expr, Some(&def_map));
-    let Expression::VarRef { name, .. } = flat else {
-        panic!("expected var ref");
-    };
-    assert_eq!(name.as_str(), "inst.y");
-    assert_eq!(name.target_def_id(), Some(def_id));
-    assert!(name.has_structure());
-}
-
-#[test]
-fn test_flat_expression_component_ref_encodes_final_segment_subscripts_in_name() {
-    let expr = ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![ast::ComponentRefPart {
-            ident: rumoca_core::Token {
-                text: Arc::from("A"),
-                ..Default::default()
-            },
-            subs: Some(vec![ast::Subscript::Expression(make_int(2))]),
-        }],
-        def_id: None,
-        span: DUMMY,
-    });
-
-    let flat = expression_from_ast(&expr);
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = flat
-    else {
-        panic!("expected var ref");
-    };
-    assert_eq!(name.as_str(), "A[2]");
-    assert!(name.has_structure());
-    assert!(subscripts.is_empty());
-}
-
-#[test]
-fn test_flat_expression_component_ref_folds_static_subscript_arithmetic_in_name() {
-    let expr = ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![
-            ast::ComponentRefPart {
-                ident: rumoca_core::Token {
-                    text: Arc::from("split"),
-                    ..Default::default()
-                },
-                subs: Some(vec![ast::Subscript::Expression(make_binary(
-                    rumoca_core::OpBinary::Sub,
-                    make_int(2),
-                    make_int(1),
-                ))]),
-            },
-            ast::ComponentRefPart {
-                ident: rumoca_core::Token {
-                    text: Arc::from("available"),
-                    ..Default::default()
-                },
-                subs: None,
-            },
-        ],
-        def_id: None,
-        span: DUMMY,
-    });
-
-    let flat = expression_from_ast(&expr);
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = flat
-    else {
-        panic!("expected var ref");
-    };
-    assert_eq!(name.as_str(), "split[1].available");
-    assert!(name.has_structure());
-    assert!(subscripts.is_empty());
-}
-
-#[test]
-fn test_flat_expression_component_ref_preserves_nested_subscripts_in_subscript_expressions() {
-    let expr = ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![ast::ComponentRefPart {
-            ident: rumoca_core::Token {
-                text: Arc::from("T"),
-                ..Default::default()
-            },
-            subs: Some(vec![
-                ast::Subscript::Expression(make_subscripted_ref_expr("aux", 1)),
-                ast::Subscript::Expression(make_subscripted_ref_expr("x", 2)),
-            ]),
-        }],
-        def_id: None,
-        span: DUMMY,
-    });
-
-    let flat = expression_from_ast(&expr);
-    let Expression::Index {
-        base, subscripts, ..
-    } = flat
-    else {
-        panic!("expected Index expression");
-    };
-    let Expression::VarRef {
-        name,
-        subscripts: base_subs,
-        ..
-    } = base.as_ref()
-    else {
-        panic!("expected Index base var ref");
-    };
-    assert_eq!(name.as_str(), "T");
-    assert!(name.has_structure());
-    assert!(base_subs.is_empty());
-    assert_eq!(subscripts.len(), 2);
-    assert!(matches!(subscripts[0], Subscript::Expr { .. }));
-    assert!(matches!(subscripts[1], Subscript::Expr { .. }));
 }

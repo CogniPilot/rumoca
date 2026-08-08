@@ -25,13 +25,17 @@
 //! | EI030 | InstantiationDepthLimit | implementation limit |
 //! | EI031 | InstantiationCycle | recursive class/type graph |
 //! | EI032 | InvalidTypeAttribute | §4.4.4 |
+//! | EI033 | MissingResolvedIdentity | compiler phase-order invariant |
 //! | EI098 | MissingSourceContext | compiler provenance invariant |
 //!
 //! Uses miette for rich diagnostic output with error codes and help text.
 
 use miette::Diagnostic;
 use rumoca_core::Span;
-use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
+use rumoca_core::{
+    BoxedResult, Diagnostic as CommonDiagnostic, PhaseError, error_constructor,
+    miette_phase_error_to_diagnostic,
+};
 use thiserror::Error;
 
 /// Type alias for instantiation results with boxed errors.
@@ -51,7 +55,7 @@ pub enum InstantiateError {
     ModelNotFoundWithSpan {
         name: String,
         #[label("referenced here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Type not found with span.
@@ -60,7 +64,7 @@ pub enum InstantiateError {
     TypeNotFound {
         name: String,
         #[label("referenced here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Invalid modification path.
@@ -69,7 +73,7 @@ pub enum InstantiateError {
     InvalidModPath {
         path: String,
         #[label("invalid path")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Type mismatch in modification.
@@ -80,7 +84,7 @@ pub enum InstantiateError {
         expected: String,
         found: String,
         #[label("type mismatch here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Cannot evaluate structural parameter.
@@ -90,7 +94,7 @@ pub enum InstantiateError {
         name: String,
         msg: String,
         #[label("structural parameter")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Array dimension mismatch.
@@ -101,7 +105,7 @@ pub enum InstantiateError {
         expected: String,
         found: String,
         #[label("dimension mismatch")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Conditional component with non-parameter condition.
@@ -110,7 +114,7 @@ pub enum InstantiateError {
     ConditionalError {
         name: String,
         #[label("conditional component")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Redeclaration error.
@@ -120,7 +124,7 @@ pub enum InstantiateError {
         name: String,
         msg: String,
         #[label("redeclaration")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Redeclare non-replaceable element (MLS §7.3).
@@ -132,7 +136,7 @@ pub enum InstantiateError {
     RedeclareNonReplaceable {
         name: String,
         #[label("redeclare of non-replaceable element")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Redeclare violates constrainedby (MLS §7.3.2).
@@ -148,7 +152,7 @@ pub enum InstantiateError {
         new_type: String,
         constraint: String,
         #[label("constraint violation")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Redeclare final element (MLS §7.2.6).
@@ -160,7 +164,7 @@ pub enum InstantiateError {
     RedeclareFinal {
         name: String,
         #[label("redeclare of final element")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Invalid break name in selective extension (MLS §7.4).
@@ -173,7 +177,7 @@ pub enum InstantiateError {
         name: String,
         base_class: String,
         #[label("invalid break name")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Missing inner declaration for outer component (MLS §5.4).
@@ -187,7 +191,7 @@ pub enum InstantiateError {
     MissingInner {
         name: String,
         #[label("outer component")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Inner/outer type mismatch (MLS §5.4).
@@ -203,7 +207,7 @@ pub enum InstantiateError {
         outer_type: String,
         inner_type: String,
         #[label("type mismatch")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Conflicting component definitions from multiple inheritance (MLS §5.6).
@@ -217,7 +221,7 @@ pub enum InstantiateError {
         base1: String,
         base2: String,
         #[label("conflict here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Conflicting modifications in diamond inheritance (MLS §5.6/§7.2).
@@ -235,7 +239,7 @@ pub enum InstantiateError {
         value1: String,
         value2: String,
         #[label("conflicting modification")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Illegal instantiation of a partial class in a non-partial model (MLS §4.7).
@@ -248,7 +252,7 @@ pub enum InstantiateError {
         component_path: String,
         class_name: String,
         #[label("partial class instantiation")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Instantiation exceeded the configured implementation depth limit.
@@ -266,7 +270,7 @@ pub enum InstantiateError {
         depth: usize,
         limit: usize,
         #[label("depth limit reached while instantiating this class")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Recursive class/type instantiation cycle.
@@ -280,7 +284,7 @@ pub enum InstantiateError {
     InstantiationCycle {
         cycle: String,
         #[label("recursive instantiation re-enters this class")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Invalid predefined type attribute value.
@@ -293,7 +297,16 @@ pub enum InstantiateError {
         attribute: String,
         value: String,
         #[label("invalid attribute value")]
-        span: SourceSpan,
+        span: Span,
+    },
+
+    /// Resolve did not attach an exact declaration identity required by Instantiation.
+    #[error("component `{name}` is missing its resolved declaration identity")]
+    #[diagnostic(code(rumoca::instantiate::EI033))]
+    MissingResolvedIdentity {
+        name: String,
+        #[label("unresolved component reached instantiation")]
+        span: Span,
     },
 
     /// Required source provenance was missing from instantiation metadata.
@@ -396,6 +409,10 @@ impl InstantiateError {
         }
     );
     error_constructor!(instantiation_cycle, InstantiationCycle { cycle: String });
+    error_constructor!(
+        missing_resolved_identity,
+        MissingResolvedIdentity { name: String }
+    );
 
     pub fn instantiation_depth_limit(
         path: impl Into<String>,
@@ -407,7 +424,7 @@ impl InstantiateError {
             path: path.into(),
             depth,
             limit,
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -415,6 +432,36 @@ impl InstantiateError {
         Self::MissingSourceContext {
             reason: reason.into(),
         }
+    }
+}
+
+impl PhaseError for InstantiateError {
+    fn to_diagnostic(&self) -> CommonDiagnostic {
+        let source_spans = match self {
+            Self::ModelNotFoundWithSpan { span, .. }
+            | Self::TypeNotFound { span, .. }
+            | Self::InvalidModPath { span, .. }
+            | Self::ModTypeMismatch { span, .. }
+            | Self::StructuralParamError { span, .. }
+            | Self::ArrayDimMismatch { span, .. }
+            | Self::ConditionalError { span, .. }
+            | Self::RedeclareError { span, .. }
+            | Self::RedeclareNonReplaceable { span, .. }
+            | Self::RedeclareConstraintViolation { span, .. }
+            | Self::RedeclareFinal { span, .. }
+            | Self::InvalidBreakName { span, .. }
+            | Self::MissingInner { span, .. }
+            | Self::InnerOuterTypeMismatch { span, .. }
+            | Self::ConflictingInheritance { span, .. }
+            | Self::ConflictingModifications { span, .. }
+            | Self::PartialClassInstantiation { span, .. }
+            | Self::InstantiationDepthLimit { span, .. }
+            | Self::InstantiationCycle { span, .. }
+            | Self::InvalidTypeAttribute { span, .. }
+            | Self::MissingResolvedIdentity { span, .. } => std::slice::from_ref(span),
+            Self::ModelNotFound(_) | Self::MissingSourceContext { .. } => &[],
+        };
+        miette_phase_error_to_diagnostic(self, source_spans)
     }
 }
 
@@ -479,11 +526,20 @@ impl InstantiationOutcome {
     pub fn into_result(self) -> InstantiateResult<rumoca_ir_ast::InstanceOverlay> {
         match self {
             Self::Success(overlay) => Ok(overlay),
-            Self::NeedsInner { missing_inners, .. } => {
+            Self::NeedsInner {
+                missing_inners,
+                missing_spans,
+                ..
+            } => {
                 let names = missing_inners.join(", ");
+                let Some(span) = missing_spans.first().copied() else {
+                    return Err(Box::new(InstantiateError::missing_source_context(
+                        "a missing outer declaration had no source span",
+                    )));
+                };
                 Err(Box::new(InstantiateError::MissingInner {
                     name: names,
-                    span: (0_usize, 0_usize).into(),
+                    span,
                 }))
             }
             Self::Error(e) => Err(e),
@@ -532,5 +588,26 @@ mod tests {
         let help = err.help().map(|h| h.to_string());
         assert!(help.is_some());
         assert!(help.unwrap().contains("MLS §5.6"));
+    }
+
+    #[test]
+    fn phase_error_preserves_source_identity_and_help() {
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_instantiate_phase_error.mo"),
+            7,
+            13,
+        );
+        let error =
+            InstantiateError::redeclare_constraint_violation("Medium", "Bad", "Interface", span);
+        let diagnostic = error.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("EI027"));
+        assert_eq!(diagnostic.labels[0].span, span);
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("MLS §7.3.2"))
+        );
     }
 }

@@ -7,7 +7,8 @@ Examples are organized by workflow:
 - `interactive/`: browser or input-driven simulations with scene assets.
 - `benchmarks/`: reproducible cross-runtime comparisons for selected models.
 - `codegen/`: code generation scenarios and custom target bundles.
-- `codegen/custom_casadi.jinja`: direct raw-template codegen example.
+- `codegen/custom_checked_variables.jinja`: direct raw-template checked-DAE
+  codegen example.
 
 Generated code from `codegen/` scenarios goes under `codegen/gen/`, which is
 ignored by git.

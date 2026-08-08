@@ -6,35 +6,16 @@ use super::*;
 use rumoca_compile::SessionConfig;
 use rumoca_compile::codegen::targets::RenderedTargetFile;
 
+// Keep this dispatch-parity fixture inside the currently checked GALEC
+// projection. Coupled discrete Real equations have their own fail-closed
+// EGT017 coverage in the GALEC phase and CLI suites.
 const FIXED_WING_OUTER_LOOP_SOURCE: &str = r#"
-record CubEstimate
-  Real flightPathAngle;
-  Real speedChange;
-end CubEstimate;
-
-record CubGuidance
-  CubEstimate estimate;
-end CubGuidance;
-
 model FixedWingOuterLoop
   constant Real samplePeriod = 0.02;
-  parameter Real courseDeadband = 0.01;
-  parameter Real courseErrorGain = 2.0;
-  discrete CubEstimate estimator;
-  discrete CubGuidance guidance;
   discrete Real course(start = 0.0);
-  discrete Real courseError(start = 0.0);
-  discrete Real desiredCourseRate(start = 0.0);
 algorithm
   when sample(0.0, samplePeriod) then
-    estimator.flightPathAngle := 0.5;
-    estimator.speedChange := 1.0;
-    guidance.estimate := estimator;
-    courseError := 0.5 - pre(course);
-    if abs(courseError) < courseDeadband then
-      courseError := 0.0;
-    end if;
-    desiredCourseRate := courseErrorGain * courseError;
+    course := pre(course) + 0.5;
   end when;
 end FixedWingOuterLoop;
 "#;
@@ -66,12 +47,21 @@ fn diagnostics_clean_source_has_no_syntax_error() {
 }
 
 #[test]
-fn builtin_targets_include_sympy() {
+fn builtin_targets_exclude_removed_dae_symbolic_schema() {
     let ids: Vec<String> = targets::list_targets().into_iter().map(|t| t.id).collect();
-    assert!(
-        ids.iter().any(|id| id == "sympy"),
-        "expected a sympy target, got {ids:?}"
-    );
+    for removed in [
+        "casadi-mx",
+        "casadi-sx",
+        "jax",
+        "julia-mtk",
+        "onnx",
+        "symforce",
+        "sympy",
+    ] {
+        assert!(!ids.iter().any(|id| id == removed), "{removed}: {ids:?}");
+    }
+    assert!(ids.iter().any(|id| id == "casadi-ode"));
+    assert!(ids.iter().any(|id| id == "jax-ode"));
 }
 
 #[test]
@@ -87,6 +77,27 @@ fn solver_listing_has_known_families() {
             .iter()
             .any(|s| s.id == "bdf" && s.family == "implicit")
     );
+}
+
+/// The listing advertises what a caller can actually select. The SDIRK tableaus
+/// were reachable only through the general/implicit DAE construction SPEC 0038
+/// removed, so listing them would offer a choice no run can honor.
+#[test]
+fn solver_listing_omits_solvers_that_cannot_run() {
+    let ids: Vec<String> = targets::list_solvers()
+        .into_iter()
+        .map(|solver| solver.id)
+        .collect();
+    for removed in ["esdirk34", "trbdf2"] {
+        assert!(!ids.iter().any(|id| id == removed), "{removed}: {ids:?}");
+    }
+    // Every advertised solver resolves through the one authority on names.
+    for id in &ids {
+        assert!(
+            rumoca_core::canonical_solver_name(id).is_ok(),
+            "listed solver '{id}' is not a name this tree runs"
+        );
+    }
 }
 
 fn compile_fixed_wing_outer_loop() -> HighLevelCompilationResult {

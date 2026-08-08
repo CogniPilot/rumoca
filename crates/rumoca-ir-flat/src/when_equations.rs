@@ -1,18 +1,71 @@
 use super::*;
 
-/// MLS §8.3.5: When clause
+/// MLS §8.3.5: one complete `when`/`elsewhen` equation owner.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WhenClause {
+#[serde(deny_unknown_fields)]
+pub struct WhenChain {
+    /// First, mandatory `when` branch.
+    first: WhenBranch,
+    /// Remaining source-priority ordered `elsewhen` branches.
+    else_when: Vec<WhenBranch>,
+    /// Source span of the complete `when`/`elsewhen` equation.
+    span: Span,
+}
+
+impl WhenChain {
+    /// Create one nonempty chain owned by a source `when` equation.
+    pub fn new(first: WhenBranch, span: Span) -> Self {
+        Self {
+            first,
+            else_when: Vec::new(),
+            span,
+        }
+    }
+
+    /// Append the next source-priority `elsewhen` branch.
+    pub fn push_else_when(&mut self, branch: WhenBranch) {
+        self.else_when.push(branch);
+    }
+
+    /// Return the mandatory first `when` branch.
+    pub fn first(&self) -> &WhenBranch {
+        &self.first
+    }
+
+    /// Iterate over every branch in source-priority order.
+    pub fn branches(&self) -> impl Iterator<Item = &WhenBranch> {
+        std::iter::once(&self.first).chain(self.else_when.iter())
+    }
+
+    /// Mutably iterate over every branch in source-priority order.
+    pub fn branches_mut(&mut self) -> impl Iterator<Item = &mut WhenBranch> {
+        std::iter::once(&mut self.first).chain(self.else_when.iter_mut())
+    }
+
+    /// Return the number of source branches.
+    pub fn branch_count(&self) -> usize {
+        1 + self.else_when.len()
+    }
+
+    /// Return the complete source `when`/`elsewhen` owner span.
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+/// One ordered branch inside a [`WhenChain`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhenBranch {
     /// The condition expression.
     pub condition: Expression,
     /// Equations active when the condition triggers.
     pub equations: Vec<WhenEquation>,
-    /// Source span for error reporting.
+    /// Exact source span of this branch's condition.
     pub span: Span,
 }
 
-impl WhenClause {
-    /// Create a new when clause with span information.
+impl WhenBranch {
+    /// Create a new branch with exact condition provenance.
     pub fn new(condition: Expression, span: Span) -> Self {
         Self {
             condition,
@@ -21,18 +74,18 @@ impl WhenClause {
         }
     }
 
-    /// Add an equation to this when clause.
+    /// Add an equation to this branch.
     pub fn add_equation(&mut self, eq: WhenEquation) {
         self.equations.push(eq);
     }
 }
 
-/// An equation inside a when clause (MLS §8.3.5).
+/// An equation inside a when-chain branch (MLS §8.3.5).
 ///
 /// When-clauses can contain:
 /// - Simple assignments: `v = expr`
 /// - Reinit statements: `reinit(x, expr)`
-/// - Assert statements: `assert(condition, message)`
+/// - Assert statements: `assert(condition, message[, level])`
 /// - Terminate statements: `terminate(message)`
 /// - Conditional branches: `if cond then ... elseif ... else ... end if`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +108,7 @@ pub enum WhenEquation {
     Assert {
         condition: Expression,
         message: Expression,
+        level: Option<Box<Expression>>,
         span: Span,
         origin: String,
     },
@@ -71,8 +125,8 @@ pub enum WhenEquation {
     Conditional {
         /// Condition/equation pairs for if/elseif branches.
         branches: Vec<(Expression, Vec<WhenEquation>)>,
-        /// Equations for the else branch (may be empty).
-        else_branch: Vec<WhenEquation>,
+        /// Source-present else branch; `Some([])` is distinct from no else.
+        else_branch: Option<Vec<WhenEquation>>,
         span: Span,
         origin: String,
     },
@@ -125,12 +179,14 @@ impl WhenEquation {
     pub fn assert(
         condition: Expression,
         message: Expression,
+        level: Option<Expression>,
         span: Span,
         origin: impl Into<String>,
     ) -> Self {
         Self::Assert {
             condition,
             message,
+            level: level.map(Box::new),
             span,
             origin: origin.into(),
         }
@@ -148,7 +204,7 @@ impl WhenEquation {
     /// Create a new conditional when equation (if-statement inside when-clause).
     pub fn conditional(
         branches: Vec<(Expression, Vec<WhenEquation>)>,
-        else_branch: Vec<WhenEquation>,
+        else_branch: Option<Vec<WhenEquation>>,
         span: Span,
         origin: impl Into<String>,
     ) -> Self {

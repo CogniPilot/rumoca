@@ -40,20 +40,22 @@
 //! This module is designed to be extensible and serves as the foundation for parsing,
 //! analyzing, and generating code for the custom language or model representation.
 
+mod external_object;
 pub mod instance;
 mod modelica;
 mod nodes;
 pub mod scope;
+mod semantic_identity;
 pub mod state_machines;
 pub mod types;
 pub mod visitor;
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
-    Causality, ClassType, DefId, Location, OpBinary, OpUnary, ScopeId, Span, StateSelect, Token,
-    TypeId, Variability, visit_top_level_path_segments,
+    BUILTIN_TYPES, Causality, ClassType, ComponentPath, DefId, Location, OpBinary, OpUnary,
+    ScopeId, Span, StateSelect, Token, TypeId, Variability, visit_top_level_path_segments,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::{fmt::Debug, fmt::Display};
@@ -61,22 +63,29 @@ use std::{fmt::Debug, fmt::Display};
 pub use visitor::{
     ComponentReferenceContext, ExpressionContext, ExpressionTransformer, FunctionCallContext,
     NameContext, SubscriptContext, TypeNameContext, VisitScope, Visitor, collect_component_refs,
-    contains_component_ref, contains_function_call, walk_class_def_default, walk_component_default,
-    walk_component_reference_default, walk_equation_default, walk_expression_default,
-    walk_extend_default, walk_statement_default,
+    contains_component_ref, contains_function_call, expression_component_path,
+    walk_class_def_default, walk_component_default, walk_component_reference_default,
+    walk_equation_default, walk_expression_default, walk_extend_default, walk_statement_default,
 };
 
 pub type AstIndexMap<K, V> = IndexMap<K, V, rustc_hash::FxBuildHasher>;
 
+pub use external_object::{
+    ExternalObjectLifecycle, ExternalObjectLifecycleError, ExternalObjectLifecycleRole,
+};
 pub use nodes::*;
+pub use semantic_identity::{
+    classes_are_semantically_compatible, components_are_semantically_compatible,
+};
 
 // Re-export key types from submodules
 pub use instance::{
-    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceConnection, InstanceData,
-    InstanceEquation, InstanceId, InstanceOverlay, InstanceStatement, InstancedTree,
-    ModificationEnvironment, ModificationValue, QualifiedName,
+    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceConnection,
+    InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData, InstanceEquation,
+    InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment, ModificationValue,
+    QualifiedName,
 };
-pub use scope::{Import as ScopeImport, Scope, ScopeKind, ScopeTree};
+pub use scope::{Import as ScopeImport, InheritedMember, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};
 pub use types::{
     ArrayType, BuiltinType, ClassKind, ClassType as TypeClassType, EnumerationType, FunctionType,
@@ -218,6 +227,9 @@ pub struct ClassDefIndex<'tree> {
     qualified_names: FxHashMap<DefId, String>,
     parent_classes: FxHashMap<DefId, DefId>,
     local_names: FxHashMap<DefId, &'tree str>,
+    builtin_def_ids: FxHashSet<DefId>,
+    external_object_def_id: Option<DefId>,
+    external_object_owner_def_ids: FxHashSet<DefId>,
 }
 
 impl<'tree> ClassDefIndex<'tree> {
@@ -228,6 +240,17 @@ impl<'tree> ClassDefIndex<'tree> {
             qualified_names: FxHashMap::default(),
             parent_classes: FxHashMap::default(),
             local_names: FxHashMap::default(),
+            builtin_def_ids: BUILTIN_TYPES
+                .iter()
+                .filter_map(|name| {
+                    tree.scope_tree
+                        .predefined_member(&ComponentPath::from_flat_path(name))
+                })
+                .collect(),
+            external_object_def_id: tree
+                .scope_tree
+                .predefined_member(&ComponentPath::from_flat_path("ExternalObject")),
+            external_object_owner_def_ids: FxHashSet::default(),
         };
         for class_def in tree.definitions.classes.values() {
             index.insert_class_tree(class_def, None, None);
@@ -249,6 +272,10 @@ impl<'tree> ClassDefIndex<'tree> {
                     .entry(*def_id)
                     .or_insert_with(|| qualified_name.clone());
             }
+        }
+        if let Some(external_object_def_id) = index.external_object_def_id {
+            index.external_object_owner_def_ids =
+                external_object_descendants(&index.classes, external_object_def_id);
         }
         index
     }
@@ -296,6 +323,26 @@ impl<'tree> ClassDefIndex<'tree> {
         }
         chain.reverse();
         chain
+    }
+
+    /// Prove MLS §6.3.1 transitive non-replaceability for an exact class-name
+    /// exposure path.
+    ///
+    /// Every written/restated path segment and every declaration in that
+    /// segment's owning ancestry must be non-replaceable. A long class proves
+    /// that fact directly; only a short class definition additionally depends
+    /// on the class reference on the right-hand side of its alias. Missing
+    /// identities, unresolved short aliases, and alias cycles cannot mint the
+    /// proof.
+    pub fn proves_transitively_non_replaceable_path(
+        &self,
+        path: impl IntoIterator<Item = DefId>,
+    ) -> bool {
+        let mut proven = FxHashMap::default();
+        let mut active = FxHashSet::default();
+        path.into_iter().all(|def_id| {
+            prove_transitively_non_replaceable_reference(self, def_id, &mut proven, &mut active)
+        })
     }
 
     fn insert_class_tree(
@@ -349,6 +396,219 @@ impl<'tree> ClassDefIndex<'tree> {
     }
 }
 
+fn prove_transitively_non_replaceable_reference(
+    index: &ClassDefIndex<'_>,
+    def_id: DefId,
+    proven: &mut FxHashMap<DefId, bool>,
+    active: &mut FxHashSet<DefId>,
+) -> bool {
+    index
+        .def_ancestry(def_id)
+        .into_iter()
+        .all(|part| prove_transitively_non_replaceable_definition(index, part, proven, active))
+}
+
+fn prove_transitively_non_replaceable_definition(
+    index: &ClassDefIndex<'_>,
+    def_id: DefId,
+    proven: &mut FxHashMap<DefId, bool>,
+    active: &mut FxHashSet<DefId>,
+) -> bool {
+    if let Some(result) = proven.get(&def_id) {
+        return *result;
+    }
+    let Some(class) = index.get(def_id) else {
+        proven.insert(def_id, false);
+        return false;
+    };
+    if class.is_replaceable {
+        proven.insert(def_id, false);
+        return false;
+    }
+
+    // `end_name_token` is the AST's source-form discriminator: long classes
+    // have an `end Name`, while short definitions do not. MLS §6.3.1 makes
+    // ordinary `extends` irrelevant to a long class's own non-replaceability;
+    // recursively proving the base is required only for `class A = P.B` and
+    // the other short alias forms represented by their single extends edge.
+    let result = if class.end_name_token.is_some() || class.extends.is_empty() {
+        true
+    } else if class.extends.len() != 1 || !active.insert(def_id) {
+        false
+    } else {
+        let result = class.extends[0].base_def_id.is_some_and(|base| {
+            prove_transitively_non_replaceable_reference(index, base, proven, active)
+        });
+        active.remove(&def_id);
+        result
+    };
+    proven.insert(def_id, result);
+    result
+}
+
+#[cfg(test)]
+mod transitive_nonreplaceability_tests {
+    use super::*;
+
+    fn token(text: &str) -> Token {
+        Token {
+            text: Arc::from(text),
+            ..Token::default()
+        }
+    }
+
+    fn long_class(name: &str, def_id: DefId) -> ClassDef {
+        let name = token(name);
+        ClassDef {
+            def_id: Some(def_id),
+            name: name.clone(),
+            end_name_token: Some(name),
+            ..ClassDef::default()
+        }
+    }
+
+    fn short_alias(name: &str, def_id: DefId, base_def_id: Option<DefId>) -> ClassDef {
+        ClassDef {
+            def_id: Some(def_id),
+            name: token(name),
+            extends: vec![Extend {
+                base_name: Name::from_string("Base"),
+                base_def_id,
+                ..Extend::default()
+            }],
+            ..ClassDef::default()
+        }
+    }
+
+    fn index(classes: impl IntoIterator<Item = (String, ClassDef)>) -> ClassTree {
+        let mut tree = ClassTree::new();
+        tree.definitions.classes.extend(classes);
+        tree
+    }
+
+    #[test]
+    fn long_class_extending_a_lexical_descendant_is_nonreplaceable() {
+        let modelica_id = DefId::new(91_001);
+        let icons_id = DefId::new(91_002);
+        let package_id = DefId::new(91_003);
+        let package = long_class("Package", package_id);
+        let mut icons = long_class("Icons", icons_id);
+        icons.classes.insert("Package".to_string(), package);
+        let mut modelica = long_class("Modelica", modelica_id);
+        modelica.extends.push(Extend {
+            base_name: Name::from_string("Modelica.Icons.Package"),
+            base_def_id: Some(package_id),
+            ..Extend::default()
+        });
+        modelica.classes.insert("Icons".to_string(), icons);
+        let tree = index([("Modelica".to_string(), modelica)]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(index.proves_transitively_non_replaceable_path([modelica_id]));
+        assert!(index.proves_transitively_non_replaceable_path([package_id]));
+    }
+
+    #[test]
+    fn short_alias_to_a_nonreplaceable_reference_is_nonreplaceable() {
+        let base_id = DefId::new(91_011);
+        let alias_id = DefId::new(91_012);
+        let tree = index([
+            ("Base".to_string(), long_class("Base", base_id)),
+            (
+                "Alias".to_string(),
+                short_alias("Alias", alias_id, Some(base_id)),
+            ),
+        ]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(index.proves_transitively_non_replaceable_path([alias_id]));
+    }
+
+    #[test]
+    fn short_alias_to_a_replaceable_reference_is_not_nonreplaceable() {
+        let base_id = DefId::new(91_021);
+        let alias_id = DefId::new(91_022);
+        let mut base = long_class("Base", base_id);
+        base.is_replaceable = true;
+        let tree = index([
+            ("Base".to_string(), base),
+            (
+                "Alias".to_string(),
+                short_alias("Alias", alias_id, Some(base_id)),
+            ),
+        ]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([alias_id]));
+    }
+
+    #[test]
+    fn unresolved_short_alias_is_not_nonreplaceable() {
+        let alias_id = DefId::new(91_031);
+        let tree = index([("Alias".to_string(), short_alias("Alias", alias_id, None))]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([alias_id]));
+    }
+
+    #[test]
+    fn short_alias_cycle_is_not_nonreplaceable() {
+        let a_id = DefId::new(91_041);
+        let b_id = DefId::new(91_042);
+        let tree = index([
+            ("A".to_string(), short_alias("A", a_id, Some(b_id))),
+            ("B".to_string(), short_alias("B", b_id, Some(a_id))),
+        ]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([a_id]));
+        assert!(!index.proves_transitively_non_replaceable_path([b_id]));
+    }
+
+    #[test]
+    fn replaceable_exposure_parent_is_not_nonreplaceable() {
+        let package_id = DefId::new(91_051);
+        let function_id = DefId::new(91_052);
+        let function = long_class("f", function_id);
+        let mut package = long_class("P", package_id);
+        package.is_replaceable = true;
+        package.classes.insert("f".to_string(), function);
+        let tree = index([("P".to_string(), package)]);
+        let index = ClassDefIndex::from_tree(&tree);
+
+        assert!(!index.proves_transitively_non_replaceable_path([function_id]));
+    }
+}
+
+fn external_object_descendants(
+    classes: &FxHashMap<DefId, &ClassDef>,
+    external_object_def_id: DefId,
+) -> FxHashSet<DefId> {
+    let mut derived_by_base: FxHashMap<DefId, Vec<DefId>> = FxHashMap::default();
+    for (derived_def_id, class) in classes {
+        for base_def_id in class.extends.iter().filter_map(|extend| extend.base_def_id) {
+            derived_by_base
+                .entry(base_def_id)
+                .or_default()
+                .push(*derived_def_id);
+        }
+    }
+
+    let mut descendants = FxHashSet::default();
+    let mut pending = vec![external_object_def_id];
+    while let Some(base_def_id) = pending.pop() {
+        let Some(derived_def_ids) = derived_by_base.get(&base_def_id) else {
+            continue;
+        };
+        for derived_def_id in derived_def_ids {
+            if descendants.insert(*derived_def_id) {
+                pending.push(*derived_def_id);
+            }
+        }
+    }
+    descendants
+}
+
 // =============================================================================
 // Phase Wrappers - Newtype wrappers for type-safe phase transitions
 // =============================================================================
@@ -357,7 +617,7 @@ impl<'tree> ClassDefIndex<'tree> {
 // proceeding. The underlying ClassTree is the same, but the wrappers provide
 // compile-time guarantees about which fields have been populated.
 //
-// Standalone typecheck progression: ParsedTree -> ResolvedTree -> TypedTree.
+// Standalone progression: ParsedTree -> phase-resolve::ResolvedTree -> TypedTree.
 // Production model compilation instantiates after resolve, then annotates the
 // InstanceOverlay with post-instantiation type information before flattening.
 
@@ -396,47 +656,6 @@ impl std::ops::Deref for ParsedTree {
 }
 
 impl std::ops::DerefMut for ParsedTree {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// A ClassTree that has completed name resolution.
-///
-/// At this stage:
-/// - All `def_id` fields are populated
-/// - All `scope_id` fields are populated
-/// - The `scope_tree` is fully built
-/// - `type_id` fields are still `None`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResolvedTree(pub ClassTree);
-
-impl ResolvedTree {
-    /// Create a new ResolvedTree from a ClassTree.
-    /// This should only be called by the resolve phase.
-    pub fn new(tree: ClassTree) -> Self {
-        Self(tree)
-    }
-
-    /// Get a reference to the inner ClassTree.
-    pub fn inner(&self) -> &ClassTree {
-        &self.0
-    }
-
-    /// Consume and return the inner ClassTree.
-    pub fn into_inner(self) -> ClassTree {
-        self.0
-    }
-}
-
-impl std::ops::Deref for ResolvedTree {
-    type Target = ClassTree;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ResolvedTree {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }

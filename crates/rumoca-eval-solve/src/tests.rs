@@ -1,6 +1,5 @@
 use super::*;
 use crate::random_runtime::checked_random_reg_offset;
-use rumoca_eval_dae::{VarEnv, eval_expr};
 use rumoca_ir_solve::RandomGenerator;
 
 fn fixture_span() -> rumoca_core::Span {
@@ -11,100 +10,70 @@ fn fixture_span() -> rumoca_core::Span {
     )
 }
 
-fn lit(value: f64) -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    }
-}
+#[test]
+fn parameter_static_gradient_certificate_rejects_y_and_time_varying_coefficients() {
+    let prepare = |row| {
+        let block = ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()])
+            .expect("gradient-certificate fixture is source-backed");
+        PreparedScalarProgramBlock::new(block).expect("gradient-certificate fixture prepares")
+    };
+    let parameter_affine = prepare(vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::LoadY { dst: 1, index: 0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::LoadTime { dst: 3 },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Add,
+            lhs: 2,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ]);
+    let time_coefficient = prepare(vec![
+        LinearOp::LoadTime { dst: 0 },
+        LinearOp::LoadY { dst: 1, index: 0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ]);
+    let nonlinear = prepare(vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::Binary {
+            dst: 1,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ]);
 
-fn int_lit(value: i64) -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn array(elements: Vec<rumoca_core::Expression>, is_matrix: bool) -> rumoca_core::Expression {
-    rumoca_core::Expression::Array {
-        elements,
-        is_matrix,
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn function_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
-    rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new(name).into(),
-        args,
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn table_expr() -> rumoca_core::Expression {
-    array(
-        vec![
-            array(vec![lit(0.0), lit(10.0)], false),
-            array(vec![lit(2.0), lit(14.0)], false),
-        ],
-        true,
-    )
-}
-
-fn columns_expr() -> rumoca_core::Expression {
-    array(vec![int_lit(2)], false)
+    assert!(parameter_affine.certifies_parameter_static_y_gradient(0));
+    assert!(!time_coefficient.certifies_parameter_static_y_gradient(0));
+    assert!(!nonlinear.certifies_parameter_static_y_gradient(0));
 }
 
 fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
-    let env = VarEnv::<f64>::new();
-    let table_id = eval_expr::<f64>(
-        &function_call(
-            "ExternalCombiTimeTable",
-            vec![
-                lit(0.0),
-                lit(0.0),
-                table_expr(),
-                lit(0.0),
-                columns_expr(),
-                int_lit(1),
-                int_lit(1),
-            ],
-        ),
-        &env,
+    let table_id = 1_u64;
+    (
+        table_id as f64,
+        vec![rumoca_core::ExternalTableData {
+            id: table_id,
+            data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+            columns: vec![2],
+            smoothness: 1,
+            extrapolation: 1,
+        }],
     )
-    .expect("table id should evaluate");
-    let tables =
-        rumoca_eval_dae::eval::external_table_data_for_parameter_values_in(&env, &[table_id]);
-    (table_id, tables)
-}
-
-#[test]
-fn apply_discrete_slot_value_reports_out_of_bounds_target() {
-    let mut y = [0.0];
-    let mut p = [];
-
-    let err = apply_discrete_slot_value(
-        rumoca_ir_solve::ScalarSlot::Y {
-            index: 2,
-            byte_offset: 16,
-        },
-        1.0,
-        &mut y,
-        &mut p,
-        1e-12,
-    )
-    .expect_err("out-of-bounds discrete target must be reported");
-
-    assert_eq!(
-        err,
-        EvalSolveError::MissingInput {
-            vector: "y",
-            index: 2,
-            len: 1,
-            span: None,
-        }
-    );
 }
 
 #[test]
@@ -161,18 +130,6 @@ fn eval_solve_f64_values_rejects_impossible_capacity() {
 }
 
 #[test]
-fn eval_solve_bool_values_rejects_impossible_capacity() {
-    let err = eval_solve_bool_values(usize::MAX, false, "row register flow state")
-        .expect_err("impossible eval-solve bool capacity should fail");
-
-    assert!(matches!(err, EvalSolveError::InvalidRow { .. }));
-    assert!(
-        err.to_string()
-            .contains("row register flow state exceeds host memory limits")
-    );
-}
-
-#[test]
 fn eval_row_compare_equality_is_exact_not_epsilon_based() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },
@@ -214,20 +171,31 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
                 LinearOp::Const { dst: 0, value: 1.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            fixture_span(),
-        ),
+            fixture_span()
+                .require_provenance("evaluator fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("event action condition fixture is computable"),
         actions: vec![rumoca_ir_solve::SolveEventAction {
             kind: SolveEventActionKind::Assert,
             message: rumoca_ir_solve::SolveEventMessage {
                 parts: vec![
                     rumoca_ir_solve::SolveEventMessagePart::Text("value = ".to_string()),
-                    rumoca_ir_solve::SolveEventMessagePart::Number(vec![
-                        LinearOp::LoadY { dst: 0, index: 0 },
-                        LinearOp::StoreOutput { src: 0 },
-                    ]),
+                    rumoca_ir_solve::SolveEventMessagePart::Conversion {
+                        value: vec![
+                            LinearOp::LoadY { dst: 0, index: 0 },
+                            LinearOp::StoreOutput { src: 0 },
+                        ],
+                        source: rumoca_ir_solve::SolveStringConversionSource::Real,
+                        format: rumoca_ir_solve::SolveStringConversionFormat::Options {
+                            minimum_length: None,
+                            left_justified: None,
+                            significant_digits: None,
+                        },
+                    },
                 ],
             },
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
             origin: "assert".to_string(),
         }],
         ..Default::default()
@@ -242,6 +210,93 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
             message: "value = 3.5".to_string()
         }
     );
+}
+
+#[test]
+fn eval_event_action_message_applies_dynamic_string_options() {
+    let events = event_message_fixture(
+        rumoca_ir_solve::SolveStringConversionSource::Real,
+        rumoca_ir_solve::SolveStringConversionFormat::Options {
+            minimum_length: Some(constant_row(8.0)),
+            left_justified: Some(constant_row(0.0)),
+            significant_digits: Some(constant_row(3.0)),
+        },
+    );
+
+    let request = eval_event_action_request(&events, &[3.5], &[], 0.0, RowEvalContext::default())
+        .expect("well-typed dynamic String options should evaluate");
+
+    assert_eq!(
+        request,
+        EventActionRequest::AssertionFailed {
+            message: "value =      3.5".to_string()
+        }
+    );
+}
+
+#[test]
+fn eval_event_action_message_rejects_oversized_width_with_source_span() {
+    let events = event_message_fixture(
+        rumoca_ir_solve::SolveStringConversionSource::Real,
+        rumoca_ir_solve::SolveStringConversionFormat::Options {
+            minimum_length: Some(constant_row((MAX_EVENT_MESSAGE_BYTES + 1) as f64)),
+            left_justified: None,
+            significant_digits: None,
+        },
+    );
+
+    let error = eval_event_action_request(&events, &[3.5], &[], 0.0, RowEvalContext::default())
+        .expect_err("unbounded runtime formatting must fail before allocating");
+
+    assert!(matches!(
+        error,
+        EvalSolveError::InvalidRow {
+            span: Some(span),
+            ..
+        } if span == fixture_span()
+    ));
+    assert!(error.to_string().contains("minimumLength exceeds"));
+}
+
+fn event_message_fixture(
+    source: rumoca_ir_solve::SolveStringConversionSource,
+    format: rumoca_ir_solve::SolveStringConversionFormat,
+) -> rumoca_ir_solve::SolveEventPartition {
+    rumoca_ir_solve::SolveEventPartition {
+        action_conditions: ScalarProgramBlock::with_source_span(
+            vec![constant_row(1.0)],
+            fixture_span()
+                .require_provenance("evaluator fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("event action condition fixture is computable"),
+        actions: vec![rumoca_ir_solve::SolveEventAction {
+            kind: SolveEventActionKind::Assert,
+            message: rumoca_ir_solve::SolveEventMessage {
+                parts: vec![
+                    rumoca_ir_solve::SolveEventMessagePart::Text("value = ".to_string()),
+                    rumoca_ir_solve::SolveEventMessagePart::Conversion {
+                        value: vec![
+                            LinearOp::LoadY { dst: 0, index: 0 },
+                            LinearOp::StoreOutput { src: 0 },
+                        ],
+                        source,
+                        format,
+                    },
+                ],
+            },
+            span: fixture_span(),
+            origin: "assert".to_string(),
+        }],
+        ..Default::default()
+    }
+}
+
+fn constant_row(value: f64) -> Vec<LinearOp> {
+    vec![
+        LinearOp::Const { dst: 0, value },
+        LinearOp::StoreOutput { src: 0 },
+    ]
 }
 
 #[test]
@@ -364,7 +419,7 @@ fn eval_row_hydrates_serialized_external_table_data() {
 }
 
 #[test]
-fn eval_row_guarded_division_matches_jit_semantics() {
+fn eval_row_division_uses_ieee_semantics() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },
         LinearOp::Const { dst: 1, value: 0.0 },
@@ -379,7 +434,45 @@ fn eval_row_guarded_division_matches_jit_semantics() {
 
     let value = eval_row(&row, &[], &[], 0.0, None).expect("0/0 row should evaluate");
 
-    assert_eq!(value, 0.0);
+    assert!(value.is_nan());
+
+    let negative_over_zero = vec![
+        LinearOp::Const {
+            dst: 0,
+            value: -1.0,
+        },
+        LinearOp::Const { dst: 1, value: 0.0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Div,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let value =
+        eval_row(&negative_over_zero, &[], &[], 0.0, None).expect("-1/0 row should evaluate");
+    assert_eq!(value, f64::NEG_INFINITY);
+}
+
+#[test]
+fn eval_row_sign_is_zero_at_zero() {
+    for input in [0.0, -0.0] {
+        let row = vec![
+            LinearOp::Const {
+                dst: 0,
+                value: input,
+            },
+            LinearOp::Unary {
+                dst: 1,
+                op: UnaryOp::Sign,
+                arg: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ];
+        let value = eval_row(&row, &[], &[], 0.0, None).expect("sign row should evaluate");
+        assert_eq!(value, 0.0);
+    }
 }
 
 #[test]
@@ -689,12 +782,13 @@ fn eval_row_missing_source_register_is_error_not_panic_or_zero() {
     let err = eval_row(&row, &[], &[], 0.0, None)
         .expect_err("missing source register should report an evaluation error");
 
-    assert_eq!(
-        err,
-        EvalSolveError::UninitializedRegister {
-            register: 1,
-            span: None,
-        }
+    assert!(
+        matches!(err, EvalSolveError::InvalidRow { span: None, .. }),
+        "expected invalid row error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("Move op 0") && err.to_string().contains("undefined register r1"),
+        "error should identify the first invalid register read: {err}"
     );
 }
 
@@ -713,12 +807,14 @@ fn eval_row_uninitialized_source_register_is_error_not_zero() {
     let err = eval_row(&row, &[], &[], 0.0, None)
         .expect_err("uninitialized register read should report an evaluation error");
 
-    assert_eq!(
-        err,
-        EvalSolveError::UninitializedRegister {
-            register: 1,
-            span: None,
-        }
+    assert!(
+        matches!(err, EvalSolveError::InvalidRow { span: None, .. }),
+        "expected invalid row error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("Binary op 0")
+            && err.to_string().contains("undefined register r1"),
+        "error should identify the first invalid register read: {err}"
     );
 }
 
@@ -738,12 +834,14 @@ fn eval_row_linsolve_missing_matrix_register_is_error_not_panic_or_zero() {
     let err = eval_row(&row, &[], &[], 0.0, None)
         .expect_err("malformed linear solve row should report an evaluation error");
 
-    assert_eq!(
-        err,
-        EvalSolveError::UninitializedRegister {
-            register: 1,
-            span: None,
-        }
+    assert!(
+        matches!(err, EvalSolveError::InvalidRow { span: None, .. }),
+        "expected invalid row error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("LinearSolveComponent op 0")
+            && err.to_string().contains("undefined register r1"),
+        "error should identify the first invalid matrix register: {err}"
     );
 }
 
@@ -785,8 +883,16 @@ fn batched_linsolve_rejects_short_output_instead_of_truncating() {
     let regs = [1.0, 0.0, 0.0, 1.0, 2.0, 3.0];
     let mut out = [0.0];
 
-    let err = crate::linear_solve::solve_all_unchecked(&regs, 0, 4, 2, &mut out)
-        .expect_err("a short output buffer must not truncate a linear solution");
+    let err = crate::linear_solve::solve_all_unchecked(
+        &regs,
+        0,
+        4,
+        2,
+        crate::tensor_policy::LinearSolveKernel::Dense,
+        None,
+        &mut out,
+    )
+    .expect_err("a short output buffer must not truncate a linear solution");
 
     assert_eq!(
         err,
@@ -811,8 +917,11 @@ fn eval_scalar_program_block_short_output_is_error_not_truncation() {
                 LinearOp::StoreOutput { src: 0 },
             ],
         ],
-        fixture_span(),
-    );
+        fixture_span()
+            .require_provenance("evaluator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("evaluation fixture is computable");
     let mut out = [0.0];
 
     let err = eval_scalar_program_block(&block, &[], &[], 0.0, None, &mut out)
@@ -894,8 +1003,11 @@ fn eval_scalar_program_block_prevalidates_inputs_before_mutating_output() {
                 LinearOp::StoreOutput { src: 0 },
             ],
         ],
-        fixture_span(),
-    );
+        fixture_span()
+            .require_provenance("evaluator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("evaluation fixture is computable");
     let mut out = [9.0, 9.0];
 
     let err = eval_scalar_program_block(&block, &[5.0], &[], 0.0, None, &mut out)
@@ -946,8 +1058,11 @@ fn scalar_program_block_input_requirements_merge_all_rows() {
                 LinearOp::StoreOutput { src: 1 },
             ],
         ],
-        fixture_span(),
-    );
+        fixture_span()
+            .require_provenance("evaluator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("input-requirement fixture is computable");
 
     assert_eq!(
         scalar_program_block_input_requirements(&block)
@@ -1001,7 +1116,8 @@ fn required_registers_reject_random_state_range_overflow() {
         "expected invalid row error, got {err:?}"
     );
     assert!(
-        err.to_string().contains("random state range") && err.to_string().contains("overflows"),
+        err.to_string().contains("RandomResult op 0 register range")
+            && err.to_string().contains("overflows"),
         "error should explain random state range overflow: {err}"
     );
 }
@@ -1027,7 +1143,8 @@ fn required_registers_reject_linear_solve_matrix_size_overflow() {
     );
     assert!(
         err.to_string()
-            .contains("linear solve matrix size overflow"),
+            .contains("LinearSolveComponent op 0 register range")
+            && err.to_string().contains("overflows"),
         "error should explain linear solve matrix overflow: {err}"
     );
 }
@@ -1129,14 +1246,15 @@ fn prepared_scalar_block_rejects_ambiguous_single_output_owners() {
 #[test]
 fn prepared_scalar_block_rejects_logical_output_count_overflow() {
     let span = fixture_span();
-    let block = ScalarProgramBlock {
-        programs: vec![vec![
+    let block = ScalarProgramBlock::with_output_indices(
+        vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
         ]],
-        program_spans: vec![span],
-        output_indices: vec![usize::MAX],
-    };
+        vec![span],
+        vec![usize::MAX],
+    )
+    .expect("sparse output fixture satisfies scalar-program contracts");
 
     let error = match PreparedScalarProgramBlock::new(block) {
         Ok(_) => panic!("logical output count overflow should fail preparation"),
@@ -1149,14 +1267,15 @@ fn prepared_scalar_block_rejects_logical_output_count_overflow() {
 #[test]
 fn prepared_scalar_block_rejects_unallocatable_sparse_output_index() {
     let span = fixture_span();
-    let block = ScalarProgramBlock {
-        programs: vec![vec![
+    let block = ScalarProgramBlock::with_output_indices(
+        vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
         ]],
-        program_spans: vec![span],
-        output_indices: vec![usize::MAX / 2],
-    };
+        vec![span],
+        vec![usize::MAX / 2],
+    )
+    .expect("sparse output fixture satisfies scalar-program contracts");
 
     let error = match PreparedScalarProgramBlock::new(block) {
         Ok(_) => panic!("unallocatable sparse output metadata should fail preparation"),
@@ -1167,32 +1286,26 @@ fn prepared_scalar_block_rejects_unallocatable_sparse_output_index() {
 }
 
 #[test]
-fn prepared_scalar_row_eval_attaches_span_to_register_error() {
+fn scalar_program_construction_attaches_span_to_register_error() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_register_row.mo"),
         7,
         15,
     );
-    let block = ScalarProgramBlock::with_program_spans(
+    let err = ScalarProgramBlock::with_program_spans(
         vec![vec![
             LinearOp::Move { dst: 1, src: 0 },
             LinearOp::StoreOutput { src: 1 },
         ]],
         vec![span],
     )
-    .expect("register-error fixture metadata should match row count");
-    let prepared = PreparedScalarProgramBlock::new(block)
-        .expect("row with invalid runtime register state should still prepare");
-
-    let err = prepared
-        .eval_row_with_context(0, &[], &[], 0.0, RowEvalContext::default())
-        .expect_err("uninitialized register should fail at row evaluation");
+    .expect_err("undefined register reads must fail during scalar-program construction");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(
         err.to_string()
-            .contains("uninitialized Solve-IR register r0"),
-        "error should explain the uninitialized register: {err}"
+            .contains("Move op 0 reads undefined register r0"),
+        "error should explain the undefined register: {err}"
     );
 }
 
@@ -1394,6 +1507,21 @@ fn simulation_runtime_state_clear_resets_impure_random_streams() {
 
     assert_eq!(first_id, second_id);
     assert_eq!(first_draw, second_draw);
+}
+
+#[test]
+fn simulation_runtime_snapshot_restores_impure_random_continuation() {
+    let runtime_state = SimulationRuntimeState::new();
+    let id = impure_random_stream_id(17);
+    let draw = |time| impure_random_sample(id, 9, time, &runtime_state.impure_random);
+    let _first = draw(1.0);
+    let saved = runtime_state.snapshot();
+    let expected = draw(2.0);
+    let _later = draw(3.0);
+
+    runtime_state.restore(&saved);
+
+    assert_eq!(draw(2.0).to_bits(), expected.to_bits());
 }
 
 #[test]

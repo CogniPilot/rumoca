@@ -20,7 +20,7 @@ pub fn simulate(
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
     let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(|err| SimError::SolveIr(err.to_string()))?;
+        .map_err(diagnostic_sim_error)?;
     rumoca_solver_rk45::simulate(&solve_model, opts)
 }
 
@@ -37,6 +37,14 @@ pub fn simulate_with_diagnostics(
 
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
+/// Preserve the originating diagnostic code when adapting to the backend's
+/// string-carrying error.
+/// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
+/// for a rejected parameter/start override).
+fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
+    SimError::SolveIr(format!("[{}] {err}", err.diagnostic_code()))
+}
+
 pub struct SimulationSession {
     inner: rumoca_solver_rk45::SimulationSession,
 }
@@ -51,7 +59,8 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
         mut begin_stage: impl FnMut(&'static str),
     ) -> Result<(Self, BuildSimulationTimings), SimError> {
-        let param_overrides = tunable_param_overrides(dae_model, &opts);
+        let param_overrides =
+            tunable_param_overrides(dae_model, &opts).map_err(diagnostic_sim_error)?;
         let (mut solve_model, solve_timings) =
             lower_dae_for_simulation_with_stage_timing_and_param_overrides(
                 dae_model,
@@ -59,11 +68,11 @@ impl SimulationSession {
                 &param_overrides,
                 &mut begin_stage,
             )
-            .map_err(|err| SimError::SolveIr(err.to_string()))?;
+            .map_err(diagnostic_sim_error)?;
         begin_stage("sim_overrides");
         let override_apply_start = Instant::now();
         crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
-            .map_err(|err| SimError::SolveIr(err.to_string()))?;
+            .map_err(diagnostic_sim_error)?;
         let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
         begin_stage("sim_build");
         let backend_build_start = Instant::now();
@@ -72,9 +81,9 @@ impl SimulationSession {
         Ok((
             Self { inner },
             BuildSimulationTimings {
-                ir_solve_structural_dae_seconds: solve_timings.structural_dae_seconds,
-                ir_solve_lower_seconds: solve_timings.solve_ir_seconds,
-                ir_solve_seconds: solve_timings.total_seconds(),
+                ir_solve_structural_dae_seconds: solve_timings.ir_solve_structural_dae_seconds,
+                ir_solve_lower_seconds: solve_timings.ir_solve_lower_seconds,
+                ir_solve_seconds: solve_timings.ir_solve_seconds,
                 override_apply_seconds,
                 backend_build_seconds,
             },
@@ -177,5 +186,51 @@ impl SimulationSessionApi for SimulationSession {
 
     fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
         Self::get(self, name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both backends must tag solve-lowering failures with the SPEC_0008 code
+    /// of the phase that raised them. Without the prefix, `rumoca-worker`'s
+    /// `sim_error_diagnostic_code` can only re-derive the generic `EX002`
+    /// fallback, so `--backend rk45` reported a different (and coarser) code
+    /// than `--backend diffsol` for the identical defect.
+    #[test]
+    fn solve_lowering_failures_carry_their_phase_code() {
+        let err =
+            SimulationDiagnosticError::SolveLowering(rumoca_phase_solve::LowerError::Structural {
+                reason: "empty checked system".to_string(),
+                span: None,
+            });
+        let code = err.diagnostic_code();
+        let SimError::SolveIr(message) = diagnostic_sim_error(err) else {
+            panic!("solve-lowering failures must surface as SimError::SolveIr");
+        };
+        assert_eq!(code, "EL005");
+        assert!(
+            message.starts_with("[EL005] "),
+            "rk45 must tag the lowering code like diffsol does, got {message:?}"
+        );
+    }
+
+    /// `EX003` (rejected parameter/start override) exists only on the
+    /// structured diagnostic; re-deriving a code from the stringified
+    /// `SimError` can never produce it. Tagging is what keeps it reachable.
+    #[test]
+    fn rejected_override_carries_its_runtime_code() {
+        let err = SimulationDiagnosticError::InvalidOverride {
+            message: "unknown parameter 'nope'".to_string(),
+        };
+        assert_eq!(err.diagnostic_code(), "EX003");
+        let SimError::SolveIr(message) = diagnostic_sim_error(err) else {
+            panic!("override rejection must surface as SimError::SolveIr");
+        };
+        assert!(
+            message.starts_with("[EX003] "),
+            "expected the override code to survive into the message, got {message:?}"
+        );
     }
 }

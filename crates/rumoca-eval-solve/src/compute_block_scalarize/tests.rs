@@ -1,8 +1,12 @@
 use super::*;
 use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
 use rumoca_ir_solve::{
-    AffineStencilConstStride, AffineStencilLoadStride, SparsityPattern, TensorNodeMetadata, UnaryOp,
+    AffineStencilConstStride, AffineStencilLoadStride, TensorNodeMetadata, UnaryOp,
 };
+
+fn fixture_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
+}
 
 fn test_tensor_domain(count: usize) -> StructuredIndexDomain {
     StructuredIndexDomain {
@@ -25,10 +29,10 @@ fn one_by_one_matmul_node(lhs: f64, rhs: f64) -> ComputeNode {
         m: 1,
         k: 1,
         n: 1,
-        lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-        rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+        lhs_pattern: crate::fixture_pattern(1, 1, false),
+        rhs_pattern: crate::fixture_pattern(1, 1, false),
         metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-        span: rumoca_core::Span::DUMMY,
+        span: fixture_span(),
     }
 }
 
@@ -71,23 +75,23 @@ fn matmul_scalarizes_to_one_program_without_operand_duplication() {
             m,
             k,
             n,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(2, 2, false),
+            rhs_pattern: crate::fixture_pattern(2, 2, false),
             metadata: TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
     let scalar = to_scalar_program_block(&block).expect("matmul should scalarize");
 
     // One self-contained program, m*n outputs.
-    assert_eq!(scalar.programs.len(), 1);
+    assert_eq!(scalar.programs().len(), 1);
     assert_eq!(scalar.output_count(), m * n);
     assert_eq!(scalar.output_count(), block.len().expect("block length"));
-    assert_eq!(store_output_count(&scalar.programs[0]), m * n);
+    assert_eq!(store_output_count(&scalar.programs()[0]), m * n);
 
     // Operand loads appear exactly ONCE (8 = m*k + k*n), not m*n times.
-    let load_p_count = scalar.programs[0]
+    let load_p_count = scalar.programs()[0]
         .iter()
         .filter(|op| matches!(op, LinearOp::LoadP { .. }))
         .count();
@@ -113,16 +117,16 @@ fn matmul_program_has_unique_monotonic_destination_registers() {
             m,
             k,
             n,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(3, 3, false),
+            rhs_pattern: crate::fixture_pattern(3, 3, false),
             metadata: TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
     let scalar = to_scalar_program_block(&block).expect("matmul should scalarize");
     let mut seen = std::collections::HashSet::new();
-    for op in &scalar.programs[0] {
+    for op in &scalar.programs()[0] {
         if let LinearOp::Binary { dst, .. } = op {
             assert!(seen.insert(*dst), "duplicate destination register {dst}");
         }
@@ -144,19 +148,20 @@ fn linsolve_scalarizes_to_one_program_with_unique_components() {
             rhs_start: (n * n) as Reg,
             n,
             next_reg,
+            matrix_pattern: crate::fixture_pattern(n, n, false),
             metadata: TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
     let scalar = to_scalar_program_block(&block).expect("linsolve should scalarize");
-    assert_eq!(scalar.programs.len(), 1);
+    assert_eq!(scalar.programs().len(), 1);
     assert_eq!(scalar.output_count(), n);
     assert_eq!(scalar.output_count(), block.len().expect("block length"));
 
     let mut seen = std::collections::HashSet::new();
     let mut components = 0;
-    for op in &scalar.programs[0] {
+    for op in &scalar.programs()[0] {
         if let LinearOp::LinearSolveComponent { dst, component, .. } = op {
             assert!(
                 seen.insert(*dst),
@@ -167,6 +172,44 @@ fn linsolve_scalarizes_to_one_program_with_unique_components() {
         }
     }
     assert_eq!(components, n);
+}
+
+#[test]
+fn sparse_scalar_node_does_not_move_output_cursor_backward() {
+    let sparse = |output_index| {
+        ComputeNode::ScalarPrograms(
+            ScalarProgramBlock::with_output_indices(
+                vec![const_store_row(output_index as f64)],
+                vec![fixture_span()],
+                vec![output_index],
+            )
+            .expect("sparse scalar fixture should be valid"),
+        )
+    };
+    let block = ComputeBlock {
+        nodes: vec![
+            sparse(5),
+            sparse(2),
+            ComputeNode::LinSolve {
+                setup_ops: vec![
+                    LinearOp::Const { dst: 0, value: 1.0 },
+                    LinearOp::Const { dst: 1, value: 2.0 },
+                ],
+                matrix_start: 0,
+                rhs_start: 1,
+                n: 1,
+                next_reg: 2,
+                matrix_pattern: crate::fixture_pattern(1, 1, false),
+                metadata: TensorNodeMetadata::default(),
+                span: fixture_span(),
+            },
+        ],
+    };
+
+    let scalar = to_scalar_program_block(&block).expect("mixed sparse block should scalarize");
+
+    assert_eq!(scalar.output_indices(), [5, 2, 6]);
+    assert_eq!(scalar.output_count(), 7);
 }
 
 #[test]
@@ -198,28 +241,84 @@ fn affine_stencil_expands_to_exact_scalar_rows() {
             }],
             const_strides: Vec::new(),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
     let rows = to_scalar_program_block(&block).expect("valid stencil should scalarize");
-    assert_eq!(rows.programs.len(), 3);
-    assert_eq!(rows.output_indices, vec![0, 1, 2]);
+    assert_eq!(rows.programs().len(), 3);
+    assert_eq!(rows.output_indices(), [0, 1, 2]);
     assert!(matches!(
-        rows.programs[0][1],
+        rows.programs()[0][1],
         LinearOp::LoadY { dst: 1, index: 10 }
     ));
     assert!(matches!(
-        rows.programs[1][1],
+        rows.programs()[1][1],
         LinearOp::LoadY { dst: 1, index: 12 }
     ));
     assert!(matches!(
-        rows.programs[2][1],
+        rows.programs()[2][1],
         LinearOp::LoadY { dst: 1, index: 14 }
     ));
     assert!(matches!(
-        rows.programs[2][0],
+        rows.programs()[2][0],
         LinearOp::LoadP { dst: 0, index: 2 }
+    ));
+}
+
+#[test]
+fn affine_scalar_view_combines_duplicate_stride_descriptors() {
+    let domain = test_tensor_domain(3);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("valid dense output map"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: isize::MAX,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: 1,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -isize::MAX,
+                    }],
+                },
+            ],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    let rows = to_scalar_program_block(&block).expect("combined stride should scalarize");
+    assert!(matches!(
+        rows.programs()[0][0],
+        LinearOp::LoadY { index: 0, .. }
+    ));
+    assert!(matches!(
+        rows.programs()[1][0],
+        LinearOp::LoadY { index: 1, .. }
+    ));
+    assert!(matches!(
+        rows.programs()[2][0],
+        LinearOp::LoadY { index: 2, .. }
     ));
 }
 
@@ -246,23 +345,23 @@ fn map_expands_through_same_scalar_view_ordering() {
                 }],
             }],
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
     let rows = to_scalar_program_block(&block).expect("valid map should scalarize");
-    assert_eq!(rows.programs.len(), 3);
-    assert_eq!(rows.output_indices, vec![0, 1, 2]);
+    assert_eq!(rows.programs().len(), 3);
+    assert_eq!(rows.output_indices(), [0, 1, 2]);
     assert!(matches!(
-        rows.programs[0][0],
+        rows.programs()[0][0],
         LinearOp::Const { dst: 0, value: 1.0 }
     ));
     assert!(matches!(
-        rows.programs[1][0],
+        rows.programs()[1][0],
         LinearOp::Const { dst: 0, value: 3.0 }
     ));
     assert!(matches!(
-        rows.programs[2][0],
+        rows.programs()[2][0],
         LinearOp::Const { dst: 0, value: 5.0 }
     ));
 }
@@ -293,12 +392,12 @@ fn map_scalar_view_preserves_sparse_output_indices() {
                 }],
             }],
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
     let rows = to_scalar_program_block(&block).expect("valid sparse map should scalarize");
-    assert_eq!(rows.output_indices, vec![2, 4, 6]);
+    assert_eq!(rows.output_indices(), [2, 4, 6]);
     assert_eq!(rows.output_count(), 7);
 }
 
@@ -335,25 +434,36 @@ fn scalar_program_block_output_overflow_reports_span() {
 }
 
 #[test]
-fn scalar_program_output_indices_use_first_source_span_after_dummy_row() {
-    let span = rumoca_core::Span::from_offsets(
+fn scalar_program_output_indices_use_first_exact_source_span() {
+    let first_span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_scalarized_cursor.mo"),
         19,
         31,
     );
+    let second_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("bad_scalarized_cursor.mo"),
+        32,
+        40,
+    );
     let block = ScalarProgramBlock::with_program_spans(
         vec![
-            vec![LinearOp::StoreOutput { src: 0 }],
-            vec![LinearOp::StoreOutput { src: 1 }],
+            vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 1, value: 0.0 },
+                LinearOp::StoreOutput { src: 1 },
+            ],
         ],
-        vec![rumoca_core::Span::DUMMY, span],
+        vec![first_span, second_span],
     )
     .expect("scalar cursor fixture metadata should match row count");
 
     let err = scalar_program_output_indices(&block, usize::MAX, "scalar cursor")
         .expect_err("overflowing scalar cursor should fail");
 
-    assert_eq!(err.source_span(), Some(span));
+    assert_eq!(err.source_span(), Some(first_span));
     assert!(
         err.to_string().contains("scalar cursor"),
         "error should explain scalar cursor overflow: {err}"
@@ -375,57 +485,6 @@ fn scalarize_vec_with_capacity_reports_span() {
         err.to_string()
             .contains("scalarized scalarize test capacity"),
         "error should explain scalarize allocation overflow: {err}"
-    );
-}
-
-#[test]
-fn scalarize_rejects_scalar_program_span_mismatch_before_visiting_rows() {
-    let span = rumoca_core::Span::from_offsets(
-        rumoca_core::SourceId::from_source_name("bad_scalarized_spans.mo"),
-        3,
-        8,
-    );
-    let block = ComputeBlock {
-        nodes: vec![ComputeNode::ScalarPrograms(ScalarProgramBlock {
-            programs: vec![vec![LinearOp::StoreOutput { src: 0 }]],
-            program_spans: vec![span, span],
-            output_indices: vec![0],
-        })],
-    };
-
-    let err = to_scalar_program_block(&block)
-        .expect_err("scalarization should reject malformed scalar row spans");
-
-    assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.to_string().contains("1 scalar programs but 2 spans"),
-        "error should explain malformed scalar span metadata: {err}"
-    );
-}
-
-#[test]
-fn scalarize_rejects_scalar_program_output_index_mismatch_before_visiting_rows() {
-    let span = rumoca_core::Span::from_offsets(
-        rumoca_core::SourceId::from_source_name("bad_scalarized_outputs.mo"),
-        5,
-        13,
-    );
-    let block = ComputeBlock {
-        nodes: vec![ComputeNode::ScalarPrograms(ScalarProgramBlock {
-            programs: vec![vec![LinearOp::StoreOutput { src: 0 }]],
-            program_spans: vec![span],
-            output_indices: vec![0, 1],
-        })],
-    };
-
-    let err = to_scalar_program_block(&block)
-        .expect_err("scalarization should reject malformed scalar output indices");
-
-    assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.to_string()
-            .contains("1 scalar programs but 2 output indices"),
-        "error should explain malformed scalar output metadata: {err}"
     );
 }
 
@@ -542,7 +601,7 @@ fn scalarize_reports_invalid_native_stride_position_with_span() {
     assert!(
         error
             .to_string()
-            .contains("native map family stride op position 99 out of bounds for 2 ops"),
+            .contains("load stride at op 99 of 2 targets missing op"),
         "error should explain the invalid stride position: {error}"
     );
 }
@@ -567,16 +626,16 @@ fn scalarize_reports_native_stride_wrong_op_kind() {
             }],
             const_strides: Vec::new(),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
     let error = to_scalar_program_block(&block)
         .expect_err("load stride pointing at Const should fail scalarization");
     assert!(
-        error.to_string().contains(
-            "native affine stencil family stride op position 0 points at Const, expected LoadY, LoadP, or LoadSeed"
-        ),
+        error
+            .to_string()
+            .contains("load stride at op 0 of 2 targets Const, expected LoadY, LoadP, or LoadSeed"),
         "error should explain the wrong stride target: {error}"
     );
 }
@@ -604,7 +663,7 @@ fn scalarize_reports_native_stride_invalid_dimension() {
                 }],
             }],
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
         }],
     };
 
@@ -613,7 +672,7 @@ fn scalarize_reports_native_stride_invalid_dimension() {
     assert!(
         error
             .to_string()
-            .contains("native map family stride dimension 1 out of bounds for 1 dimensions"),
+            .contains("constant stride at op 0 references dimension 1, but domain rank is 1"),
         "error should explain the invalid stride dimension: {error}"
     );
 }
@@ -648,13 +707,13 @@ fn scalarize_reports_invalid_stride_metadata_for_empty_domain() {
     };
 
     let error = to_scalar_program_block(&block)
-        .expect_err("empty native domain should fail shape-contract validation");
+        .expect_err("malformed stride metadata must fail even for an empty domain");
     assert_eq!(error.source_span(), Some(span));
     assert!(
         error
             .to_string()
-            .contains("scalarize compute block node 0 has zero Map tensor dimension"),
-        "error should explain invalid empty domains before zero-row expansion: {error}"
+            .contains("load stride at op 99 of 2 targets missing op"),
+        "error should explain the malformed stride metadata: {error}"
     );
 }
 
@@ -677,8 +736,8 @@ fn scalarize_matmul_rejects_temp_register_overflow_with_span() {
             m: 1,
             k: 1,
             n: 1,
-            lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-            rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, false),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
             span,
         }],
@@ -712,8 +771,8 @@ fn scalarize_matmul_rejects_source_register_range_overflow_with_span() {
             m: 1,
             k: 2,
             n: 1,
-            lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
-            rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 2, false),
+            rhs_pattern: crate::fixture_pattern(2, 1, false),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
             span,
         }],
@@ -741,16 +800,20 @@ fn local_scalar_node_is_placed_after_prior_tensor_output() {
     let block = ComputeBlock {
         nodes: vec![
             one_by_one_matmul_node(2.0, 3.0),
-            ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-                vec![const_store_row(7.0)],
-                span,
-            )),
+            ComputeNode::ScalarPrograms(
+                ScalarProgramBlock::with_source_span(
+                    vec![const_store_row(7.0)],
+                    span.require_provenance("scalarization fixture")
+                        .expect("fixture span is source-backed"),
+                )
+                .expect("scalarization fixture is computable"),
+            ),
             one_by_one_matmul_node(5.0, 11.0),
         ],
     };
 
     let rows = to_scalar_program_block(&block).expect("valid mixed block should scalarize");
-    assert_eq!(rows.output_indices, vec![0, 1, 2]);
+    assert_eq!(rows.output_indices(), [0, 1, 2]);
     assert_eq!(rows.output_count(), 3);
 }
 
@@ -777,6 +840,6 @@ fn explicit_scalar_node_advances_following_tensor_output_cursor() {
     };
 
     let rows = to_scalar_program_block(&block).expect("valid mixed block should scalarize");
-    assert_eq!(rows.output_indices, vec![0, 3, 4]);
+    assert_eq!(rows.output_indices(), [0, 3, 4]);
     assert_eq!(rows.output_count(), 5);
 }

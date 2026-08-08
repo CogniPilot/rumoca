@@ -9,8 +9,6 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use rumoca_eval_flat::phase_constant::looks_like_enum_literal_path;
-
 /// Canonicalize enum literal references in the final flat model.
 pub(crate) fn canonicalize_flat_enum_literals(
     flat: &mut flat::Model,
@@ -38,10 +36,22 @@ pub(crate) fn canonicalize_flat_enum_literals(
     for eq in &mut flat.initial_equations {
         canonicalize_expr(&mut eq.residual, &enum_literals, &variable_names);
     }
+    canonicalize_structured_templates(
+        &mut flat.structured_equations,
+        &enum_literals,
+        &variable_names,
+    );
+    canonicalize_structured_templates(
+        &mut flat.initial_structured_equations,
+        &enum_literals,
+        &variable_names,
+    );
 
-    for when_clause in &mut flat.when_clauses {
-        canonicalize_expr(&mut when_clause.condition, &enum_literals, &variable_names);
-        canonicalize_when_equations(&mut when_clause.equations, &enum_literals, &variable_names);
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            canonicalize_expr(&mut branch.condition, &enum_literals, &variable_names);
+            canonicalize_when_equations(&mut branch.equations, &enum_literals, &variable_names);
+        }
     }
 
     for algorithm in &mut flat.algorithms {
@@ -52,25 +62,32 @@ pub(crate) fn canonicalize_flat_enum_literals(
     }
 }
 
-#[derive(Debug, Clone)]
-struct EnumLiteralSuffixMatch {
-    value: String,
-    segments: usize,
-    ambiguous: bool,
+fn canonicalize_structured_templates(
+    families: &mut [flat::StructuredEquationFamily],
+    enum_literals: &EnumLiteralIndex,
+    variable_names: &FxHashSet<VarName>,
+) {
+    for family in families {
+        let Some(template) = family.template.as_mut() else {
+            continue;
+        };
+        for body in &mut template.body {
+            canonicalize_expr(body, enum_literals, variable_names);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 struct EnumLiteralIndex {
-    by_suffix: FxHashMap<ComponentPath, EnumLiteralSuffixMatch>,
+    by_identity: FxHashMap<(rumoca_core::DefId, String), String>,
 }
 
 impl EnumLiteralIndex {
     fn new(tree: &ast::ClassTree, known_enum_values: &FxHashMap<String, String>) -> Self {
         let mut index = Self::default();
         for value in known_enum_values.values() {
-            index.record_value(value);
+            index.record_resolved_value(tree, value);
         }
-
         for (def_id, qualified_name) in &tree.def_map {
             let Some(class_def) = tree.get_class_by_def_id(*def_id) else {
                 continue;
@@ -80,7 +97,11 @@ impl EnumLiteralIndex {
             }
             for literal in &class_def.enum_literals {
                 let literal_name = literal.ident.text.as_ref();
-                index.record_value(&format!("{qualified_name}.{literal_name}"));
+                index.record_identity(
+                    *def_id,
+                    literal_name,
+                    format!("{qualified_name}.{literal_name}"),
+                );
             }
         }
 
@@ -88,67 +109,69 @@ impl EnumLiteralIndex {
     }
 
     fn is_empty(&self) -> bool {
-        self.by_suffix.is_empty()
+        self.by_identity.is_empty()
     }
 
-    fn record_value(&mut self, value: &str) {
+    fn record_resolved_value(&mut self, tree: &ast::ClassTree, value: &str) {
         let path = ComponentPath::from_flat_path(value);
-        let segments = path.len();
-        if segments < 2 {
+        let Some(literal_name) = path.parts().last() else {
+            return;
+        };
+        let Some(type_path) = path.prefix(path.len().saturating_sub(1)) else {
+            return;
+        };
+        let Some(def_id) = tree.name_map.get(type_path.as_str()).copied().or_else(|| {
+            tree.def_map
+                .iter()
+                .find_map(|(def_id, name)| (name == type_path.as_str()).then_some(*def_id))
+        }) else {
+            return;
+        };
+        let Some(class_def) = tree.get_class_by_def_id(def_id) else {
+            return;
+        };
+        if !class_def
+            .enum_literals
+            .iter()
+            .any(|literal| literal.ident.text.as_ref() == literal_name)
+        {
             return;
         }
-
-        for start in 0..segments.saturating_sub(1) {
-            let Some(suffix) = path.suffix_from(start) else {
-                continue;
-            };
-            self.record_suffix(suffix, value, segments);
-        }
+        self.record_identity(def_id, literal_name, value.to_string());
     }
 
-    fn record_suffix(&mut self, suffix: ComponentPath, value: &str, segments: usize) {
-        match self.by_suffix.entry(suffix) {
+    /// A colliding key names the same literal of the same enum class (the
+    /// `DefId` pins the exact declaration), so entries can differ only in
+    /// rendered spelling — e.g. the declaration path versus a use-site path
+    /// from `known_enum_values`. Preferring the longest spelling
+    /// deterministically selects the most qualified display form; it cannot
+    /// change which literal is meant.
+    fn record_identity(&mut self, def_id: rumoca_core::DefId, literal: &str, value: String) {
+        let key = (def_id, literal.to_string());
+        match self.by_identity.entry(key) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(EnumLiteralSuffixMatch {
-                    value: value.to_string(),
-                    segments,
-                    ambiguous: false,
-                });
+                entry.insert(value);
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let current = entry.get_mut();
-                if segments > current.segments {
-                    *current = EnumLiteralSuffixMatch {
-                        value: value.to_string(),
-                        segments,
-                        ambiguous: false,
-                    };
-                } else if segments == current.segments && current.value != value {
-                    current.ambiguous = true;
+                let current_rank = (
+                    ComponentPath::from_flat_path(current).len(),
+                    current.as_str(),
+                );
+                let candidate_rank = (ComponentPath::from_flat_path(&value).len(), value.as_str());
+                if candidate_rank > current_rank {
+                    *current = value;
                 }
             }
         }
     }
 
     fn canonicalize<'index>(&'index self, literal: &Reference) -> Option<&'index str> {
-        let path = reference_component_path(literal)?;
-        if path.len() < 2 {
-            return None;
-        }
-
-        for start in 0..path.len().saturating_sub(1) {
-            let Some(suffix) = path.suffix_from(start) else {
-                continue;
-            };
-            let Some(candidate) = self.by_suffix.get(&suffix) else {
-                continue;
-            };
-            if !candidate.ambiguous {
-                return Some(candidate.value.as_str());
-            }
-        }
-
-        None
+        let reference = literal.component_ref()?;
+        let literal_name = reference.parts().last()?.ident.clone();
+        self.by_identity
+            .get(&(reference.target_def_id(), literal_name))
+            .map(String::as_str)
     }
 }
 
@@ -195,6 +218,10 @@ fn canonicalize_expr(
             for arg in args {
                 canonicalize_expr(arg, enum_literals, variable_names);
             }
+        }
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            canonicalize_expr(value, enum_literals, variable_names);
+            canonicalize_string_conversion_format(format, enum_literals, variable_names);
         }
         rumoca_core::Expression::If {
             branches,
@@ -254,6 +281,30 @@ fn canonicalize_expr(
     }
 }
 
+fn canonicalize_string_conversion_format(
+    format: &mut rumoca_core::StringConversionFormat,
+    enum_literals: &EnumLiteralIndex,
+    variable_names: &FxHashSet<VarName>,
+) {
+    match format {
+        rumoca_core::StringConversionFormat::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => {
+            for operand in [minimum_length, left_justified, significant_digits]
+                .into_iter()
+                .flatten()
+            {
+                canonicalize_expr(operand, enum_literals, variable_names);
+            }
+        }
+        rumoca_core::StringConversionFormat::Format { value } => {
+            canonicalize_expr(value, enum_literals, variable_names);
+        }
+    }
+}
+
 fn canonicalize_var_ref_if_enum_literal(
     name: &mut rumoca_core::Reference,
     scalar_ref: bool,
@@ -265,38 +316,15 @@ fn canonicalize_var_ref_if_enum_literal(
     }
 
     let raw = name.as_str();
-    if variable_names.contains(name.var_name()) || !looks_like_enum_literal_reference(name) {
+    if variable_names.contains(name.var_name()) || name.component_ref().is_none() {
         return;
     }
 
     if let Some(canonical) = enum_literals.canonicalize(name)
         && canonical != raw
     {
-        *name = rumoca_core::Reference::new(canonical.to_string());
+        *name = name.with_var_name(VarName::new(canonical));
     }
-}
-
-fn looks_like_enum_literal_reference(reference: &Reference) -> bool {
-    let Some(component_ref) = reference.component_ref() else {
-        return looks_like_enum_literal_path(reference.as_str());
-    };
-    if component_ref.parts.len() < 2 || component_ref.parts.iter().any(|part| !part.subs.is_empty())
-    {
-        return false;
-    }
-    component_ref.parts[..component_ref.parts.len() - 1]
-        .iter()
-        .any(|part| part.ident.chars().next().is_some_and(char::is_uppercase))
-}
-
-fn reference_component_path(reference: &Reference) -> Option<ComponentPath> {
-    if let Some(component_ref) = reference.component_ref() {
-        if component_ref.parts.iter().any(|part| !part.subs.is_empty()) {
-            return None;
-        }
-        return Some(ComponentPath::from_component_reference(component_ref));
-    }
-    Some(ComponentPath::from_flat_path(reference.as_str()))
 }
 
 fn canonicalize_when_equations(
@@ -310,10 +338,16 @@ fn canonicalize_when_equations(
                 canonicalize_expr(value, enum_literals, variable_names);
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 canonicalize_expr(condition, enum_literals, variable_names);
                 canonicalize_expr(message, enum_literals, variable_names);
+                if let Some(level) = level {
+                    canonicalize_expr(level, enum_literals, variable_names);
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 canonicalize_expr(message, enum_literals, variable_names);
@@ -327,7 +361,9 @@ fn canonicalize_when_equations(
                     canonicalize_expr(condition, enum_literals, variable_names);
                     canonicalize_when_equations(branch_equations, enum_literals, variable_names);
                 }
-                canonicalize_when_equations(else_branch, enum_literals, variable_names);
+                if let Some(else_branch) = else_branch {
+                    canonicalize_when_equations(else_branch, enum_literals, variable_names);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 canonicalize_expr(function, enum_literals, variable_names);
@@ -378,45 +414,125 @@ mod tests {
         )
     }
 
-    fn var_ref(name: &str) -> rumoca_core::Expression {
+    fn resolved_reference(
+        parts: &[&str],
+        def_id: rumoca_core::DefId,
+        span: Span,
+    ) -> rumoca_core::ComponentReference {
+        rumoca_core::ComponentReference::construct(
+            false,
+            span,
+            parts
+                .iter()
+                .map(|part| rumoca_core::ComponentRefPart {
+                    ident: (*part).to_string(),
+                    span,
+                    subs: Vec::new(),
+                    def_id,
+                })
+                .collect(),
+        )
+        .expect("test reference is nonempty and resolved")
+    }
+
+    fn var_ref(
+        display: &str,
+        parts: &[&str],
+        def_id: rumoca_core::DefId,
+    ) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(name),
+            name: rumoca_core::Reference::with_component_reference(
+                display,
+                resolved_reference(parts, def_id, test_span()),
+            ),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
-    fn component_ref(name: &str) -> rumoca_core::ComponentReference {
-        rumoca_core::ComponentReference {
-            local: false,
-            span: rumoca_core::Span::DUMMY,
-            parts: vec![rumoca_core::ComponentRefPart {
-                ident: name.to_string(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![],
-            }],
-            def_id: None,
+    /// Build a class tree holding one enum type with one literal.
+    ///
+    /// The enum's identity is given structurally: the optionally enclosing
+    /// package and the enum class name. The canonical dotted spelling is
+    /// derived from those parts, never parsed back out of display text.
+    fn enum_tree(
+        def_id: rumoca_core::DefId,
+        enclosing_package: Option<&str>,
+        class_name: &str,
+        literal: &str,
+    ) -> ast::ClassTree {
+        let mut tree = ast::ClassTree::new();
+        let canonical_type = match enclosing_package {
+            Some(package_name) => format!("{package_name}.{class_name}"),
+            None => class_name.to_string(),
+        };
+        let mut enum_class = ast::ClassDef {
+            name: rumoca_core::Token {
+                text: class_name.into(),
+                ..Default::default()
+            },
+            class_type: rumoca_core::ClassType::Type,
+            def_id: Some(def_id),
+            ..Default::default()
+        };
+        enum_class.enum_literals.push(ast::EnumLiteral {
+            ident: rumoca_core::Token {
+                text: literal.into(),
+                ..Default::default()
+            },
+            description: Vec::new(),
+        });
+        if let Some(package_name) = enclosing_package {
+            let package_def_id = rumoca_core::DefId::new(def_id.index() + 1_000);
+            let mut package = ast::ClassDef {
+                name: rumoca_core::Token {
+                    text: package_name.into(),
+                    ..Default::default()
+                },
+                class_type: rumoca_core::ClassType::Package,
+                def_id: Some(package_def_id),
+                ..Default::default()
+            };
+            package.classes.insert(class_name.to_string(), enum_class);
+            tree.definitions
+                .classes
+                .insert(package_name.to_string(), package);
+            tree.def_map
+                .insert(package_def_id, package_name.to_string());
+            tree.name_map
+                .insert(package_name.to_string(), package_def_id);
+        } else {
+            tree.definitions
+                .classes
+                .insert(class_name.to_string(), enum_class);
         }
+        tree.def_map.insert(def_id, canonical_type.clone());
+        tree.name_map.insert(canonical_type, def_id);
+        tree.name_map.insert(class_name.to_string(), def_id);
+        tree
     }
 
     #[test]
     fn rewrites_short_enum_literal_to_most_qualified_candidate() {
+        let enum_def_id = rumoca_core::DefId::new(41);
+        let variable_def_id = rumoca_core::DefId::new(42);
+        let tree = enum_tree(enum_def_id, Some("TypesPkg"), "Init", "NoInit");
         let mut flat = flat::Model::new();
         flat.variables.insert(
             rumoca_core::VarName::new("y"),
             flat::Variable {
-                binding: Some(var_ref("Init.NoInit")),
+                binding: Some(var_ref("Init.NoInit", &["Init", "NoInit"], enum_def_id)),
                 ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.equations.push(rumoca_ir_flat::Equation::new(
             rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Eq,
-                lhs: Box::new(var_ref("y")),
-                rhs: Box::new(var_ref("Init.NoInit")),
-                span: rumoca_core::Span::DUMMY,
+                lhs: Box::new(var_ref("y", &["y"], variable_def_id)),
+                rhs: Box::new(var_ref("Init.NoInit", &["Init", "NoInit"], enum_def_id)),
+                span: test_span(),
             },
-            Span::DUMMY,
+            test_span(),
             rumoca_ir_flat::EquationOrigin::Binding {
                 variable: "y".to_string(),
             },
@@ -427,7 +543,7 @@ mod tests {
         // Also include short form to ensure canonicalization prefers the most-qualified path.
         known_enums.insert("short".to_string(), "Init.NoInit".to_string());
 
-        canonicalize_flat_enum_literals(&mut flat, &ast::ClassTree::new(), &known_enums);
+        canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
 
         let binding = flat
             .variables
@@ -449,21 +565,67 @@ mod tests {
     }
 
     #[test]
+    fn canonical_spelling_preserves_resolved_enum_identity_and_source_occurrence() {
+        let source = "model M\n  L a(start=L.U);\nend M;\n";
+        let source_id = rumoca_core::SourceId::from_source_name("enum_identity.mo");
+        let start = source.find("L.U").expect("fixture contains enum literal");
+        let occurrence = Span::from_offsets(source_id, start, start + "L.U".len());
+        let enum_type = rumoca_core::DefId::new(42);
+        let mut tree = enum_tree(enum_type, None, "L", "U");
+        tree.name_map.insert("P.L".to_string(), enum_type);
+        let resolved_reference = resolved_reference(&["L", "U"], enum_type, occurrence);
+        let mut flat = flat::Model::new();
+        flat.variables.insert(
+            rumoca_core::VarName::new("a"),
+            flat::Variable {
+                start: Some(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::with_component_reference(
+                        "L.U",
+                        resolved_reference.clone(),
+                    ),
+                    subscripts: vec![],
+                    span: occurrence,
+                }),
+                ..flat::Variable::empty_with_span(occurrence)
+            },
+        );
+        let mut known_enums = FxHashMap::default();
+        known_enums.insert("a".to_string(), "P.L.U".to_string());
+
+        canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
+
+        let rumoca_core::Expression::VarRef { name, span, .. } = flat
+            .variables
+            .get(&rumoca_core::VarName::new("a"))
+            .and_then(|variable| variable.start.as_ref())
+            .expect("start expression is retained")
+        else {
+            panic!("start expression remains an enum literal reference");
+        };
+        assert_eq!(name.as_str(), "P.L.U");
+        assert_eq!(name.component_ref(), Some(&resolved_reference));
+        assert_eq!(name.target_def_id(), Some(enum_type));
+        assert_eq!(*span, occurrence);
+        assert_eq!(&source[span.start.0..span.end.0], "L.U");
+    }
+
+    #[test]
     fn does_not_rewrite_regular_variable_references() {
+        let variable_def_id = rumoca_core::DefId::new(51);
         let mut flat = flat::Model::new();
         flat.variables.insert(
             rumoca_core::VarName::new("Plant.Init.NoInit"),
             flat::Variable {
                 binding: Some(rumoca_core::Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 ..flat::Variable::empty_with_span(test_span())
             },
         );
         flat.equations.push(rumoca_ir_flat::Equation::new(
-            var_ref("Plant.Init.NoInit"),
-            Span::DUMMY,
+            var_ref("Plant.Init.NoInit", &["Plant.Init.NoInit"], variable_def_id),
+            test_span(),
             rumoca_ir_flat::EquationOrigin::Binding {
                 variable: "x".to_string(),
             },
@@ -485,21 +647,24 @@ mod tests {
 
     #[test]
     fn rewrites_enum_literals_inside_algorithm_statements() {
+        let enum_def_id = rumoca_core::DefId::new(61);
+        let output_def_id = rumoca_core::DefId::new(62);
+        let tree = enum_tree(enum_def_id, Some("TypesPkg"), "Init", "NoInit");
         let mut flat = flat::Model::new();
         flat.algorithms.push(flat::Algorithm::new(
             vec![rumoca_core::Statement::Assignment {
-                comp: component_ref("y"),
-                value: var_ref("Init.NoInit"),
-                span: rumoca_core::Span::DUMMY,
+                comp: resolved_reference(&["y"], output_def_id, test_span()),
+                value: var_ref("Init.NoInit", &["Init", "NoInit"], enum_def_id),
+                span: test_span(),
             }],
-            Span::DUMMY,
+            test_span(),
             "test",
         ));
 
         let mut known_enums = FxHashMap::default();
         known_enums.insert("enumParam".to_string(), "TypesPkg.Init.NoInit".to_string());
 
-        canonicalize_flat_enum_literals(&mut flat, &ast::ClassTree::new(), &known_enums);
+        canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
 
         let rumoca_core::Statement::Assignment { value, .. } = &flat.algorithms[0].statements[0]
         else {
@@ -509,5 +674,70 @@ mod tests {
             panic!("expected enum literal var ref");
         };
         assert_eq!(name.as_str(), "TypesPkg.Init.NoInit");
+    }
+
+    #[test]
+    fn rewrites_structured_template_literal_by_identity_and_preserves_binder() {
+        let enum_def_id = rumoca_core::DefId::new(71);
+        let binder_def_id = rumoca_core::DefId::new(72);
+        let tree = enum_tree(enum_def_id, Some("TypesPkg"), "Logic", "Unset");
+        let mut flat = flat::Model::new();
+        flat.structured_equations
+            .push(flat::StructuredEquationFamily {
+                domain: rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                first_equation_index: 0,
+                equations_per_point: 1,
+                span: test_span(),
+                origin: flat::EquationOrigin::Binding {
+                    variable: "x".to_string(),
+                },
+                regular: None,
+                template: Some(rumoca_core::ComprehensionTemplate {
+                    body: vec![rumoca_core::Expression::Binary {
+                        op: rumoca_core::OpBinary::Eq,
+                        lhs: Box::new(var_ref("i", &["i"], binder_def_id)),
+                        rhs: Box::new(var_ref("Logic.Unset", &["Logic", "Unset"], enum_def_id)),
+                        span: test_span(),
+                    }],
+                    scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                }),
+                interiors_materialized: true,
+            });
+        let mut known_enums = FxHashMap::default();
+        known_enums.insert("enumParam".to_string(), "TypesPkg.Logic.Unset".to_string());
+
+        canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
+
+        let rumoca_core::Expression::Binary { lhs, rhs, .. } = &flat.structured_equations[0]
+            .template
+            .as_ref()
+            .expect("structured owner remains compact")
+            .body[0]
+        else {
+            panic!("fixture remains a binary template body");
+        };
+        let rumoca_core::Expression::VarRef {
+            name: binder_name, ..
+        } = lhs.as_ref()
+        else {
+            panic!("lhs remains the domain binder");
+        };
+        let rumoca_core::Expression::VarRef {
+            name: literal_name, ..
+        } = rhs.as_ref()
+        else {
+            panic!("rhs remains an enum literal reference");
+        };
+        assert_eq!(binder_name.as_str(), "i");
+        assert_eq!(literal_name.as_str(), "TypesPkg.Logic.Unset");
+        assert_eq!(literal_name.target_def_id(), Some(enum_def_id));
     }
 }

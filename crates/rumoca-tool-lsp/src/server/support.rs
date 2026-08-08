@@ -4,11 +4,11 @@ use rumoca_compile::compile::{SessionCacheStatsSnapshot, SourceRootStatusSnapsho
 // Scenario (`rumoca-scenario.toml`) config command JSON shaping is owned by `rumoca-compile`
 // so the LSP server and the browser editor bindings share one implementation.
 pub(super) use rumoca_compile::scenario::{
-    codegen_config_from_json, codegen_config_to_json, parse_fallback_simulation,
-    parse_views_payload, scenario_config_full_to_json, scenario_config_response,
-    scenario_config_text_from_json, simulation_override_from_json, simulation_preset_to_json,
-    simulation_settings_to_json, source_roots_from_json, source_roots_to_json,
-    visualization_views_to_json,
+    codegen_config_from_json, codegen_config_to_json, normalize_solver_opt,
+    parse_fallback_simulation, parse_views_payload, scenario_config_full_to_json,
+    scenario_config_response, scenario_config_text_from_json, simulation_override_from_json,
+    simulation_preset_to_json, simulation_settings_to_json, source_roots_from_json,
+    source_roots_to_json, visualization_views_to_json,
 };
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -466,20 +466,6 @@ pub(super) fn find_open_workspace_document_for_model(
     None
 }
 
-pub(super) fn normalize_solver_opt(value: Option<String>) -> Option<String> {
-    match value
-        .as_deref()
-        .map(str::trim)
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("auto") => Some("auto".to_string()),
-        Some("bdf") => Some("bdf".to_string()),
-        Some("rk-like") => Some("rk-like".to_string()),
-        _ => None,
-    }
-}
-
 pub(super) fn normalize_dt_opt(value: Option<f64>) -> Option<f64> {
     value.filter(|v| v.is_finite() && *v > 0.0)
 }
@@ -606,6 +592,40 @@ pub(super) fn collect_simulation_parsed_docs_snapshot(
         ));
     }
     Ok(parsed_docs)
+}
+
+/// Memoized per-URI document text for one request.
+///
+/// Range-producing surfaces (navigation, workspace symbols) span every file
+/// that mentions a symbol, and each emitted range must be measured in UTF-16
+/// columns of *its own* file. Cloning a document per hit would be quadratic on
+/// a rename that touches one file many times, so resolved texts are cached for
+/// the lifetime of a single request.
+pub(super) struct SnapshotSourceTexts<'a> {
+    snapshot: &'a SessionSnapshot,
+    cache: HashMap<String, Option<Arc<str>>>,
+}
+
+impl<'a> SnapshotSourceTexts<'a> {
+    pub(super) fn new(snapshot: &'a SessionSnapshot) -> Self {
+        Self {
+            snapshot,
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Text of `uri`, where `uri` is a session document key (a filesystem path).
+    pub(super) fn source_for(&mut self, uri: &str) -> Option<Arc<str>> {
+        if let Some(cached) = self.cache.get(uri) {
+            return cached.clone();
+        }
+        let source = self
+            .snapshot
+            .get_document(uri)
+            .map(|document| document.content);
+        self.cache.insert(uri.to_string(), source.clone());
+        source
+    }
 }
 
 pub(super) fn is_scenario_config_uri(uri: &Url) -> bool {

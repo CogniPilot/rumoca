@@ -25,10 +25,443 @@ fn fixture_span() -> Span {
     )
 }
 
+fn fixture_provenance() -> rumoca_core::ProvenanceSpan {
+    fixture_span()
+        .require_provenance("Solve IR fixture")
+        .expect("fixture span is source-backed")
+}
+
+fn event_iteration_contract_fixture() -> SolveProblem {
+    SolveProblem {
+        layout: VarLayout::from_parts(IndexMap::new(), 0, 2),
+        solve_layout: SolveLayout {
+            variable_storage_runs: vec![SolveVariableStorageRun {
+                base: scalar_slot_p(0),
+                scalar_count: 1,
+                role: SolveVariableStorageRole::DiscreteReal,
+                value_kind: SolveVariableValueKind::Real,
+            }],
+            variable_declarations: vec![SolveVariableDeclaration::new(
+                SolveVariableStorageRole::DiscreteReal,
+                SolveVariableValueKind::Real,
+            )],
+            compiled_parameter_len: 2,
+            discrete_real_scalar_names: vec!["z".to_string()],
+            pre_param_bindings: vec![PreParamBinding {
+                dest_p_index: 1,
+                source: PreParamSource::P { index: 0 },
+                clock_schedule: None,
+            }],
+            ..SolveLayout::default()
+        },
+        discrete: DiscreteSolveSystem {
+            event_iteration_plan: EventIterationPlan {
+                runs: vec![EventIterationRun {
+                    variable: 0,
+                    pre_binding_start: 0,
+                    owner: EventIterationOwner::ScalarRows { start_row: 0 },
+                }],
+            },
+            rhs: ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    LinearOp::Const { dst: 0, value: 1.0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ]],
+                fixture_provenance(),
+            )
+            .expect("event-iteration fixture program is computable"),
+            update_targets: vec![scalar_slot_p(0)],
+            row_roles: vec![DiscreteRowRole::Equation],
+            pre_modes: vec![DiscreteEventPreMode::FollowCurrent],
+            observation_refresh: vec![false],
+            integrator_history_effects: vec![IntegratorHistoryEffect::Preserve],
+            clock_owners: vec![None],
+            ..DiscreteSolveSystem::default()
+        },
+        ..SolveProblem::default()
+    }
+}
+
+#[test]
+fn event_iteration_contract_accepts_complete_typed_reverse_bijection() {
+    event_iteration_contract_fixture()
+        .validate_shape_contract()
+        .expect("complete typed producer, plan, and pre binding must validate");
+}
+
+#[test]
+fn event_iteration_contract_rejects_scalar_owner_relabelled_to_hold() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.discrete.event_iteration_plan.runs[0].owner = EventIterationOwner::Hold;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("a live scalar producer cannot be hidden by relabelling its owner Hold");
+    assert!(error.to_string().contains("equation producer"), "{error}");
+}
+
+#[test]
+fn event_iteration_contract_rejects_coordinated_storage_relabel_and_plan_deletion() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::Parameter;
+    problem.discrete.event_iteration_plan.runs.clear();
+    problem.solve_layout.pre_param_bindings.clear();
+    problem.discrete.row_roles[0] = DiscreteRowRole::EventAction;
+
+    let error = problem.validate_shape_contract().expect_err(
+        "an equation producer cannot escape reverse ownership by relabelling its storage role",
+    );
+    assert!(
+        error.to_string().contains("immutable declaration"),
+        "{error}"
+    );
+}
+
+#[test]
+fn variable_declaration_replay_rejects_boolean_to_integer_relabel() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::DiscreteValue;
+    problem.solve_layout.variable_storage_runs[0].value_kind = SolveVariableValueKind::Integer;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("storage metadata cannot relabel the canonical declared value kind");
+    assert!(
+        error.to_string().contains("immutable declaration"),
+        "{error}"
+    );
+}
+
+#[test]
+fn event_iteration_contract_rejects_deleted_run_and_pre_binding() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.discrete.event_iteration_plan.runs.clear();
+    problem.solve_layout.pre_param_bindings.clear();
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("canonical discrete storage requires both its plan run and pre binding");
+    assert!(error.to_string().contains("reverse bijection"), "{error}");
+}
+
+#[test]
+fn event_iteration_contract_rejects_short_clock_column_without_panicking() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.discrete.clock_owners.clear();
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("a truncated clock column must reject through the checked validator");
+    assert!(error.to_string().contains("clock range"), "{error}");
+}
+
+#[test]
+fn variable_storage_contract_rejects_external_input_producer() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::ExternalInput;
+    problem.solve_layout.variable_declarations[0] = SolveVariableDeclaration::new(
+        SolveVariableStorageRole::ExternalInput,
+        SolveVariableValueKind::Real,
+    );
+    problem.discrete.event_iteration_plan.runs.clear();
+    problem.solve_layout.pre_param_bindings.clear();
+    problem.discrete.row_roles[0] = DiscreteRowRole::EventAction;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("an external input is read-only even for an event-action producer");
+    assert!(
+        error
+            .to_string()
+            .contains("canonical non-discrete variable"),
+        "{error}"
+    );
+}
+
+#[test]
+fn variable_storage_contract_rejects_forged_discrete_value_kind() {
+    let mut problem = event_iteration_contract_fixture();
+    problem.solve_layout.variable_storage_runs[0].role = SolveVariableStorageRole::DiscreteValue;
+    problem.solve_layout.variable_storage_runs[0].value_kind = SolveVariableValueKind::String;
+
+    let error = problem
+        .validate_shape_contract()
+        .expect_err("a wire cannot relabel a discrete runtime coordinate as String");
+    assert!(
+        error.to_string().contains("immutable declaration"),
+        "{error}"
+    );
+}
+
+#[test]
+fn tensor_output_count_uses_compact_domain_bounds() {
+    let domain = test_tensor_domain(1_000_000);
+    let output_map = TensorOutputMap::dense_contiguous(7, &domain)
+        .expect("large domain has valid dense strides");
+
+    assert_eq!(
+        output_map.output_count(&domain),
+        Ok(1_000_007),
+        "output count should be derived from compact bounds"
+    );
+}
+
+#[test]
+fn tensor_output_count_combines_correlated_terms_per_dimension() {
+    let domain = test_tensor_domain(4);
+    let output_map = TensorOutputMap {
+        start: 3,
+        strides: vec![
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -2,
+            },
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 3,
+            },
+        ],
+    };
+
+    assert_eq!(output_map.output_count(&domain), Ok(7));
+}
+
+#[test]
+fn tensor_output_indices_combine_terms_before_checked_arithmetic() {
+    let domain = test_tensor_domain(3);
+    let output_map = TensorOutputMap {
+        start: 3,
+        strides: vec![
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: isize::MAX,
+            },
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            },
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -isize::MAX,
+            },
+        ],
+    };
+
+    assert_eq!(output_map.output_indices(&domain), Ok(vec![3, 4, 5]));
+}
+
+#[test]
+fn tensor_shape_contract_validates_large_domain_without_scalarizing_it() {
+    let domain = test_tensor_domain(1_000_000_000);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("large domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    block
+        .validate_shape_contract("large compact tensor")
+        .expect("compact tensor validation must not materialize domain points");
+}
+
+#[test]
+fn tensor_shape_contract_accepts_empty_map_and_affine_stencil_domains() {
+    let domain = test_tensor_domain(0);
+    let output_map = TensorOutputMap::dense_contiguous(17, &domain)
+        .expect("empty domain has valid dense strides");
+    let node = |affine_stencil| {
+        let base_ops = vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ];
+        if affine_stencil {
+            ComputeNode::AffineStencil {
+                domain: domain.clone(),
+                output_map: output_map.clone(),
+                base_ops,
+                load_strides: Vec::new(),
+                const_strides: Vec::new(),
+                metadata: TensorNodeMetadata::default(),
+                span: fixture_span(),
+            }
+        } else {
+            ComputeNode::Map {
+                domain: domain.clone(),
+                output_map: output_map.clone(),
+                base_ops,
+                load_strides: Vec::new(),
+                const_strides: Vec::new(),
+                metadata: TensorNodeMetadata::default(),
+                span: fixture_span(),
+            }
+        }
+    };
+
+    for tensor_node in [node(false), node(true)] {
+        let block = ComputeBlock {
+            nodes: vec![tensor_node],
+        };
+        block
+            .validate_shape_contract("empty compact tensor")
+            .expect("empty Map and AffineStencil domains are valid zero-iteration tensors");
+        assert_eq!(block.len(), Ok(0));
+        assert!(block.is_empty());
+    }
+}
+
+#[test]
+fn tensor_shape_contract_combines_duplicate_load_strides_before_range_validation() {
+    let domain = test_tensor_domain(3);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("three-element domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: isize::MAX,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: 1,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -isize::MAX,
+                    }],
+                },
+            ],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    block
+        .validate_shape_contract("correlated load strides")
+        .expect("the combined load stride is one");
+}
+
+#[test]
+fn tensor_shape_contract_rejects_stride_metadata_at_the_ir_boundary() {
+    let domain = test_tensor_domain(2);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("two-element domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![AffineStencilLoadStride {
+                op_position: 0,
+                terms: vec![AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 1,
+                }],
+            }],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    let error = block
+        .validate_shape_contract("invalid load stride")
+        .expect_err("a load stride on Const must fail in Solve IR");
+    assert!(
+        matches!(
+            error,
+            SolveProblemShapeContractError::AffineStrideOperation {
+                actual: Some("Const"),
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn tensor_shape_contract_rejects_non_finite_combined_constant_stride() {
+    let domain = test_tensor_domain(2);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("two-element domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: vec![
+                AffineStencilConstStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilConstStrideTerm {
+                        dimension: 0,
+                        stride: f64::MAX,
+                    }],
+                },
+                AffineStencilConstStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilConstStrideTerm {
+                        dimension: 0,
+                        stride: f64::MAX,
+                    }],
+                },
+            ],
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    assert!(matches!(
+        block.validate_shape_contract("constant stride overflow"),
+        Err(
+            SolveProblemShapeContractError::NonFiniteAffineConstantStride {
+                op_position: 0,
+                stride_dimension: 0,
+                ..
+            }
+        )
+    ));
+}
+
 #[test]
 fn scalar_program_block_with_source_span_preserves_explicit_fixture_span() {
-    let block = ScalarProgramBlock::with_source_span(vec![vec![]], fixture_span());
-    assert_eq!(block.program_spans, vec![fixture_span()]);
+    let block = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_provenance(),
+    )
+    .expect("scalar fixture is computable");
+    assert_eq!(block.program_spans(), [fixture_span()]);
 }
 
 fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)]) -> VarLayout {
@@ -48,7 +481,11 @@ fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)])
         shapes.insert(name.to_string(), shape.clone());
         p_offset += size;
     }
-    VarLayout::from_parts_with_shapes(bindings, shapes, y_offset, p_offset)
+    let shape_spans = shapes
+        .keys()
+        .map(|name| (name.clone(), fixture_span()))
+        .collect();
+    VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, y_offset, p_offset)
         .expect("representative Solve fixture layout should satisfy shape contract")
 }
 
@@ -100,6 +537,7 @@ fn representative_solve_layout() -> SolveLayout {
         pre_param_bindings: vec![PreParamBinding {
             dest_p_index: 1,
             source: PreParamSource::Y { index: 2 },
+            clock_schedule: None,
         }],
         ..SolveLayout::default()
     }
@@ -121,24 +559,30 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
                         },
                         LinearOp::StoreOutput { src: 2 },
                     ]],
-                    fixture_span(),
-                ),
+                    fixture_provenance(),
+                )
+                .expect("implicit scalar fixture is computable"),
             )],
         },
         implicit_row_targets: vec![Some(scalar_slot_y(1))],
         algebraic_projection_plan: AlgebraicProjectionPlan {
             blocks: vec![AlgebraicProjectionBlock {
-                rows: vec![1],
+                rows: vec![0],
                 y_indices: vec![1],
             }],
         },
-        residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
-            vec![vec![
-                LinearOp::LoadY { dst: 0, index: 1 },
-                LinearOp::StoreOutput { src: 0 },
-            ]],
-            fixture_span(),
-        )),
+        residual: ComputeBlock::from_scalar_program_block(
+            ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    LinearOp::LoadY { dst: 0, index: 1 },
+                    LinearOp::StoreOutput { src: 0 },
+                ]],
+                fixture_provenance(),
+            )
+            .expect("residual scalar fixture is computable"),
+        ),
+        manifold_residual: ComputeBlock::default(),
+        manifold_projection_plan: AlgebraicProjectionPlan::default(),
         derivative_rhs: representative_derivative_rhs(),
     }
 }
@@ -153,8 +597,8 @@ fn representative_derivative_rhs() -> ComputeBlock {
             m: 1,
             k: 1,
             n: 1,
-            lhs_sparsity: SparsityPattern::Diagonal,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, true),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: TensorNodeMetadata::default(),
             span: Span::DUMMY,
         }],
@@ -164,15 +608,19 @@ fn representative_derivative_rhs() -> ComputeBlock {
 fn representative_initialization_system() -> InitializationSolveSystem {
     InitializationSolveSystem {
         row_targets: vec![Some(scalar_slot_y(1))],
-        residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
-            vec![vec![
-                LinearOp::Const { dst: 0, value: 0.0 },
-                LinearOp::StoreOutput { src: 0 },
-            ]],
-            fixture_span(),
-        )),
-        projection_indices: Vec::new(),
-        projection_plan: AlgebraicProjectionPlan::default(),
+        row_roles: vec![InitializationRowRole::Solved],
+        residual: ComputeBlock::from_scalar_program_block(
+            ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    LinearOp::Const { dst: 0, value: 0.0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ]],
+                fixture_provenance(),
+            )
+            .expect("initial scalar fixture is computable"),
+        ),
+        projection_unknowns: Vec::new(),
+        projection_plan: InitializationProjectionPlan::default(),
         update_rhs: ScalarProgramBlock::default(),
         update_targets: Vec::new(),
     }
@@ -180,14 +628,20 @@ fn representative_initialization_system() -> InitializationSolveSystem {
 
 fn representative_discrete_system() -> DiscreteSolveSystem {
     DiscreteSolveSystem {
+        event_iteration_plan: EventIterationPlan::default(),
         runtime_assignment_rhs: ScalarProgramBlock::with_source_span(
             vec![vec![
-                LinearOp::LoadY { dst: 0, index: 2 },
+                LinearOp::LoadP { dst: 0, index: 1 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            fixture_span(),
-        ),
+            fixture_provenance(),
+        )
+        .expect("runtime assignment fixture is computable"),
         runtime_assignment_targets: vec![scalar_slot_p(1)],
+        runtime_assignment_roles: vec![RuntimeAssignmentRole::RelationEvaluating],
+        post_commit_assignment_rhs: ScalarProgramBlock::default(),
+        post_commit_assignment_targets: Vec::new(),
+        post_commit_assignment_runtime_rows: Vec::new(),
         rhs: ScalarProgramBlock::with_source_span(
             vec![vec![
                 LinearOp::LoadY { dst: 0, index: 1 },
@@ -200,12 +654,47 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
                 },
                 LinearOp::StoreOutput { src: 2 },
             ]],
-            fixture_span(),
-        ),
+            fixture_provenance(),
+        )
+        .expect("discrete scalar fixture is computable"),
         update_targets: vec![scalar_slot_y(2)],
+        row_roles: vec![DiscreteRowRole::EventAction],
         pre_modes: vec![DiscreteEventPreMode::Fixed],
         observation_refresh: vec![true],
+        integrator_history_effects: vec![IntegratorHistoryEffect::Restart],
+        clock_owners: vec![None],
+        structured_rhs: ComputeBlock::default(),
+        structured_updates: Vec::new(),
     }
+}
+
+fn structured_discrete_fixture(base: ScalarSlot) -> (ComputeBlock, StructuredDiscreteUpdate) {
+    let domain = test_tensor_domain(2);
+    let node = ComputeNode::Map {
+        output_map: TensorOutputMap::dense_contiguous(0, &domain).unwrap(),
+        domain: domain.clone(),
+        base_ops: vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+        load_strides: Vec::new(),
+        const_strides: Vec::new(),
+        metadata: TensorNodeMetadata::default(),
+        span: fixture_span(),
+    };
+    let update = StructuredDiscreteUpdate {
+        node_index: 0,
+        target: StructuredDiscreteTargetMap {
+            base,
+            map: TensorOutputMap::dense_contiguous(0, &domain).unwrap(),
+        },
+        role: DiscreteRowRole::EventAction,
+        pre_mode: DiscreteEventPreMode::FollowCurrent,
+        observation_refresh: false,
+        integrator_history_effect: IntegratorHistoryEffect::Preserve,
+        clock_owner: None,
+    };
+    (ComputeBlock { nodes: vec![node] }, update)
 }
 
 fn representative_event_partition() -> SolveEventPartition {
@@ -222,10 +711,12 @@ fn representative_event_partition() -> SolveEventPartition {
                 },
                 LinearOp::StoreOutput { src: 2 },
             ]],
-            fixture_span(),
-        ),
-        root_relation_memory_targets: vec![None],
+            fixture_provenance(),
+        )
+        .expect("root scalar fixture is computable"),
+        root_relation_memory_targets: vec![Some(scalar_slot_p(1))],
         root_zero_domains: vec![RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![RootRelationRefreshRole::Frozen],
         scheduled_time_events: vec![0.1],
         ..SolveEventPartition::default()
     }
@@ -233,11 +724,31 @@ fn representative_event_partition() -> SolveEventPartition {
 
 fn representative_clock_partition() -> SolveClockPartition {
     SolveClockPartition {
-        periodic_event_schedules: vec![PeriodicEventSchedule {
-            period_seconds: 0.1,
-            phase_seconds: 0.0,
-        }],
+        periodic_event_schedules: vec![
+            PeriodicEventSchedule::new(rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap())
+                .unwrap(),
+        ],
+        activation_parameter_indices: vec![0],
     }
+}
+
+#[test]
+fn solve_model_resolves_start_relative_schedules_at_instance_boundary() {
+    let lattice = rumoca_core::ClockLattice::from_seconds(0.25, 0.25).unwrap();
+    let schedule = rumoca_core::PeriodicClockSchedule::simulation_start_relative(lattice).unwrap();
+    let mut model = SolveModel::default();
+    model.problem.clocks.periodic_event_schedules =
+        vec![PeriodicEventSchedule::from_schedule(schedule).unwrap()];
+
+    let resolved = model.resolved_periodic_schedules_at(2.0).unwrap();
+    let schedule = &resolved.problem.clocks.periodic_event_schedules[0];
+    assert_eq!(schedule.anchor(), rumoca_core::ClockPhaseAnchor::Absolute);
+    assert_eq!(schedule.phase_seconds(), 2.25);
+    assert_eq!(
+        model.problem.clocks.periodic_event_schedules[0].anchor(),
+        rumoca_core::ClockPhaseAnchor::SimulationStart,
+        "compile-time Solve IR must remain independent of instance startTime"
+    );
 }
 
 fn assert_same_json_shape<T: serde::Serialize>(actual: &T, expected: &T) {
@@ -324,23 +835,6 @@ fn scalar_program_block_rejects_output_index_count_mismatch_with_span() {
 }
 
 #[test]
-fn scalar_program_block_first_source_span_skips_dummy_rows() {
-    let span = Span::from_offsets(SourceId::from_source_name("scalar_source.mo"), 13, 21);
-    let block = ScalarProgramBlock::with_program_spans(
-        vec![
-            vec![LinearOp::StoreOutput { src: 0 }],
-            vec![LinearOp::StoreOutput { src: 1 }],
-        ],
-        vec![Span::DUMMY, span],
-    )
-    .expect("scalar span fixture metadata should match row count");
-
-    assert_eq!(block.program_span(0), None);
-    assert_eq!(block.program_span(1), Some(span));
-    assert_eq!(block.first_source_span(), Some(span));
-}
-
-#[test]
 fn y_slice_returns_none_for_p_slot_variable() {
     let layout = make_layout(&[], &[("p", vec![2])]);
     assert!(
@@ -389,13 +883,16 @@ fn serde_roundtrip_tensor_block_fixture() -> ComputeBlock {
 }
 
 fn serde_roundtrip_scalar_node() -> ComputeNode {
-    ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]],
-        fixture_span(),
-    ))
+    ComputeNode::ScalarPrograms(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_provenance(),
+        )
+        .expect("round-trip scalar fixture is computable"),
+    )
 }
 
 fn serde_roundtrip_matmul_node() -> ComputeNode {
@@ -413,8 +910,8 @@ fn serde_roundtrip_matmul_node() -> ComputeNode {
         m: 1,
         k: 1,
         n: 1,
-        lhs_sparsity: SparsityPattern::Diagonal,
-        rhs_sparsity: SparsityPattern::Dense,
+        lhs_pattern: crate::fixture_pattern(1, 1, true),
+        rhs_pattern: crate::fixture_pattern(1, 1, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -432,6 +929,7 @@ fn serde_roundtrip_linsolve_node() -> ComputeNode {
         rhs_start: 3,
         n: 2,
         next_reg: 4,
+        matrix_pattern: crate::fixture_pattern(2, 2, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -487,7 +985,7 @@ fn assert_tensor_node_tags_survive_json(json: &str) {
         "LinSolve",
         "Map",
         "AffineStencil",
-        "lhs_sparsity",
+        "lhs_pattern",
         "metadata",
     ] {
         assert!(json.contains(tag), "{tag} must appear in JSON: {json}");
@@ -515,20 +1013,25 @@ fn assert_tensor_nodes_survive_roundtrip(back: &ComputeBlock) {
 }
 
 fn assert_roundtrip_matmul_shape(node: &ComputeNode) {
-    assert!(matches!(
-        node,
-        ComputeNode::MatMul {
-            m: 1,
-            k: 1,
-            n: 1,
-            lhs_sparsity: SparsityPattern::Diagonal,
-            metadata: TensorNodeMetadata {
+    let ComputeNode::MatMul {
+        m: 1,
+        k: 1,
+        n: 1,
+        lhs_pattern,
+        metadata:
+            TensorNodeMetadata {
                 element_type: TensorElementType::Real64,
                 layout: TensorLayout::RowMajorDense,
                 scalar_fallback: ScalarFallback::Exact,
             },
-            ..
-        }
+        ..
+    } = node
+    else {
+        panic!("round-tripped node should retain its MatMul shape and metadata");
+    };
+    assert!(matches!(
+        lhs_pattern.view(),
+        StructuralPatternView::Diagonal
     ));
 }
 
@@ -572,11 +1075,164 @@ fn solve_problem_json_has_supported_schema_version() {
 }
 
 #[test]
+fn mass_matrix_wire_format_stays_compact_and_roundtrips_sparse_entries() {
+    let identity = serde_json::to_value(MassMatrix::Identity).expect("serialize identity");
+    assert_eq!(identity, serde_json::json!({ "kind": "identity" }));
+
+    let sparse = MassMatrix::Sparse {
+        entries: vec![
+            MassMatrixEntry {
+                row: 0,
+                column: 0,
+                value: 2.0,
+            },
+            MassMatrixEntry {
+                row: 1,
+                column: 1,
+                value: 3.0,
+            },
+        ],
+    };
+    let json = serde_json::to_string(&sparse).expect("serialize sparse mass matrix");
+    let decoded: MassMatrix = serde_json::from_str(&json).expect("deserialize sparse mass matrix");
+
+    assert_eq!(decoded, sparse);
+}
+
+#[test]
 fn representative_solve_problem_json_roundtrip_preserves_schema_shape() {
     let problem = representative_solve_problem_fixture();
     let json = serde_json::to_string_pretty(&problem).expect("serialize SolveProblem");
     let decoded: SolveProblem = serde_json::from_str(&json).expect("deserialize SolveProblem");
     assert_same_json_shape(&decoded, &problem);
+}
+
+#[test]
+fn solve_problem_json_requires_integrator_history_effects() {
+    let mut value =
+        serde_json::to_value(representative_solve_problem_fixture()).expect("serialize fixture");
+    value["discrete"]
+        .as_object_mut()
+        .expect("discrete system is an object")
+        .remove("integrator_history_effects");
+
+    let error = serde_json::from_value::<SolveProblem>(value)
+        .expect_err("integrator-history evidence must not default on the wire");
+    assert!(
+        error
+            .to_string()
+            .contains("missing field `integrator_history_effects`"),
+        "unexpected omission error: {error}"
+    );
+}
+
+#[test]
+fn solve_problem_json_requires_post_commit_certificates() {
+    let value =
+        serde_json::to_value(representative_solve_problem_fixture()).expect("serialize fixture");
+    for (section, field) in [
+        ("discrete", "runtime_assignment_roles"),
+        ("discrete", "post_commit_assignment_rhs"),
+        ("discrete", "post_commit_assignment_targets"),
+        ("discrete", "post_commit_assignment_runtime_rows"),
+        ("events", "root_relation_refresh_roles"),
+    ] {
+        let mut omitted = value.clone();
+        omitted[section]
+            .as_object_mut()
+            .expect("Solve section is an object")
+            .remove(field);
+        let error = serde_json::from_value::<SolveProblem>(omitted)
+            .expect_err("certificate fields must not default on the wire");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field `{field}`")),
+            "unexpected omission error for {field}: {error}"
+        );
+    }
+}
+
+#[test]
+fn solve_problem_shape_rejects_forged_runtime_assignment_role() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.discrete.runtime_assignment_roles[0] = RuntimeAssignmentRole::RelationFree;
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DiscreteCertificate {
+            context: "discrete.runtime_assignment_roles",
+            row: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn solve_problem_shape_rejects_relation_bearing_post_commit_owner() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.discrete.post_commit_assignment_rhs = problem.discrete.runtime_assignment_rhs.clone();
+    problem.discrete.post_commit_assignment_targets =
+        problem.discrete.runtime_assignment_targets.clone();
+    problem.discrete.post_commit_assignment_runtime_rows = vec![0];
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DiscreteCertificate {
+            context: "discrete.post_commit_assignment_runtime_rows",
+            row: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn solve_problem_shape_rejects_forged_root_refresh_role() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.events.root_relation_refresh_roles[0] = RootRelationRefreshRole::AlgebraicDependent;
+    assert!(matches!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DiscreteCertificate {
+            context: "events.root_relation_refresh_roles",
+            row: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn solve_problem_shape_rejects_misaligned_integrator_history_effects() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.discrete.integrator_history_effects.clear();
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "discrete.integrator_history_effects",
+            expected: 1,
+            actual: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_json_rejects_omitted_layout_collections() {
+    let value =
+        serde_json::to_value(representative_solve_problem_fixture()).expect("serialize fixture");
+    for field in ["shapes", "shape_spans"] {
+        let mut omitted = value.clone();
+        omitted["layout"]
+            .as_object_mut()
+            .expect("fixture layout is an object")
+            .remove(field);
+        let error = serde_json::from_value::<SolveProblem>(omitted)
+            .expect_err("required layout collection must not default");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field `{field}`")),
+            "unexpected omission error for {field}: {error}"
+        );
+    }
 }
 
 #[test]
@@ -615,6 +1271,172 @@ fn solve_problem_shape_contract_rejects_bad_schema_version() {
 }
 
 #[test]
+fn structured_discrete_map_has_one_checked_compact_target_owner() {
+    let mut problem = representative_solve_problem_fixture();
+    let (block, update) = structured_discrete_fixture(scalar_slot_y(0));
+    problem.discrete.structured_rhs = block;
+    problem.discrete.structured_updates = vec![update];
+
+    assert_eq!(
+        problem.discrete.structured_assignments(0).unwrap(),
+        vec![(scalar_slot_y(0), 0), (scalar_slot_y(1), 1)]
+    );
+    problem.validate_shape_contract().unwrap();
+}
+
+#[test]
+fn structured_discrete_shape_rejects_unclaimed_compute_nodes() {
+    let mut problem = representative_solve_problem_fixture();
+    let (block, _) = structured_discrete_fixture(scalar_slot_y(0));
+    problem.discrete.structured_rhs = block;
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "discrete.structured_updates",
+            expected: 1,
+            actual: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn structured_discrete_shape_rejects_parallel_scalar_target_owner() {
+    let mut problem = representative_solve_problem_fixture();
+    let (block, update) = structured_discrete_fixture(scalar_slot_y(2));
+    problem.discrete.structured_rhs = block;
+    problem.discrete.structured_updates = vec![update];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::StructuredDiscreteUpdate {
+            update_index: 0,
+            node_index: 0,
+            detail: "target is also owned by a scalar discrete update",
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_duplicate_clock_activation_lanes() {
+    let mut problem = representative_solve_problem_fixture();
+    problem
+        .clocks
+        .periodic_event_schedules
+        .push(problem.clocks.periodic_event_schedules[0].clone());
+    problem.clocks.activation_parameter_indices = vec![0, 0];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "clocks.activation_parameter_indices",
+            index: 0,
+            span: None,
+        })
+    );
+}
+
+/// A state load outside the layout is a construction defect, not a runtime
+/// surprise: forward-mode AD offsets the parameter seeds by `y_scalars`, so an
+/// unowned `Y` index aliases derivative columns instead of adding one.
+#[test]
+fn solve_problem_shape_contract_rejects_state_load_outside_layout() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.continuous.residual = ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 9 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_provenance(),
+        )
+        .expect("unowned state load fixture is computable"),
+    );
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
+            context: "continuous.residual",
+            storage: "Y",
+            index: 9,
+            extent: 3,
+            span: Some(fixture_span()),
+        })
+    );
+}
+
+/// A runtime-indexed parameter load is clamped into its complete run, so the
+/// whole run — not just its base — must be addressable.
+#[test]
+fn solve_problem_shape_contract_rejects_parameter_run_outside_layout() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.continuous.residual = ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::LoadIndexedP {
+                    dst: 1,
+                    base: 1,
+                    count: 4,
+                    index: 0,
+                },
+                LinearOp::StoreOutput { src: 1 },
+            ]],
+            fixture_provenance(),
+        )
+        .expect("unowned parameter run fixture is computable"),
+    );
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
+            context: "continuous.residual",
+            storage: "P",
+            index: 4,
+            extent: 2,
+            span: Some(fixture_span()),
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_rectangular_projection_block() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.continuous.algebraic_projection_plan.blocks[0]
+        .y_indices
+        .clear();
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(
+            SolveProblemShapeContractError::ProjectionBlockShapeMismatch {
+                context: "continuous.algebraic_projection_plan",
+                row_count: 1,
+                unknown_count: 0,
+                span: None,
+            }
+        )
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_duplicate_initial_projection_unknown() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.initialization.projection_unknowns = vec![scalar_slot_y(1), scalar_slot_y(1)];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DuplicateProjectionUnknown {
+            context: "initialization.projection_unknowns",
+            unknown: format!("{:?}", scalar_slot_y(1)),
+            span: None,
+        })
+    );
+}
+
+#[test]
 fn solve_problem_shape_contract_rejects_unaligned_root_relation_memory() {
     let mut problem = representative_solve_problem_fixture();
     problem.events.root_relation_memory_targets.clear();
@@ -647,6 +1469,55 @@ fn solve_problem_shape_contract_rejects_unaligned_root_zero_domains() {
 }
 
 #[test]
+fn solve_problem_shape_contract_rejects_duplicate_delay_parameter_slots() {
+    let mut problem = representative_solve_problem_fixture();
+    let delay_rows = ScalarProgramBlock::with_source_span(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 0.1 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 0.2 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_provenance(),
+    )
+    .expect("delay scalar fixture is computable");
+    problem.events.delays.source_rhs = delay_rows.clone();
+    problem.events.delays.delay_time_rhs = delay_rows.clone();
+    problem.events.delays.delay_max_rhs = delay_rows;
+    problem.events.delays.value_parameter_indices = vec![0, 0];
+    problem.events.delays.source_is_discrete = vec![false, false];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "events.delays.value_parameter_indices",
+            index: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_requires_terminal_parameter_index() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.events.has_terminal_event = true;
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "solve_layout.terminal_event_parameter_index",
+            expected: 1,
+            actual: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
 fn solve_problem_shape_contract_rejects_zero_tensor_dimension() {
     let mut problem = representative_solve_problem_fixture();
     problem.continuous.derivative_rhs = ComputeBlock {
@@ -656,6 +1527,7 @@ fn solve_problem_shape_contract_rejects_zero_tensor_dimension() {
             rhs_start: 0,
             n: 0,
             next_reg: 0,
+            matrix_pattern: crate::fixture_pattern(0, 0, false),
             metadata: TensorNodeMetadata::default(),
             span: Span::DUMMY,
         }],
@@ -714,4 +1586,18 @@ fn solve_problem_shape_contract_rejects_zero_step_tensor_domain() {
             span: Span::DUMMY,
         })
     );
+}
+
+#[test]
+fn solve_model_variable_scale_combines_nominal_and_start_magnitude() {
+    let model = SolveModel {
+        initial_y: vec![1.0e6, 1.0e-12, f64::NAN],
+        solver_nominals: vec![2.0, 1.0e-9, -1.0],
+        ..SolveModel::default()
+    };
+
+    assert_eq!(model.solver_variable_scale(0), 1.0e6);
+    assert_eq!(model.solver_variable_scale(1), 1.0e-9);
+    assert_eq!(model.solver_variable_scale(2), 1.0);
+    assert_eq!(model.solver_variable_scale(3), 1.0);
 }

@@ -89,6 +89,9 @@ pub(crate) struct MslParityConfig {
     pub sim_limit: Option<usize>,
     /// Compile/balance stage worker count (default: host-derived).
     pub stage_parallelism: Option<usize>,
+    /// Per-model compile/simulation worker resident-plus-swap ceiling in MB
+    /// (default [`rumoca_worker::MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT`]).
+    pub model_worker_memory_mb: Option<usize>,
     /// Simulation worker count (default: stage parallelism, memory-capped).
     pub sim_parallelism: Option<usize>,
     /// Per-sim-worker address-space cap in MB (default: uncapped).
@@ -113,6 +116,33 @@ pub(crate) struct MslParityConfig {
     /// merged results (the un-sharded gate's job). Kept OUT of the shard/subset
     /// predicate so the merged run enforces the real baseline ratchet.
     pub merge_shards_dir: Option<PathBuf>,
+    /// Per-model solver wall budget in seconds. Clamped to at least
+    /// [`rumoca_worker::MSL_SIM_TIMEOUT_SECS`]: a config may only *raise* the
+    /// budget, so a mis-written file can never make the gate easier by giving
+    /// models less time than the committed baseline was measured with.
+    pub sim_timeout_secs: Option<f64>,
+    /// Per-model Solve-IR lowering wall budget in seconds. Raise-only, as above.
+    pub ir_solve_timeout_secs: Option<f64>,
+    /// Per-model Solve-IR serialized-size ceiling in MB. Defaults to
+    /// [`rumoca_test_msl::resource_budget::SOLVE_IR_SIZE_LIMIT_MB_DEFAULT`] and
+    /// is raise-only: a smaller value is clamped back to the default so a
+    /// mis-written config can never tighten the gate below its baseline. See
+    /// that module for the full acceptance contract.
+    pub solve_ir_size_limit_mb: Option<u64>,
+    /// Per-model *total* compile wall ceiling in seconds (summed across compile
+    /// phases, unlike `model_attempt_timeout_secs`, which is per phase).
+    /// Defaults to
+    /// [`rumoca_test_msl::resource_budget::MODEL_COMPILE_WALL_LIMIT_SECS_DEFAULT`]
+    /// and is raise-only.
+    pub model_compile_wall_limit_secs: Option<f64>,
+    /// Per-model, per-phase wall budget in seconds. Defaults to the shared MSL
+    /// simulation budget and is raise-only. Each model receives exactly one
+    /// attempt.
+    pub model_attempt_timeout_secs: Option<f64>,
+    /// Build the OMC reference for every simulation target instead of only the
+    /// models rumoca already simulates. Needed by the long-budget event-cohort
+    /// lane, where the point is to compare models that are *not* yet `sim_ok`.
+    pub all_omc_targets: Option<bool>,
 }
 
 /// Load (once) the MSL parity configuration from [`parity_config_path`]. A

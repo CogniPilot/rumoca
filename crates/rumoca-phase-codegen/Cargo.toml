@@ -8,23 +8,24 @@ repository.workspace = true
 
 [dependencies]
 indexmap = { workspace = true }
-rumoca-core = { workspace = true }
-rumoca-ir-ast = { workspace = true }
-rumoca-ir-dae = { workspace = true }
-rumoca-ir-flat = { workspace = true }
-rumoca-ir-solve = { workspace = true }
-rumoca-eval-solve = { workspace = true }
 minijinja = { workspace = true }
 miette = { workspace = true }
+rumoca-core = { workspace = true }
+rumoca-eval-solve = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-fmi = { workspace = true }
+rumoca-ir-flat = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+rumoca-ir-solve = { workspace = true }
+rumoca-phase-dae = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-[dev-dependencies]
-# Test-only: pins this crate's manifest-template filter copies (xs_double_str /
-# xml_escape_str) against the canonical rumoca-galec-codegen implementations the
-# shipping `galec` render path uses (SPEC_0034 contract §6 sanctions the
-# duplication across the crate boundary; this proves the copies stay in sync).
-rumoca-galec-codegen = { workspace = true }
-
 [lints]
 workspace = true
+
+[dev-dependencies]
+naga = { version = "27", features = ["wgsl-in"] }
+tempfile = { workspace = true }

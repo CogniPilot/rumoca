@@ -3,6 +3,11 @@ use std::fs;
 use std::path::Path;
 
 mod architecture_hardening_support;
+#[path = "architecture_hardening/dae_ownership.rs"]
+mod dae_ownership;
+#[path = "architecture_hardening/fmi_me_boundary.rs"]
+mod fmi_me_boundary;
+
 use architecture_hardening_support::*;
 
 const ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS: &[(&str, &str)] = &[];
@@ -318,58 +323,8 @@ semantic code reads boundaries, it does not parse rendered paths"
     );
 }
 
-#[test]
-fn test_generated_parser_contract_is_pinned_and_documented() {
-    let root = workspace_root();
-    let workspace_toml =
-        fs::read_to_string(root.join("Cargo.toml")).expect("read workspace Cargo.toml");
-
-    assert!(
-        section_dependency_line(&workspace_toml, "workspace.dependencies", "parol")
-            .is_some_and(|line| line == r#"parol = "=4.2.2""#),
-        "workspace parol dependency must be pinned exactly so generated parser output is reproducible"
-    );
-    assert!(
-        section_dependency_line(&workspace_toml, "workspace.dependencies", "parol_runtime")
-            .is_some_and(|line| line == r#"parol_runtime = "=4.2.0""#),
-        "workspace parol_runtime dependency must be pinned exactly with the generated parser"
-    );
-
-    let build_rs =
-        fs::read_to_string(root.join("crates/rumoca-phase-parse/build.rs")).expect("read build.rs");
-    for required in [
-        r#"Builder::with_explicit_output_dir("src/generated")"#,
-        r#".grammar_file(par_file)"#,
-        r#".parser_output_file("modelica_parser.rs")"#,
-        r#".actions_output_file("modelica_grammar_trait.rs")"#,
-        r#"println!("cargo:rerun-if-changed=src/modelica.par");"#,
-    ] {
-        assert!(
-            build_rs.contains(required),
-            "parser build script must keep the generated parser contract stable; missing `{required}`"
-        );
-    }
-
-    let contributing =
-        fs::read_to_string(root.join("CONTRIBUTING.md")).expect("read CONTRIBUTING.md");
-    for required in [
-        "## Parser Grammar Regeneration",
-        "cargo check -p rumoca-phase-parse",
-        "cargo test -p rumoca-phase-parse --test recovery_corpus --quiet",
-        "git diff -- crates/rumoca-phase-parse/src/generated",
-    ] {
-        assert!(
-            contributing.contains(required),
-            "CONTRIBUTING.md must document parser regeneration; missing `{required}`"
-        );
-    }
-
-    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
-    assert!(
-        ci.contains("git diff --exit-code -- crates/rumoca-phase-parse/src/generated"),
-        "CI lint gate must fail when the checked-in generated parser is stale"
-    );
-}
+#[path = "architecture_hardening/parser_contract.rs"]
+mod parser_contract;
 
 #[test]
 fn test_eval_crates_follow_ir_layer_mapping() {
@@ -683,17 +638,20 @@ Author reminder: keep visualization assets outside the runtime-contract crate."
         section_contains_dependency(&content, "dependencies", "rumoca-ir-solve"),
         "rumoca-solver must depend on rumoca-ir-solve for solver-facing prepared layout data"
     );
+    // `rumoca-eval-solve` is deliberately allowed: the runtime state machine and
+    // the backend-neutral driver live in `rumoca-solver::runtime` (SPEC_0029
+    // §3b) and consume the Tier 3 row evaluator downward. Everything below is
+    // DAE/phase preparation, which stays upstream of the runtime crate.
     for banned in [
         "rumoca-ir-dae",
         "rumoca-eval-dae",
-        "rumoca-eval-solve",
         "rumoca-phase-dae",
         "rumoca-phase-structural",
         "rumoca-phase-solve",
     ] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-solver must not depend on {banned}; DAE/eval/phase preparation belongs upstream of the runtime-contract crate"
+            "rumoca-solver must not depend on {banned}; DAE/phase preparation belongs upstream of the runtime-contract crate"
         );
     }
     assert!(
@@ -1081,12 +1039,12 @@ fn test_eval_dae_silent_default_fallback_inventory_is_explicit() {
 
 #[test]
 fn test_phase_solve_explicit_starts_do_not_default_failed_checked_eval() {
-    let path = workspace_root().join("crates/rumoca-phase-solve/src/solve_model.rs");
-    let content = fs::read_to_string(&path).expect("read phase-solve solve_model");
+    let path = workspace_root().join("crates/rumoca-sim/src/solve_lowering/initial_values.rs");
+    let content = fs::read_to_string(&path).expect("read checked initial-value projection");
     let production = content
         .split("#[cfg(test)]")
         .next()
-        .expect("solve_model source should include production section");
+        .expect("initial-value projection should include production section");
     let banned = [
         "eval_expr::<f64>(expr, env).unwrap_or(default_start)",
         ".map(|value| finite_start_value(value, default_start)).unwrap_or(default_start)",
@@ -1279,10 +1237,6 @@ fn test_solver_rk45_crate_owns_second_backend_without_diffsol_dependency() {
     assert!(
         !section_contains_dependency(&content, "dependencies", "diffsol"),
         "rumoca-solver-rk45 must stay pure Rust and must not depend on diffsol"
-    );
-    assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-ir-solve"),
-        "rumoca-solver-rk45 must consume solver-facing IR"
     );
     for banned in [
         "rumoca-ir-dae",
@@ -1674,6 +1628,46 @@ move analysis/evaluation helpers to rumoca-analysis-dae or rumoca-phase-solve."
 }
 
 #[test]
+fn test_event_threshold_analysis_is_owned_by_solve_lowering() {
+    let root = workspace_root();
+    let ir_analysis = root.join("crates/rumoca-ir-dae/src/event_threshold.rs");
+    let ir_root = root.join("crates/rumoca-ir-dae/src/lib.rs");
+    let solve_lowering = root.join("crates/rumoca-phase-solve/src/lower.rs");
+    let event_lowering = root.join("crates/rumoca-phase-solve/src/lower/events.rs");
+
+    assert!(
+        !ir_analysis.exists(),
+        "event-threshold classification is executable phase analysis and must not live in \
+rumoca-ir-dae (SPEC_0007 key invariant 2; SPEC_0029 §3)"
+    );
+
+    let ir_root = fs::read_to_string(ir_root).expect("read ir-dae lib.rs");
+    assert!(
+        !ir_root.contains("event_threshold")
+            && !ir_root.contains("is_event_constant_threshold")
+            && !ir_root.contains("is_event_constant_time_threshold_relation"),
+        "rumoca-ir-dae must not expose event-threshold phase analysis"
+    );
+
+    let solve_lowering = fs::read_to_string(solve_lowering).expect("read checked Solve lowering");
+    assert!(
+        !solve_lowering.contains("(view.root_count(), \"root surfaces\")"),
+        "checked root semantics must not regress to a blanket unsupported-system rejection"
+    );
+
+    let event_lowering =
+        fs::read_to_string(event_lowering).expect("read checked Solve event lowering");
+    assert!(
+        event_lowering.contains("fn lower_roots")
+            && event_lowering.contains("fn root_zero_domain")
+            && event_lowering.contains("root_conditions: roots.programs")
+            && event_lowering.contains(".root_program(root.relation())"),
+        "Solve lowering must own signed root-program construction and threshold-domain \
+classification"
+    );
+}
+
+#[test]
 fn test_no_new_cross_crate_public_exports() {
     let root = workspace_root();
     let mut rs_files = Vec::new();
@@ -1815,11 +1809,9 @@ fn test_exec_wasm_consumes_solve_ir_not_dae_or_lowering_phase() {
 }
 
 #[test]
-fn test_runtime_and_codegen_crates_do_not_depend_on_eval_dae() {
+fn test_concrete_solver_crates_do_not_depend_on_eval_dae() {
     let root = workspace_root();
     let checked_crates = [
-        "rumoca-phase-codegen",
-        "rumoca-sim",
         "rumoca-solver",
         "rumoca-solver-diffsol",
         "rumoca-solver-rk45",
@@ -1839,8 +1831,8 @@ fn test_runtime_and_codegen_crates_do_not_depend_on_eval_dae() {
 
     assert!(
         offenders.is_empty(),
-        "simulation codegen/runtime/solver crates must not depend on rumoca-eval-dae; \
-table runtime helpers belong behind solver-facing APIs in rumoca-eval-solve: {offenders:#?}"
+        "concrete solver crates consume Solve IR and must not depend on DAE evaluation: \
+{offenders:#?}"
     );
 }
 
@@ -1860,82 +1852,6 @@ use rumoca-eval-solve scalar fallback APIs at backend boundaries"
     assert!(
         !phase_solve_lib.contains("scalarize_compute"),
         "phase-solve must not publicly re-export scalarization helpers"
-    );
-}
-
-#[test]
-fn test_phase_debug_output_uses_tracing_not_env_stderr() {
-    let root = workspace_root();
-    let checks: &[(&str, &[&str])] = &[
-        (
-            "crates/rumoca-phase-structural/src",
-            &["RUMOCA_SIM_TRACE", "RUMOCA_SIM_INTROSPECT", "eprintln!"],
-        ),
-        (
-            "crates/rumoca-phase-dae/src",
-            &[
-                "eprintln!",
-                "RUMOCA_DEBUG_TODAE",
-                "RUMOCA_DEBUG_EQ_FILTER",
-                "RUMOCA_TODAE_PROFILE",
-                "RUMOCA_DEBUG_FM_CANON",
-                "RUMOCA_DAE_CLOCK_DEBUG",
-            ],
-        ),
-        (
-            "crates/rumoca-phase-instantiate/src",
-            &["eprintln!", "RUMOCA_DEBUG_CONNECTION_PARAMS"],
-        ),
-    ];
-
-    let mut offenders = Vec::new();
-    for (src, banned) in checks {
-        let mut rs_files = Vec::new();
-        collect_rs_files(&root.join(src), &mut rs_files);
-        for path in rs_files {
-            let content = fs::read_to_string(&path).expect("read phase source");
-            offenders.extend(find_banned_source_lines(
-                &path, &content, banned, "contains",
-            ));
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "phase debug output must use the tracing feature instead of \
-stderr writes or phase-level debug environment variables: {offenders:?}"
-    );
-}
-
-#[test]
-fn test_phase_typecheck_errors_go_through_phase_error_type() {
-    let root = workspace_root();
-    let typecheck_src = root.join("crates/rumoca-phase-typecheck/src");
-    let allowed_error_module = typecheck_src.join("lib.rs");
-    let mut rs_files = Vec::new();
-    collect_rs_files(&typecheck_src, &mut rs_files);
-
-    let mut offenders = Vec::new();
-    for path in rs_files {
-        if path == allowed_error_module {
-            continue;
-        }
-        let content = fs::read_to_string(&path).expect("read phase-typecheck source");
-        offenders.extend(find_banned_source_lines(
-            &path,
-            &content,
-            &[
-                "CommonDiagnostic::error(",
-                "rumoca_core::Diagnostic::error(",
-            ],
-            "constructs",
-        ));
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "phase-typecheck fatal diagnostics must go through TypeCheckError/PhaseError \
-instead of constructing CommonDiagnostic::error in helper modules: {offenders:?}"
     );
 }
 
@@ -1968,3 +1884,24 @@ mod size_and_validation;
 
 #[path = "architecture_hardening/env_var_registry.rs"]
 mod env_var_registry;
+
+#[path = "architecture_hardening/diagnostic_codes.rs"]
+mod diagnostic_codes;
+
+#[path = "architecture_hardening/crate_tier_edges.rs"]
+mod crate_tier_edges;
+
+#[path = "architecture_hardening/string_hashing.rs"]
+mod string_hashing;
+
+#[path = "architecture_hardening/instantiate_value_fabrication.rs"]
+mod instantiate_value_fabrication;
+
+#[path = "architecture_hardening/phase_diagnostics.rs"]
+mod phase_diagnostics;
+
+#[path = "architecture_hardening/parser_ownership.rs"]
+mod parser_ownership;
+
+#[path = "architecture_hardening/build_resource_budget.rs"]
+mod build_resource_budget;

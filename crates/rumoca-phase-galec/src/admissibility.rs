@@ -1,0 +1,297 @@
+//! GALEC admissibility checks over an immutable checked DAE.
+
+use rumoca_ir_dae as dae;
+
+use crate::diagnostic::GalecTargetError;
+use crate::input::GalecInput;
+
+/// One source clock scheduled on the projected block's fixed base period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmittedClockDomain {
+    pub clock_index: u32,
+    pub divisor: u32,
+}
+
+/// The fixed base period and exactly commensurate source-clock schedule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdmittedClock {
+    pub period_seconds: f64,
+    pub phase_seconds: f64,
+    pub domains: Vec<AdmittedClockDomain>,
+}
+
+/// Inspect checked DAE ownership directly and collect every projection-scope
+/// rejection. No preparation pass may erase semantics before this check.
+pub fn check_admissibility(input: &GalecInput<'_>) -> Result<AdmittedClock, Vec<GalecTargetError>> {
+    input.dae.inspect(check_view)
+}
+
+fn check_view(view: dae::DaeView<'_>) -> Result<AdmittedClock, Vec<GalecTargetError>> {
+    let mut errors = projection_errors(view);
+    let periodic = periodic_clocks(view);
+    if periodic.is_empty() {
+        errors.push(GalecTargetError::NoPeriodicClock);
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    admit_clock_lattice(view, &periodic).map_err(|error| vec![error])
+}
+
+fn projection_errors(view: dae::DaeView<'_>) -> Vec<GalecTargetError> {
+    let mut errors = Vec::new();
+    let states = view
+        .variables()
+        .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
+        .map(|(_, variable)| variable.scalar_count())
+        .sum::<usize>();
+    let equations = continuous_scalar_rows(view);
+    if states != 0 || equations != 0 {
+        errors.push(GalecTargetError::ContinuousDynamics { states, equations });
+    }
+    let initial_equations = initialization_scalar_rows(view);
+    if initial_equations != 0 {
+        errors.push(GalecTargetError::InitialEquations {
+            equations: initial_equations,
+            structured_families: view.initialization_family_count(),
+        });
+    }
+    if view.initial_discrete_value_count() != 0 {
+        errors.push(GalecTargetError::InitialDiscreteValues {
+            definitions: view.initial_discrete_value_count(),
+        });
+    }
+    if view.time_event_count() != 0 {
+        errors.push(GalecTargetError::RuntimeEvents {
+            scheduled_time_events: view.time_event_count(),
+            event_actions: 0,
+        });
+    }
+    let dynamic = (0..view.clock_count())
+        .filter(|index| {
+            let id = view.clock_id(*index).expect("dense checked clock identity");
+            matches!(
+                view.clock(id).expect("checked clock resolves").operation(),
+                dae::ClockOperation::Triggered(_)
+            ) || matches!(
+                view.clock(id).expect("checked clock resolves").operation(),
+                dae::ClockOperation::Periodic(schedule)
+                    if schedule.anchor() == rumoca_core::ClockPhaseAnchor::SimulationStart
+            )
+        })
+        .count();
+    if dynamic != 0 {
+        errors.push(GalecTargetError::DynamicClock { count: dynamic });
+    }
+    errors
+}
+
+fn admit_clock_lattice(
+    view: dae::DaeView<'_>,
+    periodic: &[(u32, &rumoca_core::PeriodicClockSchedule)],
+) -> Result<AdmittedClock, GalecTargetError> {
+    let Some(base) = periodic
+        .iter()
+        .min_by_key(|(_, schedule)| schedule.period())
+    else {
+        unreachable!("an admitted projection has at least one periodic clock")
+    };
+    let domains = periodic
+        .iter()
+        .map(|(clock_index, schedule)| {
+            let ratio = schedule
+                .period()
+                .checked_div(base.1.period())
+                .map_err(|error| GalecTargetError::UnsupportedFeature {
+                    feature: "clock-lattice".to_owned(),
+                    detail: error.to_string(),
+                    span: view
+                        .clock(
+                            view.clock_id(*clock_index as usize)
+                                .expect("clock index resolves"),
+                        )
+                        .map(|clock| clock.provenance().span()),
+                })?;
+            let divisor = u32::try_from(ratio.numerator())
+                .ok()
+                .filter(|_| ratio.denominator() == 1)
+                .ok_or_else(|| GalecTargetError::UnsupportedFeature {
+                    feature: "incommensurate-clock".to_owned(),
+                    detail: format!(
+                        "period {} s is not an integer multiple of base period {} s",
+                        schedule.period_seconds(),
+                        base.1.period_seconds()
+                    ),
+                    span: view
+                        .clock(
+                            view.clock_id(*clock_index as usize)
+                                .expect("clock index resolves"),
+                        )
+                        .map(|clock| clock.provenance().span()),
+                })?;
+            Ok(AdmittedClockDomain {
+                clock_index: *clock_index,
+                divisor,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(AdmittedClock {
+        period_seconds: base.1.period_seconds(),
+        phase_seconds: base.1.phase_seconds(),
+        domains,
+    })
+}
+
+fn continuous_scalar_rows(view: dae::DaeView<'_>) -> usize {
+    let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+    view.continuous_owners()
+        .map(|owner| match owner {
+            dae::ContinuousOwnerView::Residual { id, .. } if definitions.consumes(id) => 0,
+            dae::ContinuousOwnerView::Residual { equation, .. } => view
+                .expression(equation.residual())
+                .expect("checked residual resolves")
+                .value_type()
+                .scalar_count()
+                .expect("checked scalar capacity"),
+            dae::ContinuousOwnerView::Structured { id, .. } if definitions.consumes_family(id) => 0,
+            dae::ContinuousOwnerView::Structured { family, .. } => family.scalar_rows() as usize,
+        })
+        .sum()
+}
+
+fn initialization_scalar_rows(view: dae::DaeView<'_>) -> usize {
+    view.initialization_owners()
+        .map(|owner| match owner {
+            dae::InitializationOwnerView::Residual { equation, .. } => view
+                .expression(equation.residual())
+                .expect("checked residual resolves")
+                .value_type()
+                .scalar_count()
+                .expect("checked scalar capacity"),
+            dae::InitializationOwnerView::Structured { family, .. } => {
+                family.scalar_rows() as usize
+            }
+        })
+        .sum()
+}
+
+fn periodic_clocks(view: dae::DaeView<'_>) -> Vec<(u32, &rumoca_core::PeriodicClockSchedule)> {
+    (0..view.clock_count())
+        .filter_map(|index| {
+            let id = view.clock_id(index).expect("dense checked clock identity");
+            match view.clock(id).expect("checked clock resolves").operation() {
+                dae::ClockOperation::Periodic(schedule)
+                    if schedule.anchor() == rumoca_core::ClockPhaseAnchor::Absolute =>
+                {
+                    Some((
+                        u32::try_from(index).expect("clock count fits u32"),
+                        schedule,
+                    ))
+                }
+                dae::ClockOperation::Periodic(_) => None,
+                dae::ClockOperation::Triggered(_) => None,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use rumoca_core::{SourceMap, Span, TypeId, VarName};
+
+    use super::*;
+
+    #[test]
+    fn checked_dae_without_required_clock_fails_early() {
+        let dae = dae::Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
+        let input = GalecInput::new(&dae, "Empty");
+        let errors = check_admissibility(&input).unwrap_err();
+        assert!(matches!(
+            errors.as_slice(),
+            [GalecTargetError::NoPeriodicClock]
+        ));
+    }
+
+    #[test]
+    fn checked_continuous_owner_is_never_ignored() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("galec.mo", "Real x; x = 0;");
+        let declaration = dae::DaeProvenance::source(Span::from_offsets(source, 0, 6)).unwrap();
+        let equation = dae::DaeProvenance::source(Span::from_offsets(source, 8, 13)).unwrap();
+        let model = dae::Dae::construct(sources, |model| {
+            let real = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let residual = model.expressions(|expressions| {
+                expressions
+                    .at(equation)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))
+            })?;
+            model.continuous(|continuous| continuous.value_equation(equation, residual))
+        })
+        .unwrap();
+        let errors = check_admissibility(&GalecInput::new(&model, "Continuous")).unwrap_err();
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            GalecTargetError::ContinuousDynamics { equations: 1, .. }
+        )));
+    }
+
+    /// MLS §8.6: an algorithm-determined discrete initial value is a checked
+    /// DAE owner GALEC Startup has no lowering for. It initializes from `start`
+    /// attributes only, so admitting the model would run the block from the
+    /// declared `start` instead of the determined value.
+    #[test]
+    fn checked_discrete_initial_value_is_never_ignored() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("galec.mo", "discrete Real m; initial algorithm m := 1.0;");
+        let declaration = dae::DaeProvenance::source(Span::from_offsets(source, 0, 15)).unwrap();
+        let owner = dae::DaeProvenance::source(Span::from_offsets(source, 35, 43)).unwrap();
+        let model = dae::Dae::construct(sources, |model| {
+            let real = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let m = model.variables(|variables| {
+                variables.discrete_real(
+                    VarName::new("m"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let value = model.expressions(|expressions| {
+                expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))
+            })?;
+            model.initialization(|initialization| {
+                initialization
+                    .discrete_real_initial_value(m, value, owner)
+                    .map(|_| ())
+            })
+        })
+        .unwrap();
+        let errors = check_admissibility(&GalecInput::new(&model, "DiscreteInitial")).unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                GalecTargetError::InitialDiscreteValues { definitions: 1 }
+            )),
+            "an algorithm-determined discrete initial value must be reported: {errors:?}"
+        );
+    }
+}

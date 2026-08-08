@@ -136,10 +136,10 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
     let block = &problem.continuous.derivative_rhs;
     let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
     let block_output_count = block.len()?;
-    let total_ops: usize = scalar.programs.iter().map(|program| program.len()).sum();
+    let total_ops: usize = scalar.programs().iter().map(|program| program.len()).sum();
     let approx_bytes = total_ops * std::mem::size_of::<rumoca_ir_solve::LinearOp>();
 
-    let mut per_program: Vec<usize> = scalar.programs.iter().map(|p| p.len()).collect();
+    let mut per_program: Vec<usize> = scalar.programs().iter().map(|p| p.len()).collect();
     per_program.sort_unstable();
     let node_kinds: Vec<&str> = block
         .nodes
@@ -156,7 +156,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
         "SE_2(3) derivative_rhs: nodes={:?}, output_count={}, programs={}, total_ops={}, ~{} KB",
         node_kinds,
         block_output_count,
-        scalar.programs.len(),
+        scalar.programs().len(),
         total_ops,
         approx_bytes / 1024,
     );
@@ -178,7 +178,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
     // 13 outputs. A generous ceiling catches any regression back to per-output
     // re-inlining (which would be 13x larger).
     assert_eq!(
-        scalar.programs.len(),
+        scalar.programs().len(),
         1,
         "vector function-call derivative should lower to one shared program"
     );
@@ -192,7 +192,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
     // collapse so a regression to select-chain indexing is caught here.
     let (selects, indexed_loads) =
         scalar
-            .programs
+            .programs()
             .iter()
             .flatten()
             .fold((0usize, 0usize), |(s, i), op| match op {

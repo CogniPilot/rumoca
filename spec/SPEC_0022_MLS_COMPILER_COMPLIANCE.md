@@ -2,7 +2,7 @@
 
 **Status:** REFERENCE
 **Created:** 2026-01-23
-**Source:** [Modelica Language Specification 3.7-dev](https://specification.modelica.org/master/)
+**Source:** [Modelica Language Specification 3.7](https://specification.modelica.org/maint/3.7/MLS.html)
 
 ## Abstract
 
@@ -43,7 +43,7 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 
 ---
 
-## 1. Key Definitions ([MLS §1.3](https://specification.modelica.org/master/introduction1.html))
+## 1. Key Definitions ([MLS §1.3](https://specification.modelica.org/maint/3.7/introduction1.html))
 
 | Term | Definition (MLS) |
 |------|------------------|
@@ -55,7 +55,7 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 
 ---
 
-## 2. Compilation Pipeline ([MLS §5.6](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+## 2. Compilation Pipeline ([MLS §5.6](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 The MLS defines flattening as two major steps:
 
@@ -73,31 +73,31 @@ Source → Class Tree → Instance Tree → Flat Equation System → DAE System 
 
 ## 3. Data Structures
 
-### 3.1 Class Tree ([MLS §5.6](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+### 3.1 Class Tree ([MLS §5.6](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 The class tree "represents the syntactic information from the class definitions" with "all modifications at their original locations in syntactic form."
 
-### 3.2 Instance Tree ([MLS §5.6](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+### 3.2 Instance Tree ([MLS §5.6](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 "It contains the instantiated elements of the class definitions, with redeclarations taken into account and merged modifications applied."
 
-### 3.3 Modification Environment ([MLS §7.2](https://specification.modelica.org/master/inheritance-modification-and-redeclaration.html))
+### 3.3 Modification Environment ([MLS §7.2](https://specification.modelica.org/maint/3.7/inheritance-modification-and-redeclaration.html))
 
 "The modification environment is built by merging class modifications, where outer modifications override inner modifications."
 
-### 3.4 Scope Chain ([MLS §5.3](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+### 3.4 Scope Chain ([MLS §5.3](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 Ordered set of instance scopes for sequential name lookup until match or encapsulation boundary.
 
-### 3.5 Connection Set ([MLS §9.2](https://specification.modelica.org/master/connectors-and-connections.html))
+### 3.5 Connection Set ([MLS §9.2](https://specification.modelica.org/maint/3.7/connectors-and-connections.html))
 
 Variables connected by connect-equations; generates equality or sum-to-zero equations.
 
-### 3.6 Connection Graph ([MLS §9.4](https://specification.modelica.org/master/connectors-and-connections.html))
+### 3.6 Connection Graph ([MLS §9.4](https://specification.modelica.org/maint/3.7/connectors-and-connections.html))
 
 Virtual graph for overconstrained connectors using spanning trees.
 
-### 3.7 DAE System ([MLS Appendix B](https://specification.modelica.org/master/modelica-dae-representation.html))
+### 3.7 DAE System ([MLS Appendix B](https://specification.modelica.org/maint/3.7/modelica-dae-representation.html))
 
 Hybrid DAE with the following variable classifications:
 - **p**: Parameters (constant/parameter, no time dependency)
@@ -113,33 +113,33 @@ Equation forms:
 - **B.1c**: Discrete-valued assignments: m := f(v, c)
 - **B.1d**: Condition evaluation: c := f(relation(v))
 
-### 3.8 Flattened Equation System ([MLS §5.6](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+### 3.8 Flattened Equation System ([MLS §5.6](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 "The flat equation system consists of a list of variables with dimensions, flattened equations and algorithms, and a list of called functions." All name references replaced with globally unique identifiers.
 
-### 3.9 Partially Instantiated Element ([MLS §5.6](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+### 3.9 Partially Instantiated Element ([MLS §5.6](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 "A partially instantiated class or component is an element that is ready to be instantiated; comprised of a reference to the original element (from the class tree) and the modifiers for that element."
 
-### 3.10 Instance Scope ([MLS §5.6](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+### 3.10 Instance Scope ([MLS §5.6](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 "A node in the instance tree is the instance scope for the modifiers and elements syntactically defined in the class it is instantiated from." Starting point for name lookup during flattening.
 
-### 3.11 Ordered Set of Enclosing Classes ([MLS §5.3](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html))
+### 3.11 Ordered Set of Enclosing Classes ([MLS §5.3](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html))
 
 "The classes lexically enclosing an element form an ordered set of enclosing classes." Nested classes precede their enclosing class; unnamed root contains top-level definitions.
 
-### 3.12 Spanning Tree ([MLS §9.4](https://specification.modelica.org/master/connectors-and-connections.html))
+### 3.12 Spanning Tree ([MLS §9.4](https://specification.modelica.org/maint/3.7/connectors-and-connections.html))
 
 Constructed from the virtual connection graph by "removing optional spanning tree edges." Contains all nodes with selected root nodes and required spanning-tree edges.
 
-### 3.13 Root Nodes ([MLS §9.4](https://specification.modelica.org/master/connectors-and-connections.html))
+### 3.13 Root Nodes ([MLS §9.4](https://specification.modelica.org/maint/3.7/connectors-and-connections.html))
 
 **Definite Root**: "The overdetermined type or record instance R in connector instance a is a (definite) root node." Represents consistently initialized overdetermined records.
 
 **Potential Root**: Has priority value p≥0. "When subgraphs lack definite roots, one potential root node with the lowest priority number is selected."
 
-### 3.14 Clock Partitions ([MLS §16.7](https://specification.modelica.org/master/synchronous-language-elements.html))
+### 3.14 Clock Partitions ([MLS §16.7](https://specification.modelica.org/maint/3.7/synchronous-language-elements.html))
 
 **Base-Clock Partition**: "A set of equations and variables which must be executed together in one task." Different base-partitions can execute asynchronously.
 
@@ -151,7 +151,7 @@ Constructed from the virtual connection graph by "removing optional spanning tre
 
 ## 3.15 Key Algorithmic Processes
 
-### Event Iteration ([MLS Appendix B](https://specification.modelica.org/master/modelica-dae-representation.html))
+### Event Iteration ([MLS Appendix B](https://specification.modelica.org/maint/3.7/modelica-dae-representation.html))
 
 ```
 loop
@@ -162,24 +162,24 @@ loop
 end loop
 ```
 
-### Clock Partitioning ([MLS §16.7](https://specification.modelica.org/master/synchronous-language-elements.html))
+### Clock Partitioning ([MLS §16.7](https://specification.modelica.org/maint/3.7/synchronous-language-elements.html))
 
 Three-phase process after flattening:
 1. **Base-Partitioning**: Group by base-clock inference, excluding sample/hold/Clock first arguments from incidence
 2. **Sub-Partitioning**: Group within base-partitions, excluding subSample/superSample/shiftSample/backSample/noClock first arguments
 3. **Sub-Clock Inferencing**: Solve constraint sets for base intervals and sub-sampling factors
 
-### Perfect Matching ([MLS §8.4](https://specification.modelica.org/master/equations.html))
+### Perfect Matching ([MLS §8.4](https://specification.modelica.org/maint/3.7/equations.html))
 
 "There must exist a perfect matching of variables to equations after flattening, where a variable can only be matched to equations that can contribute to solving for the variable."
 
-### Initialization ([MLS §8.6](https://specification.modelica.org/master/equations.html))
+### Initialization ([MLS §8.6](https://specification.modelica.org/maint/3.7/equations.html))
 
 Derivatives (der) and pre-variables (pre) treated as algebraic unknowns during initialization, requiring 2n+m equations for n state variables and m output variables. Start values follow priority hierarchy based on model component hierarchy level.
 
 ---
 
-### 3.16 Type Attributes ([MLS §4.4](https://specification.modelica.org/master/class-predefined-types-and-declarations.html))
+### 3.16 Type Attributes ([MLS §4.4](https://specification.modelica.org/maint/3.7/class-predefined-types-and-declarations.html))
 
 Predefined type attributes controlling simulation behavior:
 
@@ -196,7 +196,7 @@ Predefined type attributes controlling simulation behavior:
 | `unbounded` | Boolean | No upper/lower bounds (Real only) |
 | `displayUnit` | String | Preferred display unit |
 
-### 3.17 Variability Classification ([MLS §4.5](https://specification.modelica.org/master/class-predefined-types-and-declarations.html))
+### 3.17 Variability Classification ([MLS §4.5](https://specification.modelica.org/maint/3.7/class-predefined-types-and-declarations.html))
 
 Ordered variability hierarchy (lower ≤ higher):
 
@@ -212,7 +212,7 @@ constant < evaluable parameter < non-evaluable parameter < discrete-time < conti
 | **discrete-time** | Changes only at event instants (when-clause or non-Real type) |
 | **continuous-time** | May change continuously during simulation |
 
-### 3.18 Specialized Class Types ([MLS §4.7](https://specification.modelica.org/master/class-predefined-types-and-declarations.html))
+### 3.18 Specialized Class Types ([MLS §4.7](https://specification.modelica.org/maint/3.7/class-predefined-types-and-declarations.html))
 
 | Kind | Restrictions | Purpose |
 |------|--------------|---------|
@@ -226,7 +226,7 @@ constant < evaluable parameter < non-evaluable parameter < discrete-time < conti
 | `operator record` | Operator overloading enabled | Custom arithmetic |
 | `operator` | Functions only, inside operator record | Overload definitions |
 
-### 3.19 Component Prefixes ([MLS §4.4.2](https://specification.modelica.org/master/class-predefined-types-and-declarations.html))
+### 3.19 Component Prefixes ([MLS §4.4.2](https://specification.modelica.org/maint/3.7/class-predefined-types-and-declarations.html))
 
 | Prefix | Context | Effect |
 |--------|---------|--------|
@@ -240,7 +240,7 @@ constant < evaluable parameter < non-evaluable parameter < discrete-time < conti
 | `inner` | Components | Target for outer references |
 | `outer` | Components | References inner declaration in enclosing scope |
 
-### 3.20 Class Prefixes ([MLS §4.6](https://specification.modelica.org/master/class-predefined-types-and-declarations.html))
+### 3.20 Class Prefixes ([MLS §4.6](https://specification.modelica.org/maint/3.7/class-predefined-types-and-declarations.html))
 
 | Prefix | Effect |
 |--------|--------|
@@ -251,7 +251,7 @@ constant < evaluable parameter < non-evaluable parameter < discrete-time < conti
 | `impure` | Function may have side effects |
 | `operator` | Operator overloading context |
 
-### 3.21 Interface Structure ([MLS §6.4](https://specification.modelica.org/master/interface-or-type-relationships.html))
+### 3.21 Interface Structure ([MLS §6.4](https://specification.modelica.org/maint/3.7/interface-or-type-relationships.html))
 
 The interface (type) of a class comprises:
 - **Replaceability**: Whether transitively non-replaceable
@@ -261,7 +261,7 @@ The interface (type) of a class comprises:
 - **Named elements**: Public elements with their interfaces (recursive)
 - **Operator record base**: If applicable, the base class identity
 
-### 3.22 Virtual Connection Graph ([MLS §9.4](https://specification.modelica.org/master/connectors-and-connections.html))
+### 3.22 Virtual Connection Graph ([MLS §9.4](https://specification.modelica.org/maint/3.7/connectors-and-connections.html))
 
 For overconstrained connectors:
 
@@ -273,7 +273,7 @@ For overconstrained connectors:
 | **Definite root** | Connections.root(), always selected as root |
 | **Potential root** | Connections.potentialRoot(), selected by priority if needed |
 
-### 3.23 Array Type Structure ([MLS §10](https://specification.modelica.org/master/arrays.html))
+### 3.23 Array Type Structure ([MLS §10](https://specification.modelica.org/maint/3.7/arrays.html))
 
 Arrays have fixed dimensionality but runtime-determinable sizes:
 
@@ -283,7 +283,7 @@ Arrays have fixed dimensionality but runtime-determinable sizes:
 | **Dimensions** | Fixed count, each with size (literal, parameter, or `:` for unknown) |
 | **Index type** | Integer (1-based), Boolean (false/true), or enumeration |
 
-### 3.24 State Machine State ([MLS §17.2](https://specification.modelica.org/master/state-machines.html))
+### 3.24 State Machine State ([MLS §17.2](https://specification.modelica.org/maint/3.7/state-machines.html))
 
 Discrete-time state tracking variables:
 
@@ -295,11 +295,11 @@ Discrete-time state tracking variables:
 | `activeResetStates[:]` | Per-state reset flags |
 | `stateMachineInFinalState` | No outgoing transitions can fire |
 
-### 3.25 Transition Record ([MLS §17.1](https://specification.modelica.org/master/state-machines.html))
+### 3.25 Transition Record ([MLS §17.1](https://specification.modelica.org/maint/3.7/state-machines.html))
 
 Defines state-to-state transitions with priority and timing control.
 
-### 3.26 Equation Classification ([MLS §8](https://specification.modelica.org/master/equations.html))
+### 3.26 Equation Classification ([MLS §8](https://specification.modelica.org/maint/3.7/equations.html))
 
 | Category | Context | Purpose |
 |----------|---------|---------|
@@ -309,7 +309,7 @@ Defines state-to-state transitions with priority and timing control.
 | **Binding equation** | Component binding | Constraint value (non-function) |
 | **Initial equation** | Initial equation section | Initialization problem |
 
-### 3.27 Annotation Categories ([MLS §18](https://specification.modelica.org/master/annotations.html))
+### 3.27 Annotation Categories ([MLS §18](https://specification.modelica.org/maint/3.7/annotations.html))
 
 | Category | Content |
 |----------|---------|
@@ -452,7 +452,7 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-004 | der not in functions | §3.7 | "der operator not allowed inside function classes" |
 | EXPR-005 | Overflow undefined | §3.3 | "If a numeric operation overflows the result is undefined" |
 | EXPR-006 | delay parameter | §3.7 | "delayMax shall be a parameter expression" |
-| EXPR-007 | delay bounds | §3.7 | "0 ≤ delayTime ≤ delayMax must hold" |
+| EXPR-007 | delay bounds | §3.7 | "0 < delayTime ≤ delayMax must hold" |
 | EXPR-008 | delay not in functions | §3.7 | "delay operator not allowed inside function classes" |
 | EXPR-009 | cardinality restrictions | §3.7 | "Shall not be applied to expandable connectors or arrays of connectors" |
 | EXPR-010 | spatialDistribution range | §3.7 | "initialPoints array shall span entire range from 0 to 1" |
@@ -471,10 +471,10 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-023 | String significantDigits | §3.7.1 | "Specifying significantDigits is error when first argument of String is Integer" |
 | EXPR-024 | div/mod/rem types | §3.7.2 | "Result and arguments shall have type Real or Integer" |
 | EXPR-025 | ceil/floor argument | §3.7.2 | "Result and argument shall have type Real" |
-| EXPR-026 | integer argument | §3.7.2 | "Argument shall have type Real, result has type Integer" |
+| EXPR-026 | integer conversion | §3.7.2 | "Argument shall have type Real; result is the largest Integer not greater than the argument" |
 | EXPR-027 | delay expr type | §3.7.2 | "Expression shall be subtype of Real, Integer, Boolean, or enumeration" |
 | EXPR-028 | delay time type | §3.7.2 | "Time arguments shall be subtypes of Real" |
-| EXPR-029 | delay delayTime param | §3.7.2 | "When delayMax not provided, delayTime ≥ 0 shall be parameter expression" |
+| EXPR-029 | delay delayTime param | §3.7.2 | "When delayMax not provided, delayTime > 0 shall be parameter expression" |
 | EXPR-030 | spatialDistribution params | §3.7.4.1 | "initialPoints and initialValues shall be parameter expressions of equal size" |
 | EXPR-031 | spatialDistribution no vectorize | §3.7.4.1 | "Operator cannot be vectorized according to §12.4.6" |
 | EXPR-032 | cardinality scope | §3.7.4.2 | "Should only be used in condition of assert and if-statements without connect" |
@@ -485,7 +485,7 @@ Defines state-to-state transitions with priority and timing control.
 | EXPR-037 | pre not in function | §3.7.5 | "pre operator is not allowed inside function classes" |
 | EXPR-038 | smooth differentiability | §3.7.5 | "smooth(p, expr) treats expression as p times continuously differentiable" |
 | EXPR-039 | noEvent event suppression | §3.3 | "noEvent suppresses event generation for relational operators within its scope" |
-| EXPR-040 | Event triggering operators | §3.7.2 | "div, ceil, floor, integer can only change values at events and will trigger events as needed"
+| EXPR-040 | Event triggering operators | §3.7.2 | "div, ceil, floor, integer can only change values at events and will trigger events as needed" |
 
 ### 4.5 Equation Contracts (EQN)
 
@@ -585,6 +585,7 @@ Defines state-to-state transitions with priority and timing control.
 | CONN-027 | potentialRoot priority | §9.4.1 | "Priority p for potentialRoot must be p ≥ 0" |
 | CONN-028 | Parameter/constant variability | §9.3 | "Primitive components may only connect parameter to parameter and constant to constant" |
 | CONN-029 | Connect arguments are connectors | §9.3 | "Both arguments of connect must be connector references" |
+| CONN-030 | Stream-to-stream | §9.3 | "Stream variables may only connect to other stream variables" |
 
 ### 4.8 Function Contracts (FUNC)
 
@@ -611,20 +612,23 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-019 | Named arg slot error | §12.4.1 | "Error if named argument slot is already filled" |
 | FUNC-020 | Unfilled slots error | §12.4.1 | "Error if any unfilled slots remain after argument processing" |
 | FUNC-021 | Impure inheritance | §12.3 | "If function declared impure, any extending function shall be declared impure" |
-| FUNC-022 | Impure call scope | §12.3 | "Impure only allowed from: impure function, when-equation/statement, pure(), initial equations/algorithms" |
+| FUNC-022 | Impure call scope | §12.3 | Stated of the written prefix: "With the prefix keyword impure it is stated that a Modelica function is impure and it is only allowed to call such a function from within: Another function marked with the prefix impure. A when-equation. A when-statement. pure(impureFunction(…)). Initial equations and initial algorithms. Binding equations for components declared as parameter. Binding equations for external objects." Rumoca enforces the first three plus initial sections and parameter bindings. `pure(…)` is recognized and erased during lowering, but it does not yet suppress the callee purity check (that needs a Flat-visible call-site marker; task #57), so `pure(impureFunction(…))` is still rejected by Resolve. External-object bindings are not yet constructible (ED019). Neither is advertised in the diagnostics as an accepting context while that holds. |
 | FUNC-023 | Binding no cycles | §12.4.4 | "Binding execution order must not have cycles" |
 | FUNC-024 | Uninitialized error | §12.4.4 | "Error to use or return an uninitialized variable" |
 | FUNC-025 | LHS list output | §12.4.3 | "Left-hand side references must agree with type of corresponding output component" |
 | FUNC-026 | Vectorization non-replaceable | §12.4.6 | "Only transitively non-replaceable functions support automatic vectorization" |
 | FUNC-027 | Vectorization size match | §12.4.6 | "Array arguments have to be the same size" |
 | FUNC-028 | Record constructor scope | §12.6 | "Record constructor can only reference records found in global scope" |
-| FUNC-029 | Record cast conditional error | §12.6.1 | "Conditional components in target record: it is an error" |
+| FUNC-029 | Record cast conditional error | §12.6.1 | "A record cast is erroneous if a corresponding source model/block/connector component is conditional" |
 | FUNC-030 | Derivative outputs non-empty | §12.7.1 | "Derivative output list shall not be empty" |
 | FUNC-031 | zeroDerivative condition | §12.7.1 | "zeroDerivative applies only if inputVar is independent of differentiation variables" |
-| FUNC-032 | External purity deprecated | §12.9 | "External function without explicit pure/impure declaration is deprecated" |
+| FUNC-032 | External purity deprecated | §12.3 | "External functions not explicitly declared with pure or impure is deprecated." Such a function is normative-impure for transformations: "a function shall be treated as impure in the following cases (applied recursively): It is declared impure. It is an external function without explicit purity. It calls another function treated as impure, except when wrapped in pure(…)." The deprecation is a report, not a call restriction — MLS 3.6 §12.3 stated the report as a requirement ("a diagnostic must be given if called in a simulation model") and made callability explicit ("without any restriction on calling them"), which is the historical basis for accepting the call. Rumoca: WR001 on every such declaration; body recorded impure; recursive third case is task #76. |
 | FUNC-033 | Functional param type | §12.4.2 | "Function type parameter cannot be type-specifier of record or enumeration" |
 | FUNC-034 | Input default independence | §12.4.1 | "Default values for inputs shall not depend on non-input variables in the function" |
 | FUNC-035 | Derivative ordering | §12.7.1 | "Most restrictive derivative annotations should be written first"
+| FUNC-036 | ExternalObject lifecycle shape | §12.9.7 | "ExternalObject owner uses the specialized class `class`, directly extends ExternalObject, owns exactly non-replaceable constructor and destructor functions, and owns no other elements" |
+| FUNC-037 | ExternalObject lifecycle signatures | §12.9.7 | "Constructor has exactly one output of the owning ExternalObject type; destructor has exactly one input of that type and no outputs" |
+| FUNC-038 | ExternalObject lifecycle calls | §12.9.7 | "Constructor and destructor cannot be called explicitly; each constructed object is constructed and destroyed exactly once" |
 
 ### 4.9 Type/Interface Contracts (TYPE)
 
@@ -709,7 +713,9 @@ Defines state-to-state transitions with priority and timing control.
 | ARR-037 | cross/skew 3-vector | §10.3.5 | "cross(x,y) and skew(x) only defined for Real 3-vectors" |
 | ARR-038 | transpose 2D minimum | §10.3.5 | "transpose(A): error if A does not have at least 2 dimensions" |
 | ARR-039 | Reduction empty defaults | §10.3.4 | "Empty array: sum returns zeros, product returns 1, min/max return type extrema" |
-| ARR-040 | min/max type restriction | §10.3.4 | "min/max require scalar enumeration, Boolean, Integer, or Real types"
+| ARR-040 | min/max type restriction | §10.3.4 | "min/max require scalar enumeration, Boolean, Integer, or Real types" |
+| ARR-041 | diagonal vector shape | §10.3.5 | "diagonal(v) requires a vector and returns a square matrix with both extents equal to size(v, 1)" |
+| ARR-042 | outer product shape | §10.3.5 | "outerProduct(v1, v2) requires two vectors and returns a matrix with extents size(v1, 1) and size(v2, 1)" |
 
 ### 4.11 Package/Import Contracts (PKG)
 
@@ -756,7 +762,8 @@ Defines state-to-state transitions with priority and timing control.
 | SIM-006 | Integer solved form | App B | "Solved variable must appear uniquely as term (no multiplicative factor) on either side" |
 | SIM-007 | Non-Integer flip form | App B | "Non-Integer equations require at most flipping sides to obtain assignment form" |
 | SIM-008 | Discrete variable stability | App B | "Values of conditions c, z, and m only changed at event instant, constant during continuous integration" |
-| SIM-009 | DAE structure | App B | "System shall consist of differential equations, discrete equations, discrete-valued assignments, and condition equations"
+| SIM-009 | DAE structure | App B | "System shall consist of differential equations, discrete equations, discrete-valued assignments, and condition equations" |
+| SIM-010 | Clocked event-iteration participation | App B | "Clocked variables use previous values and their equations are solved only in the first event iteration; they do not participate in ordinary z == pre(z), m == pre(m) convergence" |
 
 ### 4.14 Clock/Synchronous Contracts (CLK)
 
@@ -898,19 +905,19 @@ areas.
 | Expressions | EXPR | 40 |
 | Equations | EQN | 38 |
 | Algorithms | ALG | 17 |
-| Connections | CONN | 29 |
-| Functions | FUNC | 35 |
+| Connections | CONN | 30 |
+| Functions | FUNC | 38 |
 | Types/Interfaces | TYPE | 35 |
-| Arrays | ARR | 40 |
+| Arrays | ARR | 42 |
 | Packages | PKG | 12 |
 | Operator Records | OPREC | 11 |
-| Simulation | SIM | 9 |
+| Simulation | SIM | 10 |
 | Clocks/Synchronous | CLK | 20 |
 | Stream Connectors | STRM | 11 |
 | State Machines | SM | 8 |
 | Annotations | ANN | 15 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **431** |
+| **Total** | | **438** |
 
 ---
 
@@ -968,27 +975,27 @@ The following design decisions extend MLS requirements for implementation:
 
 | Chapter | Topic | URL |
 |---------|-------|-----|
-| 1 | Introduction | [Link](https://specification.modelica.org/master/introduction1.html) |
-| 2 | Lexical Structure | [Link](https://specification.modelica.org/master/lexical-structure.html) |
-| 3 | Operators/Expressions | [Link](https://specification.modelica.org/master/operators-and-expressions.html) |
-| 4 | Classes/Declarations | [Link](https://specification.modelica.org/master/class-predefined-types-and-declarations.html) |
-| 5 | Scoping/Flattening | [Link](https://specification.modelica.org/master/scoping-name-lookup-and-flattening.html) |
-| 6 | Interfaces/Types | [Link](https://specification.modelica.org/master/interface-or-type-relationships.html) |
-| 7 | Inheritance/Modification | [Link](https://specification.modelica.org/master/inheritance-modification-and-redeclaration.html) |
-| 8 | Equations | [Link](https://specification.modelica.org/master/equations.html) |
-| 9 | Connectors/Connections | [Link](https://specification.modelica.org/master/connectors-and-connections.html) |
-| 10 | Arrays | [Link](https://specification.modelica.org/master/arrays.html) |
-| 11 | Algorithms | [Link](https://specification.modelica.org/master/statements-and-algorithm-sections.html) |
-| 12 | Functions | [Link](https://specification.modelica.org/master/functions.html) |
-| 13 | Packages | [Link](https://specification.modelica.org/master/packages.html) |
-| 14 | Operator Overloading | [Link](https://specification.modelica.org/master/overloaded-operators.html) |
-| 15 | Stream Connectors | [Link](https://specification.modelica.org/master/stream-connectors.html) |
-| 16 | Synchronous Elements | [Link](https://specification.modelica.org/master/synchronous-language-elements.html) |
-| 17 | State Machines | [Link](https://specification.modelica.org/master/state-machines.html) |
-| 18 | Annotations | [Link](https://specification.modelica.org/master/annotations.html) |
-| A | Concrete Syntax | [Link](https://specification.modelica.org/master/modelica-concrete-syntax.html) |
-| B | DAE Representation | [Link](https://specification.modelica.org/master/modelica-dae-representation.html) |
-| C | Stream Equations | [Link](https://specification.modelica.org/master/derivation-of-stream-equations.html) |
+| 1 | Introduction | [Link](https://specification.modelica.org/maint/3.7/introduction1.html) |
+| 2 | Lexical Structure | [Link](https://specification.modelica.org/maint/3.7/lexical-structure.html) |
+| 3 | Operators/Expressions | [Link](https://specification.modelica.org/maint/3.7/operators-and-expressions.html) |
+| 4 | Classes/Declarations | [Link](https://specification.modelica.org/maint/3.7/class-predefined-types-and-declarations.html) |
+| 5 | Scoping/Flattening | [Link](https://specification.modelica.org/maint/3.7/scoping-name-lookup-and-flattening.html) |
+| 6 | Interfaces/Types | [Link](https://specification.modelica.org/maint/3.7/interface-or-type-relationships.html) |
+| 7 | Inheritance/Modification | [Link](https://specification.modelica.org/maint/3.7/inheritance-modification-and-redeclaration.html) |
+| 8 | Equations | [Link](https://specification.modelica.org/maint/3.7/equations.html) |
+| 9 | Connectors/Connections | [Link](https://specification.modelica.org/maint/3.7/connectors-and-connections.html) |
+| 10 | Arrays | [Link](https://specification.modelica.org/maint/3.7/arrays.html) |
+| 11 | Algorithms | [Link](https://specification.modelica.org/maint/3.7/statements-and-algorithm-sections.html) |
+| 12 | Functions | [Link](https://specification.modelica.org/maint/3.7/functions.html) |
+| 13 | Packages | [Link](https://specification.modelica.org/maint/3.7/packages.html) |
+| 14 | Operator Overloading | [Link](https://specification.modelica.org/maint/3.7/overloaded-operators.html) |
+| 15 | Stream Connectors | [Link](https://specification.modelica.org/maint/3.7/stream-connectors.html) |
+| 16 | Synchronous Elements | [Link](https://specification.modelica.org/maint/3.7/synchronous-language-elements.html) |
+| 17 | State Machines | [Link](https://specification.modelica.org/maint/3.7/state-machines.html) |
+| 18 | Annotations | [Link](https://specification.modelica.org/maint/3.7/annotations.html) |
+| A | Concrete Syntax | [Link](https://specification.modelica.org/maint/3.7/modelica-concrete-syntax.html) |
+| B | DAE Representation | [Link](https://specification.modelica.org/maint/3.7/modelica-dae-representation.html) |
+| C | Stream Equations | [Link](https://specification.modelica.org/maint/3.7/derivation-of-stream-equations.html) |
 
 ---
 
@@ -999,5 +1006,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 430 |
+| Total Contracts | 438 |
 | MLS Chapters Referenced | 21 |

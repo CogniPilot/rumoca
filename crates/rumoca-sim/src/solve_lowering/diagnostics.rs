@@ -1,9 +1,23 @@
 //! The error surfaced by every solve-lowering / simulation entry point, with
 //! the diagnostic metadata (code, label, span) the CLI renders.
+//!
+//! Error codes: `EX0xx` for the simulation runtime (per SPEC_0008 "Error Code
+//! Ranges"). Solve-lowering failures keep the code of the phase that produced
+//! them (`EL0xx` from `rumoca-phase-solve`, `ES0xx` from
+//! `rumoca-phase-structural`) rather than being relabeled here — a code
+//! identifies the defect, not the reporting surface.
+
+/// The numeric solver reported a failure while integrating.
+pub(crate) const EX001_SOLVER_FAILURE: &str = "EX001";
+/// Preparing the lowered model for execution failed (scalarization of runtime
+/// vectors, prepared-value refresh, and similar pre-integration work).
+pub(crate) const EX002_RUNTIME_PREPARATION: &str = "EX002";
+/// A requested parameter/start override was rejected.
+pub(crate) const EX003_INVALID_OVERRIDE: &str = "EX003";
 
 #[derive(Debug)]
 pub enum SimulationDiagnosticError {
-    SolveLowering(rumoca_phase_solve::SolveModelLowerError),
+    SolveLowering(rumoca_phase_solve::LowerError),
     Solver(String),
     RuntimePreparation {
         message: String,
@@ -18,22 +32,42 @@ pub enum SimulationDiagnosticError {
 }
 
 impl SimulationDiagnosticError {
+    /// Stable diagnostic code (SPEC_0008).
+    ///
+    /// Solve-lowering failures delegate, so a lowering defect keeps one code
+    /// from the phase that raised it all the way to the CLI and the LSP.
+    #[must_use]
     pub fn diagnostic_code(&self) -> &'static str {
         match self {
-            Self::SolveLowering(_) => "lowering",
-            Self::Solver(_) | Self::RuntimePreparation { .. } => "simulation",
-            Self::InvalidOverride { .. } => "override",
+            Self::SolveLowering(error) => error.code(),
+            Self::Solver(_) => EX001_SOLVER_FAILURE,
+            Self::RuntimePreparation { .. } => EX002_RUNTIME_PREPARATION,
+            Self::InvalidOverride { .. } => EX003_INVALID_OVERRIDE,
         }
     }
 
     pub fn diagnostic_label(&self) -> String {
         match self {
-            Self::SolveLowering(error) => error.diagnostic_label(),
+            Self::SolveLowering(_) => "Solve lowering failed here".to_string(),
             Self::Solver(_) | Self::RuntimePreparation { .. } => {
                 "simulation failure originates here".to_string()
             }
             Self::InvalidOverride { .. } => "override originates here".to_string(),
         }
+    }
+
+    /// True when the diagnostic came from structural analysis of the lowered
+    /// system (index reduction, matching, tearing) rather than from expression
+    /// lowering.
+    ///
+    /// Read off the `LowerError` *variant*, so a consumer never has to
+    /// recognise a structural rejection by the wording of its message.
+    #[must_use]
+    pub fn is_structural(&self) -> bool {
+        matches!(
+            self,
+            Self::SolveLowering(rumoca_phase_solve::LowerError::Structural { .. })
+        )
     }
 
     pub fn source_span(&self) -> Option<rumoca_core::Span> {

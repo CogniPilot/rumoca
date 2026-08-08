@@ -8,6 +8,10 @@ ACCEPTED
 Crate boundaries are compiler-enforced guardrails. A crate's `Cargo.toml` is
 its reading list; illegal coupling should fail before review.
 
+Per-helper and per-layer ownership assignments are catalogued in
+[SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md). Every row there is normative
+by reference from the section that links it.
+
 ## Specification
 
 ### 1. Bounded Context Per Task
@@ -21,9 +25,27 @@ Rust compiler. See [Dependency Tiers](#dependency-tiers).
 
 ### 3. IR Crates Are Pure Data
 
-`rumoca-ir-ast`, `rumoca-ir-flat`, and `rumoca-ir-dae` contain only data types,
-display/debug implementations, and serde serialization. No evaluation logic,
-phase logic, or side effects.
+`rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, and `rumoca-ir-solve`
+contain only data types, display/debug implementations, and serde
+serialization. No evaluation logic, phase logic, or side effects.
+
+Every source-language parser, generated grammar, recoverable CST, parser state,
+and syntax diagnostic belongs in a `rumoca-phase-parse*` crate. IR crates MUST
+NOT contain or feature-gate source parsers. Current-version wire replay through
+checked constructors is data integrity, not source parsing.
+
+IR data types own the checked constructors needed to make their local
+invariants unrepresentable. `rumoca-ir-dae` also owns private current-version
+wire decoding, checked root assembly, and closed root-bound operations that
+atomically rebuild invariant-related objects. These are data-integrity APIs,
+not semantic analysis: phase crates decide which transformation is valid and
+supply its typed proof/input. DAE exposes no public whole-root validator,
+unchecked builder, mutable partition callback, or invariant-bearing child
+`Deserialize` implementation.
+
+DAE construction enters through `Dae::construct`. Its generatively branded,
+sequential semantic-owner closures share one expression arena; expression
+insertion requires `expr.at(provenance)` and cannot allocate source-free nodes.
 
 Allowed exception: IR crates MAY provide read-only traversal/query helpers over
 their own data when those helpers have no side effects, do not evaluate
@@ -36,8 +58,10 @@ IR nodes without semantic state. These helpers are limited to structural
 ownership-preserving rewrites such as "visit every expression and allow a
 caller-supplied replacement"; they MUST NOT perform name lookup, constant
 evaluation, type inference, lowering, balance analysis, backend selection, or
-runtime behavior. Keep read-only traversal/query helpers and rewrite-shape
-helpers separate so reviewers can see observation versus mutation.
+runtime behavior. A multi-object DAE rewrite must be a consuming, root-bound,
+non-cloneable checked operation so catalog and expression identity change
+atomically. Keep read-only traversal/query helpers and rewrite-shape helpers
+separate so reviewers can see observation versus mutation.
 
 ### 3a. Foundation Types Live in rumoca-core
 
@@ -58,47 +82,27 @@ variable-name interners or serialized ID compatibility layers; if a phase needs
 symbol identity beyond `VarNameId`, introduce a phase-specific ID at that
 boundary.
 
-The `VarName` interner lifecycle is process-local and monotonic. Interned text
-is retained until process or WASM worker teardown so `VarNameId` stays stable
-for in-process IR values still referenced by caches, diagnostics, or snapshots.
-There is intentionally no public reset API. Long-running hosts must treat the
-process/worker/session lifetime as the memory boundary, and must
-serialize/display `VarName` as text rather than persisting `VarNameId`.
+The `VarName` interner is process-local, monotonic, and has no public reset.
+Hosts serialize/display text, never process-local `VarNameId`.
 
 Do not create `rumoca-ir-core`, `rumoca-foundation`, or another micro-crate for
 spans, diagnostics, IDs, or shared IR vocabulary without a spec update.
 
-IR-stage-specific types belong in the matching `rumoca-ir-*` crate. A type
-belongs in `rumoca-core` only if referenced by multiple IR stages or by both IR
-and phase crates.
+IR-specific types stay in their matching crate; shared multi-stage vocabulary
+belongs in `rumoca-core`.
 
 ### 3b. Single-Source Helpers Across the Pipeline
 
-Helpers referenced from multiple crates **must** have one designated
-implementation.
-
-| Helper(s) | Owner | Notes |
-|---|---|---|
-| `balance`, `balance_detail` | `rumoca-phase-dae::balance` | DAE equation/unknown balance arithmetic |
-| `runtime_defined_unknown_names`, `runtime_defined_continuous_unknown_names` | `rumoca-phase-structural::runtime_defined` | Single implementation; phase-structural is the authoritative caller. |
-| `expressions_semantically_equal`, `Expression::semantically_eq_ignoring_spans` | `rumoca-core` | Shared Flat/DAE expression identity. This is structural identity only; evaluation stays in `rumoca-eval-*`. |
-| `INTERNAL_SAMPLE_FUNCTION_NAME`, `source_temporal_function_name`, `source_temporal_function_short_name`, `source_temporal_builtin_name` | `rumoca-core` | Single source for source temporal operator vocabulary shared by DAE and Solve boundary validation. |
-| `expr_contains_var` | `rumoca-ir-dae::expr_query` | Handles every `Expression` variant |
-| `expr_refers_to_var` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
-| `expr_contains_der_of` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
-| Solver runtime time-event helpers (`event_right_limit_time`, scheduled/periodic time-event filtering, dynamic time-event parameter lookup) | `rumoca-solver::timeline` | Concrete solver backends call the shared runtime policy instead of copying time-grid rules. |
-| Solver runtime event-boundary helpers (`process_runtime_event_boundary`, `runtime_event_horizon`, `runtime_root_event_application_time`, `RuntimeEventBoundaryHandler`) | `rumoca-solver::runtime::event` | Concrete solver backends provide callback hooks for backend-local row application/state reset while shared Modelica event-boundary policy stays in `rumoca-solver`. |
-| Solver zero-state orchestration helpers (`run_no_state_output_schedule`, `NoStateOrchestrationBackend`, `NoStateEventStep`) | `rumoca-solver::runtime::no_state` | Concrete solver backends provide row/root/event callbacks while shared no-state output/event-loop policy stays in `rumoca-solver`. |
-| Solver pre-parameter snapshot helpers (`write_pre_params_from_sources`, `update_slot`, `commit_pre_params_after_event`) | `rumoca-solver::runtime::pre_params` | Concrete solver backends call the shared pre-state write policy instead of copying `pre(...)` snapshot mechanics. |
-| Solver algebraic projection helpers (`project_algebraics`, `project_algebraics_and_detect_changes`, `project_initial_*`) | `rumoca-solver::runtime::projection` | Concrete solver backends provide backend-local residual/JVP evaluation through `AlgebraicProjectionModel`; projection policy and change detection stay shared. |
+Shared helpers **must** have one designated implementation. The owner of each
+shared helper is [SPEC_0041 §1](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#1-single-source-helper-catalog-spec_0029-3b).
 
 Required rules:
 
-- Every helper above has exactly one implementation, in the listed
-  module. All callers MUST import from that module path.
-- Do not fork helpers "for convenience." If the owner creates a forbidden
-  dependency, move the helper by spec update instead.
-- Adding a helper to this list requires updating this spec.
+- Each helper has exactly one implementation in its listed module; callers MUST
+  import that path.
+- Do not fork helpers. If ownership creates a forbidden dependency, move it by
+  spec update.
+- List additions require a spec update.
 
 ### 4. Phase Typing via Newtypes
 
@@ -119,7 +123,14 @@ structural-parameter values are available only after instantiation.
 
 ### 5. Evaluation Decoupled from Representation
 
-Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`, `rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` builds on DAE evaluation primitives for solver-facing row evaluation. This keeps evaluation entry points explicit per representation and avoids cross-layer helper crates that hide where behavior lives.
+Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`,
+`rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` evaluates the
+shared typed Solve program vocabulary and both checked Solve roots, including
+tensor-kernel selection and `SolveAlgorithmBlock` lifecycle execution; it MUST
+NOT depend on a Tier 4/5 crate. The numerical simulation state machine and
+driver remain in `rumoca-solver::runtime`. `rumoca-eval-galec` remains an
+independent Algorithm Code oracle and MUST NOT delegate to Solve lowering or
+evaluation.
 
 Phase crates MAY depend on the evaluation crate for the IR they are actively processing
 when the phase needs compile-time evaluation of that representation. For example,
@@ -169,9 +180,7 @@ Re-export guardrails:
   depend on facades but must not add lower-layer forwarding surfaces.
 - Root/foundation crates MUST NOT act as compatibility facades for moved symbols.
   If a primitive is owned by a crate, downstream code must import it from the
-  owning crate, not via re-export through an intermediate crate. For example,
-  `Span` is owned by `rumoca-core` (§3a) and must be imported as
-  `use rumoca_core::Span`, not via a re-export through some other crate.
+  owning crate, not via re-export through an intermediate crate.
 
 CI: `architecture_hardening_test::test_no_new_cross_crate_public_exports`
 rejects `pub use rumoca_*::...` and `pub type X = rumoca_*::...` in non-facade
@@ -194,16 +203,9 @@ CI enforcement:
 ### 10. Session-Owned Source-Root And Class-Graph State
 
 `rumoca-compile` owns IDE/runtime semantic state above the phase crates so
-LSP, WASM, and CLI cannot drift into separate cache/invalidation policies.
-
-| Rule | Where | Why |
-|---|---|---|
-| Source-root membership, status, cache hydration live here | `rumoca-compile` | Single source of truth for project membership |
-| Incremental class graph + namespace/package views live here | `rumoca-compile` | One incremental story across all clients |
-| Workspace roots and imported roots are semantically identical | `rumoca-compile` | Retention/restore differ; semantics do not |
-| Clients MUST NOT implement their own invalidation policy or rebuild scope | tool-lsp / bind-wasm / CLI | Avoid divergent cache stories |
-| `rumoca-tool-lsp` owns transport, async, cancellation, progress | tool-lsp | Editor delivery, not compile semantics |
-| `rumoca-bind-wasm` and the CLI adapt input/output only | bind-wasm / CLI | They are clients, not owners |
+LSP, WASM, and CLI cannot drift into separate cache/invalidation policies. The
+per-rule ownership assignments are
+[SPEC_0041 §2](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#2-session-owned-source-root-and-class-graph-catalog-spec_0029-10).
 
 Session snapshots are the read-side IDE/binding boundary. They MUST be
 detached from the mutable host revision, allow concurrent reads, and reserve
@@ -217,14 +219,9 @@ cached model fingerprint.
 
 `rumoca-compile` MAY persist warm-restore state, scoped to source-root AST/index
 plus resolved aggregate inputs. Typed/flat/DAE artifacts are NOT persisted by
-default — they rebuild lazily behind dependency fingerprints.
-
-| Persisted (MAY) | Not persisted (MUST NOT) |
-|---|---|
-| parsed-source-root cache files | typed-tree artifacts |
-| file summaries, declaration indexes | flat-IR artifacts |
-| package-membership / namespace state | DAE-IR artifacts |
-| model names, class dependency graphs, dependency fingerprints | solve-IR artifacts |
+default — they rebuild lazily behind dependency fingerprints. The exact
+persisted/not-persisted split is
+[SPEC_0041 §3](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#3-session-persistence-catalog-spec_0029-11).
 
 Rationale: the warm-restore goal is to skip rebuilding front-end and resolved
 dependency inputs on reopen, not to serialize the full downstream pipeline.
@@ -232,57 +229,90 @@ dependency inputs on reopen, not to serialize the full downstream pipeline.
 ### 12. Runtime, Backend, Simulation Session, And Visualization Layering
 
 ```
-compiler/session → DAE structural → solve-IR lowering → runtime contracts → solver backend → simulation session → reporting → visualization
+compiler/session → DAE structural → checked Algorithm Code / Solve lowering → checked export/runtime contracts → execution backend → simulation session → reporting → visualization
 ```
 
-| Rule | Owner | Why |
-|---|---|---|
-| Compilation/session orchestration | `rumoca-compile` | Pipeline coordination only; no runtime |
-| DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Transformation Scope |
-| Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
-| DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
-| Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
-| Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
-| GALEC `.alg` text (recorded exception) | `rumoca-ir-galec` | Typed AST printing per eFMI conformance; routed via template context (SPEC_0034 GAL-009) |
-| eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |
-| Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
-| Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
-| Concrete solver backends | `rumoca-solver-{diffsol,rk45,...}` | MUST consume solve-IR only; no DAE/phase deps |
-| Simulation facade | `rumoca-sim` | Composes solvers/reporting/viz behind features |
-| Simulation session APIs | separate from runtime contracts | Simulation sessions are the scheduled runtime surface |
-| Reporting payload contracts | separate from viz assets | Payload is data; viz is presentation |
-| Browser visualization assets | `packages/rumoca-web` | Frontend source/deps; no solver/backend policy |
-| Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |
-| Protocol codecs (FlatBuffers, etc.) | `rumoca-codec-*` | No simulation, no controller, no HTTP, no scene |
+Ownership of each link in that chain is
+[SPEC_0041 §4](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#4-layering-ownership-catalog-spec_0029-12).
 
-Execution adapter crates are not compiler phases. `rumoca-exec-*`
-crates wrap tool invocation, ABI adaptation, loading, GPU/accelerator
-integration, packaging, or runtime compilation. Text-only targets stay in
-codegen. Non-codegen phase crates MUST NOT
-depend on target encoder/JIT libraries such as `wasm-encoder`, Cranelift,
-Inkwell, LLVM ORC bindings, CUDA Driver APIs, or NVRTC; backend bytecode,
-native/JIT execution, and device launch policy belong in `rumoca-exec-*`, above
-the IR-lowering phase.
+Execution adapters are not phases. Non-codegen phases must not depend on target
+encoders, JITs, toolchains, or device APIs. Textual target policy lives in
+`target.toml` and templates; Rust provides generic rendering, validation, and
+IR capability probes. Unsupported capabilities report
+`unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
+generated artifacts through stable execution ABIs and equivalence tests.
 
-Target-language and target-format policy belongs in manifests/templates, not
-Rust control flow. Rust MAY provide generic manifest parsing, template
-rendering, safe path handling, schema validation, and language-neutral feature
-probes over IR data. Rust MUST NOT hard-code target-language capabilities, file
-layouts, emitted language names, or backend feature tables for textual targets
-(C, Rust, CUDA C, MLIR, FMI/eFMI, or future custom targets). A textual/codegen
-target should be addable with `target.toml` plus Jinja templates; required
-capability declarations or unsupported-feature contracts must live in that
-manifest schema and be enforced by generic validation. Unsupported manifest
-capability failures MUST report stable `unsupported-feature:<feature_id>` from
-the manifest feature ID so CI, MSL reports, and release summaries can aggregate
-gaps without knowing the target language.
+FMI deployment is the checked-export case, not a textual projection directly
+from DAE or Solve. `rumoca-ir-fmi` owns the private invariant-bearing FMI
+component aggregate, `rumoca-phase-fmi` constructs it from checked DAE metadata
+and the corresponding checked Solve kernel, and `rumoca-phase-codegen` owns the
+generated FMI 2/3 lifecycle and ABI adapter text. Those adapters consume the
+checked aggregate and MUST NOT repeat Modelica, DAE, or Solve lowering.
 
-JIT targets follow the same layering rule as execution adapters, not textual
-template targets. Cranelift, LLVM ORC/Inkwell, CUDA NVRTC/Driver, and browser
-WebAssembly compilation are allowed only in backend-facing execution crates or
-host bindings. They consume Solve IR or generated artifacts through a stable
-execution ABI and share the prepared-interpreter equivalence tests of concrete
-solver backends.
+Each target manifest selects one proven-valid canonical or checked export IR.
+`rumoca-phase-codegen` exposes a typed, read-only semantic view for each
+supported IR and dispatches that view generically. Rendering never performs a
+compiler transformation or repairs an artifact. Adding another target over an
+existing view MUST require no Rust change; adding support for another IR adds
+only its target-neutral semantic view and capability vocabulary. An export IR
+selectable by a target remains outside the canonical compiler pipeline.
+
+GALEC Production Code consumes a checked `SolveAlgorithmBlock`, never the
+high-level Algorithm Code template view. `rumoca-phase-solve` owns exhaustive
+`AlgorithmCodePackage` lowering into typed storage-neutral programs and ordered
+lifecycle actions. `rumoca-phase-codegen` exposes the completed root and its
+checked correlations; C/H templates may spell the selected ABI but MUST NOT
+choose passing mode, storage, scalar/tensor lowering, scope, scheduling,
+operation, or failure behavior.
+
+`rumoca-phase-codegen` Rust may derive target-neutral typed contexts, schedules,
+shapes, dependency/bounds proofs, symbols, and provenance. It MUST NOT spell or
+assemble target-language tokens, expressions, statements, declarations, or
+files. Those belong entirely to each target's `target.toml` and MiniJinja
+templates, so adding a textual target does not require a Rust dialect or
+renderer. Generic template operations consume semantic IR vocabulary and fail
+closed; they do not return pre-rendered language fragments.
+
+Target-specific package/schema models, constants, filenames, and artifact
+graphs also belong in the owning target directory, not in IR or phase Rust.
+Generic documented artifact commands may hash rendered bytes, validate a
+declared schema, and assemble the declared graph without understanding eFMI or
+another target format. Generic on-disk package assembly is owned by the
+`fmu-packaging` feature and MUST NOT depend on scheduled simulation, transports,
+input devices, viewers, or process control.
+
+Target assets follow the same ownership rule. Builtin target discovery embeds
+arbitrary assets declared beneath a target directory; external targets resolve
+declared asset sources relative to their own directory. Rust MUST NOT maintain
+a target-format bundle registry or map names such as an eFMI schema bundle to
+hardcoded files.
+
+Target-specific semantic lowering is a compiler phase, not code generation.
+`rumoca-phase-codegen/src` MUST NOT contain target-named subsystems such as
+`galec/`, C lowering, XML manifest models, target manglers, or target dispatch.
+It MAY contain small IR-specific adapters under `views/` when they expose only
+typed, read-only semantic data. Checked export data and constructors belong to
+their `rumoca-ir-*` crate; semantic projection belongs to its
+`rumoca-phase-*` crate; all target syntax and presentation belong to the target
+directory.
+
+Within `rumoca-phase-codegen`, `src/codegen/` is reserved for the public
+MiniJinja extension-command surface. Rendering orchestration belongs in generic
+renderer modules and IR adapters belong under `src/views/`. Every registered
+command MUST be pure, deterministic, target-neutral, fail closed, and have
+documented template syntax, typed inputs/outputs, failure behavior, complexity,
+and focused tests. A single registry is the source of truth for registration
+and user-facing command documentation. Commands may return semantic values or
+checked arithmetic/query results; they MUST NOT return target-language
+fragments or perform lowering, name resolution, type repair, target dispatch,
+file assembly, or escaping for a particular output language.
+
+Architecture CI MUST reject production `rumoca-phase-codegen` Rust that builds
+generated or template-context text with formatting, concatenation, replacement,
+writer, or incremental string-assembly APIs. Diagnostic messages and generic
+template/file transport are the only string-handling exceptions; their values
+must not enter semantic template contexts. Target names are rendered from typed
+identity/path segments in templates, not pre-mangled Rust strings.
 
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection
@@ -301,31 +331,10 @@ Tier 2 — IR data: rumoca-ir-*
 Tier 1 — Foundation: rumoca-core
 ```
 
-Input boundary:
-
-- `rumoca-input` owns abstract input identifiers, config compilation, local
-  state, and signal mapping only. It MUST NOT depend on concrete adapters or
-  native device crates such as `gilrs` or `crossterm`.
-- Concrete adapters depend on `rumoca-input` and translate device events.
-- Facades MAY compose input adapters behind opt-in scheduling/input features.
-
-Simulation composition:
-
-- Simulation apps are data/config composition, not per-vehicle framework code.
-- `rumoca-sim` and CLI MAY wire axes from config; app-specific signal names,
-  routes, controller conventions, and viewer keys stay in examples/config/assets.
-- Durable simulation axes are separate crate families:
-  - `rumoca-codec` and codec implementations own logical signal-frame encoding.
-  - Transport crates own bytes-on-the-wire movement.
-  - Solver crates own numerical integration backends.
-  - Input crates own abstract input state and native device adapters.
-  - Browser packages own HTTP/viewer assets and npm locks; Rust crates MAY
-    serve prepared assets, but MUST NOT build frontend packages.
-- Coupled and standalone modes share compiler/solver contracts; loop policy is runtime.
-- Configured signal references MAY read compiled model values, local input state,
-  runtime counters, and constants. The signal-reference language must stay in the
-  simulation/config layer and MUST NOT leak into compiler IR.
+Input-boundary and simulation-composition ownership is
+[SPEC_0041 §5](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#5-input-and-simulation-composition-catalog-spec_0029-dependency-tiers).
 
 ## Related Specs
 
+- [SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) — helper, session, and layer ownership catalog.
 - [SPEC_0021](SPEC_0021_CODE_COMPLEXITY.md) — maintainability and deterministic-collection rules.

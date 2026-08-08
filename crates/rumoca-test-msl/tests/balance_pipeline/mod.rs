@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod balance_pipeline_balance_cohort;
 mod balance_pipeline_config;
 mod balance_pipeline_core;
 mod balance_pipeline_debug_introspection;
@@ -11,6 +12,7 @@ mod balance_pipeline_perf;
 mod balance_pipeline_quality_gate;
 mod balance_pipeline_render_sim;
 mod balance_pipeline_reporting;
+mod balance_pipeline_resource_budgets;
 mod balance_pipeline_selection;
 mod balance_pipeline_sim_worker;
 mod balance_pipeline_stats_report;
@@ -23,6 +25,7 @@ use balance_pipeline_perf::*;
 use balance_pipeline_quality_gate::*;
 use balance_pipeline_render_sim::*;
 use balance_pipeline_reporting::*;
+use balance_pipeline_resource_budgets::*;
 use balance_pipeline_selection::*;
 use balance_pipeline_sim_worker::*;
 use balance_pipeline_stats_report::*;
@@ -47,18 +50,143 @@ fn msl_render_enabled() -> bool {
     false
 }
 
+/// Two count families over the checked DAE, deliberately kept distinct:
+///
+/// - `*_variables` counts **declarations** — one per DAE variable, whatever its
+///   cardinality. This is the "how many things were declared" view used for
+///   reporting (`num_states`, `num_algebraics`).
+/// - `*_scalars` counts **scalars** — `scalar_count()` summed over declarations.
+///   This is the balance-accounting view: MLS 3.6 §4.7 "Balanced Models" counts
+///   "the elements after expanding all records, operator record, and arrays to a
+///   set of scalars of primitive types". It is the only family
+///   `checked_dae_has_input_scalars` and the balance report offset consume.
+///
+/// The split matters for zero-sized arrays, which MLS §10.1 declares legal
+/// ("Zero-valued dimensions are allowed, so: `C x[0];` declares an empty
+/// vector") and §10.7 names *empty arrays*: `input Real u[0]` is retained as one
+/// `Input` declaration with `scalar_count() == 0`, so it adds 1 to
+/// `input_variables` and 0 to `input_scalars` — a zero-cardinality declaration
+/// can therefore never inflate balance accounting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct CheckedDaeCounts {
+    pub variables: usize,
+    pub state_variables: usize,
+    pub algebraic_variables: usize,
+    pub output_variables: usize,
+    pub input_variables: usize,
+    pub parameter_variables: usize,
+    pub constant_variables: usize,
+    pub discrete_real_variables: usize,
+    pub discrete_value_variables: usize,
+    pub state_scalars: usize,
+    pub algebraic_scalars: usize,
+    pub output_scalars: usize,
+    pub input_scalars: usize,
+    pub parameter_scalars: usize,
+    pub constant_scalars: usize,
+    pub discrete_real_scalars: usize,
+    pub discrete_value_scalars: usize,
+    pub continuous_equations: usize,
+    pub continuous_families: usize,
+    pub continuous_scalar_rows: usize,
+    pub initialization_equations: usize,
+    pub initialization_families: usize,
+    pub initialization_scalar_rows: usize,
+    pub discrete_real_equations: usize,
+    pub discrete_value_definitions: usize,
+    pub relations: usize,
+    pub conditions: usize,
+}
+
+pub(super) fn checked_dae_counts(dae: &Dae) -> CheckedDaeCounts {
+    dae.inspect(|view| {
+        let mut counts = CheckedDaeCounts {
+            variables: view.variable_count(),
+            continuous_equations: view.continuous_equation_count(),
+            continuous_families: view.continuous_family_count(),
+            initialization_equations: view.initialization_equation_count(),
+            initialization_families: view.initialization_family_count(),
+            discrete_real_equations: view.discrete_real_equation_count(),
+            discrete_value_definitions: view.discrete_value_definition_count(),
+            relations: view.relation_count(),
+            conditions: view.condition_count(),
+            ..CheckedDaeCounts::default()
+        };
+        counts.continuous_scalar_rows = counts.continuous_equations
+            + (0..view.continuous_family_count())
+                .map(|index| {
+                    view.continuous_family(index)
+                        .expect("dense checked continuous family resolves")
+                        .scalar_rows() as usize
+                })
+                .sum::<usize>();
+        counts.initialization_scalar_rows = counts.initialization_equations
+            + (0..view.initialization_family_count())
+                .map(|index| {
+                    view.initialization_family(index)
+                        .expect("dense checked initialization family resolves")
+                        .scalar_rows() as usize
+                })
+                .sum::<usize>();
+        for (_, variable) in view.variables() {
+            let (variables, scalars) = match variable.role() {
+                rumoca_ir_dae::VariableRole::Parameter => (
+                    &mut counts.parameter_variables,
+                    &mut counts.parameter_scalars,
+                ),
+                rumoca_ir_dae::VariableRole::Constant => {
+                    (&mut counts.constant_variables, &mut counts.constant_scalars)
+                }
+                rumoca_ir_dae::VariableRole::Input => {
+                    (&mut counts.input_variables, &mut counts.input_scalars)
+                }
+                rumoca_ir_dae::VariableRole::State => {
+                    (&mut counts.state_variables, &mut counts.state_scalars)
+                }
+                rumoca_ir_dae::VariableRole::Algebraic => (
+                    &mut counts.algebraic_variables,
+                    &mut counts.algebraic_scalars,
+                ),
+                rumoca_ir_dae::VariableRole::Output => {
+                    (&mut counts.output_variables, &mut counts.output_scalars)
+                }
+                rumoca_ir_dae::VariableRole::DiscreteReal => (
+                    &mut counts.discrete_real_variables,
+                    &mut counts.discrete_real_scalars,
+                ),
+                rumoca_ir_dae::VariableRole::DiscreteValue => (
+                    &mut counts.discrete_value_variables,
+                    &mut counts.discrete_value_scalars,
+                ),
+            };
+            *variables += 1;
+            *scalars += variable.scalar_count();
+        }
+        counts
+    })
+}
+
+pub(super) fn checked_dae_has_input_scalars(dae: &Dae) -> bool {
+    checked_dae_counts(dae).input_scalars != 0
+}
+
 pub(super) const STAGE_WATCHDOG_LOG_INTERVAL_SECS: u64 = 15;
-/// Per-model, per-phase wall budget. Heavy MSL models (MultiBody, Machines, FFT
-/// rectifiers) take 10-19s to *lower* to Solve-IR on a shared 4-core CI runner,
-/// so a 10s budget timed them out non-deterministically and made the IR-Solve
-/// pass count flaky right at the quality-gate threshold. The budget only bounds
-/// genuinely stuck models; correct-but-slow lowering must be allowed to finish,
-/// so it is sized above the observed worst case with margin (local fast runners
-/// never approach it).
-pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 45.0;
+/// Default wall budget for each phase of one model attempt.
+///
+/// A model gets exactly one attempt. Exceeding this budget is a stable harness
+/// failure, not a reason to re-run the compiler with different limits.
+pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = rumoca_worker::MSL_SIM_TIMEOUT_SECS;
 
 pub(super) fn model_attempt_timeout_secs() -> f64 {
-    MODEL_ATTEMPT_TIMEOUT_SECS
+    // Raise-only: a config may extend the budget for a long-running diagnostic
+    // lane, but must never shorten it below the value the committed baseline
+    // was measured with.
+    parity_config()
+        .model_attempt_timeout_secs
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map_or(MODEL_ATTEMPT_TIMEOUT_SECS, |value| {
+            value.max(MODEL_ATTEMPT_TIMEOUT_SECS)
+        })
 }
 
 pub(super) struct ModelCompileEntry {
@@ -96,55 +224,129 @@ impl ModelCompileOutcome {
 }
 
 pub(super) struct StageAbortWatchdog {
-    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    signal: std::sync::Arc<StageWatchdogSignal>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 
+struct StageWatchdogSignal {
+    done: std::sync::Mutex<bool>,
+    changed: std::sync::Condvar,
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicBool,
+}
+
+impl StageWatchdogSignal {
+    fn new() -> Self {
+        Self {
+            done: std::sync::Mutex::new(false),
+            changed: std::sync::Condvar::new(),
+            #[cfg(test)]
+            waiting: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn finish(&self) {
+        *self
+            .done
+            .lock()
+            .expect("stage watchdog mutex should not be poisoned") = true;
+        self.changed.notify_one();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageWatchdogOutcome {
+    Finished,
+    TimedOut,
+}
+
 fn run_stage_watchdog_loop(
-    done_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    signal: std::sync::Arc<StageWatchdogSignal>,
     stage_label: String,
-    timeout_secs: u64,
+    timeout: Duration,
+    log_interval: Duration,
 ) {
-    let timeout = Duration::from_secs(timeout_secs);
+    let started = Instant::now();
+    if wait_for_stage_watchdog(&signal, &stage_label, timeout, log_interval)
+        == StageWatchdogOutcome::Finished
+    {
+        return;
+    }
+    eprintln!(
+        "ERROR: stage timeout exceeded: '{}' ran for {:.1}s (limit={}s). Aborting to prevent a stuck test run.",
+        stage_label,
+        started.elapsed().as_secs_f64(),
+        timeout.as_secs()
+    );
+    std::process::abort();
+}
+
+fn wait_for_stage_watchdog(
+    signal: &StageWatchdogSignal,
+    stage_label: &str,
+    timeout: Duration,
+    log_interval: Duration,
+) -> StageWatchdogOutcome {
     let start = Instant::now();
-    let mut last_log = Instant::now();
+    let mut next_log = log_interval;
+    let mut done = signal
+        .done
+        .lock()
+        .expect("stage watchdog mutex should not be poisoned");
     loop {
-        if done_flag.load(Ordering::Relaxed) {
-            break;
+        if *done {
+            return StageWatchdogOutcome::Finished;
         }
         let elapsed = start.elapsed();
         if elapsed >= timeout {
-            eprintln!(
-                "ERROR: stage timeout exceeded: '{}' ran for {:.1}s (limit={}s). Aborting to prevent a stuck test run.",
-                stage_label,
-                elapsed.as_secs_f64(),
-                timeout_secs
-            );
-            std::process::abort();
+            return StageWatchdogOutcome::TimedOut;
         }
-        if last_log.elapsed().as_secs() >= STAGE_WATCHDOG_LOG_INTERVAL_SECS {
+        if elapsed >= next_log {
             eprintln!(
                 "  stage in-flight: '{}' elapsed {:.1}s / {}s",
                 stage_label,
                 elapsed.as_secs_f64(),
-                timeout_secs
+                timeout.as_secs()
             );
-            last_log = Instant::now();
+            next_log = next_log.saturating_add(log_interval);
+            continue;
         }
-        std::thread::sleep(Duration::from_secs(1));
+        let wake_at = timeout.min(next_log);
+        let wait = wake_at.saturating_sub(elapsed);
+        #[cfg(test)]
+        signal.waiting.store(true, Ordering::Release);
+        let (next_done, _) = signal
+            .changed
+            .wait_timeout(done, wait)
+            .expect("stage watchdog mutex should not be poisoned");
+        done = next_done;
+        #[cfg(test)]
+        signal.waiting.store(false, Ordering::Release);
     }
 }
 
 impl StageAbortWatchdog {
     pub(super) fn new(stage_name: impl Into<String>, timeout_secs: u64) -> Self {
+        Self::with_durations(
+            stage_name,
+            Duration::from_secs(timeout_secs),
+            Duration::from_secs(STAGE_WATCHDOG_LOG_INTERVAL_SECS),
+        )
+    }
+
+    fn with_durations(
+        stage_name: impl Into<String>,
+        timeout: Duration,
+        log_interval: Duration,
+    ) -> Self {
         let stage_name = stage_name.into();
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done_flag = std::sync::Arc::clone(&done);
+        let signal = std::sync::Arc::new(StageWatchdogSignal::new());
+        let worker_signal = std::sync::Arc::clone(&signal);
         let worker = std::thread::spawn(move || {
-            run_stage_watchdog_loop(done_flag, stage_name, timeout_secs);
+            run_stage_watchdog_loop(worker_signal, stage_name, timeout, log_interval);
         });
         Self {
-            done,
+            signal,
             worker: Some(worker),
         }
     }
@@ -152,10 +354,56 @@ impl StageAbortWatchdog {
 
 impl Drop for StageAbortWatchdog {
     fn drop(&mut self) {
-        self.done.store(true, Ordering::Relaxed);
+        self.signal.finish();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod stage_watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn stage_watchdog_drop_wakes_a_blocked_worker_immediately() {
+        let watchdog = StageAbortWatchdog::with_durations(
+            "quick drop",
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+        );
+        let ready_deadline = Instant::now() + Duration::from_secs(1);
+        while !watchdog.signal.waiting.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < ready_deadline,
+                "watchdog worker did not enter its blocking wait"
+            );
+            std::thread::yield_now();
+        }
+
+        let drop_started = Instant::now();
+        drop(watchdog);
+        assert!(
+            drop_started.elapsed() < Duration::from_millis(250),
+            "signaled watchdog Drop should not wait for the polling interval"
+        );
+    }
+
+    #[test]
+    fn stage_watchdog_wait_reports_timeout_at_its_deadline() {
+        let signal = StageWatchdogSignal::new();
+        let timeout = Duration::from_millis(25);
+        let started = Instant::now();
+        let outcome =
+            wait_for_stage_watchdog(&signal, "short timeout", timeout, Duration::from_secs(1));
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome, StageWatchdogOutcome::TimedOut);
+        assert!(elapsed >= timeout, "watchdog fired before its deadline");
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "watchdog timeout should not inherit a one-second polling delay"
+        );
     }
 }
 
@@ -165,6 +413,7 @@ impl Drop for StageAbortWatchdog {
 
 /// Summary of MSL test results (compilation, balance, and simulation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MslSummary {
     /// Git commit used to generate this result file.
     #[serde(default)]
@@ -200,8 +449,8 @@ struct MslSummary {
     partial_models: usize,
     /// Class type breakdown (model, connector, function, etc.)
     #[serde(default)]
-    class_type_counts: HashMap<String, usize>,
-    failures_by_phase: HashMap<String, Vec<String>>,
+    class_type_counts: BTreeMap<String, usize>,
+    failures_by_phase: BTreeMap<String, Vec<String>>,
     unbalanced_list: Vec<String>,
     #[serde(default)]
     initial_unbalanced_list: Vec<String>,
@@ -210,25 +459,32 @@ struct MslSummary {
     non_sim_list: Vec<String>,
     /// Flatten error categories with (model_name, error) pairs
     #[serde(default)]
-    error_categories: HashMap<String, Vec<(String, String)>>,
+    error_categories: BTreeMap<String, Vec<(String, String)>>,
     /// Stable compiler diagnostic/error-code counts across all failed models.
     #[serde(default)]
-    error_code_counts: HashMap<String, usize>,
+    error_code_counts: BTreeMap<String, usize>,
     /// Unsupported backend/semantic feature IDs extracted from stable error codes/messages.
     #[serde(default)]
-    unsupported_feature_counts: HashMap<String, usize>,
+    unsupported_feature_counts: BTreeMap<String, usize>,
     /// Unsupported feature IDs grouped by manifest target/backend label.
     #[serde(default)]
-    unsupported_feature_counts_by_backend: HashMap<String, HashMap<String, usize>>,
+    unsupported_feature_counts_by_backend: BTreeMap<String, BTreeMap<String, usize>>,
     /// Most common undefined variables with counts
     #[serde(default)]
-    undefined_vars: HashMap<String, usize>,
+    undefined_vars: BTreeMap<String, usize>,
     /// Balance value distribution (balance -> count)
     #[serde(default)]
-    balance_distribution: HashMap<i64, usize>,
+    balance_distribution: BTreeMap<i64, usize>,
     /// Per-model results with eq/var counts for comparison with OMC reference data
     #[serde(default)]
     model_results: Vec<MslModelResult>,
+    /// Measured ED001 (unbalanced) cohort derived from `model_results`.
+    ///
+    /// This is the artifact that makes the balance question answerable: it
+    /// separates real balance failures from every other ToDae failure and
+    /// records the component breakdown for each one.
+    #[serde(default)]
+    compile_dae_balance_failures: balance_pipeline_balance_cohort::BalanceFailureCohort,
     /// Timing breakdown for major phases.
     #[serde(default)]
     timings: MslPhaseTimings,
@@ -242,7 +498,7 @@ struct MslSummary {
     /// Number of models where the solver failed.
     #[serde(default)]
     sim_solver_fail: usize,
-    /// Number of models skipped due to wall-clock timeout.
+    /// Number of models whose single attempt exceeded a wall-clock budget.
     #[serde(default)]
     sim_timeout: usize,
     /// Number of models with balance/dimension issues preventing simulation.
@@ -275,6 +531,21 @@ struct MslSummary {
     /// Standalone root MSL example models selected as simulation targets.
     #[serde(default)]
     sim_target_models: Vec<String>,
+    /// Models whose Solve lowering emitted a tensor-preservation report.
+    #[serde(default)]
+    tensor_models_reported: usize,
+    /// Canonical structured-family bodies observed across reported models.
+    #[serde(default)]
+    tensor_family_bodies: usize,
+    /// Canonical family bodies retained as Map/AffineStencil nodes.
+    #[serde(default)]
+    tensor_preserved_family_bodies: usize,
+    /// Derived scalar rows belonging to family bodies that fell back.
+    #[serde(default)]
+    tensor_scalarized_family_rows: usize,
+    /// Tensor-report failures, which must remain zero for a trustworthy KPI.
+    #[serde(default)]
+    tensor_report_errors: usize,
 }
 
 fn current_git_commit() -> String {
@@ -335,6 +606,11 @@ struct ResultCounters {
     total_sim_build_seconds: f64,
     total_sim_run_seconds: f64,
     total_sim_wall_seconds: f64,
+    tensor_models_reported: usize,
+    tensor_family_bodies: usize,
+    tensor_preserved_family_bodies: usize,
+    tensor_scalarized_family_rows: usize,
+    tensor_report_errors: usize,
 }
 
 /// Immutable inputs required to build the final MSL summary.
@@ -342,7 +618,7 @@ struct MslSummaryInputs {
     total_mo_files: usize,
     parse_errors: usize,
     total_models: usize,
-    class_type_counts: HashMap<String, usize>,
+    class_type_counts: BTreeMap<String, usize>,
 }
 
 /// Process a successful compilation result.
@@ -377,7 +653,19 @@ fn process_success_result(result: &MslModelResult, counters: &mut ResultCounters
 }
 
 fn process_result_error_taxonomy(result: &MslModelResult, counters: &mut ResultCounters) {
-    if let Some(code) = result.error_code.as_deref() {
+    // Compile, solve and sim stages all contribute their stable SPEC_0008 code:
+    // a model that compiles but fails to lower or to integrate is still a coded
+    // defect, and `error_code_counts` is the summary map that reaches
+    // `msl_results.json` and the printed report. Keep this in step with
+    // `build_mls_contract_coverage`'s per-package map.
+    for code in [
+        result.error_code.as_deref(),
+        result.ir_solve_error_code.as_deref(),
+        result.sim_error_code.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
         *counters
             .error_code_counts
             .entry(code.to_string())
@@ -584,17 +872,18 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         initial_balanced_models: 0,
         initial_unbalanced_models: 0,
         partial_models: 0,
-        class_type_counts: HashMap::new(),
-        failures_by_phase: HashMap::new(),
+        class_type_counts: BTreeMap::new(),
+        failures_by_phase: BTreeMap::new(),
         unbalanced_list: Vec::new(),
         initial_unbalanced_list: Vec::new(),
         non_sim_list: Vec::new(),
-        error_categories: HashMap::new(),
-        error_code_counts: HashMap::new(),
-        unsupported_feature_counts: HashMap::new(),
-        unsupported_feature_counts_by_backend: HashMap::new(),
-        undefined_vars: HashMap::new(),
-        balance_distribution: HashMap::new(),
+        error_categories: BTreeMap::new(),
+        error_code_counts: BTreeMap::new(),
+        unsupported_feature_counts: BTreeMap::new(),
+        unsupported_feature_counts_by_backend: BTreeMap::new(),
+        undefined_vars: BTreeMap::new(),
+        balance_distribution: BTreeMap::new(),
+        compile_dae_balance_failures: Default::default(),
         model_results: Vec::new(),
         timings: MslPhaseTimings::default(),
         sim_ok: 0,
@@ -611,10 +900,15 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         total_sim_run_seconds: 0.0,
         total_sim_wall_seconds: 0.0,
         sim_target_models: Vec::new(),
+        tensor_models_reported: 0,
+        tensor_family_bodies: 0,
+        tensor_preserved_family_bodies: 0,
+        tensor_scalarized_family_rows: 0,
+        tensor_report_errors: 0,
     }
 }
 
-fn phase_error_result(
+pub(crate) fn phase_error_result(
     name: String,
     phase_reached: &str,
     error: Option<String>,
@@ -652,6 +946,7 @@ fn phase_error_result(
         ir_flat_file: None,
         sim_status: None,
         sim_error: None,
+        sim_error_code: None,
         sim_error_span: None,
         ic_status: None,
         ic_error: None,
@@ -662,6 +957,11 @@ fn phase_error_result(
         ir_solve_seconds: None,
         ir_solve_structural_dae_seconds: None,
         ir_solve_lower_seconds: None,
+        tensor_family_bodies: None,
+        tensor_preserved_family_bodies: None,
+        tensor_scalarized_family_rows: None,
+        tensor_preservation_percent: None,
+        tensor_preservation_error: None,
         sim_backend_build_seconds: None,
         sim_run_seconds: None,
         sim_wall_seconds: None,
@@ -671,8 +971,14 @@ fn phase_error_result(
         ir_dae_file: None,
         ir_solve_file: None,
         ir_solve_error: None,
+        ir_solve_error_code: None,
         timeout_phase: None,
         timeout_seconds: None,
+        balance_detail: None,
+        failure_phase: None,
+        failure_bucket: None,
+        owner_category: None,
+        failure_error_code: None,
     }
 }
 
@@ -709,7 +1015,20 @@ pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> M
             if is_non_sim_failure(phase, error_code.as_deref()) {
                 phase_str = "NonSim";
             }
-            phase_error_result(name, phase_str, Some(error), error_code)
+            let mut result = phase_error_result(name, phase_str, Some(error), error_code);
+            // The typed `FailedPhase` is right here, so classify from it rather
+            // than leaving the sub-bucket to a text heuristic downstream. The
+            // in-process path has no balance breakdown, so a ToDae failure is
+            // classified from the phase alone.
+            let bucket = rumoca_worker::ModelFailureBucket::from_compile_phase(
+                Some(phase),
+                result.is_balanced == Some(false),
+            );
+            result.failure_phase = Some(rumoca_worker::compile_failure_progress_phase(Some(phase)));
+            result.failure_bucket = Some(bucket);
+            result.owner_category = Some(bucket.owner_category());
+            result.failure_error_code = result.error_code.clone();
+            result
         }
     }
 }
@@ -718,10 +1037,14 @@ pub(super) fn summarize_success_result(
     name: String,
     result: &rumoca_compile::compile::CompilationResult,
 ) -> MslModelResult {
-    let detail = rumoca_phase_dae::balance::balance_detail(&result.dae)
-        .expect("MSL success summary requires valid DAE metadata");
     let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
-    summarize_dae_success_fields(name, &result.dae, &detail, discrete_scalars)
+    summarize_dae_success_fields(
+        name,
+        &result.dae,
+        &result.flat,
+        &result.balance_detail,
+        discrete_scalars,
+    )
 }
 
 pub(super) fn summarize_dae_success_result(
@@ -731,6 +1054,7 @@ pub(super) fn summarize_dae_success_result(
     summarize_dae_success_fields(
         name,
         result.dae.as_ref(),
+        result.flat.as_ref(),
         &result.balance_detail,
         result.active_discrete_scalar_count,
     )
@@ -739,9 +1063,11 @@ pub(super) fn summarize_dae_success_result(
 fn summarize_dae_success_fields(
     name: String,
     dae: &Dae,
+    flat: &rumoca_ir_flat::Model,
     detail: &rumoca_phase_dae::balance::BalanceDetail,
     discrete_scalars: i64,
 ) -> MslModelResult {
+    let counts = checked_dae_counts(dae);
     let (scalar_equations, scalar_unknowns) = detail.equations_unknowns();
     let scalar_equations = scalar_equations as i64;
     let scalar_unknowns = scalar_unknowns as i64;
@@ -753,14 +1079,9 @@ fn summarize_dae_success_fields(
     // discrete outputs in local counts. It may also use initialization
     // equations to close local deficits. Include these in reported
     // comparison counts while preserving eq-var parity.
-    let input_scalars = dae
-        .variables
-        .inputs
-        .values()
-        .map(|v| v.size())
-        .sum::<usize>() as i64;
+    let input_scalars = counts.input_scalars as i64;
     let balanced_discrete_scalars =
-        (detail.discrete_real_unknowns + detail.discrete_valued_unknowns) as i64;
+        (detail.discrete_real_unknowns + detail.discrete_value_unknowns) as i64;
     let extra_discrete_report_scalars = (discrete_scalars - balanced_discrete_scalars).max(0);
     let report_offset = input_scalars + extra_discrete_report_scalars;
     let scalar_unknowns_for_report = scalar_unknowns + report_offset;
@@ -771,13 +1092,13 @@ fn summarize_dae_success_fields(
         phase_reached: "Success".to_string(),
         error: None,
         error_code: None,
-        num_states: Some(dae.variables.states.len()),
-        num_algebraics: Some(dae.variables.algebraics.len()),
-        num_f_x: Some(dae.continuous.equations.len()),
+        num_states: Some(counts.state_variables),
+        num_algebraics: Some(counts.algebraic_variables),
+        num_f_x: Some(counts.continuous_scalar_rows),
         balance: Some(balance_for_report),
         is_balanced: Some(balance_for_report == 0),
-        is_partial: Some(dae.metadata.is_partial),
-        class_type: Some(dae.metadata.class_type.as_str().to_string()),
+        is_partial: Some(flat.is_partial),
+        class_type: Some(flat.class_type.as_str().to_string()),
         scalar_equations: usize::try_from(scalar_equations_for_report).ok(),
         scalar_unknowns: usize::try_from(scalar_unknowns_for_report).ok(),
         initial_equation_scalars: usize::try_from(init_check.initial_equation_scalars).ok(),
@@ -796,6 +1117,7 @@ fn summarize_dae_success_fields(
         ir_flat_file: None,
         sim_status: None,
         sim_error: None,
+        sim_error_code: None,
         sim_error_span: None,
         ic_status: None,
         ic_error: None,
@@ -806,6 +1128,11 @@ fn summarize_dae_success_fields(
         ir_solve_seconds: None,
         ir_solve_structural_dae_seconds: None,
         ir_solve_lower_seconds: None,
+        tensor_family_bodies: None,
+        tensor_preserved_family_bodies: None,
+        tensor_scalarized_family_rows: None,
+        tensor_preservation_percent: None,
+        tensor_preservation_error: None,
         sim_backend_build_seconds: None,
         sim_run_seconds: None,
         sim_wall_seconds: None,
@@ -815,8 +1142,14 @@ fn summarize_dae_success_fields(
         ir_dae_file: None,
         ir_solve_file: None,
         ir_solve_error: None,
+        ir_solve_error_code: None,
         timeout_phase: None,
         timeout_seconds: None,
+        balance_detail: None,
+        failure_phase: None,
+        failure_bucket: None,
+        owner_category: None,
+        failure_error_code: None,
     }
 }
 

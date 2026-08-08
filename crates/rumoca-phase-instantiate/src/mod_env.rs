@@ -13,7 +13,7 @@ use rumoca_ir_ast::AstIndexMap as IndexMap;
 
 mod record_projection;
 
-pub(super) use record_projection::propagate_record_binding_to_fields;
+pub(super) use record_projection::{RecordBindingProjection, propagate_record_binding_to_fields};
 
 const MAX_MOD_RESOLVE_DEPTH: usize = 20;
 
@@ -41,12 +41,16 @@ pub(super) struct PopulateModEnvInput<'a> {
     pub(super) target_class: Option<&'a ast::ClassDef>,
     pub(super) parent_snapshot: &'a IndexMap<ast::QualifiedName, rumoca_ir_ast::ModificationValue>,
     pub(super) shifted_parent_keys: &'a IndexMap<ast::QualifiedName, ()>,
+    /// Import aliases of the class that wrote these modifications (MLS §13.2).
+    pub(super) modifier_imports: &'a [(String, String)],
 }
 
 struct ScopedInsertContext<'a> {
     parent_snapshot: &'a IndexMap<ast::QualifiedName, rumoca_ir_ast::ModificationValue>,
     shifted_parent_keys: &'a IndexMap<ast::QualifiedName, ()>,
     source_scope: Option<ast::QualifiedName>,
+    /// Import aliases of the class that wrote these modifications (MLS §13.2).
+    imports: &'a [(String, String)],
 }
 
 struct ModifierEvalContext<'a> {
@@ -73,6 +77,8 @@ struct NestedModificationContext<'a> {
     effective_components: &'a IndexMap<String, ast::Component>,
     tree: &'a ast::ClassTree,
     source_scope: Option<ast::QualifiedName>,
+    /// Import aliases of the class that wrote these modifications (MLS §13.2).
+    imports: &'a [(String, String)],
 }
 
 struct NestedModificationFlags<'a> {
@@ -101,6 +107,7 @@ pub(super) fn populate_modification_environment(
         target_class,
         parent_snapshot,
         shifted_parent_keys,
+        modifier_imports,
     } = input;
     let eval_ctx = ModifierEvalContext {
         tree,
@@ -111,6 +118,7 @@ pub(super) fn populate_modification_environment(
             parent_snapshot,
             shifted_parent_keys,
             source_scope: Some(enclosing_modifier_scope(ctx)),
+            imports: modifier_imports,
         },
     };
 
@@ -146,9 +154,12 @@ fn insert_modifier_value_with_structural_overrides(
         );
     let resolved_expr = resolve_modification_expr(
         value_expr,
-        ctx.mod_env(),
-        effective_components,
-        tree,
+        ModifierResolveScope {
+            mod_env: ctx.mod_env(),
+            effective_components,
+            tree,
+            imports: insert_ctx.imports,
+        },
         options.allow_string_eval,
     )?;
     let structural_field_overrides = collect_structural_integer_fields_from_sibling_reference(
@@ -346,6 +357,7 @@ fn apply_nested_class_modifier(
         effective_components: eval_ctx.effective_components,
         tree: eval_ctx.tree,
         source_scope: eval_ctx.insert_ctx.source_scope.clone(),
+        imports: eval_ctx.insert_ctx.imports,
     };
     process_nested_modifications_recursive(
         ctx,
@@ -517,7 +529,8 @@ fn collect_structural_integer_fields_from_sibling_reference(
         .modifications
         .iter()
         .filter_map(|(field_name, field_expr)| {
-            try_eval_integer_expr(&eval_ctx, field_expr).map(|value| {
+            let binding = field_expr.component_modifier_binding_value()?;
+            try_eval_integer_expr(&eval_ctx, binding).map(|value| {
                 (
                     field_name.clone(),
                     ast::Expression::Terminal {
@@ -526,7 +539,7 @@ fn collect_structural_integer_fields_from_sibling_reference(
                             text: value.to_string().into(),
                             ..Default::default()
                         },
-                        span: field_expr.span(),
+                        span: binding.span(),
                     },
                 )
             })
@@ -541,19 +554,27 @@ fn component_type_is_record(comp: &ast::Component, tree: &ast::ClassTree) -> boo
         .is_some_and(|class| class.class_type == rumoca_core::ClassType::Record)
 }
 
+/// Everything a modifier expression is resolved against (MLS §7.2.4: the scope
+/// where the modification was written).
+#[derive(Clone, Copy)]
+struct ModifierResolveScope<'a> {
+    mod_env: &'a ast::ModificationEnvironment,
+    effective_components: &'a IndexMap<String, ast::Component>,
+    tree: &'a ast::ClassTree,
+    /// Import aliases visible where the expression was written (MLS §13.2), used
+    /// to reach a constant that the writing class named through an `import`.
+    imports: &'a [(String, String)],
+}
+
 /// Resolve a modification expression by evaluating component references in scope.
 fn resolve_modification_expr(
     expr: &ast::Expression,
-    mod_env: &ast::ModificationEnvironment,
-    effective_components: &IndexMap<String, ast::Component>,
-    tree: &ast::ClassTree,
+    scope: ModifierResolveScope<'_>,
     allow_string_eval: bool,
 ) -> InstantiateResult<ast::Expression> {
     resolve_modification_expr_with_depth(
         expr,
-        mod_env,
-        effective_components,
-        tree,
+        scope,
         allow_string_eval,
         ModificationResolveMode::Modifier,
         0,
@@ -568,20 +589,45 @@ pub(super) fn resolve_declaration_binding_expr(
 ) -> InstantiateResult<ast::Expression> {
     resolve_modification_expr_with_depth(
         expr,
-        mod_env,
-        effective_components,
-        tree,
+        ModifierResolveScope {
+            mod_env,
+            effective_components,
+            tree,
+            imports: &[],
+        },
         false,
         ModificationResolveMode::DeclarationBinding,
         0,
     )
 }
 
+/// Decide a Boolean parameter expression written in this scope (MLS §4.4.5).
+///
+/// The expression is first read exactly as written. Only when that leaves it
+/// undecided is it retried with the writing class's `import` aliases applied
+/// (MLS §13.2/§5.3.2) — a modifier such as `useStrayPermeance =
+/// ratioCommonLeakage < (1 - eps)` names an imported package constant that is
+/// invisible under its short spelling. Qualification is a lexical fact about the
+/// name, not a value: the retry can only *find* a declaration, never invent one,
+/// and the qualified spelling is used solely to decide, never stored.
+fn decide_boolean_modifier(
+    expr: &ast::Expression,
+    scope: ModifierResolveScope<'_>,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+) -> Option<bool> {
+    if let Some(value) = evaluate_component_condition(eval_ctx, expr) {
+        return Some(value);
+    }
+    if !crate::dims::expr_mentions_import_alias(expr, scope.imports) {
+        return None;
+    }
+    let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, expr, scope.imports);
+    evaluate_component_condition(eval_ctx, &qualified)
+}
+
 fn resolve_modification_expr_with_depth(
     expr: &ast::Expression,
-    mod_env: &ast::ModificationEnvironment,
-    effective_components: &IndexMap<String, ast::Component>,
-    tree: &ast::ClassTree,
+    scope: ModifierResolveScope<'_>,
     allow_string_eval: bool,
     mode: ModificationResolveMode,
     depth: usize,
@@ -589,6 +635,12 @@ fn resolve_modification_expr_with_depth(
     if depth > MAX_MOD_RESOLVE_DEPTH {
         return Ok(expr.clone());
     }
+    let ModifierResolveScope {
+        mod_env,
+        effective_components,
+        tree,
+        imports: _,
+    } = scope;
 
     let eval_ctx = InstantiateEvalCtx {
         tree,
@@ -599,7 +651,7 @@ fn resolve_modification_expr_with_depth(
 
     // Resolve booleans first (e.g., useFilter=useFilter) so conditional
     // components in nested classes evaluate against the parent's value.
-    if let Some(value) = evaluate_component_condition(&eval_ctx, expr) {
+    if let Some(value) = decide_boolean_modifier(expr, scope, &eval_ctx) {
         return Ok(ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::Bool,
             token: rumoca_core::Token {
@@ -637,13 +689,12 @@ fn resolve_modification_expr_with_depth(
 
     // Resolve direct references in current scope (e.g. resolveInFrame=resolveInFrame).
     if mode == ModificationResolveMode::Modifier
-        && let Some(resolved_ref) = resolve_single_part_ref_expr(expr, mod_env)
+        && let Some(resolved_ref) =
+            resolve_single_part_ref_expr(expr, mod_env, effective_components, tree)
     {
         return resolve_modification_expr_with_depth(
             &resolved_ref,
-            mod_env,
-            effective_components,
-            tree,
+            scope,
             allow_string_eval,
             mode,
             depth + 1,
@@ -654,9 +705,7 @@ fn resolve_modification_expr_with_depth(
     if let Some(resolved) = resolve_sibling_modification(expr, effective_components) {
         return resolve_modification_expr_with_depth(
             &resolved,
-            mod_env,
-            effective_components,
-            tree,
+            scope,
             allow_string_eval,
             mode,
             depth + 1,
@@ -669,6 +718,8 @@ fn resolve_modification_expr_with_depth(
 fn resolve_single_part_ref_expr(
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
+    effective_components: &IndexMap<String, ast::Component>,
+    tree: &ast::ClassTree,
 ) -> Option<ast::Expression> {
     let ast::Expression::ComponentReference(comp_ref) = expr else {
         return None;
@@ -691,7 +742,26 @@ fn resolve_single_part_ref_expr(
         return Some(mod_value.value.clone());
     }
 
-    None
+    // A modifier is evaluated in the scope where it is written (MLS §7.2.4).
+    // Enumeration values have no arithmetic evaluator, so follow an enum
+    // parameter's declaration binding here until the chain settles to a literal.
+    // Other component references deliberately retain their identity: inlining a
+    // numeric binding, for example, would change tensor-family ownership.
+    let component = effective_components.get(name)?;
+    let type_table_proves_enum = matches!(
+        component
+            .type_id
+            .and_then(|type_id| tree.type_table.get(type_id)),
+        Some(ast::Type::Enumeration(_))
+    );
+    let declaration_proves_enum = component
+        .type_def_id
+        .and_then(|def_id| tree.get_class_by_def_id(def_id))
+        .is_some_and(|class| !class.enum_literals.is_empty());
+    if !type_table_proves_enum && !declaration_proves_enum {
+        return None;
+    }
+    component.binding.clone()
 }
 
 fn select_array_value(
@@ -783,9 +853,12 @@ fn process_nested_modifications_recursive(
                 } else {
                     resolve_modification_expr(
                         value,
-                        ctx.mod_env(),
-                        nested_ctx.effective_components,
-                        nested_ctx.tree,
+                        ModifierResolveScope {
+                            mod_env: ctx.mod_env(),
+                            effective_components: nested_ctx.effective_components,
+                            tree: nested_ctx.tree,
+                            imports: nested_ctx.imports,
+                        },
                         false,
                     )?
                 };

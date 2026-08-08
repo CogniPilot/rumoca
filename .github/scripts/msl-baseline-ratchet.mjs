@@ -2,19 +2,121 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const EXPECTED_QUALITY_GATE_VERSION = 1;
+const EXPECTED_QUALITY_GATE_VERSION = 2;
+const DEFAULT_CHECKED_IN_BASELINE_PATH = fileURLToPath(
+  new URL(
+    '../../crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json',
+    import.meta.url,
+  ),
+);
+const V2_FLATTEN_MODELS_BEFORE = 565;
+const V2_FLATTEN_MODELS_AFTER = 555;
+const V2_REATTRIBUTED_ERROR_CODE = 'ER002';
+const V2_REATTRIBUTED_MODELS = [
+  'Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater',
+  'Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank',
+  'Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1',
+  'Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2',
+  'Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1',
+  'Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2',
+  'Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks',
+  'Modelica.Fluid.Examples.Explanatory.MeasuringTemperature',
+  'Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings',
+  'Modelica.Fluid.Examples.InverseParameterization',
+];
+const CHECKED_DAE_CONTRACT_FROM = 'permissive-dae-v1';
+const CHECKED_DAE_CONTRACT_TO = 'checked-dae-v1';
+const CHECKED_DAE_EVIDENCE_COMMIT = '3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b';
+const CHECKED_DAE_STAGE_COUNTS_BEFORE = {
+  parse_models: 566,
+  flatten_models: 555,
+  dae_models: 545,
+  compiled_models: 545,
+  solve_models: 446,
+  balanced_models: 532,
+  unbalanced_models: 0,
+  partial_models: 13,
+  balance_denominator: 532,
+  initial_balanced_models: 532,
+  initial_unbalanced_models: 0,
+  sim_attempted: 496,
+  ic_attempted: 267,
+  ic_ok: 252,
+  ic_solver_fail: 15,
+  sim_ok: 207,
+};
+const CHECKED_DAE_STAGE_COUNTS_AFTER = {
+  parse_models: 566,
+  flatten_models: 444,
+  dae_models: 228,
+  compiled_models: 228,
+  solve_models: 202,
+  balanced_models: 217,
+  unbalanced_models: 0,
+  partial_models: 11,
+  balance_denominator: 217,
+  initial_balanced_models: 217,
+  initial_unbalanced_models: 0,
+  sim_attempted: 210,
+  ic_attempted: 150,
+  ic_ok: 146,
+  ic_solver_fail: 4,
+  sim_ok: 122,
+};
+const CHECKED_DAE_PHASE_FAILURE_COUNTS = {
+  Flatten: 82,
+  Instantiate: 9,
+  Resolve: 25,
+  ToDae: 216,
+  Typecheck: 6,
+};
+const CHECKED_DAE_ERROR_CODE_COUNTS = {
+  ED001: 24,
+  ED008: 7,
+  ED009: 3,
+  ED010: 14,
+  ED013: 22,
+  ED018: 29,
+  ED019: 111,
+  ED020: 1,
+  ED021: 5,
+  EF004: 24,
+  EF005: 11,
+  EF016: 16,
+  EF020: 1,
+  EF024: 16,
+  EF025: 12,
+  EI007: 2,
+  EI012: 6,
+  EI027: 1,
+  EL005: 60,
+  EMSL_TIMEOUT_MODEL_ATTEMPT: 11,
+  ER066: 23,
+  ER130: 2,
+  ET000: 1,
+  ET004: 4,
+  EX001: 6,
+  EX002: 13,
+};
 
-const HIGHER_IS_BETTER = [
+const CONTEXT_INDEPENDENT_HIGHER_IS_BETTER = [
   ['parse models', ['parse_models']],
   ['flatten models', ['flatten_models']],
+  ['DAE models', ['dae_models']],
   ['compiled models', ['compiled_models']],
   ['solve models', ['solve_models']],
   ['balanced models', ['balanced_models']],
+  ['balance denominator', ['balance_denominator']],
   ['initial balanced models', ['initial_balanced_models']],
+  ['simulation attempts', ['sim_attempted']],
+  ['initial-condition attempts', ['ic_attempted']],
   ['initial-condition solves', ['ic_ok']],
   ['successful simulations', ['sim_ok']],
+];
+
+const OMC_DEPENDENT_HIGHER_IS_BETTER = [
   ['trace models compared', ['trace_accuracy_stats', 'models_compared']],
   ['high trace agreement', ['trace_accuracy_stats', 'agreement_high']],
   [
@@ -23,10 +125,14 @@ const HIGHER_IS_BETTER = [
   ],
 ];
 
-const LOWER_IS_BETTER = [
+const CONTEXT_INDEPENDENT_LOWER_IS_BETTER = [
   ['partial models', ['partial_models']],
   ['unbalanced models', ['unbalanced_models']],
+  ['initial unbalanced models', ['initial_unbalanced_models']],
   ['initial-condition solver failures', ['ic_solver_fail']],
+];
+
+const OMC_DEPENDENT_LOWER_IS_BETTER = [
   ['trace deviation models', ['trace_accuracy_stats', 'agreement_deviation']],
   ['trace bad channels', ['trace_accuracy_stats', 'bad_channels_total']],
   ['trace severe channels', ['trace_accuracy_stats', 'severe_channels_total']],
@@ -60,14 +166,24 @@ const LOWER_FLOAT_IS_BETTER = [
   ],
 ];
 
-export function promoteBaselineIfImproved({ sourcePath, baselinePath, log = console.log }) {
+export function promoteBaselineIfImproved({
+  sourcePath,
+  baselinePath,
+  checkedInBaselinePath = DEFAULT_CHECKED_IN_BASELINE_PATH,
+  log = console.log,
+}) {
   const sourceText = fs.readFileSync(sourcePath, 'utf8');
   const baselineText = fs.readFileSync(baselinePath, 'utf8');
   const source = parseJson(sourceText, sourcePath);
   const baseline = parseJson(baselineText, baselinePath);
   ensurePromotableSnapshot(source, sourcePath);
+  const checkedInBaseline = loadCheckedInBaselineForOmcMigration({
+    source,
+    baseline,
+    checkedInBaselinePath,
+  });
 
-  const decision = ratchetDecision(source, baseline);
+  const decision = ratchetDecision(source, baseline, checkedInBaseline);
   if (!decision.promote) {
     log(`MSL quality baseline not promoted: ${decision.reason}`);
     return decision;
@@ -106,16 +222,97 @@ export function ensurePromotableSnapshot(snapshot, sourceName = 'source snapshot
   }
 }
 
-export function ratchetDecision(current, baseline) {
+export function ratchetDecision(current, baseline, checkedInBaseline = null) {
   ensureSameContext(current, baseline, ['simulatable_attempted']);
   ensureSameContext(current, baseline, ['sim_target_models']);
+  const contractDeclaration = Object.hasOwn(current, 'compiler_contract_migration')
+    ? valueAt(current, ['compiler_contract_migration'])
+    : null;
+  const schemaMigration = validatedSchemaMigration(current, baseline, contractDeclaration);
+  const currentOmc = nonEmptyStringAt(current, ['omc_version'], 'current snapshot');
+  const baselineOmc = nonEmptyStringAt(baseline, ['omc_version'], 'baseline snapshot');
+  const omcContextChanged = currentOmc !== baselineOmc;
+  if (omcContextChanged) {
+    validateOmcContextMigration(current, baseline, checkedInBaseline);
+  }
+  const contractMigration = schemaMigration === null
+    ? null
+    : validatedCompilerContractMigration(
+      current,
+      baseline,
+      checkedInBaseline,
+      contractDeclaration,
+  );
+  const comparisonBaseline = contractMigration === null ? baseline : checkedInBaseline;
+  const comparisonOmc = nonEmptyStringAt(
+    comparisonBaseline,
+    ['omc_version'],
+    'comparison baseline',
+  );
+  const comparisonOmcChanged = currentOmc !== comparisonOmc;
+  const skippedPaths = new Set(
+    schemaMigration === null || contractMigration !== null ? [] : ['flatten_models'],
+  );
 
   const improvements = [];
   const regressions = [];
-  compareIntegerMetrics(HIGHER_IS_BETTER, current, baseline, true, improvements, regressions);
-  compareIntegerMetrics(LOWER_IS_BETTER, current, baseline, false, improvements, regressions);
-  compareFloatMetrics(LOWER_FLOAT_IS_BETTER, current, baseline, improvements, regressions);
-  compareDerivedMetrics(current, baseline, improvements, regressions);
+  compareIntegerMetrics(
+    CONTEXT_INDEPENDENT_HIGHER_IS_BETTER,
+    current,
+    comparisonBaseline,
+    true,
+    improvements,
+    regressions,
+    skippedPaths,
+  );
+  compareIntegerMetrics(
+    CONTEXT_INDEPENDENT_LOWER_IS_BETTER,
+    current,
+    comparisonBaseline,
+    false,
+    improvements,
+    regressions,
+    skippedPaths,
+  );
+  if (!comparisonOmcChanged) {
+    compareIntegerMetrics(
+      OMC_DEPENDENT_HIGHER_IS_BETTER,
+      current,
+      comparisonBaseline,
+      true,
+      improvements,
+      regressions,
+    );
+    compareIntegerMetrics(
+      OMC_DEPENDENT_LOWER_IS_BETTER,
+      current,
+      comparisonBaseline,
+      false,
+      improvements,
+      regressions,
+    );
+    compareFloatMetrics(
+      LOWER_FLOAT_IS_BETTER,
+      current,
+      comparisonBaseline,
+      improvements,
+      regressions,
+    );
+    compareDerivedMetrics(current, comparisonBaseline, improvements, regressions);
+    compareRuntimeSpeedups(current, comparisonBaseline, improvements, regressions);
+  } else {
+    improvements.push(`OMC context: ${comparisonOmc} -> ${currentOmc}`);
+  }
+  if (schemaMigration !== null) {
+    improvements.push(
+      `quality schema: ${schemaMigration.from_quality_gate_version} -> ${schemaMigration.to_quality_gate_version}`,
+    );
+  }
+  if (contractMigration !== null) {
+    improvements.push(
+      `compiler contract: ${contractMigration.from_contract} -> ${contractMigration.to_contract}`,
+    );
+  }
 
   if (regressions.length > 0) {
     return {
@@ -134,6 +331,270 @@ export function ratchetDecision(current, baseline) {
     };
   }
   return { promote: true, improvements, regressions };
+}
+
+function loadCheckedInBaselineForOmcMigration({ source, baseline, checkedInBaselinePath }) {
+  const sourceOmc = nonEmptyStringAt(source, ['omc_version'], 'source snapshot');
+  const baselineOmc = nonEmptyStringAt(baseline, ['omc_version'], 'baseline snapshot');
+  if (sourceOmc === baselineOmc) {
+    return null;
+  }
+  const checkedInText = fs.readFileSync(checkedInBaselinePath, 'utf8');
+  return parseJson(checkedInText, checkedInBaselinePath);
+}
+
+function validateOmcContextMigration(current, baseline, checkedInBaseline) {
+  assert.notEqual(
+    checkedInBaseline,
+    null,
+    'cannot ratchet baseline: changed OMC context requires the reviewed checked-in migration',
+  );
+  assert.equal(
+    typeof checkedInBaseline,
+    'object',
+    'cannot ratchet baseline: checked-in OMC migration baseline must be an object',
+  );
+  ensurePromotableSnapshot(checkedInBaseline, 'checked-in migration baseline');
+  const currentOmc = nonEmptyStringAt(current, ['omc_version'], 'current snapshot');
+  const baselineOmc = nonEmptyStringAt(baseline, ['omc_version'], 'baseline snapshot');
+  assert.equal(
+    nonEmptyStringAt(checkedInBaseline, ['omc_version'], 'checked-in migration baseline'),
+    currentOmc,
+    'cannot ratchet baseline: checked-in OMC context does not match current snapshot',
+  );
+  const migration = valueAt(checkedInBaseline, ['omc_context_migration']);
+  assert.equal(
+    typeof migration,
+    'object',
+    'cannot ratchet baseline: checked-in omc_context_migration must be an object',
+  );
+  assert.equal(
+    nonEmptyStringAt(migration, ['from_omc_version'], 'OMC context migration'),
+    baselineOmc,
+    'cannot ratchet baseline: OMC migration source does not match promoted baseline',
+  );
+  assert.equal(
+    nonEmptyStringAt(migration, ['to_omc_version'], 'OMC context migration'),
+    currentOmc,
+    'cannot ratchet baseline: OMC migration target does not match current snapshot',
+  );
+  const currentTargetCount = integerAt(current, ['sim_target_models'], 'current snapshot');
+  assert.equal(
+    integerAt(migration, ['sim_target_models'], 'OMC context migration'),
+    currentTargetCount,
+    'cannot ratchet baseline: OMC migration target count does not match current snapshot',
+  );
+  assert.equal(
+    integerAt(checkedInBaseline, ['sim_target_models'], 'checked-in migration baseline'),
+    currentTargetCount,
+    'cannot ratchet baseline: checked-in OMC target count does not match current snapshot',
+  );
+}
+
+function validatedSchemaMigration(current, baseline, contractMigration = null) {
+  const currentVersion = integerAt(current, ['quality_gate_version'], 'current snapshot');
+  const baselineVersion = integerAt(baseline, ['quality_gate_version'], 'baseline snapshot');
+  if (currentVersion === baselineVersion) {
+    return null;
+  }
+  assert.equal(
+    currentVersion,
+    EXPECTED_QUALITY_GATE_VERSION,
+    'cannot ratchet baseline: current quality schema is unsupported',
+  );
+  const migration = valueAt(current, ['metric_schema_migration']);
+  assert.equal(
+    typeof migration,
+    'object',
+    'cannot ratchet baseline: metric_schema_migration must be an object',
+  );
+  assert.equal(
+    integerAt(migration, ['from_quality_gate_version'], 'metric schema migration'),
+    baselineVersion,
+    'cannot ratchet baseline: schema migration source does not match baseline',
+  );
+  assert.equal(
+    integerAt(migration, ['to_quality_gate_version'], 'metric schema migration'),
+    currentVersion,
+    'cannot ratchet baseline: schema migration target does not match current snapshot',
+  );
+  const before = integerAt(
+    migration,
+    ['flatten_models_before'],
+    'metric schema migration',
+  );
+  const after = integerAt(
+    migration,
+    ['flatten_models_after'],
+    'metric schema migration',
+  );
+  assert.equal(
+    before,
+    V2_FLATTEN_MODELS_BEFORE,
+    'cannot ratchet baseline: migration before-count differs from the reviewed correction',
+  );
+  assert.equal(
+    after,
+    V2_FLATTEN_MODELS_AFTER,
+    'cannot ratchet baseline: migration after-count differs from the reviewed correction',
+  );
+  assert.equal(
+    integerAt(baseline, ['flatten_models'], 'baseline snapshot'),
+    before,
+    'cannot ratchet baseline: migration before-count does not match baseline',
+  );
+  const schemaTargetFlatten = contractMigration === null
+    ? integerAt(current, ['flatten_models'], 'current snapshot')
+    : integerAt(
+      contractMigration,
+      ['stage_counts_before', 'flatten_models'],
+      'compiler contract migration',
+    );
+  assert.equal(
+    schemaTargetFlatten,
+    after,
+    'cannot ratchet baseline: migration after-count does not match its schema target',
+  );
+  const models = valueAt(migration, ['reattributed_models']);
+  assert.equal(Array.isArray(models), true, 'metric schema migration model set must be an array');
+  assert.equal(
+    models.every((model) => typeof model === 'string' && model.length > 0),
+    true,
+    'metric schema migration model names must be non-empty strings',
+  );
+  assert.equal(
+    models.length,
+    before - after,
+    'metric schema migration model count must explain the count delta',
+  );
+  assert.equal(
+    new Set(models).size,
+    models.length,
+    'metric schema migration model set must be unique',
+  );
+  assert.deepEqual(
+    [...models].sort(),
+    [...V2_REATTRIBUTED_MODELS].sort(),
+    'metric schema migration model set differs from the reviewed correction',
+  );
+  assert.equal(
+    stringAt(migration, ['reattributed_error_code'], 'metric schema migration'),
+    V2_REATTRIBUTED_ERROR_CODE,
+    'metric schema migration diagnostic cohort differs from the reviewed correction',
+  );
+  return migration;
+}
+
+function validatedCompilerContractMigration(
+  current,
+  baseline,
+  checkedInBaseline,
+  declaration,
+) {
+  if (declaration === null) {
+    return null;
+  }
+  assert.notEqual(
+    checkedInBaseline,
+    null,
+    'cannot ratchet baseline: compiler contract cutover requires the reviewed checked-in baseline',
+  );
+  const checkedDeclaration = valueAt(checkedInBaseline, ['compiler_contract_migration']);
+  assert.deepEqual(
+    declaration,
+    checkedDeclaration,
+    'cannot ratchet baseline: current compiler contract declaration differs from checked-in review',
+  );
+  assert.equal(
+    stringAt(declaration, ['from_contract'], 'compiler contract migration'),
+    CHECKED_DAE_CONTRACT_FROM,
+    'cannot ratchet baseline: compiler contract source differs from the reviewed cutover',
+  );
+  assert.equal(
+    stringAt(declaration, ['to_contract'], 'compiler contract migration'),
+    CHECKED_DAE_CONTRACT_TO,
+    'cannot ratchet baseline: compiler contract target differs from the reviewed cutover',
+  );
+  const evidenceCommit = stringAt(
+    declaration,
+    ['evidence_git_commit'],
+    'compiler contract migration',
+  );
+  assert.equal(
+    evidenceCommit,
+    CHECKED_DAE_EVIDENCE_COMMIT,
+    'cannot ratchet baseline: compiler contract evidence commit differs from review',
+  );
+  assert.equal(
+    stringAt(checkedInBaseline, ['git_commit'], 'checked-in migration baseline'),
+    evidenceCommit,
+    'cannot ratchet baseline: checked-in baseline is not the reviewed evidence run',
+  );
+  assert.equal(
+    integerAt(declaration, ['sim_target_models'], 'compiler contract migration'),
+    integerAt(current, ['sim_target_models'], 'current snapshot'),
+    'cannot ratchet baseline: compiler contract target set differs',
+  );
+  assert.deepEqual(
+    valueAt(declaration, ['stage_counts_before']),
+    CHECKED_DAE_STAGE_COUNTS_BEFORE,
+    'cannot ratchet baseline: compiler contract source counts differ from review',
+  );
+  assert.deepEqual(
+    valueAt(declaration, ['stage_counts_after']),
+    CHECKED_DAE_STAGE_COUNTS_AFTER,
+    'cannot ratchet baseline: compiler contract target counts differ from review',
+  );
+  assert.deepEqual(
+    valueAt(declaration, ['phase_failure_counts_after']),
+    CHECKED_DAE_PHASE_FAILURE_COUNTS,
+    'cannot ratchet baseline: compiler contract failure census differs from review',
+  );
+  assert.deepEqual(
+    valueAt(declaration, ['error_code_counts_after']),
+    CHECKED_DAE_ERROR_CODE_COUNTS,
+    'cannot ratchet baseline: compiler contract diagnostic census differs from review',
+  );
+  assertContractTargetMatchesCheckedBaseline(checkedInBaseline);
+  assertContractSourceDominatesPromoted(baseline);
+  return declaration;
+}
+
+function assertContractTargetMatchesCheckedBaseline(checkedInBaseline) {
+  for (const [metric, count] of Object.entries(CHECKED_DAE_STAGE_COUNTS_AFTER)) {
+    assert.equal(
+      integerAt(checkedInBaseline, [metric], 'checked-in migration baseline'),
+      count,
+      `cannot ratchet baseline: checked-in ${metric} differs from contract evidence`,
+    );
+  }
+  const failedModels = Object.values(CHECKED_DAE_PHASE_FAILURE_COUNTS)
+    .reduce((sum, count) => sum + count, 0);
+  assert.equal(
+    failedModels + CHECKED_DAE_STAGE_COUNTS_AFTER.compiled_models,
+    integerAt(checkedInBaseline, ['sim_target_models'], 'checked-in migration baseline'),
+    'cannot ratchet baseline: compiler contract failure census does not cover the target set',
+  );
+}
+
+function assertContractSourceDominatesPromoted(baseline) {
+  for (const [, path] of CONTEXT_INDEPENDENT_HIGHER_IS_BETTER) {
+    const metric = path[0];
+    if (metric === 'flatten_models') {
+      continue;
+    }
+    assert.ok(
+      integerAt(baseline, path, 'baseline snapshot') <= CHECKED_DAE_STAGE_COUNTS_BEFORE[metric],
+      `cannot ratchet baseline: compiler contract source regresses ${metric}`,
+    );
+  }
+  for (const [, path] of CONTEXT_INDEPENDENT_LOWER_IS_BETTER) {
+    const metric = path[0];
+    assert.ok(
+      integerAt(baseline, path, 'baseline snapshot') >= CHECKED_DAE_STAGE_COUNTS_BEFORE[metric],
+      `cannot ratchet baseline: compiler contract source regresses ${metric}`,
+    );
+  }
 }
 
 function parseJson(text, path) {
@@ -161,8 +622,12 @@ function compareIntegerMetrics(
   higherIsBetter,
   improvements,
   regressions,
+  skippedPaths = new Set(),
 ) {
   for (const [label, path] of metrics) {
+    if (skippedPaths.has(path.join('.'))) {
+      continue;
+    }
     compareMetric(
       label,
       integerAt(current, path, 'current snapshot'),
@@ -171,6 +636,31 @@ function compareIntegerMetrics(
       improvements,
       regressions,
     );
+  }
+}
+
+function compareRuntimeSpeedups(current, baseline, improvements, regressions) {
+  for (const [label, path] of [
+    [
+      'runtime system speedup median',
+      ['runtime_ratio_stats', 'system_ratio_both_success', 'median'],
+    ],
+    [
+      'runtime wall speedup median',
+      ['runtime_ratio_stats', 'wall_ratio_both_success', 'median'],
+    ],
+  ]) {
+    const currentRatio = numberAt(current, path, 'current snapshot');
+    const baselineRatio = numberAt(baseline, path, 'baseline snapshot');
+    if (currentRatio < baselineRatio * 0.65) {
+      regressions.push(
+        `${label}: ${baselineRatio.toExponential(6)} -> ${currentRatio.toExponential(6)}`,
+      );
+    } else if (currentRatio > baselineRatio) {
+      improvements.push(
+        `${label}: ${baselineRatio.toExponential(6)} -> ${currentRatio.toExponential(6)}`,
+      );
+    }
   }
 }
 
@@ -257,6 +747,12 @@ function numberAt(snapshot, path, name) {
 function stringAt(snapshot, path, name) {
   const value = valueAt(snapshot, path);
   assert.equal(typeof value, 'string', `${name}: ${path.join('.')} must be a string`);
+  return value;
+}
+
+function nonEmptyStringAt(snapshot, path, name) {
+  const value = stringAt(snapshot, path, name).trim();
+  assert.notEqual(value, '', `${name}: ${path.join('.')} must be non-empty`);
   return value;
 }
 

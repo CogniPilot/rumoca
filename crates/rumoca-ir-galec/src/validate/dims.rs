@@ -225,6 +225,12 @@ impl<'a> DimChecker<'a, '_> {
             Expression::Call(call) => self.call_arguments(&call.arguments),
             Expression::Paren(inner) | Expression::Not(inner) => self.expression(inner),
             Expression::If(if_expression) => {
+                if !if_expression.correlation_is_exact() {
+                    self.diags
+                        .push(GalecError::InvalidBoundedSelectionCorrelation {
+                            location: self.cursor.here(),
+                        });
+                }
                 for (condition, value) in &if_expression.branches {
                     self.expression(condition);
                     self.expression(value);

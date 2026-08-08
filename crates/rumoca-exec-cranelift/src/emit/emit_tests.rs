@@ -78,6 +78,31 @@ fn compile_residual_rows_accepts_linear_solve_component() {
 }
 
 #[test]
+fn compiled_rows_use_ieee_division_semantics() {
+    let division_row = |lhs| {
+        vec![
+            LinearOp::Const { dst: 0, value: lhs },
+            LinearOp::Const { dst: 1, value: 0.0 },
+            LinearOp::Binary {
+                dst: 2,
+                op: BinaryOp::Div,
+                lhs: 0,
+                rhs: 1,
+            },
+            LinearOp::StoreOutput { src: 2 },
+        ]
+    };
+    let compiled =
+        compile_residual_rows(&[division_row(0.0), division_row(-1.0)]).expect("compiled rows");
+    let mut out = [0.0; 2];
+
+    compiled.call(&[], &[], 0.0, &mut out).expect("row eval");
+
+    assert!(out[0].is_nan());
+    assert_eq!(out[1], f64::NEG_INFINITY);
+}
+
+#[test]
 fn runtime_register_scratch_allocation_failure_is_error() {
     let plan = RowPlan::Simple(SimpleRowPlan {
         ops: Box::new([]),

@@ -1,0 +1,743 @@
+//! BDF numerical integration over the shared FMI 3 ME runtime.
+//!
+//! This module contains Diffsol operations only. Model lifecycle, event
+//! iteration, relation memory, and output evaluation stay behind
+//! [`MeRuntimeHost`].
+
+use diffsol::{
+    BacktrackingLineSearch, BdfState, DiffsolError, MatrixCommon, NewtonNonlinearSolver,
+    OdeSolverMethod, OdeSolverState, OdeSolverStopReason, VectorHost, error::OdeSolverError,
+};
+use rumoca_solver::{
+    SimOptions, SimResult, TimeoutBudget,
+    fmi_me::{MeEventCause, MeEventStop, MeModelSource, MeRuntimeHost, MeRuntimeOutput},
+    runtime_root_event_application_time,
+    timeline::{sample_time_match_with_tol, try_build_output_times},
+};
+
+use crate::{
+    LinearSolver, Matrix, Scalar, SimError, SimFailureStage, Vector, instantiate_me_host,
+    ode::{StateOdeEquations, build_me_state_ode_problem, trace_bdf_eval_counter_snapshot},
+    solver_call,
+};
+
+const MAX_STEPS_PER_OUTPUT: usize = 100_000;
+
+pub(crate) fn check_initialization(
+    source: MeModelSource<'_>,
+    opts: &SimOptions,
+) -> Result<(), SimError> {
+    let host = instantiate_me_host(source, opts)?;
+    let initial = host.initialize_component()?;
+    if initial.termination.is_some() {
+        return Ok(());
+    }
+    let ode_build =
+        build_me_state_ode_problem(opts, host.clone(), initial.time, initial.states.clone())?;
+    let derivative = host.derivatives(initial.time, &initial.states)?;
+    initial_bdf_state(&ode_build.problem, &initial.states, &derivative).map(|_| ())
+}
+
+pub(crate) fn simulate(
+    source: MeModelSource<'_>,
+    opts: &SimOptions,
+) -> Result<SimResult, SimError> {
+    let host = instantiate_me_host(source, opts)?;
+    let initial = host.initialize_component()?;
+    if let Some(termination) = initial.termination {
+        return Ok(empty_terminated_result(&host, termination));
+    }
+    let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
+    let output_times = try_build_output_times(opts.t_start, opts.t_end, dt)
+        .map_err(|error| SimError::SolverError(error.to_string()))?;
+    let mut trace = TraceRecorder::new(&host, output_times.len());
+    let budget = TimeoutBudget::new(opts.max_wall_seconds);
+    let mut pending_root = None;
+    let mut pending_time_event = None;
+    for observation in &initial.observations {
+        trace.record(host.outputs_for_observation(observation)?)?;
+    }
+
+    let ode_build =
+        build_me_state_ode_problem(opts, host.clone(), initial.time, initial.states.clone())?;
+    let counters = ode_build.eval_counters.clone();
+    let problem = ode_build.problem;
+    let derivative = host.derivatives(initial.time, &initial.states)?;
+    let state = initial_bdf_state(&problem, &initial.states, &derivative)?;
+    let nonlinear =
+        NewtonNonlinearSolver::new(LinearSolver::default(), BacktrackingLineSearch::default());
+    let mut solver = solver_call("BDF new", || {
+        diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nonlinear)
+    })?;
+
+    for target in output_times {
+        budget
+            .check()
+            .map_err(|timeout| SimError::Timeout {
+                seconds: timeout.seconds,
+            })
+            .map_err(|error| error.at_stage(SimFailureStage::Integration))?;
+        let mut context = AdvanceContext {
+            host: &host,
+            trace: &mut trace,
+            pending_root: &mut pending_root,
+            pending_time_event: &mut pending_time_event,
+            opts,
+            budget: &budget,
+        };
+        let advance = advance_to(&mut context, &mut solver, target);
+        let deferred_sample = match advance {
+            Ok(sample) => sample,
+            Err(SimError::Terminated { time, message }) => {
+                return Ok(trace.finish(
+                    host.state_count(),
+                    Some(rumoca_solver::SimTermination { time, message }),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let states = if let Some(states) = deferred_sample {
+            states
+        } else if sample_time_match_with_tol(solver.state().t, target) {
+            solver.state().y.as_slice().to_vec()
+        } else {
+            let state_time = solver.state().t;
+            let context = format!(
+                "BDF output interpolation at target={target} with solver state time={state_time}"
+            );
+            solver_call(&context, || solver.interpolate(target))?
+                .as_slice()
+                .to_vec()
+        };
+        trace.record(host.observe_continuous_point(target, &states)?)?;
+    }
+    trace_bdf_eval_counter_snapshot("me-bdf", &counters);
+    Ok(trace.finish(host.state_count(), None))
+}
+
+struct AdvanceContext<'borrow> {
+    host: &'borrow MeRuntimeHost,
+    trace: &'borrow mut TraceRecorder,
+    pending_root: &'borrow mut Option<PendingRoot>,
+    pending_time_event: &'borrow mut Option<f64>,
+    opts: &'borrow SimOptions,
+    budget: &'borrow TimeoutBudget,
+}
+
+fn advance_to<'a, Eqn, S>(
+    context: &mut AdvanceContext<'_>,
+    solver: &mut S,
+    target: f64,
+) -> Result<Option<Vec<f64>>, SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let host = context.host;
+    let opts = context.opts;
+    let budget = context.budget;
+    let state_tolerance = opts.atol.max(1.0e-10);
+    for _ in 0..MAX_STEPS_PER_OUTPUT {
+        budget
+            .check()
+            .map_err(|timeout| SimError::Timeout {
+                seconds: timeout.seconds,
+            })
+            .map_err(|error| error.at_stage(SimFailureStage::Integration))?;
+        match process_pending_time_event(context, solver, target)? {
+            PendingTimeEventOutcome::None => {}
+            PendingTimeEventOutcome::Processed => continue,
+            PendingTimeEventOutcome::Deferred(sample) => return Ok(Some(sample)),
+        }
+        if let Some(root) = context.pending_root.take() {
+            if event_time_is_beyond_horizon(root.time, target) {
+                *context.pending_root = Some(root);
+                return interpolate_deferred_sample(solver, target).map(Some);
+            }
+            process_root_event(host, solver, context.trace, root, target, state_tolerance)?;
+            continue;
+        }
+        let requested = host.next_event_stop(opts.t_end)?;
+        let current = solver.state().t;
+        match process_reached_time_event(context, solver, &requested, current, target)? {
+            PendingTimeEventOutcome::None => {}
+            PendingTimeEventOutcome::Processed => continue,
+            PendingTimeEventOutcome::Deferred(sample) => return Ok(Some(sample)),
+        }
+        if current >= target || sample_time_match_with_tol(current, target) {
+            return Ok(None);
+        }
+        let stop_time = requested.time.min(opts.t_end);
+        set_stop_time(solver, stop_time)?;
+        let step = solver_call("BDF step", || solver.step());
+        if let Some(error) = host.take_callback_error() {
+            return Err(error.into());
+        }
+        match step? {
+            OdeSolverStopReason::InternalTimestep => {
+                let sample = sample_crossed_output(solver, target)?;
+                accept_step(host, solver, state_tolerance)?;
+                if sample.is_some() {
+                    return Ok(sample);
+                }
+            }
+            OdeSolverStopReason::TstopReached => {
+                let sample = sample_crossed_output(solver, target)?;
+                accept_step(host, solver, state_tolerance)?;
+                if requested.is_event {
+                    *context.pending_time_event = Some(requested.time);
+                    // A sample at an exact clock instant observes the settled
+                    // superdense event value. Process the pending tick before
+                    // returning control to the output recorder.
+                    continue;
+                }
+                if sample.is_some() {
+                    return Ok(sample);
+                }
+                let reached = solver.state().t;
+                if reached < target && !sample_time_match_with_tol(reached, target) {
+                    return Err(SimError::RuntimeContract {
+                        reason: format!(
+                            "BDF reported a non-event stop at {reached} before output target \
+                             {target} (component stop={}, t_end={})",
+                            requested.time, opts.t_end
+                        ),
+                    });
+                }
+                return Ok(None);
+            }
+            OdeSolverStopReason::RootFound(root_time, root_index) => {
+                let root_states =
+                    solver_call("BDF root interpolation", || solver.interpolate(root_time))?
+                        .as_slice()
+                        .to_vec();
+                let root = PendingRoot {
+                    time: root_time,
+                    index: root_index,
+                    states: root_states,
+                };
+                if event_time_is_beyond_horizon(root_time, target) {
+                    let sample = interpolate_deferred_sample(solver, target)?;
+                    *context.pending_root = Some(root);
+                    return Ok(Some(sample));
+                }
+                process_root_event(host, solver, context.trace, root, target, state_tolerance)?;
+            }
+        }
+    }
+    Err(SimError::SolverError(format!(
+        "BDF exceeded {MAX_STEPS_PER_OUTPUT} ME steps before output t={target}"
+    )))
+}
+
+enum PendingTimeEventOutcome {
+    None,
+    Processed,
+    Deferred(Vec<f64>),
+}
+
+fn process_reached_time_event<'a, Eqn, S>(
+    context: &mut AdvanceContext<'_>,
+    solver: &mut S,
+    requested: &MeEventStop,
+    current: f64,
+    target: f64,
+) -> Result<PendingTimeEventOutcome, SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    if !requested.is_event || !integration_time_reached(current, requested.time) {
+        return Ok(PendingTimeEventOutcome::None);
+    }
+    if event_time_is_beyond_horizon(requested.time, target) {
+        return interpolate_deferred_sample(solver, target).map(PendingTimeEventOutcome::Deferred);
+    }
+    // `integration_time_reached` deliberately accepts the solver's
+    // floating-point stop immediately beside the requested instant. Asking
+    // diffsol to interpolate to the nominal instant can therefore be a
+    // forward interpolation, which its contract rejects. The accepted stop
+    // state is the continuous left limit owned by this event boundary.
+    let states = solver.state().y.as_slice().to_vec();
+    let event = context
+        .host
+        .process_time_event(requested.time, &states, target)?;
+    if let Some(termination) = event.termination {
+        return Err(SimError::Terminated {
+            time: termination.time,
+            message: termination.message,
+        });
+    }
+    if let Some(observation) = event.pre_observation {
+        context.trace.record(observation)?;
+    }
+    if let Some(observation) = event.observation {
+        context.trace.record(observation)?;
+    }
+    resume_after_event(
+        context.host,
+        solver,
+        event.time,
+        &event.states,
+        event.entry.cause,
+        event.values_of_continuous_states_changed,
+    )?;
+    Ok(PendingTimeEventOutcome::Processed)
+}
+
+fn process_pending_time_event<'a, Eqn, S>(
+    context: &mut AdvanceContext<'_>,
+    solver: &mut S,
+    target: f64,
+) -> Result<PendingTimeEventOutcome, SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let Some(event_time) = *context.pending_time_event else {
+        return Ok(PendingTimeEventOutcome::None);
+    };
+    if event_time_is_beyond_horizon(event_time, target) {
+        return interpolate_deferred_sample(solver, target).map(PendingTimeEventOutcome::Deferred);
+    }
+    let states = solver.state().y.as_slice().to_vec();
+    let event = context
+        .host
+        .process_time_event(event_time, &states, target)?;
+    *context.pending_time_event = None;
+    if let Some(termination) = event.termination {
+        return Err(SimError::Terminated {
+            time: termination.time,
+            message: termination.message,
+        });
+    }
+    if let Some(observation) = event.pre_observation {
+        context.trace.record(observation)?;
+    }
+    if let Some(observation) = event.observation {
+        context.trace.record(observation)?;
+    }
+    resume_after_event(
+        context.host,
+        solver,
+        event.time,
+        &event.states,
+        event.entry.cause,
+        event.values_of_continuous_states_changed,
+    )?;
+    Ok(PendingTimeEventOutcome::Processed)
+}
+
+fn sample_crossed_output<'a, Eqn, S>(
+    solver: &mut S,
+    target: f64,
+) -> Result<Option<Vec<f64>>, SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let reached = solver.state().t;
+    if reached <= target || integration_time_reached(reached, target) {
+        return Ok(None);
+    }
+    interpolate_deferred_sample(solver, target).map(Some)
+}
+
+fn interpolate_deferred_sample<'a, Eqn, S>(
+    solver: &mut S,
+    target: f64,
+) -> Result<Vec<f64>, SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    solver_call("BDF deferred output interpolation", || {
+        solver.interpolate(target)
+    })
+    .map(|values| values.as_slice().to_vec())
+}
+
+struct PendingRoot {
+    time: f64,
+    index: usize,
+    states: Vec<f64>,
+}
+
+fn process_root_event<'a, Eqn, S>(
+    host: &MeRuntimeHost,
+    solver: &mut S,
+    trace: &mut TraceRecorder,
+    root: PendingRoot,
+    target: f64,
+    tolerance: f64,
+) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let candidate = runtime_root_event_application_time(root.time, target, tolerance);
+    let intervening = host.next_event_stop(candidate)?;
+    let right_time =
+        if intervening.is_event && intervening.time > root.time && intervening.time < candidate {
+            intervening.time
+        } else {
+            candidate
+        };
+    let event =
+        host.process_state_event(root.time, root.index, &root.states, right_time, target)?;
+    if let Some(termination) = event.termination {
+        return Err(SimError::Terminated {
+            time: termination.time,
+            message: termination.message,
+        });
+    }
+    if let Some(observation) = event.pre_observation {
+        trace.record(observation)?;
+    }
+    if let Some(observation) = event.observation {
+        trace.record(observation)?;
+    }
+    resume_after_event(
+        host,
+        solver,
+        event.time,
+        &event.states,
+        event.entry.cause,
+        event.values_of_continuous_states_changed,
+    )
+}
+
+fn resume_after_event<'a, Eqn, S>(
+    host: &MeRuntimeHost,
+    solver: &mut S,
+    event_time: f64,
+    states: &[f64],
+    cause: MeEventCause,
+    values_of_continuous_states_changed: bool,
+) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    // Every event may change the continuous derivatives through settled
+    // discrete values, so no BDF history may span an event boundary.
+    if event_requires_integrator_restart(cause, values_of_continuous_states_changed) {
+        return reset_after_event(host, solver, event_time, states, true);
+    }
+    // The accepted BDF stop may differ from the nominal event time by the
+    // scheduler tolerance. Clear the consumed deadline at the integrator's
+    // actual time; reinstalling a slightly earlier nominal instant leaves a
+    // stale stop behind and drives the next step size to zero.
+    clear_stop_time_after_reset(solver, solver.state().t)
+}
+
+fn event_requires_integrator_restart(
+    cause: MeEventCause,
+    _values_of_continuous_states_changed: bool,
+) -> bool {
+    // Both FMI event causes may change discrete variables that feed the
+    // continuous derivatives. Even when the continuous state values are
+    // unchanged, a multistep history spanning that derivative discontinuity
+    // is invalid and must be rebuilt from the settled event state.
+    matches!(cause, MeEventCause::StateEvent | MeEventCause::TimeEvent)
+}
+
+fn integration_time_reached(current: f64, target: f64) -> bool {
+    sample_time_match_with_tol(current, target)
+}
+
+fn event_time_is_beyond_horizon(event_time: f64, horizon: f64) -> bool {
+    event_time > horizon && !sample_time_match_with_tol(event_time, horizon)
+}
+
+fn accept_step<'a, Eqn, S>(
+    host: &MeRuntimeHost,
+    solver: &mut S,
+    tolerance: f64,
+) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let time = solver.state().t;
+    let states = solver.state().y.as_slice().to_vec();
+    let projected = host.accept_integrator_step(time, &states)?;
+    if projected.iter().zip(&states).any(|(left, right)| {
+        (left - right).abs() > tolerance * 8.0 * (1.0 + left.abs().max(right.abs()))
+    }) {
+        reset_after_event(host, solver, time, &projected, false)?;
+    }
+    Ok(())
+}
+
+fn reset_after_event<'a, Eqn, S>(
+    host: &MeRuntimeHost,
+    solver: &mut S,
+    time: f64,
+    states: &[f64],
+    reinitialize_root_finder: bool,
+) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    let derivatives = host.derivatives(time, states)?;
+    let problem = solver.problem();
+    let mut fresh = S::State::new_without_initialise(problem)
+        .map_err(|error| SimError::SolverError(format!("BDF ME reset: {error}")))?;
+    {
+        let state = fresh.as_mut();
+        state.y.as_mut_slice().copy_from_slice(states);
+        state.dy.as_mut_slice().copy_from_slice(&derivatives);
+        *state.t = time;
+    }
+    fresh.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+    fresh
+        .set_problem(problem)
+        .map_err(|error| SimError::SolverError(format!("BDF ME reset history: {error}")))?;
+    solver.set_state(fresh);
+    if reinitialize_root_finder {
+        // `OdeSolverMethod::set_state` replaces the vector but does not mark
+        // the BDF method modified. Event resets must reinitialize the root
+        // finder or its pre-event bracket survives. A pure manifold projection
+        // deliberately keeps interpolation available for output points already
+        // crossed by the accepted step.
+        let _ = solver.state_mut();
+    }
+    clear_stop_time_after_reset(solver, time)
+}
+
+fn clear_stop_time_after_reset<'a, Eqn, S>(solver: &mut S, time: f64) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    // Diffsol clears the stored deadline while returning this typed error when
+    // the replacement deadline equals the newly reset state time.
+    match solver.set_stop_time(time) {
+        Ok(()) | Err(DiffsolError::OdeSolverError(OdeSolverError::StopTimeAtCurrentTime)) => Ok(()),
+        Err(error) => Err(SimError::SolverError(format!(
+            "clear BDF ME stop time after reset: {error}"
+        ))),
+    }
+}
+
+fn initial_bdf_state<Eqn>(
+    problem: &diffsol::OdeSolverProblem<Eqn>,
+    states: &[f64],
+    derivatives: &[f64],
+) -> Result<BdfState<Vector>, SimError>
+where
+    Eqn: diffsol::OdeEquationsImplicit<
+            M = Matrix,
+            V = Vector,
+            T = Scalar,
+            C = <Matrix as MatrixCommon>::C,
+        >,
+{
+    let mut state = BdfState::<Vector>::new_without_initialise(problem)
+        .map_err(|error| SimError::SolverError(format!("BDF ME state init: {error}")))?;
+    {
+        let state_ref = state.as_mut();
+        state_ref.y.as_mut_slice().copy_from_slice(states);
+        state_ref.dy.as_mut_slice().copy_from_slice(derivatives);
+        *state_ref.t = problem.t0;
+    }
+    state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
+    Ok(state)
+}
+
+fn set_stop_time<'a, Eqn, S>(solver: &mut S, stop_time: f64) -> Result<(), SimError>
+where
+    Eqn: StateOdeEquations + 'a,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    solver
+        .set_stop_time(stop_time)
+        .map_err(|error| SimError::SolverError(format!("BDF ME stop time: {error}")))
+}
+
+struct TraceRecorder {
+    names: Vec<String>,
+    meta: Vec<rumoca_solver::SimVariableMeta>,
+    times: Vec<f64>,
+    data: Vec<Vec<f64>>,
+}
+
+impl TraceRecorder {
+    fn new(host: &MeRuntimeHost, capacity: usize) -> Self {
+        let names = host.output_names();
+        Self {
+            data: (0..names.len())
+                .map(|_| Vec::with_capacity(capacity))
+                .collect(),
+            names,
+            meta: host.output_meta(),
+            times: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn record(&mut self, observation: MeRuntimeOutput) -> Result<(), SimError> {
+        if observation.values.len() != self.data.len() {
+            return Err(SimError::RuntimeContract {
+                reason: format!(
+                    "ME output width {} does not match trace width {}",
+                    observation.values.len(),
+                    self.data.len()
+                ),
+            });
+        }
+        if self
+            .times
+            .last()
+            .is_some_and(|last| *last == observation.time)
+        {
+            return self.replace_latest(observation);
+        }
+        self.times.push(observation.time);
+        for (column, value) in self.data.iter_mut().zip(observation.values) {
+            column.push(value);
+        }
+        Ok(())
+    }
+
+    fn replace_latest(&mut self, observation: MeRuntimeOutput) -> Result<(), SimError> {
+        let Some(time) = self.times.last_mut() else {
+            return Err(SimError::RuntimeContract {
+                reason: "trace time replacement requires an existing sample".to_string(),
+            });
+        };
+        *time = observation.time;
+        for (column, value) in self.data.iter_mut().zip(observation.values) {
+            let Some(slot) = column.last_mut() else {
+                return Err(SimError::RuntimeContract {
+                    reason: "trace value replacement requires an existing sample".to_string(),
+                });
+            };
+            *slot = value;
+        }
+        Ok(())
+    }
+
+    fn finish(
+        self,
+        state_count: usize,
+        termination: Option<rumoca_solver::SimTermination>,
+    ) -> SimResult {
+        SimResult {
+            times: self.times,
+            names: self.names,
+            data: self.data,
+            n_states: state_count,
+            variable_meta: self.meta,
+            termination,
+        }
+    }
+}
+
+fn empty_terminated_result(
+    host: &MeRuntimeHost,
+    termination: rumoca_solver::SimTermination,
+) -> SimResult {
+    SimResult {
+        times: Vec::new(),
+        names: host.output_names(),
+        data: vec![Vec::new(); host.output_names().len()],
+        n_states: host.state_count(),
+        variable_meta: host.output_meta(),
+        termination: Some(termination),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        TraceRecorder, event_requires_integrator_restart, event_time_is_beyond_horizon,
+        integration_time_reached,
+    };
+    use rumoca_solver::fmi_me::{MeEventCause, MeRuntimeOutput};
+
+    fn empty_trace_recorder() -> TraceRecorder {
+        TraceRecorder {
+            names: vec!["x".to_string()],
+            meta: Vec::new(),
+            times: Vec::new(),
+            data: vec![Vec::new()],
+        }
+    }
+
+    #[test]
+    fn trace_recorder_preserves_distinct_near_start_event_coordinate() {
+        let mut trace = empty_trace_recorder();
+        trace
+            .record(MeRuntimeOutput {
+                time: 0.0,
+                values: vec![1.0],
+            })
+            .expect("initial trace point");
+        trace
+            .record(MeRuntimeOutput {
+                time: f64::from_bits(1),
+                values: vec![2.0],
+            })
+            .expect("near-start event point");
+
+        assert_eq!(trace.times, vec![0.0, f64::from_bits(1)]);
+        assert_eq!(trace.data, vec![vec![1.0, 2.0]]);
+    }
+
+    #[test]
+    fn trace_recorder_replaces_only_the_same_superdense_coordinate() {
+        let mut trace = empty_trace_recorder();
+        for value in [1.0, 2.0] {
+            trace
+                .record(MeRuntimeOutput {
+                    time: 0.0,
+                    values: vec![value],
+                })
+                .expect("same-time trace point");
+        }
+
+        assert_eq!(trace.times, vec![0.0]);
+        assert_eq!(trace.data, vec![vec![2.0]]);
+    }
+
+    #[test]
+    fn integration_time_reach_is_independent_of_state_error_tolerance() {
+        let current = 0.0;
+        let deadline = 1.0e-9;
+        let state_absolute_tolerance = 1.0e-6;
+
+        assert!((deadline - current) < state_absolute_tolerance);
+        assert!(!integration_time_reached(current, deadline));
+        assert!(integration_time_reached(deadline, deadline));
+    }
+
+    #[test]
+    fn event_times_beyond_the_output_horizon_are_not_value_tolerance_matches() {
+        for (event_time, horizon) in [
+            (1.300_001_999_999_999_9, 1.3),
+            (1.001_001_001_001_001, 1.001_000_000_000_000_1),
+            (0.038_061_032_863_850_19, 0.038_060_000_000_000_004),
+            (0.000_025, 0.000_024),
+        ] {
+            assert!(event_time_is_beyond_horizon(event_time, horizon));
+        }
+    }
+
+    #[test]
+    fn every_event_boundary_invalidates_multistep_history() {
+        assert!(event_requires_integrator_restart(
+            MeEventCause::TimeEvent,
+            false
+        ));
+        assert!(event_requires_integrator_restart(
+            MeEventCause::TimeEvent,
+            true
+        ));
+        assert!(event_requires_integrator_restart(
+            MeEventCause::StateEvent,
+            false
+        ));
+    }
+}

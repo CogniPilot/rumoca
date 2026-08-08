@@ -1351,8 +1351,6 @@ ctx.onFrame = (api) => {
     const SCENARIO_SOLVER_OPTIONS = [
         ['auto', 'Auto'],
         ['bdf', 'BDF (stiff systems)'],
-        ['esdirk34', 'ESDIRK34 (implicit)'],
-        ['trbdf2', 'TR-BDF2 (implicit)'],
         ['rk-like', 'RK-like (explicit)'],
     ];
     const SCENARIO_SIM_MODE_OPTIONS = [
@@ -1375,13 +1373,13 @@ ctx.onFrame = (api) => {
         ['3d', '3d'],
     ];
     const SCENARIO_CODEGEN_TARGET_OPTIONS = [
-        ['sympy', 'sympy'],
-        ['jax', 'jax'],
-        ['casadi-sx', 'casadi-sx'],
-        ['casadi-mx', 'casadi-mx'],
-        ['onnx', 'onnx'],
-        ['fmi2', 'fmi2'],
-        ['fmi3', 'fmi3'],
+        ['c-ode', 'c-ode'],
+        ['casadi-ode', 'casadi-ode'],
+        ['jax-ode', 'jax-ode'],
+        ['rust-ode', 'rust-ode'],
+        ['rust-fixed-ode', 'rust-fixed-ode'],
+        ['wgsl-ode', 'wgsl-ode'],
+        ['embedded-c', 'embedded-c'],
         ['galec', 'galec (eFMI Algorithm Code)'],
         ['galec-production', 'galec-production (eFMI Production Code)'],
         ['embedded-c-galec', 'embedded-c-galec (embedded C)'],
@@ -1616,7 +1614,7 @@ ctx.onFrame = (api) => {
                 label: 'Target',
                 path: ['codegen', 'target'],
                 kind: 'select',
-                value: scenarioFieldValue(config, ['codegen', 'target'], 'sympy'),
+                value: scenarioFieldValue(config, ['codegen', 'target'], 'c-ode'),
                 options: SCENARIO_CODEGEN_TARGET_OPTIONS,
                 hint: 'Built-in renderer used when task is codegen.',
             },
@@ -2145,7 +2143,7 @@ ctx.onFrame = (api) => {
             return scenarioOptionLabel(SCENARIO_VIEWER_MODE_OPTIONS, scenarioFieldByPath(fields, ['viewer', 'mode'])?.value || 'results_panel');
         }
         if (section === 'codegen') {
-            return scenarioFieldByPath(fields, ['codegen', 'target'])?.value || 'sympy';
+            return scenarioFieldByPath(fields, ['codegen', 'target'])?.value || 'c-ode';
         }
         if (section === 'source_roots') {
             const roots = normalizeStringArray(scenarioFieldByPath(fields, ['source_roots'])?.value);

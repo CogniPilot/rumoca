@@ -6,6 +6,7 @@
 //! - Enum comparisons for parameter-based conditions
 //! - StateSelect parsing from annotations
 
+use crate::ast_scalar::{self, AstScalarContext};
 use rumoca_core::{
     IntegerBinaryOperator, eval_integer_binary as eval_common_integer_binary,
     eval_integer_div_builtin,
@@ -13,11 +14,17 @@ use rumoca_core::{
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 
+mod array_indices;
+mod class_lookup;
 mod component_params;
+mod enum_literal;
 mod function_eval;
 mod scoped_condition;
 
+pub use array_indices::{ArrayIndexTuples, array_index_tuples, generate_array_indices};
+use class_lookup::{resolve_class_constant_binding, resolve_component_ref_from_record_defaults};
 pub(super) use component_params::{
     component_expr_for_structural_eval, component_ref_to_dotted_no_subscripts,
     enclosing_scope_candidates,
@@ -25,11 +32,10 @@ pub(super) use component_params::{
 pub use component_params::{
     eval_state_select_expr, eval_state_select_expr_with_source_scope, expr_to_string,
     extract_binding, extract_bool_params_with_mods, extract_int_params_with_mods,
-    parse_state_select, propagate_record_alias_integer_params, try_eval_string_expr,
+    extract_real_params_with_mods, parse_state_select, propagate_record_alias_integer_params,
+    propagate_scoped_record_alias_integer_params, try_eval_string_expr,
 };
-pub use function_eval::{
-    evaluate_array_dimensions, generate_array_indices, try_eval_integer_shape_expr,
-};
+pub use function_eval::{evaluate_array_dimensions, try_eval_integer_shape_expr};
 use scoped_condition::eval_scoped_string_condition_with_depth;
 
 /// Maximum recursion depth for condition evaluation (prevents stack overflow)
@@ -122,20 +128,60 @@ pub fn evaluate_component_condition(
     ctx: &InstantiateEvalCtx,
     condition: &ast::Expression,
 ) -> Option<bool> {
+    evaluate_component_condition_with_outer_values(ctx, condition, OuterValues::default())
+}
+
+/// Values reached through a class's `outer` references (MLS §5.4).
+///
+/// An `outer` element denotes the nearest enclosing `inner` element of the same
+/// name, so a condition such as `world.enableAnimation and sphereDiameter > 0`
+/// cannot be answered from the declaring class alone. The instantiate phase
+/// resolves those references against the matching `inner` instance and passes the
+/// values here, keyed by the dotted path as written in the condition.
+#[derive(Clone, Copy, Default)]
+pub struct OuterValues<'a> {
+    pub bools: Option<&'a FxHashMap<String, bool>>,
+    pub reals: Option<&'a FxHashMap<String, f64>>,
+}
+
+impl<'a> OuterValues<'a> {
+    /// Borrow both maps, dropping the empty ones so lookups stay on the fast path.
+    #[must_use]
+    pub fn new(bools: &'a FxHashMap<String, bool>, reals: &'a FxHashMap<String, f64>) -> Self {
+        Self {
+            bools: (!bools.is_empty()).then_some(bools),
+            reals: (!reals.is_empty()).then_some(reals),
+        }
+    }
+}
+
+/// Evaluate a conditional component's condition with pre-resolved reference values.
+///
+/// See [`OuterValues`] for what `outer_values` carries; everything else evaluates
+/// exactly as in [`evaluate_component_condition`].
+pub fn evaluate_component_condition_with_outer_values(
+    ctx: &InstantiateEvalCtx,
+    condition: &ast::Expression,
+    outer_values: OuterValues<'_>,
+) -> Option<bool> {
     let InstantiateEvalCtx {
         tree,
         mod_env,
         effective_components,
         resolve_class_components,
     } = ctx;
-    evaluate_component_condition_with_depth(
-        condition,
-        mod_env,
-        effective_components,
-        tree,
-        *resolve_class_components,
-        0,
-    )
+    let adapter = InstantiateScalarAdapter {
+        env: IntegerEvalEnv {
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components: *resolve_class_components,
+        },
+        local_ints: None,
+        local_bools: outer_values.bools,
+        local_reals: outer_values.reals,
+    };
+    ast_scalar::eval_boolean(condition, &adapter, "", 0)
 }
 
 fn evaluate_component_condition_with_depth(
@@ -152,112 +198,18 @@ fn evaluate_component_condition_with_depth(
     if depth > MAX_CONDITION_DEPTH {
         return None;
     }
-
-    // Case 1: Direct boolean literal
-    if let Some(val) = expr_to_bool(condition) {
-        return Some(val);
-    }
-
-    // Case 2: ast::Component reference to a parameter
-    if let ast::Expression::ComponentReference(comp_ref) = condition
-        && let Some(val) = eval_param_ref(
-            comp_ref,
+    let adapter = InstantiateScalarAdapter {
+        env: IntegerEvalEnv {
             mod_env,
             effective_components,
             tree,
             resolve_class_components,
-            depth,
-        )
-    {
-        return Some(val);
-    }
-
-    // Case 3: Unary 'not' operator
-    if let ast::Expression::Unary { op, rhs, .. } = condition
-        && matches!(op, rumoca_core::OpUnary::Not)
-        && let Some(inner) = evaluate_component_condition_with_depth(
-            rhs,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            depth + 1,
-        )
-    {
-        return Some(!inner);
-    }
-
-    // Case 4: Parenthesized expressions
-    if let ast::Expression::Parenthesized { inner, .. } = condition {
-        return evaluate_component_condition_with_depth(
-            inner,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            depth,
-        );
-    }
-
-    // Case 5: Binary operations
-    if let ast::Expression::Binary { op, lhs, rhs, .. } = condition
-        && let Some(val) = eval_binary_condition(
-            op,
-            lhs,
-            rhs,
-            ConditionEvalEnv {
-                mod_env,
-                effective_components,
-                tree,
-                resolve_class_components,
-            },
-            depth,
-        )
-    {
-        return Some(val);
-    }
-
-    // Case 6: Boolean if-expression
-    if let ast::Expression::If {
-        branches,
-        else_branch,
-        ..
-    } = condition
-    {
-        for (branch_condition, branch_value) in branches {
-            match evaluate_component_condition_with_depth(
-                branch_condition,
-                mod_env,
-                effective_components,
-                tree,
-                resolve_class_components,
-                depth + 1,
-            ) {
-                Some(true) => {
-                    return evaluate_component_condition_with_depth(
-                        branch_value,
-                        mod_env,
-                        effective_components,
-                        tree,
-                        resolve_class_components,
-                        depth + 1,
-                    );
-                }
-                Some(false) => continue,
-                None => return None,
-            }
-        }
-        return evaluate_component_condition_with_depth(
-            else_branch,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            depth + 1,
-        );
-    }
-
-    None
+        },
+        local_ints: None,
+        local_bools: None,
+        local_reals: None,
+    };
+    ast_scalar::eval_boolean(condition, &adapter, "", depth)
 }
 
 /// Evaluate a parameter reference in a condition.
@@ -313,12 +265,15 @@ fn eval_param_ref(
         return None;
     }
 
-    // Look up the parameter's default value from effective components (single-part only)
+    // Look up the parameter's declared value from effective components
+    // (single-part only). MLS §4.9: a component without a binding has no value
+    // here — its `start` attribute is an initial guess, not an answer — so an
+    // undecidable condition stays `None`.
     if comp_ref.parts.len() == 1 {
         let param_name = comp_ref.parts[0].ident.text.as_ref();
         let sibling = effective_components.get(param_name)?;
+        let value_expr = component_expr_for_structural_eval(sibling)?;
         // Try simple boolean extraction first
-        let value_expr = component_params::component_condition_value_expr(sibling);
         if let Some(val) = expr_to_bool(value_expr) {
             return Some(val);
         }
@@ -333,26 +288,25 @@ fn eval_param_ref(
         );
     }
 
-    // MLS §5.3.2: qualified references to class-level constants
-    // (`P.pT_explicit`) resolve through the class tree.
-    if let Some(binding) =
-        resolve_class_redeclare_field_expr(comp_ref, mod_env, tree, resolve_class_components)
-            .or_else(|| resolve_class_constant_binding(comp_ref, tree, resolve_class_components))
-    {
-        if let Some(val) = expr_to_bool(&binding) {
-            return Some(val);
-        }
-        return evaluate_component_condition_with_depth(
-            &binding,
-            mod_env,
-            effective_components,
-            tree,
-            resolve_class_components,
-            depth + 1,
-        );
-    }
-
-    None
+    // Qualified references keep the declaration scope of the value they find.
+    // This matters for a record field such as `settings.connect3` whose binding
+    // reads its sibling `layout`: evaluating that binding in the model scope
+    // would silently lose the record-member lookup required by MLS §5.3/§7.2.
+    let env = ConditionEvalEnv {
+        mod_env,
+        effective_components,
+        tree,
+        resolve_class_components,
+    };
+    let (binding, binding_scope) = resolve_component_ref_expr(
+        comp_ref,
+        mod_env,
+        effective_components,
+        tree,
+        resolve_class_components,
+        None,
+    )?;
+    eval_scoped_string_condition_with_depth(&binding, env, binding_scope.as_deref(), depth + 1)
 }
 
 /// Build a ast::QualifiedName from a ast::ComponentReference's parts.
@@ -368,110 +322,6 @@ fn build_qualified_path(comp_ref: &ast::ComponentReference) -> ast::QualifiedNam
             .join(".");
         ast::QualifiedName::from_dotted(&dotted)
     }
-}
-
-/// Evaluate a binary condition (or, and, eq, neq, relational).
-///
-/// MLS §4.8: Conditional component conditions must be evaluable at compile time.
-/// Supports enum comparison, integer comparison, and relational operators.
-fn eval_binary_condition(
-    op: &rumoca_core::OpBinary,
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    env: ConditionEvalEnv<'_>,
-    depth: usize,
-) -> Option<bool> {
-    let eval = |e| {
-        evaluate_component_condition_with_depth(
-            e,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-        )
-    };
-    let enum_eq = || {
-        evaluate_enum_equality_with_depth(
-            lhs,
-            rhs,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-        )
-    };
-    let int_eval = |e| {
-        try_eval_integer_expr_with_depth(
-            e,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-        )
-    };
-
-    match op {
-        rumoca_core::OpBinary::Or => {
-            let (l, r) = (eval(lhs), eval(rhs));
-            if l == Some(true) || r == Some(true) {
-                return Some(true);
-            }
-            if l == Some(false) && r == Some(false) {
-                return Some(false);
-            }
-        }
-        rumoca_core::OpBinary::And => {
-            let (l, r) = (eval(lhs), eval(rhs));
-            if l == Some(false) || r == Some(false) {
-                return Some(false);
-            }
-            if l == Some(true) && r == Some(true) {
-                return Some(true);
-            }
-        }
-        rumoca_core::OpBinary::Eq => {
-            // Enum equality is more specific than integer equality.
-            if let Some(val) = enum_eq() {
-                return Some(val);
-            }
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l == r);
-            }
-        }
-        rumoca_core::OpBinary::Neq => {
-            if let Some(val) = enum_eq() {
-                return Some(!val);
-            }
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l != r);
-            }
-        }
-        rumoca_core::OpBinary::Lt => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l < r);
-            }
-        }
-        rumoca_core::OpBinary::Le => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l <= r);
-            }
-        }
-        rumoca_core::OpBinary::Gt => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l > r);
-            }
-        }
-        rumoca_core::OpBinary::Ge => {
-            if let (Some(l), Some(r)) = (int_eval(lhs), int_eval(rhs)) {
-                return Some(l >= r);
-            }
-        }
-        _ => {}
-    }
-    None
 }
 
 /// Evaluate an enum equality comparison like `controllerType == SimpleController.PI`.
@@ -537,7 +387,11 @@ fn enum_value_for_comparison_with_depth(
     scope_prefix: Option<&str>,
     depth: usize,
 ) -> Option<String> {
-    let value = get_enum_value_with_depth(
+    // MLS §4.8: a compile-time condition may only use values that are actually
+    // known here. `get_enum_value_with_depth` already declines a reference it
+    // could not resolve to a String literal or an enumeration literal, so no
+    // further filtering of "looks unresolved" spellings is needed.
+    get_enum_value_with_depth(
         expr,
         mod_env,
         effective_components,
@@ -545,54 +399,37 @@ fn enum_value_for_comparison_with_depth(
         resolve_class_components,
         scope_prefix,
         depth,
-    )?;
-    // MLS §4.8: compile-time conditions must only use values that are
-    // actually known at this point; unresolved variable refs stay unknown.
-    if let ast::Expression::ComponentReference(comp_ref) = expr
-        && value == comp_ref.to_string()
-        && unresolved_component_ref_looks_like_variable(
-            comp_ref,
-            mod_env,
-            effective_components,
-            scope_prefix,
-        )
-    {
-        return None;
-    }
-    Some(value)
+    )
+    .map(ResolvedValueText::into_text)
 }
 
-fn unresolved_component_ref_looks_like_variable(
-    comp_ref: &ast::ComponentReference,
-    mod_env: &ast::ModificationEnvironment,
-    effective_components: &IndexMap<String, ast::Component>,
-    scope_prefix: Option<&str>,
-) -> bool {
-    let Some(first_part) = comp_ref.parts.first() else {
-        return false;
-    };
-    let first = first_part.ident.text.as_ref();
+/// A value this phase resolved to a comparable spelling.
+///
+/// The two cases are kept apart because they are not interchangeable: an
+/// enumeration literal is a value of its enumeration type (MLS §4.8.5.1) and
+/// must never be rewritten into a `String` modifier, while a `String` literal
+/// (MLS §4.9) may be. Collapsing them to one `String` is what let a rendered
+/// reference be substituted where a string value was expected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ResolvedValueText {
+    StringLiteral(String),
+    EnumerationLiteral(String),
+}
 
-    if effective_components.contains_key(first)
-        || mod_env
-            .get(&ast::QualifiedName::from_ident(first))
-            .is_some()
-    {
-        return true;
-    }
-
-    if let Some(prefix) = scope_prefix {
-        let scoped = format!("{prefix}.{first}");
-        if effective_components.contains_key(&scoped)
-            || mod_env
-                .get(&ast::QualifiedName::from_dotted(&scoped))
-                .is_some()
-        {
-            return true;
+impl ResolvedValueText {
+    fn into_text(self) -> String {
+        match self {
+            ResolvedValueText::StringLiteral(text)
+            | ResolvedValueText::EnumerationLiteral(text) => text,
         }
     }
 
-    false
+    pub(super) fn into_string_literal(self) -> Option<String> {
+        match self {
+            ResolvedValueText::StringLiteral(text) => Some(text),
+            ResolvedValueText::EnumerationLiteral(_) => None,
+        }
+    }
 }
 
 /// Check if two enum values are equal, handling qualified enum spellings.
@@ -606,11 +443,16 @@ fn enum_values_equal(a: &str, b: &str) -> bool {
     rumoca_core::enum_values_equal(a, b)
 }
 
-/// Get an enum value from an expression.
+/// Get an enum or string value from an expression.
 ///
 /// Handles:
-/// - Enum literals (e.g., SimpleController.PI)
-/// - Parameter references that resolve to enum values
+/// - String literals
+/// - Enumeration literals (e.g., `SimpleController.PI`), recognized against the
+///   class tree rather than by their spelling (MLS §4.8.5.1)
+/// - References that resolve to one of the above
+///
+/// A reference this phase cannot resolve is *unknown*: it is never answered
+/// with its own rendered name (SPEC_0008 — no invented values).
 fn get_enum_value_with_depth(
     expr: &ast::Expression,
     mod_env: &ast::ModificationEnvironment,
@@ -622,7 +464,7 @@ fn get_enum_value_with_depth(
     ) -> IndexMap<String, ast::Component>,
     scope_prefix: Option<&str>,
     depth: usize,
-) -> Option<String> {
+) -> Option<ResolvedValueText> {
     // Prevent deep recursion
     if depth > MAX_CONDITION_DEPTH {
         return None;
@@ -636,7 +478,7 @@ fn get_enum_value_with_depth(
             ..
         } => {
             let s = token.text.trim_matches('"');
-            Some(s.to_string())
+            Some(ResolvedValueText::StringLiteral(s.to_string()))
         }
         ast::Expression::ComponentReference(comp_ref) => resolve_component_ref_expr(
             comp_ref,
@@ -657,7 +499,10 @@ fn get_enum_value_with_depth(
                 depth + 1,
             )
         })
-        .or_else(|| component_ref_to_dotted_no_subscripts(comp_ref).map(|_| comp_ref.to_string())),
+        .or_else(|| {
+            enum_literal::enumeration_literal_path(comp_ref, tree)
+                .map(ResolvedValueText::EnumerationLiteral)
+        }),
         ast::Expression::Parenthesized { inner, .. } => get_enum_value_with_depth(
             inner,
             mod_env,
@@ -695,7 +540,7 @@ fn eval_if_enum_value(
     env: ConditionEvalEnv<'_>,
     scope_prefix: Option<&str>,
     depth: usize,
-) -> Option<String> {
+) -> Option<ResolvedValueText> {
     for (cond, branch_expr) in branches {
         match eval_scoped_string_condition_with_depth(cond, env, scope_prefix, depth) {
             Some(true) => {
@@ -740,8 +585,13 @@ fn resolve_component_ref_expr(
 
     lookup_exact_component_ref(candidate_paths.as_slice(), mod_env, effective_components)
         .or_else(|| {
-            resolve_component_ref_from_record_defaults(comp_ref, effective_components, tree)
-                .map(|expr| (expr, parent_dotted_scope(&dotted)))
+            resolve_component_ref_from_record_defaults(
+                comp_ref,
+                effective_components,
+                tree,
+                resolve_class_components,
+            )
+            .map(|expr| (expr, parent_dotted_scope(&dotted)))
         })
         .or_else(|| {
             if comp_ref.parts.len() != 1 {
@@ -764,41 +614,6 @@ fn resolve_component_ref_expr(
             resolve_class_constant_binding(comp_ref, tree, resolve_class_components)
                 .map(|expr| (expr, None))
         })
-}
-
-/// Resolve a qualified reference like `P.pT_explicit` to the binding of a
-/// class-level constant. Enclosing-scope constants are qualified to their
-/// declaring class by the package-constant alias pass (MLS §5.3.2), so this
-/// is the evaluation counterpart of that lexical lookup.
-fn resolve_class_constant_binding(
-    comp_ref: &ast::ComponentReference,
-    tree: &ast::ClassTree,
-    resolve_class_components: fn(
-        &ast::ClassTree,
-        &ast::ClassDef,
-    ) -> IndexMap<String, ast::Component>,
-) -> Option<ast::Expression> {
-    if comp_ref.parts.len() < 2
-        || comp_ref
-            .parts
-            .iter()
-            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
-    {
-        return None;
-    }
-    let member = comp_ref.parts.last()?.ident.text.as_ref();
-    let class_path = comp_ref.parts[..comp_ref.parts.len() - 1]
-        .iter()
-        .map(|part| part.ident.text.as_ref())
-        .collect::<Vec<_>>()
-        .join(".");
-    let class = tree.get_class_by_qualified_name(&class_path)?;
-    let effective_components = resolve_class_components(tree, class);
-    let component = effective_components.get(member)?;
-    if !matches!(component.variability, rumoca_core::Variability::Constant(_)) {
-        return None;
-    }
-    component.binding.clone()
 }
 
 fn resolve_class_redeclare_field_expr(
@@ -915,35 +730,6 @@ fn resolve_scoped_record_field_expr(
     component_expr_for_structural_eval(field).cloned()
 }
 
-fn resolve_component_ref_from_record_defaults(
-    comp_ref: &ast::ComponentReference,
-    effective_components: &IndexMap<String, ast::Component>,
-    tree: &ast::ClassTree,
-) -> Option<ast::Expression> {
-    if comp_ref.parts.len() < 2 || comp_ref.parts.iter().any(|part| part.subs.is_some()) {
-        return None;
-    }
-    let mut parts = comp_ref.parts.iter().map(|part| part.ident.text.as_ref());
-    let first: &str = parts.next()?;
-    let mut current = effective_components.get(first)?;
-    let mut expr = None;
-
-    for field_name in parts {
-        if let Some(mod_expr) = current.modifications.get(field_name) {
-            expr = Some(mod_expr.clone());
-            break;
-        }
-
-        let type_def_id = current.type_def_id?;
-        let class = tree.get_class_by_def_id(type_def_id)?;
-        let field_comp = class.components.get(field_name)?;
-        expr = component_expr_for_structural_eval(field_comp).cloned();
-        current = field_comp;
-    }
-
-    expr
-}
-
 #[derive(Copy, Clone)]
 pub(super) struct IntegerEvalEnv<'a> {
     mod_env: &'a ast::ModificationEnvironment,
@@ -951,6 +737,265 @@ pub(super) struct IntegerEvalEnv<'a> {
     tree: &'a ast::ClassTree,
     resolve_class_components:
         fn(&ast::ClassTree, &ast::ClassDef) -> IndexMap<String, ast::Component>,
+}
+
+struct InstantiateScalarAdapter<'a> {
+    env: IntegerEvalEnv<'a>,
+    local_ints: Option<&'a FxHashMap<String, i64>>,
+    local_bools: Option<&'a FxHashMap<String, bool>>,
+    local_reals: Option<&'a FxHashMap<String, f64>>,
+}
+
+/// Resolve a reference to the declaration-side expression that defines it.
+///
+/// MLS §4.4.4 / §7.2: a parameter's value is written either as an applied
+/// modification or as the declaration binding, and MLS §5.3 makes an unqualified
+/// name visible from the enclosing scopes as well. MLS §5.3.2 additionally makes a
+/// qualified name denote a class-level constant (`Modelica.Constants.eps`). This
+/// walks exactly those places and returns the expression found; a reference with
+/// subscripts names one array element and is left unresolved rather than answered
+/// with the whole array (SPEC_0008).
+fn resolve_scalar_declaration_expr<'a>(
+    comp_ref: &ast::ComponentReference,
+    env: IntegerEvalEnv<'a>,
+) -> Option<Cow<'a, ast::Expression>> {
+    if comp_ref
+        .parts
+        .iter()
+        .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return None;
+    }
+
+    let mut param_path = ast::QualifiedName::new();
+    for part in &comp_ref.parts {
+        param_path.push(part.ident.text.to_string(), Vec::new());
+    }
+    if let Some(mod_value) = env.mod_env.get(&param_path) {
+        return Some(Cow::Borrowed(&mod_value.value));
+    }
+
+    let dotted = comp_ref
+        .parts
+        .iter()
+        .map(|p| p.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".");
+    if let Some(component) = env.effective_components.get(dotted.as_str()) {
+        return component_expr_for_structural_eval(component).map(Cow::Borrowed);
+    }
+
+    for candidate in enclosing_scope_candidates(dotted.as_str()) {
+        let qualified = ast::QualifiedName::from_dotted(&candidate);
+        if let Some(mod_value) = env.mod_env.get(&qualified) {
+            return Some(Cow::Borrowed(&mod_value.value));
+        }
+        if let Some(component) = env.effective_components.get(candidate.as_str()) {
+            return component_expr_for_structural_eval(component).map(Cow::Borrowed);
+        }
+    }
+
+    // MLS §5.3.2: a qualified name may denote a constant declared by a class or
+    // package (`Modelica.Constants.eps`) rather than a component of this scope.
+    // MLS §7.1/§7.2: it may equally name a field of a record component, whose
+    // value comes from the record's modification or its declared default. The
+    // Boolean and Integer paths already resolve both; a Real parameter
+    // expression that compares against one needs the same reach.
+    resolve_class_redeclare_field_expr(
+        comp_ref,
+        env.mod_env,
+        env.tree,
+        env.resolve_class_components,
+    )
+    .or_else(|| resolve_class_constant_binding(comp_ref, env.tree, env.resolve_class_components))
+    .or_else(|| {
+        resolve_component_ref_from_record_defaults(
+            comp_ref,
+            env.effective_components,
+            env.tree,
+            env.resolve_class_components,
+        )
+    })
+    .map(Cow::Owned)
+}
+
+impl AstScalarContext for InstantiateScalarAdapter<'_> {
+    fn expression_depth_limit(&self) -> Option<usize> {
+        Some(MAX_EXPR_EVAL_DEPTH)
+    }
+
+    fn lookup_integer(&self, expr: &ast::Expression, _scope: &str, depth: usize) -> Option<i64> {
+        let ast::Expression::ComponentReference(reference) = expr else {
+            return None;
+        };
+        eval_integer_component_ref(reference, self.env, depth, self.local_ints)
+    }
+
+    /// Fold a Real-valued reference (MLS §4.4.5 parameter expression).
+    ///
+    /// A conditional component's condition may compare a Real parameter, as in
+    /// `Parts.Body`'s `world.enableAnimation and animation and sphereDiameter > 0`.
+    /// Values pre-resolved through an `outer` reference (MLS §5.4) win, otherwise
+    /// the reference is followed to its declaration binding and folded there.
+    fn lookup_real(&self, expr: &ast::Expression, scope: &str, depth: usize) -> Option<f64> {
+        let ast::Expression::ComponentReference(reference) = expr else {
+            return None;
+        };
+        if let Some(values) = self.local_reals
+            && let Some(value) = lookup_local_scalar(reference, values)
+        {
+            return Some(value);
+        }
+        // Integer-valued parameter declarations and pure function calls are
+        // promoted when they occur in a Real expression (MLS §10.6.2).  Ask
+        // the Integer evaluator first: it only returns a value when the full
+        // declaration expression is exact, while `/` inside the surrounding
+        // Real expression remains Real division.
+        if let Some(value) = eval_integer_component_ref(reference, self.env, depth, self.local_ints)
+        {
+            return Some(value as f64);
+        }
+        let declaration = resolve_scalar_declaration_expr(reference, self.env)?;
+        ast_scalar::eval_real(declaration.as_ref(), self, scope, depth)
+    }
+
+    fn lookup_boolean(&self, expr: &ast::Expression, _scope: &str, depth: usize) -> Option<bool> {
+        let ast::Expression::ComponentReference(reference) = expr else {
+            return None;
+        };
+        self.local_bools
+            .and_then(|values| lookup_local_scalar(reference, values))
+            .or_else(|| {
+                eval_param_ref(
+                    reference,
+                    self.env.mod_env,
+                    self.env.effective_components,
+                    self.env.tree,
+                    self.env.resolve_class_components,
+                    depth,
+                )
+            })
+    }
+
+    fn call_integer(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        scope: &str,
+        depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        if function.parts.len() == 1
+            && function.parts[0].ident.text.as_ref() == "integer"
+            && let [argument] = args
+        {
+            let value = ast_scalar::eval_real(argument, self, scope, depth)?;
+            let value = rumoca_core::modelica_integer_value(value);
+            if value.is_finite() && value >= i64::MIN as f64 && value < -(i64::MIN as f64) {
+                return Some(value as i64);
+            }
+            return None;
+        }
+        eval_integer_function_call(function, args, self.env, depth, self.local_ints)
+    }
+
+    fn call_boolean(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        _scope: &str,
+        depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<bool> {
+        eval_bool_function_call(
+            function,
+            args,
+            self.env,
+            depth,
+            self.local_ints,
+            self.local_bools,
+        )
+    }
+
+    fn call_real(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        _scope: &str,
+        depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<f64> {
+        // A structurally evaluated Integer result is a valid Real operand by
+        // MLS §10.6.2.  The Integer evaluator remains the certificate here: it
+        // rejects functions whose result cannot be established exactly, so
+        // this promotion cannot turn an undecidable Real call into a value.
+        eval_integer_function_call(function, args, self.env, depth, self.local_ints)
+            .map(|value| value as f64)
+    }
+
+    fn enum_equal(
+        &self,
+        lhs: &ast::Expression,
+        rhs: &ast::Expression,
+        _scope: &str,
+        depth: usize,
+    ) -> Option<bool> {
+        evaluate_enum_equality_with_depth(
+            lhs,
+            rhs,
+            self.env.mod_env,
+            self.env.effective_components,
+            self.env.tree,
+            self.env.resolve_class_components,
+            depth,
+        )
+    }
+
+    fn integer_binary(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: i64,
+        rhs: i64,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        eval_integer_binary(op, lhs, rhs)
+    }
+}
+
+/// Fold a Real-valued parameter expression at instantiation time (MLS §4.4.5).
+///
+/// Returns `None` when the expression is not a Real parameter expression this
+/// phase can decide, or when it folds to a non-finite value; nothing is invented
+/// for the undecided case (SPEC_0008).
+pub fn try_eval_real_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) -> Option<f64> {
+    try_eval_real_expr_with_known(ctx, expr, &FxHashMap::default())
+}
+
+/// [`try_eval_real_expr`], with references that already have a settled value
+/// answered from `known` instead of from their declaration (MLS §7.2).
+pub fn try_eval_real_expr_with_known(
+    ctx: &InstantiateEvalCtx,
+    expr: &ast::Expression,
+    known: &FxHashMap<String, f64>,
+) -> Option<f64> {
+    let InstantiateEvalCtx {
+        tree,
+        mod_env,
+        effective_components,
+        resolve_class_components,
+    } = ctx;
+    let adapter = InstantiateScalarAdapter {
+        env: IntegerEvalEnv {
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components: *resolve_class_components,
+        },
+        local_ints: None,
+        local_bools: None,
+        local_reals: (!known.is_empty()).then_some(known),
+    };
+    ast_scalar::eval_real(expr, &adapter, "", 0).filter(|value| value.is_finite())
 }
 
 /// Try to evaluate an integer expression for array dimension expansion.
@@ -1010,75 +1055,18 @@ fn try_eval_integer_expr_with_depth_and_locals(
     if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
-    let env = IntegerEvalEnv {
-        mod_env,
-        effective_components,
-        tree,
-        resolve_class_components,
+    let adapter = InstantiateScalarAdapter {
+        env: IntegerEvalEnv {
+            mod_env,
+            effective_components,
+            tree,
+            resolve_class_components,
+        },
+        local_ints,
+        local_bools: None,
+        local_reals: None,
     };
-
-    let recurse = |e| {
-        try_eval_integer_expr_with_depth_and_locals(
-            e,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-            local_ints,
-        )
-    };
-
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.parse::<i64>().ok(),
-        ast::Expression::ComponentReference(comp_ref) => {
-            eval_integer_component_ref(comp_ref, env, depth, local_ints)
-        }
-        ast::Expression::Binary { op, lhs, rhs, .. } => {
-            let l = recurse(lhs)?;
-            let r = recurse(rhs)?;
-            eval_integer_binary(op, l, r)
-        }
-        ast::Expression::Unary { op, rhs, .. } => {
-            let r = recurse(rhs)?;
-            match op {
-                rumoca_core::OpUnary::Minus => r.checked_neg(),
-                rumoca_core::OpUnary::Plus => Some(r),
-                _ => None,
-            }
-        }
-        ast::Expression::Parenthesized { inner, .. } => recurse(inner),
-        ast::Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (condition, branch_expr) in branches {
-                if try_eval_bool_expr_with_depth_and_locals(condition, env, depth + 1, local_ints)?
-                {
-                    return recurse(branch_expr);
-                }
-            }
-            recurse(else_branch)
-        }
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            eval_integer_function_call(comp, args, env, depth, local_ints)
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn try_eval_bool_expr_with_depth_and_locals(
-    expr: &ast::Expression,
-    env: IntegerEvalEnv<'_>,
-    depth: usize,
-    local_ints: Option<&FxHashMap<String, i64>>,
-) -> Option<bool> {
-    try_eval_bool_expr_with_local_values(expr, env, depth, local_ints, None)
+    ast_scalar::eval_integer(expr, &adapter, "", depth)
 }
 
 pub(super) fn try_eval_bool_expr_with_local_values(
@@ -1091,68 +1079,13 @@ pub(super) fn try_eval_bool_expr_with_local_values(
     if depth > MAX_EXPR_EVAL_DEPTH {
         return None;
     }
-
-    let recurse =
-        |e| try_eval_bool_expr_with_local_values(e, env, depth + 1, local_ints, local_bools);
-    let int_eval = |e| {
-        try_eval_integer_expr_with_depth_and_locals(
-            e,
-            env.mod_env,
-            env.effective_components,
-            env.tree,
-            env.resolve_class_components,
-            depth + 1,
-            local_ints,
-        )
+    let adapter = InstantiateScalarAdapter {
+        env,
+        local_ints,
+        local_bools,
+        local_reals: None,
     };
-
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::Bool,
-            token,
-            ..
-        } => match token.text.as_ref() {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        },
-        ast::Expression::Unary {
-            op: rumoca_core::OpUnary::Not,
-            rhs,
-            ..
-        } => Some(!recurse(rhs)?),
-        ast::Expression::Parenthesized { inner, .. } => recurse(inner),
-        ast::Expression::ComponentReference(comp_ref) => {
-            local_bools.and_then(|values| lookup_local_bool(comp_ref, values))
-        }
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            eval_bool_function_call(comp, args, env, depth, local_ints, local_bools)
-        }
-        ast::Expression::Binary { op, lhs, rhs, .. } => match op {
-            rumoca_core::OpBinary::And => Some(recurse(lhs)? && recurse(rhs)?),
-            rumoca_core::OpBinary::Or => Some(recurse(lhs)? || recurse(rhs)?),
-            rumoca_core::OpBinary::Eq => {
-                if let (Some(lhs), Some(rhs)) = (int_eval(lhs), int_eval(rhs)) {
-                    Some(lhs == rhs)
-                } else {
-                    Some(recurse(lhs)? == recurse(rhs)?)
-                }
-            }
-            rumoca_core::OpBinary::Neq => {
-                if let (Some(lhs), Some(rhs)) = (int_eval(lhs), int_eval(rhs)) {
-                    Some(lhs != rhs)
-                } else {
-                    Some(recurse(lhs)? != recurse(rhs)?)
-                }
-            }
-            rumoca_core::OpBinary::Lt => Some(int_eval(lhs)? < int_eval(rhs)?),
-            rumoca_core::OpBinary::Le => Some(int_eval(lhs)? <= int_eval(rhs)?),
-            rumoca_core::OpBinary::Gt => Some(int_eval(lhs)? > int_eval(rhs)?),
-            rumoca_core::OpBinary::Ge => Some(int_eval(lhs)? >= int_eval(rhs)?),
-            _ => None,
-        },
-        _ => None,
-    }
+    ast_scalar::eval_boolean(expr, &adapter, "", depth)
 }
 
 fn eval_bool_function_call(
@@ -1170,7 +1103,7 @@ fn eval_bool_function_call(
         .collect::<Vec<_>>()
         .join(".");
     let qualified_name = comp
-        .def_id
+        .root_def_id()
         .and_then(|did| env.tree.def_map.get(&did))
         .map(String::as_str);
 
@@ -1204,7 +1137,7 @@ fn eval_integer_component_ref(
     };
 
     if let Some(local_values) = local_ints
-        && let Some(value) = lookup_local_integer(comp_ref, local_values)
+        && let Some(value) = lookup_local_scalar(comp_ref, local_values)
     {
         return Some(value);
     }
@@ -1357,7 +1290,7 @@ fn resolve_class_from_cref<'a>(
     tree: &'a ast::ClassTree,
     cref: &ast::ComponentReference,
 ) -> Option<&'a ast::ClassDef> {
-    if let Some(def_id) = cref.def_id
+    if let Some(def_id) = cref.root_def_id()
         && let Some(class) = tree.get_class_by_def_id(def_id)
     {
         return Some(class);
@@ -1427,8 +1360,11 @@ fn eval_integer_record_field_ref(
         return None;
     }
 
+    // MLS §7.1: the record's fields include the inherited ones, so iterate its
+    // effective components rather than only what the class declares itself.
+    let record_fields = (env.resolve_class_components)(env.tree, record_class);
     let mut local_values: FxHashMap<String, i64> = FxHashMap::default();
-    for (name, field_comp) in &record_class.components {
+    for (name, field_comp) in &record_fields {
         let field_mod = root_comp.modifications.get(name);
         let extends_override = record_extends_field_override(record_class, name);
         let field_expr = field_mod
@@ -1657,10 +1593,15 @@ fn eval_integer_binary(op: &rumoca_core::OpBinary, lhs: i64, rhs: i64) -> Option
     eval_common_integer_binary(operator, lhs, rhs)
 }
 
-fn lookup_local_integer(
+/// Look up a subscript-free reference in a caller-supplied value map.
+///
+/// A subscripted reference names one element of an array and the map is keyed by
+/// scalar path, so it is left unresolved rather than answered with the array's
+/// entry (SPEC_0008).
+fn lookup_local_scalar<T: Copy>(
     comp_ref: &ast::ComponentReference,
-    local_values: &FxHashMap<String, i64>,
-) -> Option<i64> {
+    local_values: &FxHashMap<String, T>,
+) -> Option<T> {
     if comp_ref.parts.iter().any(|part| part.subs.is_some()) {
         return None;
     }
@@ -1670,37 +1611,7 @@ fn lookup_local_integer(
         .map(|p| p.ident.text.as_ref())
         .collect::<Vec<_>>()
         .join(".");
-    if let Some(value) = local_values.get(&dotted) {
-        return Some(*value);
-    }
-    if comp_ref.parts.len() == 1 {
-        let name = comp_ref.parts[0].ident.text.as_ref();
-        return local_values.get(name).copied();
-    }
-    None
-}
-
-fn lookup_local_bool(
-    comp_ref: &ast::ComponentReference,
-    local_values: &FxHashMap<String, bool>,
-) -> Option<bool> {
-    if comp_ref.parts.iter().any(|part| part.subs.is_some()) {
-        return None;
-    }
-    let dotted = comp_ref
-        .parts
-        .iter()
-        .map(|p| p.ident.text.as_ref())
-        .collect::<Vec<_>>()
-        .join(".");
-    if let Some(value) = local_values.get(&dotted) {
-        return Some(*value);
-    }
-    if comp_ref.parts.len() == 1 {
-        let name = comp_ref.parts[0].ident.text.as_ref();
-        return local_values.get(name).copied();
-    }
-    None
+    local_values.get(&dotted).copied()
 }
 
 /// Evaluate a function call to an integer value during instantiation.
@@ -1724,7 +1635,7 @@ fn eval_integer_function_call(
 
     // Also try the qualified name via def_id (resolve phase may have set this)
     let qualified_name = comp
-        .def_id
+        .root_def_id()
         .and_then(|did| env.tree.def_map.get(&did))
         .cloned();
 
@@ -1743,7 +1654,8 @@ fn eval_integer_function_call(
     // Handle Modelica builtins that return integers
     match func_name.as_str() {
         "integer" => {
-            // MLS §3.7.2: integer(x) truncates Real to Integer
+            // Integral arguments are unchanged. Real arguments are evaluated by
+            // the scalar adapter above so MLS floor semantics stay type-aware.
             let val = recurse(args.first()?)?;
             return Some(val);
         }
@@ -1835,35 +1747,5 @@ fn eval_user_defined_integer_function(
     depth: usize,
     caller_locals: Option<&FxHashMap<String, i64>>,
 ) -> Option<i64> {
-    if !function_def.pure || function_def.external.is_some() {
-        return None;
-    }
-    if depth >= MAX_EXPR_EVAL_DEPTH {
-        return None;
-    }
-
-    let mut local_values = FxHashMap::default();
-    function_eval::bind_function_inputs(
-        function_def,
-        args,
-        env,
-        depth + 1,
-        caller_locals,
-        &mut local_values,
-    )?;
-    function_eval::initialize_function_locals(function_def, env, depth + 1, &mut local_values);
-    let output_name = function_eval::find_scalar_function_output_name(function_def)?;
-
-    for algorithm in &function_def.algorithms {
-        if function_eval::interpret_function_statements(
-            algorithm,
-            env,
-            depth + 1,
-            &mut local_values,
-        )? {
-            break;
-        }
-    }
-
-    local_values.get(&output_name).copied()
+    function_eval::eval_user_defined_integer_function(function_def, args, env, depth, caller_locals)
 }

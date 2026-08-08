@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{
-    extract_named_record_constructor_fields, infer_dims_from_expr,
+    eval_size_call_with_scope, extract_named_record_constructor_fields, infer_dims_from_expr,
     try_eval_const_boolean_with_scope,
 };
 use crate::Context;
@@ -12,6 +12,21 @@ fn token(text: &str) -> rumoca_core::Token {
         text: Arc::from(text),
         ..rumoca_core::Token::default()
     }
+}
+
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("constant_folding_test.mo"),
+        1,
+        2,
+    )
+}
+
+fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::DefId::new(hash.max(1))
 }
 
 fn bool_expr(value: bool) -> ast::Expression {
@@ -38,31 +53,43 @@ fn int_expr(value: &str) -> ast::Expression {
     }
 }
 
+fn string_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::String,
+        token: token(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn unknown_bool_ref(name: &str) -> ast::Expression {
     ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![ast::ComponentRefPart {
             ident: token(name),
             subs: None,
+            def_id: Some(fixture_def_id(name)),
         }],
-        span: rumoca_core::Span::DUMMY,
-        def_id: None,
+        span: test_span(),
+        qualified_display_name: None,
     })
 }
 
-fn component_ref(path: &str, def_id: Option<rumoca_core::DefId>) -> ast::ComponentReference {
-    ast::ComponentReference {
+fn component_ref(path: &str, target_def_id: rumoca_core::DefId) -> ast::ComponentReference {
+    let mut reference = ast::ComponentReference {
         local: false,
         parts: crate::path_utils::segments(path)
             .into_iter()
             .map(|part| ast::ComponentRefPart {
                 ident: token(part),
                 subs: None,
+                def_id: Some(fixture_def_id(part)),
             })
             .collect(),
-        span: rumoca_core::Span::DUMMY,
-        def_id,
-    }
+        span: test_span(),
+        qualified_display_name: None,
+    };
+    reference.set_target_def_id(Some(target_def_id));
+    reference
 }
 
 fn real_binary(
@@ -119,6 +146,51 @@ fn infers_constant_range_binding_dimensions() {
 }
 
 #[test]
+fn fill_with_array_seed_prefixes_dimensions_including_zero() {
+    let seed = ast::Expression::Array {
+        elements: vec![int_expr("1"), int_expr("2"), int_expr("3")],
+        is_matrix: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = ast::Expression::FunctionCall {
+        comp: component_ref("fill", fixture_def_id("fill")),
+        args: vec![seed, int_expr("0"), int_expr("2")],
+        is_partial_application: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        infer_dims_from_expr(&expr, &Context::default(), ""),
+        Some(vec![0, 2, 3])
+    );
+}
+
+#[test]
+fn size_of_string_matrix_literal_uses_shape_without_value_evaluation() {
+    let matrix = ast::Expression::Array {
+        elements: vec![
+            ast::Expression::Array {
+                elements: vec![string_expr("\"a\""), string_expr("\"b\"")],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+            ast::Expression::Array {
+                elements: vec![string_expr("\"c\""), string_expr("\"d\"")],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+        ],
+        is_matrix: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_size_call_with_scope(&matrix, &int_expr("2"), &Context::default(), ""),
+        Some(2)
+    );
+}
+
+#[test]
 fn boolean_constant_folding_short_circuits_unknown_and_rhs() {
     let expr = bool_binary(
         rumoca_core::OpBinary::And,
@@ -170,12 +242,9 @@ fn relational_constant_folding_compares_real_values() {
 fn named_record_constructor_extraction_preserves_target_identity() {
     let record_def_id = rumoca_core::DefId::new(42);
     let expr = ast::Expression::ClassModification {
-        target: component_ref(
-            "Utilities.ParameterRecords.MachineData",
-            Some(record_def_id),
-        ),
+        target: component_ref("Utilities.ParameterRecords.MachineData", record_def_id),
         modifications: vec![ast::Expression::Modification {
-            target: component_ref("PRef", None),
+            target: component_ref("PRef", fixture_def_id("PRef")),
             value: Arc::new(real_expr("1000.0")),
             span: rumoca_core::Span::DUMMY,
         }],

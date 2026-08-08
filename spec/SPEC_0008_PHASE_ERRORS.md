@@ -137,132 +137,122 @@ Error codes use mnemonic prefixes for readability:
 | EF0xx | flatten | **F**latten | Connection errors |
 | ED0xx | todae | **D**AE | Equation errors |
 | EC0xx | codegen | **C**odegen | Code generation errors |
+| EM0xx | class merge | **M**erge | Class-tree merge errors |
+| ES0xx | structural | **S**tructural | Matching/BLT/singularity (`ES001`-`ES002` warnings, `ES01x` errors) |
+| EL0xx | solve lowering | so**L**ve | DAE → Solve-IR lowering (`EL001`-`EL011` rows, `EL02x` assembly, `EL03x` overrides) |
+| EX0xx | sim runtime | e**X**ecution | Solver, runtime-preparation, parameter-override |
+| EG0xx | GALEC IR | **G**ALEC | GALEC IR parse/validation errors |
+| EGT0xx | GALEC target projection | **G**ALEC **T**arget | DAE-to-GALEC projection/export errors |
+| EFM0xx | eFMI packaging | e**FM**I | eFMI manifest/packaging errors |
 | WP/WR/WT/etc | (same) | | Warnings per phase |
+
+The leading letter is the severity: a warning MUST NOT be minted in an `E`
+range, nor an error in a `W` range. The stable identity of a diagnostic is its
+bare mnemonic (`ED001`); `miette` phases render it as
+`rumoca::<phase>::<MNEMONIC>` and others emit the bare form, so consumers MUST
+match by mnemonic **suffix**. Contract tests implement this comparison locally
+in `crates/rumoca-contracts/src/test_support.rs`. A shipped code is stable:
+retire it rather than renumber or reuse.
+
+The former GALEC-target meanings of `ET001`–`ET023` are retired because they
+collided with typecheck. GALEC target projection now emits `EGT001`–`EGT023`;
+the typecheck meanings of `ET0xx` are unchanged.
+
+**Known drift**, tracked separately: `rumoca-phase-structural` emits
+`ES001`/`ES002` at warning severity. For these, severity MUST be read from the
+diagnostic's `severity` field, never inferred.
+
+### Acceptance Contract Before Rejection
+
+A rejection is only as good as the acceptance it bounds. A **typed rejection
+path** is a new error variant, a newly minted code, or an `Err`/`emit()` on
+input a phase previously accepted. Every new one MUST land in the same change as
+a written **acceptance contract**: which inputs stay legal, and which owner
+handles them.
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| A new typed rejection ships with its acceptance contract | Author, same change | Unbounded rejection is over-reach |
+| The contract names the legal shapes *and* their handling owner | Same change | "Not rejected" is not a design |
+| Discharge it as a test asserting the accepted shape, or a checklist/spec bullet | Test suite, or PR notes per SPEC_0025 §3 | Executable evidence preferred, written evidence required |
+| Widening an existing rejection to new input is a new rejection path | Author | Scope creep needs the same contract |
+| Never discharge it by relaxing an existing fixture or assertion | Test suite | Weakening hides the over-reach it should expose |
+
+**Why:** `EF025` over-reached onto callables that legally select no
+implementation — MLS §3.7 predefined operators, record constructors, `type`
+conversions — because nothing stated which callables stay legal; the `EI012`
+partial-class rejection was absorbed by weakening a fixture instead of naming
+the accepted deferred-declaration shape. Rejections whose accepted shape was
+designed first landed clean.
+
+**Checklist-item template** — one per new rejection path:
+
+```markdown
+- [ ] <CODE> rejects <illegal shape>;
+      accepts <legal shapes that stay legal>,
+      owned by <crate::module or phase>;
+      evidence <test path::name | spec section>
+```
 
 ### PhaseError Trait
 
-The `PhaseError` trait in `rumoca-core` provides a common interface for all phase errors:
+`PhaseError` in `crates/rumoca-core/src/lib.rs` is the common interface:
 
 ```rust
-//! rumoca-core/src/diag.rs
-
 pub trait PhaseError {
     /// Convert this error to a diagnostic.
     fn to_diagnostic(&self) -> Diagnostic;
-
-    /// Emit this error to a diagnostics collection.
-    fn emit_to(&self, diags: &mut Diagnostics) {
-        diags.emit(self.to_diagnostic());
-    }
 }
 ```
 
 ### Phase Error Pattern
 
-Each phase defines errors in a local `errors.rs` and implements `PhaseError`:
+Each phase defines errors in a local `errors.rs`, derives `thiserror::Error` and
+`miette::Diagnostic` for the message/code/label, and implements `PhaseError` by
+handing the retained spans to `miette_phase_error_to_diagnostic`:
 
 ```rust
 //! rumoca-phase-resolve/src/errors.rs
 
-use rumoca_core::{Diagnostic, Label, PhaseError, Span};
-
+#[derive(Debug, Clone, Error, MietteDiagnostic)]
 pub enum ResolveError {
-    UnresolvedName { name: String, span: Span },
-    DuplicateDefinition { name: String, first: Span, second: Span },
-    CyclicInheritance { class: String, span: Span },
-    InvalidExtends { name: String, span: Span },
+    #[error("undefined reference: `{name}` not found")]
+    #[diagnostic(
+        code(rumoca::resolve::ER002),
+        help("check that the name is declared before use")
+    )]
+    UndefinedReference {
+        name: String,
+        #[label("not found in scope")]
+        span: Span,
+    },
+    // ER001, ER003, ER004 follow the same shape.
 }
 
 impl PhaseError for ResolveError {
     fn to_diagnostic(&self) -> Diagnostic {
-        match self {
-            Self::UnresolvedName { name, span } => {
-                Diagnostic::error(format!("cannot find `{name}` in this scope"))
-                    .with_code("ER001")
-                    .with_label(Label::primary(*span))
-            }
-            Self::DuplicateDefinition { name, first, second } => {
-                Diagnostic::error(format!("`{name}` is defined multiple times"))
-                    .with_code("ER002")
-                    .with_label(Label::primary(*second).with_message("duplicate"))
-                    .with_label(Label::secondary(*first).with_message("first defined here"))
-            }
-            Self::CyclicInheritance { class, span } => {
-                Diagnostic::error(format!("cyclic inheritance involving `{class}`"))
-                    .with_code("ER003")
-                    .with_label(Label::primary(*span))
-            }
-            Self::InvalidExtends { name, span } => {
-                Diagnostic::error(format!("`{name}` cannot be extended"))
-                    .with_code("ER004")
-                    .with_label(Label::primary(*span))
-            }
-        }
+        let span = match self {
+            Self::UndefinedReference { span, .. } => span,
+            // ... one arm per variant
+        };
+        miette_phase_error_to_diagnostic(self, std::slice::from_ref(span))
     }
 }
 ```
 
-### Typecheck Phase Example
-
-```rust
-//! rumoca-phase-typecheck/src/errors.rs
-
-use rumoca_core::{Diagnostic, Label, PhaseError, Span};
-
-pub enum TypecheckError {
-    TypeMismatch { expected: String, found: String, span: Span },
-    VariabilityViolation { msg: String, span: Span },
-    DimensionMismatch { expected: String, found: String, span: Span },
-    UnknownType { name: String, span: Span },
-}
-
-impl PhaseError for TypecheckError {
-    fn to_diagnostic(&self) -> Diagnostic {
-        match self {
-            Self::TypeMismatch { expected, found, span } => {
-                Diagnostic::error(format!("expected `{expected}`, found `{found}`"))
-                    .with_code("ET001")
-                    .with_label(Label::primary(*span))
-            }
-            // ...
-        }
-    }
-}
-```
-
-### Usage in Phase Implementation
-
-```rust
-//! rumoca-phase-resolve/src/lib.rs
-
-mod errors;
-use errors::ResolveError;
-
-pub fn resolve(ast: &Ast, ctx: &mut ResolveContext) -> Result<Resolved, ()> {
-    let resolver = Resolver::new(ctx);
-    
-    // Error emission
-    if let Some(existing) = resolver.lookup_local(&name) {
-        ctx.diags.emit(ResolveError::DuplicateDefinition {
-            name: name.clone(),
-            first: existing.span,
-            second: span,
-        }.to_diagnostic());
-    }
-    
-    // ...
-}
-```
+Miette labels carry byte offsets but not source identity, so the phase error
+retains the original `Span` values and passes them in `#[label]` order. Callers
+emit with `ctx.diags.emit(err.to_diagnostic())` or bubble the `Result`, per the
+propagation table above. Typecheck defines `TypeCheckError` in
+`crates/rumoca-phase-typecheck/src/lib.rs` rather than in an `errors.rs`.
 
 ### Common Diagnostic Infrastructure
 
-The shared `rumoca-core` crate provides the base types:
+`crates/rumoca-core/src/lib.rs` provides the base types:
 
 ```rust
-//! rumoca-core/src/diag.rs
-
 pub struct Diagnostic {
-    pub severity: Severity,
+    pub severity: DiagnosticSeverity,
     pub code: Option<String>,
     pub message: String,
     pub labels: Vec<Label>,
@@ -271,7 +261,6 @@ pub struct Diagnostic {
 
 pub struct Diagnostics {
     diags: Vec<Diagnostic>,
-    error_count: usize,
 }
 
 impl Diagnostics {
@@ -280,37 +269,21 @@ impl Diagnostics {
 }
 ```
 
-### Miette Integration
-
-Errors convert to miette reports for pretty display:
-
-```rust
-impl Diagnostic {
-    pub fn to_miette(&self, source_name: &str, source: &str) -> MietteReport {
-        // ...
-    }
-}
-```
+`Diagnostic::to_miette(&self, source_name: &str, source: &str) -> MietteReport`
+and `to_miette_with_source_map` render a diagnostic for terminal display.
 
 ### Exceptions
 
 **CodegenError** does not implement `PhaseError` because:
 - Code generation errors occur during template rendering, not source analysis
-- They have no `Span` pointing to user source code
+- They carry at most a rendered-template `SourceSpan`, never a `rumoca_core::Span`
+  identifying user Modelica source
 - They need to implement `std::error::Error` for Result-based error handling
 - They wrap external errors (e.g., minijinja template errors)
 
-```rust
-//! rumoca-phase-codegen/src/errors.rs
-
-/// Error during code generation (does NOT implement PhaseError).
-pub struct CodegenError {
-    pub message: String,
-}
-
-impl std::error::Error for CodegenError {}
-impl From<minijinja::Error> for CodegenError { ... }
-```
+`CodegenError` in `crates/rumoca-phase-codegen/src/errors.rs` is a
+`thiserror::Error` + `miette::Diagnostic` enum carrying `EC0xx` codes, with
+`impl From<minijinja::Error>`; it implements no `PhaseError`.
 
 ### Source Traceability
 
@@ -341,5 +314,11 @@ mnemonic-prefixed codes (ER/ET/EI/EF/ED/EC). Codes are grep-discoverable;
 phases evolve independently; `PhaseError` enables polymorphic handling.
 
 ## References
+- [SPEC_0025](SPEC_0025_PR_REVIEW_PROCESS.md) §3 — where a PR records an
+  acceptance contract that is not discharged by a test
+- Acceptance-contract exemplars:
+  `rumoca-phase-flatten/tests/function_selection_identity.rs` and
+  `.../pipeline/function_overrides_and_dims/predefined_callables.rs` (`EF025`);
+  `rumoca-phase-resolve/src/tests/partial_replaceable.rs` (`EI012`)
 - Rust compiler error index: https://doc.rust-lang.org/error_codes/
 - miette crate: https://docs.rs/miette

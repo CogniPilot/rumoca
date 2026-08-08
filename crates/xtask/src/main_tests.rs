@@ -134,6 +134,7 @@ fn cli_parses_verify_template_runtimes_job() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::All);
+                assert!(!args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },
@@ -155,6 +156,29 @@ fn cli_parses_verify_template_runtimes_backend() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::Casadi);
+            }
+            other => panic!("expected template runtimes command, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_verify_template_runtimes_required_tools_policy() {
+    let cli = Cli::try_parse_from([
+        "xtask",
+        "verify",
+        "template-runtimes",
+        "--backend",
+        "cuda",
+        "--require-external-tools",
+    ])
+    .expect("parse required external tool policy");
+    match cli.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::TemplateRuntimes(args) => {
+                assert_eq!(args.backend, TemplateRuntimeBackend::Cuda);
+                assert!(args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },
@@ -303,6 +327,35 @@ fn cli_parses_verify_msl_parity_prebuilt_workers() {
     match cli.command {
         Commands::Verify(args) => match args.command {
             VerifyCommand::MslParity(_) => {}
+            other => panic!("expected msl-parity, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+}
+
+/// The comparator-evidence check is on by default; opting out has to be typed.
+/// If this flag ever becomes a default, an unmeasured cohort run goes quiet
+/// again — which is the exact regression the check exists to stop.
+#[test]
+fn verify_msl_parity_requires_an_explicit_opt_out_to_accept_unmeasured_parity() {
+    let default = Cli::try_parse_from(["xtask", "verify", "msl-parity"]).expect("parse bare");
+    match default.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::MslParity(parity) => assert!(
+                !parity.allows_unmeasured_parity(),
+                "a bare msl-parity run must enforce the comparator check"
+            ),
+            other => panic!("expected msl-parity, got {other:?}"),
+        },
+        other => panic!("expected verify command, got {other:?}"),
+    }
+
+    let opted_out =
+        Cli::try_parse_from(["xtask", "verify", "msl-parity", "--allow-unmeasured-parity"])
+            .expect("parse --allow-unmeasured-parity");
+    match opted_out.command {
+        Commands::Verify(args) => match args.command {
+            VerifyCommand::MslParity(parity) => assert!(parity.allows_unmeasured_parity()),
             other => panic!("expected msl-parity, got {other:?}"),
         },
         other => panic!("expected verify command, got {other:?}"),

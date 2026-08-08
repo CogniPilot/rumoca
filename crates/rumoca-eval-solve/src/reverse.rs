@@ -13,6 +13,10 @@
 //! `Aᵀμ = λ·e_c`). Table lookups, random generators, and runtime-indexed loads
 //! are still deferred and raise an explicit error here rather than silently
 //! returning a wrong gradient.
+//!
+//! The reverse-sweep types are `pub` only so that
+//! `rumoca_solver::runtime::solve_runtime` (the runtime state machine that owns
+//! the scratch buffers) can drive them; they are not a general-purpose API.
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, UnaryOp};
 
@@ -24,7 +28,7 @@ use crate::{
 /// slot. Any slice may be empty if the caller does not need that input space
 /// (e.g. a primal program has no `seed`; a forward-JVP program's `y`/`p` are the
 /// fixed linearization point).
-pub(crate) struct ReverseCotangents<'a> {
+pub struct ReverseCotangents<'a> {
     pub y: &'a mut [f64],
     pub p: &'a mut [f64],
     pub seed: &'a mut [f64],
@@ -33,14 +37,14 @@ pub(crate) struct ReverseCotangents<'a> {
 /// A scalar program plus the per-row register counts and cached input
 /// requirements a reverse sweep needs from a
 /// [`crate::prepared::PreparedScalarProgramBlock`].
-pub(crate) struct ScalarVjpProgram<'a> {
+pub struct ScalarVjpProgram<'a> {
     pub block: &'a ScalarProgramBlock,
     pub row_registers: &'a [usize],
     pub requirements: RowInputRequirements,
 }
 
 /// Primal evaluation point for the forward tape pass.
-pub(crate) struct ReverseInputs<'a> {
+pub struct ReverseInputs<'a> {
     pub y: &'a [f64],
     pub p: &'a [f64],
     pub t: f64,
@@ -52,7 +56,7 @@ pub(crate) struct ReverseInputs<'a> {
 /// `clear` + `resize` retains capacity. Mirrors how `SolveRuntime` reuses its
 /// forward `StateDerivativeScratch`.
 #[derive(Default, Clone)]
-pub(crate) struct ReverseScratch {
+pub struct ReverseScratch {
     regs: Vec<f64>,
     adj: Vec<f64>,
 }
@@ -60,7 +64,7 @@ pub(crate) struct ReverseScratch {
 /// Reverse-accumulate `Jᵀ · output_cotangents` of a scalar program block into
 /// `cot`. Each row is an independent program; its contribution is summed into the
 /// shared input cotangents.
-pub(crate) fn reverse_scalar_block_vjp(
+pub fn reverse_scalar_block_vjp(
     program: &ScalarVjpProgram<'_>,
     inputs: &ReverseInputs<'_>,
     output_cotangents: &[f64],
@@ -87,12 +91,9 @@ pub(crate) fn reverse_scalar_block_vjp(
         });
     }
     let mut output_ordinal = 0usize;
-    for (row_idx, row) in block.programs.iter().enumerate() {
+    for (row_idx, row) in block.programs().iter().enumerate() {
         let register_count = program.row_registers[row_idx];
-        scratch.regs.clear();
-        scratch.regs.resize(register_count, 0.0);
-        scratch.adj.clear();
-        scratch.adj.resize(register_count, 0.0);
+        scratch.prepare(register_count);
         let span = block.program_span(row_idx);
         forward_row_tape(row, inputs, &mut scratch.regs)
             .map_err(|error| error.with_source_span(span))?;
@@ -105,8 +106,82 @@ pub(crate) fn reverse_scalar_block_vjp(
         );
         reverse_row_adjoints(row, &scratch.regs, &mut scratch.adj, cot)
             .map_err(|error| error.with_source_span(span))?;
+        debug_assert!(scratch.adj.iter().all(|value| *value == 0.0));
     }
     Ok(())
+}
+
+/// Reverse one scalar-output row into its complete solver-`y` gradient.
+///
+/// A scalar residual row has one output, so reverse mode obtains every
+/// `d(row)/d(y[i])` in one forward/reverse sweep. Returning `false` preserves a
+/// precise fallback for rows containing operations whose reverse rule is not
+/// implemented yet.
+pub fn reverse_scalar_row_y_gradient(
+    program: &ScalarVjpProgram<'_>,
+    row_idx: usize,
+    inputs: &ReverseInputs<'_>,
+    y_gradient: &mut [f64],
+    scratch: &mut ReverseScratch,
+) -> Result<bool, EvalSolveError> {
+    let Some(row) = program.block.programs().get(row_idx) else {
+        return Ok(false);
+    };
+    let mut output_sources = row.iter().filter_map(|op| match op {
+        LinearOp::StoreOutput { src } => Some(*src),
+        _ => None,
+    });
+    let Some(output_source) = output_sources.next() else {
+        return Ok(false);
+    };
+    if output_sources.next().is_some() || row.iter().any(|op| !reverse_row_op_supported(op)) {
+        return Ok(false);
+    }
+
+    scratch.prepare(program.row_registers[row_idx]);
+    forward_row_tape(row, inputs, &mut scratch.regs)
+        .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    add_adj(&mut scratch.adj, output_source, 1.0);
+    y_gradient.fill(0.0);
+    reverse_row_adjoints(
+        row,
+        &scratch.regs,
+        &mut scratch.adj,
+        &mut ReverseCotangents {
+            y: y_gradient,
+            p: &mut [],
+            seed: &mut [],
+        },
+    )
+    .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    debug_assert!(scratch.adj.iter().all(|value| *value == 0.0));
+    Ok(true)
+}
+
+impl ReverseScratch {
+    fn prepare(&mut self, register_count: usize) {
+        self.regs.resize(register_count, 0.0);
+        self.adj.resize(register_count, 0.0);
+        debug_assert!(self.adj.iter().all(|value| *value == 0.0));
+    }
+}
+
+pub fn reverse_row_op_supported(op: &LinearOp) -> bool {
+    matches!(
+        op,
+        LinearOp::Const { .. }
+            | LinearOp::LoadTime { .. }
+            | LinearOp::LoadY { .. }
+            | LinearOp::LoadP { .. }
+            | LinearOp::LoadIndexedP { .. }
+            | LinearOp::Move { .. }
+            | LinearOp::LinearSolveComponent { .. }
+            | LinearOp::Unary { .. }
+            | LinearOp::Binary { .. }
+            | LinearOp::Compare { .. }
+            | LinearOp::Select { .. }
+            | LinearOp::StoreOutput { .. }
+    )
 }
 
 /// Seed the row's `StoreOutput` register adjoints with the matching output
@@ -125,7 +200,7 @@ fn seed_row_output_adjoints(
             // `ordinal` and the dense output slot are in bounds by block invariant
             // (one `output_indices` entry per `StoreOutput`, values < output_count)
             // and the caller's `output_cotangents` length is validated up front.
-            let dense = block.output_indices[ordinal];
+            let dense = block.output_indices()[ordinal];
             add_adj(adj, src, output_cotangents[dense]);
             ordinal += 1;
         }
@@ -146,6 +221,15 @@ fn forward_row_tape(
             LinearOp::LoadTime { dst } => set(regs, dst, inputs.t),
             LinearOp::LoadY { dst, index } => set(regs, dst, load(inputs.y, "y", index)?),
             LinearOp::LoadP { dst, index } => set(regs, dst, load(inputs.p, "p", index)?),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+                set(regs, dst, load(inputs.p, "p", slot)?);
+            }
             LinearOp::LoadSeed { dst, index } => {
                 let seed = inputs
                     .context
@@ -225,6 +309,15 @@ fn reverse_row_adjoints(
             }
             LinearOp::LoadY { dst, index } => accumulate(cot.y, index, take_adj(adj, dst)),
             LinearOp::LoadP { dst, index } => accumulate(cot.p, index, take_adj(adj, dst)),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+                accumulate(cot.p, slot, take_adj(adj, dst));
+            }
             LinearOp::LoadSeed { dst, index } => accumulate(cot.seed, index, take_adj(adj, dst)),
             LinearOp::Move { dst, src } => {
                 let dst_adj = take_adj(adj, dst);
@@ -300,7 +393,15 @@ fn solve_linear_system(
     n: usize,
 ) -> Result<Vec<f64>, EvalSolveError> {
     let mut x = vec![0.0_f64; n];
-    crate::linear_solve::solve_all_unchecked(regs, matrix_start, rhs_start, n, &mut x)?;
+    crate::linear_solve::solve_all_unchecked(
+        regs,
+        matrix_start,
+        rhs_start,
+        n,
+        crate::tensor_policy::LinearSolveKernel::Dense,
+        None,
+        &mut x,
+    )?;
     Ok(x)
 }
 
@@ -385,7 +486,8 @@ fn binary_partials(op: BinaryOp, lhs: f64, rhs: f64) -> (f64, f64) {
         BinaryOp::Add => (1.0, 1.0),
         BinaryOp::Sub => (1.0, -1.0),
         BinaryOp::Mul => (rhs, lhs),
-        // Mirrors `guarded_division`: a zero denominator contributes no gradient.
+        // Division has no finite derivative at a zero denominator. Keep the
+        // existing AD boundary policy of contributing no gradient there.
         BinaryOp::Div => {
             if rhs == 0.0 {
                 (0.0, 0.0)
@@ -501,6 +603,10 @@ mod tests {
     use super::*;
     use rumoca_ir_solve::ScalarProgramBlock;
 
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
+    }
+
     /// Reverse over a program that *reuses and self-references* register 0:
     ///   r0 = y0; r1 = 3; r0 = r0 * r1; output = r0   (so f = 3·y0, df/dy0 = 3).
     /// A sweep that did not zero `adj[dst]` after consuming it would leak the
@@ -521,12 +627,12 @@ mod tests {
                 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            vec![rumoca_core::Span::DUMMY],
+            vec![fixture_span()],
             vec![0],
         )
         .expect("valid scalar block");
         let row_registers: Vec<usize> = block
-            .programs
+            .programs()
             .iter()
             .map(|row| crate::required_registers(row).expect("register count"))
             .collect();
@@ -568,6 +674,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reverse_indexed_parameter_load_accumulates_selected_slot() {
+        let block = ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::LoadIndexedP {
+                    dst: 1,
+                    base: 1,
+                    count: 3,
+                    index: 0,
+                },
+                LinearOp::StoreOutput { src: 1 },
+            ]],
+            vec![fixture_span()],
+            vec![0],
+        )
+        .expect("valid indexed-parameter block");
+        let row_registers =
+            [crate::required_registers(&block.programs()[0]).expect("register count")];
+        let requirements =
+            crate::scalar_program_block_input_requirements(&block).expect("requirements");
+        let mut cot_y = [0.0];
+        let mut cot_p = [0.0; 4];
+        let mut scratch = ReverseScratch::default();
+
+        reverse_scalar_block_vjp(
+            &ScalarVjpProgram {
+                block: &block,
+                row_registers: &row_registers,
+                requirements,
+            },
+            &ReverseInputs {
+                y: &[1.0],
+                p: &[10.0, 20.0, 30.0, 40.0],
+                t: 0.0,
+                context: RowEvalContext::default(),
+            },
+            &[2.5],
+            &mut ReverseCotangents {
+                y: &mut cot_y,
+                p: &mut cot_p,
+                seed: &mut [],
+            },
+            &mut scratch,
+        )
+        .expect("reverse sweep");
+
+        assert_eq!(cot_y, [0.0]);
+        assert_eq!(cot_p, [0.0, 0.0, 2.5, 0.0]);
+        let parameter_direction = [1.0, -2.0, 3.0, -4.0];
+        let forward_contraction = 2.5 * parameter_direction[2];
+        let reverse_contraction: f64 = cot_p
+            .iter()
+            .zip(parameter_direction)
+            .map(|(cotangent, direction)| cotangent * direction)
+            .sum();
+        assert_eq!(forward_contraction, reverse_contraction);
+    }
+
     /// Reverse VJP through a `LinearSolveComponent` (`x = A⁻¹ b`). The 2x2 system's
     /// `A`/`b` are loaded from solver-y, so `x[0]` is a function of `y`; the reverse
     /// `∂x0/∂y` must match a finite-difference of the forward solve.
@@ -590,14 +755,11 @@ mod tests {
             },
             LinearOp::StoreOutput { src: 6 },
         ];
-        let block = ScalarProgramBlock::with_output_indices(
-            vec![row],
-            vec![rumoca_core::Span::DUMMY],
-            vec![0],
-        )
-        .expect("valid block");
+        let block =
+            ScalarProgramBlock::with_output_indices(vec![row], vec![fixture_span()], vec![0])
+                .expect("valid block");
         let row_registers: Vec<usize> = block
-            .programs
+            .programs()
             .iter()
             .map(|row| crate::required_registers(row).expect("registers"))
             .collect();
@@ -616,7 +778,7 @@ mod tests {
         let forward_x0 = |y: &[f64]| -> f64 {
             let mut regs = vec![0.0_f64; row_registers[0]];
             forward_row_tape(
-                &block.programs[0],
+                &block.programs()[0],
                 &ReverseInputs {
                     y,
                     p: &[],

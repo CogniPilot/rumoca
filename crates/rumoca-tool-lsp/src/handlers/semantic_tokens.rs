@@ -66,9 +66,14 @@ pub fn get_semantic_token_legend() -> SemanticTokensLegend {
 
 /// Handle semantic tokens request - provides rich syntax highlighting.
 ///
-/// Takes a parsed AST from `rumoca-compile`.
-pub fn handle_semantic_tokens(ast: &StoredDefinition) -> Option<SemanticTokensResult> {
-    let mut collector = SemanticTokenCollector::new();
+/// Takes a parsed AST from `rumoca-compile` plus the text it was parsed from.
+/// The source text is required: LSP semantic-token `start`/`length` are UTF-16
+/// code-unit counts, which can only be derived from the token's byte span.
+pub fn handle_semantic_tokens(
+    ast: &StoredDefinition,
+    source: &str,
+) -> Option<SemanticTokensResult> {
+    let mut collector = SemanticTokenCollector::new(source);
     let _ = traversal_adapter::walk_stored_definition(&mut collector, ast);
 
     // Sort by line then column
@@ -108,24 +113,39 @@ pub fn handle_semantic_tokens(ast: &StoredDefinition) -> Option<SemanticTokensRe
 }
 
 /// Visitor that collects semantic tokens from the AST.
-struct SemanticTokenCollector {
+struct SemanticTokenCollector<'a> {
+    /// Source text the AST was parsed from, used to measure UTF-16 columns.
+    source: &'a str,
     /// Collected: (line, col, length, token_type, token_modifiers)
     tokens: Vec<(u32, u32, u32, u32, u32)>,
 }
 
-impl SemanticTokenCollector {
-    fn new() -> Self {
-        Self { tokens: Vec::new() }
+impl<'a> SemanticTokenCollector<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            tokens: Vec::new(),
+        }
     }
 
-    fn add_token(&mut self, line: u32, col: u32, len: u32, token_type: u32, modifiers: u32) {
-        if line == 0 || col == 0 || len == 0 {
+    /// Record a token from its source location.
+    ///
+    /// The LSP semantic-token encoding is `(line, UTF-16 start, UTF-16 length)`
+    /// and has no way to express a token that spans lines, so multi-line spans
+    /// (multi-line strings, quoted identifiers containing newlines) are dropped
+    /// rather than emitted with a bogus length.
+    fn add_token_at(&mut self, loc: &parsing::Location, token_type: u32, modifiers: u32) {
+        if loc.start_line == 0 || loc.start_column == 0 {
+            return;
+        }
+        let range = crate::helpers::location_to_range_in_source(self.source, loc);
+        if range.end.line != range.start.line || range.end.character <= range.start.character {
             return;
         }
         self.tokens.push((
-            line.saturating_sub(1),
-            col.saturating_sub(1),
-            len,
+            range.start.line,
+            range.start.character,
+            range.end.character - range.start.character,
             token_type,
             modifiers,
         ));
@@ -134,13 +154,7 @@ impl SemanticTokenCollector {
     fn add_class_tokens(&mut self, class: &ClassDef) {
         // Class type keyword (model, class, function, etc.)
         if class.class_type_token.location.start_line > 0 {
-            self.add_token(
-                class.class_type_token.location.start_line,
-                class.class_type_token.location.start_column,
-                class.class_type_token.text.len() as u32,
-                TYPE_KEYWORD,
-                0,
-            );
+            self.add_token_at(&class.class_type_token.location, TYPE_KEYWORD, 0);
         }
 
         // Class name
@@ -150,13 +164,7 @@ impl SemanticTokenCollector {
             ClassType::Type => TYPE_TYPE,
             _ => TYPE_CLASS,
         };
-        self.add_token(
-            class.name.location.start_line,
-            class.name.location.start_column,
-            class.name.text.len() as u32,
-            class_type_idx,
-            MOD_DEFINITION,
-        );
+        self.add_token_at(&class.name.location, class_type_idx, MOD_DEFINITION);
     }
 
     fn add_component_tokens(&mut self, comp: &Component) {
@@ -168,34 +176,16 @@ impl SemanticTokenCollector {
 
         // Type name
         if let Some(first_token) = comp.type_name.name.first() {
-            self.add_token(
-                first_token.location.start_line,
-                first_token.location.start_column,
-                first_token.text.len() as u32,
-                TYPE_TYPE,
-                0,
-            );
+            self.add_token_at(&first_token.location, TYPE_TYPE, 0);
         }
 
         // Component name
-        self.add_token(
-            comp.name_token.location.start_line,
-            comp.name_token.location.start_column,
-            comp.name_token.text.len() as u32,
-            token_type,
-            modifiers,
-        );
+        self.add_token_at(&comp.name_token.location, token_type, modifiers);
     }
 
     fn add_component_reference_tokens(&mut self, cr: &ComponentReference, token_type: u32) {
         for part in &cr.parts {
-            self.add_token(
-                part.ident.location.start_line,
-                part.ident.location.start_column,
-                part.ident.text.len() as u32,
-                token_type,
-                0,
-            );
+            self.add_token_at(&part.ident.location, token_type, 0);
         }
     }
 
@@ -241,7 +231,7 @@ fn is_modelica_operator_keyword(name: &str) -> bool {
     )
 }
 
-impl ast::visitor::Visitor for SemanticTokenCollector {
+impl ast::visitor::Visitor for SemanticTokenCollector<'_> {
     fn visit_class_def(&mut self, class: &ClassDef) -> ControlFlow<()> {
         self.add_class_tokens(class);
         traversal_adapter::walk_class_sections(self, class, true)
@@ -266,13 +256,7 @@ impl ast::visitor::Visitor for SemanticTokenCollector {
                 TerminalType::Bool => TYPE_NUMBER,
                 TerminalType::Empty | TerminalType::End => return Continue(()),
             };
-            self.add_token(
-                token.location.start_line,
-                token.location.start_column,
-                token.text.len() as u32,
-                tt,
-                0,
-            );
+            self.add_token_at(&token.location, tt, 0);
             return Continue(());
         }
 
@@ -351,15 +335,17 @@ mod tests {
         decoded
     }
 
+    /// Decode a `(line, UTF-16 column, UTF-16 length)` triple back to text, so
+    /// assertions read the same units the protocol carries.
     fn lexeme_at(source: &str, line: u32, col: u32, len: u32) -> String {
-        source
-            .lines()
-            .nth(line as usize)
-            .unwrap_or_default()
-            .chars()
-            .skip(col as usize)
-            .take(len as usize)
-            .collect()
+        let Some(text) = crate::text_position::line_text(source, line) else {
+            return String::new();
+        };
+        let start = crate::text_position::utf16_column_to_byte_column(text, col);
+        let end = crate::text_position::utf16_column_to_byte_column(text, col + len);
+        text.get(start..end)
+            .map(ToString::to_string)
+            .unwrap_or_else(String::new)
     }
 
     fn assert_no_overlaps(source: &str, decoded: &[(u32, u32, u32, u32)]) {
@@ -382,7 +368,8 @@ mod tests {
 
     fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
         let ast = parse_source_to_ast(source, "test.mo").expect("parse should succeed");
-        let result = handle_semantic_tokens(&ast).expect("semantic tokens should be available");
+        let result =
+            handle_semantic_tokens(&ast, source).expect("semantic tokens should be available");
         match result {
             SemanticTokensResult::Tokens(tokens) => tokens.data,
             SemanticTokensResult::Partial(_) => panic!("unexpected partial semantic tokens"),
@@ -450,5 +437,55 @@ end Ball;
 "#;
         let decoded = decode_tokens(&semantic_tokens(source));
         assert_no_overlaps(source, &decoded);
+    }
+
+    #[test]
+    fn token_length_counts_utf16_units_not_bytes() {
+        // The string literal `"温度"` is 4 UTF-16 units but 8 UTF-8 bytes.
+        // Emitting `text.len()` would overrun the line and shift every later
+        // token by the delta encoding.
+        let source = "model M\n  String s = \"温度\";\n  Real x;\nend M;\n";
+        let decoded = decode_tokens(&semantic_tokens(source));
+        let literal = decoded
+            .iter()
+            .copied()
+            .find(|&(line, col, len, kind)| {
+                kind == TYPE_STRING && lexeme_at(source, line, col, len).starts_with('"')
+            })
+            .expect("string literal token");
+        assert_eq!(
+            lexeme_at(source, literal.0, literal.1, literal.2),
+            "\"温度\"",
+            "decoded token was {literal:?}"
+        );
+        assert_eq!(literal.2, 4, "expected 4 UTF-16 units, got {}", literal.2);
+    }
+
+    #[test]
+    fn token_columns_shift_by_utf16_units_after_non_ascii_text() {
+        // The `x` component name sits after a two-unit astral character, so its
+        // UTF-16 column is one greater than its lexer character column.
+        let source = "model M\n  String s = \"𝔸\"; Real x;\nend M;\n";
+        let decoded = decode_tokens(&semantic_tokens(source));
+        let x_token = decoded
+            .iter()
+            .find(|&&(line, col, len, _)| line == 1 && lexeme_at(source, line, col, len) == "x")
+            .expect("component `x` token");
+        let expected = crate::text_position::byte_offset_to_position(
+            source,
+            source.rfind("x;").expect("component name present"),
+        );
+        assert_eq!(x_token.1, expected.character);
+        // Guard the actual regression: the lexer's character column would be
+        // one short of the UTF-16 column on this line.
+        let line = source.lines().nth(1).expect("line 1");
+        let name_byte = line.find("x;").expect("component name on line 1");
+        let char_column = line[..name_byte].chars().count();
+        assert!(
+            expected.character as usize > char_column,
+            "test line must expose the char-column/UTF-16 divergence \
+             (utf16={}, chars={char_column})",
+            expected.character
+        );
     }
 }

@@ -9,62 +9,41 @@ fn test_span() -> Span {
     )
 }
 
+fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::DefId::new(hash.max(1))
+}
+
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(name),
+        name: rumoca_core::Reference::from_component_reference(component_ref_path(name)),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn component_ref(name: &str) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: vec![rumoca_core::ComponentRefPart {
-            ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+    component_ref_path(name)
+}
+
+fn reference_parts(path: &str) -> Vec<rumoca_core::ComponentRefPart> {
+    rumoca_core::ComponentPath::from_flat_path(path)
+        .parts()
+        .iter()
+        .map(|ident| rumoca_core::ComponentRefPart {
+            ident: ident.clone(),
+            span: test_span(),
             subs: vec![],
-        }],
-        def_id: None,
-    }
+            def_id: fixture_def_id(ident),
+        })
+        .collect()
 }
 
 fn component_ref_path(path: &str) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: rumoca_core::ComponentPath::from_flat_path(path)
-            .parts()
-            .iter()
-            .map(|ident| rumoca_core::ComponentRefPart {
-                ident: ident.clone(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![],
-            })
-            .collect(),
-        def_id: None,
-    }
-}
-
-fn component_ref_with_def_id(
-    path: &str,
-    def_id: rumoca_core::DefId,
-) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: rumoca_core::ComponentPath::from_flat_path(path)
-            .parts()
-            .iter()
-            .map(|ident| rumoca_core::ComponentRefPart {
-                ident: ident.clone(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![],
-            })
-            .collect(),
-        def_id: Some(def_id),
-    }
+    rumoca_core::ComponentReference::construct(false, test_span(), reference_parts(path))
+        .expect("fixture reference has an exact identity for every part")
 }
 
 fn context_with_alias() -> Context {
@@ -77,146 +56,7 @@ fn context_with_alias() -> Context {
 }
 
 #[test]
-fn def_id_canonicalization_rewrites_class_qualified_ref_by_owner_scope() {
-    let mut model = flat::Model::new();
-    let def_id = rumoca_core::DefId::new(42);
-    for name in [
-        "inertia1.rotorWith3DEffects.e",
-        "inertia2.rotorWith3DEffects.e",
-    ] {
-        model.add_variable(
-            rumoca_core::VarName::new(name),
-            flat::Variable {
-                name: rumoca_core::VarName::new(name),
-                component_ref: Some(component_ref_with_def_id(name, def_id)),
-                is_primitive: true,
-                ..flat::Variable::empty_with_span(test_span())
-            },
-        );
-    }
-
-    model.add_variable(
-        rumoca_core::VarName::new("inertia1.rotorWith3DEffects.cylinder.r_shape"),
-        flat::Variable {
-            name: rumoca_core::VarName::new("inertia1.rotorWith3DEffects.cylinder.r_shape"),
-            binding: Some(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::with_component_reference(
-                    "Modelica.Mechanics.MultiBody.Parts.Rotor1D.e",
-                    component_ref_with_def_id(
-                        "Modelica.Mechanics.MultiBody.Parts.Rotor1D.e",
-                        def_id,
-                    ),
-                ),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            is_primitive: true,
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
-
-    let binding = model
-        .variables
-        .get(&rumoca_core::VarName::new(
-            "inertia1.rotorWith3DEffects.cylinder.r_shape",
-        ))
-        .and_then(|var| var.binding.as_ref())
-        .expect("binding should remain present");
-    let rumoca_core::Expression::VarRef { name, .. } = binding else {
-        panic!("expected varref binding");
-    };
-    assert_eq!(name.as_str(), "inertia1.rotorWith3DEffects.e");
-}
-
-#[test]
-fn def_id_canonicalization_resolves_descendant_from_component_equation_owner() {
-    let mut model = flat::Model::new();
-    for name in [
-        "tank.medium.state.p",
-        "tank.heatTransfer.states[1].p",
-        "pump.medium.state.p",
-    ] {
-        model.add_variable(
-            rumoca_core::VarName::new(name),
-            flat::Variable {
-                name: rumoca_core::VarName::new(name),
-                component_ref: Some(component_ref_path(name)),
-                is_primitive: true,
-                ..flat::Variable::empty_with_span(test_span())
-            },
-        );
-    }
-
-    model.add_equation(flat::Equation::new(
-        rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::with_component_reference(
-                "Modelica.Media.CompressibleLiquids.LinearWater_pT_Ambient.state.p",
-                component_ref_path(
-                    "Modelica.Media.CompressibleLiquids.LinearWater_pT_Ambient.state.p",
-                ),
-            ),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        },
-        rumoca_core::Span::DUMMY,
-        flat::EquationOrigin::ComponentEquation {
-            component: "tank".to_string(),
-        },
-    ));
-
-    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
-
-    let rumoca_core::Expression::VarRef { name, .. } = &model.equations[0].residual else {
-        panic!("expected varref residual");
-    };
-    assert_eq!(name.as_str(), "tank.medium.state.p");
-}
-
-#[test]
-fn def_id_canonicalization_preserves_resolved_package_constant_refs() {
-    let mut model = flat::Model::new();
-    let instantiated_constant_def = rumoca_core::DefId::new(3651);
-    let package_constant_def = rumoca_core::DefId::new(86);
-
-    model.add_variable(
-        rumoca_core::VarName::new("sine.pi"),
-        flat::Variable {
-            name: rumoca_core::VarName::new("sine.pi"),
-            component_ref: Some(component_ref_with_def_id(
-                "sine.pi",
-                instantiated_constant_def,
-            )),
-            binding: Some(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::with_component_reference(
-                    "Modelica.Constants.pi",
-                    component_ref_with_def_id("Modelica.Constants.pi", package_constant_def),
-                ),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            }),
-            is_primitive: true,
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    canonicalize_varrefs_via_instantiated_def_ids(&mut model);
-
-    let binding = model
-        .variables
-        .get(&rumoca_core::VarName::new("sine.pi"))
-        .and_then(|var| var.binding.as_ref())
-        .expect("binding should remain present");
-    let rumoca_core::Expression::VarRef { name, .. } = binding else {
-        panic!("expected varref binding");
-    };
-    assert_eq!(name.as_str(), "Modelica.Constants.pi");
-    assert_eq!(name.target_def_id(), Some(package_constant_def));
-}
-
-#[test]
-fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
+fn record_alias_canonicalization_visits_when_chains_and_algorithms() {
     let mut model = flat::Model::new();
     model.add_variable(
         rumoca_core::VarName::new("pipe.port_a.p"),
@@ -226,17 +66,18 @@ fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
             ..flat::Variable::empty_with_span(test_span())
         },
     );
-    let mut when_clause = flat::WhenClause::new(
+    let mut when_branch = flat::WhenBranch::new(
         rumoca_core::Expression::Empty { span: Span::DUMMY },
         Span::DUMMY,
     );
-    when_clause.add_equation(flat::WhenEquation::Assign {
+    when_branch.add_equation(flat::WhenEquation::Assign {
         target: rumoca_core::VarName::new("y"),
         value: var_ref("pipe.flowModel.port_a.p"),
         span: Span::DUMMY,
         origin: "test".to_string(),
     });
-    model.when_clauses.push(when_clause);
+    let when_chain = flat::WhenChain::new(when_branch, Span::DUMMY);
+    model.when_chains.push(when_chain);
     model.algorithms.push(flat::Algorithm::new(
         vec![rumoca_core::Statement::Assignment {
             comp: component_ref("y"),
@@ -249,7 +90,8 @@ fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
 
     canonicalize_varrefs_via_record_aliases(&mut model, &context_with_alias());
 
-    let flat::WhenEquation::Assign { value, .. } = &model.when_clauses[0].equations[0] else {
+    let flat::WhenEquation::Assign { value, .. } = &model.when_chains[0].first().equations[0]
+    else {
         panic!("expected when assignment");
     };
     let rumoca_core::Expression::VarRef { name, .. } = value else {
@@ -286,12 +128,13 @@ fn invalid_field_access_drop_handles_indexed_bases() {
                     base: Box::new(var_ref("someArray")),
                     subscripts: vec![rumoca_core::Subscript::Index {
                         value: 1,
-                        span: Span::DUMMY,
+                        span: test_span(),
                     }],
-                    span: Span::DUMMY,
+                    span: test_span(),
                 }),
                 field: "missing".to_string(),
-                span: Span::DUMMY,
+                field_def_id: fixture_def_id("missing"),
+                span: test_span(),
             }),
             ..flat::Variable::empty_with_span(test_span())
         },

@@ -36,14 +36,14 @@ fn scenario_get_simulation_config_reads_in_memory_scenario_toml() {
 #[test]
 fn scenario_codegen_config_round_trips_in_model_scenario() {
     let sources = serde_json::json!({
-        "src/rumoca-scenario.Ball.toml": "source_roots = [\"lib\"]\n\n[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nname = \"Ball\"\n\n[codegen]\ntarget = \"sympy\"\n",
+        "src/rumoca-scenario.Ball.toml": "source_roots = [\"lib\"]\n\n[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nname = \"Ball\"\n\n[codegen]\ntarget = \"c-ode\"\n",
         "src/Ball.mo": "model Ball end Ball;",
     })
     .to_string();
 
     let response = scenario_get_codegen_config(&sources, "Ball").expect("codegen config");
     let parsed: serde_json::Value = serde_json::from_str(&response).expect("valid JSON");
-    assert_eq!(parsed["target"], "sympy");
+    assert_eq!(parsed["target"], "c-ode");
 
     let config =
         serde_json::json!({ "target": "targets/custom", "outputDir": "generated" }).to_string();
@@ -76,14 +76,14 @@ fn scenario_codegen_config_round_trips_in_model_scenario() {
     let cleared: serde_json::Value = serde_json::from_str(&clear_write).expect("valid JSON");
     let cleared_content = cleared["writes"][0]["content"].as_str().expect("content");
     assert!(!cleared_content.contains("source_roots"));
-    assert!(cleared_content.contains("target = \"sympy\""));
+    assert!(cleared_content.contains("target = \"c-ode\""));
 }
 
 #[test]
 fn scenario_task_configs_do_not_collide_for_same_model() {
     let sources = serde_json::json!({
         "src/rumoca-scenario.Ball.toml": "[rumoca]\nversion = \"1\"\ntask = \"simulate\"\n\n[model]\nname = \"Ball\"\n\n[sim]\nsolver = \"bdf\"\nt_end = 7.0\n",
-        "src/rumoca-scenario.Ball.codegen.toml": "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nname = \"Ball\"\n\n[codegen]\ntarget = \"sympy\"\n",
+        "src/rumoca-scenario.Ball.codegen.toml": "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nname = \"Ball\"\n\n[codegen]\ntarget = \"c-ode\"\n",
         "src/Ball.mo": "model Ball end Ball;",
     })
     .to_string();
@@ -96,7 +96,7 @@ fn scenario_task_configs_do_not_collide_for_same_model() {
 
     let codegen = scenario_get_codegen_config(&sources, "Ball").expect("codegen config");
     let codegen: serde_json::Value = serde_json::from_str(&codegen).expect("valid JSON");
-    assert_eq!(codegen["target"], "sympy");
+    assert_eq!(codegen["target"], "c-ode");
 }
 
 #[test]

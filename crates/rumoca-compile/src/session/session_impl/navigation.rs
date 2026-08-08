@@ -7,6 +7,9 @@ pub(super) fn source_map_content_for_doc(doc: &Document) -> std::sync::Arc<str> 
     if !doc.content.is_empty() {
         return doc.content.clone();
     }
+    if let Some(source) = &doc.source_root_content {
+        return source.clone();
+    }
     std::fs::read_to_string(&doc.uri)
         .map(std::sync::Arc::<str>::from)
         .unwrap_or_else(|_| doc.content.clone())

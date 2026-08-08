@@ -454,6 +454,11 @@ fn merge_initial_condition_summary(trace_values: &[&Value]) -> Result<Value, Str
         &["models_with_initial_condition_deviation"],
         "initial_condition.models_with_initial_condition_deviation",
     )?;
+    let unmeasured = sum_required_usize(
+        &initial_values,
+        &["models_with_unmeasured_initial_conditions"],
+        "initial_condition.models_with_unmeasured_initial_conditions",
+    )?;
     let total_channels = sum_required_usize(
         &initial_values,
         &["total_channels_compared"],
@@ -488,8 +493,10 @@ fn merge_initial_condition_summary(trace_values: &[&Value]) -> Result<Value, Str
         "models_compared": models_compared,
         "models_with_accurate_initial_conditions": accurate,
         "models_with_initial_condition_deviation": deviated,
+        "models_with_unmeasured_initial_conditions": unmeasured,
         "accurate_initial_conditions_percent": percent(accurate, models_compared),
         "models_with_initial_condition_deviation_percent": percent(deviated, models_compared),
+        "models_with_unmeasured_initial_conditions_percent": percent(unmeasured, models_compared),
         "total_channels_compared": total_channels,
         "high_channels_total": high,
         "near_channels_total": near,
@@ -630,6 +637,8 @@ struct MergedTraceCounts {
     models_compared: usize,
     missing_trace: usize,
     skipped: usize,
+    policy_excluded: usize,
+    trace_nonidentifiable: usize,
     high: usize,
     minor: usize,
     deviation: usize,
@@ -675,6 +684,16 @@ fn collect_flat_trace_counts(trace_values: &[&Value]) -> Result<MergedTraceCount
             trace_values,
             &["skipped_models"],
             "trace_comparison.skipped_models",
+        )?,
+        policy_excluded: sum_required_usize(
+            trace_values,
+            &["policy_excluded_models"],
+            "trace_comparison.policy_excluded_models",
+        )?,
+        trace_nonidentifiable: sum_required_usize(
+            trace_values,
+            &["trace_nonidentifiable_models"],
+            "trace_comparison.trace_nonidentifiable_models",
         )?,
         high: sum_required_usize(
             trace_values,
@@ -745,6 +764,8 @@ fn build_base_flat_trace_summary(
         "models_compared": counts.models_compared,
         "missing_trace_models": counts.missing_trace,
         "skipped_models": counts.skipped,
+        "policy_excluded_models": counts.policy_excluded,
+        "trace_nonidentifiable_models": counts.trace_nonidentifiable,
         "agreement_high": counts.high,
         "agreement_high_percent": percent(counts.high, counts.models_compared),
         "agreement_near": counts.minor,
@@ -941,6 +962,14 @@ fn merge_trace_comparison_payloads(
         json!(trace_summary_usize(summary, "skipped_models")),
     );
     root.insert(
+        "policy_excluded_models".to_string(),
+        json!(trace_summary_usize(summary, "policy_excluded_models")),
+    );
+    root.insert(
+        "trace_nonidentifiable_models".to_string(),
+        json!(trace_summary_usize(summary, "trace_nonidentifiable_models")),
+    );
+    root.insert(
         "agreement_bands".to_string(),
         json!({
             "high_agreement": trace_summary_usize(summary, "agreement_high"),
@@ -1126,17 +1155,23 @@ fn test_msl_merge_and_gate() {
 
     // Reuse the un-sharded write + validate + snapshot + gate sequence.
     write_msl_results(&merged).expect("write merged msl_results.json + reports");
+    // The comparator ran per shard; this job's comparator stage is the merge of
+    // those bands. `MergedShardArtifacts` says so, so the gate reads the merged
+    // reference instead of reporting "the stage never executed" — and a merge
+    // that produced no readable reference still lands as "parity unmeasured".
+    let parity_stage = MslParityStageOutcome::MergedShardArtifacts;
     merge_shard_parity_artifacts(&dir, &msl_results_dir())
         .expect("write merged OMC parity artifacts");
     write_msl_package_trace_accuracy_report(&merged)
         .expect("write merged package trace accuracy report");
-    assert_valid_msl_summary(&merged);
+    assert_msl_run_is_measurable(&merged);
     if merged.sim_attempted > 0 {
-        write_current_msl_quality_snapshot(&merged).expect("write merged quality snapshot");
+        write_current_msl_quality_snapshot(&merged, &parity_stage)
+            .expect("write merged quality snapshot");
     }
-    enforce_msl_quality_gate(&merged).expect("merged MSL quality gate");
+    enforce_msl_quality_gate(&merged, &parity_stage).expect("merged MSL quality gate");
     println!(
-        "Merged MSL quality gate passed ({} sim_ok / {} attempted)",
+        "Merged MSL quality gate passed ({} sim_ok / {} attempted; sim_ok is completion, never parity)",
         merged.sim_ok, merged.sim_attempted
     );
 }
@@ -1236,6 +1271,7 @@ fn shard_trace_initial_condition_fixture() -> Value {
         "models_compared": 1,
         "models_with_accurate_initial_conditions": 1,
         "models_with_initial_condition_deviation": 0,
+        "models_with_unmeasured_initial_conditions": 0,
         "total_channels_compared": 1,
         "high_channels_total": 1,
         "near_channels_total": 0,
@@ -1266,6 +1302,8 @@ fn shard_flat_trace_summary_fixture() -> Value {
         "models_compared": 1,
         "missing_trace_models": 0,
         "skipped_models": 0,
+        "policy_excluded_models": 0,
+        "trace_nonidentifiable_models": 0,
         "agreement_high": 1,
         "agreement_minor": 0,
         "agreement_deviation": 0,
@@ -1280,6 +1318,21 @@ fn shard_flat_trace_summary_fixture() -> Value {
         "initial_condition": shard_trace_initial_condition_fixture(),
         "state_selection": shard_trace_state_selection_fixture()
     })
+}
+
+#[test]
+fn collect_flat_trace_counts_sums_typed_boundaries() {
+    let mut first = shard_flat_trace_summary_fixture();
+    first["policy_excluded_models"] = json!(3);
+    first["trace_nonidentifiable_models"] = json!(1);
+    let mut second = shard_flat_trace_summary_fixture();
+    second["policy_excluded_models"] = json!(2);
+    second["trace_nonidentifiable_models"] = json!(4);
+
+    let counts = collect_flat_trace_counts(&[&first, &second]).expect("merge trace counts");
+
+    assert_eq!(counts.policy_excluded, 5);
+    assert_eq!(counts.trace_nonidentifiable, 5);
 }
 
 fn shard_omc_model_fixture() -> Value {
@@ -1413,6 +1466,18 @@ fn merge_shard_parity_artifacts_writes_full_omc_and_trace_inputs() {
         Some(2)
     );
     assert_eq!(json_usize(&trace, &["models_compared"]), Some(2));
+    for field in ["policy_excluded_models", "trace_nonidentifiable_models"] {
+        assert_eq!(
+            json_usize(&omc, &["trace_comparison", field]),
+            Some(0),
+            "merged OMC summary must retain typed trace boundary `{field}`"
+        );
+        assert_eq!(
+            json_usize(&trace, &[field]),
+            Some(0),
+            "merged trace report must retain typed trace boundary `{field}`"
+        );
+    }
     assert_eq!(
         trace.get("models").and_then(Value::as_object).map(Map::len),
         Some(2)

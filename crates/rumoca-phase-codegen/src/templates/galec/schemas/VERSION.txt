@@ -1,0 +1,101 @@
+This file lists the versions of the Container Manifest schema.
+Each version gets an entry of the form:
+- Version: version number in semantic version format consisting of <major>.<minor>.<patch>
+- Revision: SHA1 ID hash of GIT commit
+- Description: May consist of multiple lines.
+The entries should be separated by an empty line.
+
+The recent version number must become the fixed value of the "version" attribute of the Content element of the schema file.
+On the other hand, the "eFMUContainerBuilder" writes the supported version number to that attribute.
+Hence, the version number can be used for multiple purposes:
+- For each Manifest file, the considered version of the schema is stored.
+- The validation of the Manifest file can also check wether the file fits to the schema.
+
+=============================================================================
+
+Version: <major>.<minor>.<patch>
+Revision: <SHA1 ID of last commit for this version>
+Description: <enter description>
+
+Version: 0.11.0
+Revision: 
+Description:
+Christoff Bürger
+ * Bumped version number to denote changes in other XSD Schemas
+   (mostly Algorithm Code and Behavioral Model) and avoid version mismatches.
+ * <Files> can now be empty (lower multiplicity is 0, not 1).
+ * Aligned all XSD Schema definitions to have:
+     elementFormDefault="qualified"
+     attributeFormDefault="unqualified"
+ * Renamed efmiSupportedFloatPrecisions to efmiFloatingPointPrecision.
+ * Extended supported floating-point precision to the full range of IEEE 754-2019
+   (i.e., added 16-bit, 128-bit and 256-bit).
+ * Added efmiWildcard type, which can be used to add the "any" wildcard to
+   enumeration types. An example of usage is the extension of
+   efmiFloatingPointPrecision with "any" in "floatingPointPrecision" of
+   <TolerancesConfiguration> in Behavioral Model manifests (denoting that
+   the error tolerances configuration can be used with any floating-point
+   precision).
+
+Version: 0.10.0
+Revision: b1ffe9f703350f9d08ebb14a3cc27b454b09b0a1
+Description:
+Restricted generationDateAndTime attribute of manifests with pattern according to the eFMI Standard.
+
+Version: 0.9.0
+Revision: d5b70e77f4a8cd5cb48bc8632f1f1e13726168eb
+Description:
+Attribute name and attribute manifest of element ModelRepresentation restricted to values without slashes.
+
+Version: 0.8.0
+Revision: 5434cd90cb035399289392b7cdb5077188e6017b
+Description:
+__Content.xml file:
+The current attributes xsdVersion, activeFMU have been kept.
+The other attributes have been removed and instead the further attributes are inherited from efmiAttributesBase, as all the other manifest files do it already.
+
+All manifest.xml files:
+The efmiVersion attribute has been changed from 0.7.0 to 1.0.0 (if necessary, the xsdVersion will be changed if there are still changes before the release)
+
+Version: 0.7.0
+Revision: c6106ffcccdf422dd11e699288567a879cd00885
+Description: introduced identifier type
+
+Version: 0.6.0
+Revision: 527504803fca2ea5f9ddba544c630d571306102a
+Description:
+- Changed format to semantics version number
+
+Version: 0.6
+Revision: 85fb1edb3cc9d077869f3ed434e33509bd25a14f
+Description:
+- Plug-Fest modifications.
+
+Version: 0.5
+Revision: 4123e72859c0be4a554f39f366e2412be6636861
+Description:
+- Clarification of checksum computation
+- Consistent naming of manifest id-attribute (id instead of uuid)
+- Consistent naming of XSD Schema version (xsdVersion instead of version)
+
+Version: 0.4
+Revision: 0efaf900758b3d7275663b505138250d80e08cdc
+Description:
+- checksum computed for manifest of model representation only
+- added attribute manifestRefId
+
+Version: 0.3
+Revision: b62c82e613183de9b3761202bab2b2234fa2b2db
+Description:
+- Added reference to currently active FMU (= name of model representation)
+- Renamed "id" attribute to "uuid" according to .adoc specification
+
+Version 0.2
+Revision: e0387d7d28a1a400e329dbeda49a7b6279e9f319
+Description: Manifest has "id" attribute which is UUID
+
+Version: 0.1
+Revision: 450fb708a822d0fce68643e58e5fd2092a426ecf
+Description: Initial revision with ModelRepresentations for all kinds of representation levels.
+A level may occur multiple times and hencefore a ModelRepresentation is identified by a name.
+For an explanation of the remaining attributes, see the comments in the schema file.

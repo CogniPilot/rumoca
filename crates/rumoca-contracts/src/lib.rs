@@ -5,7 +5,7 @@
 //!
 //! # Overview
 //!
-//! The MLS defines 431 contracts across 18 categories. This framework:
+//! The MLS defines 432 contracts across 18 categories. This framework:
 //! - Registers all contracts with metadata
 //! - Provides test infrastructure and macros
 //! - Tracks compliance status
@@ -30,6 +30,10 @@ pub mod test_support;
 use std::sync::OnceLock;
 
 // Re-export main types
+pub use registry::formal::{
+    EnforcementStatus, FormalStatement, FormalStatementError, MlsEdition, PinPolarity, QuoteKind,
+    StatementPin, StatementTier, load_all_formal_statements, parse_formal_statements,
+};
 pub use registry::{Contract, ContractCategory, ContractId, ContractRegistry, ContractStatus};
 pub use report::ComplianceReport;
 pub use runner::{ContractResult, TestRunner};
@@ -130,7 +134,6 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "CONN-009",
     "CONN-010",
     "CONN-011",
-    "CONN-012",
     "CONN-013",
     "CONN-014",
     "CONN-015",
@@ -139,7 +142,6 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "CONN-018",
     "CONN-019",
     "CONN-020",
-    "CONN-021",
     "CONN-022",
     "CONN-023",
     "CONN-024",
@@ -148,6 +150,7 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "CONN-027",
     "CONN-028",
     "CONN-029",
+    "CONN-030",
     "DECL-001",
     "DECL-002",
     "DECL-003",
@@ -281,7 +284,6 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "FUNC-022",
     "FUNC-023",
     "FUNC-027",
-    "FUNC-029",
     "FUNC-030",
     "FUNC-031",
     "FUNC-032",
@@ -378,14 +380,6 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "SIM-007",
     "SIM-008",
     "SIM-009",
-    "SM-001",
-    "SM-002",
-    "SM-003",
-    "SM-004",
-    "SM-005",
-    "SM-006",
-    "SM-007",
-    "SM-008",
     "STRM-001",
     "STRM-002",
     "STRM-003",
@@ -398,8 +392,6 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "STRM-010",
     "STRM-011",
     "TYPE-001",
-    "TYPE-002",
-    "TYPE-003",
     "TYPE-004",
     "TYPE-005",
     "TYPE-006",
@@ -417,7 +409,6 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "TYPE-019",
     "TYPE-020",
     "TYPE-021",
-    "TYPE-022",
     "TYPE-024",
     "TYPE-025",
     "TYPE-026",
@@ -440,6 +431,18 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "UNIT-008",
     "UNIT-009",
 ];
+
+static FORMAL_STATEMENTS: OnceLock<Vec<FormalStatement>> = OnceLock::new();
+
+/// The formal-statement registry: which formal statement justifies each pinned
+/// behavior, and whether it is spec-sourced or oracle-implied.
+///
+/// See [`registry::formal`] for the tiers and how rows are added. The table is
+/// parsed once per process; a malformed row panics on first access, because it
+/// ships inside the binary.
+pub fn formal_statements() -> &'static [FormalStatement] {
+    FORMAL_STATEMENTS.get_or_init(load_all_formal_statements)
+}
 
 static REGISTRY_TEMPLATE: OnceLock<ContractRegistry> = OnceLock::new();
 
@@ -466,11 +469,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 431 contracts
+        // SPEC_0022 defines 432 contracts
         assert_eq!(
             registry.len(),
-            431,
-            "Expected 431 contracts, got {}",
+            432,
+            "Expected 432 contracts, got {}",
             registry.len()
         );
     }
@@ -492,7 +495,7 @@ mod tests {
         assert_eq!(registry.count_by_category(ContractCategory::Expression), 40);
         assert_eq!(registry.count_by_category(ContractCategory::Equation), 38);
         assert_eq!(registry.count_by_category(ContractCategory::Algorithm), 17);
-        assert_eq!(registry.count_by_category(ContractCategory::Connection), 29);
+        assert_eq!(registry.count_by_category(ContractCategory::Connection), 30);
         assert_eq!(registry.count_by_category(ContractCategory::Function), 35);
         assert_eq!(registry.count_by_category(ContractCategory::Type), 35);
         assert_eq!(registry.count_by_category(ContractCategory::Array), 40);

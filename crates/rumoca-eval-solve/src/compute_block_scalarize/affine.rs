@@ -2,23 +2,6 @@ use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
 
 use super::{ScalarizeError, scalarize_vec_with_capacity_optional};
 
-pub(crate) fn scalarize_affine_rows(
-    domain: &rumoca_core::StructuredIndexDomain,
-    base_ops: &[LinearOp],
-    load_strides: &[rumoca_ir_solve::AffineStencilLoadStride],
-    const_strides: &[rumoca_ir_solve::AffineStencilConstStride],
-    span: rumoca_core::Span,
-) -> Result<Vec<Vec<LinearOp>>, ScalarizeError> {
-    scalarize_affine_rows_with_span(
-        domain,
-        base_ops,
-        load_strides,
-        const_strides,
-        "affine stencil",
-        span,
-    )
-}
-
 pub(super) fn scalarize_affine_rows_with_span(
     domain: &rumoca_core::StructuredIndexDomain,
     base_ops: &[LinearOp],
@@ -28,6 +11,8 @@ pub(super) fn scalarize_affine_rows_with_span(
     span: rumoca_core::Span,
 ) -> Result<Vec<Vec<LinearOp>>, ScalarizeError> {
     validate_affine_stride_metadata(domain, base_ops, load_strides, const_strides, kind, span)?;
+    let load_strides = combined_load_strides(load_strides, base_ops.len(), kind, span)?;
+    let const_strides = combined_const_strides(const_strides, base_ops.len(), kind, span)?;
     let index_tuples = domain
         .index_tuples()
         .map_err(|err| ScalarizeError::ShapeContract {
@@ -40,7 +25,7 @@ pub(super) fn scalarize_affine_rows_with_span(
     let mut rows = scalarize_vec_with_capacity(index_tuples.len(), kind, span)?;
     for index_tuple in &index_tuples {
         let mut ops = cloned_linear_ops(base_ops, kind, span)?;
-        for stride in load_strides {
+        for stride in &load_strides {
             apply_affine_load_stride(
                 &mut ops,
                 stride,
@@ -51,7 +36,7 @@ pub(super) fn scalarize_affine_rows_with_span(
                 span,
             )?;
         }
-        for stride in const_strides {
+        for stride in &const_strides {
             apply_affine_const_stride(
                 &mut ops,
                 stride,
@@ -67,6 +52,70 @@ pub(super) fn scalarize_affine_rows_with_span(
     Ok(rows)
 }
 
+fn combined_load_strides(
+    strides: &[rumoca_ir_solve::AffineStencilLoadStride],
+    op_count: usize,
+    kind: &'static str,
+    span: rumoca_core::Span,
+) -> Result<Vec<rumoca_ir_solve::AffineStencilLoadStride>, ScalarizeError> {
+    let mut terms_by_op =
+        vec![None::<Vec<rumoca_ir_solve::AffineStencilIndexStrideTerm>>; op_count];
+    for stride in strides {
+        let Some(terms) = terms_by_op.get_mut(stride.op_position) else {
+            return Err(affine_stride_error(
+                kind,
+                stride.op_position,
+                op_count,
+                "LoadY, LoadP, or LoadSeed",
+                None,
+                span,
+            ));
+        };
+        terms
+            .get_or_insert_with(Vec::new)
+            .extend(stride.terms.iter().cloned());
+    }
+    Ok(terms_by_op
+        .into_iter()
+        .enumerate()
+        .filter_map(|(op_position, terms)| {
+            terms.map(|terms| rumoca_ir_solve::AffineStencilLoadStride { op_position, terms })
+        })
+        .collect())
+}
+
+fn combined_const_strides(
+    strides: &[rumoca_ir_solve::AffineStencilConstStride],
+    op_count: usize,
+    kind: &'static str,
+    span: rumoca_core::Span,
+) -> Result<Vec<rumoca_ir_solve::AffineStencilConstStride>, ScalarizeError> {
+    let mut terms_by_op =
+        vec![None::<Vec<rumoca_ir_solve::AffineStencilConstStrideTerm>>; op_count];
+    for stride in strides {
+        let Some(terms) = terms_by_op.get_mut(stride.op_position) else {
+            return Err(affine_stride_error(
+                kind,
+                stride.op_position,
+                op_count,
+                "Const",
+                None,
+                span,
+            ));
+        };
+        terms
+            .get_or_insert_with(Vec::new)
+            .extend(stride.terms.iter().cloned());
+    }
+    Ok(terms_by_op
+        .into_iter()
+        .enumerate()
+        .filter_map(|(op_position, terms)| {
+            terms.map(|terms| rumoca_ir_solve::AffineStencilConstStride { op_position, terms })
+        })
+        .collect())
+}
+
 /// Expand a tensor output map into concrete scalar output slots.
 pub fn tensor_output_indices(
     domain: &rumoca_core::StructuredIndexDomain,
@@ -76,6 +125,18 @@ pub fn tensor_output_indices(
 ) -> Result<Vec<usize>, ScalarizeError> {
     output_map
         .output_indices(domain)
+        .map_err(|err| tensor_output_map_error(err, kind, span))
+}
+
+/// Compute a tensor node's logical output count without materializing its scalar view.
+pub(crate) fn tensor_output_count(
+    domain: &rumoca_core::StructuredIndexDomain,
+    output_map: &rumoca_ir_solve::TensorOutputMap,
+    kind: &'static str,
+    span: rumoca_core::Span,
+) -> Result<usize, ScalarizeError> {
+    output_map
+        .output_count(domain)
         .map_err(|err| tensor_output_map_error(err, kind, span))
 }
 
@@ -101,8 +162,8 @@ pub fn scalar_program_output_indices(
     let span = block_span(block);
     if !block.uses_local_contiguous_output_indices() {
         let mut indices =
-            scalarize_vec_with_capacity_optional(block.output_indices.len(), kind, span)?;
-        indices.extend_from_slice(&block.output_indices);
+            scalarize_vec_with_capacity_optional(block.output_indices().len(), kind, span)?;
+        indices.extend_from_slice(block.output_indices());
         return Ok(indices);
     }
     let stored_outputs = block.stored_output_count();
@@ -121,7 +182,7 @@ pub fn scalar_program_output_count(
     checked_tensor_output_count_optional(&indices, output_cursor, kind, block_span(block))
 }
 
-fn validate_affine_stride_metadata(
+pub(crate) fn validate_affine_stride_metadata(
     domain: &rumoca_core::StructuredIndexDomain,
     base_ops: &[LinearOp],
     load_strides: &[rumoca_ir_solve::AffineStencilLoadStride],
@@ -157,6 +218,12 @@ fn validate_affine_stride_metadata(
     }
     for stride in const_strides {
         validate_stride_terms(domain, &stride.terms, kind, span)?;
+        if stride.terms.iter().any(|term| !term.stride.is_finite()) {
+            return Err(ScalarizeError::ShapeContract {
+                message: format!("native {kind} family constant stride must be finite"),
+                span: Some(span),
+            });
+        }
         match base_ops.get(stride.op_position) {
             Some(LinearOp::Const { .. }) => {}
             Some(op) => {
@@ -395,13 +462,56 @@ fn apply_index_terms(
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<usize, ScalarizeError> {
-    let mut value = base_index as isize;
+    let mut value = i128::try_from(base_index).map_err(|_| ScalarizeError::ShapeContract {
+        message: format!("native {kind} family load base index exceeds arithmetic range"),
+        span: Some(span),
+    })?;
+    let mut dimension_strides = vec![0i128; domain.binders.len()];
     for term in terms {
-        value += ordinal_delta(term.dimension, domain, base_tuple, index_tuple, kind, span)?
-            as isize
-            * term.stride;
+        let Some(stride) = dimension_strides.get_mut(term.dimension) else {
+            return Err(ScalarizeError::InvalidStrideDimension {
+                kind,
+                dimension: term.dimension,
+                dimension_count: domain.binders.len(),
+                span,
+            });
+        };
+        *stride = stride.checked_add(term.stride as i128).ok_or_else(|| {
+            ScalarizeError::ShapeContract {
+                message: format!("native {kind} family load stride accumulation overflowed"),
+                span: Some(span),
+            }
+        })?;
     }
-    usize::try_from(value).map_err(|_| ScalarizeError::NegativeLoadIndex { kind, value, span })
+    for (dimension, stride) in dimension_strides.into_iter().enumerate() {
+        let delta = i128::from(ordinal_delta(
+            dimension,
+            domain,
+            base_tuple,
+            index_tuple,
+            kind,
+            span,
+        )?);
+        let offset = delta
+            .checked_mul(stride)
+            .ok_or_else(|| ScalarizeError::ShapeContract {
+                message: format!("native {kind} family load stride multiplication overflowed"),
+                span: Some(span),
+            })?;
+        value = value
+            .checked_add(offset)
+            .ok_or_else(|| ScalarizeError::ShapeContract {
+                message: format!("native {kind} family load index accumulation overflowed"),
+                span: Some(span),
+            })?;
+    }
+    if value < 0 {
+        return Err(ScalarizeError::NegativeLoadIndex { kind, value, span });
+    }
+    usize::try_from(value).map_err(|_| ScalarizeError::ShapeContract {
+        message: format!("native {kind} family load index exceeds host range"),
+        span: Some(span),
+    })
 }
 
 fn apply_const_terms(
@@ -414,9 +524,33 @@ fn apply_const_terms(
     span: rumoca_core::Span,
 ) -> Result<f64, ScalarizeError> {
     let mut value = base_value;
+    let mut dimension_strides = vec![0.0f64; domain.binders.len()];
     for term in terms {
-        value += ordinal_delta(term.dimension, domain, base_tuple, index_tuple, kind, span)? as f64
-            * term.stride;
+        let Some(stride) = dimension_strides.get_mut(term.dimension) else {
+            return Err(ScalarizeError::InvalidStrideDimension {
+                kind,
+                dimension: term.dimension,
+                dimension_count: domain.binders.len(),
+                span,
+            });
+        };
+        *stride += term.stride;
+        if !stride.is_finite() {
+            return Err(ScalarizeError::ShapeContract {
+                message: format!("native {kind} family constant stride accumulation is non-finite"),
+                span: Some(span),
+            });
+        }
+    }
+    for (dimension, stride) in dimension_strides.into_iter().enumerate() {
+        value +=
+            ordinal_delta(dimension, domain, base_tuple, index_tuple, kind, span)? as f64 * stride;
+        if !value.is_finite() && base_value.is_finite() {
+            return Err(ScalarizeError::ShapeContract {
+                message: format!("native {kind} family constant adjustment is non-finite"),
+                span: Some(span),
+            });
+        }
     }
     Ok(value)
 }

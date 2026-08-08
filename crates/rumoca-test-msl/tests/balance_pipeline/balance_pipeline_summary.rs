@@ -8,6 +8,23 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
     let mut counters = ResultCounters::default();
     for result in results {
         process_result_error_taxonomy(result, &mut counters);
+        match (
+            result.tensor_family_bodies,
+            result.tensor_preserved_family_bodies,
+            result.tensor_scalarized_family_rows,
+        ) {
+            (Some(family_bodies), Some(preserved_bodies), Some(scalarized_rows)) => {
+                counters.tensor_models_reported += 1;
+                counters.tensor_family_bodies += family_bodies;
+                counters.tensor_preserved_family_bodies += preserved_bodies;
+                counters.tensor_scalarized_family_rows += scalarized_rows;
+            }
+            (None, None, None) => {}
+            _ => counters.tensor_report_errors += 1,
+        }
+        if result.tensor_preservation_error.is_some() {
+            counters.tensor_report_errors += 1;
+        }
         match result.phase_reached.as_str() {
             "Resolve" => process_phase_failure(result, "Resolve", &mut counters),
             "Success" => process_success_result(result, &mut counters),
@@ -120,16 +137,23 @@ fn build_summary_from_counters(
         initial_unbalanced_models: counters.initial_unbalanced_models,
         partial_models: counters.partial_models,
         class_type_counts: inputs.class_type_counts,
-        failures_by_phase: counters.failures_by_phase,
+        failures_by_phase: counters.failures_by_phase.into_iter().collect(),
         unbalanced_list: counters.unbalanced_list,
         initial_unbalanced_list: counters.initial_unbalanced_list,
         non_sim_list: counters.non_sim_list,
-        error_categories: counters.error_categories,
-        error_code_counts: counters.error_code_counts,
-        unsupported_feature_counts: counters.unsupported_feature_counts,
-        unsupported_feature_counts_by_backend: counters.unsupported_feature_counts_by_backend,
-        undefined_vars: counters.undefined_vars,
-        balance_distribution: counters.balance_distribution,
+        error_categories: counters.error_categories.into_iter().collect(),
+        error_code_counts: counters.error_code_counts.into_iter().collect(),
+        unsupported_feature_counts: counters.unsupported_feature_counts.into_iter().collect(),
+        unsupported_feature_counts_by_backend: counters
+            .unsupported_feature_counts_by_backend
+            .into_iter()
+            .map(|(backend, counts)| (backend, counts.into_iter().collect()))
+            .collect(),
+        undefined_vars: counters.undefined_vars.into_iter().collect(),
+        balance_distribution: counters.balance_distribution.into_iter().collect(),
+        compile_dae_balance_failures: balance_pipeline_balance_cohort::build_balance_failure_cohort(
+            &model_results,
+        ),
         model_results,
         timings,
         sim_ok: counters.sim_ok,
@@ -146,21 +170,67 @@ fn build_summary_from_counters(
         total_sim_run_seconds: counters.total_sim_run_seconds,
         total_sim_wall_seconds: counters.total_sim_wall_seconds,
         sim_target_models,
+        tensor_models_reported: counters.tensor_models_reported,
+        tensor_family_bodies: counters.tensor_family_bodies,
+        tensor_preserved_family_bodies: counters.tensor_preserved_family_bodies,
+        tensor_scalarized_family_rows: counters.tensor_scalarized_family_rows,
+        tensor_report_errors: counters.tensor_report_errors,
     }
 }
 
-pub(super) fn update_phase_timing_totals(timings: &mut MslPhaseTimings) {
+fn aggregate_worker_phase_durations(
+    durations: impl Iterator<Item = Option<f64>>,
+) -> Option<(f64, u64)> {
+    let mut seconds = 0.0;
+    let mut calls = 0;
+    for duration in durations.flatten().filter(|value| value.is_finite()) {
+        seconds += duration;
+        calls += 1;
+    }
+    (calls != 0).then_some((seconds, calls))
+}
+
+fn worker_or_in_process_phase_timing(
+    durations: impl Iterator<Item = Option<f64>>,
+    in_process: rumoca_compile::compile::CompilePhaseTimingStat,
+) -> (f64, u64) {
+    aggregate_worker_phase_durations(durations)
+        .unwrap_or_else(|| (in_process.total_seconds(), in_process.calls))
+}
+
+pub(super) fn update_phase_timing_totals(
+    timings: &mut MslPhaseTimings,
+    results: &[MslModelResult],
+) {
     let compile_phase_timings = compile_phase_timing_stats();
     let flatten_phase_timings = flatten_phase_timing_stats();
 
-    timings.compile_instantiate_seconds = compile_phase_timings.instantiate.total_seconds();
-    timings.compile_typecheck_seconds = compile_phase_timings.typecheck.total_seconds();
-    timings.compile_flatten_seconds = compile_phase_timings.flatten.total_seconds();
-    timings.compile_todae_seconds = compile_phase_timings.todae.total_seconds();
-    timings.compile_instantiate_calls = compile_phase_timings.instantiate.calls;
-    timings.compile_typecheck_calls = compile_phase_timings.typecheck.calls;
-    timings.compile_flatten_calls = compile_phase_timings.flatten.calls;
-    timings.compile_todae_calls = compile_phase_timings.todae.calls;
+    (
+        timings.compile_instantiate_seconds,
+        timings.compile_instantiate_calls,
+    ) = worker_or_in_process_phase_timing(
+        results.iter().map(|result| result.instantiate_seconds),
+        compile_phase_timings.instantiate,
+    );
+    (
+        timings.compile_typecheck_seconds,
+        timings.compile_typecheck_calls,
+    ) = worker_or_in_process_phase_timing(
+        results.iter().map(|result| result.typecheck_seconds),
+        compile_phase_timings.typecheck,
+    );
+    (
+        timings.compile_flatten_seconds,
+        timings.compile_flatten_calls,
+    ) = worker_or_in_process_phase_timing(
+        results.iter().map(|result| result.flatten_seconds),
+        compile_phase_timings.flatten,
+    );
+    (timings.compile_todae_seconds, timings.compile_todae_calls) =
+        worker_or_in_process_phase_timing(
+            results.iter().map(|result| result.dae_seconds),
+            compile_phase_timings.todae,
+        );
     timings.flatten_connections_seconds = flatten_phase_timings.connections.total_seconds();
     timings.flatten_connections_calls = flatten_phase_timings.connections.calls;
     timings.flatten_eval_fallback_seconds = flatten_phase_timings.eval_fallback.total_seconds();

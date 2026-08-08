@@ -1,3 +1,6 @@
+// SPEC_0021 file-size exception: connection regression coverage spans scalar,
+// array, expandable, and stream connectors. split plan: move each connector
+// family into a focused test module sharing a small common fixture builder.
 use super::*;
 use rumoca_core::TypeId;
 use rumoca_ir_ast as ast;
@@ -46,6 +49,7 @@ fn test_connection_involves_disabled_handles_dot_inside_bracket_expression() {
         connector_type: None,
         span: Span::DUMMY,
         scope: String::new(),
+        family: None,
     };
 
     let mut disabled = indexmap::IndexSet::new();
@@ -69,6 +73,7 @@ fn test_connection_involves_disabled_ignores_non_matching_bracket_expression() {
         connector_type: None,
         span: Span::DUMMY,
         scope: String::new(),
+        family: None,
     };
 
     let mut disabled = indexmap::IndexSet::new();
@@ -150,7 +155,8 @@ fn test_connect_primitive_vars_routes_streams_to_stream_set() {
         &mut flow_pairs,
         &mut potential_uf,
         &mut stream_uf,
-    );
+    )
+    .expect("stream-to-stream is the pairing MLS §9.3 admits");
 
     assert!(flow_pairs.is_empty());
     assert!(
@@ -181,27 +187,52 @@ fn test_stream_connection_does_not_generate_potential_equality() {
             ..flat::Variable::empty_with_span(test_span())
         },
     );
+    for name in ["a.m_flow", "b.m_flow"] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                flow: true,
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
 
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
-        connections: vec![ast::InstanceConnection {
-            a: ast::QualifiedName::from_dotted("a.h_outflow"),
-            b: ast::QualifiedName::from_dotted("b.h_outflow"),
-            connector_type: None,
-            span: Span::DUMMY,
-            scope: String::new(),
-        }],
+        connections: vec![
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("a.h_outflow"),
+                b: ast::QualifiedName::from_dotted("b.h_outflow"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: String::new(),
+                family: None,
+            },
+            ast::InstanceConnection {
+                a: ast::QualifiedName::from_dotted("a.m_flow"),
+                b: ast::QualifiedName::from_dotted("b.m_flow"),
+                connector_type: None,
+                span: Span::DUMMY,
+                scope: String::new(),
+                family: None,
+            },
+        ],
         ..Default::default()
     });
 
-    process_connections(&mut flat, &overlay, false).expect("stream connection processing");
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("stream connection processing");
 
-    assert!(
-        flat.equations.is_empty(),
-        "stream connect() must not become an ordinary equality equation"
-    );
+    assert_eq!(flat.equations.len(), 1, "only the flow sum is expected");
+    assert!(matches!(
+        flat.equations[0].origin,
+        flat::EquationOrigin::FlowSum { .. }
+    ));
     assert!(
         flat.variables
             .get(&rumoca_core::VarName::new("a.h_outflow"))
@@ -260,7 +291,7 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
 
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
         connections: vec![ast::InstanceConnection {
             a: ast::QualifiedName::from_ident("a"),
@@ -268,11 +299,14 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
             connector_type: None,
             span: Span::DUMMY,
             scope: String::new(),
+            family: None,
         }],
         ..Default::default()
     });
 
-    process_connections(&mut flat, &overlay, false).expect("connector connection processing");
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("connector connection processing");
 
     assert!(
         flat.variables
@@ -291,6 +325,161 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
             .is_some_and(|var| var.connected),
         "structural connector members must not prevent nonstructural members from connecting"
     );
+}
+
+#[test]
+fn collapsed_connector_array_connects_to_expanded_connector_elements() {
+    let mut flat = flat::Model::new();
+    for (name, dims, flow) in [
+        ("source.port.T", vec![2], false),
+        ("source.port.Q_flow", vec![2], true),
+        ("sink.ports[1].T", vec![], false),
+        ("sink.ports[1].Q_flow", vec![], true),
+        ("sink.ports[2].T", vec![], false),
+        ("sink.ports[2].Q_flow", vec![], true),
+    ] {
+        flat.add_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                name: rumoca_core::VarName::new(name),
+                dims,
+                flow,
+                is_primitive: true,
+                source_span: test_span(),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: rumoca_core::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_dotted("source.port"),
+            b: ast::QualifiedName::from_dotted("sink.ports"),
+            connector_type: None,
+            span: test_span(),
+            scope: String::new(),
+            family: None,
+        }],
+        ..Default::default()
+    });
+
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("asymmetric connector-array connection processing");
+
+    for name in [
+        "source.port.T",
+        "source.port.Q_flow",
+        "sink.ports[1].T",
+        "sink.ports[1].Q_flow",
+        "sink.ports[2].T",
+        "sink.ports[2].Q_flow",
+    ] {
+        assert!(
+            flat.variables
+                .get(&rumoca_core::VarName::new(name))
+                .is_some_and(|var| var.connected),
+            "{name} should belong to the expanded connection set"
+        );
+    }
+    assert!(
+        flat.equations.iter().any(|equation| {
+            equation.origin.to_string().contains("source.port.T[1]")
+                && equation.origin.to_string().contains("sink.ports[1].T")
+        }),
+        "the collapsed potential array should be projected elementwise"
+    );
+}
+
+fn expandable_connector_test_overlay() -> ast::InstanceOverlay {
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.add_class(ast::ClassInstanceData {
+        instance_id: rumoca_core::InstanceId(0),
+        qualified_name: ast::QualifiedName::from_ident("Root"),
+        connections: vec![ast::InstanceConnection {
+            a: ast::QualifiedName::from_ident("a"),
+            b: ast::QualifiedName::from_ident("b"),
+            connector_type: None,
+            span: test_span(),
+            scope: String::new(),
+            family: None,
+        }],
+        ..Default::default()
+    });
+    overlay
+}
+
+fn add_expandable_member(flat: &mut flat::Model, name: &str) {
+    flat.add_variable(
+        rumoca_core::VarName::new(name),
+        flat::Variable {
+            name: rumoca_core::VarName::new(name),
+            is_primitive: true,
+            from_expandable_connector: true,
+            source_span: test_span(),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+}
+
+#[test]
+fn expandable_connectors_with_same_declared_members_are_supported() {
+    let mut flat = flat::Model::new();
+    add_expandable_member(&mut flat, "a.signal");
+    add_expandable_member(&mut flat, "b.signal");
+    let overlay = expandable_connector_test_overlay();
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("identical declared members require no augmentation");
+
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("a.signal"))
+            .is_some_and(|var| var.connected)
+    );
+}
+
+#[test]
+fn expandable_connector_member_union_is_rejected_before_connection_sets() {
+    let mut flat = flat::Model::new();
+    add_expandable_member(&mut flat, "a.left_only");
+    add_expandable_member(&mut flat, "b.right_only");
+    let overlay = expandable_connector_test_overlay();
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+
+    let error = process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect_err("member-union augmentation must not silently drop both endpoints");
+
+    assert!(matches!(
+        error,
+        FlattenError::UnsupportedExpandableConnectorAugmentation { .. }
+    ));
+    assert!(
+        flat.equations.is_empty(),
+        "the unsupported connection must fail before equations are generated"
+    );
+}
+
+#[test]
+fn expandable_connector_partial_member_union_is_rejected() {
+    let mut flat = flat::Model::new();
+    for name in ["a.shared", "a.left_only", "b.shared"] {
+        add_expandable_member(&mut flat, name);
+    }
+    let overlay = expandable_connector_test_overlay();
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+
+    let error = process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect_err("connecting only the declared intersection is not MLS §9.1.3");
+
+    assert!(matches!(
+        error,
+        FlattenError::UnsupportedExpandableConnectorAugmentation { .. }
+    ));
 }
 
 #[test]
@@ -398,7 +587,8 @@ fn test_generate_equality_equations() {
         rumoca_core::VarName::new("r3.p.v"),
     ];
 
-    generate_equality_equations(&mut flat, &vars, test_span()).unwrap();
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+    generate_equality_equations(&mut flat, &vars, test_span(), &mut oc_forest).unwrap();
 
     // Should generate 2 equations (n-1 for n=3)
     assert_eq!(flat.equations.len(), 2);
@@ -422,6 +612,47 @@ fn test_generate_equality_equations() {
             .unwrap()
             .connected
     );
+}
+
+#[test]
+fn zero_constraint_equality_generation_respects_required_vcg_branch() {
+    let mut flat = flat::Model::new();
+    for record in ["a.R", "b.R", "c.R"] {
+        let name = rumoca_core::VarName::new(format!("{record}.gamma"));
+        flat.add_variable(
+            name.clone(),
+            flat::Variable {
+                name,
+                is_primitive: true,
+                is_overconstrained: true,
+                oc_record_path: Some(record.to_string()),
+                oc_eq_constraint_size: Some(0),
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+    }
+    let branches = vec![("a.R".to_string(), "b.R".to_string())];
+    let optional = vec![
+        ("a.R".to_string(), "c.R".to_string()),
+        ("c.R".to_string(), "b.R".to_string()),
+    ];
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::new(
+        crate::vcg::test_required_forest(&Default::default(), &branches, &optional),
+    );
+    let vars = [
+        rumoca_core::VarName::new("a.R.gamma"),
+        rumoca_core::VarName::new("c.R.gamma"),
+        rumoca_core::VarName::new("b.R.gamma"),
+    ];
+
+    generate_equality_equations(&mut flat, &vars, test_span(), &mut oc_forest).unwrap();
+
+    assert_eq!(flat.equations.len(), 1);
+    assert!(matches!(
+        &flat.equations[0].origin,
+        flat::EquationOrigin::Connection { lhs, rhs }
+            if lhs == "a.R.gamma" && rhs == "c.R.gamma"
+    ));
 }
 
 #[test]
@@ -636,6 +867,20 @@ fn test_generate_flow_equation_two_arrays_and_scalar_keeps_array_scalar_count() 
         flat.equations[0].scalar_count, 2,
         "flow sum with multiple array terms should preserve array scalarization"
     );
+    assert_eq!(flat.structured_equations.len(), 1);
+    let family = &flat.structured_equations[0];
+    assert_eq!(family.first_equation_index, 0);
+    assert_eq!(
+        family
+            .domain
+            .scalar_count()
+            .expect("valid connection family"),
+        2
+    );
+    assert!(matches!(
+        family.origin,
+        flat::EquationOrigin::FlowSum { .. }
+    ));
 }
 
 #[test]
@@ -796,14 +1041,14 @@ fn test_process_connections_negates_nested_connector_under_outside_root() {
 
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_component(ast::InstanceData {
-        instance_id: ast::InstanceId(1),
+        instance_id: rumoca_core::InstanceId(1),
         qualified_name: ast::QualifiedName::from_dotted("cell.plug"),
         is_connector_type: true,
         is_protected: false,
         ..Default::default()
     });
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_dotted("cell"),
         connections: vec![ast::InstanceConnection {
             a: ast::QualifiedName::from_dotted("cell.plug.pin"),
@@ -811,11 +1056,14 @@ fn test_process_connections_negates_nested_connector_under_outside_root() {
             connector_type: None,
             span: test_span(),
             scope: "cell".to_string(),
+            family: None,
         }],
         ..Default::default()
     });
 
-    process_connections(&mut flat, &overlay, false).expect("nested connector connection");
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
+    process_connections(&mut flat, &overlay, false, &mut oc_forest)
+        .expect("nested connector connection");
 
     let flow_origins: Vec<String> = flat
         .equations
@@ -1090,6 +1338,42 @@ fn test_validate_dimension_compatibility_partial_subscript_mismatch_fails() {
 }
 
 #[test]
+fn test_generate_equality_marks_base_connected_for_multidimensional_subscript() {
+    let mut flat = flat::Model::new();
+    flat.add_variable(
+        rumoca_core::VarName::new("bus.values"),
+        flat::Variable {
+            dims: vec![3, 2],
+            from_expandable_connector: true,
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    flat.add_variable(
+        rumoca_core::VarName::new("gain.y"),
+        flat::Variable::empty_with_span(test_span()),
+    );
+
+    generate_equality_equations(
+        &mut flat,
+        &[
+            rumoca_core::VarName::new("bus.values[3,2]"),
+            rumoca_core::VarName::new("gain.y"),
+        ],
+        test_span(),
+        &mut crate::vcg::OverconstrainedEquationForest::empty(),
+    )
+    .unwrap();
+
+    assert_eq!(flat.equations.len(), 1);
+    assert!(
+        flat.variables
+            .get(&rumoca_core::VarName::new("bus.values"))
+            .unwrap()
+            .connected
+    );
+}
+
+#[test]
 fn test_split_trailing_index_groups_multi_index() {
     let (base, groups) =
         split_trailing_index_groups("connector.field[2][3]").expect("should parse");
@@ -1213,689 +1497,5 @@ fn test_validate_type_compatibility_alias_root_allowed() {
     assert!(result.is_ok());
 }
 
-// =============================================================================
-// Array Index Matching Tests
-// =============================================================================
-
-#[test]
-fn test_split_path_with_indices() {
-    // Simple path
-    assert_eq!(path_segments_of("a.b.c"), vec!["a", "b", "c"]);
-
-    // Path with array indices
-    assert_eq!(
-        path_segments_of("resistor[1].p.v"),
-        vec!["resistor[1]", "p", "v"]
-    );
-
-    // Multiple array indices
-    assert_eq!(
-        path_segments_of("plug_p.pin[2].v"),
-        vec!["plug_p", "pin[2]", "v"]
-    );
-
-    // Complex indices
-    assert_eq!(
-        path_segments_of("a[1,2].b[3].c"),
-        vec!["a[1,2]", "b[3]", "c"]
-    );
-}
-
-#[test]
-fn test_strip_array_index() {
-    assert_eq!(strip_array_index("resistor[1]"), "resistor");
-    assert_eq!(strip_array_index("pin[2]"), "pin");
-    assert_eq!(strip_array_index("p"), "p");
-    assert_eq!(strip_array_index("a[1,2,3]"), "a");
-}
-
-#[test]
-fn test_strip_embedded_array_indices() {
-    assert_eq!(
-        strip_embedded_array_indices("battery.resistor[2].p.i"),
-        Some("battery.resistor.p.i".to_string())
-    );
-    assert_eq!(
-        strip_embedded_array_indices("battery.capacitor.p.i[2]"),
-        Some("battery.capacitor.p.i".to_string())
-    );
-    assert_eq!(strip_embedded_array_indices("battery.p.i"), None);
-}
-
-#[test]
-fn test_extract_array_index() {
-    assert_eq!(extract_array_index("resistor[1]"), Some("[1]".to_string()));
-    assert_eq!(extract_array_index("pin[2]"), Some("[2]".to_string()));
-    assert_eq!(extract_array_index("p"), None);
-    assert_eq!(extract_array_index("a[1,2,3]"), Some("[1,2,3]".to_string()));
-}
-
-#[test]
-fn test_parse_array_element_ref_simple_and_indexed_prefix() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("x"),
-        flat::Variable {
-            dims: vec![3],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("cell[2].v"),
-        flat::Variable {
-            dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    assert_eq!(
-        parse_array_element_ref("x[1]", &flat),
-        Some((rumoca_core::VarName::new("x"), 1))
-    );
-    assert_eq!(
-        parse_array_element_ref("cell[2].v[3]", &flat),
-        Some((rumoca_core::VarName::new("cell[2].v"), 3))
-    );
-}
-
-#[test]
-fn test_parse_array_element_ref_rejects_non_scalar_or_non_terminal_subscripts() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("x"),
-        flat::Variable {
-            dims: vec![2, 2],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    assert_eq!(parse_array_element_ref("x[1,2]", &flat), None);
-    assert_eq!(parse_array_element_ref("x[1].y", &flat), None);
-}
-
-#[test]
-fn test_scalarize_collapsed_connector_element() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("s[1].inductance.n.i"),
-        flat::Variable {
-            flow: true,
-            dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    let scalarized = scalarize_collapsed_connector_element(
-        &rumoca_core::VarName::new("s[1].inductance.n.i"),
-        "s[1].inductance.n[2]",
-        &flat,
-    );
-    assert_eq!(
-        scalarized,
-        rumoca_core::VarName::new("s[1].inductance.n.i[2]")
-    );
-}
-
-#[test]
-fn test_scalarize_collapsed_connector_element_without_dims_still_scalarizes() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("cell.cell.resistor.p.i"),
-        flat::Variable {
-            flow: true,
-            // Collapsed connector-array fields can reach flatten with dims=[].
-            dims: vec![],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    let scalarized = scalarize_collapsed_connector_element(
-        &rumoca_core::VarName::new("cell.cell.resistor.p.i"),
-        "cell.cell.resistor[2].p",
-        &flat,
-    );
-    assert_eq!(
-        scalarized,
-        rumoca_core::VarName::new("cell.cell.resistor.p.i[2]")
-    );
-}
-
-#[test]
-fn test_is_flow_variable_subscripted_with_unknown_dims() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("arr.n.i"),
-        flat::Variable {
-            flow: true,
-            // Unknown dims in flat::Variable must still allow element flow handling.
-            dims: vec![],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    assert!(is_flow_variable(
-        &flat,
-        &rumoca_core::VarName::new("arr.n.i[2]")
-    ));
-}
-
-#[test]
-fn test_matches_with_array_indices() {
-    let matches = |name: &str, segments: &[&str]| {
-        let parsed = path_segments_of(name)
-            .into_iter()
-            .map(std::borrow::ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        matches_with_array_indices_cached(&parsed, segments)
-    };
-
-    // resistor.p should match resistor[1].p.v
-    assert!(matches("resistor[1].p.v", &["resistor", "p"]));
-    assert!(matches("resistor[2].p.i", &["resistor", "p"]));
-
-    // plug_p.pin should match plug_p.pin[1].v
-    assert!(matches("plug_p.pin[1].v", &["plug_p", "pin"]));
-
-    // Exact match (no array indices)
-    assert!(matches("r1.n.v", &["r1", "n"]));
-
-    // No match - wrong base name
-    assert!(!matches("resistor[1].p.v", &["capacitor", "p"]));
-
-    // No match - not enough parts (no suffix)
-    assert!(!matches("resistor[1].p", &["resistor", "p"]));
-}
-
-#[test]
-fn test_find_exact_match_with_array_expansion_handles_dot_inside_subscript() {
-    let var_names = [
-        rumoca_core::VarName::new("bus[data.medium].pin"),
-        rumoca_core::VarName::new("bus[data.other].pin"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(var_names.iter());
-
-    let matches = find_exact_match_with_array_expansion("bus[data.medium].pin", &var_index);
-    assert_eq!(
-        matches,
-        vec![rumoca_core::VarName::new("bus[data.medium].pin")]
-    );
-}
-
-#[test]
-fn test_find_sub_variables_with_array_expansion_handles_dot_inside_subscript() {
-    let var_names = [
-        rumoca_core::VarName::new("bus[data.medium].pin.i"),
-        rumoca_core::VarName::new("bus[data.medium].pin.v"),
-        rumoca_core::VarName::new("bus[data.other].pin.i"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(var_names.iter());
-
-    let matches =
-        find_sub_variables_with_array_expansion_indexed("bus[data.medium].pin", &var_index);
-    assert_eq!(matches.len(), 2);
-    assert!(matches.contains(&rumoca_core::VarName::new("bus[data.medium].pin.i")));
-    assert!(matches.contains(&rumoca_core::VarName::new("bus[data.medium].pin.v")));
-}
-
-#[test]
-fn test_extract_suffix_exact() {
-    // Exact prefix match
-    let result = extract_suffix("r1.n.v", "r1.n");
-    assert_eq!(result, Some(("v".to_string(), "".to_string())));
-
-    let result = extract_suffix("a.b.c.d", "a.b.c");
-    assert_eq!(result, Some(("d".to_string(), "".to_string())));
-}
-
-#[test]
-fn test_extract_suffix_with_array_indices() {
-    // Array prefix match
-    let result = extract_suffix("resistor[1].p.v", "resistor.p");
-    assert_eq!(result, Some(("v".to_string(), "[1]".to_string())));
-
-    let result = extract_suffix("plug_p.pin[2].i", "plug_p.pin");
-    assert_eq!(result, Some(("i".to_string(), "[2]".to_string())));
-
-    // Multiple segments with indices
-    let result = extract_suffix("resistor[1].p.v", "resistor.p");
-    assert_eq!(result, Some(("v".to_string(), "[1]".to_string())));
-}
-
-#[test]
-fn test_extract_suffix_preserves_segment_index_when_name_is_collapsed_array_field() {
-    let result = extract_suffix("s[1].inductance.n.i", "s[1].inductance.n[2]");
-    assert_eq!(result, Some(("i".to_string(), "[1][2]".to_string())));
-}
-
-#[test]
-fn test_extract_suffix_handles_dot_inside_subscript_expression() {
-    let result = extract_suffix("bus[data.medium].pin.i", "bus[data.medium].pin[2]");
-    assert_eq!(
-        result,
-        Some(("i".to_string(), "[data.medium][2]".to_string()))
-    );
-}
-
-#[test]
-fn test_find_matching_var_b_exact() {
-    let subs_b = vec![
-        rumoca_core::VarName::new("plug_p.pin.v"),
-        rumoca_core::VarName::new("plug_p.pin.i"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index = ConnectionSubMatchIndex::new("plug_p.pin", &subs_b, &var_index);
-
-    // Exact match
-    let result = find_matching_var_b_indexed("v", "", &sub_match_index);
-    assert_eq!(result, Some(rumoca_core::VarName::new("plug_p.pin.v")));
-
-    let result = find_matching_var_b_indexed("i", "", &sub_match_index);
-    assert_eq!(result, Some(rumoca_core::VarName::new("plug_p.pin.i")));
-
-    // No match
-    let result = find_matching_var_b_indexed("x", "", &sub_match_index);
-    assert_eq!(result, None);
-}
-
-#[test]
-fn test_find_matching_var_b_exact_with_dotted_suffix() {
-    let subs_b = vec![
-        rumoca_core::VarName::new("plug_p.pin.inner.v"),
-        rumoca_core::VarName::new("plug_p.pin.inner.i"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index = ConnectionSubMatchIndex::new("plug_p.pin", &subs_b, &var_index);
-
-    let result = find_matching_var_b_indexed("inner.v", "", &sub_match_index);
-    assert_eq!(
-        result,
-        Some(rumoca_core::VarName::new("plug_p.pin.inner.v"))
-    );
-}
-
-#[test]
-fn test_find_matching_var_b_with_array_indices() {
-    let subs_b = vec![
-        rumoca_core::VarName::new("plug_p.pin[1].v"),
-        rumoca_core::VarName::new("plug_p.pin[1].i"),
-        rumoca_core::VarName::new("plug_p.pin[2].v"),
-        rumoca_core::VarName::new("plug_p.pin[2].i"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index = ConnectionSubMatchIndex::new("plug_p.pin", &subs_b, &var_index);
-
-    // Should find matching indexed variable
-    let result = find_matching_var_b_indexed("v", "[1]", &sub_match_index);
-    assert_eq!(result, Some(rumoca_core::VarName::new("plug_p.pin[1].v")));
-
-    let result = find_matching_var_b_indexed("i", "[2]", &sub_match_index);
-    assert_eq!(result, Some(rumoca_core::VarName::new("plug_p.pin[2].i")));
-
-    // Wrong index
-    let result = find_matching_var_b_indexed("v", "[3]", &sub_match_index);
-    assert_eq!(result, None);
-}
-
-#[test]
-fn test_find_matching_var_b_with_collapsed_indexed_connector_path() {
-    let subs_b = vec![
-        rumoca_core::VarName::new("s[1].n.i"),
-        rumoca_core::VarName::new("s[1].n.v"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index = ConnectionSubMatchIndex::new("s[1].n[2]", &subs_b, &var_index);
-    let result = find_matching_var_b_indexed("i", "", &sub_match_index);
-    assert_eq!(result, Some(rumoca_core::VarName::new("s[1].n.i")));
-}
-
-#[test]
-fn test_find_matching_var_b_preserves_explicit_cross_index_path() {
-    // Connects like resistor[1].n <-> resistor[2].p should use B's explicit
-    // index even when A/B indices differ.
-    let subs_b = vec![
-        rumoca_core::VarName::new("cell.cell.resistor.p.v"),
-        rumoca_core::VarName::new("cell.cell.resistor.p.i"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index =
-        ConnectionSubMatchIndex::new("cell.cell.resistor[2].p", &subs_b, &var_index);
-    let result = find_matching_var_b_indexed("v", "", &sub_match_index);
-    assert_eq!(
-        result,
-        Some(rumoca_core::VarName::new("cell.cell.resistor.p.v"))
-    );
-}
-
-#[test]
-fn test_find_matching_var_b_does_not_cross_match_connector_member_name() {
-    let subs_b = vec![
-        rumoca_core::VarName::new("resistor.p.v"),
-        rumoca_core::VarName::new("resistor.n.v"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index = ConnectionSubMatchIndex::new("resistor[1].n", &subs_b, &var_index);
-    let result = find_matching_var_b_indexed("v", "", &sub_match_index);
-    assert_eq!(result, Some(rumoca_core::VarName::new("resistor.n.v")));
-}
-
-#[test]
-fn test_find_matching_var_b_allows_indexed_b_when_a_has_no_indices() {
-    // Reproduces scalar-to-indexed connector matches like:
-    // connect(internalHeatPort, resistor[1].heatPort)
-    // where A suffix extraction yields empty indices.
-    let subs_b = vec![
-        rumoca_core::VarName::new("battery.resistor.heatPort.T"),
-        rumoca_core::VarName::new("battery.resistor.heatPort.Q_flow"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index =
-        ConnectionSubMatchIndex::new("battery.resistor[1].heatPort", &subs_b, &var_index);
-
-    let t_match = find_matching_var_b_indexed("T", "", &sub_match_index);
-    let q_match = find_matching_var_b_indexed("Q_flow", "", &sub_match_index);
-
-    assert_eq!(
-        t_match,
-        Some(rumoca_core::VarName::new("battery.resistor.heatPort.T"))
-    );
-    assert_eq!(
-        q_match,
-        Some(rumoca_core::VarName::new(
-            "battery.resistor.heatPort.Q_flow"
-        ))
-    );
-}
-
-#[test]
-fn test_strip_explicit_path_indices() {
-    assert_eq!(
-        strip_explicit_path_indices("[1][2]", "s[1].inductance.n"),
-        "[2]"
-    );
-    assert_eq!(
-        strip_explicit_path_indices("[1][2]", "s[1].inductance.n[2]"),
-        ""
-    );
-    assert_eq!(strip_explicit_path_indices("[2]", "plug_p.pin"), "[2]");
-}
-
-#[test]
-fn test_find_matching_var_b_keeps_trailing_connector_index_with_explicit_prefix() {
-    let subs_b = vec![
-        rumoca_core::VarName::new("s[1].p[1].i"),
-        rumoca_core::VarName::new("s[1].p[2].i"),
-        rumoca_core::VarName::new("s[1].p[3].i"),
-    ];
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let sub_match_index = ConnectionSubMatchIndex::new("s[1].p", &subs_b, &var_index);
-    let result = find_matching_var_b_indexed("i", "[2]", &sub_match_index);
-    assert_eq!(result, Some(rumoca_core::VarName::new("s[1].p[2].i")));
-}
-
-#[test]
-fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("plug_p.pin[2].i"),
-        flat::Variable {
-            flow: true,
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("plugs_n.pin.i"),
-        flat::Variable {
-            flow: true,
-            dims: vec![3],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    let sub_a = rumoca_core::VarName::new("plug_p.pin[2].i");
-    let subs_b = vec![rumoca_core::VarName::new("plugs_n.pin.i")];
-    let mut flow_pairs = Vec::new();
-    let mut potential_uf = UnionFind::new();
-    let mut stream_uf = UnionFind::new();
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let mut ctx = ConnectionBuildCtx {
-        flat: &flat,
-        var_index: &var_index,
-        flow_pairs: &mut flow_pairs,
-        potential_uf: &mut potential_uf,
-        stream_uf: &mut stream_uf,
-    };
-    let sub_match_index = ConnectionSubMatchIndex::new("plugs_n.pin", &subs_b, &var_index);
-
-    connect_sub_variable(
-        &sub_a,
-        "plug_p.pin",
-        "plugs_n.pin",
-        &sub_match_index,
-        &mut ctx,
-    );
-
-    assert_eq!(
-        flow_pairs,
-        vec![(
-            rumoca_core::VarName::new("plug_p.pin[2].i"),
-            rumoca_core::VarName::new("plugs_n.pin.i[2]")
-        )]
-    );
-}
-
-#[test]
-fn test_connect_sub_variable_does_not_index_scalar_b_member() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("resistor[1].p.i"),
-        flat::Variable {
-            flow: true,
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("r0.n.i"),
-        flat::Variable {
-            flow: true,
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    let sub_a = rumoca_core::VarName::new("resistor[1].p.i");
-    let subs_b = vec![rumoca_core::VarName::new("r0.n.i")];
-    let mut flow_pairs = Vec::new();
-    let mut potential_uf = UnionFind::new();
-    let mut stream_uf = UnionFind::new();
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let mut ctx = ConnectionBuildCtx {
-        flat: &flat,
-        var_index: &var_index,
-        flow_pairs: &mut flow_pairs,
-        potential_uf: &mut potential_uf,
-        stream_uf: &mut stream_uf,
-    };
-    let sub_match_index = ConnectionSubMatchIndex::new("r0.n", &subs_b, &var_index);
-
-    connect_sub_variable(&sub_a, "resistor.p", "r0.n", &sub_match_index, &mut ctx);
-
-    assert_eq!(
-        flow_pairs,
-        vec![(
-            rumoca_core::VarName::new("resistor[1].p.i"),
-            rumoca_core::VarName::new("r0.n.i")
-        )]
-    );
-}
-
-#[test]
-fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("plug_p.pin[1].i"),
-        flat::Variable {
-            flow: true,
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("starpoints.pin.i"),
-        flat::Variable {
-            flow: true,
-            dims: vec![1],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    let sub_a = rumoca_core::VarName::new("plug_p.pin[1].i");
-    let subs_b = vec![rumoca_core::VarName::new("starpoints.pin.i")];
-    let mut flow_pairs = Vec::new();
-    let mut potential_uf = UnionFind::new();
-    let mut stream_uf = UnionFind::new();
-    let var_index = ConnectionVarIndex::from_var_names(subs_b.iter());
-    let mut ctx = ConnectionBuildCtx {
-        flat: &flat,
-        var_index: &var_index,
-        flow_pairs: &mut flow_pairs,
-        potential_uf: &mut potential_uf,
-        stream_uf: &mut stream_uf,
-    };
-    let sub_match_index = ConnectionSubMatchIndex::new("starpoints.pin", &subs_b, &var_index);
-
-    connect_sub_variable(
-        &sub_a,
-        "plug_p.pin",
-        "starpoints.pin",
-        &sub_match_index,
-        &mut ctx,
-    );
-
-    assert_eq!(
-        flow_pairs,
-        vec![(
-            rumoca_core::VarName::new("plug_p.pin[1].i"),
-            rumoca_core::VarName::new("starpoints.pin.i")
-        )]
-    );
-}
-
-#[test]
-fn test_find_sub_variables_with_array_expansion() {
-    let mut flat = flat::Model::new();
-
-    // Add variables for resistor[1-3].p.v and resistor[1-3].p.i
-    for i in 1..=3 {
-        flat.add_variable(
-            rumoca_core::VarName::new(format!("resistor[{}].p.v", i)),
-            flat::Variable::empty_with_span(test_span()),
-        );
-        flat.add_variable(
-            rumoca_core::VarName::new(format!("resistor[{}].p.i", i)),
-            flat::Variable {
-                flow: true,
-                ..flat::Variable::empty_with_span(test_span())
-            },
-        );
-    }
-
-    // Searching for "resistor.p" should find all resistor[*].p.* variables
-    let pc = build_prefix_children(&flat);
-    let var_index = ConnectionVarIndex::new(&flat);
-    let subs = find_sub_variables_indexed("resistor.p", &pc, &var_index);
-    assert_eq!(subs.len(), 6);
-
-    // Verify all expected variables are found
-    for i in 1..=3 {
-        assert!(subs.contains(&rumoca_core::VarName::new(format!("resistor[{}].p.v", i))));
-        assert!(subs.contains(&rumoca_core::VarName::new(format!("resistor[{}].p.i", i))));
-    }
-}
-
-#[test]
-fn test_find_sub_variables_indexed_prefix_matches_collapsed_connector_array_fields() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("s[1].inductance.n.i"),
-        flat::Variable {
-            flow: true,
-            dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("s[1].inductance.n.v"),
-        flat::Variable {
-            dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    let pc = build_prefix_children(&flat);
-    let var_index = ConnectionVarIndex::new(&flat);
-    let subs = find_sub_variables_indexed("s[1].inductance.n[2]", &pc, &var_index);
-    assert_eq!(subs.len(), 2);
-    assert!(subs.contains(&rumoca_core::VarName::new("s[1].inductance.n.i")));
-    assert!(subs.contains(&rumoca_core::VarName::new("s[1].inductance.n.v")));
-}
-
-#[test]
-fn test_find_sub_variables_exact_match_preferred() {
-    let mut flat = flat::Model::new();
-
-    // Add both exact and indexed variables
-    flat.add_variable(
-        rumoca_core::VarName::new("r1.n.v"),
-        flat::Variable::empty_with_span(test_span()),
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("r1.n.i"),
-        flat::Variable::empty_with_span(test_span()),
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("r1[1].n.v"),
-        flat::Variable::empty_with_span(test_span()),
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("r1[1].n.i"),
-        flat::Variable::empty_with_span(test_span()),
-    );
-
-    // Searching for "r1.n" should find exact matches
-    let pc = build_prefix_children(&flat);
-    let var_index = ConnectionVarIndex::new(&flat);
-    let subs = find_sub_variables_indexed("r1.n", &pc, &var_index);
-    assert_eq!(subs.len(), 2);
-    assert!(subs.contains(&rumoca_core::VarName::new("r1.n.v")));
-    assert!(subs.contains(&rumoca_core::VarName::new("r1.n.i")));
-}
-
-#[test]
-fn test_find_sub_variables_indexed_prefix_does_not_cross_match_connector_members() {
-    let mut flat = flat::Model::new();
-    // Collapsed connector-array fields commonly appear as indexless members with
-    // array dims kept on the primitive variable itself.
-    for name in [
-        "resistor.p.v",
-        "resistor.p.i",
-        "resistor.n.v",
-        "resistor.n.i",
-    ] {
-        flat.add_variable(
-            rumoca_core::VarName::new(name),
-            flat::Variable {
-                dims: vec![1],
-                flow: name.ends_with(".i"),
-                ..flat::Variable::empty_with_span(test_span())
-            },
-        );
-    }
-
-    let pc = build_prefix_children(&flat);
-    let var_index = ConnectionVarIndex::new(&flat);
-    let subs = find_sub_variables_indexed("resistor[1].n", &pc, &var_index);
-
-    assert_eq!(subs.len(), 2);
-    assert!(subs.contains(&rumoca_core::VarName::new("resistor.n.v")));
-    assert!(subs.contains(&rumoca_core::VarName::new("resistor.n.i")));
-    assert!(!subs.contains(&rumoca_core::VarName::new("resistor.p.v")));
-    assert!(!subs.contains(&rumoca_core::VarName::new("resistor.p.i")));
-}
+mod member_pairing_tests;
+mod path_matching_tests;

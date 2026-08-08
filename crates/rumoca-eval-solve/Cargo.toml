@@ -11,13 +11,7 @@ homepage.workspace = true
 indexmap = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
-rumoca-solver = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
-
-[dev-dependencies]
-rumoca-ir-dae = { workspace = true }
-rumoca-eval-dae = { workspace = true }
 
 [lints]
 workspace = true

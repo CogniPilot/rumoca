@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiAnnotation.xsd"/>
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="efmiObjectFile.xsd"/>
+	<xs:element name="Modules">
+		<xs:complexType>
+			<xs:choice minOccurs="1" maxOccurs="unbounded">
+				<xs:element name="BinaryModule" minOccurs="1" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:choice minOccurs="1" maxOccurs="unbounded">
+							<xs:element ref="ObjectFile" minOccurs="1" maxOccurs="1"/>
+							<xs:element ref="SourceFileReference" minOccurs="0" maxOccurs="unbounded"/>
+							<!-- This source file Reference is related to simulation code, tool 
+								specific code, etc. in opposite to the ObjectFile element the presence of 
+								the files in the Production code Manifest are MANDATORY -->
+						</xs:choice>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+						<xs:attribute name="generationTool" type="xs:normalizedString" use="required">
+							<xs:annotation>
+								<xs:documentation>Tool that was used to create or modified the Algorithm Code manifest and code file. Use "manual" if these files were created or modified manually.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+						<xs:attribute name="generationDateAndTime" use="required">
+							<xs:annotation>
+								<xs:documentation>Last modification date and time of manifest or any container contents. Must be an xs:dateTime in UTC time without any time offset, only using arabic numerals, with hours, minutes and seconds, but no smaller fractions; i.e., the used pattern is YYYY-MM-DDTHH:MM:SSZ.</xs:documentation>
+							</xs:annotation>
+							<xs:simpleType>
+								<xs:restriction base="xs:dateTime">
+									<xs:pattern
+										value="[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z">
+									</xs:pattern>
+								</xs:restriction>
+							</xs:simpleType>
+						</xs:attribute>
+						<xs:attribute name="compilerOptionSetRefId" type="efmiIdentifierType"/>
+					</xs:complexType>
+				</xs:element>
+			</xs:choice>
+		</xs:complexType>
+	</xs:element>
+	<xs:element name="SourceFileReference">
+		<xs:complexType>
+			<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+			<xs:attribute name="fileRefId" type="efmiIdentifierType" use="required"/>
+			<xs:attribute name="compilerOptionSetRefId" type="efmiIdentifierType"/>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>

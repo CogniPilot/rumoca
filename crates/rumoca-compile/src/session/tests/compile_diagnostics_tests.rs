@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn nested_type_in_an_instantiating_model_does_not_capture_a_device_sibling_type() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+                package Root
+                  package Examples
+                    model Test
+                      record Shared
+                        Real unrelated;
+                      end Shared;
+                      Root.Internal.Device device;
+                    end Test;
+                  end Examples;
+                  package Internal
+                    function consume
+                      input Shared constants;
+                      output Real value;
+                    algorithm
+                      value := constants.value;
+                    end consume;
+                    model Device
+                      constant Shared constants;
+                      Shared copied = constants;
+                      Real observed = consume(constants);
+                    end Device;
+                    record Shared
+                      Real value;
+                    end Shared;
+                  end Internal;
+                end Root;
+            "#,
+        )
+        .expect("source should parse");
+
+    let diagnostics = session.compile_model_diagnostics("Root.Examples.Test");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("type mismatch")),
+        "device-local sibling types must not bind to an unrelated nested record: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn test_merge_duplicate_class_diagnostic_has_primary_label() {
     let mut session = Session::default();
     session
@@ -194,13 +241,18 @@ fn test_synthesized_inner_warning_is_emitted() {
     );
 }
 
+/// The `medium.p` equation is load-bearing coverage, not decoration.
+///
+/// `medium` is declared as `Medium.BaseProperties` through a replaceable
+/// package, so its member set is only known once instantiation applies the
+/// redeclare. Resolve must classify the `medium.p` tail as deferred; if it
+/// instead treats it as a missing static tail, the model fails in Resolve with
+/// ER002 and the real defect — instantiating the partial `BaseProperties` —
+/// never reaches its own phase. The failure must stay Instantiate/EI012 with
+/// exact provenance on the declaration.
 #[test]
 fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiation() {
-    let mut session = Session::default();
-    session
-        .add_document(
-            "test.mo",
-            r#"
+    let source = r#"
                 package PartialMedium
                   replaceable partial model BaseProperties
                     Real p;
@@ -213,20 +265,48 @@ fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiati
                 equation
                   medium.p = 1;
                 end M;
-                "#,
-        )
-        .unwrap();
+                "#;
+    let mut session = Session::default();
+    session.add_document("test.mo", source).unwrap();
 
     let phase_result = session.compile_model_phases("M").unwrap();
     match phase_result {
         PhaseResult::Failed {
-            phase, error_code, ..
+            phase,
+            error_code,
+            diagnostics,
+            ..
         } => {
             assert_eq!(phase, FailedPhase::Instantiate);
             assert!(
                 error_code
                     .as_deref()
                     .is_some_and(|code| code.ends_with("EI012"))
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code.as_deref() != Some("ER002")),
+                "the deferred member must not decay into a resolve error: {diagnostics:?}"
+            );
+            let partial = diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic
+                        .code
+                        .as_deref()
+                        .is_some_and(|code| code.ends_with("EI012"))
+                })
+                .unwrap_or_else(|| panic!("expected EI012 diagnostic, got: {diagnostics:?}"));
+            let primary = partial
+                .labels
+                .iter()
+                .find(|label| label.primary)
+                .unwrap_or_else(|| panic!("EI012 must retain a primary label: {partial:?}"));
+            assert_eq!(
+                &source[primary.span.start.0..primary.span.end.0],
+                "Medium.BaseProperties medium",
+                "EI012 provenance must point at the deferred declaration"
             );
         }
         other => panic!("expected instantiate failure, got {:?}", other),
@@ -360,13 +440,12 @@ fn test_array_expansion_is_not_disabled_near_depth_limit() {
     let compiled = session
         .compile_model("Root")
         .unwrap_or_else(|error| panic!("array expansion near depth limit should compile: {error}"));
-    let variables = compiled
-        .dae
-        .variables
-        .algebraics
-        .keys()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
+    let variables = compiled.dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == rumoca_ir_dae::VariableRole::Algebraic)
+            .map(|(_, variable)| variable.name().to_string())
+            .collect::<Vec<_>>()
+    });
 
     assert!(
         variables.iter().any(|name| name == "holder.leaf[1].x")
@@ -475,13 +554,12 @@ fn test_dae_expression_spans_use_target_source_file_in_multi_document_session() 
         .get_id("target_second.mo")
         .expect("target document should be in source map");
 
-    let rhs_span = result
-        .dae
-        .continuous
-        .equations
-        .iter()
-        .find_map(|equation| equation.rhs.span())
-        .expect("expected a source span on a DAE equation RHS");
+    let rhs_span = result.dae.inspect(|view| {
+        (0..view.continuous_equation_count())
+            .find_map(|index| view.continuous_equation(index))
+            .map(|equation| equation.provenance().span())
+            .expect("expected a source span on a checked DAE equation")
+    });
 
     assert_eq!(rhs_span.source, target_source_id);
     let (file_name, source) = source_map
@@ -547,7 +625,7 @@ fn test_strict_reachable_ignores_unrelated_source_root_resolve_errors() {
     let report = session.compile_model_strict_reachable_with_recovery("Root");
     assert!(
         report.requested_succeeded(),
-        "strict compile must ignore unrelated source-root resolve errors"
+        "strict compile must resolve the selected source closure independently"
     );
     assert!(
         report.failures.is_empty(),
@@ -556,12 +634,370 @@ fn test_strict_reachable_ignores_unrelated_source_root_resolve_errors() {
 }
 
 #[test]
-fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_root_errors() {
-    let parsed = vec![
+fn strict_compilation_carries_exact_target_resolve_proof() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "good_dep.mo",
+            r#"
+            within Lib;
+            model GoodDep
+              Real x(start=0);
+            equation
+              der(x) = 1;
+            end GoodDep;
+            "#,
+        )
+        .expect("good dependency should parse");
+    session
+        .add_document(
+            "broken.mo",
+            r#"
+            within Lib;
+            model Broken
+              MissingType value;
+            end Broken;
+            "#,
+        )
+        .expect("broken sibling should parse");
+    session
+        .add_document(
+            "lib.mo",
+            r#"
+            package Lib
+            end Lib;
+            "#,
+        )
+        .expect("source-root package should parse");
+    session
+        .add_document(
+            "root.mo",
+            r#"
+            model Root
+              Lib.GoodDep dep;
+            end Root;
+            "#,
+        )
+        .expect("root should parse");
+
+    let compilation = session
+        .compile_model_strict("Root")
+        .expect("the selected target closure should compile");
+
+    assert!(
+        !session.has_resolved_cached(),
+        "the unrelated invalid sibling must keep global planning incomplete"
+    );
+    let resolved = compilation.resolved().inner();
+    assert!(
+        resolved.get_class_by_qualified_name("Root").is_some(),
+        "the proof must contain the requested model"
+    );
+    assert!(
+        resolved
+            .get_class_by_qualified_name("Lib.GoodDep")
+            .is_some(),
+        "the proof must contain the requested model's dependency"
+    );
+    assert!(
+        resolved.get_class_by_qualified_name("Lib.Broken").is_none(),
+        "the proof must be the retained target closure, not the incomplete global plan"
+    );
+}
+
+#[test]
+fn strict_target_resolution_keeps_dependencies_declared_by_lexical_ancestors() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "models.mo",
+            r#"
+            package Icons
+              partial package ExamplesPackage
+              end ExamplesPackage;
+            end Icons;
+
+            package P
+              extends Icons.ExamplesPackage;
+
+              package Sub
+                model M
+                  Real x;
+                equation
+                  x = 1;
+                end M;
+              end Sub;
+
+              model Broken
+                MissingType value;
+              end Broken;
+            end P;
+            "#,
+        )
+        .expect("source should parse");
+
+    let cached_plan_target = session
+        .resolve_strict_target("P.Sub.M")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "the retained ancestor chain must keep its extends dependencies: {:?}",
+                failure.failures
+            )
+        });
+    let fresh_plan_target = session
+        .resolve_strict_target_from_fresh_plan("P.Sub.M")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "an uncached planning tree must keep ancestor dependencies: {:?}",
+                failure.failures
+            )
+        });
+    for target in [cached_plan_target, fresh_plan_target] {
+        let resolved = target.resolved.inner();
+        assert!(
+            resolved
+                .get_class_by_qualified_name("Icons.ExamplesPackage")
+                .is_some(),
+            "the completed Resolve proof must retain the ancestor package's base"
+        );
+        assert!(
+            resolved.get_class_by_qualified_name("P.Broken").is_none(),
+            "unreachable invalid siblings must remain outside the strict target proof"
+        );
+    }
+}
+
+#[test]
+fn strict_target_resolution_keeps_external_object_lifecycle_identity() {
+    const SOURCE: &str = r#"
+class Handle
+  extends ExternalObject;
+
+  function constructor
+    input Real seed;
+    output Handle handle;
+    external "C" handle = make_handle(seed);
+  end constructor;
+
+  function destructor
+    input Handle handle;
+    external "C" free_handle(handle);
+  end destructor;
+end Handle;
+
+model UsesHandle
+  parameter Handle handle = Handle(1.0);
+end UsesHandle;
+"#;
+
+    let mut session = Session::default();
+    session
+        .add_document("external_object.mo", SOURCE)
+        .expect("source should parse");
+
+    let strict_target = session
+        .resolve_strict_target("UsesHandle")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "strict resolution must retain the complete ExternalObject lifecycle: {:?}",
+                failure.failures
+            )
+        });
+    let resolved = strict_target.resolved.inner();
+    let handle_class = resolved
+        .get_class_by_qualified_name("Handle")
+        .expect("ExternalObject owner must remain in the strict closure");
+    let handle_class_def_id = handle_class
+        .def_id
+        .expect("ExternalObject owner must keep its declaration identity");
+    let constructor = handle_class
+        .classes
+        .get("constructor")
+        .expect("constructor must remain owned by Handle");
+    let destructor = handle_class
+        .classes
+        .get("destructor")
+        .expect("destructor must remain owned by Handle");
+    let constructor_def_id = constructor
+        .def_id
+        .expect("constructor must keep its declaration identity");
+    let destructor_def_id = destructor
+        .def_id
+        .expect("destructor must keep its declaration identity");
+    assert_ne!(constructor_def_id, handle_class_def_id);
+    assert_ne!(destructor_def_id, handle_class_def_id);
+    assert_ne!(constructor_def_id, destructor_def_id);
+    assert_eq!(
+        SOURCE[constructor.location.start as usize..constructor.location.end as usize].trim_start(),
+        "constructor\n    input Real seed;\n    output Handle handle;\n    external \"C\" handle = make_handle(seed);\n  end constructor"
+    );
+    assert_eq!(
+        SOURCE[destructor.location.start as usize..destructor.location.end as usize].trim_start(),
+        "destructor\n    input Handle handle;\n    external \"C\" free_handle(handle);\n  end destructor"
+    );
+
+    let flat = session
+        .compile_model_flat_strict_reachable_uncached_with_recovery("UsesHandle")
+        .unwrap_or_else(|error| {
+            panic!("strict compilation must project the retained constructor: {error}")
+        });
+    let constructor_function = flat
+        .functions
+        .get(&rumoca_core::VarName::new("Handle"))
+        .expect("ExternalObject constructor must be exposed under its callable type");
+    assert_eq!(constructor_function.def_id, Some(constructor_def_id));
+    assert_ne!(constructor_function.def_id, Some(handle_class_def_id));
+    assert!(!constructor_function.is_constructor);
+    assert!(constructor_function.external.is_some());
+    assert_eq!(constructor_function.span, constructor.location.span());
+
+    let binding = flat
+        .variables
+        .get(&rumoca_core::VarName::new("handle"))
+        .and_then(|variable| variable.binding.as_ref())
+        .expect("ExternalObject binding must survive Flat construction");
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        is_constructor,
+        span,
+        ..
+    } = binding
+    else {
+        panic!("ExternalObject binding must remain an executable function call");
+    };
+    assert!(!is_constructor);
+    assert_eq!(name.target_def_id(), Some(handle_class_def_id));
+    assert_eq!(
+        name.resolved_function()
+            .map(|function| function.instance_id),
+        constructor_function.instance_id
+    );
+    assert_eq!(&SOURCE[span.start.0..span.end.0], "Handle(1.0)");
+}
+
+#[test]
+fn strict_target_resolution_preserves_malformed_external_object_child_diagnostic() {
+    const SOURCE: &str = r#"
+class WrongConstructorRestriction
+  extends ExternalObject;
+
+  model constructor
+  end constructor;
+
+  function destructor
+    input WrongConstructorRestriction handle;
+    external "C" free_handle(handle);
+  end destructor;
+end WrongConstructorRestriction;
+
+model UsesWrongConstructor
+  parameter WrongConstructorRestriction handle = WrongConstructorRestriction();
+end UsesWrongConstructor;
+"#;
+
+    let mut session = Session::default();
+    session
+        .add_document("malformed_external_object.mo", SOURCE)
+        .expect("source should parse");
+
+    let failure = session
+        .resolve_strict_target("UsesWrongConstructor")
+        .expect_err("reachable malformed lifecycle must not mint a ResolvedTree proof");
+    let diagnostic = failure
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER132"))
+        .unwrap_or_else(|| {
+            panic!(
+                "strict re-resolution must preserve the lifecycle-shape diagnostic: {:?}",
+                failure.diagnostics
+            )
+        });
+    assert!(
+        diagnostic
+            .message
+            .contains("constructor must be a function"),
+        "unexpected ER132 message: {}",
+        diagnostic.message
+    );
+    let primary = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER132 must retain a primary source span");
+    assert_eq!(
+        &SOURCE[primary.span.start.0..primary.span.end.0],
+        "constructor",
+        "strict planning must retain the malformed child declaration itself"
+    );
+}
+
+#[test]
+fn test_strict_reachable_ignores_broken_sibling_in_the_same_document() {
+    let source = r#"
+        package Types
+          type Signal = Real;
+        end Types;
+
+        package Lib
+          import Signal = Types.Signal;
+
+          model Good
+            Signal x(start=0);
+          equation
+            der(x) = 1;
+          end Good;
+
+          model Broken
+            MissingType value;
+          end Broken;
+        end Lib;
+
+        model Root
+          Lib.Good good;
+        end Root;
+        "#;
+
+    let mut session = Session::default();
+    session
+        .add_document("models.mo", source)
+        .expect("the shared document should parse");
+
+    let target = session
+        .resolve_strict_target("Root")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "the exact Root definition closure should resolve: {:?}",
+                failure.failures
+            )
+        });
+    assert!(
+        target
+            .resolved
+            .inner()
+            .get_class_by_qualified_name("Lib.Broken")
+            .is_none(),
+        "the completed Resolve proof must not retain the unresolved sibling"
+    );
+
+    let report = session.compile_model_strict_reachable_with_recovery("Root");
+    assert!(
+        report.requested_succeeded(),
+        "the exact Root definition closure must exclude unresolved Lib.Broken: {:?}",
+        report.failures
+    );
+    assert!(
+        report.failures.is_empty(),
+        "whole-document resolve diagnostics must not leak into Root"
+    );
+}
+
+#[test]
+fn test_compiled_source_root_planning_strict_reachable_ignores_unrelated_source_root_errors() {
+    let sources = [
         (
-            "good_dep.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "good_dep.mo",
+            r#"
                 within Lib;
                 model GoodDep
                   Real x(start=0);
@@ -569,72 +1005,64 @@ fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_
                   der(x) = 1;
                 end GoodDep;
                 "#,
-                "good_dep.mo",
-            )
-            .expect("good dependency should parse"),
         ),
         (
-            "broken.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "broken.mo",
+            r#"
                 within Lib;
                 model Broken
                   MissingType x;
                 end Broken;
                 "#,
-                "broken.mo",
-            )
-            .expect("broken sibling should still parse"),
         ),
         (
-            "lib.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "lib.mo",
+            r#"
                 package Lib
                 end Lib;
                 "#,
-                "lib.mo",
-            )
-            .expect("source-root package should parse"),
         ),
         (
-            "root.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "root.mo",
+            r#"
                 model Root
                   Lib.GoodDep dep;
                 end Root;
                 "#,
-                "root.mo",
-            )
-            .expect("root should parse"),
         ),
     ];
+    let mut source_map = rumoca_core::SourceMap::new();
+    let parsed = sources
+        .into_iter()
+        .map(|(name, source)| {
+            source_map.add(name, source);
+            (
+                name.to_owned(),
+                rumoca_phase_parse::parse_to_ast(source, name)
+                    .unwrap_or_else(|error| panic!("{name} should parse: {error}")),
+            )
+        })
+        .collect();
 
-    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(parsed)
-        .expect("tolerant compiled source root should index despite unrelated errors");
+    let source_root =
+        CompiledSourceRoot::from_parsed_batch_with_resolution_planning(parsed, source_map)
+            .expect("planning-only source root should retain unresolved diagnostics");
     assert!(
         source_root.model_names().iter().any(|name| name == "Root"),
-        "Root must still be discoverable without a whole-source-root strict resolve"
+        "Root must remain discoverable through the planning view"
     );
-
     let report = source_root
         .compile_model_strict_reachable_with_recovery("Root")
-        .unwrap_or_else(|error| panic!("strict reachable compile failed: {error}"));
+        .expect("strict target compilation should run");
     assert!(
         report.requested_succeeded(),
-        "strict closure compile must ignore unrelated source-root diagnostics"
-    );
-    assert!(
-        report.failures.is_empty(),
-        "unrelated source-root diagnostics must not leak into Root"
+        "the independently resolved Root closure must compile"
     );
 }
 
 #[test]
 fn test_compiled_source_root_strict_reachable_uncached_does_not_fill_cache() {
-    let definition = rumoca_phase_parse::parse_to_ast(
-        r#"
+    let source = r#"
         package P
           model A
             Real x(start=0);
@@ -648,12 +1076,12 @@ fn test_compiled_source_root_strict_reachable_uncached_does_not_fill_cache() {
             der(y) = 2;
           end B;
         end P;
-        "#,
-        "pkg.mo",
-    )
-    .expect("package should parse");
-
-    let source_root = CompiledSourceRoot::from_stored_definition(definition)
+        "#;
+    let definition =
+        rumoca_phase_parse::parse_to_ast(source, "pkg.mo").expect("package should parse");
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add("pkg.mo", source);
+    let source_root = CompiledSourceRoot::from_stored_definition(definition, source_map)
         .expect("compiled source root should build from one parsed package");
 
     let report = source_root.compile_model_strict_reachable_uncached_with_recovery("P.A");
@@ -917,10 +1345,10 @@ fn completion_class_names_tolerate_unrelated_resolve_diagnostics() {
 
     let strict_names = session
         .all_class_names_for_completion()
-        .expect("completion name collection should tolerate unrelated diagnostics");
+        .expect("completion may consume the planning-only tree");
     assert!(
         strict_names.iter().any(|name| name == "Lib.A"),
-        "completion name collection should still expose Lib.A: {strict_names:?}"
+        "completion must retain declared classes: {strict_names:?}"
     );
 
     let standard_names = session.all_class_names();
@@ -962,10 +1390,10 @@ fn planned_reachability(
     session
         .build_resolved()
         .expect("session should resolve for planner test");
-    let tree = &session
+    let tree = session
         .ensure_resolved()
         .expect("resolved tree should be available")
-        .0;
+        .inner();
     let dep_cache = super::dependency_fingerprint::DependencyFingerprintCache::from_tree(tree);
     let planner = super::reachability::ReachabilityPlanner::new(
         dep_cache.class_dependencies(),
@@ -1135,6 +1563,20 @@ end Ball;
         first_line.contains("unresolved import"),
         "expected first line to include unresolved import root cause, got: {summary}"
     );
+    let failure = report
+        .failures
+        .iter()
+        .find(|failure| failure.error.contains("unresolved import"))
+        .expect("reachable unresolved import must retain its Resolve failure");
+    let span = failure
+        .primary_label
+        .as_ref()
+        .expect("reachable Resolve failure must retain exact provenance")
+        .span;
+    assert_eq!(
+        &source[span.start.0..span.end.0],
+        "import Modelica.Blocks.Continuous.PID"
+    );
 }
 
 #[test]
@@ -1236,4 +1678,208 @@ end P;
         matches!(result, Ok(PhaseResult::Success(_))),
         "expected compile success for enum 2D lookup model, got {result:?}"
     );
+}
+
+/// An under-determined model must surface as a structured ToDae/ED001 failure
+/// carrying the balance breakdown, not just a rendered summary string.
+#[test]
+fn strict_dae_recovery_detailed_reports_todae_ed001_with_balance_detail() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "Unbalanced.mo",
+            r#"
+                model Unbalanced
+                  Real x;
+                  Real y;
+                equation
+                  x = 1;
+                end Unbalanced;
+                "#,
+        )
+        .unwrap();
+
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Unbalanced")
+        .expect_err("an under-determined model must not compile strictly");
+
+    assert_eq!(failure.phase, Some(FailedPhase::ToDae));
+    assert_eq!(failure.phase_name(), "ToDae");
+    assert_eq!(
+        failure.error_code.as_deref(),
+        Some("ED001"),
+        "expected the bare SPEC_0008 code, got {:?}",
+        failure.error_code
+    );
+    let detail = failure
+        .balance_detail
+        .as_ref()
+        .expect("ED001 must carry the balance breakdown");
+    assert!(
+        detail.balance() != 0,
+        "carried detail must reproduce the unbalanced verdict: {detail:?}"
+    );
+    assert_eq!(detail.equations_unknowns().1, detail.unknowns());
+    assert!(failure.summary.contains("unbalanced model"));
+}
+
+/// The direct regression for the ThreeTanks mislabel: a resolve-stage failure
+/// must report `phase: None` (rendered as `Resolve`), never `ToDae`.
+#[test]
+fn strict_dae_recovery_detailed_reports_none_phase_for_resolve_failure() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "Unresolved.mo",
+            r#"
+                model Unresolved
+                  Real x;
+                equation
+                  x = nParallel;
+                end Unresolved;
+                "#,
+        )
+        .unwrap();
+
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Unresolved")
+        .expect_err("an unresolved reference must not compile strictly");
+
+    assert_eq!(
+        failure.phase, None,
+        "resolve failures never reach a model phase, got {:?}",
+        failure.phase
+    );
+    assert_eq!(failure.phase_name(), "Resolve");
+    assert!(
+        failure.balance_detail.is_none(),
+        "a resolve failure carries no balance breakdown"
+    );
+    assert!(
+        !failure.summary.contains("failed in ToDae"),
+        "summary must not claim ToDae: {}",
+        failure.summary
+    );
+}
+
+#[test]
+fn warning_only_resolve_diagnostics_do_not_fail_model_compilation() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "WarningOnly.mo",
+            r#"
+                model WarningOnly
+                  parameter Real q(start=1) annotation(Evaluate=true);
+                  Real x;
+                equation
+                  x = 1;
+                end WarningOnly;
+                "#,
+        )
+        .unwrap();
+
+    session
+        .compile_model("WarningOnly")
+        .expect("warning-only Resolve diagnostics must not fail compilation");
+    let diagnostics = session.compile_model_diagnostics("WarningOnly");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("WR005")
+                && !diagnostic.is_error()),
+        "the warning must remain observable: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.is_error()),
+        "warning-only source must not acquire an error: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn strict_resolve_failure_is_constructed_only_from_error_diagnostics() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "MixedSeverity.mo",
+            r#"
+                model MixedSeverity
+                  parameter Real q(start=1) annotation(Evaluate=true);
+                  Real x;
+                equation
+                  x = missing;
+                end MixedSeverity;
+                "#,
+        )
+        .unwrap();
+
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("MixedSeverity")
+        .expect_err("the unresolved reference must fail Resolve");
+    assert_eq!(failure.phase, None);
+    assert_eq!(failure.error_code.as_deref(), Some("ER002"));
+    assert!(
+        failure
+            .failures
+            .iter()
+            .all(|failure| failure.error_code.as_deref() != Some("WR005")),
+        "advisories cannot construct ModelFailureDiagnostic: {failure:?}"
+    );
+    assert!(
+        failure.summary.contains("unresolved component reference")
+            && !failure.summary.contains("Evaluate=true"),
+        "the fatal summary must be derived from the error: {}",
+        failure.summary
+    );
+
+    let diagnostics = session.compile_model_diagnostics("MixedSeverity");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("WR005")
+                && !diagnostic.is_error()),
+        "the advisory remains independently observable: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER002") && diagnostic.is_error()),
+        "the fatal diagnostic remains independently observable: {diagnostics:?}"
+    );
+}
+
+/// The string API must keep returning exactly the detailed summary so
+/// its six existing callers do not change behavior.
+#[test]
+fn strict_dae_recovery_string_api_matches_detailed_summary() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "Unbalanced2.mo",
+            r#"
+                model Unbalanced2
+                  Real x;
+                  Real y;
+                equation
+                  x = 1;
+                end Unbalanced2;
+                "#,
+        )
+        .unwrap();
+
+    let detailed_summary = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Unbalanced2")
+        .expect_err("model is unbalanced")
+        .summary
+        .clone();
+    let string_summary = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("Unbalanced2")
+        .expect_err("model is unbalanced");
+    assert_eq!(detailed_summary, string_summary);
 }

@@ -764,3 +764,127 @@ fn test_normalize_indentation_handles_operator_classes() {
         "record Complex\n  encapsulated operator '-'\n    function negate\n      input Real x;\n    algorithm\n      x := -x;\n    end negate;\n  end '-';\nend Complex;\n"
     );
 }
+
+#[test]
+fn canonical_format_preserves_block_comment_between_equation_operands() {
+    let source = "model C\n  Real x;\n  Real y;\nequation\n  x = /* gain == 2 */ y;\nend C;\n";
+    let formatted = format(
+        source,
+        &FormatOptions::for_profile(FormatProfile::Canonical),
+    )
+    .expect("format canonical");
+    assert!(
+        formatted.contains("/* gain == 2 */"),
+        "assignment spacing rewrote comment text: {formatted:?}"
+    );
+    assert!(!formatted.contains("gain = = 2"), "{formatted:?}");
+}
+
+#[test]
+fn canonical_format_preserves_block_comment_between_statement_assignment_operands() {
+    let source = "function f\n  output Real y;\nalgorithm\n  y := /* reset:=0 */ 1;\nend f;\n";
+    let formatted = format(
+        source,
+        &FormatOptions::for_profile(FormatProfile::Canonical),
+    )
+    .expect("format canonical");
+    assert!(
+        formatted.contains("/* reset:=0 */"),
+        "statement assignment spacing rewrote comment text: {formatted:?}"
+    );
+}
+
+#[test]
+fn canonical_format_preserves_block_comment_in_argument_assignment_gap() {
+    let source = "model C\n  Real x(start = /* nominal = 5 */ 1);\nend C;\n";
+    let formatted = format(
+        source,
+        &FormatOptions::for_profile(FormatProfile::Canonical),
+    )
+    .expect("format canonical");
+    assert!(
+        formatted.contains("/* nominal = 5 */"),
+        "argument assignment spacing rewrote comment text: {formatted:?}"
+    );
+}
+
+#[test]
+fn gap_contains_comment_start_detects_both_comment_forms() {
+    assert!(gap_contains_comment_start(" = /* c */ "));
+    assert!(gap_contains_comment_start(" =\n// c\n"));
+    assert!(!gap_contains_comment_start(" = "));
+    assert!(!gap_contains_comment_start(") = "));
+    assert!(!gap_contains_comment_start("[3] = "));
+}
+
+#[test]
+fn dymola_format_trims_trailing_whitespace_after_escaped_backslash_string() {
+    let escaped =
+        "model C\n  constant String s = \"a\\\\\";\n  Real y ;   \nequation\n  y = 1;\nend C;\n";
+    let plain =
+        "model C\n  constant String s = \"a\";\n  Real y ;   \nequation\n  y = 1;\nend C;\n";
+    let escaped_out = format(escaped, &FormatOptions::default()).expect("format escaped");
+    let plain_out = format(plain, &FormatOptions::default()).expect("format plain");
+    assert!(
+        plain_out.contains("  Real y ;\n"),
+        "control lost trailing-whitespace trim: {plain_out:?}"
+    );
+    assert!(
+        escaped_out.contains("  Real y ;\n"),
+        "escaped backslash latched in_string and blocked trimming: {escaped_out:?}"
+    );
+}
+
+#[test]
+fn dymola_format_keeps_declaration_section_across_block_comment_keyword() {
+    let with_keyword = "model C\n/*\nequation\n*/\n\nReal x = 1;\nend C;\n";
+    let control = "model C\n/*\nnote\n*/\n\nReal x = 1;\nend C;\n";
+    let with_keyword_out = format(with_keyword, &FormatOptions::default()).expect("format");
+    let control_out = format(control, &FormatOptions::default()).expect("format");
+    assert!(
+        control_out.contains("\n  Real x = 1;\n"),
+        "control lost indent repair: {control_out:?}"
+    );
+    assert!(
+        with_keyword_out.contains("\n  Real x = 1;\n"),
+        "`equation` inside a block comment switched the format section: {with_keyword_out:?}"
+    );
+}
+
+#[test]
+fn dymola_format_does_not_switch_section_on_keyword_prefixed_identifier() {
+    let prefixed = "package P\n  type equationCount = Real;\n  model C\nequationCount a;\nReal x = 1;\n  end C;\nend P;\n";
+    let control =
+        "package P\n  type eqCount = Real;\n  model C\neqCount a;\nReal x = 1;\n  end C;\nend P;\n";
+    let prefixed_out = format(prefixed, &FormatOptions::default()).expect("format");
+    let control_out = format(control, &FormatOptions::default()).expect("format");
+    assert!(
+        control_out.contains("Real x = 1;") && !control_out.contains("\nReal x = 1;"),
+        "control lost indent repair: {control_out:?}"
+    );
+    assert_eq!(
+        prefixed_out.replace("equationCount", "eqCount"),
+        control_out,
+        "identifier `equationCount` switched the format section"
+    );
+}
+
+#[test]
+fn canonical_format_normalizes_indent_of_annotation_prefixed_identifier() {
+    // MLS §2.3.3 reserves `annotation`; `annotationThing` is a plain identifier,
+    // so a declaration of that type must be re-indented like any other.
+    let prefixed = "package P\n  model annotationThing\n    Real v;\n  end annotationThing;\n  model C\n        annotationThing s;\n        Real x;\n  end C;\nend P;\n";
+    let control = "package P\n  model notationThing\n    Real v;\n  end notationThing;\n  model C\n        notationThing s;\n        Real x;\n  end C;\nend P;\n";
+    let options = FormatOptions::for_profile(FormatProfile::Canonical);
+    let prefixed_out = format(prefixed, &options).expect("format prefixed");
+    let control_out = format(control, &options).expect("format control");
+    assert!(
+        control_out.contains("\n    notationThing s;\n    Real x;\n"),
+        "control lost indent normalization: {control_out:?}"
+    );
+    assert_eq!(
+        prefixed_out.replace("annotationThing", "notationThing"),
+        control_out,
+        "identifier `annotationThing` was treated as the `annotation` keyword"
+    );
+}

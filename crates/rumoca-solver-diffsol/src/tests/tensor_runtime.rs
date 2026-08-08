@@ -2,6 +2,17 @@ use rumoca_ir_solve as solve;
 
 use crate::OdeModel;
 
+fn full_pattern(rows: usize, columns: usize) -> solve::StructuralPattern {
+    let provenance =
+        solve::PatternProvenance::derived(solve::PatternDerivation::TensorOperand, fixture_span!())
+            .expect("fixture provenance");
+    let dependencies = (0..rows)
+        .map(|_| (0..columns).collect())
+        .collect::<Vec<_>>();
+    solve::StructuralPattern::from_row_dependencies(rows, columns, &dependencies, provenance)
+        .expect("fixture pattern")
+}
+
 #[test]
 fn ode_model_evaluates_tensor_jacobian_vector_product() {
     let mut model = solve::SolveModel::default();
@@ -27,8 +38,8 @@ fn ode_model_evaluates_tensor_jacobian_vector_product() {
             m: 2,
             k: 2,
             n: 1,
-            lhs_sparsity: solve::SparsityPattern::Dense,
-            rhs_sparsity: solve::SparsityPattern::Dense,
+            lhs_pattern: full_pattern(2, 2),
+            rhs_pattern: full_pattern(2, 1),
             metadata: solve::TensorNodeMetadata::default(),
             span: solve::SolveVariableMeta::empty_with_span(fixture_span!()).source_span,
         }],

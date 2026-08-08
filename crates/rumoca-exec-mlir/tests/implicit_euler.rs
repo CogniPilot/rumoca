@@ -14,9 +14,40 @@ use rumoca_exec_mlir::{
     CompiledMlirResidual, MlirError, compile_derivative_rhs as exec_compile_derivative_rhs,
 };
 use rumoca_ir_solve::{
-    BinaryOp, ComputeBlock, ContinuousSolveSystem, LinearOp, ScalarProgramBlock, SolveProblem,
-    UnaryOp,
+    BinaryOp, ComputeBlock, ContinuousSolveSystem, LinearOp, ScalarProgramBlock, SolveLayout,
+    SolveProblem, SolverNameIndexMaps, UnaryOp, VarLayout,
 };
+
+mod support;
+
+/// Both models here are one-state and parameterless, so the derivative seed
+/// space is exactly one state column and no parameter column.
+fn fixture_layout() -> VarLayout {
+    VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0)
+}
+
+/// The solver unknown vector for the same one-state models. The implicit
+/// Jacobian column space is the solver vector, so the residual fixtures name
+/// their unknown instead of inheriting an empty solver map.
+fn fixture_solve_layout(state: &str) -> SolveLayout {
+    let state = state.to_string();
+    SolveLayout {
+        solver_maps: SolverNameIndexMaps {
+            names: vec![state.clone()],
+            name_to_idx: [(state.clone(), 0)].into_iter().collect(),
+            base_to_indices: [(state, vec![0])].into_iter().collect(),
+        },
+        state_scalar_count: 1,
+        ..SolveLayout::default()
+    }
+}
+
+fn checked_problem(problem: SolveProblem) -> SolveProblem {
+    problem
+        .validate()
+        .expect("fixture problem is valid by construction");
+    problem
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,7 +57,7 @@ fn compile_or_skip(solve: &SolveProblem, name: &str) -> Option<CompiledMlirResid
     match exec_compile_derivative_rhs(solve, &artifacts, name) {
         Ok(c) => Some(c),
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             None
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -36,8 +67,11 @@ fn compile_or_skip(solve: &SolveProblem, name: &str) -> Option<CompiledMlirResid
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR implicit-Euler fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 /// Implicit Euler integrator using MLIR-compiled residual + JVP.
@@ -127,7 +161,9 @@ fn decay_solve() -> SolveProblem {
         },
         LinearOp::StoreOutput { src: 1 },
     ];
-    SolveProblem {
+    checked_problem(SolveProblem {
+        layout: fixture_layout(),
+        solve_layout: fixture_solve_layout("x"),
         continuous: ContinuousSolveSystem {
             derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
                 vec![rhs_row.clone()],
@@ -137,10 +173,11 @@ fn decay_solve() -> SolveProblem {
                 vec![rhs_row],
                 "implicit_euler_decay_implicit.mo",
             )),
+            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
             ..Default::default()
         },
         ..Default::default()
-    }
+    })
 }
 
 /// Model: xdot = x*(1-x)  (logistic growth)
@@ -167,7 +204,9 @@ fn logistic_solve() -> SolveProblem {
         }, // y*(1-y)
         LinearOp::StoreOutput { src: 3 },
     ];
-    SolveProblem {
+    checked_problem(SolveProblem {
+        layout: fixture_layout(),
+        solve_layout: fixture_solve_layout("x"),
         continuous: ContinuousSolveSystem {
             derivative_rhs: ComputeBlock::from_scalar_program_block(spb(
                 vec![rhs_row.clone()],
@@ -177,10 +216,11 @@ fn logistic_solve() -> SolveProblem {
                 vec![rhs_row],
                 "implicit_euler_logistic_implicit.mo",
             )),
+            implicit_row_targets: vec![Some(rumoca_ir_solve::scalar_slot_y(0))],
             ..Default::default()
         },
         ..Default::default()
-    }
+    })
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

@@ -1,53 +1,60 @@
-//! Code generation implementation.
-//!
-//! This module provides a simple template rendering function. The DAE is
-//! serialized and passed directly to minijinja templates, which can then
-//! walk the expression tree and generate code as needed.
-//!
-//! For common cases, templates can use the built-in `render_expr` function
-//! which handles the recursive tree walking with configurable operator syntax.
-//!
-//! SPEC_0021 file-size exception: codegen still owns target registration,
-//! template environment setup, and shared render helpers. split plan: move
-//! target registration and template environment construction into submodules.
+//! Template-driven code generation and shared render helpers.
 
 use crate::errors::{CodegenError, render_err};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use minijinja::{Environment, UndefinedBehavior, Value};
-use rumoca_core::{Expression, ExpressionVisitor, Subscript};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
+use serde::Serialize;
 use std::path::Path;
 
-mod fmi3_projection;
-mod render_c;
-mod render_dae_modelica;
+mod algorithm_code_renderer;
+#[cfg(test)]
+mod checked_dae_diagnostic_tests;
+#[cfg(test)]
+mod checked_dae_tests;
+#[cfg(test)]
+mod codegen_test_support;
+mod dae_backend;
+mod dae_diagnostics;
+mod expr_config;
+#[cfg(test)]
+mod galec_golden_tests;
+#[cfg(test)]
+mod galec_manifest_template_tests;
 mod render_expr;
 mod render_solve;
 mod render_solve_ops;
 mod render_stmt;
+#[cfg(test)]
+mod scalar_plan_template_tests;
+mod scalar_program_plan;
 mod solve_lazy;
+mod solve_renderer;
+#[cfg(test)]
+mod solve_sparse_output_tests;
+#[cfg(test)]
+mod solve_template_context_tests;
+#[cfg(test)]
+mod stencil_codegen_tests;
 mod symbol_alloc;
+#[cfg(test)]
+mod wgsl_ode_tests;
 
-pub use fmi3_projection::fmi3_native_projection_available;
-use fmi3_projection::fmi3_scalar_projection_schedule_function;
+pub(crate) use expr_config::{ExprConfig, IfStyle, get_str_attr};
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
-    render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
-    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
-    render_solve_block_py_function, render_solve_block_rust_function,
-    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
-    render_solve_row_output_wgsl_function, render_solve_row_rust_function,
-    render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
+    render_linsolve_mlir_function, render_matmul_mlir_function,
+    render_solve_row_output_wgsl_function, render_solve_row_wgsl_function,
     render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
-    render_wgsl_native_family_inventory_json_function, solve_block_output_count_function,
+    render_wgsl_native_family_inventory_json_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
     allocate_symbols_function, emitted_symbol, lookup_symbol_value, symbol_function,
-    symbol_ref_priority, target_symbols_function,
+    target_symbols_function,
 };
 
 /// Result type for internal render functions.
@@ -103,33 +110,6 @@ pub(crate) fn join_usize_values(
     Ok(rendered.join(separator))
 }
 
-fn codegen_join_usize_values(
-    values: &[usize],
-    separator: &str,
-    context: &'static str,
-) -> Result<String, CodegenError> {
-    let mut rendered = codegen_vec_with_capacity(values.len(), context)?;
-    for value in values {
-        rendered.push(value.to_string());
-    }
-    Ok(rendered.join(separator))
-}
-
-fn codegen_vec_with_capacity<T>(
-    capacity: usize,
-    context: &'static str,
-) -> Result<Vec<T>, CodegenError> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(capacity)
-        .map_err(|_| CodegenError::SerializationFailed {
-            message: format!("{context} exceeds host memory limits"),
-        })?;
-    Ok(values)
-}
-
-const SOURCE_REF_ENUMERATION_LIMIT: usize = 1_000_000;
-
 /// Supported IR roots for template rendering.
 #[derive(Debug, Clone, Copy)]
 pub enum CodegenInput<'a> {
@@ -140,424 +120,21 @@ pub enum CodegenInput<'a> {
     },
     Flat(&'a flat::Model),
     Ast(&'a ast::ClassTree),
+    AlgorithmCode(&'a rumoca_ir_galec::package::AlgorithmCodePackage),
+}
+
+fn dae_template_json_for_solve_context(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
+    dae_template_json(dae)
 }
 
 pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
-    let mut value = serde_json::to_value(dae).map_err(|e| CodegenError::SerializationFailed {
-        message: format!("DAE: {e}"),
-    })?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| CodegenError::SerializationFailed {
-            message: "DAE did not serialize to a JSON object".to_string(),
-        })?;
-    let enum_type_names = enum_type_names_from_ordinals(dae);
-    let symbol_refs = source_refs_from_dae(dae, &enum_type_names)?;
-    let symbol_aliases = symbol_aliases_from_dae(dae)?;
-    let condition_aliases =
-        condition_aliases_from_dae(dae).map_err(|e| CodegenError::SerializationFailed {
-            message: format!("condition_aliases: {e}"),
-        })?;
-    object.insert(
-        "model_description".to_string(),
-        serde_json::to_value(&dae.metadata.model_description).map_err(|e| {
-            CodegenError::SerializationFailed {
-                message: format!("model_description: {e}"),
-            }
-        })?,
-    );
-    object.insert(
-        "enum_type_names".to_string(),
-        serde_json::to_value(enum_type_names).map_err(|e| CodegenError::SerializationFailed {
-            message: format!("enum_type_names: {e}"),
-        })?,
-    );
-    object.insert(
-        "symbol_refs".to_string(),
-        serde_json::to_value(symbol_refs).map_err(|e| CodegenError::SerializationFailed {
-            message: format!("symbol_refs: {e}"),
-        })?,
-    );
-    object.insert(
-        "symbol_aliases".to_string(),
-        serde_json::to_value(symbol_aliases).map_err(|e| CodegenError::SerializationFailed {
-            message: format!("symbol_aliases: {e}"),
-        })?,
-    );
-    object.insert(
-        "condition_aliases".to_string(),
-        serde_json::Value::Array(condition_aliases),
-    );
-    Ok(value)
-}
-
-fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, serde_json::Error> {
-    dae.conditions
-        .equations
-        .iter()
-        .filter_map(|eq| eq.lhs.as_ref().map(|lhs| (eq, lhs, &eq.rhs)))
-        .map(|(eq, lhs, relation)| {
-            Ok(serde_json::json!({
-                "condition": Expression::VarRef {
-                    name: lhs.clone(),
-                    subscripts: Vec::new(),
-                    span: eq.span,
-                },
-                "relation": relation,
-            }))
-        })
-        .collect()
-}
-
-/// Extract unique enum type names from enum literal ordinals.
-/// E.g., from `Modelica.Blocks.Types.Smoothness.LinearSegments` to
-/// `Modelica.Blocks.Types.Smoothness`.
-fn enum_type_names_from_ordinals(dae: &dae::Dae) -> Vec<String> {
-    let mut seen = IndexSet::new();
-    let mut result = Vec::new();
-    for name in dae.symbols.enum_literal_ordinals.keys() {
-        if let Some((type_name, _literal_name)) = rumoca_core::split_last_top_level(name)
-            && seen.insert(type_name.to_string())
-        {
-            result.push(type_name.to_string());
-        }
-    }
-    result
-}
-
-fn source_refs_from_dae(
-    dae: &dae::Dae,
-    enum_type_names: &[String],
-) -> Result<Vec<String>, CodegenError> {
-    let mut refs = IndexSet::new();
-
-    for vars in [
-        &dae.variables.states,
-        &dae.variables.algebraics,
-        &dae.variables.inputs,
-        &dae.variables.outputs,
-        &dae.variables.parameters,
-        &dae.variables.constants,
-        &dae.variables.discrete_reals,
-        &dae.variables.discrete_valued,
-    ] {
-        for (name, var) in vars {
-            add_source_refs_for_var(name.as_str(), &var.dims, &mut refs)?;
-        }
-    }
-
-    for (func_name, func) in &dae.symbols.functions {
-        refs.insert(func_name.as_str().to_string());
-        add_function_output_projection_refs(func_name.as_str(), func, &mut refs)?;
-    }
-    for func in dae.symbols.functions.values() {
-        for var in func
-            .inputs
-            .iter()
-            .chain(func.outputs.iter())
-            .chain(func.locals.iter())
-        {
-            add_source_refs_for_var(var.name.as_str(), &var.dims, &mut refs)?;
-        }
-    }
-    for name in dae.symbols.enum_literal_ordinals.keys() {
-        refs.insert(name.clone());
-    }
-    for name in enum_type_names {
-        refs.insert(name.clone());
-    }
-
-    let mut sorted_refs = codegen_vec_with_capacity(refs.len(), "source reference count")?;
-    sorted_refs.extend(refs);
-    let mut refs = sorted_refs;
-    refs.sort_by(|a, b| {
-        symbol_ref_priority(a)
-            .cmp(&symbol_ref_priority(b))
-            .then_with(|| a.cmp(b))
-    });
-    Ok(refs)
-}
-
-fn add_function_output_projection_refs(
-    func_name: &str,
-    func: &rumoca_core::Function,
-    refs: &mut IndexSet<String>,
-) -> Result<(), CodegenError> {
-    for output in &func.outputs {
-        let dims = positive_usize_dims_for_source_refs(output.name.as_str(), &output.dims)?;
-        let count = source_ref_scalar_count(output.name.as_str(), &dims)?;
-        for element_idx in 1..=count {
-            let selector = if count == 1 {
-                output.name.as_str().to_string()
-            } else {
-                format!(
-                    "{}[{}]",
-                    output.name.as_str(),
-                    source_subscript_suffix(&dims, element_idx)?
-                )
-            };
-            refs.insert(format!("{func_name}.{selector}"));
-        }
-    }
-    Ok(())
-}
-
-fn add_source_refs_for_var(
-    name: &str,
-    dims: &[i64],
-    refs: &mut IndexSet<String>,
-) -> Result<(), CodegenError> {
-    refs.insert(name.to_string());
-
-    let dims = positive_usize_dims_for_source_refs(name, dims)?;
-    if dims.is_empty() {
-        return Ok(());
-    }
-
-    let total = source_ref_scalar_count(name, &dims)?;
-    for flat_index in 1..=total {
-        refs.insert(format!(
-            "{}[{}]",
-            name,
-            source_subscript_suffix(&dims, flat_index)?
-        ));
-    }
-    Ok(())
-}
-
-fn positive_usize_dims_for_source_refs(
-    name: &str,
-    dims: &[i64],
-) -> Result<Vec<usize>, CodegenError> {
-    let mut converted = codegen_vec_with_capacity(dims.len(), "source reference dimension count")?;
-    for dim in dims.iter().copied().filter(|dim| *dim > 0) {
-        converted.push(
-            usize::try_from(dim).map_err(|_| CodegenError::SerializationFailed {
-                message: format!(
-                    "source ref dimension {dim} for `{name}` exceeds host index range"
-                ),
-            })?,
-        );
-    }
-    Ok(converted)
-}
-
-fn source_ref_scalar_count(name: &str, dims: &[usize]) -> Result<usize, CodegenError> {
-    if dims.is_empty() {
-        return Ok(1);
-    }
-    let count = dims.iter().try_fold(1usize, |acc, dim| {
-        acc.checked_mul(*dim)
-            .ok_or_else(|| CodegenError::SerializationFailed {
-                message: format!("source ref scalar count for `{name}` overflows host index range"),
-            })
-    })?;
-    if count > SOURCE_REF_ENUMERATION_LIMIT {
-        return Err(CodegenError::SerializationFailed {
-            message: format!(
-                "source ref scalar count for `{name}` ({count}) exceeds enumeration limit {SOURCE_REF_ENUMERATION_LIMIT}"
-            ),
-        });
-    }
-    Ok(count)
-}
-
-fn symbol_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, CodegenError> {
-    let mut declared_refs = IndexSet::new();
-    for vars in [
-        &dae.variables.states,
-        &dae.variables.algebraics,
-        &dae.variables.inputs,
-        &dae.variables.outputs,
-        &dae.variables.parameters,
-        &dae.variables.constants,
-        &dae.variables.discrete_reals,
-        &dae.variables.discrete_valued,
-    ] {
-        for (name, var) in vars {
-            add_source_refs_for_var(name.as_str(), &var.dims, &mut declared_refs)?;
-        }
-    }
-
-    let mut aliases = IndexMap::<String, String>::new();
-    for vars in [
-        &dae.variables.states,
-        &dae.variables.algebraics,
-        &dae.variables.inputs,
-        &dae.variables.outputs,
-        &dae.variables.parameters,
-        &dae.variables.constants,
-        &dae.variables.discrete_reals,
-        &dae.variables.discrete_valued,
-    ] {
-        for (name, var) in vars {
-            add_symbol_aliases_for_variable_exprs(
-                name.as_str(),
-                var,
-                &declared_refs,
-                &mut aliases,
-            )?;
-        }
-    }
-
-    Ok(aliases
-        .into_iter()
-        .map(|(alias, target)| {
-            serde_json::json!({
-                "alias": alias,
-                "target": target,
-            })
-        })
-        .collect())
-}
-
-fn add_symbol_aliases_for_variable_exprs(
-    owner_name: &str,
-    var: &dae::Variable,
-    declared_refs: &IndexSet<String>,
-    aliases: &mut IndexMap<String, String>,
-) -> Result<(), CodegenError> {
-    for expr in [
-        var.start.as_ref(),
-        var.min.as_ref(),
-        var.max.as_ref(),
-        var.nominal.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        add_symbol_aliases_for_expr(owner_name, expr, declared_refs, aliases)?;
-    }
-    Ok(())
-}
-
-fn add_symbol_aliases_for_expr(
-    owner_name: &str,
-    expr: &Expression,
-    declared_refs: &IndexSet<String>,
-    aliases: &mut IndexMap<String, String>,
-) -> Result<(), CodegenError> {
-    let mut collector = dae::VarRefWithSubscriptsCollector::new();
-    collector.visit_expression(expr);
-    for (name, subscripts) in collector.into_refs() {
-        let Some(target_base) =
-            resolve_attribute_expr_alias_target(owner_name, name.as_str(), declared_refs)
-        else {
-            continue;
-        };
-        insert_symbol_alias(aliases, name.as_str().to_string(), target_base.clone())?;
-        let Some(indices) = literal_positive_indices(&subscripts) else {
-            continue;
-        };
-        let alias = dae::format_subscript_key(name.as_str(), &indices);
-        let target = dae::format_subscript_key(&target_base, &indices);
-        if declared_refs.contains(&target) {
-            insert_symbol_alias(aliases, alias, target)?;
-        }
-    }
-    Ok(())
-}
-
-fn resolve_attribute_expr_alias_target(
-    owner_name: &str,
-    reference: &str,
-    declared_refs: &IndexSet<String>,
-) -> Option<String> {
-    if declared_refs.contains(reference) || rumoca_core::split_last_top_level(reference).is_some() {
-        return None;
-    }
-    let (owner_scope, _) = rumoca_core::split_last_top_level(owner_name)?;
-    let candidate = format!("{owner_scope}.{reference}");
-    declared_refs.contains(&candidate).then_some(candidate)
-}
-
-fn insert_symbol_alias(
-    aliases: &mut IndexMap<String, String>,
-    alias: String,
-    target: String,
-) -> Result<(), CodegenError> {
-    if alias == target {
-        return Ok(());
-    }
-    if let Some(existing) = aliases.get(&alias) {
-        if existing == &target {
-            return Ok(());
-        }
-        return Err(CodegenError::SerializationFailed {
-            message: format!(
-                "conflicting emitted symbol aliases for `{alias}`: `{existing}` and `{target}`"
-            ),
-        });
-    }
-    aliases.insert(alias, target);
-    Ok(())
-}
-
-fn literal_positive_indices(subscripts: &[Subscript]) -> Option<Vec<usize>> {
-    if subscripts.is_empty() {
-        return None;
-    }
-    subscripts
-        .iter()
-        .map(|subscript| match subscript {
-            Subscript::Index { value, .. } => {
-                usize::try_from(*value).ok().filter(|value| *value > 0)
-            }
-            Subscript::Expr { .. } | Subscript::Colon { .. } => None,
-        })
-        .collect()
+    dae_backend::project(dae).map_err(|error| {
+        CodegenError::dae_preparation_failed(error.to_string(), Some(error.span()))
+    })
 }
 
 fn dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
     Ok(Value::from_serialize(dae_template_json(dae)?))
-}
-
-fn reject_external_functions_for_simulation_template(
-    dae_model: &dae::Dae,
-    template: &str,
-) -> Result<(), CodegenError> {
-    if !template_emits_simulation_function_bodies(template) {
-        return Ok(());
-    }
-    if let Some((name, _)) = dae_model
-        .symbols
-        .functions
-        .iter()
-        .find(|(_, function)| function.external.is_some())
-    {
-        return Err(CodegenError::external_function_not_callable(name.as_str()));
-    }
-    Ok(())
-}
-
-fn reject_external_functions_in_json_for_simulation_template(
-    dae_json: &serde_json::Value,
-    template: &str,
-) -> Result<(), CodegenError> {
-    if !template_emits_simulation_function_bodies(template) {
-        return Ok(());
-    }
-    let Some(functions) = dae_json
-        .get("functions")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return Ok(());
-    };
-    if let Some((name, _)) = functions.iter().find(|(_, function)| {
-        function
-            .get("external")
-            .is_some_and(|external| !external.is_null())
-    }) {
-        return Err(CodegenError::external_function_not_callable(name.as_str()));
-    }
-    Ok(())
-}
-
-fn template_emits_simulation_function_bodies(template: &str) -> bool {
-    template.contains("func.external")
-        && (template.contains("FMI 2.0 API")
-            || template.contains("FMI 3.0 API")
-            || template.contains("step("))
 }
 
 fn render_with_input_context(
@@ -572,6 +149,20 @@ fn render_with_input_context(
         }
         (CodegenInput::Flat(flat_model), name) => render_flat_context(tmpl, flat_model, name)?,
         (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
+        (CodegenInput::AlgorithmCode(package), name) => {
+            let view = crate::views::algorithm_code::AlgorithmCodeView::new(package);
+            match name {
+                Some(model_name) => tmpl.render(minijinja::context! {
+                    algorithm_code => minijinja::Value::from_serialize(view),
+                    ir_kind => "algorithm_code",
+                    model_name,
+                })?,
+                None => tmpl.render(minijinja::context! {
+                    algorithm_code => minijinja::Value::from_serialize(view),
+                    ir_kind => "algorithm_code",
+                })?,
+            }
+        }
     };
     Ok(rendered)
 }
@@ -582,22 +173,20 @@ fn render_dae_context(
     model_name: Option<&str>,
 ) -> Result<String, CodegenError> {
     let dae_value = dae_template_value(dae_model)?;
-    let solve_value = optional_object_field(&dae_value, "solve");
-    match model_name {
-        Some(name) => Ok(tmpl.render(minijinja::context! {
+    let rendered = match model_name {
+        Some(name) => tmpl.render(minijinja::context! {
             dae => dae_value.clone(),
-            solve => solve_value,
             ir => dae_value,
             ir_kind => "dae",
             model_name => name,
-        })?),
-        None => Ok(tmpl.render(minijinja::context! {
+        }),
+        None => tmpl.render(minijinja::context! {
             dae => dae_value.clone(),
-            solve => solve_value,
             ir => dae_value,
             ir_kind => "dae",
-        })?),
-    }
+        }),
+    };
+    rendered.map_err(|error| dae_diagnostics::render_error(dae_model, error))
 }
 
 fn render_solve_context(
@@ -633,26 +222,16 @@ fn solve_template_blocks_value(
 
 #[derive(Debug)]
 struct LazyScalarProgramsValue {
-    block: std::sync::Arc<solve::ComputeBlock>,
-    scalar: std::sync::OnceLock<Option<std::sync::Arc<solve::ScalarProgramBlock>>>,
+    scalar: std::sync::Arc<solve::ScalarProgramBlock>,
 }
 
 impl LazyScalarProgramsValue {
-    fn new(block: solve::ComputeBlock) -> Self {
-        Self {
-            block: std::sync::Arc::new(block),
-            scalar: std::sync::OnceLock::new(),
-        }
+    fn new(scalar: std::sync::Arc<solve::ScalarProgramBlock>) -> Self {
+        Self { scalar }
     }
 
-    fn scalar(&self) -> Option<&std::sync::Arc<solve::ScalarProgramBlock>> {
-        self.scalar
-            .get_or_init(|| {
-                rumoca_eval_solve::to_scalar_program_block(&self.block)
-                    .ok()
-                    .map(std::sync::Arc::new)
-            })
-            .as_ref()
+    fn scalar(&self) -> &std::sync::Arc<solve::ScalarProgramBlock> {
+        &self.scalar
     }
 }
 
@@ -662,13 +241,13 @@ impl minijinja::value::Object for LazyScalarProgramsValue {
     }
 
     fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
-        let scalar = self.scalar()?;
+        let scalar = self.scalar();
         match key.as_str()? {
-            "programs" => Some(Value::from_object(render_solve::SolveRowsValue::from_arc(
-                std::sync::Arc::new(scalar.programs.clone()),
-            ))),
-            "program_spans" => Some(Value::from_serialize(&scalar.program_spans)),
-            "output_indices" => Some(Value::from_serialize(&scalar.output_indices)),
+            "programs" => Some(Value::from_object(solve_lazy::SolveProgramsObject {
+                block: scalar.clone(),
+            })),
+            "program_spans" => Some(Value::from_serialize(scalar.program_spans())),
+            "output_indices" => Some(Value::from_serialize(scalar.output_indices())),
             _ => None,
         }
     }
@@ -704,7 +283,7 @@ impl LazyScalarRowsValue {
             .get_or_init(|| {
                 rumoca_eval_solve::to_scalar_program_block(&self.block)
                     .ok()
-                    .map(|scalar| std::sync::Arc::new(scalar.programs))
+                    .map(|scalar| std::sync::Arc::new(scalar.programs().to_vec()))
             })
             .as_ref()
     }
@@ -777,17 +356,29 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     // nodes contain large op programs don't materialize as eager Values.
     let nodes = solve_lazy::nodes_value(std::sync::Arc::new(block.clone()))?;
     let output_count = block.len()?;
-    let scalar_programs = Value::from_object(LazyScalarProgramsValue::new(block.clone()));
+    let scalar = std::sync::Arc::new(rumoca_eval_solve::to_scalar_program_block(block)?);
+    let scalar_plan =
+        Value::from_object(scalar_program_plan::ScalarProgramPlan::new(scalar.clone())?);
+    let scalar_programs = Value::from_object(LazyScalarProgramsValue::new(scalar));
+    let fallback_programs = Value::from_object(render_solve::SolveRowsValue::new(
+        partition.fallback_programs,
+    ));
     let scalar_fallback_rows = Value::from_object(render_solve::SolveScalarFallbackRowsValue::new(
         partition.scalar_fallback_rows,
     ));
     let native_families = Value::from_object(render_solve::SolveNativeFamiliesValue::new(
         partition.families,
     ));
+    let native_dense_nodes = Value::from_object(render_solve::SolveNativeDenseNodesValue::new(
+        partition.native_dense_nodes,
+    )?);
     Ok(minijinja::context! {
         nodes => nodes,
+        scalar_plan => scalar_plan,
         scalar_programs => scalar_programs,
+        fallback_programs => fallback_programs,
         native_families => native_families,
+        native_dense_nodes => native_dense_nodes,
         scalar_fallback_rows => scalar_fallback_rows,
         output_count => output_count,
         tensor_node_count => block.tensor_node_count(),
@@ -799,7 +390,7 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
 
 fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgramBlock) -> bool {
     block
-        .programs
+        .programs()
         .iter()
         .flatten()
         .any(|op| matches!(op, solve::LinearOp::LinearSolveComponent { .. }))
@@ -864,9 +455,6 @@ pub fn render_template_for_input(
     input: CodegenInput<'_>,
     template: &str,
 ) -> Result<String, CodegenError> {
-    if let CodegenInput::Dae(dae_model) = input {
-        reject_external_functions_for_simulation_template(dae_model, template)?;
-    }
     let mut env = create_environment();
     env.add_template("inline", template)?;
     let tmpl = env.get_template("inline")?;
@@ -879,26 +467,60 @@ pub fn render_template_with_name_for_input(
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    if let CodegenInput::Dae(dae_model) = input {
-        reject_external_functions_for_simulation_template(dae_model, template)?;
-    }
     let mut env = create_environment();
     env.add_template("inline", template)?;
     let tmpl = env.get_template("inline")?;
     render_with_input_context(&tmpl, input, Some(model_name))
 }
 
+/// Render a checked Algorithm Code package with immutable, caller-owned
+/// artifact facts.
+///
+/// `artifact` is deliberately generic: the artifact layer may expose
+/// identities, timestamps, and checksum edges, while this phase remains
+/// stateless and unaware of any concrete package format.
+pub fn render_algorithm_code_template_with_artifact<T: Serialize>(
+    package: &rumoca_ir_galec::package::AlgorithmCodePackage,
+    artifact: &T,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    AlgorithmCodeTemplateRenderer::new(package)?
+        .render_with_name_and_artifact(template, model_name, artifact)
+}
+
+/// Render a validated standalone Algorithm Code block.
+///
+/// This is the `.alg` editor boundary: it deliberately exposes no manifest
+/// or artifact metadata that cannot be derived from the parsed block.
+pub fn render_checked_algorithm_block_template_with_artifact<T: Serialize>(
+    block: &rumoca_ir_galec::package::CheckedAlgorithmBlock,
+    artifact: &T,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    let view = crate::views::algorithm_code::CheckedAlgorithmBlockView::new(block)
+        .map_err(CodegenError::template)?;
+    Ok(tmpl.render(minijinja::context! {
+        algorithm_code => Value::from_serialize(view),
+        artifact => Value::from_serialize(artifact),
+        ir_kind => "algorithm_code",
+        model_name,
+    })?)
+}
+
 /// Render a DAE using a template string.
 ///
-/// The template receives the full DAE structure as `dae` and can access
-/// any field using standard Jinja2 syntax.
+/// The template receives the checked DAE semantic projection as `dae`.
 ///
 /// # Example Template
 ///
 /// ```jinja
-/// # States: {{ dae.x | length }}
-/// {% for name, var in dae.x %}
-/// {{ name | sanitize }} = Symbol('{{ name }}')
+/// {% for variable in dae.variables %}
+/// {{ variable.role }} {{ variable.name | sanitize }}
 /// {% endfor %}
 /// ```
 ///
@@ -912,199 +534,6 @@ pub fn render_template_with_name_for_input(
 /// - Standard minijinja filters (length, upper, lower, etc.)
 pub fn render_template(dae: &dae::Dae, template: &str) -> Result<String, CodegenError> {
     render_template_for_input(CodegenInput::Dae(dae), template)
-}
-
-/// Render a template using a pre-built `dae` JSON context object.
-///
-/// This is useful when callers need to augment the canonical DAE context with
-/// additional template-only metadata.
-pub fn render_template_with_dae_json(
-    dae_json: &serde_json::Value,
-    template: &str,
-) -> Result<String, CodegenError> {
-    reject_external_functions_in_json_for_simulation_template(dae_json, template)?;
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-
-    let dae_value = Value::from_serialize(dae_json);
-    let tmpl = env.get_template("inline")?;
-    let solve_value = optional_object_field(&dae_value, "solve");
-    let ir_kind = template_ir_kind_from_dae_json(dae_json);
-    let ir_value = if ir_kind == "solve" {
-        solve_value.clone()
-    } else {
-        dae_value.clone()
-    };
-    let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
-    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
-    let result = tmpl.render(minijinja::context! {
-        dae => dae_value.clone(),
-        solve => solve_value,
-        ir => ir_value,
-        ir_kind => ir_kind,
-        solve_blocks => solve_blocks,
-        solve_derivative_nodes => solve_derivative_nodes,
-        solve_implicit_rows => Value::from_serialize(&solve_implicit_rows),
-        solve_jacobian_rows => solve_jacobian_rows,
-        solve_full_jacobian_rows => solve_full_jacobian_rows,
-    })?;
-
-    Ok(result)
-}
-
-pub fn render_template_with_dae_json_and_name(
-    dae_json: &serde_json::Value,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
-    reject_external_functions_in_json_for_simulation_template(dae_json, template)?;
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-
-    let dae_value = Value::from_serialize(dae_json);
-    let solve_value = optional_object_field(&dae_value, "solve");
-    let ir_kind = template_ir_kind_from_dae_json(dae_json);
-    let ir_value = if ir_kind == "solve" {
-        solve_value.clone()
-    } else {
-        dae_value.clone()
-    };
-    let solve_blocks = solve_blocks_from_dae_json(dae_json)?;
-    let solve_derivative_nodes = solve_derivative_nodes_from_dae_json(dae_json)?;
-    let solve_implicit_rows = solve_implicit_rows_from_dae_json(dae_json);
-    let solve_jacobian_rows = solve_jacobian_rows_from_dae_json(dae_json, &solve_implicit_rows);
-    let solve_full_jacobian_rows = solve_full_jacobian_rows_from_dae_json(dae_json);
-    let tmpl = env.get_template("inline")?;
-    let result = tmpl.render(minijinja::context! {
-        dae => dae_value.clone(),
-        solve => solve_value,
-        ir => ir_value,
-        ir_kind => ir_kind,
-        model_name => model_name,
-        solve_blocks => solve_blocks,
-        solve_derivative_nodes => solve_derivative_nodes,
-        solve_implicit_rows => Value::from_serialize(&solve_implicit_rows),
-        solve_jacobian_rows => solve_jacobian_rows,
-        solve_full_jacobian_rows => solve_full_jacobian_rows,
-    })?;
-
-    Ok(result)
-}
-
-fn optional_object_field(value: &Value, name: &str) -> Value {
-    get_field(value, name).unwrap_or_else(|_| Value::from_serialize(serde_json::Map::new()))
-}
-
-fn template_ir_kind_from_dae_json(dae_json: &serde_json::Value) -> &'static str {
-    if dae_json
-        .get("__ir_kind")
-        .and_then(serde_json::Value::as_str)
-        == Some("solve")
-    {
-        "solve"
-    } else {
-        "dae"
-    }
-}
-
-fn solve_blocks_from_dae_json(dae_json: &serde_json::Value) -> Result<Value, CodegenError> {
-    if template_ir_kind_from_dae_json(dae_json) != "solve" {
-        return Ok(Value::from_serialize(serde_json::json!({})));
-    }
-    let Some(solve_json) = dae_json.get("solve") else {
-        return Ok(Value::from_serialize(serde_json::json!({})));
-    };
-    let mut problem_json = solve_json.clone();
-    if let Some(object) = problem_json.as_object_mut() {
-        object.remove("artifacts");
-    }
-    let problem: solve::SolveProblem =
-        serde_json::from_value(problem_json).map_err(|err| CodegenError::SerializationFailed {
-            message: format!("SolveProblem template context: {err}"),
-        })?;
-    let artifacts = solve_artifacts_for_template_blocks(solve_json)?;
-    solve_template_blocks_value(&problem, &artifacts)
-}
-
-fn solve_artifacts_for_template_blocks(
-    solve_json: &serde_json::Value,
-) -> Result<solve::SolveArtifacts, CodegenError> {
-    let mut artifacts = solve::SolveArtifacts::default();
-    let Some(implicit_jacobian_v) = solve_json.pointer("/artifacts/continuous/implicit_jacobian_v")
-    else {
-        return Ok(artifacts);
-    };
-    artifacts.continuous.implicit_jacobian_v = serde_json::from_value(implicit_jacobian_v.clone())
-        .map_err(|err| CodegenError::SerializationFailed {
-            message: format!("SolveArtifacts implicit_jacobian_v template context: {err}"),
-        })?;
-    Ok(artifacts)
-}
-
-fn solve_derivative_nodes_from_dae_json(
-    dae_json: &serde_json::Value,
-) -> Result<Value, CodegenError> {
-    let Some(nodes) = dae_json.pointer("/solve/continuous/derivative_rhs/nodes") else {
-        return Ok(Value::from_serialize(Vec::<serde_json::Value>::new()));
-    };
-    let block_json = serde_json::json!({ "nodes": nodes });
-    let block: solve::ComputeBlock =
-        serde_json::from_value(block_json).map_err(|err| CodegenError::SerializationFailed {
-            message: format!("Solve derivative nodes template context: {err}"),
-        })?;
-    Ok(Value::from_serialize(
-        solve_renderer::c_renderable_derivative_nodes(&block)?,
-    ))
-}
-
-fn solve_implicit_rows_from_dae_json(dae_json: &serde_json::Value) -> serde_json::Value {
-    dae_json
-        .pointer("/solve/continuous/implicit_rhs/nodes")
-        .map(scalar_programs_from_compute_nodes)
-        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()))
-}
-
-fn solve_jacobian_rows_from_dae_json(
-    dae_json: &serde_json::Value,
-    implicit_rows: &serde_json::Value,
-) -> Value {
-    if implicit_rows.as_array().is_none_or(Vec::is_empty) {
-        return Value::from_serialize(Vec::<serde_json::Value>::new());
-    }
-    let rows = dae_json
-        .pointer("/solve/artifacts/continuous/implicit_jacobian_v_scalar/programs")
-        .cloned()
-        .or_else(|| {
-            dae_json
-                .pointer("/solve/artifacts/continuous/implicit_jacobian_v/nodes")
-                .map(scalar_programs_from_compute_nodes)
-        })
-        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    Value::from_serialize(&rows)
-}
-
-fn solve_full_jacobian_rows_from_dae_json(dae_json: &serde_json::Value) -> Value {
-    Value::from_serialize(
-        dae_json
-            .pointer("/solve/artifacts/continuous/full_jacobian_v/programs")
-            .unwrap_or(&serde_json::Value::Array(Vec::new())),
-    )
-}
-
-fn scalar_programs_from_compute_nodes(nodes: &serde_json::Value) -> serde_json::Value {
-    let rows = nodes
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|node| node.get("ScalarPrograms"))
-        .filter_map(|node| node.get("programs"))
-        .filter_map(serde_json::Value::as_array)
-        .flat_map(|rows| rows.iter().cloned())
-        .collect();
-    serde_json::Value::Array(rows)
 }
 
 /// Render a DAE using a template string, with an additional model name in context.
@@ -1135,7 +564,6 @@ pub fn render_template_file(
     let path_ref = path.as_ref();
     let template = std::fs::read_to_string(path_ref)
         .map_err(|e| CodegenError::template(format!("Failed to read template: {e}")))?;
-    reject_external_functions_for_simulation_template(dae, &template)?;
 
     let mut env = create_environment();
     env.add_template("file", &template)?;
@@ -1200,8 +628,34 @@ pub fn render_ast_template_with_name(
 /// Create a minijinja environment with all custom filters and functions.
 fn create_environment() -> Environment<'static> {
     let mut env = Environment::new();
+    // Artifact bytes are target-owned. Preserve an explicit final newline so
+    // strict text and compiler formats can state their EOF policy in templates.
+    env.set_keep_trailing_newline(true);
+    // Preserve template source on ordinary render failures in release builds.
+    // MiniJinja clones this debug context only when constructing an error.
+    env.set_debug(true);
     // Fail fast on missing fields/variables in templates.
     env.set_undefined_behavior(UndefinedBehavior::Strict);
+    env.add_template(
+        "algorithm-code-source.jinja",
+        include_str!("../templates/galec/model.alg.jinja"),
+    )
+    .expect("built-in Algorithm Code source template must parse");
+    env.add_template(
+        "algorithm-code-manifest.jinja",
+        include_str!("../templates/galec/manifest.xml.jinja"),
+    )
+    .expect("built-in Algorithm Code manifest template must parse");
+    env.add_template(
+        "galec-model.c.jinja",
+        include_str!("../templates/embedded-c-galec/model.c.jinja"),
+    )
+    .expect("built-in GALEC-derived C source template must parse");
+    env.add_template(
+        "galec-model.h.jinja",
+        include_str!("../templates/embedded-c-galec/model.h.jinja"),
+    )
+    .expect("built-in GALEC-derived C header template must parse");
 
     // Custom filters
     env.add_filter("sanitize", sanitize_filter);
@@ -1223,17 +677,6 @@ fn create_environment() -> Environment<'static> {
     // Custom functions for expression rendering
     env.add_function("render_expr", render_expr_function);
     env.add_function("render_event_indicator", render_event_indicator_function);
-    env.add_function("render_solve_row_c", render_solve_row_c_function);
-    env.add_function(
-        "fmi3_scalar_projection_schedule",
-        fmi3_scalar_projection_schedule_function,
-    );
-    render_solve::register_target_assignment_functions(&mut env);
-    env.add_function("render_solve_row_rust", render_solve_row_rust_function);
-    env.add_function("render_solve_block_c", render_solve_block_c_function);
-    env.add_function("render_solve_block_rust", render_solve_block_rust_function);
-    env.add_function("render_solve_block_py", render_solve_block_py_function);
-    env.add_function("store_output_count", solve_block_output_count_function);
     env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
     env.add_function(
         "render_solve_row_output_wgsl",
@@ -1242,6 +685,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function(
         "render_solve_native_family_wgsl",
         render_solve::render_solve_native_family_wgsl_function,
+    );
+    env.add_function(
+        "render_solve_native_family_mlir",
+        render_solve::render_solve_native_family_mlir_function,
     );
     env.add_function(
         "render_solve_native_family_output_index_wgsl",
@@ -1263,26 +710,9 @@ fn create_environment() -> Environment<'static> {
         "wgsl_native_family_inventory_json",
         render_wgsl_native_family_inventory_json_function,
     );
-    env.add_function(
-        "render_solve_slot_assign_c",
-        render_solve_slot_assign_c_function,
-    );
-    env.add_function(
-        "render_optional_solve_slot_assign_c",
-        render_optional_solve_slot_assign_c_function,
-    );
-    env.add_function(
-        "render_solve_pre_param_binding_c",
-        render_solve_pre_param_binding_c_function,
-    );
-    env.add_function("render_matmul_c", render_matmul_c_function);
     env.add_function("render_matmul_mlir", render_matmul_mlir_function);
     env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
     env.add_function("render_equation", render_equation_function);
-    env.add_function(
-        "render_dae_equations",
-        render_dae_modelica::render_dae_equations_function,
-    );
 
     // Custom functions for statement rendering (MLS §12: function bodies)
     env.add_function("render_statement", render_statement_function);
@@ -1294,34 +724,7 @@ fn create_environment() -> Environment<'static> {
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
     env.add_function("fail", fail_function);
-
-    // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
-    env.add_function("ode_rhs", render_c::ode_rhs_function);
-    // Find derivative expression for a specific state variable
-    env.add_function("ode_rhs_for_state", render_c::ode_rhs_for_state_function);
-
-    // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
-    env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
-    env.add_function(
-        "alg_rhs_for_var_or_self",
-        render_c::alg_rhs_for_var_or_self_function,
-    );
-    env.add_function(
-        "discrete_rhs_for_var",
-        render_c::discrete_rhs_for_var_function,
-    );
-
-    // Index into an array expression to render element i (1-based)
-    env.add_function(
-        "render_expr_at_index",
-        render_c::render_expr_at_index_function,
-    );
-
-    // Check if an expression is a string literal for scalar templates.
-    env.add_function("is_string_literal", render_c::is_string_literal_function);
-
-    // Check if a function has record-typed parameters
-    env.add_function("has_complex_params", render_c::has_complex_params_function);
+    dae_diagnostics::register(&mut env);
 
     env
 }
@@ -1403,21 +806,39 @@ fn xml_escape_filter(value: String) -> String {
     xml_escape_str(&value)
 }
 
-/// Render a finite `f64` as a valid `xs:double` lexical form (explicit
-/// decimal point, never exponent notation): `2` -> `2.0`, `1e300` stays a
-/// plain decimal. Mirrors `rumoca_galec_codegen::xs_double` (a tier below cannot be
-/// imported here, so the guarantee is duplicated deliberately — contract §6);
-/// used by the eFMI templates for raw `BaseUnit` factor/offset.
-pub(crate) fn xs_double_str(value: f64) -> String {
-    let rendered = format!("{value}");
-    if rendered.contains('.') {
-        rendered
-    } else {
-        format!("{rendered}.0")
+/// Render a finite `f64` as a portable real literal with explicit decimal
+/// places and a signed lowercase exponent when scientific notation is needed.
+///
+/// The result is valid both as `xs:double` and as a GALEC Real token. Keeping
+/// this as a documented template filter avoids target-language rendering in
+/// semantic IR or lowering crates.
+pub(crate) fn xs_double_str(value: f64) -> Result<String, minijinja::Error> {
+    if !value.is_finite() {
+        return Err(render_err("non-finite value has no portable real literal"));
     }
+    let plain = format!("{value}");
+    if !plain.contains('e') && plain.len() <= 21 {
+        return Ok(ensure_real_decimal(plain));
+    }
+    let scientific = format!("{value:e}");
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("LowerExp for f64 contains an exponent");
+    let sign = if exponent.starts_with('-') { "" } else { "+" };
+    Ok(format!(
+        "{}e{sign}{exponent}",
+        ensure_real_decimal(mantissa.to_owned())
+    ))
 }
 
-fn xs_double_filter(value: f64) -> String {
+fn ensure_real_decimal(mut text: String) -> String {
+    if !text.contains('.') {
+        text.push_str(".0");
+    }
+    text
+}
+
+fn xs_double_filter(value: f64) -> Result<String, minijinja::Error> {
     xs_double_str(value)
 }
 
@@ -1504,34 +925,6 @@ fn value_symbol_aliases(value: &Value) -> Result<Vec<(String, String)>, minijinj
     Ok(out)
 }
 
-fn subscripts_for_flat_index(
-    dims: &[usize],
-    flat_index: usize,
-) -> Result<Vec<usize>, CodegenError> {
-    if dims.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut remaining = flat_index.saturating_sub(1);
-    let mut subscripts = codegen_vec_with_capacity(dims.len(), "source reference subscript count")?;
-    subscripts.resize(dims.len(), 1);
-    for dim_idx in (0..dims.len()).rev() {
-        let dim = dims[dim_idx].max(1);
-        subscripts[dim_idx] = (remaining % dim) + 1;
-        remaining /= dim;
-    }
-    Ok(subscripts)
-}
-
-fn source_subscript_suffix(dims: &[usize], flat_index: usize) -> Result<String, CodegenError> {
-    let subscripts = subscripts_for_flat_index(dims, flat_index)?;
-    if subscripts.is_empty() {
-        Ok(flat_index.max(1).to_string())
-    } else {
-        codegen_join_usize_values(&subscripts, ",", "source reference subscript text count")
-    }
-}
-
 fn checked_subscripts_for_flat_index(
     dims: &[usize],
     flat_index: usize,
@@ -1598,11 +991,7 @@ fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> RenderRes
 /// Templates use this to declare target-specific capability constraints
 /// without pushing those policies into Rust-side backend branching.
 fn fail_function(message: Value) -> RenderResult {
-    let msg = message
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| message.to_string());
-    Err(render_err(msg))
+    Err(render_err(dae_diagnostics::template_message(message)))
 }
 
 /// Detect whether a function is a trivial self-call (builtin alias).
@@ -1642,10 +1031,9 @@ fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinj
     if let Ok(func_call) = get_field(&value, "FunctionCall")
         && let Ok(name) = get_field(&func_call, "name")
     {
-        let call_name = get_field(&name, "0")
-            .map(|v| v.to_string().replace('"', ""))
-            .unwrap_or_else(|_| name.to_string().replace('"', ""));
-        return Ok(call_name == name_str);
+        // A serialized reference is one record whose `name` is its spelling;
+        // reading it any other way recovers the record's debug text instead.
+        return Ok(render_expr::render_serialized_name(&name) == name_str);
     }
     Ok(false)
 }
@@ -1774,220 +1162,6 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     render_statements(&stmts, &cfg, indent_str)
 }
 
-// ── ExprConfig and helpers ───────────────────────────────────────────
-
-/// Configuration for expression rendering.
-#[derive(Clone)]
-pub(crate) struct ExprConfig {
-    pub(crate) prefix: String,
-    pub(crate) power: String,
-    pub(crate) and_op: String,
-    pub(crate) or_op: String,
-    pub(crate) not_op: String,
-    pub(crate) true_val: String,
-    pub(crate) false_val: String,
-    pub(crate) array_start: String,
-    pub(crate) array_end: String,
-    pub(crate) if_style: IfStyle,
-    /// When false, keep dots in variable/function names instead of replacing with underscores.
-    pub(crate) sanitize_dots: bool,
-    /// When true, use 1-based indexing (Modelica) instead of 0-based (Python).
-    pub(crate) one_based_index: bool,
-    /// When true, use Modelica builtin names (abs, min, max) instead of Python (fabs, fmin, fmax).
-    pub(crate) modelica_builtins: bool,
-    /// Optional function for element-wise multiply (e.g., `ca.times` for CasADi).
-    pub(crate) mul_elem_fn: Option<String>,
-    /// Optional function-call form for power (e.g., `ca.power` for CasADi).
-    /// When set, `a^b` renders as `power_fn(a, b)` instead of `a ** b`.
-    pub(crate) power_fn: Option<String>,
-    /// Subscript rendering style: "bracket" (default: `x[0]`) or "underscore" (`x_1`, 1-based).
-    /// The "underscore" style matches the C template's unpack_vars naming convention.
-    pub(crate) subscript_underscore: bool,
-    /// Override function name for `IfStyle::Function` (default: `"if_else"`).
-    /// E.g., set to `"IfElse.ifelse"` for Julia ModelingToolkit.
-    pub(crate) if_else_fn: Option<String>,
-    /// When true, render Modelica range `start:end` as Python `range(start, end + 1)`
-    /// and array comprehensions with `[...]` instead of `{...}`.
-    pub(crate) python_range: bool,
-    /// Override function name for `sum()` calls on non-literal arrays.
-    /// Default is `"sum1"` (CasADi convention, rendered as `prefix + sum1`).
-    /// Templates can set this to a runtime helper name.
-    pub(crate) sum_fn: String,
-    /// When true, render all numeric literals as float constants with `f` suffix.
-    /// E.g., `8` → `8.0f`, `3.14` → `3.14f`.
-    pub(crate) float_literals: bool,
-    /// Optional source-reference to emitted-symbol map provided by a template.
-    pub(crate) symbols: Option<Value>,
-    /// Optional aliases from Appendix-B condition memory (`c[i]`) to live
-    /// relation expressions for backends that do not run event iteration.
-    pub(crate) condition_aliases: Option<Value>,
-    /// Render-time substitutions for expression-level unrolling.
-    pub(crate) substitutions: Vec<(String, String)>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum IfStyle {
-    /// Python-style: ca.if_else(cond, then, else)
-    Function,
-    /// Ternary: cond ? then : else
-    Ternary,
-    /// Modelica-style: if cond then expr elseif cond2 then expr2 else expr3
-    Modelica,
-}
-
-impl Default for ExprConfig {
-    fn default() -> Self {
-        Self {
-            prefix: String::new(),
-            power: "**".to_string(),
-            and_op: "and".to_string(),
-            or_op: "or".to_string(),
-            not_op: "not ".to_string(),
-            true_val: "True".to_string(),
-            false_val: "False".to_string(),
-            array_start: "[".to_string(),
-            array_end: "]".to_string(),
-            if_style: IfStyle::Function,
-            sanitize_dots: true,
-            one_based_index: false,
-            modelica_builtins: false,
-            mul_elem_fn: None,
-            power_fn: None,
-            subscript_underscore: false,
-            if_else_fn: None,
-            python_range: false,
-            sum_fn: "sum1".to_string(),
-            float_literals: false,
-            symbols: None,
-            condition_aliases: None,
-            substitutions: Vec::new(),
-        }
-    }
-}
-
-/// Helper to get a string attribute from a Value.
-pub(crate) fn get_str_attr(v: &Value, attr: &str) -> Option<String> {
-    v.get_attr(attr)
-        .ok()
-        .and_then(|val| val.as_str().map(|s| s.to_string()))
-}
-
-fn get_present_attr(v: &Value, attr: &str) -> Option<Value> {
-    let val = v.get_attr(attr).ok()?;
-    (!val.is_undefined() && !val.is_none()).then_some(val)
-}
-
-fn get_bool_attr(v: &Value, attr: &str) -> Option<bool> {
-    Some(get_present_attr(v, attr)?.is_true())
-}
-
-fn get_non_empty_str_attr(v: &Value, attr: &str) -> Option<String> {
-    get_str_attr(v, attr).filter(|s| !s.is_empty())
-}
-
-impl ExprConfig {
-    pub(crate) fn from_value(v: &Value) -> Self {
-        let mut cfg = Self::default();
-
-        if let Some(s) = get_str_attr(v, "prefix") {
-            cfg.prefix = s;
-        }
-        if let Some(s) = get_str_attr(v, "power") {
-            cfg.power = s;
-        }
-        if let Some(s) = get_str_attr(v, "and_op") {
-            cfg.and_op = s;
-        }
-        if let Some(s) = get_str_attr(v, "or_op") {
-            cfg.or_op = s;
-        }
-        if let Some(s) = get_str_attr(v, "not_op") {
-            cfg.not_op = s;
-        }
-        if let Some(s) = get_str_attr(v, "true_val") {
-            cfg.true_val = s;
-        }
-        if let Some(s) = get_str_attr(v, "false_val") {
-            cfg.false_val = s;
-        }
-        if let Some(s) = get_str_attr(v, "array_start") {
-            cfg.array_start = s;
-        }
-        if let Some(s) = get_str_attr(v, "array_end") {
-            cfg.array_end = s;
-        }
-        if let Some(s) = get_str_attr(v, "if_style") {
-            cfg.if_style = match s.as_str() {
-                "ternary" => IfStyle::Ternary,
-                "modelica" => IfStyle::Modelica,
-                _ => IfStyle::Function,
-            };
-        }
-        if let Some(enabled) = get_bool_attr(v, "sanitize_dots") {
-            cfg.sanitize_dots = enabled;
-        }
-        if let Some(enabled) = get_bool_attr(v, "one_based_index") {
-            cfg.one_based_index = enabled;
-        }
-        if let Some(enabled) = get_bool_attr(v, "modelica_builtins") {
-            cfg.modelica_builtins = enabled;
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "mul_elem_fn") {
-            cfg.mul_elem_fn = Some(s);
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "power_fn") {
-            cfg.power_fn = Some(s);
-        }
-        if let Some(enabled) = get_bool_attr(v, "subscript_underscore") {
-            cfg.subscript_underscore = enabled;
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "if_else_fn") {
-            cfg.if_else_fn = Some(s);
-        }
-        if let Some(enabled) = get_bool_attr(v, "python_range") {
-            cfg.python_range = enabled;
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "sum_fn") {
-            cfg.sum_fn = s;
-        }
-        if let Some(enabled) = get_bool_attr(v, "float_literals") {
-            cfg.float_literals = enabled;
-        }
-        if let Some(val) = get_present_attr(v, "symbols") {
-            cfg.symbols = Some(val);
-        }
-        if let Some(val) = get_present_attr(v, "condition_aliases") {
-            cfg.condition_aliases = Some(val);
-        }
-
-        cfg
-    }
-}
-
-#[cfg(test)]
-mod local_tests;
-
-mod solve_renderer;
+pub use algorithm_code_renderer::AlgorithmCodeTemplateRenderer;
 pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;
-
-#[cfg(test)]
-mod codegen_block_render_tests;
-#[cfg(test)]
-mod codegen_tests;
-#[cfg(test)]
-mod dae_modelica_tests;
-#[cfg(test)]
-mod fmi_template_tests;
-#[cfg(test)]
-mod galec_manifest_template_tests;
-#[cfg(test)]
-mod solve_sparse_output_tests;
-#[cfg(test)]
-mod solve_template_context_tests;
-#[cfg(test)]
-mod stencil_codegen_tests;
-#[cfg(test)]
-mod strict_render_tests;
-#[cfg(test)]
-mod wgsl_solve_tests;

@@ -13,11 +13,12 @@ use crate::solve_lowering::{
     tunable_param_overrides,
 };
 
-pub use rumoca_solver_diffsol::SimError;
 pub(crate) use rumoca_solver_diffsol::session::SessionState;
+pub use rumoca_solver_diffsol::{SimError, SimFailureStage};
 
 pub struct PreparedSimulation {
     inner: rumoca_solver_diffsol::PreparedSimulation,
+    model: solve::SolveModel,
 }
 
 impl PreparedSimulation {
@@ -34,7 +35,7 @@ impl PreparedSimulation {
     }
 
     pub fn model(&self) -> &solve::SolveModel {
-        self.inner.model()
+        &self.model
     }
 
     pub fn set_parameter_value(&mut self, _name: &str, _value: f64) -> Result<(), SimError> {
@@ -73,7 +74,7 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     mut begin_stage: impl FnMut(&'static str),
     mut observe_solve_model: impl FnMut(&solve::SolveModel),
 ) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
-    let param_overrides = tunable_param_overrides(dae_model, opts);
+    let param_overrides = tunable_param_overrides(dae_model, opts).map_err(diagnostic_sim_error)?;
     let (mut solve_model, solve_timings) =
         lower_dae_for_simulation_with_stage_timing_and_param_overrides(
             dae_model,
@@ -81,11 +82,11 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
             &param_overrides,
             &mut begin_stage,
         )
-        .map_err(solve_lowering_sim_error)?;
+        .map_err(diagnostic_sim_error)?;
     begin_stage("sim_overrides");
     let override_apply_start = Instant::now();
     crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
-        .map_err(|err| SimError::SolverError(err.to_string()))?;
+        .map_err(diagnostic_sim_error)?;
     let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
     observe_solve_model(&solve_model);
     begin_stage("sim_build");
@@ -93,11 +94,14 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     let inner = rumoca_solver_diffsol::build_simulation(&solve_model, opts)?;
     let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
     Ok((
-        PreparedSimulation { inner },
+        PreparedSimulation {
+            inner,
+            model: solve_model,
+        },
         BuildSimulationTimings {
-            ir_solve_structural_dae_seconds: solve_timings.structural_dae_seconds,
-            ir_solve_lower_seconds: solve_timings.solve_ir_seconds,
-            ir_solve_seconds: solve_timings.total_seconds(),
+            ir_solve_structural_dae_seconds: solve_timings.ir_solve_structural_dae_seconds,
+            ir_solve_lower_seconds: solve_timings.ir_solve_lower_seconds,
+            ir_solve_seconds: solve_timings.ir_solve_seconds,
             override_apply_seconds,
             backend_build_seconds,
         },
@@ -119,7 +123,7 @@ pub fn check_initialization(
     opts: &rumoca_solver::SimOptions,
 ) -> Result<(), SimError> {
     let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(|err| SimError::SolverError(err.to_string()))?;
+        .map_err(diagnostic_sim_error)?;
     rumoca_solver_diffsol::check_initialization(&solve_model, opts)
 }
 
@@ -128,7 +132,7 @@ pub fn simulate(
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
     let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(|err| SimError::SolverError(err.to_string()))?;
+        .map_err(diagnostic_sim_error)?;
     rumoca_solver_diffsol::simulate(&solve_model, opts)
 }
 
@@ -214,8 +218,32 @@ impl SimulationSession {
     }
 }
 
-fn solve_lowering_sim_error(err: rumoca_phase_solve::SolveModelLowerError) -> SimError {
-    SimError::SolveIr(err.to_string())
+/// Preserve the originating diagnostic code when adapting to the backend's
+/// string-carrying error.
+/// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
+/// for a rejected parameter/start override — otherwise unreachable downstream,
+/// because a re-derivation from the stringified `SimError` can only ever
+/// produce the `EX001`/`EX002` fallbacks).
+fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
+    // Carry the stage as typed data too. The `[CODE] ` tag is what the CLI
+    // renders and what code-recovery reads back; the stage is what failure
+    // classification consumes, so it must not have to re-parse that tag.
+    let stage = diagnostic_failure_stage(&err);
+    SimError::SolveIr(format!("[{}] {err}", err.diagnostic_code())).at_stage(stage)
+}
+
+/// The simulation stage a lowering/preparation diagnostic belongs to, read off
+/// the error variant rather than its rendered text.
+fn diagnostic_failure_stage(err: &SimulationDiagnosticError) -> SimFailureStage {
+    match err {
+        SimulationDiagnosticError::SolveLowering(_) if err.is_structural() => {
+            SimFailureStage::StructuralAnalysis
+        }
+        SimulationDiagnosticError::SolveLowering(_)
+        | SimulationDiagnosticError::InvalidOverride { .. } => SimFailureStage::SolveLowering,
+        SimulationDiagnosticError::RuntimePreparation { .. } => SimFailureStage::BackendBuild,
+        SimulationDiagnosticError::Solver(_) => SimFailureStage::Integration,
+    }
 }
 
 #[cfg(feature = "scheduled-sim")]

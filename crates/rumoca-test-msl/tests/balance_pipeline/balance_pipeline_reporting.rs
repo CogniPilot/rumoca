@@ -4,7 +4,7 @@ use rumoca_sim::sim_trace_compare::{
     MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE, MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
     ModelDeviationMetric, classify_trace_metric_channel_distribution,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 // =============================================================================
 // Result JSON write + balance summary printing
@@ -60,6 +60,8 @@ struct MslPackagePassRateRow {
     solve_avg_seconds: Option<f64>,
     ic_avg_seconds: Option<f64>,
     sim_avg_seconds: Option<f64>,
+    /// Models whose single attempt exceeded a phase budget.
+    too_slow: usize,
 }
 
 #[derive(Serialize)]
@@ -92,12 +94,12 @@ struct MslPackagePassRateCounts {
     ic_timed: usize,
     sim_seconds: f64,
     sim_timed: usize,
+    too_slow: usize,
 }
 
 #[derive(Default)]
 struct MslPackagePassRateParity {
     models: BTreeMap<String, MslPackagePassRateParityModel>,
-    accepted_sim_ok_without_trace: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -390,7 +392,17 @@ pub(super) fn build_mls_contract_coverage(
         if result.sim_status.as_deref() == Some("sim_ok") {
             entry.sim_ok += 1;
         }
-        if let Some(error_code) = result.error_code.as_deref() {
+        // Compile, solve and sim stages all contribute their stable SPEC_0008
+        // code: a model that compiles but fails to lower or to integrate is
+        // still a coded defect and must be visible in the coverage table.
+        for error_code in [
+            result.error_code.as_deref(),
+            result.ir_solve_error_code.as_deref(),
+            result.sim_error_code.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             *entry
                 .error_code_counts
                 .entry(error_code.to_string())
@@ -506,6 +518,7 @@ fn pass_rate_row(
     parse_avg_seconds: Option<f64>,
 ) -> MslPackagePassRateRow {
     MslPackagePassRateRow {
+        too_slow: counts.too_slow,
         package,
         n: counts.n,
         parse_passed: counts.parse_passed,
@@ -560,7 +573,6 @@ fn build_msl_package_pass_rate_report_with_parity(
     }
 
     let parse_avg_seconds = avg_seconds(summary.timings.parse_seconds, overall_counts.n);
-
     let rows = by_package
         .into_iter()
         .map(|(package, counts)| pass_rate_row(package, counts, parse_avg_seconds))
@@ -608,23 +620,7 @@ fn pass_rate_parity_from_trace_payload(
             },
         );
     }
-    parity.accepted_sim_ok_without_trace = accepted_sim_ok_without_trace(payload);
     Ok(parity)
-}
-
-fn accepted_sim_ok_without_trace(payload: &serde_json::Value) -> BTreeSet<String> {
-    payload
-        .get("skipped")
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|skipped| skipped.iter())
-        .filter(|(_, reason)| reason.as_str().is_some_and(trace_skip_accepts_sim_ok))
-        .map(|(model_name, _)| model_name.clone())
-        .collect()
-}
-
-fn trace_skip_accepts_sim_ok(reason: &str) -> bool {
-    reason.contains("trace has no comparable variable samples")
 }
 
 fn trace_metric_matches_omc(metric: &ModelDeviationMetric) -> bool {
@@ -636,7 +632,7 @@ fn trace_metric_matches_omc(metric: &ModelDeviationMetric) -> bool {
             MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
             MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE,
         ),
-        AgreementBand::HighAgreement | AgreementBand::MinorAgreement
+        AgreementBand::HighAgreement
     )
 }
 
@@ -651,6 +647,9 @@ fn add_result_to_pass_rate_counts(
 ) {
     counts.n += 1;
     counts.parse_passed += 1;
+    if result.sim_status.as_deref() == Some("sim_timeout") {
+        counts.too_slow += 1;
+    }
     let parity_model = parity.and_then(|parity| parity.models.get(&result.model_name));
     let ic_passed = parity_model
         .and_then(|model| model.ic_matches)
@@ -726,13 +725,10 @@ fn sim_passed_with_trace_parity(
     if let Some(sim_matches) = parity_model.and_then(|model| model.sim_matches) {
         return sim_matches;
     }
-    let Some(parity) = parity else {
+    let Some(_parity) = parity else {
         return result_simulated_successfully(result);
     };
-    parity
-        .accepted_sim_ok_without_trace
-        .contains(&result.model_name)
-        && result_simulated_successfully(result)
+    false
 }
 
 fn stage_time_or_timeout(
@@ -1423,6 +1419,94 @@ pub(super) fn print_msl_balance_summary(summary: &MslSummary) {
 mod tests {
     use super::*;
 
+    fn summary_with_artifact_maps(reverse: bool) -> MslSummary {
+        let mut summary = empty_summary(0, 0);
+        summary.git_commit = "deterministic-test".to_string();
+        let entries = if reverse {
+            [("zeta".to_string(), 2), ("alpha".to_string(), 1)]
+        } else {
+            [("alpha".to_string(), 1), ("zeta".to_string(), 2)]
+        };
+        summary.class_type_counts = entries.clone().into_iter().collect();
+        summary.failures_by_phase = entries
+            .clone()
+            .into_iter()
+            .map(|(key, value)| (key, vec![value.to_string()]))
+            .collect();
+        summary.error_categories = entries
+            .clone()
+            .into_iter()
+            .map(|(key, value)| (key.clone(), vec![(key, value.to_string())]))
+            .collect();
+        summary.error_code_counts = entries.clone().into_iter().collect();
+        summary.unsupported_feature_counts = entries.clone().into_iter().collect();
+        summary.undefined_vars = entries.clone().into_iter().collect();
+        summary.balance_distribution = [(-1, 1), (2, 2)].into_iter().collect();
+
+        let backend_entries = if reverse {
+            [("z-backend", 2), ("a-backend", 1)]
+        } else {
+            [("a-backend", 1), ("z-backend", 2)]
+        };
+        summary.unsupported_feature_counts_by_backend = backend_entries
+            .into_iter()
+            .map(|(backend, value)| {
+                let feature_entries = if reverse {
+                    [
+                        ("z-feature".to_string(), value),
+                        ("a-feature".to_string(), 1),
+                    ]
+                } else {
+                    [
+                        ("a-feature".to_string(), 1),
+                        ("z-feature".to_string(), value),
+                    ]
+                };
+                (
+                    backend.to_string(),
+                    feature_entries.into_iter().collect::<BTreeMap<_, _>>(),
+                )
+            })
+            .collect();
+        summary
+    }
+
+    #[test]
+    fn msl_summary_artifact_maps_serialize_deterministically() {
+        let summary = summary_with_artifact_maps(false);
+        let first = serde_json::to_vec_pretty(&summary).expect("serialize summary");
+        let repeated = serde_json::to_vec_pretty(&summary).expect("repeat serialization");
+        assert_eq!(
+            first, repeated,
+            "repeated serialization must be byte-identical"
+        );
+
+        let reverse = summary_with_artifact_maps(true);
+        let reverse_bytes =
+            serde_json::to_vec_pretty(&reverse).expect("serialize reverse insertion");
+        assert_eq!(
+            first, reverse_bytes,
+            "map insertion order must not affect artifact bytes"
+        );
+
+        let compact = serde_json::to_string(&summary).expect("serialize compact summary");
+        for expected in [
+            r#""class_type_counts":{"alpha":1,"zeta":2}"#,
+            r#""failures_by_phase":{"alpha":["1"],"zeta":["2"]}"#,
+            r#""error_categories":{"alpha":[["alpha","1"]],"zeta":[["zeta","2"]]}"#,
+            r#""error_code_counts":{"alpha":1,"zeta":2}"#,
+            r#""unsupported_feature_counts":{"alpha":1,"zeta":2}"#,
+            r#""undefined_vars":{"alpha":1,"zeta":2}"#,
+            r#""balance_distribution":{"-1":1,"2":2}"#,
+            r#""unsupported_feature_counts_by_backend":{"a-backend":{"a-feature":1,"z-feature":1},"z-backend":{"a-feature":1,"z-feature":2}}"#,
+        ] {
+            assert!(
+                compact.contains(expected),
+                "serialized artifact keys are not sorted: expected {expected} in {compact}"
+            );
+        }
+    }
+
     fn model_result(name: &str, phase_reached: &str, sim_status: Option<&str>) -> MslModelResult {
         let mut result = phase_error_result(name.to_string(), phase_reached, None, None);
         result.sim_status = sim_status.map(str::to_string);
@@ -1728,7 +1812,61 @@ mod tests {
     }
 
     #[test]
-    fn package_pass_rate_report_accepts_sim_ok_for_non_comparable_omc_trace() {
+    fn package_pass_rate_report_rejects_sim_ok_without_a_comparable_trace() {
+        let mut summary = empty_summary(0, 0);
+        summary.model_results = vec![model_result(
+            "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine",
+            "Success",
+            Some("sim_ok"),
+        )];
+        // A solver return without comparable evidence is raw execution only. It
+        // must fail closed instead of being counted as supported simulation.
+        let payload = serde_json::json!({
+            "models": {},
+            "skipped": {
+                "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine": {
+                    "kind": "no_comparable_samples",
+                    "detail": "trace compare failed: trace has no comparable variable samples"
+                }
+            }
+        });
+
+        let report = build_msl_package_pass_rate_report_with_trace_payload(&summary, &payload)
+            .expect("pass report with trace skip");
+
+        assert_eq!(report.overall.n, 1);
+        assert_eq!(report.overall.sim_passed, 0);
+        assert_eq!(report.overall.sim_percent, 0.0);
+    }
+
+    #[test]
+    fn package_pass_rate_report_requires_strict_high_not_near() {
+        let mut summary = empty_summary(0, 0);
+        summary.model_results = vec![model_result(
+            "Modelica.Blocks.Examples.NearTrace",
+            "Success",
+            Some("sim_ok"),
+        )];
+        let payload = serde_json::json!({
+            "models": {
+                "Modelica.Blocks.Examples.NearTrace":
+                    trace_metric_json("Modelica.Blocks.Examples.NearTrace", 0, 3, 0, 0)
+            }
+        });
+
+        let report = build_msl_package_pass_rate_report_with_trace_payload(&summary, &payload)
+            .expect("pass report with near trace");
+
+        assert_eq!(report.overall.sim_passed, 0);
+        assert_eq!(report.overall.sim_percent, 0.0);
+    }
+
+    /// Every other recorded skip is a comparator defect or a policy decision, and
+    /// neither excuses a `sim_ok` model from having no band behind it. Matching
+    /// on the typed kind is what keeps this from widening the day a comparator
+    /// error message is rephrased.
+    #[test]
+    fn package_pass_rate_report_does_not_accept_sim_ok_for_a_comparator_defect() {
         let mut summary = empty_summary(0, 0);
         summary.model_results = vec![model_result(
             "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine",
@@ -1738,17 +1876,21 @@ mod tests {
         let payload = serde_json::json!({
             "models": {},
             "skipped": {
-                "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine":
-                    "trace compare failed: trace has no comparable variable samples"
+                "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine": {
+                    "kind": "comparator_failed",
+                    "detail": "trace compare failed: trace has no valid time samples"
+                }
             }
         });
 
         let report = build_msl_package_pass_rate_report_with_trace_payload(&summary, &payload)
-            .expect("pass report with accepted trace skip");
+            .expect("pass report with a comparator defect");
 
         assert_eq!(report.overall.n, 1);
-        assert_eq!(report.overall.sim_passed, 1);
-        assert_eq!(report.overall.sim_percent, 100.0);
+        assert_eq!(
+            report.overall.sim_passed, 0,
+            "a comparator defect must not be read as a passing simulation"
+        );
     }
 
     #[test]

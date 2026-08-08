@@ -1,3 +1,4 @@
+use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
 use crate::{
@@ -29,8 +30,22 @@ pub enum RuntimeSolveError {
         span: Option<rumoca_core::Span>,
     },
 
+    #[error(
+        "algebraic refresh row {row} cannot isolate y[{target_y_index}]: singular coefficient {coefficient}{}",
+        span_suffix(*.span)
+    )]
+    RefreshTargetSingular {
+        row: usize,
+        target_y_index: usize,
+        coefficient: f64,
+        span: Option<rumoca_core::Span>,
+    },
+
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
+
+    #[error("algebraic directional derivative is unavailable: {reason}")]
+    DirectionalDerivativeUnavailable { reason: String },
 
     #[error(
         "non-finite ({kind}) value computed for `{name}`{}",
@@ -66,6 +81,7 @@ impl RuntimeSolveError {
         match self {
             Self::SolveIr { span, .. }
             | Self::RefreshTargetUnassignable { span, .. }
+            | Self::RefreshTargetSingular { span, .. }
             | Self::NonFiniteValue { span, .. } => *span,
             _ => None,
         }
@@ -147,7 +163,10 @@ pub fn replace_last_visible_values(
     Ok(())
 }
 
-pub fn discrete_row_pre_mode(model: &solve::SolveModel, row_idx: usize) -> EventPreMode {
+pub fn discrete_row_pre_mode(
+    model: &solve::SolveModel,
+    row_idx: usize,
+) -> Result<EventPreMode, RuntimeSolveError> {
     model
         .problem
         .discrete
@@ -155,7 +174,53 @@ pub fn discrete_row_pre_mode(model: &solve::SolveModel, row_idx: usize) -> Event
         .get(row_idx)
         .copied()
         .map(EventPreMode::from)
-        .unwrap_or(EventPreMode::FollowCurrent)
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "discrete pre-mode row index {row_idx} is out of bounds"
+            ))
+        })
+}
+
+pub fn discrete_row_active_at(
+    model: &solve::SolveModel,
+    row_idx: usize,
+    t: f64,
+) -> Result<bool, RuntimeSolveError> {
+    let owner = model
+        .problem
+        .discrete
+        .clock_owners
+        .get(row_idx)
+        .copied()
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "discrete clock-owner row index {row_idx} is out of bounds"
+            ))
+        })?;
+    let Some(owner) = owner else {
+        return Ok(true);
+    };
+    let schedule = model
+        .problem
+        .clocks
+        .periodic_schedule(owner)
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "discrete row {row_idx} refers to periodic clock {} outside the clock partition",
+                owner.index()
+            ))
+        })?;
+    Ok(crate::timeline::periodic_schedule_matches_time(schedule, t))
+}
+
+pub fn apply_discrete_slot_value(
+    target: solve::ScalarSlot,
+    value: f64,
+    y: &mut [f64],
+    p: &mut [f64],
+    _tol: f64,
+) -> Result<bool, solve_eval::EvalSolveError> {
+    solve_eval::apply_scalar_slot_value_exact(target, value, y, p)
 }
 
 pub fn row_reads_solver_or_time(row: &[solve::LinearOp]) -> bool {
@@ -171,16 +236,60 @@ pub fn row_reads_solver_or_time(row: &[solve::LinearOp]) -> bool {
     })
 }
 
+/// Compare runtime fixed-point values with a combined absolute/relative scale.
+///
+/// Projection routines certify their own residual tolerances. This comparison
+/// only decides whether another coupled runtime pass is needed, so large
+/// physical values must not require bit-level or absolute-tolerance agreement.
+pub fn runtime_value_changed(old: f64, new: f64, tol: f64) -> bool {
+    if old == new {
+        return false;
+    }
+    if !old.is_finite() || !new.is_finite() {
+        return true;
+    }
+    let scale = 1.0_f64.max(old.abs()).max(new.abs());
+    (old - new).abs() > tol.abs() * scale
+}
+
+pub fn runtime_values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
+    before.len() != after.len()
+        || before
+            .iter()
+            .copied()
+            .zip(after.iter().copied())
+            .any(|(old, new)| runtime_value_changed(old, new, tol))
+}
+
 pub fn event_eval_params_for_pre_mode(
     model: &solve::SolveModel,
     base_p: &[f64],
     pre_y: &[f64],
     pre_p: &[f64],
+    t: f64,
     tol: f64,
 ) -> Vec<f64> {
     let mut eval_p = base_p.to_vec();
     write_pre_params_from_sources(model, pre_y, pre_p, &mut eval_p, tol);
+    write_clock_activation_params(model, &mut eval_p, t);
     eval_p
+}
+
+/// Derive mixed-condition clock leaves from their authoritative typed schedules.
+///
+/// The compiler reserves exactly one hidden lane per periodic clock and the
+/// Solve shape contract proves the two dense arrays agree. This function only
+/// projects the schedule at `t`; it does not create another timing owner.
+pub fn write_clock_activation_params(model: &solve::SolveModel, p: &mut [f64], t: f64) {
+    for (schedule, &index) in model
+        .problem
+        .clocks
+        .periodic_event_schedules
+        .iter()
+        .zip(&model.problem.clocks.activation_parameter_indices)
+    {
+        p[index] = f64::from(crate::timeline::periodic_schedule_matches_time(schedule, t));
+    }
 }
 
 /// Candidate pre snapshots available while evaluating one event-iteration row.
@@ -202,10 +311,11 @@ pub fn event_eval_params_for_row_pre_mode(
     base_p: &[f64],
     mode: EventPreMode,
     sources: &EventPreSources<'_>,
+    t: f64,
     tol: f64,
 ) -> Vec<f64> {
     let (pre_y, pre_p) = event_pre_sources_for_mode(mode, sources);
-    event_eval_params_for_pre_mode(model, base_p, pre_y, pre_p, tol)
+    event_eval_params_for_pre_mode(model, base_p, pre_y, pre_p, t, tol)
 }
 
 fn event_pre_sources_for_mode<'a>(
@@ -340,6 +450,28 @@ pub fn update_relation_memory_slots(
     changed
 }
 
+/// Give an exactly zero root the compiler-owned side of its source relation.
+///
+/// Numerical root finders detect sign changes, so an unqualified `0.0` at an
+/// accepted point cannot represent whether a strict or non-strict relation
+/// owns that point. Solve IR preserves that semantic distinction explicitly;
+/// the smallest ordinary dimensionless perturbation is enough to expose its
+/// sign without moving the mathematical root. A nonzero value remains a signed
+/// distance from the root even when it lies inside the solver's convergence
+/// tolerance; changing that sign would contradict the source relation.
+pub fn orient_typed_root_zeros(roots: &mut [f64], zero_domains: &[solve::RootZeroDomain]) {
+    for (root, zero_domain) in roots.iter_mut().zip(zero_domains) {
+        if *root != 0.0 {
+            continue;
+        }
+        *root = match zero_domain {
+            solve::RootZeroDomain::Positive => f64::EPSILON,
+            solve::RootZeroDomain::NonPositive => -f64::EPSILON,
+            solve::RootZeroDomain::Previous => continue,
+        };
+    }
+}
+
 pub fn relation_memory_value_from_root(root: f64) -> f64 {
     if root < 0.0 { 1.0 } else { 0.0 }
 }
@@ -419,6 +551,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn periodic_clock_owner_activates_only_on_its_exact_lattice() {
+        let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10)
+            .expect("one-tenth-second lattice is valid");
+        let schedule =
+            solve::PeriodicEventSchedule::new(lattice).expect("periodic schedule is valid");
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![schedule],
+            activation_parameter_indices: vec![0],
+        };
+        let owner = clocks
+            .periodic_clock_id(0)
+            .expect("inserted periodic clock has a typed identity");
+        let model = solve::SolveModel {
+            problem: solve::SolveProblem {
+                clocks,
+                discrete: solve::DiscreteSolveSystem {
+                    clock_owners: vec![Some(owner)],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!discrete_row_active_at(&model, 0, 0.05).unwrap());
+        assert!(discrete_row_active_at(&model, 0, 0.1).unwrap());
+        assert!(!discrete_row_active_at(&model, 0, 0.15).unwrap());
+        assert!(discrete_row_active_at(&model, 0, 0.2).unwrap());
+    }
+
+    #[test]
+    fn typed_clock_activation_lanes_are_exact_and_target_independent() {
+        let tenth = solve::PeriodicEventSchedule::new(
+            rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap(),
+        )
+        .unwrap();
+        let fifth = solve::PeriodicEventSchedule::new(
+            rumoca_core::ClockLattice::from_seconds(0.2, 0.0).unwrap(),
+        )
+        .unwrap();
+        let model = solve::SolveModel {
+            problem: solve::SolveProblem {
+                clocks: solve::SolveClockPartition {
+                    periodic_event_schedules: vec![tenth, fifth],
+                    // Deliberately not schedule order: typed identity owns the
+                    // mapping, not a row target or incidental P-slot ordinal.
+                    activation_parameter_indices: vec![2, 0],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut params = vec![-1.0; 3];
+
+        write_clock_activation_params(&model, &mut params, 0.1);
+        assert_eq!(params, [0.0, -1.0, 1.0]);
+
+        // A non-clock event between ticks clears both lanes.
+        write_clock_activation_params(&model, &mut params, 0.15);
+        assert_eq!(params, [0.0, -1.0, 0.0]);
+
+        // A root or other event coincident with both schedules observes both
+        // clock leaves as true in the one event iteration at that instant.
+        write_clock_activation_params(&model, &mut params, 0.2);
+        assert_eq!(params, [1.0, -1.0, 1.0]);
+    }
+
+    #[test]
     fn root_crossings_detect_leaving_tolerance_on_opposite_side() {
         let crossings = root_crossings(&[1.0e-8, -1.0e-8], &[-1.0e-4, 1.0e-4], 1.0e-6);
 
@@ -487,6 +687,25 @@ mod tests {
     }
 
     #[test]
+    fn typed_root_zero_orientation_exposes_relation_side_to_root_finders() {
+        let mut roots = [0.0, -1.0e-8, 0.0, -2.0];
+        orient_typed_root_zeros(
+            &mut roots,
+            &[
+                solve::RootZeroDomain::Positive,
+                solve::RootZeroDomain::NonPositive,
+                solve::RootZeroDomain::Previous,
+                solve::RootZeroDomain::Positive,
+            ],
+        );
+
+        assert!(roots[0].is_sign_positive() && roots[0] > 0.0);
+        assert_eq!(roots[1], -1.0e-8);
+        assert_eq!(roots[2], 0.0);
+        assert_eq!(roots[3], -2.0);
+    }
+
+    #[test]
     fn boolean_root_crossing_still_detects_zero_one_toggle() {
         assert_eq!(
             root_crossings(&[0.0], &[1.0], 1.0e-6),
@@ -502,5 +721,13 @@ mod tests {
                 post_relation_memory_value: 0.0
             }]
         );
+    }
+
+    #[test]
+    fn runtime_change_detection_combines_absolute_and_relative_scale() {
+        assert!(!runtime_value_changed(100_000.0, 100_000.01, 1.0e-6));
+        assert!(runtime_value_changed(0.0, 2.0e-6, 1.0e-6));
+        assert!(runtime_value_changed(f64::NAN, f64::NAN, 1.0e-6));
+        assert!(runtime_values_changed(&[1.0], &[1.0, 2.0], 1.0e-6));
     }
 }

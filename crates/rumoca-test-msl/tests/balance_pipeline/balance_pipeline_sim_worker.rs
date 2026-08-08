@@ -19,14 +19,6 @@ pub(super) const SIM_TIMEOUT_SECS: f64 = rumoca_worker::MSL_SIM_TIMEOUT_SECS;
 pub(super) const SIM_WORKER_TIMEOUT_GRACE_SECS: f64 = 2.0;
 /// Default simulation horizon when model annotations do not specify StopTime.
 pub(super) const DEFAULT_SIM_END_TIME_SECS: f64 = 1.0;
-/// Output sample count per simulation horizon for stateful models.
-pub(super) const SIM_OUTPUT_SAMPLES_DEFAULT: usize = 100;
-/// Output sample count for no-state (pure algebraic/discrete) models.
-///
-/// These models still contain time-driven behavior (relations, sampled tables,
-/// delays). Coarse sampling can miss transition times and inflate trace
-/// deviation against OMC.
-pub(super) const SIM_OUTPUT_SAMPLES_NO_STATES: usize = 500;
 /// Emit in-flight simulation progress for models that exceed this wall time.
 pub(super) const SIM_PROGRESS_LOG_INTERVAL_SECS: u64 = 15;
 /// Poll interval while waiting on isolated simulation worker process.
@@ -45,16 +37,27 @@ static SIM_WORKER_PRLIMIT_AVAILABLE: std::sync::OnceLock<bool> = std::sync::Once
 static SIM_WORKER_PRLIMIT_WARNED: AtomicBool = AtomicBool::new(false);
 static SIM_WORKER_RUN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// Clamp a configured timeout override so it can only *raise* the budget.
+///
+/// The committed quality baseline was measured with the default budgets, so a
+/// config that shortened them would silently make the gate easier (models would
+/// time out instead of failing on their real defect).
+fn raise_only_timeout(configured: Option<f64>, floor: f64) -> Option<f64> {
+    configured
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.max(floor))
+}
+
 pub(super) fn sim_timeout_override_secs() -> Option<f64> {
-    None
+    raise_only_timeout(parity_config().sim_timeout_secs, SIM_TIMEOUT_SECS)
 }
 
 pub(super) fn sim_timeout_secs() -> f64 {
-    SIM_TIMEOUT_SECS
+    sim_timeout_override_secs().unwrap_or(SIM_TIMEOUT_SECS)
 }
 
 pub(super) fn ir_solve_timeout_override_secs() -> Option<f64> {
-    None
+    raise_only_timeout(parity_config().ir_solve_timeout_secs, IR_SOLVE_TIMEOUT_SECS)
 }
 
 pub(super) fn ir_solve_timeout_secs() -> f64 {
@@ -212,6 +215,11 @@ pub(super) struct SimWorkerResult {
     solve_ir_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     solve_ir_error: Option<String>,
+    /// Serialized Solve-IR size the worker measured against the per-model
+    /// ceiling. Exact when accepted, a lower bound past the ceiling when the
+    /// worker stopped measuring; see `rumoca_test_msl::resource_budget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    solve_ir_bytes: Option<u64>,
 }
 
 pub(super) fn sim_result(
@@ -729,7 +737,9 @@ pub(super) fn spawn_sim_worker_process(
         .arg("--trace-json")
         .arg(&artifacts.trace_path)
         .arg("--solve-ir-json")
-        .arg(&artifacts.solve_ir_path);
+        .arg(&artifacts.solve_ir_path)
+        .arg("--solve-ir-size-limit-mb")
+        .arg(solve_ir_size_budget().limit_mb().to_string());
     if let Some(dt) = settings.dt {
         cmd.arg("--dt").arg(dt.to_string());
     }
@@ -903,16 +913,17 @@ pub(super) fn prepare_simulation_run(
     let input_bytes = dae_payload.len();
     let prep_secs = prep_started.elapsed().as_secs_f64();
     if slow_sim_prep_log_threshold_secs().is_some_and(|threshold| prep_secs >= threshold) {
+        let counts = checked_dae_counts(dae);
         eprintln!(
             "    slow sim prep: model={model_name} total={prep_secs:.2}s create={artifact_create_secs:.2}s serialize_input={serialize_secs:.2}s input_bytes={input_bytes} states={} algebraics={} f_x={} f_z={} f_m={} f_c={} relation={} initial_eqs={}",
-            dae.variables.states.len(),
-            dae.variables.algebraics.len(),
-            dae.continuous.equations.len(),
-            dae.discrete.real_updates.len(),
-            dae.discrete.valued_updates.len(),
-            dae.conditions.equations.len(),
-            dae.conditions.relations.len(),
-            dae.initialization.equations.len(),
+            counts.state_variables,
+            counts.algebraic_variables,
+            counts.continuous_equations,
+            counts.discrete_real_equations,
+            counts.discrete_value_definitions,
+            counts.conditions,
+            counts.relations,
+            counts.initialization_equations,
         );
     }
 
@@ -1043,6 +1054,14 @@ fn finalize_sim_worker_result(
             ));
         }
     };
+    // Re-apply the ceiling harness-side over the number the worker reported, so
+    // the verdict comes from a measured size compared against a constant rather
+    // than from trusting the worker to have failed itself.
+    if let Some(bytes) = worker_result.solve_ir_bytes
+        && let Err(exceeded) = solve_ir_size_budget().check_bytes(bytes)
+    {
+        return ctx.solver_fail(format!("{} ({})", exceeded, ctx.model_name));
+    }
     let sim_trace_file = if matches!(status, SimStatus::Ok) && artifacts.trace_path.is_file() {
         Some(artifacts.trace_relative_path.clone())
     } else {
@@ -1107,26 +1126,15 @@ pub(super) fn run_prepared_simulation(run: PreparedSimulationRun) -> MslSimModel
 }
 
 pub(super) fn is_trivial_static_model(dae: &Dae) -> bool {
-    let discrete_real_scalars: usize = dae
-        .variables
-        .discrete_reals
-        .values()
-        .map(|v| v.size())
-        .sum();
-    let discrete_valued_scalars: usize = dae
-        .variables
-        .discrete_valued
-        .values()
-        .map(|v| v.size())
-        .sum();
-    discrete_real_scalars == 0
-        && discrete_valued_scalars == 0
-        && dae.continuous.equations.is_empty()
-        && dae.discrete.real_updates.is_empty()
-        && dae.discrete.valued_updates.is_empty()
-        && dae.conditions.equations.is_empty()
-        && dae.conditions.relations.is_empty()
-        && dae.initialization.equations.is_empty()
+    let counts = checked_dae_counts(dae);
+    counts.discrete_real_scalars == 0
+        && counts.discrete_value_scalars == 0
+        && counts.continuous_equations == 0
+        && counts.discrete_real_equations == 0
+        && counts.discrete_value_definitions == 0
+        && counts.conditions == 0
+        && counts.relations == 0
+        && counts.initialization_equations == 0
 }
 
 pub(super) fn try_simulate_dae_with_settings(
@@ -1134,28 +1142,11 @@ pub(super) fn try_simulate_dae_with_settings(
     model_name: &str,
     settings: &SimExecutionSettings,
 ) -> MslSimModelResult {
-    let n_states = dae.variables.states.len();
-    let n_algebraics = dae.variables.algebraics.len();
-    let n_state_scalars: usize = dae.variables.states.values().map(|v| v.size()).sum();
-
-    let total_unknowns: usize = dae
-        .variables
-        .states
-        .values()
-        .map(|v| v.size())
-        .sum::<usize>()
-        + dae
-            .variables
-            .algebraics
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>()
-        + dae
-            .variables
-            .outputs
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>();
+    let counts = checked_dae_counts(dae);
+    let n_states = counts.state_variables;
+    let n_algebraics = counts.algebraic_variables;
+    let n_state_scalars = counts.state_scalars;
+    let total_unknowns = counts.state_scalars + counts.algebraic_scalars + counts.output_scalars;
     if total_unknowns == 0 && is_trivial_static_model(dae) {
         return MslSimModelResult {
             name: model_name.to_string(),
@@ -1194,12 +1185,8 @@ pub(super) fn try_simulate_dae_with_settings(
     )
 }
 
-pub(super) fn output_samples_for_model(n_state_scalars: usize) -> usize {
-    if n_state_scalars == 0 {
-        SIM_OUTPUT_SAMPLES_NO_STATES
-    } else {
-        SIM_OUTPUT_SAMPLES_DEFAULT
-    }
+pub(super) fn output_samples_for_model(_n_state_scalars: usize) -> usize {
+    rumoca_worker::MSL_SIM_OUTPUT_INTERVALS
 }
 
 #[cfg(test)]
@@ -1338,6 +1325,8 @@ mod tests {
         let compiled = session
             .compile_model("WorkerPipe")
             .expect("compile worker pipe model");
+        let counts = checked_dae_counts(&compiled.dae);
+        assert_eq!(counts.continuous_scalar_rows, 1);
 
         let settings = SimExecutionSettings {
             t_start: 0.0,
@@ -1353,8 +1342,8 @@ mod tests {
             "WorkerPipe",
             settings,
             10,
-            compiled.dae.variables.states.len(),
-            compiled.dae.variables.algebraics.len(),
+            counts.state_variables,
+            counts.algebraic_variables,
         )
         .expect("prepare simulation");
         let result = run_prepared_simulation(prepared);

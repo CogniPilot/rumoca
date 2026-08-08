@@ -1,45 +1,50 @@
-/* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
-{%- for line in conformance_header.lines %}
- * {{ line }}
-{%- endfor %} */
-#ifndef {{ include_guard }}
-#define {{ include_guard }}
+{%- set c_reserved = [
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while",
+    "_Alignas", "_Alignof", "_Atomic", "_BitInt", "_Bool", "_Complex",
+    "_Decimal32", "_Decimal64", "_Decimal128", "_Generic", "_Imaginary",
+    "_Noreturn", "_Static_assert", "_Thread_local",
+    "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
+    "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
+    "self", "rumoca_galec_sign", "rumoca_galec_imin", "rumoca_galec_imax",
+    "rumoca_galec_division_towards_zero", "rumoca_galec_error_signal_status"
+] -%}
+{%- set c_symbols = allocate_symbols(
+    algorithm_code.symbol_names,
+    {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
+) -%}
+{%- set c_state_symbols = allocate_symbols(
+    algorithm_code.variable_names,
+    {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
+) -%}
+{%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
+{%- macro c_type(kind) -%}
+{%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * NOT an eFMI Production Code container.
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed.
+ * Target syntax and layout are owned by this template. */{% endblock %}
+#ifndef RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
+#define RUMOCA_{{ c_model | upper }}_GALEC_H_INCLUDED
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Block state: every manifest-listed variable of the projected GALEC
- * block, including the 'previous(x)' discrete-state slots committed at
- * the end of dostep (eFMI trap T2). */
-typedef struct {
-{%- for variable in variables %}
-    {{ variable.c_type }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
+typedef struct {{ c_model }}StateTag {
+{%- for variable in algorithm_code.variables %}
+    {{ c_type(variable.kind) }} {{ symbol(c_state_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
-} {{ struct_name }};
+    uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus */
+} {{ c_model }}State;
 
-/* The three GALEC block-interface methods (eFMI §3.1.3): parameter-free,
- * all I/O through the block state.
- * - startup: initializes every writable variable (call once first);
- * - recalibrate: recomputes dependent parameters after tunable-parameter
- *   changes (parameters stay tunable at runtime);
- * - dostep: one fixed-sample control-cycle tick. */
-void {{ function_prefix }}_startup({{ struct_name }} *self);
-void {{ function_prefix }}_recalibrate({{ struct_name }} *self);
-void {{ function_prefix }}_dostep({{ struct_name }} *self);
+void {{ c_model }}_startup({{ c_model }}State *self);
+void {{ c_model }}_recalibrate({{ c_model }}State *self);
+void {{ c_model }}_dostep({{ c_model }}State *self);
 
-/* Project-neutral convenience wrappers for applications that want a stable
- * eFMI-shaped call surface independent of the generated model prefix. */
-#ifndef EFMI_STATE_TYPE
-#  define EFMI_STATE_TYPE(model) model##State
 #endif
-#ifndef EFMI_INIT
-#  define EFMI_INIT(model, state) model##_startup(state)
-#endif
-#ifndef EFMI_RECALIBRATE
-#  define EFMI_RECALIBRATE(model, state) model##_recalibrate(state)
-#endif
-#ifndef EFMI_STEP
-#  define EFMI_STEP(model, state) model##_dostep(state)
-#endif
-
-#endif /* {{ include_guard }} */

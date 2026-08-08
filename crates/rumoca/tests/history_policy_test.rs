@@ -43,9 +43,20 @@ fn should_skip_policy_dir(path: &Path) -> bool {
     }) {
         return true;
     }
+    // `.claude` holds agent worktrees and session scratch — checkouts and
+    // probe artifacts that are not this repository's source.
     matches!(
         name,
-        Some(".git" | ".vscode-test" | "dev" | "target" | "node_modules" | "pkg" | "vendor")
+        Some(
+            ".git"
+                | ".claude"
+                | ".vscode-test"
+                | "dev"
+                | "target"
+                | "node_modules"
+                | "pkg"
+                | "vendor"
+        )
     )
 }
 

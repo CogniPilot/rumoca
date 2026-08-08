@@ -1,39 +1,47 @@
-use rumoca_solver::SolveStopSchedule;
+use rumoca_solver::fmi_me::{MeFmuState, ModelExchangeKernel};
 
-use super::Rk45Backend;
+use super::{Rk45Backend, SimError};
 
+/// The host's own restart point plus the component state (`fmi3GetFMUState`)
+/// it was captured with.
 #[derive(Clone)]
 pub(super) struct Rk45ResetSnapshot {
+    time: f64,
     state: Vec<f64>,
-    params: Vec<f64>,
     next_step: f64,
+    component: MeFmuState,
 }
 
-impl Rk45Backend<'_> {
+impl Rk45Backend {
     pub(super) fn reset_snapshot(&self) -> Rk45ResetSnapshot {
         Rk45ResetSnapshot {
+            time: self.time,
             state: self.state.clone(),
-            params: self.params.clone(),
             next_step: self.next_step,
+            component: self.kernel.fmu_state(),
         }
     }
 
-    pub(super) fn reset_to_snapshot(&mut self, snapshot: &Rk45ResetSnapshot, t_start: f64) {
-        self.time = t_start;
+    pub(super) fn reset_to_snapshot(
+        &mut self,
+        snapshot: &Rk45ResetSnapshot,
+        t_start: f64,
+    ) -> Result<(), SimError> {
+        self.time = if t_start.to_bits() == snapshot.time.to_bits() {
+            snapshot.time
+        } else {
+            t_start
+        };
         self.state.clone_from(&snapshot.state);
-        self.params.clone_from(&snapshot.params);
         self.next_step = snapshot.next_step;
-        self.stop_schedule = SolveStopSchedule::new(&self.model.model.problem, t_start, self.t_end);
         self.termination = None;
-        self.pending_root_crossings.clear();
-        self.pending_event_pre_y = None;
-        self.pending_event_pre_p = None;
-        self.boundary_event_pre_y = None;
-        self.boundary_event_pre_p = None;
-        self.post_event_eval_time = None;
-        self.solver_y_guess
-            .borrow_mut()
-            .clone_from(&self.model.model.initial_y);
-        self.clear_runtime_caches();
+        self.located_event_state = None;
+        if self.time.to_bits() == snapshot.time.to_bits() {
+            self.kernel.reset_to_fmu_state(&snapshot.component)?;
+        } else {
+            self.kernel
+                .restart_from_fmu_state(&snapshot.component, self.time)?;
+        }
+        Ok(())
     }
 }

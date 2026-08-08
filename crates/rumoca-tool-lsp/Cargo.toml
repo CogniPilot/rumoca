@@ -14,6 +14,8 @@ required-features = ["server"]
 [dependencies]
 rumoca-compile = { workspace = true }
 rumoca-phase-dae = { workspace = true }
+rumoca-phase-codegen = { workspace = true }
+rumoca-phase-galec = { workspace = true }
 # `rumoca-sim` is optional behind the `simulation` feature. The bare LSP
 # (completions, hover, diagnostics) does not need solver backends, and
 # WASM/light builds turn this off to keep simulation deps out of the graph.
@@ -21,7 +23,6 @@ rumoca-sim = { workspace = true, default-features = false, features = ["native-s
 rumoca-tool-fmt = { workspace = true }
 tracing = { workspace = true }
 rumoca-tool-lint = { workspace = true }
-rumoca-lsp-position = { workspace = true }
 lsp-types = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "mls_version": "3.7",
+  "contract_catalog": "spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md",
+  "catalog_contract_count": 438,
+  "default_status": "unformalized",
+  "ordinary_compilation_policy": "informational_only",
+  "formalization_complete": false,
+  "contracts": {}
+}

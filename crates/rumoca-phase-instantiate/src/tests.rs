@@ -13,7 +13,7 @@ fn make_token(text: &str) -> rumoca_core::Token {
 
 fn make_location(file_name: &str, start: u32, end: u32) -> rumoca_core::Location {
     rumoca_core::Location {
-        file_name: file_name.to_string(),
+        source: rumoca_core::SourceId::from_source_name(file_name),
         start,
         end,
         ..Default::default()
@@ -100,10 +100,11 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             .map(|name| ast::ComponentRefPart {
                 ident: make_token(name),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
 }
 
@@ -134,10 +135,30 @@ fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) 
                     end + u32::try_from(index).unwrap(),
                 ),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
+    })
+}
+
+fn make_resolved_comp_ref_expr_at(
+    name: &str,
+    def_id: DefId,
+    file_name: &str,
+    start: u32,
+    end: u32,
+) -> ast::Expression {
+    ast::Expression::ComponentReference(ast::ComponentReference {
+        local: false,
+        parts: vec![ast::ComponentRefPart {
+            ident: make_token_at(name, file_name, start, end),
+            subs: None,
+            def_id: Some(def_id),
+        }],
+        span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
 }
 
@@ -190,19 +211,6 @@ fn context_with_source_scope_tree(classes: Vec<ast::ClassDef>) -> InstantiateCon
     let mut ctx = InstantiateContext::new();
     ctx.index_source_scopes(&tree);
     ctx
-}
-
-fn make_simple_equation_at(
-    lhs: &str,
-    rhs: i64,
-    file_name: &str,
-    start: u32,
-    end: u32,
-) -> ast::Equation {
-    ast::Equation::Simple {
-        lhs: make_comp_ref_expr_at(&[lhs], file_name, start, end),
-        rhs: make_int_expr(rhs),
-    }
 }
 
 #[test]
@@ -338,6 +346,57 @@ fn test_lookup_type_info_accepts_predefined_state_select() {
 
     assert!(info.class_def.is_none());
     assert!(!info.is_primitive);
+    assert!(info.is_discrete);
+}
+
+/// MLS §3.8.3: `String` is discrete-valued by type, so a `String` component is
+/// discrete-time with no `discrete` prefix. Classifying it continuous makes the
+/// DAE boundary reject it as a continuous non-Real coordinate.
+#[test]
+fn test_lookup_type_info_classifies_string_as_discrete() {
+    let tree = ast::ClassTree::new();
+    let comp = make_component("s", "String", None);
+
+    let info = lookup_type_info(&tree, &comp, "String")
+        .expect("predefined String type should resolve through the type table");
+
+    assert!(info.is_primitive);
+    assert!(info.is_discrete);
+}
+
+/// A `String` type alias must inherit the discrete-by-type classification
+/// through its extends chain (MLS §3.8.3).
+#[test]
+fn test_lookup_type_info_classifies_string_alias_as_discrete() {
+    let string_def = DefId::new(1);
+    let label_def = DefId::new(2);
+
+    let string_class = ast::ClassDef {
+        name: make_token("String"),
+        def_id: Some(string_def),
+        ..Default::default()
+    };
+    let label = ast::ClassDef {
+        name: make_token("Label"),
+        def_id: Some(label_def),
+        extends: vec![ast::Extend {
+            base_name: make_name("String"),
+            base_def_id: Some(string_def),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut tree = ast::ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("String".to_string(), string_class);
+    tree.definitions.classes.insert("Label".to_string(), label);
+
+    let comp = make_component("s", "Label", Some(label_def));
+    let info = lookup_type_info(&tree, &comp, "Label")
+        .expect("String alias should resolve through the class tree");
+
     assert!(info.is_discrete);
 }
 
@@ -538,6 +597,7 @@ fn test_continuous_declaration_binding_preserves_runtime_expression() {
         &phi_diff,
         &mut ctx,
         &effective_components,
+        &TypeOverrideMap::new(),
         false,
         &[],
     )
@@ -565,14 +625,179 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
     let tree = ast::ClassTree::default();
     let mut ctx = InstantiateContext::new();
 
-    let info =
-        prepare_component_binding_info(&tree, &p, &mut ctx, &effective_components, true, &[])
-            .expect("parameter binding should prepare");
+    let info = prepare_component_binding_info(
+        &tree,
+        &p,
+        &mut ctx,
+        &effective_components,
+        &TypeOverrideMap::new(),
+        true,
+        &[],
+    )
+    .expect("parameter binding should prepare");
 
     assert_eq!(
         info.binding.as_ref().map(terminal_text),
         Some("5"),
         "structural parameter declaration bindings should still resolve"
+    );
+}
+
+#[test]
+fn conditional_component_folds_transitive_integer_function_parameter() {
+    let source = r#"
+package P
+  function numberOfBaseSystems
+    input Integer m = 3;
+    output Integer n;
+  algorithm
+    n := 1;
+    if mod(m, 2) == 0 then
+      if m == 2 then
+        n := 1;
+      else
+        n := n * 2 * numberOfBaseSystems(integer(m / 2));
+      end if;
+    else
+      n := 1;
+    end if;
+  end numberOfBaseSystems;
+
+  model Winding
+    parameter Integer m = 3;
+    final parameter Integer nBase = numberOfBaseSystems(m);
+    final parameter Integer mBase = integer(m / nBase);
+    final parameter Integer floored = integer(numberOfBaseSystems(4) / 3);
+    Real zeroInductor if mBase <> 2;
+    Real floorWitness if floored == 0;
+  end Winding;
+end P;
+"#;
+    let file_name = "transitive_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
+
+    let winding = resolved
+        .get_class_by_qualified_name("P.Winding")
+        .expect("resolved winding class");
+    let effective_components = resolve_effective_components_for_eval(&resolved, winding);
+    let mod_env = ast::ModificationEnvironment::new();
+    let eval_ctx = make_eval_ctx(&resolved, &mod_env, &effective_components);
+    for (name, expected) in [("m", 3), ("nBase", 1), ("mBase", 3), ("floored", 0)] {
+        let binding = effective_components[name]
+            .binding
+            .as_ref()
+            .expect("structural parameter binding");
+        assert_eq!(
+            rumoca_eval_ast::eval_instantiate::try_eval_integer_expr(&eval_ctx, binding),
+            Some(expected),
+            "{name} should fold transitively"
+        );
+    }
+
+    let instanced = instantiate(resolved, "P.Winding")
+        .expect("the parameter expression should decide the conditional component");
+
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "zeroInductor"),
+        "mBase=3 keeps the conditional component enabled"
+    );
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "floorWitness"),
+        "integer(2 / 3) uses Real division followed by floor"
+    );
+}
+
+#[test]
+fn conditional_component_folds_record_field_in_record_scope() {
+    let source = r#"
+package P
+  record Settings
+    parameter String layout = "Y3";
+    parameter Boolean connect3 = layout == "Y3" or layout == "D3";
+  end Settings;
+
+  model Brake
+    parameter Settings settings(layout = "D3");
+    Real plugToPin3 if settings.connect3;
+  end Brake;
+end P;
+"#;
+    let file_name = "record_scoped_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
+
+    let instanced = instantiate(resolved, "P.Brake")
+        .expect("the record parameter expression should decide the component");
+
+    assert!(
+        instanced
+            .overlay
+            .components
+            .iter()
+            .any(|(_, instance)| instance.qualified_name.to_flat_string() == "plugToPin3"),
+        "the modified record sibling is evaluated in the record instance scope"
+    );
+}
+
+#[test]
+fn conditional_component_folds_forwarded_enum_modifiers() {
+    let source = r#"
+package P
+  type Frame = enumeration(world, frame_a, frame_b, frame_resolve);
+
+  model Transform
+    parameter Frame frame_r_in = Frame.frame_a;
+    parameter Frame frame_r_out = frame_r_in;
+    Real resolveConnector if
+      frame_r_in == Frame.frame_resolve or frame_r_out == Frame.frame_resolve;
+  end Transform;
+
+  model Relative
+    parameter Frame resolveInFrame = Frame.frame_a;
+    parameter Frame resolveAfter = resolveInFrame;
+    Transform transform(
+      frame_r_in = resolveInFrame,
+      frame_r_out = resolveAfter);
+  end Relative;
+
+  model Root
+    Relative relative(resolveInFrame = Frame.frame_a);
+  end Root;
+end P;
+"#;
+    let file_name = "forwarded_enum_condition.mo";
+    let parsed = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source should parse");
+    let mut tree = ast::ClassTree::from_parsed(parsed);
+    tree.source_map.add(file_name, source);
+    let resolved =
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
+
+    let instanced = instantiate(resolved, "P.Root")
+        .expect("forwarded enum modifiers should decide the component");
+
+    assert!(
+        !instanced.overlay.components.iter().any(|(_, instance)| {
+            instance
+                .qualified_name
+                .to_flat_string()
+                .ends_with("resolveConnector")
+        }),
+        "the enum aliases all resolve to frame_a, so the conditional component is absent"
     );
 }
 
@@ -586,18 +811,20 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
                 parts: vec![ast::ComponentRefPart {
                     ident: make_token("a"),
                     subs: None,
+                    def_id: None,
                 }],
-                def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
             rhs: ast::ComponentReference {
                 local: false,
                 parts: vec![ast::ComponentRefPart {
                     ident: make_token("b"),
                     subs: None,
+                    def_id: None,
                 }],
-                def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
         },
         ast::Equation::Simple {
@@ -611,7 +838,7 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
     let origin = ast::QualifiedName::from_ident("M");
     let ctx = InstantiateContext::new();
     let converted =
-        equations_to_instance_without_connections(&ctx, &equations, &origin, &source_map)?;
+        equations_to_instance_without_connections(&ctx, &equations, &origin, &source_map, None)?;
 
     assert_eq!(converted.len(), 1);
     assert!(matches!(
@@ -619,6 +846,56 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
         ast::Equation::Simple { .. }
     ));
     assert_eq!(converted[0].origin, origin);
+    Ok(())
+}
+
+#[test]
+fn structural_if_equations_keep_only_the_active_branch() -> InstantiateResult<()> {
+    let source_name = "structural_if.mo";
+    let condition = ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::Bool,
+        token: make_token_at("false", source_name, 0, 5),
+        span: rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(source_name),
+            0,
+            5,
+        ),
+    };
+    let inactive = ast::Equation::Simple {
+        lhs: make_comp_ref_expr_at(&["inactive"], source_name, 7, 15),
+        rhs: make_int_expr(2),
+    };
+    let active = ast::Equation::Simple {
+        lhs: make_comp_ref_expr_at(&["active"], source_name, 17, 23),
+        rhs: make_int_expr(1),
+    };
+    let equations = vec![ast::Equation::If {
+        cond_blocks: vec![ast::EquationBlock {
+            cond: condition,
+            eqs: vec![inactive],
+        }],
+        else_block: Some(vec![active]),
+    }];
+
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add(source_name, "false; inactive; active;");
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::default();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let converted = equations_to_instance_without_connections(
+        &InstantiateContext::new(),
+        &equations,
+        &ast::QualifiedName::from_ident("M"),
+        &source_map,
+        Some(&eval_ctx),
+    )?;
+
+    assert_eq!(converted.len(), 1);
+    let ast::Equation::Simple { lhs, .. } = &converted[0].equation else {
+        panic!("expected selected simple equation");
+    };
+    assert_eq!(lhs.to_string(), "active");
     Ok(())
 }
 
@@ -692,6 +969,31 @@ fn test_extract_int_params_record_alias_prefers_rebound_field_values() {
         Some(&2),
         "aliased record field should override stale/default value"
     );
+}
+
+#[test]
+fn test_register_known_integer_instance_uses_modifier_source_scope() {
+    let mut ctx = InstantiateContext::new();
+    ctx.known_int_params.insert("source.n".to_string(), 2);
+    ctx.known_int_params.insert("holder.n".to_string(), 1);
+    let data = ast::InstanceData {
+        qualified_name: ast::QualifiedName::from_dotted("holder.n"),
+        binding: Some(ast::Expression::FieldAccess {
+            base: std::sync::Arc::new(make_comp_ref_expr(&["source"])),
+            field: "n".to_string(),
+            field_def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        }),
+        binding_source_scope: Some(ast::QualifiedName::new()),
+        binding_from_modification: true,
+        variability: rumoca_core::Variability::Parameter(make_token("parameter")),
+        is_discrete_type: true,
+        ..Default::default()
+    };
+
+    ctx.register_known_integer_instance(&data);
+
+    assert_eq!(ctx.known_int_params.get("holder.n"), Some(&2));
 }
 
 // -------------------------------------------------------------------------
@@ -832,18 +1134,27 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     let state_id = DefId::new(100);
     let uses_outer_id = DefId::new(101);
     let root_id = DefId::new(102);
+    let state_x_id = DefId::new(103);
+    let outer_shared_id = DefId::new(104);
+    let child_id = DefId::new(105);
+    let inner_shared_id = DefId::new(106);
 
     let mut state_x = make_component("x", "Real", None);
+    state_x.def_id = Some(state_x_id);
     state_x.location = make_location("late_inner.mo", 20, 21);
     let state = ast::ClassDef {
         def_id: Some(state_id),
         name: make_token("State"),
         components: [("x".to_string(), state_x)].into_iter().collect(),
-        equations: vec![make_simple_equation_at("x", 1, "late_inner.mo", 0, 1)],
+        equations: vec![ast::Equation::Simple {
+            lhs: make_resolved_comp_ref_expr_at("x", state_x_id, "late_inner.mo", 0, 1),
+            rhs: make_int_expr(1),
+        }],
         ..Default::default()
     };
 
     let mut outer_shared = make_component("shared", "State", Some(state_id));
+    outer_shared.def_id = Some(outer_shared_id);
     outer_shared.outer = true;
     outer_shared.location = make_location("late_inner.mo", 6, 12);
     let uses_outer = ast::ClassDef {
@@ -854,8 +1165,10 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     };
 
     let mut child = make_component("child", "UsesOuter", Some(uses_outer_id));
+    child.def_id = Some(child_id);
     child.location = make_location("late_inner.mo", 0, 5);
     let mut inner_shared = make_component("shared", "State", Some(state_id));
+    inner_shared.def_id = Some(inner_shared_id);
     inner_shared.location = make_location("late_inner.mo", 13, 19);
     inner_shared.inner = true;
     let root = ast::ClassDef {
@@ -883,8 +1196,11 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     tree.def_map.insert(root_id, "Root".to_string());
 
     let outcome = instantiate_model_with_outcome(&tree, "Root");
-    let InstantiationOutcome::Success(overlay) = outcome else {
-        panic!("late inner declaration should resolve pending outer reference");
+    let overlay = match outcome {
+        InstantiationOutcome::Success(overlay) => overlay,
+        other => {
+            panic!("late inner declaration should resolve pending outer reference: {other:?}")
+        }
     };
 
     assert!(
@@ -935,18 +1251,30 @@ fn test_type_compatible_class_inheritance() {
     // Test that a derived class is compatible with its base
     // Create a simple class hierarchy: DerivedConnector extends BaseConnector
     let mut tree = ast::ClassTree::default();
+    let base_def_id = rumoca_core::DefId::new(300);
+    let derived_def_id = rumoca_core::DefId::new(301);
+    tree.scope_tree.add_predefined_member(
+        rumoca_core::ComponentPath::from_flat_path("ExternalObject"),
+        rumoca_core::DefId::new(u32::MAX),
+    );
 
     // Base class
     let base = ast::ClassDef {
         name: make_token("BaseConnector"),
+        def_id: Some(base_def_id),
         ..Default::default()
     };
 
     // Derived class that extends Base
     let derived = ast::ClassDef {
         name: make_token("DerivedConnector"),
+        def_id: Some(derived_def_id),
         extends: vec![ast::Extend {
-            base_name: make_name("BaseConnector"),
+            base_name: ast::Name {
+                name: vec![make_token("BaseConnector")],
+                def_id: Some(base_def_id),
+            },
+            base_def_id: Some(base_def_id),
             ..Default::default()
         }],
         ..Default::default()
@@ -958,6 +1286,13 @@ fn test_type_compatible_class_inheritance() {
     tree.definitions
         .classes
         .insert("DerivedConnector".to_string(), derived);
+    for (name, def_id) in [
+        ("BaseConnector", base_def_id),
+        ("DerivedConnector", derived_def_id),
+    ] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
 
     // DerivedConnector should be compatible with BaseConnector (subtype)
     assert!(is_type_compatible(
