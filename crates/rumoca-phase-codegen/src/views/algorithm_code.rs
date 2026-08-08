@@ -15,6 +15,7 @@ pub struct AlgorithmCodeView<'a> {
     block_name: &'a str,
     block_name_quoted: bool,
     symbol_names: Vec<&'a str>,
+    variable_names: Vec<&'a str>,
     variables: Vec<VariableView<'a>>,
     methods: MethodsView,
 }
@@ -61,6 +62,7 @@ impl<'a> AlgorithmCodeView<'a> {
                 VariableView::new(index + 1, declaration, start, causality, *nominal)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let variable_names = variables.iter().map(|variable| variable.name).collect();
         Ok(Self {
             package: PackageRoot {
                 block: algorithm_code_typed::block(block)?,
@@ -69,6 +71,7 @@ impl<'a> AlgorithmCodeView<'a> {
             block_name,
             block_name_quoted,
             symbol_names: algorithm_code_symbols::collect(block),
+            variable_names,
             variables,
             methods: MethodsView::new(block),
         })
@@ -193,6 +196,7 @@ pub struct CheckedAlgorithmBlockView<'a> {
     block_name: &'a str,
     block_name_quoted: bool,
     symbol_names: Vec<&'a str>,
+    variable_names: Vec<&'a str>,
     variables: Vec<CheckedBlockVariable<'a>>,
     methods: MethodsView,
 }
@@ -255,6 +259,7 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let variable_names = variables.iter().map(|variable| variable.name).collect();
         Ok(Self {
             package: CheckedBlockRoot {
                 block: algorithm_code_typed::block(block)?,
@@ -262,6 +267,7 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
             block_name,
             block_name_quoted,
             symbol_names: algorithm_code_symbols::collect(block),
+            variable_names,
             variables,
             methods: MethodsView::new(block),
         })

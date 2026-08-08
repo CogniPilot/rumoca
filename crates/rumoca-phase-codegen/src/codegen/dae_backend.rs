@@ -312,6 +312,16 @@ fn project_function_statement(statement: dae::FunctionStatementView<'_>) -> Valu
             "kind": "assignment",
             "definition": definition.id().ordinal(),
         }),
+        dae::FunctionStatementView::AssignmentGroup { definitions } => json!({
+            "kind": "assignment_group",
+            "statements": definitions
+                .iter()
+                .map(|definition| json!({
+                    "kind": "assignment",
+                    "definition": definition.id().ordinal(),
+                }))
+                .collect::<Vec<_>>(),
+        }),
         dae::FunctionStatementView::Assertion {
             condition,
             message,

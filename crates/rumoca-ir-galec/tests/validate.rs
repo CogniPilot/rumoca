@@ -354,13 +354,7 @@ fn malformed_structural_shapes_fail_at_checked_construction_boundary() {
 
     for (expression, code) in [
         (Expression::Array(vec![]), "EG007"),
-        (
-            Expression::If(IfExpression {
-                branches: vec![],
-                else_value: Box::new(r(0.0)),
-            }),
-            "EG009",
-        ),
+        (Expression::If(IfExpression::new(vec![], r(0.0))), "EG009"),
     ] {
         expect_statement(
             Statement::Assignment {
@@ -512,10 +506,10 @@ fn if_expression_branches_must_be_equally_typed() {
     block.do_step.locals = vec![int_decl("k")];
     block.do_step.statements = vec![assign(
         local("k"),
-        Expression::If(IfExpression {
-            branches: vec![(bin(BinaryOp::Gt, sref("u"), r(0.0)), int(1))],
-            else_value: Box::new(r(2.0)),
-        }),
+        Expression::If(IfExpression::new(
+            vec![(bin(BinaryOp::Gt, sref("u"), r(0.0)), int(1))],
+            r(2.0),
+        )),
     )];
     expect_codes(&block, &["EG017"]);
 }
@@ -1025,13 +1019,13 @@ fn stateful_calls_banned_inside_if_expressions() {
     block.do_step.locals = vec![real_decl("w")];
     block.do_step.statements = vec![assign(
         local("w"),
-        Expression::If(IfExpression {
-            branches: vec![(
+        Expression::If(IfExpression::new(
+            vec![(
                 bin(BinaryOp::Gt, sref("u"), r(0.0)),
                 Expression::Call(fcall("bump", vec![])),
             )],
-            else_value: Box::new(r(0.0)),
-        }),
+            r(0.0),
+        )),
     )];
     expect_codes(&block, &["EG032"]);
 }

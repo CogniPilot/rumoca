@@ -16,6 +16,10 @@
     algorithm_code.symbol_names,
     {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
 ) -%}
+{%- set c_state_symbols = allocate_symbols(
+    algorithm_code.variable_names,
+    {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
+) -%}
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
 {%- macro attr(name, value) -%}{{ " " }}{{ name }}="{{ value | xml_escape }}"{%- endmacro -%}
 {%- macro type_id(kind) -%}{% if kind == "real" %}TD_F32{% elif kind == "integer" %}TD_I32{% elif kind == "boolean" %}TD_BOOL{% else %}{{ fail_closed_scalar_type }}{% endif %}{%- endmacro -%}
@@ -57,7 +61,7 @@
           <Typedef id="TD_STATE"{{ attr("name", c_model ~ "State") }}>
             <Components>
 {%- for variable in algorithm_code.variables %}
-              <Component{{ attr("id", "CO_" ~ variable.ordinal) }}{{ attr("name", symbol(c_symbols, variable.name)) }}{{ attr("typeDefRefId", type_id(variable.kind)) }}
+              <Component{{ attr("id", "CO_" ~ variable.ordinal) }}{{ attr("name", symbol(c_state_symbols, variable.name)) }}{{ attr("typeDefRefId", type_id(variable.kind)) }}
 {%- if variable.dimensions|length == 0 %}/>
 {%- else %}>
                 <Dimensions>
@@ -88,7 +92,7 @@
 {%- for variable in algorithm_code.variables %}
         <DataReference>
           <ForeignVariableReference manifestReferenceRefId="MR_AC"{{ attr("foreignRefId", "V" ~ variable.ordinal) }}/>
-          <FormalParameter formalParameterRefId="FP_DOSTEP_SELF"{{ attr("componentIdentifier", symbol(c_symbols, variable.name)) }}/>
+          <FormalParameter formalParameterRefId="FP_DOSTEP_SELF"{{ attr("componentIdentifier", symbol(c_state_symbols, variable.name)) }}/>
         </DataReference>
 {%- endfor %}
         <DataReference>

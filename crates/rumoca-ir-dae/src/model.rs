@@ -109,7 +109,10 @@ use crate::{
 ///
 /// 27 adds compact structured root families. Checked replay derives their
 /// scalar coverage from the referenced domain and binder-scoped relation.
-pub const DAE_SCHEMA_VERSION: u16 = 27;
+///
+/// 28 retains atomic function assignment groups, including multi-result calls
+/// and conditional joins, as one checked statement owner during wire replay.
+pub const DAE_SCHEMA_VERSION: u16 = 28;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -350,6 +353,9 @@ pub(crate) struct FunctionDefinitionEntry {
 enum FunctionStatementWire {
     Assignment {
         definition: u32,
+    },
+    AssignmentGroup {
+        definitions: Vec<u32>,
     },
     Assertion {
         condition: u32,
@@ -1327,13 +1333,17 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage
                 .expect_value_type_compatible(entry.value_type, found, provenance)?;
         }
+        let mut definitions = Vec::with_capacity(assignments.len());
         for (target, value) in assignments {
             let definition = insert_function_definition(self.storage, *target, *value, provenance)?;
             let build = function_build_state_mut(self.storage, body);
             build.current_values[target.ordinal() as usize] = Some(definition.ordinal());
-            build.statements.push(FunctionStatementWire::Assignment {
-                definition: definition.ordinal(),
-            });
+            definitions.push(definition.ordinal());
+        }
+        if !definitions.is_empty() {
+            function_build_state_mut(self.storage, body)
+                .statements
+                .push(FunctionStatementWire::AssignmentGroup { definitions });
         }
         Ok(())
     }

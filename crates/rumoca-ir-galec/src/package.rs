@@ -200,4 +200,47 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn checked_block_rejects_a_mutated_bounded_selection_expansion() {
+        let mut block = galec::Block::new(galec::Name::ident("SelectionIntegrity"));
+        let mut samples = galec::VariableDeclaration::scalar(
+            galec::ScalarType::Real,
+            galec::Name::ident("samples"),
+        );
+        samples.dimensions = vec![galec::Dimension::Expr(galec::Expression::Integer(3))];
+        block.do_step.locals = vec![
+            samples,
+            galec::VariableDeclaration::scalar(
+                galec::ScalarType::Integer,
+                galec::Name::ident("index"),
+            ),
+            galec::VariableDeclaration::scalar(
+                galec::ScalarType::Real,
+                galec::Name::ident("selected"),
+            ),
+        ];
+        let reference = galec::Reference::Local(galec::RefPart {
+            name: galec::Name::ident("samples"),
+            subscripts: vec![galec::Expression::Ref(galec::Reference::local(
+                galec::Name::ident("index"),
+            ))],
+            span: rumoca_core::Span::DUMMY,
+        });
+        let mut selection = galec::IfExpression::bounded_selection(reference, vec![3])
+            .expect("valid bounded selection");
+        *selection.else_value = galec::Expression::Ref(galec::Reference::Local(galec::RefPart {
+            name: galec::Name::ident("samples"),
+            subscripts: vec![galec::Expression::Integer(1)],
+            span: rumoca_core::Span::DUMMY,
+        }));
+        block.do_step.statements = vec![galec::Spanned::dummy(galec::Statement::Assignment {
+            target: galec::Reference::local(galec::Name::ident("selected")),
+            value: galec::Expression::If(selection),
+        })];
+
+        let error = CheckedAlgorithmBlock::construct(block)
+            .expect_err("a stale correlation must fail checked construction");
+        assert!(error.to_string().contains("EG041"), "{error}");
+    }
 }

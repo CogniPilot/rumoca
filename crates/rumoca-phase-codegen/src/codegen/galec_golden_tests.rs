@@ -261,16 +261,16 @@ fn rate_controller_do_step() -> BlockMethod {
             ),
         ),
     ];
-    let limiter = Expression::If(IfExpression {
-        branches: vec![
+    let limiter = Expression::If(IfExpression::new(
+        vec![
             (bin(BinaryOp::Gt, lref("unboundedDrive"), r(50.0)), r(50.0)),
             (
                 bin(BinaryOp::Lt, lref("unboundedDrive"), r(-50.0)),
                 r(-50.0),
             ),
         ],
-        else_value: Box::new(lref("unboundedDrive")),
-    });
+        lref("unboundedDrive"),
+    ));
     BlockMethod {
         signals: vec![PredefinedSignal::Nan],
         locals: vec![

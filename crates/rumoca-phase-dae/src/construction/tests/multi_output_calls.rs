@@ -216,8 +216,15 @@ fn multi_result_call_defines_every_receiving_variable() {
             .map(|value| value.name().as_str().to_string())
             .collect::<Vec<_>>();
         assert_eq!(locals, vec!["p".to_string(), "q".to_string()]);
-        // Two receivers plus the result assignment.
-        assert_eq!(caller.statements().count(), 3);
+        // Both receivers remain one checked atomic call-result group, followed
+        // by the result assignment.
+        let statements = caller.statements().collect::<Vec<_>>();
+        assert_eq!(statements.len(), 2);
+        assert!(matches!(
+            &statements[0],
+            dae::FunctionStatementView::AssignmentGroup { definitions }
+                if definitions.len() == 2
+        ));
     });
 }
 

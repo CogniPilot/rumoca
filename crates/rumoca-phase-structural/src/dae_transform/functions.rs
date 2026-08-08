@@ -479,6 +479,9 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 dae::FunctionStatementView::Assignment { definition } => {
                     self.assign_statement(target, function, &mut body, definition)?
                 }
+                dae::FunctionStatementView::AssignmentGroup { definitions } => {
+                    self.assign_group(target, function, &mut body, definitions)?
+                }
                 dae::FunctionStatementView::Assertion {
                     condition,
                     message,
@@ -535,6 +538,41 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             target_value,
             target_definition,
         )
+    }
+
+    fn assign_group(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        function: &RebuiltFunction<'target>,
+        body: &mut dae::FunctionBody<'target>,
+        definitions: dae::FunctionDefinitionValues<'source>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let source = definitions.iter().collect::<Vec<_>>();
+        let provenance = source
+            .first()
+            .expect("checked assignment group is nonempty")
+            .provenance();
+        let mut assignments = Vec::with_capacity(source.len());
+        for definition in &source {
+            let target_value = function.values[definition.target().ordinal() as usize];
+            let value = self.rebuild_expression(target, body, definition.rhs())?;
+            assignments.push((target_value, value));
+        }
+        target.functions(|functions| functions.assign_all(body, &assignments, provenance))?;
+        for (definition, (target_value, _)) in source.into_iter().zip(assignments) {
+            let target_definition = target.functions(|functions| {
+                functions.current_definition_id(body, target_value, provenance)
+            })?;
+            self.materialize_definition_uses(
+                target,
+                body,
+                definition,
+                definition.target(),
+                target_value,
+                target_definition,
+            )?;
+        }
+        Ok(())
     }
 
     fn rebuild_loop(
@@ -599,9 +637,16 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         statements: dae::FunctionStatements<'source>,
     ) -> Result<(), dae::DaeConstructionError> {
         for statement in statements {
-            let dae::FunctionStatementView::Assignment { definition } = statement else {
-                self.rebuild_loop_assertion(target, loop_body, statement)?;
-                continue;
+            let definition = match statement {
+                dae::FunctionStatementView::Assignment { definition } => definition,
+                dae::FunctionStatementView::AssignmentGroup { definitions } => {
+                    self.rebuild_loop_assignment_group(target, function, loop_body, definitions)?;
+                    continue;
+                }
+                statement => {
+                    self.rebuild_loop_assertion(target, loop_body, statement)?;
+                    continue;
+                }
             };
             let source_target = definition.target();
             let source_rhs = definition.rhs();
@@ -619,6 +664,43 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 loop_body.body(),
                 definition,
                 source_target,
+                target_value,
+                target_definition,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn rebuild_loop_assignment_group(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        function: &RebuiltFunction<'target>,
+        loop_body: &mut dae::FunctionLoop<'target>,
+        definitions: dae::FunctionDefinitionValues<'source>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let source = definitions.iter().collect::<Vec<_>>();
+        let provenance = source
+            .first()
+            .expect("checked loop assignment group is nonempty")
+            .provenance();
+        let mut assignments = Vec::with_capacity(source.len());
+        for definition in &source {
+            let target_value = function.values[definition.target().ordinal() as usize];
+            let value = self.rebuild_expression(target, loop_body.body(), definition.rhs())?;
+            assignments.push((target_value, value));
+        }
+        target.functions(|functions| {
+            functions.assign_all_loop(loop_body, &assignments, provenance)
+        })?;
+        for (definition, (target_value, _)) in source.into_iter().zip(assignments) {
+            let target_definition = target.functions(|functions| {
+                functions.current_definition_id(loop_body.body(), target_value, provenance)
+            })?;
+            self.materialize_definition_uses(
+                target,
+                loop_body.body(),
+                definition,
+                definition.target(),
                 target_value,
                 target_definition,
             )?;

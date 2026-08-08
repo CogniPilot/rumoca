@@ -198,10 +198,10 @@ fn collect_algorithm_owners(
                 })
             })
             .collect::<Result<Vec<_>, ToDaeError>>()?;
-        owners.extend(targets.into_iter().map(|target| SourceOwner {
-            targets: vec![target],
+        owners.push(SourceOwner {
+            targets,
             span: algorithm.span,
-        }));
+        });
     }
     Ok(())
 }

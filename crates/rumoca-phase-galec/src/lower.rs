@@ -875,6 +875,7 @@ struct ExpressionLowerer<'a, 'dae> {
     function_fold_projection_cache: HashMap<u32, bool>,
     comprehension_frames: Vec<ComprehensionFrame>,
     loop_index_bounds: Vec<LoopIndexBound>,
+    conditional_activation_path: Vec<ConditionalActivationKey>,
     materialize_function_values: bool,
     inline_causal_locals: bool,
     conditional_depth: usize,
@@ -940,8 +941,43 @@ struct MaterializedCallKey {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct MaterializedFunctionCallKey {
     call_path: Vec<MaterializedCallKey>,
+    activation_path: Vec<ConditionalActivationKey>,
     function: u32,
     arguments: Vec<u32>,
+}
+
+type SharedMaterializedFunctionCalls = HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>;
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ConditionalActivationKey {
+    kind: ConditionalActivationKind,
+    operands: Vec<u32>,
+    branch: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ConditionalActivationKind {
+    ConditionalScalar,
+    ConditionalRecord,
+    ArraySelection,
+    ArrayUpdate,
+    Concatenation,
+}
+
+#[derive(Clone)]
+struct ConditionalMaterializationSnapshot {
+    function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
+    fold_outputs: HashMap<FunctionFoldOutputKey, TypedExpression>,
+    seen_assertions: HashSet<FunctionAssertionCallKey>,
+}
+
+struct MaterializedConditional<'a, 'dae> {
+    operands: dae::ExpressionOperands<'dae>,
+    indices: &'a [gast::Expression],
+    scalar_type: gast::ScalarType,
+    target: &'a gast::Name,
+    activation_operands: Vec<u32>,
+    span: Span,
 }
 
 #[derive(Clone)]
@@ -1020,6 +1056,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             function_fold_projection_cache: HashMap::new(),
             comprehension_frames: Vec::new(),
             loop_index_bounds: Vec::new(),
+            conditional_activation_path: Vec::new(),
             materialize_function_values: false,
             inline_causal_locals: false,
             conditional_depth: 0,
@@ -1068,6 +1105,42 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     fn take_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
         self.finish_statement_group();
         self.drain_prefix_statements()
+    }
+
+    /// Finish one schedulable state-assignment group while retaining only
+    /// call temporaries initialized by a dominating clock-domain preamble.
+    fn take_prefix_statements_with_shared_calls(
+        &mut self,
+        shared: &SharedMaterializedFunctionCalls,
+    ) -> Vec<gast::Spanned<gast::Statement>> {
+        self.finish_statement_group();
+        self.materialized_function_calls.clone_from(shared);
+        self.drain_prefix_statements()
+    }
+
+    fn shared_materialized_function_calls(&self) -> SharedMaterializedFunctionCalls {
+        self.materialized_function_calls.clone()
+    }
+
+    fn conditional_materialization_snapshot(&self) -> ConditionalMaterializationSnapshot {
+        ConditionalMaterializationSnapshot {
+            function_values: self.materialized_function_values.clone(),
+            fold_outputs: self.function_fold_output_cache.clone(),
+            seen_assertions: self.seen_assertion_calls.clone(),
+        }
+    }
+
+    fn restore_conditional_materialization(
+        &mut self,
+        snapshot: &ConditionalMaterializationSnapshot,
+    ) {
+        self.materialized_function_values
+            .clone_from(&snapshot.function_values);
+        self.function_fold_output_cache
+            .clone_from(&snapshot.fold_outputs);
+        self.seen_assertion_calls
+            .clone_from(&snapshot.seen_assertions);
+        self.scalar_projection_cache.clear();
     }
 
     fn drain_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
@@ -1311,12 +1384,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .values()
                 .find(|value| value.id() == definition.target())
                 .expect("checked function definition target resolves");
+            let value_type = self
+                .view
+                .value_type(value.value_type())
+                .expect("checked function value type resolves");
             return Ok(TypedExpression {
-                expression: gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
-                    name: user_functions::value_name(value)?,
-                    subscripts: indices.to_vec(),
-                    span: definition.provenance().span(),
-                })),
+                expression: self.lower_local_reference(
+                    user_functions::value_name(value)?,
+                    value_type.dimensions(),
+                    indices,
+                    definition.provenance().span(),
+                )?,
                 scalar_type,
             });
         }
@@ -1513,86 +1591,105 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             range: gast::RangeAttributes::default(),
             span,
         });
-        let statements = self.lower_materialized_conditional_branch(
+        let conditional = MaterializedConditional {
             operands,
             indices,
             scalar_type,
-            &name,
-            0,
+            target: &name,
+            activation_operands: conditional_activation_operands(operands),
             span,
-        )?;
+        };
+        let statements = self.lower_materialized_conditional_branch(&conditional, 0)?;
         self.pending_prefix_statements.extend(statements);
         Ok(gast::Expression::Ref(gast::Reference::local(name)))
     }
 
     fn lower_materialized_conditional_branch(
         &mut self,
-        operands: dae::ExpressionOperands<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-        target: &gast::Name,
+        conditional: &MaterializedConditional<'_, 'dae>,
         ordinal: usize,
-        span: Span,
     ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-        if ordinal + 1 == operands.len() {
+        self.conditional_activation_path
+            .push(ConditionalActivationKey {
+                kind: ConditionalActivationKind::ConditionalScalar,
+                operands: conditional.activation_operands.clone(),
+                branch: u32::try_from(ordinal / 2).map_err(|_| {
+                    GalecTargetError::LoweringInternal {
+                        detail: "conditional branch exceeds the activation-key capacity".to_owned(),
+                    }
+                })?,
+            });
+        if ordinal + 1 == conditional.operands.len() {
             let start = self.pending_prefix_statements.len();
             let value = self.lower_at(
-                operands.get(ordinal).expect("checked conditional fallback"),
-                indices,
-            )?;
+                conditional
+                    .operands
+                    .get(ordinal)
+                    .expect("checked conditional fallback"),
+                conditional.indices,
+            );
+            self.conditional_activation_path.pop();
+            let value = value?;
             let mut body = self.pending_prefix_statements.split_off(start);
             body.push(gast::Spanned::new(
                 gast::Statement::Assignment {
-                    target: gast::Reference::local(target.clone()),
-                    value: coerce(value, scalar_type, span)?,
+                    target: gast::Reference::local(conditional.target.clone()),
+                    value: coerce(value, conditional.scalar_type, conditional.span)?,
                 },
-                span,
+                conditional.span,
             ));
             return Ok(body);
         }
 
         let condition_start = self.pending_prefix_statements.len();
         let condition = self.lower(
-            operands
+            conditional
+                .operands
                 .get(ordinal)
                 .expect("checked conditional branch condition"),
-        )?;
-        require_boolean(&condition, span)?;
+        );
+        let condition = match condition {
+            Ok(condition) => condition,
+            Err(error) => {
+                self.conditional_activation_path.pop();
+                return Err(error);
+            }
+        };
+        if let Err(error) = require_boolean(&condition, conditional.span) {
+            self.conditional_activation_path.pop();
+            return Err(error);
+        }
         let mut statements = self.pending_prefix_statements.split_off(condition_start);
 
         let value_start = self.pending_prefix_statements.len();
         let value = self.lower_at(
-            operands
+            conditional
+                .operands
                 .get(ordinal + 1)
                 .expect("checked conditional branch value"),
-            indices,
-        )?;
+            conditional.indices,
+        );
+        self.conditional_activation_path.pop();
+        let value = value?;
         let mut body = self.pending_prefix_statements.split_off(value_start);
         body.push(gast::Spanned::new(
             gast::Statement::Assignment {
-                target: gast::Reference::local(target.clone()),
-                value: coerce(value, scalar_type, span)?,
+                target: gast::Reference::local(conditional.target.clone()),
+                value: coerce(value, conditional.scalar_type, conditional.span)?,
             },
-            span,
+            conditional.span,
         ));
-        let else_body = self.lower_materialized_conditional_branch(
-            operands,
-            indices,
-            scalar_type,
-            target,
-            ordinal + 2,
-            span,
-        )?;
+        let else_body = self.lower_materialized_conditional_branch(conditional, ordinal + 2)?;
         statements.push(gast::Spanned::new(
             gast::Statement::If(gast::IfStatement {
                 branches: vec![gast::IfBranch {
                     condition: gast::Condition::Expression(condition.expression),
                     body,
-                    span,
+                    span: conditional.span,
                 }],
                 else_body: Some(else_body),
             }),
-            span,
+            conditional.span,
         ));
         Ok(statements)
     }
@@ -1621,11 +1718,23 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .expect("checked conditional fallback"),
             indices,
         )?;
-        Ok(gast::Expression::If(gast::IfExpression {
+        Ok(gast::Expression::If(gast::IfExpression::new(
             branches,
-            else_value: Box::new(coerce(fallback, scalar_type, span)?),
-        }))
+            coerce(fallback, scalar_type, span)?,
+        )))
     }
+}
+
+fn conditional_activation_operands(operands: dae::ExpressionOperands<'_>) -> Vec<u32> {
+    (0..operands.len().saturating_sub(1))
+        .step_by(2)
+        .map(|ordinal| {
+            operands
+                .get(ordinal)
+                .expect("checked conditional condition")
+                .index()
+        })
+        .collect()
 }
 
 fn first_function_assertion(statements: dae::FunctionStatements<'_>) -> Option<Span> {
@@ -1639,7 +1748,8 @@ fn first_function_assertion(statements: dae::FunctionStatements<'_>) -> Option<S
                     return Some(span);
                 }
             }
-            dae::FunctionStatementView::Assignment { .. } => {}
+            dae::FunctionStatementView::Assignment { .. }
+            | dae::FunctionStatementView::AssignmentGroup { .. } => {}
         }
     }
     None

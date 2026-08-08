@@ -228,10 +228,7 @@ impl TryFrom<&g::IfExpression> for rumoca_ir_galec::ast::IfExpression {
         for branch in &ast.if_expression_list {
             branches.push((branch.expression.clone(), branch.expression0.clone()));
         }
-        Ok(Self {
-            branches,
-            else_value: Box::new(ast.expression1.clone()),
-        })
+        Ok(Self::new(branches, ast.expression1.clone()))
     }
 }
 

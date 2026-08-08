@@ -820,16 +820,11 @@ struct FunctionMultiOutputCall<'statement> {
 
 /// Lower one MLS §11.2.1.1 multi-result call statement.
 ///
-/// The call's *arguments* are lowered once and each read result ordinal becomes
-/// the `call(function, ordinal, ..)` node that defines its receiving variable —
-/// the same owner an MLS §11.2.1 single-result assignment builds at ordinal 0.
-/// An omitted receiver reads no result, so it mints no expression.
-///
-/// Only the arguments are shared: reading k results denotes k evaluations of
-/// the callee body, not the one evaluation MLS §12.4.3 describes. That is
-/// observationally equal only for a pure callee, which is why an impure
-/// external callee is refused by name during planning. See
-/// [`expression::LoweredCallOperands`] for the cost this leaves behind.
+/// The call's arguments are lowered once and every received result is committed
+/// as one atomic assignment group. The checked group retains the MLS §12.4.3
+/// proof that all result projections belong to one call evaluation; a backend
+/// may therefore materialize the call once without inferring atomicity from
+/// spans or expression identity.
 fn lower_function_multi_output_call<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
@@ -853,6 +848,7 @@ fn lower_function_multi_output_call<'dae>(
         call.args,
         provenance,
     )?;
+    let mut assignments = Vec::new();
     for (ordinal, plan) in call.outputs.iter().enumerate() {
         let Some(plan) = plan else {
             continue;
@@ -884,9 +880,9 @@ fn lower_function_multi_output_call<'dae>(
                 },
             )?;
         }
-        construction.functions(|owner| owner.assign(body, target, value, provenance))?;
+        assignments.push((target, value));
     }
-    Ok(())
+    construction.functions(|owner| owner.assign_all(body, &assignments, provenance))
 }
 
 fn lower_function_record_multi_output_assembly<'dae>(

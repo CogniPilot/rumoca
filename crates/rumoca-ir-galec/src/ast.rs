@@ -635,6 +635,177 @@ pub struct IfExpression {
     pub branches: Vec<(Expression, Expression)>,
     /// Mandatory `else` value — unrepresentable without one.
     pub else_value: Box<Expression>,
+    /// Stronger target-neutral operation whose GALEC legalization is exactly
+    /// `branches` plus `else_value` (SPEC_0034 GAL-033).
+    correlation: Option<Box<BoundedSelection>>,
+}
+
+/// A checked bounded tensor selection retained beside its conforming GALEC
+/// expansion. The reference contains the original runtime subscripts.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BoundedSelection {
+    reference: Reference,
+    extents: Vec<u32>,
+}
+
+/// Failure to construct a bounded selection and its equivalent GALEC form.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BoundedSelectionError {
+    #[error("bounded selection requires one array reference part")]
+    ReferenceShape,
+    #[error("bounded selection requires one non-empty extent per subscript")]
+    DimensionShape,
+    #[error("bounded selection has no runtime subscript")]
+    StaticSelection,
+    #[error("bounded selection domain is too large")]
+    DomainOverflow,
+}
+
+impl IfExpression {
+    /// Construct an ordinary GALEC if-expression without a stronger
+    /// target-neutral correlation.
+    #[must_use]
+    pub fn new(branches: Vec<(Expression, Expression)>, else_value: Expression) -> Self {
+        Self {
+            branches,
+            else_value: Box::new(else_value),
+            correlation: None,
+        }
+    }
+
+    /// Construct a bounded selection together with its exhaustive,
+    /// static-subscript GALEC legalization.
+    pub fn bounded_selection(
+        reference: Reference,
+        extents: Vec<u32>,
+    ) -> Result<Self, BoundedSelectionError> {
+        let part =
+            single_reference_part(&reference).ok_or(BoundedSelectionError::ReferenceShape)?;
+        if extents.is_empty() || extents.len() != part.subscripts.len() || extents.contains(&0) {
+            return Err(BoundedSelectionError::DimensionShape);
+        }
+        if part
+            .subscripts
+            .iter()
+            .all(|index| matches!(index, Expression::Integer(_)))
+        {
+            return Err(BoundedSelectionError::StaticSelection);
+        }
+        let candidates = bounded_selection_indices(&extents)?
+            .into_iter()
+            .filter(|candidate| {
+                part.subscripts
+                    .iter()
+                    .zip(candidate)
+                    .all(|(index, candidate)| {
+                        !matches!(index, Expression::Integer(found) if *found != i64::from(*candidate))
+                    })
+            })
+            .collect::<Vec<_>>();
+        let (fallback, branches) = candidates
+            .split_last()
+            .ok_or(BoundedSelectionError::DimensionShape)?;
+        let branches = branches
+            .iter()
+            .map(|candidate| {
+                let condition = part
+                    .subscripts
+                    .iter()
+                    .zip(candidate)
+                    .filter(|(index, _)| !matches!(index, Expression::Integer(_)))
+                    .map(|(index, candidate)| {
+                        Expression::binary(
+                            BinaryOp::Eq,
+                            index.clone(),
+                            Expression::Integer(i64::from(*candidate)),
+                        )
+                    })
+                    .reduce(|lhs, rhs| Expression::binary(BinaryOp::And, lhs, rhs))
+                    .expect("bounded selection has a runtime subscript");
+                (
+                    condition,
+                    Expression::Ref(reference_with_subscripts(&reference, candidate)),
+                )
+            })
+            .collect();
+        Ok(Self {
+            branches,
+            else_value: Box::new(Expression::Ref(reference_with_subscripts(
+                &reference, fallback,
+            ))),
+            correlation: Some(Box::new(BoundedSelection { reference, extents })),
+        })
+    }
+
+    #[must_use]
+    pub fn bounded_selection_correlation(&self) -> Option<&BoundedSelection> {
+        self.correlation.as_deref()
+    }
+
+    pub(crate) fn correlation_is_exact(&self) -> bool {
+        let Some(selection) = &self.correlation else {
+            return true;
+        };
+        Self::bounded_selection(selection.reference.clone(), selection.extents.clone()).is_ok_and(
+            |expected| self.branches == expected.branches && self.else_value == expected.else_value,
+        )
+    }
+}
+
+impl BoundedSelection {
+    #[must_use]
+    pub const fn reference(&self) -> &Reference {
+        &self.reference
+    }
+
+    #[must_use]
+    pub fn extents(&self) -> &[u32] {
+        &self.extents
+    }
+}
+
+fn single_reference_part(reference: &Reference) -> Option<&RefPart> {
+    match reference {
+        Reference::Local(part) => Some(part),
+        Reference::State(parts) if parts.len() == 1 => parts.first(),
+        Reference::State(_) => None,
+    }
+}
+
+fn reference_with_subscripts(reference: &Reference, indices: &[u32]) -> Reference {
+    let mut result = reference.clone();
+    let part = match &mut result {
+        Reference::Local(part) => part,
+        Reference::State(parts) => &mut parts[0],
+    };
+    part.subscripts = indices
+        .iter()
+        .map(|index| Expression::Integer(i64::from(*index)))
+        .collect();
+    result
+}
+
+fn bounded_selection_indices(extents: &[u32]) -> Result<Vec<Vec<u32>>, BoundedSelectionError> {
+    const MAX_POINTS: usize = 1_000_000;
+    let count = extents
+        .iter()
+        .try_fold(1_usize, |count, extent| count.checked_mul(*extent as usize));
+    let count = count
+        .filter(|count| *count <= MAX_POINTS)
+        .ok_or(BoundedSelectionError::DomainOverflow)?;
+    let mut result = Vec::with_capacity(count);
+    let mut current = vec![1; extents.len()];
+    loop {
+        result.push(current.clone());
+        let Some(axis) = (0..extents.len())
+            .rev()
+            .find(|axis| current[*axis] < extents[*axis])
+        else {
+            return Ok(result);
+        };
+        current[axis] += 1;
+        current[axis + 1..].fill(1);
+    }
 }
 
 /// A function call `name(args)`.
@@ -830,4 +1001,55 @@ pub enum Statement {
     /// re-raises closures. Whole-block construction requires at least one
     /// identifier.
     Signal(Vec<Identifier>),
+}
+
+#[cfg(test)]
+mod bounded_selection_tests {
+    use super::*;
+
+    fn dynamic_reference() -> Reference {
+        Reference::Local(RefPart {
+            name: Name::ident("samples"),
+            subscripts: vec![Expression::Ref(Reference::local(Name::ident("index")))],
+            span: Span::DUMMY,
+        })
+    }
+
+    #[test]
+    fn bounded_selection_owns_exact_static_expansion() {
+        let mut selection = IfExpression::bounded_selection(dynamic_reference(), vec![3])
+            .expect("valid bounded selection");
+        assert_eq!(selection.branches.len(), 2);
+        assert_eq!(
+            selection.else_value,
+            Box::new(Expression::Ref(Reference::Local(RefPart {
+                name: Name::ident("samples"),
+                subscripts: vec![Expression::Integer(3)],
+                span: Span::DUMMY,
+            })))
+        );
+        assert!(selection.correlation_is_exact());
+
+        *selection.else_value = Expression::Integer(0);
+        assert!(!selection.correlation_is_exact());
+    }
+
+    #[test]
+    fn malformed_bounded_selections_are_unconstructable() {
+        assert_eq!(
+            IfExpression::bounded_selection(dynamic_reference(), vec![]),
+            Err(BoundedSelectionError::DimensionShape)
+        );
+        assert_eq!(
+            IfExpression::bounded_selection(
+                Reference::Local(RefPart {
+                    name: Name::ident("samples"),
+                    subscripts: vec![Expression::Integer(1)],
+                    span: Span::DUMMY,
+                }),
+                vec![3],
+            ),
+            Err(BoundedSelectionError::StaticSelection)
+        );
+    }
 }

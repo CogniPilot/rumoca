@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 use rumoca_ir_galec::ast;
 use serde::Serialize;
 
+use super::algorithm_code_scopes::{LocalPlacements, ScopePath, ScopeStep};
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TypedBlockView<'a> {
     name: &'a ast::Name,
@@ -38,6 +40,7 @@ struct SemanticOperationUses {
     compare_ge: bool,
     compare_eq: bool,
     compare_ne: bool,
+    bounded_selection: bool,
 }
 
 impl SemanticOperationUses {
@@ -73,6 +76,7 @@ struct TypedFunctionView<'a> {
     signals: &'a [ast::Identifier],
     parameters: &'a [ast::Parameter],
     locals: &'a [ast::VariableDeclaration],
+    c_locals: Vec<&'a ast::VariableDeclaration>,
     statements: Vec<TypedSpannedStatement<'a>>,
 }
 
@@ -80,6 +84,7 @@ struct TypedFunctionView<'a> {
 struct TypedMethodView<'a> {
     signals: &'a [ast::PredefinedSignal],
     locals: &'a [ast::VariableDeclaration],
+    c_locals: Vec<&'a ast::VariableDeclaration>,
     statements: Vec<TypedSpannedStatement<'a>>,
 }
 
@@ -112,7 +117,7 @@ enum TypedStatementView<'a> {
     },
     Call(TypedCallView<'a>),
     If(TypedIfStatementView<'a>),
-    For(TypedForView<'a>),
+    For(Box<TypedForView<'a>>),
     Limit(Vec<TypedLimitTargetView<'a>>),
     Signal(&'a [ast::Identifier]),
 }
@@ -121,11 +126,13 @@ enum TypedStatementView<'a> {
 struct TypedIfStatementView<'a> {
     branches: Vec<TypedIfBranchView<'a>>,
     else_body: Option<Vec<TypedSpannedStatement<'a>>>,
+    else_c_locals: Vec<&'a ast::VariableDeclaration>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct TypedIfBranchView<'a> {
     condition: TypedConditionView<'a>,
+    c_locals: Vec<&'a ast::VariableDeclaration>,
     body: Vec<TypedSpannedStatement<'a>>,
 }
 
@@ -135,6 +142,7 @@ struct TypedForView<'a> {
     start: TypedExpressionView<'a>,
     step: Option<TypedExpressionView<'a>>,
     stop: TypedExpressionView<'a>,
+    c_locals: Vec<&'a ast::VariableDeclaration>,
     body: Vec<TypedSpannedStatement<'a>>,
 }
 
@@ -199,6 +207,7 @@ enum TypedExpressionNodeView<'a> {
     Call(TypedCallView<'a>),
     Paren(Box<TypedExpressionView<'a>>),
     If(TypedIfExpressionView<'a>),
+    BoundedSelection(Box<TypedBoundedSelectionView<'a>>),
     Array(Vec<TypedExpressionView<'a>>),
     Neg(TypedReferenceView<'a>),
     Not(Box<TypedExpressionView<'a>>),
@@ -213,6 +222,13 @@ enum TypedExpressionNodeView<'a> {
 struct TypedIfExpressionView<'a> {
     branches: Vec<(TypedExpressionView<'a>, TypedExpressionView<'a>)>,
     else_value: Box<TypedExpressionView<'a>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TypedBoundedSelectionView<'a> {
+    reference: TypedReferenceView<'a>,
+    extents: Vec<u32>,
+    galec: TypedIfExpressionView<'a>,
 }
 
 pub(super) fn block(block: &ast::Block) -> Result<TypedBlockView<'_>, String> {
@@ -287,22 +303,26 @@ impl<'a> BlockShapes<'a> {
 
     fn method(&self, method: &'a ast::BlockMethod) -> Result<TypedMethodView<'a>, String> {
         let scope = ScopeShapes::new(self, &method.locals);
+        let placements = LocalPlacements::derive(&method.locals, &method.statements);
         Ok(TypedMethodView {
             signals: &method.signals,
             locals: &method.locals,
-            statements: scope.statements(&method.statements)?,
+            c_locals: placements.at(&[]),
+            statements: scope.statements(&method.statements, &placements, &mut Vec::new())?,
         })
     }
 
     fn function(&self, function: &'a ast::UserFunction) -> Result<TypedFunctionView<'a>, String> {
         let scope = ScopeShapes::for_function(self, function);
+        let placements = LocalPlacements::derive(&function.locals, &function.statements);
         Ok(TypedFunctionView {
             kind: function.kind,
             name: &function.name,
             signals: &function.signals,
             parameters: &function.parameters,
             locals: &function.locals,
-            statements: scope.statements(&function.statements)?,
+            c_locals: placements.at(&[]),
+            statements: scope.statements(&function.statements, &placements, &mut Vec::new())?,
         })
     }
 
@@ -471,23 +491,32 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
     fn statements(
         &self,
         statements: &'a [ast::Spanned<ast::Statement>],
+        placements: &LocalPlacements<'a>,
+        path: &mut ScopePath,
     ) -> Result<Vec<TypedSpannedStatement<'a>>, String> {
         statements
             .iter()
-            .map(|statement| {
+            .enumerate()
+            .map(|(statement_index, statement)| {
                 Ok(TypedSpannedStatement {
                     trace: (!statement.span.is_dummy()).then_some(StatementTrace {
                         source_id: statement.span.source.0,
                         byte_start: statement.span.start.0,
                         byte_end: statement.span.end.0,
                     }),
-                    node: self.statement(&statement.node)?,
+                    node: self.statement(&statement.node, statement_index, placements, path)?,
                 })
             })
             .collect()
     }
 
-    fn statement(&self, statement: &'a ast::Statement) -> Result<TypedStatementView<'a>, String> {
+    fn statement(
+        &self,
+        statement: &'a ast::Statement,
+        statement_index: usize,
+        placements: &LocalPlacements<'a>,
+        path: &mut ScopePath,
+    ) -> Result<TypedStatementView<'a>, String> {
         Ok(match statement {
             ast::Statement::Assignment { target, value } => {
                 let target = self.reference(target)?;
@@ -513,22 +542,52 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 branches: statement
                     .branches
                     .iter()
-                    .map(|branch| {
+                    .enumerate()
+                    .map(|(branch_index, branch)| {
+                        path.push(ScopeStep::IfBranch {
+                            statement: statement_index,
+                            branch: branch_index,
+                        });
+                        let c_locals = placements.at(path);
+                        let body = self.statements(&branch.body, placements, path);
+                        path.pop();
                         Ok(TypedIfBranchView {
                             condition: self.condition(&branch.condition)?,
-                            body: self.statements(&branch.body)?,
+                            c_locals,
+                            body: body?,
                         })
                     })
                     .collect::<Result<_, String>>()?,
-                else_body: statement
-                    .else_body
-                    .as_deref()
-                    .map(|body| self.statements(body))
-                    .transpose()?,
+                else_c_locals: if statement.else_body.is_some() {
+                    path.push(ScopeStep::IfElse {
+                        statement: statement_index,
+                    });
+                    let locals = placements.at(path);
+                    path.pop();
+                    locals
+                } else {
+                    Vec::new()
+                },
+                else_body: if let Some(body) = statement.else_body.as_deref() {
+                    path.push(ScopeStep::IfElse {
+                        statement: statement_index,
+                    });
+                    let body = self.statements(body, placements, path);
+                    path.pop();
+                    Some(body?)
+                } else {
+                    None
+                },
             }),
             ast::Statement::For(for_loop) => {
                 let body_scope = self.with_iterator(for_loop.iterator.as_ref());
-                TypedStatementView::For(TypedForView {
+                path.push(ScopeStep::ForBody {
+                    statement: statement_index,
+                });
+                let c_locals = placements.at(path);
+                let body = body_scope.statements(&for_loop.body, placements, path);
+                path.pop();
+                TypedStatementView::For(Box::new(TypedForView {
                     iterator: &for_loop.iterator,
                     start: self.expression(&for_loop.start)?,
                     step: for_loop
@@ -537,8 +596,9 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                         .map(|step| self.expression(step))
                         .transpose()?,
                     stop: self.expression(&for_loop.stop)?,
-                    body: body_scope.statements(&for_loop.body)?,
-                })
+                    c_locals,
+                    body: body?,
+                }))
             }
             ast::Statement::Limit(targets) => TypedStatementView::Limit(
                 targets
@@ -664,7 +724,13 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                     TypedExpressionNodeView::Paren(value),
                 )
             }
-            ast::Expression::If(value) => self.if_expression(value)?,
+            ast::Expression::If(value) => {
+                if let Some(selection) = value.bounded_selection_correlation() {
+                    self.bounded_selection_expression(value, selection)?
+                } else {
+                    self.if_expression(value)?
+                }
+            }
             ast::Expression::Array(values) => self.array_expression(values)?,
             ast::Expression::Neg(reference) => {
                 let reference = self.reference(reference)?;
@@ -685,6 +751,27 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
             scalar: shape.scalar,
             node,
         })
+    }
+
+    fn bounded_selection_expression(
+        &self,
+        value: &'a ast::IfExpression,
+        selection: &'a ast::BoundedSelection,
+    ) -> Result<(ShapeEvidence, TypedExpressionNodeView<'a>), String> {
+        let reference = self.reference(selection.reference())?;
+        let (shape, node) = self.if_expression(value)?;
+        let TypedExpressionNodeView::If(galec) = node else {
+            return Err("if-expression projection did not return an if node".to_owned());
+        };
+        self.block.semantic_uses.borrow_mut().bounded_selection = true;
+        Ok((
+            shape,
+            TypedExpressionNodeView::BoundedSelection(Box::new(TypedBoundedSelectionView {
+                reference,
+                extents: selection.extents().to_vec(),
+                galec,
+            })),
+        ))
     }
 
     fn if_expression(

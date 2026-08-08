@@ -98,7 +98,12 @@ pub(super) fn lower_algorithms<'dae>(
                 tensor_loops,
                 function_calls,
             } => {
-                let mut values = HashMap::new();
+                let mut values = seed_event_algorithm_values(
+                    lowering.construction,
+                    request.environment.coordinates,
+                    model_algorithm_targets(request.flat, algorithm),
+                    algorithm.span,
+                )?;
                 let environment = AlgorithmEnvironment {
                     tensor_loops: Some(tensor_loops),
                     function_calls: Some(function_calls),
@@ -120,6 +125,27 @@ pub(super) fn lower_algorithms<'dae>(
         }
     }
     Ok(())
+}
+
+fn seed_event_algorithm_values<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    targets: impl IntoIterator<Item = VarName>,
+    span: Span,
+) -> Result<HashMap<VarName, dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, span)?;
+    let mut values = HashMap::new();
+    for target in targets {
+        let coordinate = match coordinates[&target] {
+            Coordinate::DiscreteReal(id) => dae::CoordinateInput::PreDiscreteReal(id),
+            Coordinate::DiscreteValue(id) => dae::CoordinateInput::PreDiscreteValue(id),
+            _ => continue,
+        };
+        let value = construction
+            .expressions(|expressions| expressions.at(provenance).coordinate(coordinate))?;
+        values.insert(target, value);
+    }
+    Ok(values)
 }
 
 fn preclaim_algorithm_clock_targets<'dae>(

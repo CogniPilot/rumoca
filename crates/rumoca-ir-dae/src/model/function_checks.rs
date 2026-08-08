@@ -164,7 +164,8 @@ fn push_function_statement_expressions(
 ) {
     for statement in statements {
         match statement {
-            FunctionStatementWire::Assignment { .. } => {}
+            FunctionStatementWire::Assignment { .. }
+            | FunctionStatementWire::AssignmentGroup { .. } => {}
             FunctionStatementWire::Assertion {
                 condition, message, ..
             } => {

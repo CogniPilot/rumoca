@@ -268,6 +268,9 @@ enum FunctionStatementInput {
         #[serde(deserialize_with = "deserialize_provenance")]
         provenance: DaeProvenance,
     },
+    AssignmentGroup {
+        assignments: Vec<FunctionAssignmentInput>,
+    },
     Assertion {
         condition: u32,
         message: u32,
@@ -283,6 +286,15 @@ enum FunctionStatementInput {
         #[serde(deserialize_with = "deserialize_provenance")]
         finish_provenance: DaeProvenance,
     },
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionAssignmentInput {
+    target: u32,
+    rhs: u32,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
 }
 
 #[derive(Deserialize)]

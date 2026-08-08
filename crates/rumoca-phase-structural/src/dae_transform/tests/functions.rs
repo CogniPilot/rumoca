@@ -54,7 +54,8 @@ fn assert_same_rhs_definitions(view: dae::DaeView<'_>) {
         .statements()
         .filter_map(|statement| match statement {
             dae::FunctionStatementView::Assignment { definition } => Some(definition),
-            dae::FunctionStatementView::Assertion { .. }
+            dae::FunctionStatementView::AssignmentGroup { .. }
+            | dae::FunctionStatementView::Assertion { .. }
             | dae::FunctionStatementView::For { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -92,6 +93,7 @@ fn assert_same_rhs_definitions(view: dae::DaeView<'_>) {
         .find_map(|statement| match statement {
             dae::FunctionStatementView::For { fold, .. } => view.function_fold(fold),
             dae::FunctionStatementView::Assignment { .. }
+            | dae::FunctionStatementView::AssignmentGroup { .. }
             | dae::FunctionStatementView::Assertion { .. } => None,
         })
         .expect("sum fixture retains its fold");

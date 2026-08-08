@@ -16,6 +16,10 @@
     algorithm_code.symbol_names,
     {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
 ) -%}
+{%- set c_state_symbols = allocate_symbols(
+    algorithm_code.variable_names,
+    {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
+) -%}
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
 {%- macro c_type(kind) -%}
 {%- if kind == "real" -%}float{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
@@ -34,7 +38,7 @@
 
 typedef struct {{ c_model }}StateTag {
 {%- for variable in algorithm_code.variables %}
-    {{ c_type(variable.kind) }} {{ symbol(c_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
+    {{ c_type(variable.kind) }} {{ symbol(c_state_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
     uint32_t rumoca_galec_error_signal_status; /* eFMI ErrorSignalStatus */
 } {{ c_model }}State;

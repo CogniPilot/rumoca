@@ -132,13 +132,13 @@ pub(super) fn lower_identity_element(indices: &[gast::Expression]) -> TypedExpre
         (gast::Expression::Integer(row), gast::Expression::Integer(column)) => {
             gast::Expression::Integer(i64::from(row == column))
         }
-        _ => gast::Expression::If(gast::IfExpression {
-            branches: vec![(
+        _ => gast::Expression::If(gast::IfExpression::new(
+            vec![(
                 gast::Expression::binary(gast::BinaryOp::Eq, row.clone(), column.clone()),
                 gast::Expression::Integer(1),
             )],
-            else_value: Box::new(gast::Expression::Integer(0)),
-        }),
+            gast::Expression::Integer(0),
+        )),
     };
     TypedExpression {
         expression,

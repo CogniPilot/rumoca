@@ -1,6 +1,7 @@
 //! Checked Modelica function inlining, call-scoped assertions, and record
 //! field projection for the scalar GALEC expression boundary.
 
+use super::expression_projection::{SelectionBranch, SelectionValue};
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -61,15 +62,34 @@ fn select_dynamic_typed_expression(
         })
         .collect();
     Ok(TypedExpression {
-        expression: gast::Expression::If(gast::IfExpression {
-            branches,
-            else_value: Box::new(fallback.expression),
-        }),
+        expression: gast::Expression::If(gast::IfExpression::new(branches, fallback.expression)),
         scalar_type,
     })
 }
 
 impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
+    pub(super) fn materialize_eager_call(
+        &mut self,
+        call: dae::ExprId<'dae>,
+    ) -> Result<(), GalecTargetError> {
+        let node = self
+            .view
+            .expression(call)
+            .expect("checked eager call identity resolves");
+        let dae::ExpressionOperation::Call {
+            function,
+            arguments,
+            ..
+        } = node.operation()
+        else {
+            return Err(GalecTargetError::LoweringInternal {
+                detail: "an eager-call plan referenced a non-call expression".to_owned(),
+            });
+        };
+        self.materialize_function_call(function, arguments, node.provenance().span())?;
+        Ok(())
+    }
+
     pub(super) fn lower_function_fold_parameter_at(
         &self,
         fold: dae::FunctionFoldId<'dae>,
@@ -492,6 +512,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                     indices: frame.indices.clone(),
                 })
                 .collect(),
+            activation_path: self.conditional_activation_path.clone(),
             function: function.index(),
             arguments: arguments.iter().map(|argument| argument.index()).collect(),
         };
@@ -515,6 +536,71 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             names
         };
         Ok(names)
+    }
+
+    /// Lower one aggregate-valued function assignment directly into its
+    /// checked destination storage.
+    ///
+    /// Modelica functions are pure and GALEC multi-assignment commits outputs
+    /// after the function body has evaluated. A single primitive aggregate
+    /// result therefore needs no intermediate result tensor, including when an
+    /// input aliases the destination: the callee reads its inputs before its
+    /// final output copy. Multi-result and record calls retain separate
+    /// materialized outputs because their atomic grouping has more than one
+    /// destination.
+    pub(super) fn lower_direct_aggregate_call_assignment(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        target: gast::Name,
+        span: Span,
+    ) -> Result<Option<gast::Spanned<gast::Statement>>, GalecTargetError> {
+        let node = self
+            .view
+            .expression(expression)
+            .expect("checked direct call assignment resolves");
+        if node.value_type().dimensions().is_empty() {
+            return Ok(None);
+        }
+        let dae::ExpressionOperation::Call {
+            function,
+            output,
+            arguments,
+        } = node.operation()
+        else {
+            return Ok(None);
+        };
+        let function_view = self
+            .view
+            .function(function)
+            .expect("checked direct call function resolves");
+        if output != 0
+            || function_view.result_types().len() != 1
+            || self
+                .view
+                .value_type(
+                    function_view
+                        .result_types()
+                        .get(0)
+                        .expect("single checked function result exists"),
+                )
+                .expect("checked direct call result type resolves")
+                .is_record()
+            || !user_functions::is_directly_lowerable(self.view, function)
+        {
+            return Ok(None);
+        }
+        let arguments = self.lower_direct_function_arguments(function_view, arguments, span)?;
+        self.called_user_functions.insert(function.index());
+        Ok(Some(gast::Spanned::new(
+            gast::Statement::MultiAssignment {
+                targets: vec![gast::Reference::local(target)],
+                call: gast::FunctionCall {
+                    function: user_functions::function_name(self.view, function_view)?,
+                    arguments,
+                },
+            },
+            span,
+        )))
     }
 
     fn materialized_result_names(
@@ -634,6 +720,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         if node.value_type().dimensions().is_empty() {
             return self.lower(argument).map(|value| value.expression);
         }
+        if let Some(reference) = self.direct_aggregate_function_argument(argument)? {
+            return Ok(reference);
+        }
         let scalar_type = scalar_type(
             node.value_type().scalar_type(),
             "<function-argument>",
@@ -655,6 +744,119 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             scalar_type,
             call_span,
         )
+    }
+
+    /// Preserve a whole-array reference at a checked input-only function boundary.
+    ///
+    /// Copying every tensor coordinate into a generated argument local is only
+    /// necessary for computed aggregate expressions. A materialized variable or
+    /// current function parameter already has the exact checked shape. A
+    /// function-local value read also carries its exact reaching-definition
+    /// proof in DAE; function-body validation accepts that read only at a
+    /// statement where the definition is current. GALEC construction proves
+    /// that input parameters are not written. Keeping those references intact
+    /// avoids both a redundant bounded copy and a second full-size stack
+    /// allocation in embedded C.
+    pub(super) fn direct_aggregate_function_argument(
+        &self,
+        argument: dae::ExprId<'dae>,
+    ) -> Result<Option<gast::Expression>, GalecTargetError> {
+        let node = self
+            .view
+            .expression(argument)
+            .expect("checked function argument resolves");
+        let span = node.provenance().span();
+
+        if let dae::ExpressionOperation::FunctionValue { definition, .. } = node.operation() {
+            if self.function_scope != Some(definition.id().function()) {
+                return Ok(None);
+            }
+            let value = self
+                .view
+                .function(definition.id().function())
+                .expect("checked function identity resolves")
+                .values()
+                .find(|value| value.id() == definition.target())
+                .expect("checked function definition target resolves");
+            return Ok(Some(gast::Expression::Ref(gast::Reference::Local(
+                gast::RefPart {
+                    name: user_functions::value_name(value)?,
+                    subscripts: Vec::new(),
+                    span,
+                },
+            ))));
+        }
+
+        let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
+            return Ok(None);
+        };
+
+        if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
+            if self.function_scope != Some(parameter.function()) {
+                return Ok(None);
+            }
+            let parameter = self
+                .view
+                .function(parameter.function())
+                .expect("checked function identity resolves")
+                .parameters()
+                .find(|candidate| candidate.id() == parameter)
+                .expect("checked function parameter resolves");
+            return Ok(Some(gast::Expression::Ref(gast::Reference::Local(
+                gast::RefPart {
+                    name: user_functions::parameter_name(parameter)?,
+                    subscripts: Vec::new(),
+                    span,
+                },
+            ))));
+        }
+
+        if matches!(coordinate, dae::CoordinateView::Algebraic(_)) && self.inline_causal_locals {
+            return Ok(None);
+        }
+        let variable = match coordinate {
+            dae::CoordinateView::Parameter(_)
+            | dae::CoordinateView::Input(_)
+            | dae::CoordinateView::State(_)
+            | dae::CoordinateView::Algebraic(_)
+            | dae::CoordinateView::DiscreteReal(_)
+            | dae::CoordinateView::DiscreteValue(_)
+            | dae::CoordinateView::PreDiscreteReal(_)
+            | dae::CoordinateView::PreDiscreteValue(_) => coordinate_variable(coordinate, span)?,
+            _ => return Ok(None),
+        };
+        let (variable, previous) = variable;
+        let classified = self.by_id.get(&variable.index()).ok_or_else(|| {
+            GalecTargetError::UnknownVariableReference {
+                name: format!("#{}", variable.index()),
+                span: Some(span),
+            }
+        })?;
+        let name = if previous {
+            self.pre_names
+                .get(&variable.index())
+                .ok_or_else(|| GalecTargetError::LoweringInternal {
+                    detail: format!(
+                        "pre-coordinate for `{}` was not collected",
+                        classified.variable.name()
+                    ),
+                })?
+                .clone()
+        } else {
+            classified.name.clone()
+        };
+        let reference = gast::RefPart {
+            name,
+            subscripts: Vec::new(),
+            span,
+        };
+        Ok(Some(gast::Expression::Ref(
+            if classified.class == VariableClass::Local {
+                gast::Reference::Local(reference)
+            } else {
+                gast::Reference::State(vec![reference])
+            },
+        )))
     }
 
     fn lower_function_record_argument(
@@ -746,7 +948,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         };
         self.loop_index_bounds.truncate(bounds_depth);
         let value = coerce(value?, scalar, call_span)?;
-        let mut body = self.pending_prefix_statements.split_off(prefix_start);
+        let prefixes = self.pending_prefix_statements.split_off(prefix_start);
+        let (before, mut body) = user_functions::partition_tensor_prefixes(prefixes, &iterators);
         body.push(gast::Spanned::new(
             gast::Statement::Assignment {
                 target: gast::Reference::Local(gast::RefPart {
@@ -758,6 +961,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             },
             call_span,
         ));
+        if let Some(fused) = user_functions::fuse_guarded_tensor_loop(
+            before.clone(),
+            body.clone(),
+            &iterators,
+            dimensions,
+            call_span,
+        ) {
+            self.pending_prefix_statements.extend(fused);
+            return Ok(gast::Expression::Ref(gast::Reference::local(name)));
+        }
+        self.pending_prefix_statements.extend(before);
         for (iterator, &extent) in iterators.iter().zip(dimensions).rev() {
             body = vec![gast::Spanned::new(
                 gast::Statement::For(gast::ForLoop {
@@ -1020,6 +1234,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                     self.lower_function_loop_assertions(fold, statements, provenance.span())?;
                 }
                 dae::FunctionStatementView::Assignment { .. }
+                | dae::FunctionStatementView::AssignmentGroup { .. }
                 | dae::FunctionStatementView::For { .. } => {}
             }
         }
@@ -1201,19 +1416,24 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                         .parameters()
                         .nth(parameter.ordinal() as usize)
                         .expect("checked direct record parameter resolves");
-                    let (field_name, _) = self
+                    let (field_name, field_type) = self
                         .view
                         .record_field(parameter_view.value_type(), field)
                         .expect("checked direct record parameter field resolves");
+                    let field_type = self
+                        .view
+                        .value_type(field_type)
+                        .expect("checked direct record parameter field type resolves");
                     return Ok(TypedExpression {
-                        expression: gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
-                            name: user_functions::record_parameter_field_name(
+                        expression: self.lower_local_reference(
+                            user_functions::record_parameter_field_name(
                                 parameter_view,
                                 field_name,
                             )?,
-                            subscripts: indices.to_vec(),
+                            field_type.dimensions(),
+                            indices,
                             span,
-                        })),
+                        )?,
                         scalar_type,
                     });
                 }
@@ -1317,16 +1537,21 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .values()
                 .find(|value| value.id() == definition.target())
                 .expect("checked function definition target resolves");
-            let (field_name, _) = self
+            let (field_name, field_type) = self
                 .view
                 .record_field(value.value_type(), field)
                 .expect("checked function record field resolves");
+            let field_type = self
+                .view
+                .value_type(field_type)
+                .expect("checked function record field type resolves");
             return Ok(TypedExpression {
-                expression: gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
-                    name: user_functions::record_value_field_name(value, field_name)?,
-                    subscripts: indices.to_vec(),
+                expression: self.lower_local_reference(
+                    user_functions::record_value_field_name(value, field_name)?,
+                    field_type.dimensions(),
+                    indices,
                     span,
-                })),
+                )?,
                 scalar_type,
             });
         }
@@ -1385,14 +1610,39 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
+        let entry_materialization = self.conditional_materialization_snapshot();
+        let activation_operands = conditional_activation_operands(operands);
         let mut branches = Vec::new();
         for ordinal in (0..operands.len() - 1).step_by(2) {
+            self.conditional_activation_path
+                .push(ConditionalActivationKey {
+                    kind: ConditionalActivationKind::ConditionalRecord,
+                    operands: activation_operands.clone(),
+                    branch: conditional_activation_ordinal(
+                        ordinal / 2,
+                        "conditional branch ordinal",
+                    )?,
+                });
+            let condition_start = self.pending_prefix_statements.len();
             let condition = self.lower(
                 operands
                     .get(ordinal)
                     .expect("checked conditional condition"),
-            )?;
-            require_boolean(&condition, span)?;
+            );
+            let condition = match condition {
+                Ok(condition) => condition,
+                Err(error) => {
+                    self.conditional_activation_path.pop();
+                    return Err(error);
+                }
+            };
+            if let Err(error) = require_boolean(&condition, span) {
+                self.conditional_activation_path.pop();
+                return Err(error);
+            }
+            let condition_prefix = self.pending_prefix_statements.split_off(condition_start);
+            let condition_materialization = self.conditional_materialization_snapshot();
+            let value_start = self.pending_prefix_statements.len();
             let value = self.lower_record_field_at(
                 operands
                     .get(ordinal + 1)
@@ -1401,9 +1651,35 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 indices,
                 scalar_type,
                 span,
-            )?;
-            branches.push((condition.expression, coerce(value, scalar_type, span)?));
+            );
+            let value = match value {
+                Ok(value) => value,
+                Err(error) => {
+                    self.conditional_activation_path.pop();
+                    return Err(error);
+                }
+            };
+            branches.push(SelectionBranch {
+                condition_prefix,
+                condition: condition.expression,
+                value: SelectionValue {
+                    prefix: self.pending_prefix_statements.split_off(value_start),
+                    expression: coerce(value, scalar_type, span)?,
+                },
+            });
+            self.restore_conditional_materialization(&condition_materialization);
+            self.conditional_activation_path.pop();
         }
+        self.conditional_activation_path
+            .push(ConditionalActivationKey {
+                kind: ConditionalActivationKind::ConditionalRecord,
+                operands: activation_operands,
+                branch: conditional_activation_ordinal(
+                    operands.len() / 2,
+                    "conditional fallback ordinal",
+                )?,
+            });
+        let fallback_start = self.pending_prefix_statements.len();
         let fallback = self.lower_record_field_at(
             operands
                 .get(operands.len() - 1)
@@ -1412,15 +1688,28 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             indices,
             scalar_type,
             span,
-        )?;
-        Ok(TypedExpression {
-            expression: gast::Expression::If(gast::IfExpression {
-                branches,
-                else_value: Box::new(coerce(fallback, scalar_type, span)?),
-            }),
-            scalar_type,
-        })
+        );
+        let fallback = match fallback {
+            Ok(fallback) => fallback,
+            Err(error) => {
+                self.conditional_activation_path.pop();
+                return Err(error);
+            }
+        };
+        let fallback = SelectionValue {
+            prefix: self.pending_prefix_statements.split_off(fallback_start),
+            expression: coerce(fallback, scalar_type, span)?,
+        };
+        self.conditional_activation_path.pop();
+        self.restore_conditional_materialization(&entry_materialization);
+        Ok(self.lower_lazy_selection(branches, fallback, scalar_type, span))
     }
+}
+
+fn conditional_activation_ordinal(ordinal: usize, kind: &str) -> Result<u32, GalecTargetError> {
+    u32::try_from(ordinal).map_err(|_| GalecTargetError::LoweringInternal {
+        detail: format!("{kind} exceeds the activation-key capacity"),
+    })
 }
 
 fn expression_contains_array<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'dae>) -> bool {

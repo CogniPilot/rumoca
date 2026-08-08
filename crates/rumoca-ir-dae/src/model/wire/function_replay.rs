@@ -104,6 +104,21 @@ fn project_statements(
                     provenance: definition.provenance,
                 }
             }
+            FunctionStatementWire::AssignmentGroup { definitions } => {
+                FunctionStatementInput::AssignmentGroup {
+                    assignments: definitions
+                        .iter()
+                        .map(|definition| {
+                            let definition = &function.definitions[*definition as usize];
+                            FunctionAssignmentInput {
+                                target: definition.target,
+                                rhs: definition.rhs,
+                                provenance: definition.provenance,
+                            }
+                        })
+                        .collect(),
+                }
+            }
             FunctionStatementWire::Assertion {
                 condition,
                 message,
@@ -308,6 +323,7 @@ enum ReplayCapability<'group, 'dae> {
 #[derive(Clone, Copy)]
 enum ReplayOp<'wire> {
     Assign(AssignmentInput),
+    AssignGroup(&'wire [FunctionAssignmentInput]),
     Assert(AssertionInput),
     BeginFold(FoldInput<'wire>),
     EndFold(FoldEnd),
@@ -386,6 +402,9 @@ fn flatten_operations(
             FunctionStatementInput::Assignment { .. } => {
                 operations.push(ReplayOp::Assign(assignment(statement)?));
             }
+            FunctionStatementInput::AssignmentGroup { assignments } => {
+                operations.push(ReplayOp::AssignGroup(assignments));
+            }
             FunctionStatementInput::Assertion { .. } => {
                 operations.push(ReplayOp::Assert(assertion(statement)?));
             }
@@ -422,6 +441,9 @@ fn push_fold_operations<'wire>(
             FunctionStatementInput::Assignment { .. } => {
                 operations.push(ReplayOp::Assign(assignment(statement)?));
             }
+            FunctionStatementInput::AssignmentGroup { assignments } => {
+                operations.push(ReplayOp::AssignGroup(assignments));
+            }
             FunctionStatementInput::Assertion { .. } => {
                 operations.push(ReplayOp::Assert(assertion(statement)?));
             }
@@ -448,7 +470,8 @@ fn assignment(statement: &FunctionStatementInput) -> Result<AssignmentInput, Dae
             rhs: *rhs,
             provenance: *provenance,
         }),
-        FunctionStatementInput::Assertion { .. } => {
+        FunctionStatementInput::AssignmentGroup { .. }
+        | FunctionStatementInput::Assertion { .. } => {
             Err(malformed("functions.statements.assignment"))
         }
         FunctionStatementInput::For { .. } => Err(malformed("functions.statements.nesting")),
@@ -466,9 +489,9 @@ fn assertion(statement: &FunctionStatementInput) -> Result<AssertionInput, DaeCo
             message: *message,
             provenance: *provenance,
         }),
-        FunctionStatementInput::Assignment { .. } | FunctionStatementInput::For { .. } => {
-            Err(malformed("functions.statements.assertion"))
-        }
+        FunctionStatementInput::Assignment { .. }
+        | FunctionStatementInput::AssignmentGroup { .. }
+        | FunctionStatementInput::For { .. } => Err(malformed("functions.statements.assertion")),
     }
 }
 
@@ -573,6 +596,15 @@ fn apply_next_ready_operation<'dae>(
             }
             apply_assignment(wire, dae, ids, state, assignment)?;
         }
+        ReplayOp::AssignGroup(assignments) => {
+            if assignments
+                .iter()
+                .any(|assignment| assignment.rhs as usize >= ids.expressions.len())
+            {
+                return Ok(false);
+            }
+            apply_assignment_group(wire, dae, ids, state, assignments)?;
+        }
         ReplayOp::Assert(assertion) => {
             if [assertion.condition, assertion.message]
                 .into_iter()
@@ -643,6 +675,50 @@ fn apply_assignment<'dae>(
     dae.functions(|functions| match capability {
         ReplayCapability::Body(body) => functions.assign(body, target, rhs, input.provenance),
         ReplayCapability::Fold(body) => functions.assign_loop(body, target, rhs, input.provenance),
+        ReplayCapability::External(_) => Err(malformed("functions.external")),
+    })
+}
+
+fn apply_assignment_group<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    state: &mut FunctionReplay<'_, '_, 'dae>,
+    inputs: &[FunctionAssignmentInput],
+) -> Result<(), DaeConstructionError> {
+    let provenance = inputs
+        .first()
+        .map(|input| input.provenance)
+        .ok_or_else(|| malformed("functions.statements.assignment_group"))?;
+    if inputs.iter().any(|input| input.provenance != provenance) {
+        return Err(malformed(
+            "functions.statements.assignment_group.provenance",
+        ));
+    }
+    let assignments = inputs
+        .iter()
+        .map(|input| {
+            Ok((
+                checked_assignment_target(
+                    wire,
+                    state.function_index,
+                    AssignmentInput {
+                        target: input.target,
+                        rhs: input.rhs,
+                        provenance: input.provenance,
+                    },
+                )?,
+                mapped_expression(ids, input.rhs, input.provenance)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, DaeConstructionError>>()?;
+    let capability = state
+        .capability
+        .as_mut()
+        .ok_or_else(|| incomplete("function capability", state.function_index, provenance))?;
+    dae.functions(|functions| match capability {
+        ReplayCapability::Body(body) => functions.assign_all(body, &assignments, provenance),
+        ReplayCapability::Fold(body) => functions.assign_all_loop(body, &assignments, provenance),
         ReplayCapability::External(_) => Err(malformed("functions.external")),
     })
 }

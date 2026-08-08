@@ -139,6 +139,16 @@ fn order_clocked_assignments(
         )
     });
     let mut owners = HashMap::new();
+    let preambles = source
+        .iter()
+        .enumerate()
+        .filter_map(|(index, scheduled)| {
+            scheduled
+                .assignment
+                .is_preamble
+                .then_some((scheduled.clock.index(), index))
+        })
+        .collect::<HashMap<_, _>>();
     for (index, scheduled) in source.iter().enumerate() {
         for target in &scheduled.assignment.targets {
             if let Some(previous) = owners.insert(*target, index)
@@ -156,6 +166,10 @@ fn order_clocked_assignments(
     let mut order = Vec::with_capacity(source.len());
     while let Some(index) = source.iter().enumerate().position(|(index, scheduled)| {
         !emitted[index]
+            && (!scheduled.assignment.requires_preamble
+                || preambles
+                    .get(&scheduled.clock.index())
+                    .is_none_or(|preamble| emitted[*preamble]))
             && scheduled.assignment.reads.iter().all(|read| {
                 owners
                     .get(read)
@@ -301,10 +315,10 @@ fn advance_counter(
         reference(),
         gast::Expression::Integer(1),
     );
-    let value = gast::Expression::If(gast::IfExpression {
-        branches: vec![(condition, gast::Expression::Integer(0))],
-        else_value: Box::new(increment),
-    });
+    let value = gast::Expression::If(gast::IfExpression::new(
+        vec![(condition, gast::Expression::Integer(0))],
+        increment,
+    ));
     gast::Spanned::new(
         gast::Statement::Assignment {
             target: state_reference(counter, span),

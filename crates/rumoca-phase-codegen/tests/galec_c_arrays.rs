@@ -142,10 +142,10 @@ fn checked_array_block() -> CheckedAlgorithmBlock {
         ),
         state_assignment(
             "selected",
-            galec::Expression::If(galec::IfExpression {
-                branches: vec![(expression("choose_a"), expression("a"))],
-                else_value: Box::new(expression("b")),
-            }),
+            galec::Expression::If(galec::IfExpression::new(
+                vec![(expression("choose_a"), expression("a"))],
+                expression("b"),
+            )),
         ),
         state_assignment(
             "lifted",
@@ -159,8 +159,15 @@ fn checked_array_block() -> CheckedAlgorithmBlock {
 }
 
 fn render(block: &CheckedAlgorithmBlock, path: &str) -> Result<String, String> {
-    let template = templates::builtin_template_source("embedded-c-galec", path)
-        .expect("embedded-C GALEC template");
+    render_target(block, "embedded-c-galec", path)
+}
+
+fn render_target(
+    block: &CheckedAlgorithmBlock,
+    target: &str,
+    path: &str,
+) -> Result<String, String> {
+    let template = templates::builtin_template_source(target, path).expect("built-in template");
     render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, MODEL)
         .map_err(|error| error.to_string())
 }
@@ -213,10 +220,10 @@ fn large_checked_if_expression_renders_without_template_recursion() {
         .collect();
     block.do_step.statements = vec![state_assignment(
         "selected",
-        galec::Expression::If(galec::IfExpression {
+        galec::Expression::If(galec::IfExpression::new(
             branches,
-            else_value: Box::new(galec::Expression::Real(225.0)),
-        }),
+            galec::Expression::Real(225.0),
+        )),
     )];
     let block = CheckedAlgorithmBlock::construct(block)
         .expect("bounded large conditional must be valid GALEC");
@@ -227,10 +234,108 @@ fn large_checked_if_expression_renders_without_template_recursion() {
 }
 
 #[test]
+fn bounded_selection_has_equivalent_galec_and_native_c_legalizations() {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![
+        galec::InterfaceVariable {
+            kind: galec::InterfaceKind::Input,
+            decl: array_declaration(galec::ScalarType::Real, "samples", 3),
+            start: None,
+        },
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Integer,
+            "index",
+            false,
+        ),
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Real,
+            "selected",
+            false,
+        ),
+    ];
+    let dynamic_reference = galec::Reference::State(vec![galec::RefPart {
+        name: galec::Name::ident("samples"),
+        subscripts: vec![expression("index")],
+        span: rumoca_core::Span::DUMMY,
+    }]);
+    let selection = galec::IfExpression::bounded_selection(dynamic_reference, vec![3])
+        .expect("bounded selection fixture");
+    block.do_step.statements = vec![state_assignment(
+        "selected",
+        galec::Expression::If(selection),
+    )];
+    let checked = CheckedAlgorithmBlock::construct(block).expect("valid bounded selection block");
+
+    let algorithm_code =
+        render_target(&checked, "galec", "model.alg.jinja").expect("bounded selection GALEC");
+    assert!(
+        algorithm_code.contains("self.samples[1]"),
+        "{algorithm_code}"
+    );
+    assert!(
+        algorithm_code.contains("self.samples[3]"),
+        "{algorithm_code}"
+    );
+    assert!(!algorithm_code.contains("self.samples[self.index]"));
+
+    let header = render(&checked, "model.h.jinja").expect("bounded selection header");
+    let source = render(&checked, "model.c.jinja").expect("bounded selection C");
+    assert!(
+        source.contains("self->samples[rumoca_galec_bounded_index(self->index, 3)]"),
+        "{source}"
+    );
+    assert!(!source.contains("? self->samples[0]"), "{source}");
+
+    let directory = tempdir().expect("temporary generated-C directory");
+    let header_path = directory.path().join(format!("{MODEL}.h"));
+    let source_path = directory.path().join(format!("{MODEL}.c"));
+    let driver_path = directory.path().join("main.c");
+    let executable = directory.path().join("bounded-selection");
+    fs::write(&header_path, header).expect("write generated header");
+    fs::write(&source_path, source).expect("write generated source");
+    fs::write(
+        &driver_path,
+        "#include \"ArrayProjection.h\"\nint main(void) {\n  ArrayProjectionState state = {0};\n  state.samples[0] = 10.0f; state.samples[1] = 20.0f; state.samples[2] = 30.0f;\n  const int32_t indices[5] = {1, 2, 3, 0, 4};\n  const float expected[5] = {10.0f, 20.0f, 30.0f, 30.0f, 30.0f};\n  for (int32_t k = 0; k < 5; ++k) {\n    state.index = indices[k]; ArrayProjection_dostep(&state);\n    if (state.selected != expected[k]) return (int)(k + 1);\n  }\n  return 0;\n}\n",
+    )
+    .expect("write generated-C driver");
+    let compile = Command::new("cc")
+        .args([
+            "-std=c99",
+            "-pedantic",
+            "-Wall",
+            "-Wextra",
+            "-Wconversion",
+            "-Wsign-conversion",
+            "-Werror",
+        ])
+        .arg(&driver_path)
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .expect("run C compiler");
+    assert!(
+        compile.status.success(),
+        "strict generated-C compile failed:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    assert!(
+        Command::new(&executable)
+            .status()
+            .expect("execute bounded-selection harness")
+            .success()
+    );
+}
+
+#[test]
 fn recursive_array_expressions_execute_with_checked_values() {
     let block = checked_array_block();
     let header = render(&block, "model.h.jinja").expect("checked header");
     let source = render(&block, "model.c.jinja").expect("checked source");
+    assert!(source.contains("(void)&scratch;"));
+    assert!(!source.contains("(void)scratch;"));
 
     for expected in [
         "scratch[0] = (-self->a[0]);",
@@ -356,8 +461,12 @@ fn multi_output_user_calls_compile_and_copy_every_result() {
     let checked = CheckedAlgorithmBlock::construct(block).expect("valid multi-output GALEC block");
     let header = render(&checked, "model.h.jinja").expect("checked header");
     let source = render(&checked, "model.c.jinja").expect("checked source");
-    assert!(source.contains("make_pair(self, self->input_value, self->values, &self->accepted);"));
+    assert!(source.contains(
+        "make_pair(\n        self,\n        self->input_value,\n        self->values,\n        &self->accepted);"
+    ));
     assert!(source.contains("(void)unused_input;"));
+    assert!(source.contains("float pair[2];"));
+    assert!(source.contains("rumoca_galec_out_pair[0] = pair[0];"));
 
     let directory = tempdir().expect("temporary generated-C directory");
     let header_path = directory.path().join(format!("{MODEL}.h"));

@@ -136,6 +136,10 @@
   {%- endif -%}
   {%- else %} := {{ expr(definition.rhs) }};
   {%- endif -%}
+  {%- elif statement.kind == "assignment_group" -%}
+  {%- for nested in statement.statements %}
+{{ function_statement(function, nested, depth) }}
+  {%- endfor %}
   {%- elif statement.kind == "for" -%}
   {%- set fold = function.folds[statement.fold] -%}
 {{ "  " * depth }}for {% for binder in dae.domains[fold.domain].domain.binders %}{{ binder_clause(binder) }}{% if not loop.last %}, {% endif %}{% endfor %} loop

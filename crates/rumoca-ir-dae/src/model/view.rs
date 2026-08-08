@@ -1145,6 +1145,9 @@ pub enum FunctionStatementView<'dae> {
     Assignment {
         definition: FunctionDefinitionView<'dae>,
     },
+    AssignmentGroup {
+        definitions: FunctionDefinitionValues<'dae>,
+    },
     Assertion {
         condition: ExprId<'dae>,
         message: ExprId<'dae>,
@@ -1166,6 +1169,13 @@ impl<'dae> FunctionStatementView<'dae> {
         match statement {
             FunctionStatementWire::Assignment { definition } => Self::Assignment {
                 definition: function_definition_view(dae, function, *definition),
+            },
+            FunctionStatementWire::AssignmentGroup { definitions } => Self::AssignmentGroup {
+                definitions: FunctionDefinitionValues {
+                    dae,
+                    function,
+                    raw: definitions,
+                },
             },
             FunctionStatementWire::Assertion {
                 condition,

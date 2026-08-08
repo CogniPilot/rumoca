@@ -21,7 +21,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         call_span: Span,
     ) -> Result<(), LowerError> {
         match statement {
-            dae::FunctionStatementView::Assignment { .. } => Ok(()),
+            dae::FunctionStatementView::Assignment { .. }
+            | dae::FunctionStatementView::AssignmentGroup { .. } => Ok(()),
             dae::FunctionStatementView::Assertion {
                 condition,
                 message,
@@ -77,7 +78,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         call_span: Span,
     ) -> Result<(), LowerError> {
         match statement {
-            dae::FunctionStatementView::Assignment { .. } => Ok(()),
+            dae::FunctionStatementView::Assignment { .. }
+            | dae::FunctionStatementView::AssignmentGroup { .. } => Ok(()),
             dae::FunctionStatementView::Assertion {
                 condition,
                 message,
@@ -388,7 +390,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
 fn has_assertion(statements: dae::FunctionStatements<'_>) -> bool {
     statements.into_iter().any(|statement| match statement {
-        dae::FunctionStatementView::Assignment { .. } => false,
+        dae::FunctionStatementView::Assignment { .. }
+        | dae::FunctionStatementView::AssignmentGroup { .. } => false,
         dae::FunctionStatementView::Assertion { .. } => true,
         dae::FunctionStatementView::For { statements, .. } => has_assertion(statements),
     })

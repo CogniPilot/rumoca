@@ -409,7 +409,8 @@ where
     ) -> Result<(), NumericEvaluationError> {
         for statement in statements {
             match statement {
-                dae::FunctionStatementView::Assignment { .. } => {}
+                dae::FunctionStatementView::Assignment { .. }
+                | dae::FunctionStatementView::AssignmentGroup { .. } => {}
                 dae::FunctionStatementView::Assertion {
                     condition,
                     message: _,

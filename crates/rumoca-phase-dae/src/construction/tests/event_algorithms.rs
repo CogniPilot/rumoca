@@ -63,24 +63,96 @@ fn model_event_algorithm_sequential_read_after_write_uses_new_value() {
     let dae = construct(&model, source.map)
         .expect("the event transition carries the first assignment into the second RHS");
     dae.inspect(|view| {
-        assert_eq!(view.discrete_value_owner_count(), 2);
-        let owner = (0..view.discrete_value_owner_count())
-            .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
-            .find(|owner| {
-                owner
-                    .targets()
-                    .get(0)
-                    .is_some_and(|target| target.index() == 1)
-            })
-            .expect("y retains its own scalar B.1c owner");
+        assert_eq!(view.discrete_value_owner_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        assert_eq!(owner.targets().len(), 2);
+        assert_eq!(owner.targets().get(0).unwrap().index(), 0);
+        assert_eq!(owner.targets().get(1).unwrap().index(), 1);
         let branch = owner.branches().get(0).unwrap();
-        let (value, provenance) = branch.values().get(0).unwrap();
+        let (value, provenance) = branch.values().get(1).unwrap();
         assert_eq!(provenance.span(), second_span);
         assert!(matches!(
             view.expression(value).unwrap().operation(),
             dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(true))
         ));
     });
+}
+
+#[test]
+fn model_event_algorithm_partial_assignment_retains_entry_value() {
+    let source = TestSource::new(
+        "model M discrete Boolean x; discrete Boolean y; algorithm when true then if false then x := true; end if; y := x; end when; end M;",
+    );
+    let mut model = test_model();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "x",
+        "discrete Boolean x",
+        151,
+        Vec::new(),
+        true,
+    );
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "y",
+        "discrete Boolean y",
+        152,
+        Vec::new(),
+        true,
+    );
+    let assignment_span = source.span("x := true", 0);
+    let if_span = source.span("if false then x := true; end if", 0);
+    let y_span = source.span("y := x", 0);
+    let when_span = source.span(
+        "when true then if false then x := true; end if; y := x; end when",
+        0,
+    );
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("true", 0),
+                },
+                stmts: vec![
+                    rumoca_core::Statement::If {
+                        cond_blocks: vec![rumoca_core::StatementBlock {
+                            cond: Expression::Literal {
+                                value: Literal::Boolean(false),
+                                span: source.span("false", 0),
+                            },
+                            stmts: vec![rumoca_core::Statement::Assignment {
+                                comp: test_component_reference("x", assignment_span),
+                                value: Expression::Literal {
+                                    value: Literal::Boolean(true),
+                                    span: source.span("true", 1),
+                                },
+                                span: assignment_span,
+                            }],
+                        }],
+                        else_block: None,
+                        span: if_span,
+                    },
+                    rumoca_core::Statement::Assignment {
+                        comp: test_component_reference("y", y_span),
+                        value: variable_reference(&source, "x", "y := x", 0, Vec::new()),
+                        span: y_span,
+                    },
+                ],
+            }],
+            span: when_span,
+        }],
+        source.span("algorithm", 0),
+        "algorithm section",
+    ));
+    model.is_partial = true;
+
+    construct(&model, source.map)
+        .expect("an unassigned event branch retains the target's event-entry value");
 }
 
 #[test]

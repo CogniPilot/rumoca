@@ -10,6 +10,7 @@ pub(super) struct SelectionValue {
 }
 
 pub(super) struct SelectionBranch {
+    pub(super) condition_prefix: Vec<gast::Spanned<gast::Statement>>,
     pub(super) condition: gast::Expression,
     pub(super) value: SelectionValue,
 }
@@ -166,11 +167,37 @@ fn selection_assignment(
     value.prefix
 }
 
+fn selection_statements(
+    mut branches: Vec<SelectionBranch>,
+    fallback: SelectionValue,
+    target: &gast::Name,
+    span: Span,
+) -> Vec<gast::Spanned<gast::Statement>> {
+    if branches.is_empty() {
+        return selection_assignment(fallback, target, span);
+    }
+    let branch = branches.remove(0);
+    let mut statements = branch.condition_prefix;
+    statements.push(gast::Spanned::new(
+        gast::Statement::If(gast::IfStatement {
+            branches: vec![gast::IfBranch {
+                condition: gast::Condition::Expression(branch.condition),
+                body: selection_assignment(branch.value, target, span),
+                span,
+            }],
+            else_body: Some(selection_statements(branches, fallback, target, span)),
+        }),
+        span,
+    ));
+    statements
+}
+
 impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     fn hoist_loop_invariant_selection_prefixes(
         &mut self,
         branches: &mut [SelectionBranch],
         fallback: &mut SelectionValue,
+        span: Span,
     ) {
         let loop_indices = self
             .loop_index_bounds
@@ -180,20 +207,45 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         if loop_indices.is_empty() {
             return;
         }
-        for branch in branches {
-            let (before, guarded) = user_functions::partition_tensor_prefixes(
-                std::mem::take(&mut branch.value.prefix),
-                &loop_indices,
-            );
-            self.pending_prefix_statements.extend(before);
-            branch.value.prefix = guarded;
+        if branches.iter().any(|branch| {
+            !branch.condition_prefix.is_empty()
+                || user_functions::expression_depends_on(&branch.condition, &loop_indices)
+        }) {
+            return;
         }
-        let (before, guarded) = user_functions::partition_tensor_prefixes(
+
+        let mut has_hoisted_statements = false;
+        let hoisted_branches = branches
+            .iter_mut()
+            .map(|branch| {
+                let (before, guarded) = user_functions::partition_tensor_prefixes(
+                    std::mem::take(&mut branch.value.prefix),
+                    &loop_indices,
+                );
+                has_hoisted_statements |= !before.is_empty();
+                branch.value.prefix = guarded;
+                gast::IfBranch {
+                    condition: gast::Condition::Expression(branch.condition.clone()),
+                    body: before,
+                    span,
+                }
+            })
+            .collect();
+        let (fallback_before, guarded) = user_functions::partition_tensor_prefixes(
             std::mem::take(&mut fallback.prefix),
             &loop_indices,
         );
-        self.pending_prefix_statements.extend(before);
+        has_hoisted_statements |= !fallback_before.is_empty();
         fallback.prefix = guarded;
+        if has_hoisted_statements {
+            self.pending_prefix_statements.push(gast::Spanned::new(
+                gast::Statement::If(gast::IfStatement {
+                    branches: hoisted_branches,
+                    else_body: Some(fallback_before),
+                }),
+                span,
+            ));
+        }
     }
 
     pub(super) fn lower_lazy_selection(
@@ -203,7 +255,24 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> TypedExpression {
-        self.hoist_loop_invariant_selection_prefixes(&mut branches, &mut fallback);
+        let conditional_call_names = self
+            .materialized_function_calls
+            .iter()
+            .filter(|(key, _)| !key.activation_path.is_empty())
+            .flat_map(|(_, names)| names.iter().cloned())
+            .collect::<Vec<_>>();
+        let materialized_branch_values = !fallback.prefix.is_empty()
+            || branches.iter().any(|branch| {
+                !branch.condition_prefix.is_empty() || !branch.value.prefix.is_empty()
+            })
+            || user_functions::expression_depends_on(&fallback.expression, &conditional_call_names)
+            || branches.iter().any(|branch| {
+                user_functions::expression_depends_on(
+                    &branch.value.expression,
+                    &conditional_call_names,
+                )
+            });
+        self.hoist_loop_invariant_selection_prefixes(&mut branches, &mut fallback, span);
 
         if branches.is_empty() {
             self.pending_prefix_statements.extend(fallback.prefix);
@@ -212,19 +281,20 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 scalar_type,
             };
         }
-        let needs_statements = !fallback.prefix.is_empty()
-            || branches
-                .iter()
-                .any(|branch| !branch.value.prefix.is_empty());
+        let needs_statements = materialized_branch_values
+            || !fallback.prefix.is_empty()
+            || branches.iter().any(|branch| {
+                !branch.condition_prefix.is_empty() || !branch.value.prefix.is_empty()
+            });
         if !needs_statements {
             return TypedExpression {
-                expression: gast::Expression::If(gast::IfExpression {
-                    branches: branches
+                expression: gast::Expression::If(gast::IfExpression::new(
+                    branches
                         .into_iter()
                         .map(|branch| (branch.condition, branch.value.expression))
                         .collect(),
-                    else_value: Box::new(fallback.expression),
-                }),
+                    fallback.expression,
+                )),
                 scalar_type,
             };
         }
@@ -241,21 +311,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             range: gast::RangeAttributes::default(),
             span,
         });
-        let branches = branches
-            .into_iter()
-            .map(|branch| gast::IfBranch {
-                condition: gast::Condition::Expression(branch.condition),
-                body: selection_assignment(branch.value, &target, span),
-                span,
-            })
-            .collect();
-        self.pending_prefix_statements.push(gast::Spanned::new(
-            gast::Statement::If(gast::IfStatement {
-                branches,
-                else_body: Some(selection_assignment(fallback, &target, span)),
-            }),
-            span,
-        ));
+        self.pending_prefix_statements
+            .extend(selection_statements(branches, fallback, &target, span));
         TypedExpression {
             expression: gast::Expression::Ref(gast::Reference::local(target)),
             scalar_type,
@@ -483,7 +540,10 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let rhs = self.lower_at(rhs, &rhs_indices);
         self.loop_index_bounds.pop();
         let product = lower_binary(dae::BinaryOperator::Multiply, lhs?, rhs?, scalar_type, span)?;
-        let mut body = self.pending_prefix_statements.split_off(body_start);
+        let prefixes = self.pending_prefix_statements.split_off(body_start);
+        let (before, mut body) =
+            user_functions::partition_tensor_prefixes(prefixes, std::slice::from_ref(&iterator));
+        self.pending_prefix_statements.extend(before);
         body.push(gast::Spanned::new(
             gast::Statement::Assignment {
                 target: gast::Reference::local(accumulator.clone()),
@@ -625,10 +685,27 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             )
         })?;
         self.prove_dynamic_index(first, extent, span)?;
+        let activation_operands = elements
+            .iter()
+            .map(|element| element.index())
+            .collect::<Vec<_>>();
         let mut selected = Vec::with_capacity(elements.len());
         for (ordinal, element) in elements.iter().enumerate() {
+            self.conditional_activation_path
+                .push(ConditionalActivationKey {
+                    kind: ConditionalActivationKind::ArraySelection,
+                    operands: activation_operands.clone(),
+                    branch: u32::try_from(ordinal).map_err(|_| {
+                        GalecTargetError::LoweringInternal {
+                            detail: "array-selection ordinal exceeds the activation-key capacity"
+                                .to_owned(),
+                        }
+                    })?,
+                });
             let prefix_start = self.pending_prefix_statements.len();
-            let value = self.lower_at(element, rest)?;
+            let value = self.lower_at(element, rest);
+            self.conditional_activation_path.pop();
+            let value = value?;
             selected.push((
                 ordinal + 1,
                 SelectionValue {
@@ -646,6 +723,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .map(|(ordinal, value, branch_type)| {
                 debug_assert_eq!(branch_type, scalar_type);
                 SelectionBranch {
+                    condition_prefix: Vec::new(),
                     condition: gast::Expression::binary(
                         gast::BinaryOp::Eq,
                         first.clone(),
@@ -690,8 +768,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         else {
             return self.lower_at(base, indices);
         };
+        let activation_operands = vec![base.index(), value.index()];
+        self.conditional_activation_path
+            .push(ConditionalActivationKey {
+                kind: ConditionalActivationKind::ArrayUpdate,
+                operands: activation_operands.clone(),
+                branch: 0,
+            });
         let updated_start = self.pending_prefix_statements.len();
-        let updated = self.lower_at(value, &value_indices)?;
+        let updated = self.lower_at(value, &value_indices);
+        self.conditional_activation_path.pop();
+        let updated = updated?;
         let Some(condition) = dynamic_conditions
             .into_iter()
             .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
@@ -702,8 +789,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             prefix: self.pending_prefix_statements.split_off(updated_start),
             expression: updated.expression,
         };
+        self.conditional_activation_path
+            .push(ConditionalActivationKey {
+                kind: ConditionalActivationKind::ArrayUpdate,
+                operands: activation_operands,
+                branch: 1,
+            });
         let historical_start = self.pending_prefix_statements.len();
-        let historical = self.lower_at(base, indices)?;
+        let historical = self.lower_at(base, indices);
+        self.conditional_activation_path.pop();
+        let historical = historical?;
         let scalar_type = historical.scalar_type;
         let fallback = SelectionValue {
             prefix: self.pending_prefix_statements.split_off(historical_start),
@@ -711,6 +806,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         };
         Ok(self.lower_lazy_selection(
             vec![SelectionBranch {
+                condition_prefix: Vec::new(),
                 condition,
                 value: updated,
             }],
@@ -947,10 +1043,10 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 expression: match condition {
                     gast::Expression::Bool(true) => diagonal.expression,
                     gast::Expression::Bool(false) => gast::Expression::Real(0.0),
-                    condition => gast::Expression::If(gast::IfExpression {
-                        branches: vec![(condition, diagonal.expression)],
-                        else_value: Box::new(gast::Expression::Real(0.0)),
-                    }),
+                    condition => gast::Expression::If(gast::IfExpression::new(
+                        vec![(condition, diagonal.expression)],
+                        gast::Expression::Real(0.0),
+                    )),
                 },
                 scalar_type,
             });
@@ -1085,8 +1181,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .get(axis)
             .expect("checked concatenation projection has its concatenated axis");
         let mut offset = 0_i64;
+        let activation_operands = arguments
+            .iter()
+            .map(|argument| argument.index())
+            .collect::<Vec<_>>();
         let mut values = Vec::with_capacity(arguments.len());
-        for argument in arguments.iter() {
+        for (ordinal, argument) in arguments.iter().enumerate() {
             let dimensions = self
                 .view
                 .expression(argument)
@@ -1106,8 +1206,21 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 )
             };
             truncate_promoted_projection(&mut projected, dimensions.len());
+            self.conditional_activation_path
+                .push(ConditionalActivationKey {
+                    kind: ConditionalActivationKind::Concatenation,
+                    operands: activation_operands.clone(),
+                    branch: u32::try_from(ordinal).map_err(|_| {
+                        GalecTargetError::LoweringInternal {
+                            detail: "concatenation ordinal exceeds the activation-key capacity"
+                                .to_owned(),
+                        }
+                    })?,
+                });
             let prefix_start = self.pending_prefix_statements.len();
-            let value = coerce(self.lower_at(argument, &projected)?, scalar_type, span)?;
+            let value = self.lower_at(argument, &projected);
+            self.conditional_activation_path.pop();
+            let value = coerce(value?, scalar_type, span)?;
             values.push((
                 upper,
                 SelectionValue {
@@ -1127,6 +1240,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let branches = values
             .into_iter()
             .map(|(upper, value)| SelectionBranch {
+                condition_prefix: Vec::new(),
                 condition: gast::Expression::binary(
                     gast::BinaryOp::Le,
                     coordinate.clone(),
@@ -1267,8 +1381,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             let first = component(0)?;
             let second = component(1)?;
             let third = component(2)?;
-            gast::Expression::If(gast::IfExpression {
-                branches: vec![
+            gast::Expression::If(gast::IfExpression::new(
+                vec![
                     (
                         gast::Expression::binary(
                             gast::BinaryOp::Eq,
@@ -1286,8 +1400,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                         second,
                     ),
                 ],
-                else_value: Box::new(third),
-            })
+                third,
+            ))
         };
         Ok(TypedExpression {
             expression,
@@ -1412,18 +1526,110 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .view
             .value_type(parameter.value_type())
             .expect("checked function parameter type resolves");
+        let scalar_type = scalar_type(
+            value_type.scalar_type(),
+            parameter.name().as_str(),
+            parameter.declaration().span(),
+        )?;
         Ok(TypedExpression {
-            expression: gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
-                name: user_functions::parameter_name(parameter)?,
-                subscripts: indices.to_vec(),
+            expression: self.lower_local_reference(
+                user_functions::parameter_name(parameter)?,
+                value_type.dimensions(),
+                indices,
                 span,
-            })),
-            scalar_type: scalar_type(
-                value_type.scalar_type(),
-                parameter.name().as_str(),
-                parameter.declaration().span(),
             )?,
+            scalar_type,
         })
+    }
+
+    pub(super) fn lower_local_reference(
+        &mut self,
+        name: gast::Name,
+        dimensions: &[u32],
+        indices: &[gast::Expression],
+        span: Span,
+    ) -> Result<gast::Expression, GalecTargetError> {
+        if dimensions.len() != indices.len() {
+            return Err(unsupported(
+                "dynamic-array-index",
+                "function-local reference does not have one index per checked dimension".to_owned(),
+                span,
+            ));
+        }
+        let indices = indices
+            .iter()
+            .map(|index| {
+                constant_integer(index)
+                    .map(gast::Expression::Integer)
+                    .unwrap_or_else(|| index.clone())
+            })
+            .collect::<Vec<_>>();
+        if indices
+            .iter()
+            .all(|index| self.is_loop_index_expression(index))
+        {
+            return Ok(gast::Expression::Ref(gast::Reference::Local(
+                gast::RefPart {
+                    name,
+                    subscripts: indices,
+                    span,
+                },
+            )));
+        }
+        self.guard_local_reference_bounds(&indices, dimensions, span);
+        lower_bounded_reference_selection(
+            gast::Reference::Local(gast::RefPart {
+                name,
+                subscripts: indices,
+                span,
+            }),
+            dimensions,
+            span,
+        )
+    }
+
+    fn guard_local_reference_bounds(
+        &mut self,
+        indices: &[gast::Expression],
+        dimensions: &[u32],
+        span: Span,
+    ) {
+        let invalid = indices
+            .iter()
+            .zip(dimensions)
+            .filter(|(index, _)| !matches!(index, gast::Expression::Integer(_)))
+            .flat_map(|(index, extent)| {
+                [
+                    gast::Expression::binary(
+                        gast::BinaryOp::Lt,
+                        index.clone(),
+                        gast::Expression::Integer(1),
+                    ),
+                    gast::Expression::binary(
+                        gast::BinaryOp::Gt,
+                        index.clone(),
+                        gast::Expression::Integer(i64::from(*extent)),
+                    ),
+                ]
+            })
+            .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::Or, lhs, rhs))
+            .expect("a dynamic local reference has at least one runtime index");
+        self.pending_prefix_statements.push(gast::Spanned::new(
+            gast::Statement::If(gast::IfStatement {
+                branches: vec![gast::IfBranch {
+                    condition: gast::Condition::Expression(invalid),
+                    body: vec![gast::Spanned::new(
+                        gast::Statement::Signal(vec![gast::Identifier::new(
+                            gast::PredefinedSignal::InvalidArgument.name(),
+                        )]),
+                        span,
+                    )],
+                    span,
+                }],
+                else_body: None,
+            }),
+            span,
+        ));
     }
 
     fn variable_coordinate(
@@ -1547,7 +1753,15 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 name, indices, span,
             )));
         }
-        lower_bounded_state_selection(name, dimensions, &indices, span)
+        lower_bounded_reference_selection(
+            gast::Reference::State(vec![gast::RefPart {
+                name,
+                subscripts: indices,
+                span,
+            }]),
+            dimensions,
+            span,
+        )
     }
 
     fn is_loop_index_expression(&self, expression: &gast::Expression) -> bool {
@@ -1604,7 +1818,13 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 let variable = self
                     .by_id
                     .values()
-                    .find(|variable| variable.name.lexeme() == part.name.lexeme())?;
+                    .find(|variable| variable.name.lexeme() == part.name.lexeme())
+                    .or_else(|| {
+                        self.pre_names
+                            .iter()
+                            .find(|(_, name)| name.lexeme() == part.name.lexeme())
+                            .and_then(|(id, _)| self.by_id.get(id))
+                    })?;
                 Some((
                     variable
                         .variable
@@ -1643,53 +1863,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     }
 }
 
-fn lower_bounded_state_selection(
-    name: gast::Name,
+fn lower_bounded_reference_selection(
+    reference: gast::Reference,
     dimensions: &[u32],
-    indices: &[gast::Expression],
     span: Span,
 ) -> Result<gast::Expression, GalecTargetError> {
-    let candidates = row_major_indices(dimensions)
-        .into_iter()
-        .filter(|candidate| {
-            indices.iter().zip(candidate).all(|(index, candidate)| {
-                !matches!(index, gast::Expression::Integer(found) if *found != i64::from(*candidate))
-            })
-        })
-        .collect::<Vec<_>>();
-    let (fallback, branches) = candidates.split_last().ok_or_else(|| {
-        unsupported(
-            "dynamic-array-index",
-            "checked dynamic index domain is empty".to_owned(),
-            span,
-        )
-    })?;
-    let branches = branches
-        .iter()
-        .map(|candidate| {
-            let condition = indices
-                .iter()
-                .zip(candidate)
-                .filter(|(index, _)| !matches!(index, gast::Expression::Integer(_)))
-                .map(|(index, candidate)| {
-                    gast::Expression::binary(
-                        gast::BinaryOp::Eq,
-                        index.clone(),
-                        gast::Expression::Integer(i64::from(*candidate)),
-                    )
-                })
-                .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
-                .expect("dynamic reference has at least one dynamic index");
-            (
-                condition,
-                gast::Expression::Ref(state_reference_indexed(name.clone(), candidate, span)),
-            )
-        })
-        .collect();
-    Ok(gast::Expression::If(gast::IfExpression {
-        branches,
-        else_value: Box::new(gast::Expression::Ref(state_reference_indexed(
-            name, fallback, span,
-        ))),
-    }))
+    gast::IfExpression::bounded_selection(reference, dimensions.to_vec())
+        .map(gast::Expression::If)
+        .map_err(|error| unsupported("dynamic-array-index", error.to_string(), span))
 }

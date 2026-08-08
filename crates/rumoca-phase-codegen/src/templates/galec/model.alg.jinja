@@ -37,6 +37,7 @@
 {%- elif value.kind == "call" -%}{{ call(value.value) }}
 {%- elif value.kind == "paren" -%}({{ expr(value.value) }})
 {%- elif value.kind == "if" -%}({% for branch in value.value.branches %}{% if loop.first %}if{% else %} elseif{% endif %} {{ expr(branch[0]) }} then {{ expr(branch[1]) }}{% endfor %} else {{ expr(value.value.else_value) }})
+{%- elif value.kind == "bounded_selection" -%}({% for branch in value.value.galec.branches %}{% if loop.first %}if{% else %} elseif{% endif %} {{ expr(branch[0]) }} then {{ expr(branch[1]) }}{% endfor %} else {{ expr(value.value.galec.else_value) }})
 {%- elif value.kind == "array" -%}{% raw %}{{% endraw %}{% for item in value.value %}{{ expr(item) }}{% if not loop.last %}, {% endif %}{% endfor %}{% raw %}}{% endraw %}
 {%- elif value.kind == "neg" -%}-{{ reference(value.value) }}
 {%- elif value.kind == "not" -%}not {% if value.value.kind == "if" or value.value.kind == "paren" %}{{ expr(value.value) }}{% else %}({{ expr(value.value) }}){% endif %}

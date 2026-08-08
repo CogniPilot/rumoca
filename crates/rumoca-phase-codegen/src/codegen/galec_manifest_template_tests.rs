@@ -122,7 +122,12 @@ fn collision_block() -> CheckedAlgorithmBlock {
         input(galec::Name::quoted("a.b")),
         input(galec::Name::ident("a_b")),
         input(galec::Name::ident("volatile")),
+        input(galec::Name::ident("imu_valid")),
     ];
+    block.do_step.locals = vec![galec::VariableDeclaration::scalar(
+        galec::ScalarType::Real,
+        galec::Name::quoted("imu.valid"),
+    )];
     CheckedAlgorithmBlock::construct(block).expect("valid collision fixture")
 }
 
@@ -175,6 +180,14 @@ fn galec_c_symbols_are_collision_safe_reserved_disjoint_and_consistent() {
             .count(),
         1
     );
+    assert_eq!(
+        header
+            .matches("float imu_valid; /* declaration 4: imu_valid")
+            .count(),
+        1,
+        "a function-local collision must not rename a state field: {header}"
+    );
+    assert!(!header.contains("float imu_valid_2;"), "{header}");
     assert!(header.contains("constexpr_2State"), "{header}");
     assert!(source.contains("void constexpr_2_startup"), "{source}");
     assert!(manifest.contains("name=\"constexpr_2State\""), "{manifest}");
@@ -197,6 +210,10 @@ fn galec_c_symbols_are_collision_safe_reserved_disjoint_and_consistent() {
     assert!(manifest.contains("componentIdentifier=\"b\""), "{manifest}");
     assert!(
         manifest.contains("componentIdentifier=\"volatile_2\""),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("componentIdentifier=\"imu_valid\""),
         "{manifest}"
     );
     assert!(

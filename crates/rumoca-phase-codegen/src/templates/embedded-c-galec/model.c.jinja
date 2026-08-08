@@ -10,6 +10,7 @@
     "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
     "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
     "self", "rumoca_galec_sign", "rumoca_galec_min", "rumoca_galec_max",
+    "rumoca_galec_bounded_index",
     "rumoca_galec_imin", "rumoca_galec_imax", "rumoca_galec_division_towards_zero",
     "rumoca_galec_compare_lt", "rumoca_galec_compare_gt", "rumoca_galec_compare_le",
     "rumoca_galec_compare_ge", "rumoca_galec_compare_eq", "rumoca_galec_compare_ne"
@@ -18,13 +19,17 @@
     algorithm_code.symbol_names,
     {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
 ) -%}
+{%- set c_state_symbols = allocate_symbols(
+    algorithm_code.variable_names,
+    {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
+) -%}
 {%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
 {%- macro name_text(value) -%}{{ value.value[0] }}{%- endmacro -%}
 {%- macro state_symbol(part) -%}
 {%- set spelling = part.name.value[0] -%}
 {%- set found = namespace(value="") -%}
 {%- for variable in algorithm_code.variables -%}
-{%- if variable.name == spelling -%}{%- set found.value = symbol(c_symbols, variable.name) -%}{%- endif -%}
+{%- if variable.name == spelling -%}{%- set found.value = symbol(c_state_symbols, variable.name) -%}{%- endif -%}
 {%- endfor -%}
 {%- if found.value == "" -%}{{ fail_closed_unresolved_state_reference }}{%- else -%}{{ found.value }}{%- endif -%}
 {%- endmacro -%}
@@ -36,6 +41,13 @@
 {%- for index in part.subscripts %}[((int32_t)({{ expr(index) }})) - 1]{% endfor -%}
 {%- endfor -%}
 {%- else -%}{{ fail_closed_reference_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro bounded_reference(value) -%}
+{%- if value.reference.kind == "local" -%}
+{{ symbol(c_symbols, name_text(value.reference.value.name)) }}{% for index in value.reference.value.subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
+{%- elif value.reference.kind == "state" and value.reference.value|length == 1 -%}
+self->{{ state_symbol(value.reference.value[0]) }}{% for index in value.reference.value[0].subscripts %}[rumoca_galec_bounded_index({{ expr(index) }}, {{ value.extents[loop.index0] }})]{% endfor %}
+{%- else -%}{{ fail_closed_bounded_reference_kind }}{%- endif -%}
 {%- endmacro -%}
 {%- macro binary_operator(value) -%}
 {%- if value.kind == "mul" -%}*{%- elif value.kind == "div" -%}/{%- elif value.kind == "add" -%}+{%- elif value.kind == "sub" -%}-{%- elif value.kind == "lt" -%}<{%- elif value.kind == "gt" -%}>{%- elif value.kind == "le" -%}<={%- elif value.kind == "ge" -%}>={%- elif value.kind == "eq" -%}=={%- elif value.kind == "ne" -%}!={%- elif value.kind == "and" -%}&&{%- elif value.kind == "or" -%}||{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
@@ -79,10 +91,16 @@
 ({% for argument in value.arguments %}{% if indices|length > 0 %}{{ scalar_source(argument, indices) }}{% else %}{{ expr(argument) }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}){% if function == "real" %}){% endif %}
 {%- endmacro -%}
 {%- macro user_call(value, target) -%}
-    {{ symbol(c_symbols, name_text(value.function)) }}(self{% for argument in value.arguments %}, {{ expr(argument) }}{% endfor %}, {% if target.rank > 0 %}{{ reference(target) }}{% else %}&{{ reference(target) }}{% endif %});
+    {{ symbol(c_symbols, name_text(value.function)) }}(
+        self{% for argument in value.arguments %},
+        {{ expr(argument) }}{% endfor %},
+        {% if target.rank > 0 %}{{ reference(target) }}{% else %}&{{ reference(target) }}{% endif %});
 {%- endmacro -%}
 {%- macro user_multi_call(value) -%}
-    {{ symbol(c_symbols, name_text(value.call.function)) }}(self{% for argument in value.call.arguments %}, {{ expr(argument) }}{% endfor %}{% for target in value.targets %}, {% if target.rank > 0 %}{{ reference(target) }}{% else %}&{{ reference(target) }}{% endif %}{% endfor %});
+    {{ symbol(c_symbols, name_text(value.call.function)) }}(
+        self{% for argument in value.call.arguments %},
+        {{ expr(argument) }}{% endfor %}{% for target in value.targets %},
+        {% if target.rank > 0 %}{{ reference(target) }}{% else %}&{{ reference(target) }}{% endif %}{% endfor %});
 {%- endmacro -%}
 {%- macro if_expression(value) -%}
 {%- for branch in value.branches -%}({{ expr(branch[0]) }} ? {{ expr(branch[1]) }} : {% endfor -%}
@@ -98,6 +116,7 @@
 {%- elif value.kind == "call" -%}{{ call(value.value) }}
 {%- elif value.kind == "paren" -%}({{ expr(value.value) }})
 {%- elif value.kind == "if" -%}{{ if_expression(value.value) }}
+{%- elif value.kind == "bounded_selection" -%}{{ bounded_reference(value.value) }}
 {%- elif value.kind == "neg" -%}(-{{ reference(value.value) }})
 {%- elif value.kind == "not" -%}(!({{ expr(value.value) }}))
 {%- elif value.kind == "binary" -%}{{ binary(value.value, expr(value.value.lhs), expr(value.value.rhs)) }}
@@ -131,6 +150,7 @@
 {%- elif value.kind == "binary" -%}
 {{ binary(value.value, scalar_source(value.value.lhs, indices), scalar_source(value.value.rhs, indices)) }}
 {%- elif value.kind == "if" -%}{{ scalar_if_tail(value.value.branches, 0, value.value.else_value, indices) }}
+{%- elif value.kind == "bounded_selection" -%}{{ expr(value) }}
 {%- elif value.kind == "call" -%}{{ call(value.value, indices) }}
 {%- elif value.kind == "bool" or value.kind == "integer" or value.kind == "real" or value.kind == "size" or value.kind == "not" -%}{{ expr(value) }}
 {%- else -%}{{ fail("unsupported-feature:embedded-c-array-expression:" ~ value.kind) }}
@@ -139,10 +159,10 @@
 {%- macro array_assignment(target, value, dimensions, depth, indices) -%}
 {%- if depth == dimensions|length -%}
     {{ scalar_target(target, indices) }} = {{ scalar_source(value, indices) }};
-{%- else -%}
+{% else -%}
 {%- for index in range(dimensions[depth]) -%}
 {{ array_assignment(target, value, dimensions, depth + 1, indices + [index]) }}
-{%- endfor -%}
+{% endfor -%}
 {%- endif -%}
 {%- endmacro -%}
 {%- macro c_condition(value) -%}
@@ -160,7 +180,7 @@
 {%- endmacro -%}
 {%- macro branch(value, keyword) -%}
     {{ keyword }} {{ c_condition(value.condition.value) }} {
-{{ statements(value.body) }}    }
+{{ local_declarations(value.c_locals) }}{{ statements(value.body) }}    }
 {%- endmacro -%}
 {%- macro statements(values) -%}
 {%- for wrapped in values -%}
@@ -187,7 +207,7 @@
 {%- for item in value.value.branches %}{{ branch(item, "if" if loop.first else "else if") }}{% endfor %}
 {%- if value.value.else_body is not none %}
     else {
-{{ statements(value.value.else_body) }}    }
+{{ local_declarations(value.value.else_c_locals) }}{{ statements(value.value.else_body) }}    }
 {%- endif -%}
 {%- elif value.kind == "for" -%}
 {%- if value.value.iterator is none -%}{{ fail("unsupported-feature:embedded-c-anonymous-for") }}
@@ -197,7 +217,7 @@
     for (int32_t {{ iterator }} = {{ expr(value.value.start) }};
          (({{ step }}) > 0 ? {{ iterator }} <= {{ expr(value.value.stop) }} : {{ iterator }} >= {{ expr(value.value.stop) }});
          {{ iterator }} += {{ step }}) {
-{{ statements(value.value.body) }}    }
+{{ local_declarations(value.value.c_locals) }}{{ statements(value.value.body) }}    }
 {%- endif -%}
 {%- elif value.kind == "signal" -%}
 {%- for signal in value.value %}
@@ -212,7 +232,7 @@
 {%- macro local_declarations(values) -%}
 {%- for declaration in values %}
     {{ c_type(declaration.ty.value.kind) }} {{ symbol(c_symbols, name_text(declaration.name)) }}{% for dimension in declaration.dimensions %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-local-array-dimension") }}{% endif %}{% endfor %};
-    (void){{ symbol(c_symbols, name_text(declaration.name)) }};
+    (void)&{{ symbol(c_symbols, name_text(declaration.name)) }};
 {%- endfor -%}
 {%- endmacro -%}
 {%- macro function_parameter(value) -%}
@@ -227,18 +247,20 @@
 {%- endif -%}
 {%- endmacro -%}
 {%- macro function_signature(value) -%}
-static void {{ symbol(c_symbols, name_text(value.name)) }}({{ c_model }}State *self{% for parameter in value.parameters %}, {{ function_parameter(parameter) }}{% endfor %})
+static void {{ symbol(c_symbols, name_text(value.name)) }}(
+    {{ c_model }}State *self{% for parameter in value.parameters %},
+    {{ function_parameter(parameter) }}{% endfor %})
 {%- endmacro -%}
 {%- macro output_copy(value, depth, indices) -%}
 {%- if depth == value.decl.dimensions|length -%}
     {% if value.decl.dimensions|length == 0 %}*{% endif %}rumoca_galec_out_{{ symbol(c_symbols, name_text(value.decl.name)) }}{% for index in indices %}[{{ index }}]{% endfor %} = {{ symbol(c_symbols, name_text(value.decl.name)) }}{% for index in indices %}[{{ index }}]{% endfor %};
-{%- else -%}
+{% else -%}
 {%- set dimension = value.decl.dimensions[depth] -%}
 {%- if dimension.kind != "expr" or dimension.value.kind != "integer" -%}{{ fail("unsupported-feature:embedded-c-function-dimension") }}
 {%- else -%}
 {%- for index in range(dimension.value.value) -%}
 {{ output_copy(value, depth + 1, indices + [index]) }}
-{%- endfor -%}
+{% endfor -%}
 {%- endif -%}
 {%- endif -%}
 {%- endmacro -%}
@@ -252,11 +274,11 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}({{ c_model }}State *s
     {{ c_type(parameter.decl.ty.value.kind) }} {{ symbol(c_symbols, name_text(parameter.decl.name)) }}{% for dimension in parameter.decl.dimensions %}[{{ dimension.value.value }}]{% endfor %};
 {%- endif -%}
 {%- endfor -%}
-{{ local_declarations(value.locals) }}{{ statements(value.statements) }}
+{{ local_declarations(value.c_locals) }}{{ statements(value.statements) }}
 {%- for parameter in value.parameters -%}
 {%- if parameter.direction.kind == "output" -%}
 {{ output_copy(parameter, 0, []) }}
-{%- endif -%}
+{% endif -%}
 {%- endfor %}}
 {%- endmacro -%}
 {% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
@@ -266,6 +288,16 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}({{ c_model }}State *s
 #include "{{ model_name }}.h"
 
 #include <math.h>
+
+{%- if algorithm_code.package.block.semantic_uses.bounded_selection %}
+static inline int32_t rumoca_galec_bounded_index(int32_t value, int32_t extent) {
+    int32_t result = extent - INT32_C(1);
+    if ((value >= INT32_C(1)) && (value <= extent)) {
+        result = value - INT32_C(1);
+    }
+    return result;
+}
+{%- endif %}
 
 {%- if algorithm_code.package.block.semantic_uses.sign %}
 static inline float rumoca_galec_sign(float value) {
@@ -415,14 +447,14 @@ static inline int32_t rumoca_galec_division_towards_zero(int32_t lhs, int32_t rh
 void {{ c_model }}_startup({{ c_model }}State *self) {
     (void)self;
     self->rumoca_galec_error_signal_status = UINT32_C(0);
-{{ local_declarations(algorithm_code.package.block.startup.locals) }}{{ statements(algorithm_code.package.block.startup.statements) }}}
+{{ local_declarations(algorithm_code.package.block.startup.c_locals) }}{{ statements(algorithm_code.package.block.startup.statements) }}}
 
 void {{ c_model }}_recalibrate({{ c_model }}State *self) {
     (void)self;
     self->rumoca_galec_error_signal_status = UINT32_C(0);
-{{ local_declarations(algorithm_code.package.block.recalibrate.locals) }}{{ statements(algorithm_code.package.block.recalibrate.statements) }}}
+{{ local_declarations(algorithm_code.package.block.recalibrate.c_locals) }}{{ statements(algorithm_code.package.block.recalibrate.statements) }}}
 
 void {{ c_model }}_dostep({{ c_model }}State *self) {
     (void)self;
     self->rumoca_galec_error_signal_status = UINT32_C(0);
-{{ local_declarations(algorithm_code.package.block.do_step.locals) }}{{ statements(algorithm_code.package.block.do_step.statements) }}}
+{{ local_declarations(algorithm_code.package.block.do_step.c_locals) }}{{ statements(algorithm_code.package.block.do_step.statements) }}}

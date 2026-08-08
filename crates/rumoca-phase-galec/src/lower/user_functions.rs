@@ -288,6 +288,7 @@ fn function_locals<'dae>(
     view: dae::DaeView<'dae>,
     function: dae::FunctionView<'dae>,
 ) -> Result<Vec<gast::VariableDeclaration>, GalecTargetError> {
+    let output_names = flattened_output_names(view, function)?;
     let mut locals = Vec::new();
     for value in function
         .values()
@@ -297,7 +298,10 @@ fn function_locals<'dae>(
             .value_type(value.value_type())
             .expect("checked function value type resolves");
         if !ty.is_record() {
-            locals.push(value_declaration(view, value)?);
+            let declaration = value_declaration(view, value)?;
+            if !output_names.contains(&declaration.name) {
+                locals.push(declaration);
+            }
             continue;
         }
         for ordinal in 0..ty.record_field_count() {
@@ -307,7 +311,7 @@ fn function_locals<'dae>(
             let field_type = view
                 .value_type(field_type)
                 .expect("checked record field value type resolves");
-            locals.push(gast::VariableDeclaration {
+            let declaration = gast::VariableDeclaration {
                 ty: gast::TypeRef::Primitive(scalar_type(
                     field_type.scalar_type(),
                     field_name.as_str(),
@@ -317,10 +321,30 @@ fn function_locals<'dae>(
                 dimensions: dimensions(field_type.dimensions()),
                 range: gast::RangeAttributes::default(),
                 span: value.declaration().span(),
-            });
+            };
+            if !output_names.contains(&declaration.name) {
+                locals.push(declaration);
+            }
         }
     }
     Ok(locals)
+}
+
+fn flattened_output_names<'dae>(
+    view: dae::DaeView<'dae>,
+    function: dae::FunctionView<'dae>,
+) -> Result<Vec<gast::Name>, GalecTargetError> {
+    let mut declarations = Vec::new();
+    for output in function
+        .values()
+        .filter(|value| value.role() == dae::FunctionValueRole::Output)
+    {
+        append_output_declarations(view, output, &mut declarations)?;
+    }
+    Ok(declarations
+        .into_iter()
+        .map(|parameter| parameter.decl.name)
+        .collect())
 }
 
 fn parameter_declaration<'dae>(
@@ -377,6 +401,13 @@ fn lower_function_statement<'a, 'dae>(
     match statement {
         dae::FunctionStatementView::Assignment { definition } => {
             lower_function_assignment(view, definition, lowerer, statements)?;
+            lowerer.finish_statement_group();
+        }
+        dae::FunctionStatementView::AssignmentGroup { definitions } => {
+            for definition in definitions.iter() {
+                lower_function_assignment(view, definition, lowerer, statements)?;
+            }
+            lowerer.finish_statement_group();
         }
         dae::FunctionStatementView::Assertion {
             condition,
@@ -392,6 +423,7 @@ fn lower_function_statement<'a, 'dae>(
             provenance,
         } => {
             lower_function_for(view, fold, body, provenance.span(), lowerer, statements)?;
+            lowerer.finish_statement_group();
         }
     }
     Ok(())
@@ -412,10 +444,13 @@ fn lower_function_assignment<'a, 'dae>(
     let target_type = view
         .value_type(target.value_type())
         .expect("checked function target type resolves");
+    if preserves_function_target(view, target, definition.rhs()) {
+        return Ok(());
+    }
     if let Some(statement) =
         lower_indexed_function_update(view, target, target_type, definition, lowerer)?
     {
-        statements.extend(lowerer.take_prefix_statements());
+        statements.extend(lowerer.drain_prefix_statements());
         statements.push(statement);
         return Ok(());
     }
@@ -445,8 +480,7 @@ fn lower_record_function_assignment<'a, 'dae>(
             &mut record_statements,
         )?;
     }
-    lowerer.finish_statement_group();
-    statements.extend(record_statements);
+    statements.extend(merge_guarded_tensor_loops(record_statements));
     Ok(())
 }
 
@@ -476,19 +510,43 @@ fn lower_record_function_field<'a, 'dae>(
         lowerer,
     )? {
         statements.extend(lowered.before);
-        statements.push(lowered.nested);
+        if let Some(nested) = lowered.nested
+            && !is_identity_assignment_tree(&nested)
+        {
+            statements.push(nested);
+        }
         return Ok(());
     }
     let value = lowerer.lower_aggregate_record_field(definition.rhs(), ordinal, field_type)?;
     statements.extend(lowerer.drain_prefix_statements());
+    let target = gast::Reference::local(record_value_field_name(target, field_name)?);
+    if matches!(&value, gast::Expression::Ref(source) if same_local_reference(&target, source)) {
+        return Ok(());
+    }
     statements.push(gast::Spanned::new(
-        gast::Statement::Assignment {
-            target: gast::Reference::local(record_value_field_name(target, field_name)?),
-            value,
-        },
+        gast::Statement::Assignment { target, value },
         span,
     ));
     Ok(())
+}
+
+fn is_identity_assignment_tree(statement: &gast::Spanned<gast::Statement>) -> bool {
+    match &statement.node {
+        gast::Statement::Assignment { target, value } => {
+            matches!(value, gast::Expression::Ref(source) if same_local_reference(target, source))
+        }
+        gast::Statement::For(loop_statement) if loop_statement.body.len() == 1 => {
+            is_identity_assignment_tree(&loop_statement.body[0])
+        }
+        _ => false,
+    }
+}
+
+fn same_local_reference(lhs: &gast::Reference, rhs: &gast::Reference) -> bool {
+    let (gast::Reference::Local(lhs), gast::Reference::Local(rhs)) = (lhs, rhs) else {
+        return false;
+    };
+    lhs.name.lexeme() == rhs.name.lexeme() && lhs.subscripts == rhs.subscripts
 }
 
 fn lower_primitive_function_assignment<'a, 'dae>(
@@ -500,6 +558,15 @@ fn lower_primitive_function_assignment<'a, 'dae>(
 ) -> Result<(), GalecTargetError> {
     let span = definition.provenance().span();
     let target_name = value_name(target)?;
+    if let Some(call) = lowerer.lower_direct_aggregate_call_assignment(
+        definition.rhs(),
+        target_name.clone(),
+        span,
+    )? {
+        statements.extend(lowerer.drain_prefix_statements());
+        statements.push(call);
+        return Ok(());
+    }
     if let Some(lowered) = lower_tensor_function_assignment(
         TensorAssignment {
             target: target_name.clone(),
@@ -511,13 +578,14 @@ fn lower_primitive_function_assignment<'a, 'dae>(
         lowerer,
     )? {
         statements.extend(lowered.before);
-        statements.push(lowered.nested);
-        lowerer.finish_statement_group();
+        if let Some(nested) = lowered.nested {
+            statements.push(nested);
+        }
         return Ok(());
     }
     let target_scalar = scalar_type(target_type.scalar_type(), target.name().as_str(), span)?;
     let value = lowerer.lower_aggregate_expression_as(definition.rhs(), target_scalar)?;
-    statements.extend(lowerer.take_prefix_statements());
+    statements.extend(lowerer.drain_prefix_statements());
     statements.push(gast::Spanned::new(
         gast::Statement::Assignment {
             target: gast::Reference::local(target_name),
@@ -621,7 +689,7 @@ struct TensorAssignment<'a, 'dae> {
 
 struct LoweredTensorAssignment {
     before: Vec<gast::Spanned<gast::Statement>>,
-    nested: gast::Spanned<gast::Statement>,
+    nested: Option<gast::Spanned<gast::Statement>>,
 }
 
 fn lower_tensor_function_assignment<'a, 'dae>(
@@ -686,6 +754,18 @@ fn lower_tensor_function_assignment<'a, 'dae>(
         },
         assignment.span,
     ));
+    if let Some(fused) = fuse_guarded_tensor_loop(
+        before.clone(),
+        body.clone(),
+        &names,
+        assignment.target_type.dimensions(),
+        assignment.span,
+    ) {
+        return Ok(Some(LoweredTensorAssignment {
+            before: fused,
+            nested: None,
+        }));
+    }
     for (name, &extent) in names.iter().zip(assignment.target_type.dimensions()).rev() {
         body = vec![gast::Spanned::new(
             gast::Statement::For(gast::ForLoop {
@@ -700,8 +780,221 @@ fn lower_tensor_function_assignment<'a, 'dae>(
     }
     Ok(Some(LoweredTensorAssignment {
         before,
-        nested: body.pop().expect("tensor assignment has one outer loop"),
+        nested: Some(body.pop().expect("tensor assignment has one outer loop")),
     }))
+}
+
+pub(super) fn fuse_guarded_tensor_loop(
+    before: Vec<gast::Spanned<gast::Statement>>,
+    body: Vec<gast::Spanned<gast::Statement>>,
+    iterators: &[gast::Name],
+    extents: &[u32],
+    span: Span,
+) -> Option<Vec<gast::Spanned<gast::Statement>>> {
+    let [before] = before.as_slice() else {
+        return None;
+    };
+    let (body_guard, tail) = body.split_first()?;
+    let before = flatten_total_guard(before)?;
+    let body = flatten_total_guard(body_guard)?;
+    if before.branches.len() != body.branches.len()
+        || before
+            .branches
+            .iter()
+            .zip(&body.branches)
+            .any(|(lhs, rhs)| lhs.condition != rhs.condition)
+    {
+        return None;
+    }
+    let branches = before
+        .branches
+        .into_iter()
+        .zip(body.branches)
+        .map(|(before, body)| gast::IfBranch {
+            condition: before.condition,
+            body: guarded_tensor_branch(before.body, body.body, tail, iterators, extents, span),
+            span: before.span,
+        })
+        .collect();
+    let else_body = guarded_tensor_branch(
+        before.fallback,
+        body.fallback,
+        tail,
+        iterators,
+        extents,
+        span,
+    );
+    Some(vec![gast::Spanned::new(
+        gast::Statement::If(gast::IfStatement {
+            branches,
+            else_body: Some(else_body),
+        }),
+        span,
+    )])
+}
+
+struct TotalGuard {
+    branches: Vec<gast::IfBranch>,
+    fallback: Vec<gast::Spanned<gast::Statement>>,
+}
+
+fn flatten_total_guard(statement: &gast::Spanned<gast::Statement>) -> Option<TotalGuard> {
+    let gast::Statement::If(value) = &statement.node else {
+        return None;
+    };
+    let mut branches = value.branches.clone();
+    let fallback = value.else_body.clone()?;
+    if let Some((nested, suffix)) = fallback.split_first()
+        && matches!(nested.node, gast::Statement::If(_))
+    {
+        let mut nested = flatten_total_guard(nested)?;
+        for branch in &mut nested.branches {
+            branch.body.extend_from_slice(suffix);
+        }
+        nested.fallback.extend_from_slice(suffix);
+        branches.extend(nested.branches);
+        return Some(TotalGuard {
+            branches,
+            fallback: nested.fallback,
+        });
+    }
+    Some(TotalGuard { branches, fallback })
+}
+
+fn guarded_tensor_branch(
+    mut before: Vec<gast::Spanned<gast::Statement>>,
+    mut body: Vec<gast::Spanned<gast::Statement>>,
+    tail: &[gast::Spanned<gast::Statement>],
+    iterators: &[gast::Name],
+    extents: &[u32],
+    span: Span,
+) -> Vec<gast::Spanned<gast::Statement>> {
+    body.extend_from_slice(tail);
+    for (iterator, &extent) in iterators.iter().zip(extents).rev() {
+        body = vec![gast::Spanned::new(
+            gast::Statement::For(gast::ForLoop {
+                iterator: Some(iterator.clone()),
+                start: gast::Expression::Integer(1),
+                step: None,
+                stop: gast::Expression::Integer(i64::from(extent)),
+                body,
+            }),
+            span,
+        )];
+    }
+    before.extend(body);
+    before
+}
+
+pub(super) fn merge_guarded_tensor_loops(
+    statements: Vec<gast::Spanned<gast::Statement>>,
+) -> Vec<gast::Spanned<gast::Statement>> {
+    let mut merged: Vec<gast::Spanned<gast::Statement>> = Vec::new();
+    for statement in statements {
+        let mut consumed = false;
+        for candidate in merged.iter_mut().rev() {
+            if matches!(candidate.node, gast::Statement::If(_))
+                && merge_guarded_tensor_loop(candidate, &statement)
+            {
+                consumed = true;
+                break;
+            }
+        }
+        if !consumed {
+            merged.push(statement);
+        }
+    }
+    merged
+}
+
+#[derive(Clone)]
+struct TensorLoopShell {
+    loop_statement: gast::ForLoop,
+    span: Span,
+}
+
+fn merge_guarded_tensor_loop(
+    destination: &mut gast::Spanned<gast::Statement>,
+    nested: &gast::Spanned<gast::Statement>,
+) -> bool {
+    let Some((shells, loop_body)) = tensor_loop_shells(nested) else {
+        return false;
+    };
+    let Some((body_guard, tail)) = loop_body.split_first() else {
+        return false;
+    };
+    let Some(mut destination_guard) = flatten_total_guard(destination) else {
+        return false;
+    };
+    let Some(body_guard) = flatten_total_guard(body_guard) else {
+        return false;
+    };
+    if destination_guard.branches.len() != body_guard.branches.len()
+        || destination_guard
+            .branches
+            .iter()
+            .zip(&body_guard.branches)
+            .any(|(lhs, rhs)| lhs.condition != rhs.condition)
+    {
+        return false;
+    }
+    for (destination, source) in destination_guard
+        .branches
+        .iter_mut()
+        .zip(body_guard.branches)
+    {
+        let mut body = source.body;
+        body.extend_from_slice(tail);
+        destination.body.push(wrap_tensor_loop(&shells, body));
+    }
+    let mut fallback = body_guard.fallback;
+    fallback.extend_from_slice(tail);
+    destination_guard
+        .fallback
+        .push(wrap_tensor_loop(&shells, fallback));
+    destination.node = gast::Statement::If(gast::IfStatement {
+        branches: destination_guard.branches,
+        else_body: Some(destination_guard.fallback),
+    });
+    true
+}
+
+fn tensor_loop_shells(
+    statement: &gast::Spanned<gast::Statement>,
+) -> Option<(Vec<TensorLoopShell>, Vec<gast::Spanned<gast::Statement>>)> {
+    let mut shells = Vec::new();
+    let mut current = statement;
+    loop {
+        let gast::Statement::For(loop_statement) = &current.node else {
+            return None;
+        };
+        shells.push(TensorLoopShell {
+            loop_statement: loop_statement.clone(),
+            span: current.span,
+        });
+        let [nested] = loop_statement.body.as_slice() else {
+            return Some((shells, loop_statement.body.clone()));
+        };
+        if !matches!(nested.node, gast::Statement::For(_)) {
+            return Some((shells, loop_statement.body.clone()));
+        }
+        current = nested;
+    }
+}
+
+fn wrap_tensor_loop(
+    shells: &[TensorLoopShell],
+    mut body: Vec<gast::Spanned<gast::Statement>>,
+) -> gast::Spanned<gast::Statement> {
+    for shell in shells.iter().rev() {
+        let mut loop_statement = shell.loop_statement.clone();
+        loop_statement.body = body;
+        body = vec![gast::Spanned::new(
+            gast::Statement::For(loop_statement),
+            shell.span,
+        )];
+    }
+    body.pop().expect("tensor loop owns one outer shell")
 }
 
 pub(super) fn partition_tensor_prefixes(
@@ -711,6 +1004,7 @@ pub(super) fn partition_tensor_prefixes(
     Vec<gast::Spanned<gast::Statement>>,
     Vec<gast::Spanned<gast::Statement>>,
 ) {
+    let statements = split_loop_invariant_guards(statements, outer_indices);
     let mut dependent_names = outer_indices.to_vec();
     let mut dependent = vec![false; statements.len()];
     loop {
@@ -737,6 +1031,124 @@ pub(super) fn partition_tensor_prefixes(
         }
     }
     (before, body)
+}
+
+fn split_loop_invariant_guards(
+    statements: Vec<gast::Spanned<gast::Statement>>,
+    outer_indices: &[gast::Name],
+) -> Vec<gast::Spanned<gast::Statement>> {
+    let mut split = Vec::new();
+    for statement in statements {
+        let Some(partition) = split_loop_invariant_guard(&statement, outer_indices) else {
+            split.push(statement);
+            continue;
+        };
+        split.extend(partition.before);
+        split.extend(partition.body);
+    }
+    split
+}
+
+struct GuardPartition {
+    before: Option<gast::Spanned<gast::Statement>>,
+    body: Option<gast::Spanned<gast::Statement>>,
+}
+
+fn split_loop_invariant_guard(
+    statement: &gast::Spanned<gast::Statement>,
+    outer_indices: &[gast::Name],
+) -> Option<GuardPartition> {
+    let gast::Statement::If(value) = &statement.node else {
+        return None;
+    };
+    if value
+        .branches
+        .iter()
+        .any(|branch| !repeatable_loop_invariant_condition(&branch.condition, outer_indices))
+    {
+        return None;
+    }
+    let mut defined = Vec::new();
+    for branch in &value.branches {
+        for nested in &branch.body {
+            collect_defined_names(nested, &mut defined);
+        }
+    }
+    if let Some(else_body) = &value.else_body {
+        for nested in else_body {
+            collect_defined_names(nested, &mut defined);
+        }
+    }
+    if value
+        .branches
+        .iter()
+        .any(|branch| condition_depends_on(&branch.condition, &defined))
+    {
+        return None;
+    }
+
+    let mut has_before = false;
+    let mut has_body = false;
+    let mut before_branches = Vec::with_capacity(value.branches.len());
+    let mut body_branches = Vec::with_capacity(value.branches.len());
+    for branch in &value.branches {
+        let (before, body) = partition_tensor_prefixes(branch.body.clone(), outer_indices);
+        has_before |= !before.is_empty();
+        has_body |= !body.is_empty();
+        before_branches.push(gast::IfBranch {
+            condition: branch.condition.clone(),
+            body: before,
+            span: branch.span,
+        });
+        body_branches.push(gast::IfBranch {
+            condition: branch.condition.clone(),
+            body,
+            span: branch.span,
+        });
+    }
+    let (before_else, body_else) = value
+        .else_body
+        .as_ref()
+        .map(|else_body| partition_tensor_prefixes(else_body.clone(), outer_indices))
+        .map_or((None, None), |(before, body)| {
+            has_before |= !before.is_empty();
+            has_body |= !body.is_empty();
+            (Some(before), Some(body))
+        });
+    if !has_before || !has_body {
+        return None;
+    }
+    let before = gast::Spanned::new(
+        gast::Statement::If(gast::IfStatement {
+            branches: before_branches,
+            else_body: before_else,
+        }),
+        statement.span,
+    );
+    let body = gast::Spanned::new(
+        gast::Statement::If(gast::IfStatement {
+            branches: body_branches,
+            else_body: body_else,
+        }),
+        statement.span,
+    );
+    Some(GuardPartition {
+        before: Some(before),
+        body: Some(body),
+    })
+}
+
+fn repeatable_loop_invariant_condition(
+    condition: &gast::Condition,
+    outer_indices: &[gast::Name],
+) -> bool {
+    match condition {
+        gast::Condition::Expression(gast::Expression::Bool(_)) => true,
+        gast::Condition::Expression(gast::Expression::Ref(reference)) => {
+            !reference_depends_on(reference, outer_indices)
+        }
+        gast::Condition::Expression(_) | gast::Condition::SignalCheck(_) => false,
+    }
 }
 
 fn collect_defined_names(statement: &gast::Spanned<gast::Statement>, names: &mut Vec<gast::Name>) {
@@ -840,7 +1252,7 @@ fn call_depends_on(call: &gast::FunctionCall, names: &[gast::Name]) -> bool {
         .any(|argument| expression_depends_on(argument, names))
 }
 
-fn expression_depends_on(expression: &gast::Expression, names: &[gast::Name]) -> bool {
+pub(super) fn expression_depends_on(expression: &gast::Expression, names: &[gast::Name]) -> bool {
     match expression {
         gast::Expression::Bool(_) | gast::Expression::Integer(_) | gast::Expression::Real(_) => {
             false
@@ -1034,8 +1446,29 @@ fn preserves_function_target<'dae>(
                 .and_then(|fold| fold.targets().nth(carried as usize))
                 == Some(target.id())
         }
+        dae::ExpressionOperation::Record(fields) => {
+            fields.iter().enumerate().all(|(field, expression)| {
+                preserves_function_target_field(view, target, expression, field)
+            })
+        }
         _ => false,
     }
+}
+
+fn preserves_function_target_field<'dae>(
+    view: dae::DaeView<'dae>,
+    target: dae::FunctionValueView<'dae>,
+    expression: dae::ExprId<'dae>,
+    expected_field: usize,
+) -> bool {
+    let dae::ExpressionOperation::Field { base, field } = view
+        .expression(expression)
+        .expect("checked function record field resolves")
+        .operation()
+    else {
+        return false;
+    };
+    field as usize == expected_field && preserves_function_target(view, target, base)
 }
 
 fn lower_indexed_function_update_expression<'a, 'dae>(
