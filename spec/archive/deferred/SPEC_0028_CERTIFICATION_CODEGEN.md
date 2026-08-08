@@ -21,6 +21,22 @@ DO-178C evidence without claiming product certification before expert review.
 
 ## Specification
 
+### Claim boundary and preferred assurance strategy
+
+Rumoca should pursue a **verified-output-first** strategy: retain enough
+traceability and deterministic evidence that a certification project can
+independently verify each generated artifact. Tool qualification remains a
+project-selectable path when repeated use makes its cost worthwhile; this
+proposal does not select a Tool Qualification Level because that depends on
+the tool's actual use, the software level, and whether errors can otherwise be
+detected.
+
+The phrases `MISRA compliant`, `DO-178C compliant`, `certified code`, and
+`qualified code generator` are prohibited until qualified certification review
+confirms the applicable process objectives and evidence. Before then, the
+accurate description is `safety-assurance candidate` or `supports project
+assurance evidence`.
+
 Future work should evaluate these design targets before this spec is promoted:
 
 | Target | Likely Owner | Why |
@@ -39,6 +55,10 @@ Future work should evaluate these design targets before this spec is promoted:
 | Translation validation checks each generated artifact | verified checker | Avoid trusting template intent alone |
 | Optimization can be disabled or explained | codegen/phase passes | Auditable transformation history |
 | eFMI/GALEC remains the production-C path | backend/codegen work | Avoid a parallel safety interface |
+| Requirements-to-model-to-IR-to-C trace links use stable identifiers and exact byte ranges | evidence bundle | Reviews and change impact analysis need navigable provenance |
+| Translation validation is independent of the code emitter and fails closed | assurance tooling | Verified output reduces reliance on trusting or qualifying the generator |
+| MC/DC instrumentation maps back to model decisions without changing production bytes | coverage tooling | DO-178C structural coverage must remain explainable at the source/model boundary |
+| Tool operational requirements, configuration index, problem reports, and reproducible qualification tests are retained from now | lifecycle data | Retrofitting tool-qualification history is expensive |
 
 Any active version of this spec must use current Rumoca terminology and actual
 types. It must not reintroduce old operation names or deleted spec references.

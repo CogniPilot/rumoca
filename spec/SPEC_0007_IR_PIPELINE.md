@@ -146,7 +146,7 @@ generate simulation code.
 | Instantiation and flattening are separate logical phases | Instantiation applies modifications + builds `InstanceOverlay`/`InstancedTree`; production then runs `typecheck_instanced` before flattening traverses the overlay, expands connections, and produces `flat::Model`. |
 | Arrays stay symbolic through Flat and DAE | Backends requesting scalar form call scalarization in structural/solver layers with shape metadata, not via display-string parsing |
 | Function algorithms remain structured in `Flat.functions`/`Dae.functions` | Function bodies are not lowered into solver equation buckets |
-| A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. A proven-false or unsettled condition requires a call-scoped assertion owner and is typed-rejected while that owner is unavailable; it is never silently discarded or routed through multi-result-call lowering. |
+| A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. An unsettled condition may lower only through the call-specialized guarded root/action schedule in SOLVE-C25; a proven-false or otherwise unrepresentable schedule is typed-rejected. The action is never silently discarded or routed through multi-result-call lowering. |
 | Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
 | Initial sections use declarative owners: sequential scalar assignments and `if` conditionals in an `initial algorithm` determine a `parameter` declared `fixed = false` or a discrete coordinate; an explicit initial equation `m = value` or `pre(m) = value` determines the same typed discrete initial-value owner; and `assert` becomes an assertion owner carrying its enclosing branch conditions | A discrete initial value is a checked definition, not a numeric residual: its constructor proves exact scalar type, initialization-settled reads, and unique target ownership, and Solve initializes both current and `pre` storage from it. Replayed calculated-parameter values read only parameters and constants. Where each dependency is settled at parameter-set time, the parameter set computes exactly the initialization value; where one is a `fixed = false` parameter, Solve re-applies the binding after the initialization projection, so the parameter-set value is an iteration seed. Algebraic, state, output, and input algorithm targets and every loop, `when`, or non-`assert` call statement keep `ED013` because no checked initialization owner determines them |
 | Post-resolution declaration identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry `DefId` for declarations and structured instance identity where one declaration has multiple instantiated meanings. |
@@ -206,7 +206,7 @@ Only private current-version wire records derive `Deserialize`. Decoding
 constructs checked children and then the checked root; derived counts and
 indexes are recomputed rather than accepted as wire inputs.
 
-**Contract:** rows `DAE-C01`–`DAE-C16` in
+**Contract:** rows `DAE-C01`–`DAE-C19` in
 [SPEC_0040 §1](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#1-dae-stage-contract-catalog-spec_0007-stage-3).
 
 **Do here:** DAE lowering, structural transformation, and separately returned
@@ -266,7 +266,7 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 `rumoca-phase-solve` only when a backend/template/runtime boundary asks.
 `lower_solve_problem` must not eagerly populate them.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C21` in
+**Contract:** rows `SOLVE-C01`–`SOLVE-C31` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
 Steady-state objectives, adjoints, parameter sensitivities, and

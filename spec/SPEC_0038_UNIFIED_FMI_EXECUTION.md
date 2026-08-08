@@ -4,11 +4,9 @@
 DRAFT
 
 ## Summary
-Rumoca's sole internal numerical-solver boundary is the FMI 3 Model Exchange
-interface. Rumoca will expose FMI 2/3 Model Exchange and Co-Simulation in
-native C and Wasm forms as projections or hosts of that one interface, with
-eFMI GALEC/Production Code as the primary safety-oriented code-generation
-path.
+Rumoca's sole internal solver boundary is FMI 3 Model Exchange. FMI 2/3 Model
+Exchange and Co-Simulation are projections or hosts of that interface; eFMI
+GALEC/Production Code is the primary safety-oriented code-generation path.
 
 ## Specification
 
@@ -33,6 +31,11 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | `rumoca-solver` implements the FMI 3 ME importer/host contract | solver facade | Solver code never consumes `SolveModel` directly |
 | Numerical methods implement an internal FMI 3 ME-host integrator contract | solver implementations | Solver choice does not change model semantics |
 | Native in-process calls may be zero-copy | FMI host | Preserve current performance |
+| Repeated directional seeds may reuse a bitwise-identical settled coordinate | FMI component | Avoid redundant algebraic projection |
+| Root evaluation may warm-start its complete checked refresh plan from a bitwise-identical derivative-settled coordinate | FMI component | Keep roots on the same algebraic branch without omitting root dependencies |
+| At a bitwise-identical derivative-settled coordinate, root evaluation may omit covered value stages and execute only a construction-issued checked-BLT remainder; it may omit the complete refresh only when that remainder is empty | FMI component | Remove duplicate work without turning a warm start into an unchecked semantic shortcut |
+| Settled-coordinate caches invalidate on lifecycle or parameter mutation | FMI component | Never reuse stale algebraics |
+| An empty checked manifold-projection artifact certifies that continuous-state projection returns unchanged without settling observation algebraics | FMI component | Do not execute algebraic work for a structurally absent constraint system |
 | Wasm uses the FMI layered-standard WIT profile | Wasm adapter | Avoid a private ABI |
 | Native and Wasm hosts expose batched state/variable access | FMI host | Avoid per-scalar boundary overhead |
 | `rumoca-input` writes model inputs only through typed FMI setters | input/runtime boundary | One input lifecycle |
@@ -116,6 +119,10 @@ SPEC_0029 §12 and SPEC_0041 §4 assign the checked FMI aggregate, its lowering,
 the shared FMI runtime, and the concrete-solver boundary. A concrete numerical
 solver consumes only `rumoca-solver`'s generic FMI ME importer/host contract.
 
+Automatic integrator selection is importer numerical policy. Its exact
+capability decision and failure-preservation obligations are cataloged in
+[SPEC_0044 §5](SPEC_0044_FMI_EXECUTION_CATALOG.md#5-automatic-integrator-selection).
+
 ### Bounded ME Verification Profile
 
 The linked FMI 3 ME component exposes a checked lifecycle aggregate and pure
@@ -130,8 +137,8 @@ floating-point accuracy, solver convergence, or end-to-end Modelica refinement.
 
 ### Phasing
 
-The cutover has four phases. Code-movement phases MUST prove bit-identical
-traces against the pre-phase binary unless their row states otherwise.
+The cutover has four phases. Code movement MUST prove bit-identical traces
+against the pre-phase binary unless its row states otherwise.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
@@ -181,17 +188,15 @@ are profile capabilities.
 | FMI 3 CS | Importer issues typed setters at communication points | `fmi3DoStep` | Importer issues typed getters after accepted steps |
 | FMI 3 CS with Intermediate Update | Importer may update declared inputs only in supported callbacks | `fmi3DoStep` with intermediate callbacks | Declared intermediate variables may be read in callbacks |
 
-Rumoca's linked native simulation uses the FMI 3 ME row above. A packaged or
-embedded CS component uses the CS row. A scenario requesting an update cadence
-or intermediate value unavailable in the selected profile fails during
-schedule preparation. It is prohibited to delay, drop, interpolate, or replace
-an input update merely to make the selected profile execute.
+Linked native simulation uses the FMI 3 ME row; packaged or embedded CS uses
+the CS row. An unavailable update cadence or intermediate value fails schedule
+preparation. Input updates MUST NOT be delayed, dropped, interpolated, or
+replaced to make a profile execute.
 
-FMI 2 ME is a version adapter over the same component state. FMI 2/3
-Co-Simulation is an FMI 3 ME host plus an owned integration method and
-communication-step policy. Packaging an FMU or Wasm component adds transport
-and resources only. None of these projections may repeat Modelica, DAE, or
-Solve lowering.
+FMI 2 ME adapts the same component state. FMI 2/3 Co-Simulation is an FMI 3 ME
+host with an integration method and communication-step policy. FMU or Wasm
+packaging adds only transport and resources. These projections MUST NOT repeat
+Modelica, DAE, or Solve lowering.
 
 ### Target Surface
 
@@ -205,17 +210,14 @@ Solve lowering.
 | eFMI Algorithm Code | Integrator/toolchain | eFMU |
 | eFMI Production Code | Generated production runtime | eFMU, generated C |
 
-The CLI may provide distinct profile names for discoverability, but those
-profiles MUST select capabilities of the same generator. They MUST NOT own
+CLI profile names MUST select capabilities of one generator and MUST NOT own
 independent equation lowering, initialization, event, or state-machine code.
-A raw derivative-only C kernel may remain an internal lowering or diagnostic
-fixture, but it MUST NOT be a user-visible deployment target once FMI 2/3 are
-exposed.
+A raw derivative-only C kernel may remain an internal fixture, but MUST NOT be
+a user-visible target once FMI 2/3 are exposed.
 
-Symbolic exports remain analysis projections from computable checked Solve IR,
-which retains their residuals, Jacobian structure, initialization, roots, and
-events. They are not FMI profiles and MUST NOT repeat structural analysis. A
-symbolic engine's separate FMI ME host role is not symbolic export.
+Symbolic exports project computable checked Solve IR and MUST NOT repeat
+structural analysis. They are not FMI profiles; a symbolic engine's FMI ME
+host role is separate.
 
 ### FMI-LS-DAE Layered Profile
 

@@ -4,9 +4,8 @@
 ACCEPTED
 
 ## Summary
-Development work MUST be grounded in the governing spec/MLS rule, trace
-bugs to the first owning layer, and verify the smallest behavior-proving path
-before broader review gates.
+Development MUST follow governing specs, fix the first divergent layer, and
+verify focused behavior before broad gates.
 
 ## Specification
 
@@ -28,12 +27,6 @@ before broader review gates.
 | Triage MUST reject plausible competing hypotheses with evidence | bug triage | Prevents speculative fixes |
 | Fixes SHOULD land at the earliest responsible layer | owning crate/phase | Preserves upstream invariants |
 | Later-layer fixes MUST justify why earlier ownership is infeasible | validators/runtime/templates | Avoids compatibility workarounds |
-
-Preferred ownership order for compiler bugs:
-
-1. Parse, resolve, typecheck, instantiate, flatten, or ToDae producer.
-2. Compile/session orchestration.
-3. Solver/runtime/template layer only for truly downstream issues.
 
 ### 3. Evidence Requirements
 
@@ -69,8 +62,9 @@ Preferred ownership order for compiler bugs:
 | Focused or partial MSL snapshots MUST NOT be promoted | baseline workflow | Prevents baseline drift |
 | Commit-to-commit comparisons MUST use the same focused target list | regression triage | Makes deltas meaningful |
 | External compatibility corpora MUST pin an immutable revision and run as bounded parallel gates | CI workflows | Keeps evidence reproducible without creating a serial CI long pole |
-| A compiler-stage contract cutover MAY reset incomparable cumulative floors only through a one-shot migration naming both contracts, the immutable full-run evidence commit, exact before/after stage counts, fixed target count, and complete post-cutover phase-failure and diagnostic censuses; the resolver MUST fail closed if any field differs | baseline workflow | A stricter typed refusal is not a compile regression under the superseded contract, but an unaudited floor reset could hide one |
+| A compiler-contract cutover MAY reset incomparable floors only through a one-shot migration naming both contracts, evidence commit, exact stage counts, target count, and post-cutover failure and diagnostic censuses; the resolver MUST fail closed on any mismatch | baseline workflow | A stricter typed refusal differs from an unchecked compile, but an unaudited reset could hide regression |
 | After a compiler-stage contract cutover, ordinary ratchets MUST compare against the reviewed post-cutover floor and MUST NOT reuse the migration to excuse later regressions | baseline workflow | Migration provenance cannot become a standing waiver |
+| A comparator-policy change MUST increment the gate schema and pin old/new strict-high counts, reviewed-boundary count, and exclusion-artifact digest; unrelated ratchets MUST remain monotonic | baseline workflow | An oracle-boundary change alters the denominator; an unaudited reset could hide regression or counterexamples |
 
 Failure classifications:
 
@@ -92,7 +86,7 @@ Failure classifications:
 | Semantic work is done only after spec grounding, root-cause proof, and regression coverage | compiler/simulator | Fix must be defensible |
 | Built-in targets MUST satisfy SPEC_0007's product contract | code generation | Excludes placeholders and lossy output |
 | Repository-launched Cargo MUST derive `CARGO_BUILD_JOBS` and `RAYON_NUM_THREADS` from host topology unless explicitly set | developer tooling | Avoids nested oversubscription |
-| The automatic Cargo budget MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two at 8 or more | developer tooling | Small runners retain throughput while developer machines retain foreground capacity |
+| Automatic Cargo budgets MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two otherwise | developer tooling | Balance runner throughput and foreground capacity |
 | Long-running isolated workers MUST exit when their parent control channel closes and MUST enforce a bounded resident-memory policy | worker orchestration | Interrupted gates must not leave orphaned or unbounded processes |
 
 ### 6a. Two-Tier Verification Cadence
@@ -114,17 +108,18 @@ Failure classifications:
 | Tier 2 MUST cover the full 566-model set, either in one run or as CI shards merged by the fan-in job | CI / milestone | Cohort evidence without a serial CI long pole |
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
 | A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
+| Initialization parity MUST use each trace's last row at the exact common start time; nearby positive-time rows remain trajectory behavior | trace comparator | Separates initialization from later events |
 | The comparator's candidate set MUST be every `sim_ok` trace | `rumoca_model_is_trace_candidate` | Completion picks candidates; comparison decides parity |
 | Every candidate MUST be compared or recorded under `skipped`, `missing_trace`, or `trace_nonidentifiable` with a typed reason | `sim_trace_comparison.json` | An uncompared trace must name the exact proof boundary |
 | `trace_nonidentifiable` MUST be reported separately, excluded from the pointwise-comparison denominator, and MUST NOT count as strict-high, passing, supported, or certified | comparator and all consumers | Inapplicable pointwise evidence cannot become affirmative evidence |
-| Stochastic non-identifiability MUST be derived from typed random operations in compiler IR; deterministic-chaotic non-identifiability MUST carry a positive finite Lyapunov lower bound plus the sample count and digest of its analysis artifact | trace producer | Classification is machine-readable evidence, not a model-name exception |
-| A non-identifiability profile MUST record its outstanding replacement proof obligations; malformed or incomplete evidence MUST fail closed as a comparator failure | trace producer/comparator | Classification narrows the proof method but never discharges the proof |
+| Stochastic non-identifiability MUST follow typed random IR; deterministic-chaotic evidence MUST record a positive finite Lyapunov lower bound, sample count, and artifact digest | trace producer | Classification is machine-readable evidence, not a model-name exception |
+| A non-identifiability profile MUST list outstanding proof obligations; incomplete evidence MUST fail comparison | trace producer/comparator | Classification narrows the proof method but never discharges the proof |
 | Automatic trace classification MUST NOT branch on model name, OMC output, or an observed comparison band | trace producer/comparator | Corpus-specific heuristics cannot establish correctness |
 | A run whose comparator stage did not execute, or compared zero models, reports "parity unmeasured", not a number | harness gate, `verify msl-parity` | Missing comparison must be visible, not defaulted |
 | A quoted number MUST state `models_compared` and the skipped/missing counts beside it | reports, dev/ ledger | Partial coverage is part of the claim |
 | Tracked comparator exclusions MUST explain why pointwise OMC comparison is non-identifying; they remain visible and non-strict-high but are not refinement counterexamples | comparator | Oracle-test boundaries must be auditable |
 | An unmeasured cohort run MUST fail its quality gate, not pass with `sim_ok` | harness gate, `verify msl-parity` | A run nobody could check must not read as a green run |
-| The cohort ratchet MUST be the strict-high agreement band | harness gate | Only strict-high is parity |
+| The cohort ratchet MUST be strict-high; strict-high MUST contain zero deviation channels | harness gate | One wrong observable falsifies parity |
 | `sim_ok` MUST remain a raw execution count and MUST NOT be called supported, certified, or passing | reports, PRs, specs | Solver completion does not prove semantics |
 | A package or stage simulation pass MUST require a comparable strict-high OMC trace | package pass-rate report | Near, deviation, and absent bands are unsupported |
 | A full Tier 2 gate MUST classify every `sim_ok` as strict-high, tracked exclusion, or typed `trace_nonidentifiable` | harness gate | Every completion needs parity or a reviewed boundary |

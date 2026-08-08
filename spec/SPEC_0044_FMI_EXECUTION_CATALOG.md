@@ -130,3 +130,22 @@ Updating the pin updates schemas, lifecycle tests, and negative controls.
 | Revision-matched eFMI integrity, round-trip, and execution | Production package integrity |
 | Injected unsupported-capability failures | Early-error behavior |
 | FMI-LS-DAE ODE and DAE execution from one aggregate | Mode does not change model identity |
+
+### 5. Automatic Integrator Selection
+
+| Obligation ID | Obligation | Required evidence |
+|---|---|---|
+| ME-AUTO-001 | `auto` selects an integrator before time integration; it MUST NOT retry or replace a failed trajectory | An integration failure after selection remains the original typed failure |
+| ME-AUTO-002 | BDF is eligible only when every initial-state basis direction has a finite FMI ME directional derivative after initialization | A locally undefined algebraic sensitivity rejects BDF eligibility while the finite value path remains executable by the explicit host |
+| ME-AUTO-003 | Only the typed `DirectionalDerivativeUnavailable` capability result selects the explicit host; lifecycle, contract, assertion, allocation, and ordinary evaluation failures remain failures | Negative tests for at least one non-capability failure plus typed dispatch tests |
+| ME-AUTO-004 | Explicit `bdf` and `rk-like` requests are never redirected | Backend-specific tests retain their requested success or failure |
+
+The initial linearization probe is a capability query over the same initialized
+FMI 3 ME component and the same `fmi3GetDirectionalDerivative` semantics used
+by BDF. It is not a finite-difference heuristic. A model may have a finite ODE
+value at a point where its directional derivative is undefined (for example,
+`atan2(0, 0)`). That is not a compiler-semantic failure and does not make an
+explicit integration result less valid; it makes the derivative-dependent BDF
+host ineligible at that point. A directional derivative that becomes
+unavailable after integration starts remains a visible numerical failure under
+ME-AUTO-001.

@@ -63,7 +63,7 @@ valid LOC reductions.
 |---|---|---|---|
 | `dae-core-loc` | 11,000 | 14,500 | SPEC_0036 cutover: ranked non-wire reductions |
 | `dae-wire-loc` | 3,250 | 4,000 | SPEC_0036 cutover: operation-shaped wire |
-| `dae-total-loc` | 14,250 | 18,250 | Both items above; total follows their sum |
+| `dae-total-loc` | 14,250 | 18,500 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -118,7 +118,7 @@ exists. Every other object inserts complete values in proven order.
 | B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
 | Runtime binding equations contribute event owners by expression occurrence | Event analysis | MLS §4.4 binding syntax and equation-section syntax have the same MLS §8.5 event surface |
 | Whole-record equality derives leaf owners only from exact record/field identities and equal complete layouts; each array field remains one tensor equation | Flat-to-DAE record-equation analysis | Aggregate routing cannot depend on rendered names or source scalarization |
-| Straight-line function-loop scratch elimination substitutes only scalar call-locals whose definitions dominate their uses, whose expression dependencies remain unchanged through every substituted use, and whose final values are not read after the loop; unresolved self-reads remain explicit transitions | Flat-to-DAE function-loop analysis | Compact loop owners cannot erase loop-carried state, replace a snapshot with a later live tensor read, or erase escaping values |
+| Straight-line function-loop scratch elimination substitutes only scalar call-locals whose definitions dominate their uses, whose expression dependencies remain unchanged through every substituted use, whose name is not assigned again in the substituted suffix, and whose final values are not read after the loop; unresolved self-reads remain explicit transitions | Flat-to-DAE function-loop analysis | Compact loop owners cannot erase loop-carried state, replace a snapshot with a later live tensor read, bypass a sequential redefinition, or erase escaping values |
 | A function loop with call-scoped actions and no carried values constructs one zero-carried compact fold over the checked domain | Flat-to-DAE function-loop analysis | Scratch substitution may expose assertion-only loops without erasing or scalarizing their per-point actions |
 | In a function with certified early-return output seeds, invariant-guard pushdown may use those exact seeded outputs as the false-arm values of compact loops; an ordinary unseeded output must already have a whole definition | Flat-to-DAE function-loop normalization | Guard pushdown preserves both the returned path and the non-return loop path without inventing an output value |
 | An ordered unit-step first-match loop compacts only from a zero seed, an exact `found == 0` guard, and an update to the current binder; its tensor reduction appends an out-of-range sentinel before `min` and maps the sentinel back to zero | Flat-to-DAE function-loop normalization | The compact form is total for empty/no-match domains and preserves the source loop's first-match semantics without scalar expansion |
@@ -131,6 +131,8 @@ exists. Every other object inserts complete values in proven order.
 | Structured B.1c construction derives scalar count and proves exact target coverage | Discrete system | Partial, duplicate, overlapping, and caller-count definitions are impossible |
 | Reinitialization owns typed state/value updates | Event system | State resets are explicit |
 | Reinit branches preserve ordering and exclusivity | Event system | Multiple legal branches remain expressible |
+| A representable call-scoped function assertion constructs one call-specialized guarded root and one row-aligned guarded assertion action; root/action metadata are appended together or not at all | Solve event construction | Pure scalar programs retain exact call activation while initialization and root location enforce the assertion |
+| A cached scalar function-fold result is keyed by its exact call plus the carried values and domain points of every active fold its checked initial/update expression graph reads | Solve scalar construction | Equal keys prove equal relevant loop environments; unrelated active loops cannot cause redundant re-expansion and a loop dependency cannot reuse a value from the wrong iteration |
 | Caller-supplied scalar counts are prohibited | Equation domains | Counts are derived |
 
 ### 5. Enforcement Evidence Catalog
@@ -163,6 +165,10 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | B.1b residuals, B.1c definitions, reinit, and condition memory are distinct owners | Solve construction | Tags cannot conflate semantics |
 | Definitions, branches, generated edges, and holds retain exact typed provenance | Construction scopes | No dummy source claims |
 | Dense vectors, packed branches, and `u32` IDs freeze without rescanning | Solve aggregate | Linear construction |
+| Each prepared refresh row owns the selected isolator for its exact target | Solve evaluation construction | Runtime cannot rediscover another target shape |
+| A prepared scalar row may certify that its complete solver-Y gradient is invariant under solver-Y and time at a fixed parameter snapshot | Solve scalar construction | Runtime may reuse the exact gradient only while the parameter snapshot is bitwise identical; nonlinear or time-varying gradients remain uncached |
+| The staged executor accepts a checked value-stage schedule only when every numerical block coordinate has a compiler-issued causal seed; the schedule begins with the complete seed sweep in certified order, then reapplies each block's local seeds immediately before that BLT stage; otherwise execution uses the complete preserved projection, and a runtime-unavailable isolator also restores the incoming coordinate before that fallback | Solve evaluation construction and runtime artifact check | Complete seed coverage makes block-local branch selection construction-owned; missing, reordered, or deleted warm-start witnesses can select a different nonlinear solution, while treating a runtime-singular isolator as a semantic failure would discard the preserved implicit equation |
+| A refresh plan derives a settled remainder against another only when both share the same prepared source block; exact assignments and atomic projection blocks with identical construction identity are removed, while uncovered stages retain checked BLT order | Solve evaluation construction | A derivative-settled coordinate may skip root work only through an explicit stage-coverage proof |
 | Wire decode replays the same owner operations | Solve serialization | Bytes cannot forge definitions |
 | Old schemas, raw insertion, validators, defaults, and adapters are absent | Solve boundary | No weaker path survives |
 | Tests use production construction and cannot bypass provenance or activation | Solve tests | Evidence exercises the boundary |

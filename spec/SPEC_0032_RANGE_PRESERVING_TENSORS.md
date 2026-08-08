@@ -15,6 +15,7 @@ scalar rows are derived views, not recovered structure.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Structured equation families stay authoritative | Flat/DAE IR | Prevents parallel scalar owners |
+| Structured event-relation families stay authoritative | DAE event system | Preserve every per-point zero crossing without making scalar roots a second owner |
 | Compacted component arrays leave no descriptor | Instance IR | Compaction is not an ownership change |
 | Domains use `rumoca-core::StructuredIndexDomain` | Flat/DAE/Solve IR | One compact domain shape |
 | Domain payloads are compact | IR serialization | Avoids O(N) metadata |
@@ -27,6 +28,13 @@ equations that are naturally ranged. Domain payloads must not serialize one
 entry per scalar iteration except inside an explicitly materialized scalar view.
 Stage-specific structured-equation ids remain stage-owned and must be mapped
 explicitly when identity crosses phase boundaries.
+
+An event-generating relation inside a structured family is itself a compact
+family over the same checked domain. DAE owns continuously monitored state
+relations as compact root families, and Solve derives one root program for each
+domain point in canonical order. A structured event kind without its own
+compact owner MUST be rejected at the exact relation; lowering MUST NOT retain
+the conditional value while silently omitting its event boundary.
 
 Instantiation may compact an array of structured components: it resolves one
 template domain point and derives the others by reindexing instance paths
@@ -77,6 +85,7 @@ compacting a genuinely per-element array would produce a wrong model.
 | Views carry provenance | Structured equation/tensor scalar views | Diagnostics and fallback |
 | No scalar-row reassembly | Solve lowering | Prevents fragile recovery |
 | Structured B.1c views retain assignment identity | DAE/Solve scalar views | Preserve target and update policy |
+| Structured root rows are generated views | Event evaluator/backend boundary | Root location sees every domain point in canonical order |
 
 Domains enumerate in binder declaration order, lexicographic with the innermost
 binder varying fastest, respecting explicit step direction. For each index
@@ -98,6 +107,11 @@ expression, and exact provenance. Ordering is domain lexicographic order and
 then source body order. These are derived view values; no per-scalar target or
 row list is stored in DAE or canonical Solve IR.
 
+A scalar root view is derived by substituting its canonical domain index tuple
+into the compact relation expression and carries the family's zero-domain
+policy and provenance into its program row. The compact DAE event family, not
+the expanded Solve root list, is authoritative.
+
 ### 3. DAE Canonical Form
 
 | Rule | Owner/Where | Brief Justification |
@@ -106,6 +120,7 @@ row list is stored in DAE or canonical Solve IR.
 | Derivative families map to canonical slots | DAE structured family | Explicit state identity |
 | No parallel scalarized owner | DAE IR | Avoids drift |
 | Structured B.1c target coverage is constructor-derived | DAE discrete system | No holes, overlaps, or caller counts |
+| Structured event relations own their domain once | DAE event system | No dropped or parallel per-point roots |
 
 A source family such as `der(u[i, j]) = w[i, j]` is represented as residuals
 over canonical derivative slots/state metadata. The structured node owns the
