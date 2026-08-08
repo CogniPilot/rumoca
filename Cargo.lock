@@ -4649,6 +4649,7 @@ name = "rumoca-ir-galec"
 version = "0.9.20"
 dependencies = [
  "rumoca-core",
+ "rustc-hash 2.1.3",
  "serde",
  "thiserror 2.0.18",
 ]
@@ -4916,6 +4917,7 @@ dependencies = [
 name = "rumoca-solver"
 version = "0.9.20"
 dependencies = [
+ "faer",
  "indexmap 2.14.0",
  "instant",
  "nalgebra",
