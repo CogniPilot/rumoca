@@ -24,24 +24,28 @@
 //!   precedent: self-checksum is impossible);
 //! - `TargetTypes` `TT_F64`/`TT_I32`/`TT_BOOL`/`TT_VOID` and their alias
 //!   `Typedefs` `TD_F64`/`TD_I32`/`TD_BOOL`/`TD_VOID` (names = the literal C
-//!   tokens `double`/`int32_t`/`bool`/`void`);
-//! - header `CodeFile` `CF_H`: the four aliases plus the block-state struct
+//!   tokens `double`/`int32_t`/`bool`/`void`); under the GAL-029 status ABI
+//!   additionally `TT_STATUS`/`TD_STATUS` (`uint32_t`, the 32-bit
+//!   ErrorSignalStatus word);
+//! - header `CodeFile` `CF_H`: the aliases plus the block-state struct
 //!   `Typedef` `TD_STATE` (one `Component` `CO_<i>` per manifest variable
 //!   `V<i>`, with literal array dimensions passed through — arrays are
 //!   first-class, D5);
-//! - source `CodeFile` `CF_C` (includes `CF_H`): the three exported void
+//! - source `CodeFile` `CF_C` (includes `CF_H`): the three exported
 //!   block-method functions `FN_STARTUP`/`FN_RECALIBRATE`/`FN_DOSTEP`
-//!   (return parameters `RP_*` typed `TD_VOID`, one `self` formal parameter
-//!   `FP_*_SELF` pointing at `TD_STATE`). The `static inline` builtin
-//!   helpers of the C prelude are file-internal and deliberately **not**
-//!   published — the `Functions` list is for globally accessible entities;
+//!   (return parameters `RP_*` typed `TD_VOID`, or `TD_STATUS` when any
+//!   method declares a signal escape — the GAL-029 status ABI; one `self`
+//!   formal parameter `FP_*_SELF` pointing at `TD_STATE`). The
+//!   `static inline` builtin helpers of the C prelude are file-internal and
+//!   deliberately **not** published — the `Functions` list is for globally
+//!   accessible entities;
 //! - `LogicalData`: one `DataReference` per Algorithm Code variable,
 //!   anchored on the DoStep `self` parameter (`FP_DOSTEP_SELF`) with the C
 //!   field name as whole-field `componentIdentifier` (no indices — arrays
 //!   map as the field; D5/D7), plus one `FunctionReference` per block
-//!   method. No `ErrorSignalStatus` mapping is emitted: the generated
-//!   methods return void and expose no status variable (D8; the
-//!   cross-validator permits, never requires, an ESS mapping).
+//!   method. No `ErrorSignalStatus` *variable* mapping is emitted: under the
+//!   status ABI the word is the method return value, not a state variable
+//!   (the cross-validator permits, never requires, an ESS mapping).
 //!
 //! Post-validation (GAL-004 idiom): the assembled manifest is checked by
 //! [`ProductionCodeManifest::new`] and then cross-validated against the
@@ -81,6 +85,9 @@ const COMPONENT_ID_PREFIX: &str = "CO_";
 /// The `TT_VOID`/`TD_VOID` C token (the scalar tokens come from the shared
 /// `crate::emit::c_scalar_binding`; `void` is not a GALEC scalar type).
 const VOID_C_TYPE: &str = "void";
+
+/// C token of the GAL-029 status-ABI return type (32-bit ErrorSignalStatus).
+const STATUS_C_TYPE: &str = "uint32_t";
 
 /// (`TargetType` id, alias `Typedef` id) per GALEC scalar type; the bound C
 /// token and eFMI kind come from `crate::emit::c_scalar_binding`.
@@ -184,8 +191,11 @@ pub fn assemble_production_manifest_with_identity(
     let function_prefix = crate::c_mangle::c_identifier(&package.block.name)?;
 
     let (components, data_references) = variable_mappings(package, &names)?;
-    let (target_types, typedefs) = type_bindings(&format!("{function_prefix}State"), components)?;
-    let (functions, function_references) = method_functions(&function_prefix, ac_manifest)?;
+    let status_abi = crate::emit::status_abi(&package.block);
+    let (target_types, typedefs) =
+        type_bindings(&format!("{function_prefix}State"), components, status_abi)?;
+    let (functions, function_references) =
+        method_functions(&function_prefix, ac_manifest, status_abi)?;
 
     let parts = ProductionCodeManifestParts {
         attributes: production_attributes(package, identity)?,
@@ -258,9 +268,10 @@ fn variable_mappings(
 fn type_bindings(
     struct_name: &str,
     components: Vec<Component>,
+    status_abi: bool,
 ) -> Result<(Vec<TargetType>, Vec<Typedef>), GalecTargetError> {
-    let mut target_types = Vec::with_capacity(SCALAR_TYPES.len() + 1);
-    let mut typedefs = Vec::with_capacity(SCALAR_TYPES.len() + 2);
+    let mut target_types = Vec::with_capacity(SCALAR_TYPES.len() + 2);
+    let mut typedefs = Vec::with_capacity(SCALAR_TYPES.len() + 3);
     for scalar in SCALAR_TYPES {
         let (kind, c_token) = crate::emit::c_scalar_binding(scalar);
         let (target_type_id, type_def_id) = scalar_type_ids(scalar);
@@ -277,6 +288,16 @@ fn type_bindings(
         coded_type: NormalizedText::new(VOID_C_TYPE)?,
     });
     typedefs.push(alias_typedef("TD_VOID", VOID_C_TYPE, "TT_VOID")?);
+    if status_abi {
+        // GAL-029 status ABI: the methods return the 32-bit
+        // ErrorSignalStatus word.
+        target_types.push(TargetType {
+            id: Identifier::new("TT_STATUS")?,
+            kind: TargetTypeKind::EfmiUnsignedInteger32,
+            coded_type: NormalizedText::new(STATUS_C_TYPE)?,
+        });
+        typedefs.push(alias_typedef("TD_STATUS", STATUS_C_TYPE, "TT_STATUS")?);
+    }
     typedefs.push(Typedef {
         id: Identifier::new(STATE_TYPEDEF_ID)?,
         name: NormalizedText::new(struct_name)?,
@@ -290,6 +311,7 @@ fn type_bindings(
 fn method_functions(
     function_prefix: &str,
     ac_manifest: &AlgorithmCodeManifest,
+    status_abi: bool,
 ) -> Result<(Vec<Function>, Vec<FunctionReference>), GalecTargetError> {
     let methods = &ac_manifest.parts().block_methods;
     let method_ids = [
@@ -297,15 +319,17 @@ fn method_functions(
         &methods.recalibrate.id,
         &methods.do_step.id,
     ];
+    let return_typedef = if status_abi { "TD_STATUS" } else { "TD_VOID" };
     let mut functions = Vec::with_capacity(METHOD_FUNCTIONS.len());
     let mut function_references = Vec::with_capacity(METHOD_FUNCTIONS.len());
     for ((function_id, return_id, self_id, suffix), method_id) in
         METHOD_FUNCTIONS.into_iter().zip(method_ids)
     {
-        functions.push(void_self_function(
+        functions.push(self_function(
             function_id,
             &format!("{function_prefix}_{suffix}"),
             return_id,
+            return_typedef,
             self_id,
         )?);
         function_references.push(FunctionReference {
@@ -419,11 +443,14 @@ fn alias_typedef(
     })
 }
 
-/// One exported block-method function: `void <name>(<Struct> *self)`.
-fn void_self_function(
+/// One exported block-method function:
+/// `<return_typedef> <name>(<Struct> *self)` — `TD_VOID`, or `TD_STATUS`
+/// (the `uint32_t` ErrorSignalStatus word) under the GAL-029 status ABI.
+fn self_function(
     id: &str,
     name: &str,
     return_id: &str,
+    return_typedef: &str,
     self_id: &str,
 ) -> Result<Function, GalecTargetError> {
     Ok(Function {
@@ -431,7 +458,7 @@ fn void_self_function(
         name: NormalizedText::new(name)?,
         return_parameter: ParameterCore {
             id: Identifier::new(return_id)?,
-            type_def_ref_id: Identifier::new("TD_VOID")?,
+            type_def_ref_id: Identifier::new(return_typedef)?,
             constant: false,
             pointer: false,
             const_pointer: false,

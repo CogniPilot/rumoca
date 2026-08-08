@@ -1,7 +1,117 @@
+{#- ==================================================================
+    embedded-c-galec source: C rendering of the language-neutral GALEC
+    block context (SPEC_0034 GAL-024/D16/D17). This template OWNS the C
+    language — expressions fully parenthesize (the GALEC AST shape is the
+    normative evaluation order, trap T6, and full parens preserve it in
+    C); GALEC 1-based subscripts print 0-based; whole-array reference
+    copies memcpy; array-valued assignments expand element-wise from the
+    context's pre-projected element lists.
+    =================================================================== -#}
+{%- set c_keywords = [
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while",
+    "bool", "true", "false", "memcpy", "self",
+    "rumoca_status", "rumoca_solve_a", "rumoca_solve_b"
+] -%}
+{%- macro ident(name) -%}
+{%- if name is none -%}{{ fail("GALEC name cannot form a C identifier") }}
+{%- elif name in c_keywords -%}{{ name }}_{%- else -%}{{ name }}{%- endif -%}
+{%- endmacro -%}
+{#- Operator spellings; `pow` maps to libm pow (both operands Real by
+    lowering, trap T5). -#}
+{%- set ops = {
+    "add": "+", "sub": "-", "mul": "*", "div": "/",
+    "lt": "<", "le": "<=", "gt": ">", "ge": ">=", "eq": "==", "ne": "!=",
+    "and": "&&", "or": "||"
+} -%}
+{#- GALEC §3.2.6 catalog -> C99/libm. min/max are the GALEC relational
+    forms, NOT fmin/fmax (which drop a qNaN operand instead of taking the
+    `else` branch a false comparison implies, traps T9/T14). -#}
+{%- set builtins = {
+    "absolute": "fabs", "sign": "rumoca_ir_galec_sign",
+    "min": "rumoca_ir_galec_min", "max": "rumoca_ir_galec_max",
+    "imin": "rumoca_ir_galec_imin", "imax": "rumoca_ir_galec_imax",
+    "sqrt": "sqrt", "exp": "exp", "ln": "log", "lg": "log10",
+    "roundDown": "floor", "roundUp": "ceil",
+    "sin": "sin", "cos": "cos", "tan": "tan",
+    "asin": "asin", "acos": "acos", "atan": "atan", "atan2": "atan2",
+    "sinh": "sinh", "cosh": "cosh", "tanh": "tanh"
+} -%}
+{#- Template IR indices are the GALEC truth (1-based); C is 0-based. -#}
+{%- macro ref(r) -%}
+self->{{ ident(r.base_name) }}{% for i in r.indices %}[{{ i - 1 }}]{% endfor %}
+{%- endmacro -%}
+{%- macro expr(e) -%}
+{%- if e.kind == "bool" -%}{{ e.value }}
+{%- elif e.kind == "int" -%}{% if e.value < 0 %}({{ e.value }}){% else %}{{ e.value }}{% endif %}
+{%- elif e.kind == "real" -%}{% if e.negative %}({{ e.text }}){% else %}{{ e.text }}{% endif %}
+{%- elif e.kind == "ref" -%}{{ ref(e) }}
+{%- elif e.kind == "neg" -%}(-{{ ref(e.value) }})
+{%- elif e.kind == "not" -%}(!({{ expr(e.value) }}))
+{%- elif e.kind == "paren" -%}({{ expr(e.value) }})
+{%- elif e.kind == "binary" -%}
+{%- if e.op == "pow" -%}pow({{ expr(e.lhs) }}, {{ expr(e.rhs) }})
+{%- else -%}({{ expr(e.lhs) }} {{ ops[e.op] }} {{ expr(e.rhs) }}){%- endif -%}
+{%- elif e.kind == "if" -%}
+{{ ternary(e.branches, e["else"], 0) }}
+{%- elif e.kind == "call" -%}
+{%- if e.builtin == "real" -%}((double)({{ expr(e.args[0]) }}))
+{%- elif e.builtin == "divisionTowardsZero" -%}({{ expr(e.args[0]) }} / {{ expr(e.args[1]) }})
+{%- elif e.builtin in builtins -%}{{ builtins[e.builtin] }}({% for a in e.args %}{{ expr(a) }}{% if not loop.last %}, {% endif %}{% endfor %})
+{%- else -%}{{ fail("embedded-c-galec has no mapping for GALEC builtin `" ~ e.builtin ~ "`") }}
+{%- endif -%}
+{%- else -%}{{ fail("embedded-c-galec met unknown expression kind `" ~ e.kind ~ "` (array constructors only print via whole-assignment element lists)") }}
+{%- endif -%}
+{%- endmacro -%}
+{#- If-expression -> right-nested C conditionals, one `?:` per branch. -#}
+{%- macro ternary(branches, else_value, i) -%}
+{%- if i >= branches | length -%}{{ expr(else_value) }}
+{%- else -%}({{ expr(branches[i].condition) }} ? {{ expr(branches[i].value) }} : {{ ternary(branches, else_value, i + 1) }}){%- endif -%}
+{%- endmacro -%}
+{#- Scratch materialization for the solve statement: whole-array reference
+    copies memcpy; everything else assigns the pre-projected elements. -#}
+{%- macro materialize(name, value, copy, elements) -%}
+{%- if copy %}
+        memcpy({{ name }}, {{ ref(value) }}, sizeof({{ name }}));
+{%- else %}
+{%- for element in elements %}
+        {{ name }}{% for i in element.indices %}[{{ i - 1 }}]{% endfor %} = {{ expr(element.value) }};
+{%- endfor %}
+{%- endif %}
+{%- endmacro -%}
+{%- macro stmt(s) -%}
+{%- if s.kind == "assign" %}
+    {{ ref(s.target) }} = {{ expr(s.value) }};
+{%- elif s.kind == "assign_whole" %}
+{%- if s.copy %}
+    memcpy({{ ref(s.target) }}, {{ ref(s.value) }}, sizeof({{ ref(s.target) }}));
+{%- else %}
+{%- for element in s.elements %}
+    {{ ref(s.target) }}{% for i in element.indices %}[{{ i - 1 }}]{% endfor %} = {{ expr(element.value) }};
+{%- endfor %}
+{%- endif %}
+{%- elif s.kind == "solve" %}
+    {
+        double rumoca_solve_a[{{ s.n }}][{{ s.n }}];
+        double rumoca_solve_b[{{ s.n }}];
+{{- materialize("rumoca_solve_a", s.a, s.a_copy, s.a_elements) }}
+{{- materialize("rumoca_solve_b", s.b, s.b_copy, s.b_elements) }}
+        rumoca_status |= rumoca_ir_galec_solve_linear_equations({{ s.n }}, &rumoca_solve_a[0][0], rumoca_solve_b, &{{ ref(s.target) }}[0]);
+    }
+{%- else -%}
+{{ fail("embedded-c-galec met unknown statement kind `" ~ s.kind ~ "`") }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro method_body(m) -%}
+{%- for s in m.statements %}{{ stmt(s) }}{% endfor %}
+{%- endmacro -%}
 /* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
- * {{ conformance_header.summary }} Method bodies below are printed
- * from the validated GALEC block by the typed C printer
- * (rumoca-galec-codegen::c_print); this template only lays out the file. */
+ * {{ conformance_header.summary }} Method bodies below are generated by
+ * walking the language-neutral GALEC block context (SPEC_0034 D16/D17);
+ * this template owns every C spelling. */
 #include "{{ model_name }}.h"
 
 #include <math.h>
@@ -19,9 +129,9 @@
 #endif
 
 /* GALEC §3.2.6 builtins without a direct C99 counterpart. The names are a
- * fixed contract with the typed C printer (compile-checked in CI). min/max use
- * the GALEC relational definition (`u1 < u2` selects), NOT fmin/fmax: a false
- * qNaN comparison must take the else operand (eFMI traps T9/T14). */
+ * fixed contract with the walking template above. min/max use the GALEC
+ * relational definition (`u1 < u2` selects), NOT fmin/fmax: a false qNaN
+ * comparison must take the else operand (eFMI traps T9/T14). */
 RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_sign(double x) {
     return (double)((x > 0.0) - (x < 0.0));
 }
@@ -37,30 +147,96 @@ RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imin(int32_t u1, int32
 RUMOCA_MAYBE_UNUSED static inline int32_t rumoca_ir_galec_imax(int32_t u1, int32_t u2) {
     return u1 > u2 ? u1 : u2;
 }
+{%- if status_abi %}
 
-void {{ function_prefix }}_startup({{ struct_name }} *self) {
-    (void)self;
-{%- for statement in methods.startup %}
-{%- for line in statement.c_lines %}
-    {{ line }}
-{%- endfor %}
-{%- endfor %}
+/* GALEC `solveLinearEquations` (§3.2.6): solve a*x = b by Gaussian
+ * elimination with partial pivoting. `a` (row-major n*n) and `b` are
+ * caller-owned scratch and are destroyed; returns 0 or the
+ * SOLVE_LINEAR_EQUATIONS_FAILED status bit (bit 3) on a singular matrix
+ * (SPEC_0034 GAL-029). */
+RUMOCA_MAYBE_UNUSED static uint32_t rumoca_ir_galec_solve_linear_equations(
+        int n, double *a, double *b, double *x) {
+    int col;
+    for (col = 0; col < n; ++col) {
+        int pivot = col;
+        int row;
+        int k;
+        double best = fabs(a[col * n + col]);
+        for (row = col + 1; row < n; ++row) {
+            double magnitude = fabs(a[row * n + col]);
+            if (magnitude > best) {
+                best = magnitude;
+                pivot = row;
+            }
+        }
+        if (!(best > 0.0)) {
+            return (uint32_t)1u << 3; /* SOLVE_LINEAR_EQUATIONS_FAILED */
+        }
+        if (pivot != col) {
+            double swap;
+            for (k = col; k < n; ++k) {
+                swap = a[col * n + k];
+                a[col * n + k] = a[pivot * n + k];
+                a[pivot * n + k] = swap;
+            }
+            swap = b[col];
+            b[col] = b[pivot];
+            b[pivot] = swap;
+        }
+        for (row = col + 1; row < n; ++row) {
+            double factor = a[row * n + col] / a[col * n + col];
+            a[row * n + col] = 0.0;
+            for (k = col + 1; k < n; ++k) {
+                a[row * n + k] -= factor * a[col * n + k];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+    for (col = n - 1; col >= 0; --col) {
+        int k;
+        double sum = b[col];
+        for (k = col + 1; k < n; ++k) {
+            sum -= a[col * n + k] * x[k];
+        }
+        x[col] = sum / a[col * n + col];
+    }
+    return 0u;
 }
 
-void {{ function_prefix }}_recalibrate({{ struct_name }} *self) {
+uint32_t {{ ident(base_name) }}_startup({{ ident(base_name) }}State *self) {
+    uint32_t rumoca_status = 0u;
     (void)self;
-{%- for statement in methods.recalibrate %}
-{%- for line in statement.c_lines %}
-    {{ line }}
-{%- endfor %}
-{%- endfor %}
+{{- method_body(methods.startup) }}
+    return rumoca_status;
 }
 
-void {{ function_prefix }}_dostep({{ struct_name }} *self) {
+uint32_t {{ ident(base_name) }}_recalibrate({{ ident(base_name) }}State *self) {
+    uint32_t rumoca_status = 0u;
     (void)self;
-{%- for statement in methods.do_step %}
-{%- for line in statement.c_lines %}
-    {{ line }}
-{%- endfor %}
-{%- endfor %}
+{{- method_body(methods.recalibrate) }}
+    return rumoca_status;
 }
+
+uint32_t {{ ident(base_name) }}_dostep({{ ident(base_name) }}State *self) {
+    uint32_t rumoca_status = 0u;
+    (void)self;
+{{- method_body(methods.do_step) }}
+    return rumoca_status;
+}
+{%- else %}
+
+void {{ ident(base_name) }}_startup({{ ident(base_name) }}State *self) {
+    (void)self;
+{{- method_body(methods.startup) }}
+}
+
+void {{ ident(base_name) }}_recalibrate({{ ident(base_name) }}State *self) {
+    (void)self;
+{{- method_body(methods.recalibrate) }}
+}
+
+void {{ ident(base_name) }}_dostep({{ ident(base_name) }}State *self) {
+    (void)self;
+{{- method_body(methods.do_step) }}
+}
+{%- endif %}

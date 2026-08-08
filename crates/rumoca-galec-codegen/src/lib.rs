@@ -50,9 +50,10 @@
 //!   `__content.xml` models, checksums, id discipline), its data-integrity
 //!   validators, and the `#[derive(Serialize)]` context views the packaging
 //!   templates consume (the dissolved eFMI packaging crate; D3 amended);
-//! - [`c_mangle`] / [`c_print`] — the embedded-C side of the projection:
-//!   collision-checked GALEC-name → C-identifier mangling and the GALEC
-//!   AST → C99 printer feeding [`c_template_context`];
+//! - [`template_ir`] — the language-neutral walkable GALEC block context
+//!   every rendering target consumes (D16/D17: `.alg`, C, and Rust are
+//!   walking templates); [`c_mangle`] keeps the C name policy the
+//!   Production Code manifest describes in lockstep with the C template;
 //! - [`production_manifest`] — [`assemble_production_manifest`]: the typed
 //!   eFMI Production Code manifest describing the generated C files
 //!   (`TargetTypes`/`CodeFiles`/`LogicalData` mapping every Algorithm Code
@@ -66,7 +67,6 @@
 
 pub mod admissibility;
 pub mod c_mangle;
-pub mod c_print;
 pub mod classify;
 pub mod diagnostic;
 pub mod emit;
@@ -77,10 +77,10 @@ pub mod manifest_context;
 pub mod manifest_vars;
 pub mod package;
 pub mod production_manifest;
+pub mod template_ir;
 
 pub use admissibility::{AdmittedClock, check_admissibility};
 pub use c_mangle::{CNameTable, c_identifier};
-pub use c_print::CPrinter;
 pub use classify::{Classification, ClassifiedVariable, VariableClass, classify_variables};
 pub use diagnostic::GalecTargetError;
 pub use emit::{
@@ -99,3 +99,4 @@ pub use package::{AlgorithmCodePackage, ManifestFragment};
 pub use production_manifest::{
     EmittedCodeFile, assemble_production_manifest, assemble_production_manifest_with_identity,
 };
+pub use template_ir::{galec_template_context, galec_template_context_for_block};

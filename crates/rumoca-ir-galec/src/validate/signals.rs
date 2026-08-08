@@ -32,8 +32,8 @@
 //! restructuring.
 
 use crate::ast::{
-    BinaryOp, Condition, Expression, FunctionCall, Identifier, IfStatement, SignalCheck, Spanned,
-    Statement,
+    BinaryOp, Condition, Expression, FunctionCall, Identifier, IfStatement, PredefinedSignal,
+    SignalCheck, Spanned, Statement,
 };
 use crate::diagnostic::{GalecError, PathSegment};
 
@@ -41,6 +41,48 @@ use super::context::{BlockContext, BodyView, Cursor, SignalSet, SignalTable, res
 
 /// User-defined signal budget in the 32-bit encoding (§3.2.5 §1.6).
 const MAX_USER_SIGNALS: usize = 16;
+
+/// Computed escape sets of the three block-interface methods, in normative
+/// encoding order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MethodEscapes {
+    pub startup: Vec<PredefinedSignal>,
+    pub recalibrate: Vec<PredefinedSignal>,
+    pub do_step: Vec<PredefinedSignal>,
+}
+
+/// Compute the escape set of each block-interface method (the §3.2.5
+/// dataflow this validator enforces), so producers can declare signal
+/// clauses by construction — declared == computed cannot drift (SPEC_0034
+/// GAL-029). Diagnostics encountered on the way are discarded; callers run
+/// [`crate::validate`] separately for the full analysis.
+#[must_use]
+pub fn computed_method_escapes(block: &crate::ast::Block) -> MethodEscapes {
+    let ctx = BlockContext::new(block);
+    let mut escapes = MethodEscapes::default();
+    for body in ctx.bodies() {
+        let Some(kind) = body.method else { continue };
+        let mut scratch = Vec::new();
+        let mut walker = SignalWalker {
+            ctx: &ctx,
+            cursor: Cursor::for_body(&ctx, &body),
+            closures: Vec::new(),
+            diags: &mut scratch,
+        };
+        let computed = walker.statements(body.statements, SignalSet::default());
+        let signals: Vec<PredefinedSignal> = PredefinedSignal::ALL
+            .iter()
+            .copied()
+            .filter(|signal| computed.contains(SignalTable::predefined_bit(*signal)))
+            .collect();
+        match kind {
+            crate::ast::BlockMethodKind::Startup => escapes.startup = signals,
+            crate::ast::BlockMethodKind::Recalibrate => escapes.recalibrate = signals,
+            crate::ast::BlockMethodKind::DoStep => escapes.do_step = signals,
+        }
+    }
+    escapes
+}
 
 pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
     if ctx.signals.user_count() > MAX_USER_SIGNALS {

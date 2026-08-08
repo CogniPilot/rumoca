@@ -35,7 +35,6 @@ pub fn check_admissibility(input: &GalecInput<'_>) -> Result<AdmittedClock, Vec<
     let mut errors = Vec::new();
     check_metadata(dae, &mut errors);
     check_continuous(dae, &mut errors);
-    check_initialization(dae, &mut errors);
     check_external_functions(dae, &mut errors);
     check_runtime_events(dae, &mut errors);
     check_dimensions(dae, &mut errors);
@@ -70,24 +69,27 @@ fn check_continuous(dae: &Dae, errors: &mut Vec<GalecTargetError>) {
     }
 }
 
-/// (g) No initial equations (GAL-025 wording): `Startup` is built from
-/// manifest `start` values only, so a non-empty initialization partition
-/// would be silently ignored rather than lowered — reject it up front.
-fn check_initialization(dae: &Dae, errors: &mut Vec<GalecTargetError>) {
-    let equations = dae.initialization.equations.len();
-    let structured_families = dae.initialization.structured_equations.len();
-    if equations > 0 || structured_families > 0 {
-        errors.push(GalecTargetError::InitialEquations {
-            equations,
-            structured_families,
-        });
-    }
-}
+// (g) — removed: the initialization partition now lowers into `Startup`
+// (GAL-028, `crate::lower::initialization`); un-lowerable forms fail there
+// with stable `unsupported-feature:` diagnostics instead of a blanket ET021.
 
 /// (b) No external functions (GAL-025 wording), one error per function so
 /// the report names every offender.
+///
+/// Exemption (D13): the `Modelica.Math.Matrices` namespace maps by name to
+/// GALEC catalog builtins (`solve` → `solveLinearEquations`) instead of
+/// calling its LAPACK-external MSL bodies, so referencing it must not
+/// reject up front. A `Matrices` function that does NOT map still fails
+/// precisely during lowering (its external callee is never inlined).
 fn check_external_functions(dae: &Dae, errors: &mut Vec<GalecTargetError>) {
     for function in dae.symbols.functions.values() {
+        if function
+            .name
+            .as_str()
+            .starts_with("Modelica.Math.Matrices.")
+        {
+            continue;
+        }
         if let Some(external) = &function.external {
             errors.push(GalecTargetError::ExternalFunction {
                 function: function.name.as_str().to_owned(),

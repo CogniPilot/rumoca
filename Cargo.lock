@@ -4471,6 +4471,7 @@ dependencies = [
 name = "rumoca-galec-codegen"
 version = "0.9.20"
 dependencies = [
+ "minijinja",
  "rumoca-core",
  "rumoca-ir-dae",
  "rumoca-ir-galec",

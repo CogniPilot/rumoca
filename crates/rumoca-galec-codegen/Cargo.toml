@@ -10,6 +10,9 @@ repository.workspace = true
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-ir-galec = { workspace = true }
+# D17: the `.alg` text renders from the embedded walking template
+# (src/templates/alg.jinja) over the language-neutral template IR.
+minijinja = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha1 = { workspace = true }

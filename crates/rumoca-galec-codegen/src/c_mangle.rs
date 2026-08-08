@@ -354,7 +354,7 @@ impl CNameTable {
     }
 }
 
-fn literal_dimensions(dimensions: &[Dimension]) -> Result<Vec<i64>, GalecTargetError> {
+pub(crate) fn literal_dimensions(dimensions: &[Dimension]) -> Result<Vec<i64>, GalecTargetError> {
     dimensions
         .iter()
         .map(|dimension| match dimension {

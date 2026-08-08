@@ -5,9 +5,9 @@ Algorithm Code — the GALEC (Guarded Algorithmic Language for Embedded
 Control) `.alg` representation — and package it as a schema-valid eFMU
 container.
 
-## The three targets
+## The four targets
 
-All three GALEC targets consume the `dae` IR and accept **fixed-sample
+All GALEC targets consume the `dae` IR and accept **fixed-sample
 discrete models only** — models with no continuous states and no `der()`.
 
 | Target | Output | eFMI container? |
@@ -15,6 +15,7 @@ discrete models only** — models with no continuous states and no `der()`.
 | `galec` | eFMI Algorithm Code eFMU: `AlgorithmCode/Model.alg` + `manifest.xml`, plus `__content.xml` and `schemas/` | Yes |
 | `galec-production` | eFMI Production Code eFMU: adds `ProductionCode/` C99 + LogicalData manifest, co-emits the `AlgorithmCode/` representation | Yes |
 | `embedded-c-galec` | GALEC-derived embedded C (`.h` + `.c`): block-state struct with `startup`/`recalibrate`/`dostep` | No — not an eFMI container |
+| `embedded-rust-galec` | GALEC-derived embedded Rust (`.rs`): self-contained `#![no_std]` crate root with `startup`/`recalibrate`/`do_step` returning `Result<(), Signals>` when the block declares signal escapes | No — not an eFMI container (Rust is outside the Beta-1 ProductionCode schema) |
 
 The **eFMI container?** column describes the CLI packaging step. The GUI's
 Generate Code (below) renders the inspectable `.alg`/`.h`/`.c` sources for any
@@ -26,6 +27,7 @@ target but does not itself build the container.
 rumoca compile Model.mo --target galec -o out/
 rumoca compile Model.mo --target galec-production -o out/
 rumoca compile Model.mo --target embedded-c-galec -o out/
+rumoca compile Model.mo --target embedded-rust-galec -o out/
 ```
 
 The `galec` and `galec-production` targets write the eFMU container in two
@@ -42,7 +44,14 @@ out/
 ```
 
 The `embedded-c-galec` target instead writes plain `out/Model.h` and
-`out/Model.c` — no manifest and no container.
+`out/Model.c`, and `embedded-rust-galec` writes `out/Model.rs` — no manifest
+and no container. Models whose GALEC block declares signal escapes (e.g. a
+Kalman filter using `Modelica.Math.Matrices.solve`, which maps to the
+`solveLinearEquations` builtin) get the status ABI: the C methods return the
+32-bit ErrorSignalStatus word and the Rust methods return
+`Result<(), Signals>`. See `examples/models/QuadrotorAltitudeKF.mo` for a
+full estimator exercising matrix algebra, computed initialization, and the
+solve builtin across every target.
 
 ## Code generation in the GUI
 

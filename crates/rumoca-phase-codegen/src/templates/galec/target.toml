@@ -38,10 +38,13 @@ eFMI Production Code export (see --target galec-production)."""
 [capabilities]
 continuous_states = false
 residual_equations = false
-external_functions = false
+# Delegated to the projection: D13 maps `Modelica.Math.Matrices.solve` to the
+# GALEC `solveLinearEquations` builtin instead of calling its LAPACK-external
+# MSL body; any *other* external function still rejects precisely (ET002).
+external_functions = true
 external_tables = false
 random = false
-initialization = false
+initialization = true
 events = true
 runtime_events = false
 clocks = true

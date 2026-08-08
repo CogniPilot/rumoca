@@ -1,0 +1,54 @@
+version = 1
+ir = "dae"
+name = "embedded-rust-galec"
+# Conformance (SPEC_0034 GAL-030, mirroring the GAL-024 two-track rule):
+# this target is a non-eFMI track — a GALEC-derived embedded Rust export.
+# It is NOT an eFMI Production Code container (the Beta-1 ProductionCode
+# XSD restricts `language` to C/C++): no LogicalData/BlockMethods manifest
+# mapping, no checksummed ManifestReference, no co-emitted Algorithm Code
+# container. The eFMI rungs are the separate `galec`/`galec-production`
+# targets.
+description = "GALEC-derived embedded Rust export (#![no_std] block-state struct + startup/recalibrate/do_step over the projected GALEC block) for fixed-sample discrete models — NOT an eFMI Production Code container (SPEC_0034 GAL-030)"
+execution_mode = "compiled"
+deployment_class = "cpu"
+readiness_level = 2
+completion_message = """GALEC-derived embedded Rust source compiled to: {{ out_dir }}
+  {{ model_name }}.rs   #![no_std] crate root: block-state struct + startup/recalibrate/do_step
+This is a GALEC-derived embedded Rust export, NOT an eFMI Production Code
+container (SPEC_0034 GAL-030): the Beta-1 ProductionCode XSD restricts
+`language` to C/C++, so no eFMU manifest mapping is emitted. Transcendental
+builtins (sin/exp/…) reference the `libm` crate; models without them have no
+dependencies at all.
+Compile: rustc --edition 2021 --crate-type lib -D warnings {{ out_dir }}/{{ model_name }}.rs"""
+
+# Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
+# the galec/embedded-c-galec targets: all three consume the same
+# DAE → GALEC projection, so admissibility is identical.
+[capabilities]
+continuous_states = false
+residual_equations = false
+# Delegated to the projection: D13 maps `Modelica.Math.Matrices.solve` to the
+# GALEC `solveLinearEquations` builtin instead of calling its LAPACK-external
+# MSL body; any *other* external function still rejects precisely (ET002).
+external_functions = true
+external_tables = false
+random = false
+initialization = true
+events = true
+runtime_events = false
+clocks = true
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+# GAL-008 analog: this template owns the Rust FILE LAYOUT only (attributes,
+# struct/impl skeletons, the fixed helper prelude); every Rust expression/
+# statement and identifier is printed by the typed printer in
+# rumoca-galec-codegen (rust_mangle/rust_print) and arrives pre-printed in
+# the template context (`variables[*].rust_name`, `methods.*.rust_lines`).
+[[files]]
+path = "{{ model_name }}.rs"
+template = "model.rs.jinja"

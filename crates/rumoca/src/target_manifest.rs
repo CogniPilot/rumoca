@@ -713,6 +713,11 @@ enum ManifestRenderer {
     /// projection context (SPEC_0034 GAL-024/D2) — never the generic DAE
     /// JSON context.
     GalecC(rumoca_compile::galec::GalecCExport),
+    /// GALEC-template targets (`embedded-rust-galec`, SPEC_0034 GAL-030/D16)
+    /// render self-contained walking templates over the language-neutral
+    /// GALEC block context — the template owns the language, exactly like
+    /// the generic IR targets own theirs.
+    GalecBlock(rumoca_compile::galec::GalecBlockContext),
 }
 
 /// Resolve the renderer for one non-eFMU target invocation (module docs on
@@ -738,6 +743,14 @@ fn resolve_manifest_renderer(
         )
         .context("GALEC C export for target 'embedded-c-galec'")?;
         return Ok(ManifestRenderer::GalecC(export));
+    }
+    if manifest.ir == TargetTemplateIr::Dae
+        && manifest.name.as_deref() == Some("embedded-rust-galec")
+    {
+        let context =
+            rumoca_compile::galec::galec_block_context(&result.dae, &result.flat, model_identifier)
+                .context("GALEC block context for target 'embedded-rust-galec'")?;
+        return Ok(ManifestRenderer::GalecBlock(context));
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -777,6 +790,7 @@ impl ManifestRenderer {
                 .render_solve_template_str_without_dae(template, model_identifier)
                 .map_err(Into::into),
             Self::GalecC(export) => render_galec_c_template(export, template),
+            Self::GalecBlock(context) => render_galec_block_template(context, template),
         }
     }
 }
@@ -816,15 +830,6 @@ struct CConformanceHeader {
     summary: &'static str,
 }
 
-impl CConformanceHeader {
-    fn context_value(&self) -> minijinja::Value {
-        minijinja::context! {
-            lines => self.lines,
-            summary => self.summary,
-        }
-    }
-}
-
 /// The `embedded-c-galec` claim: the non-eFMI track of GAL-024 must
 /// self-describe as NOT an eFMI Production Code container (pinned by the
 /// CLI honesty test `export_self_describes_as_not_an_efmi_production_code_container`).
@@ -849,16 +854,45 @@ fn render_galec_c_template(
     export: &rumoca_compile::galec::GalecCExport,
     template: &str,
 ) -> Result<String> {
-    let mut env = minijinja::Environment::new();
-    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
-    env.render_str(
-        template,
-        minijinja::context! {
-            conformance_header => EMBEDDED_C_GALEC_CONFORMANCE_HEADER.context_value(),
-            ..minijinja::Value::from_serialize(&export.context)
-        },
-    )
-    .context("Render embedded-c-galec target template")
+    // D16/D17: the C templates walk the GALEC block context under the
+    // standard codegen environment (same toolbox as every other walker).
+    let mut context = export.context.clone();
+    if let serde_json::Value::Object(map) = &mut context {
+        map.insert(
+            "conformance_header".to_owned(),
+            serde_json::json!({
+                "lines": EMBEDDED_C_GALEC_CONFORMANCE_HEADER.lines,
+                "summary": EMBEDDED_C_GALEC_CONFORMANCE_HEADER.summary,
+            }),
+        );
+    }
+    rumoca_compile::galec::render_galec_block_template(&context, template)
+        .context("Render embedded-c-galec target template")
+}
+
+/// Render a GALEC-template target file (path or code) from the invocation's
+/// language-neutral [`rumoca_compile::galec::GalecBlockContext`]
+/// (SPEC_0034 D16). Rendering goes through the standard codegen
+/// environment ([`rumoca_phase_codegen::render_template_with_json_context`])
+/// so these walking templates get the exact filter/function toolbox the
+/// generic IR targets have; the renderer adds the one key that is target
+/// identity rather than projection data — the honesty header (GAL-030).
+fn render_galec_block_template(
+    block: &rumoca_compile::galec::GalecBlockContext,
+    template: &str,
+) -> Result<String> {
+    let mut context = block.context.clone();
+    if let serde_json::Value::Object(map) = &mut context {
+        map.insert(
+            "conformance_header".to_owned(),
+            serde_json::json!({
+                "lines": rumoca_compile::galec::EMBEDDED_RUST_GALEC_CONFORMANCE_LINES,
+                "summary": rumoca_compile::galec::EMBEDDED_RUST_GALEC_CONFORMANCE_SUMMARY,
+            }),
+        );
+    }
+    rumoca_compile::galec::render_galec_block_template(&context, template)
+        .context("Render embedded-rust-galec target template")
 }
 
 #[cfg(feature = "scheduled-sim")]

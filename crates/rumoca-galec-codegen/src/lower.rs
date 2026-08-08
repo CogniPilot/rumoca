@@ -25,17 +25,17 @@
 //!    this projection and reported as an internal error (ET018), never
 //!    shipped.
 //!
-//! # D8 (Real relationals and escape sets, trap T9)
+//! # D8 / GAL-029 (escape sets)
 //!
-//! Per SPEC_0034 D8, slice 1 lowers Real relational operators with empty
-//! escape-set accounting (matching the `rumoca-ir-galec` validator's
-//! documented NAN deferral), while rejecting every construct whose escape
-//! set would have to be non-empty to conform: Real→Integer narrowing
-//! (`unsupported-feature:real-to-integer-conversion`, which would also need
-//! the floor-vs-truncate rewrite of trap T8) and anything requiring the
-//! signaling linear-solver builtins. Full NAN accounting (T9) is tracked
-//! for slice 2, at which point the relational stance is revisited together
-//! with the validator.
+//! Slice 2a: signaling builtins lower with declared-by-construction escape
+//! sets — `Matrices.solve` maps to `solveLinearEquations` (D13) and each
+//! method's `signals` clause is computed by the validator's own dataflow
+//! ([`rumoca_ir_galec::computed_method_escapes`]), so declared == computed
+//! cannot drift; the manifest carries the per-method Signals and the C
+//! track switches to the status ABI. Still deferred (slice 2b): Real
+//! relational NAN accounting (trap T9) and Real→Integer narrowing
+//! (`unsupported-feature:real-to-integer-conversion`, which also needs the
+//! floor-vs-truncate rewrite of trap T8).
 
 use rumoca_core::component_path_trailing_index;
 use rumoca_ir_dae::Equation;
@@ -52,6 +52,7 @@ pub(crate) mod clock;
 pub(crate) mod conditions;
 pub(crate) mod expr;
 pub(crate) mod guard;
+pub(crate) mod initialization;
 pub(crate) mod methods;
 pub(crate) mod schedule;
 
@@ -121,7 +122,12 @@ pub fn lower_to_algorithm_code(
             .cloned()
             .collect(),
     );
-    let mut manifest = build_manifest_variables(&kept)?;
+    // GAL-028: orient source initial equations, record the projection-time
+    // manifest `start` overrides, then (below) lower them into `Startup`.
+    let oriented = initialization::orient_initial_equations(input.dae, &kept)?;
+    let mut env = crate::manifest_vars::const_eval::ConstEnv::from_classification(&kept);
+    initialization::record_start_overrides(&oriented, &kept, &mut env)?;
+    let mut manifest = build_manifest_variables(&kept, &env)?;
     let starts = methods::manifest_by_dae_name(&manifest);
 
     // 6. Block sections + methods (borrowing `starts` before clock wiring
@@ -129,6 +135,12 @@ pub fn lower_to_algorithm_code(
     let (interface, mut protected) =
         methods::build_sections(&kept, &starts).map_err(|error| vec![error])?;
     let mut startup = methods::build_startup(&kept, &conditions, &input.dae.symbols, &starts)?;
+    startup.extend(initialization::lower_into_startup(
+        &oriented,
+        &kept,
+        &conditions,
+        &input.dae.symbols,
+    )?);
     let recalibrate = methods::build_recalibrate(&kept, &conditions, &input.dae.symbols)?;
     let commits = methods::build_pre_commits(&kept, &referenced)?;
     do_step.extend(commits);
@@ -161,21 +173,47 @@ pub fn lower_to_algorithm_code(
     block.recalibrate.statements = recalibrate;
     block.do_step.statements = do_step;
 
+    // GAL-029 (slice 2a): declare each method's escape set by construction —
+    // the validator's own dataflow computes it, so declared == computed
+    // cannot drift. Only signaling builtins contribute today (NAN relational
+    // accounting is slice 2b).
+    let escapes = rumoca_ir_galec::computed_method_escapes(&block);
+    block.startup.signals = escapes.startup.clone();
+    block.recalibrate.signals = escapes.recalibrate.clone();
+    block.do_step.signals = escapes.do_step.clone();
+
     let package = AlgorithmCodePackage {
         block,
         manifest: ManifestFragment {
             variables: manifest.variables,
             clock_variable_ref_id: wired.variable_ref_id,
-            // Slice 1 emits nothing that can signal, and Real relationals
-            // lower with empty escape accounting (module docs, D8).
-            startup_signals: Vec::new(),
-            recalibrate_signals: Vec::new(),
-            do_step_signals: Vec::new(),
+            startup_signals: manifest_signals(&escapes.startup),
+            recalibrate_signals: manifest_signals(&escapes.recalibrate),
+            do_step_signals: manifest_signals(&escapes.do_step),
         },
         alg_file_name,
     };
     validate_package(&package)?;
     Ok(package)
+}
+
+/// The manifest `ErrorSignal` list for a method's declared escape set.
+fn manifest_signals(
+    signals: &[gast::PredefinedSignal],
+) -> Vec<crate::manifest_context::algorithm_code_manifest::ErrorSignal> {
+    use crate::manifest_context::algorithm_code_manifest::ErrorSignal;
+    use gast::PredefinedSignal;
+    signals
+        .iter()
+        .map(|signal| match signal {
+            PredefinedSignal::InvalidArgument => ErrorSignal::InvalidArgument,
+            PredefinedSignal::Overflow => ErrorSignal::Overflow,
+            PredefinedSignal::Nan => ErrorSignal::Nan,
+            PredefinedSignal::SolveLinearEquationsFailed => ErrorSignal::SolveLinearEquationsFailed,
+            PredefinedSignal::NoSolutionFound => ErrorSignal::NoSolutionFound,
+            PredefinedSignal::UnspecifiedError => ErrorSignal::UnspecifiedError,
+        })
+        .collect()
 }
 
 /// One guarded `f_z`/`f_m` row → one flat `DoStep` assignment, carrying the

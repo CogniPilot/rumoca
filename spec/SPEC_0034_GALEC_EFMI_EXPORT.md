@@ -8,10 +8,17 @@ Design contract; `--target galec` (Algorithm Code) and `--target galec-productio
 conformance is **Earned** (parser round-trip under `--features parse`, plus the
 `.alg` language server).
 
+Extension in progress (estimator/Kalman-filter scope, GAL-027–GAL-030,
+D12–D15): matrix-algebra lowering, `initial equation` → `Startup` lowering,
+error-signal slice 2 (closes D8), and the non-eFMI Rust export track
+`embedded-rust-galec`.
+
 ## Summary
 Rumoca exports eFMI Algorithm Code and Production Code (GALEC `.alg`, C99, and
 XML manifests in an eFMU container) as a target-language projection over
-canonical artifacts; GALEC is never a canonical IR stage.
+canonical artifacts; GALEC is never a canonical IR stage. A non-eFMI Rust
+export (`embedded-rust-galec`, GAL-030) renders the same GALEC AST as
+`#![no_std]` Rust.
 
 ## Pipeline Placement
 
@@ -61,6 +68,10 @@ rumoca crate  generic container/checksum build step + vendored schemas (BSD-3 ve
 | GAL-024 | Embedded C is two-track: `embedded-c-galec` is a non-eFMI export ("NOT an eFMI Production Code container"); `galec-production` (**landed**) earns the "eFMI Production Code export" rung. Neither fabricates the claim below its rung. | `rumoca-galec-codegen` | **Why** below. |
 | GAL-025 | v1 scope rejections (continuous states, external functions, runtime events) are labeled "not yet supported by the Rumoca GALEC projection" — never "unsupported by eFMI". | `rumoca-galec-codegen` | §3.2.1(b), §1.3.3: eFMI expects discretized models. |
 | GAL-026 | GALEC AST, manifest model, printer, and validator are array-native (dimensions, row-major `start`, for-loops, lifted builtins, indexed quoted identifiers); scalarized lowering is an implementation stage, never a language-layer assumption. | `rumoca-ir-galec` + `rumoca-galec-codegen` | Scalarization curtails Production Code optimization. |
+| GAL-027 | Matrix algebra (matrix×matrix and matrix×vector `*`, `transpose`, `identity`) lowers to whole-array assignments whose values are element-unrolled sums over literal bounds (consistent with the existing vector-dot/slice unrolling); accumulation order is ascending-index and part of the projection contract (T6: no re-association is *introduced* — the unroll order is the defined order); `.*` stays element-wise; no runtime-size codepaths (T11). For-loop emission is a future optimization once lowering grows a statement sink (the AST already supports it, GAL-026). | `rumoca-galec-codegen` | Kalman-class estimators need matrix products. |
+| GAL-028 | The DAE initialization partition lowers into `Startup`: dependency-sorted statements emitted after literal `start` mirroring; `Startup` stays builtins-only (GAL-017); initial equations reading control inputs are rejected (inputs are not valid before the first tick); manifest `start` mirrors the projection-time evaluation of the `Startup` computation under default parameter values (GAL-020 mirroring holds by construction). | `rumoca-galec-codegen` | Computed initial state (e.g. initial covariance) is core estimator practice, not a hack. |
+| GAL-029 | Slice-2 error signaling, staged. **2a (this slice):** lowering computes non-empty escape sets for signaling builtins (`solveLinearEquations` → `SOLVE_LINEAR_EQUATIONS_FAILED`), declares them by construction on emitted methods (via the validator's public escape computation — declared == computed cannot drift), and surfaces per-method Signals + ErrorSignalStatus in the manifest; the C track's methods return the 32-bit status word. **2b (still deferred):** Real relationals → `NAN` (T9) and `integer()` — flipping these marks every comparison-bearing model, so they land together with relational helpers across validator, both code tracks, and the equivalence harness. Default policy: signals escape to `DoStep` and the manifest; silent catching is never emitted. | `rumoca-galec-codegen` + `rumoca-ir-galec` | The signaling builtins (T14) are unusable without producer-side escape sets. |
+| GAL-030 | `embedded-rust-galec` is a non-eFMI export ("NOT an eFMI Production Code container" — the Beta-1 ProductionCode XSD restricts `language` to C/C++): a self-contained walking template over the language-neutral GALEC block context (D16); generated code is `#![no_std]`, allocation-free, static arrays; method escape sets map to `Result<(), Signals>`; CI compile-checks with `rustc` (GAL-012 analog). | `rumoca-galec-codegen` (`template_ir`) + templates | GAL-024 honesty: never fabricate a conformance claim the XSD forbids. |
 
 **Why (GAL-016):** GALEC has no `previous()`/`sample()` (T2); `pre(x)` becomes
 protected state `'previous(x)'` committed at end of DoStep; the sample period is a
@@ -81,10 +92,16 @@ non-conformant (§2.2).
 | D5 | Manifest `renderer` extension | Rejected: covered by D1. |
 | D6 | Clock strictness | XSD-strict (GAL-016): `constant`, seconds; Beta-1's `tunableParameter` examples are nonconforming. |
 | D7 | Beta-1 grammar gaps | AST adopts `(min=,max=)`, the error-signal statement, input/output prefixes; emitter rejects `//` comments and unsigned exponents. |
-| D8 | Slice-1 signal scope | Full signal machinery in AST + validator; lowering emits Real relationals with empty escape sets and rejects constructs needing non-empty sets; NAN accounting (T9) is slice 2. |
+| D8 | Slice-1 signal scope | Full signal machinery in AST + validator; lowering emits Real relationals with empty escape sets and rejects constructs needing non-empty sets; NAN accounting (T9) is slice 2. **Slice 2 is now specified by GAL-029.** |
 | D9 | Embedded-C sequencing | GAL-024: non-eFMI C export after the projection crate; PC container after AC packaging. |
 | D10 | XSD vendoring | `crates/rumoca/assets/efmi-schemas/` (GAL-023). |
 | D11 | GALEC AST source spans | GALEC AST nodes carry `rumoca_core::Span` (the *foundation* crate, not an IR stage — GAL-001/GAL-010 intent holds). Parsed nodes span `.alg` bytes; generated nodes carry the originating Modelica span or `Span::DUMMY`. Spans are provenance, not identity (round-trip equality is span-insensitive). Unlocks positioned diagnostics and the `.alg` LSP. |
+| D12 | Auto-discretization (inline integration) | **Permanently out of scope.** Discrete-time clocked Modelica (MLS ch. 16) is the supported input; the tool never invents sample-time semantics. ET001 becomes a permanent scope rejection whose wording points at clocked discrete-time modeling (GAL-025 honesty retained: never "unsupported by eFMI"). |
+| D13 | Matrix-product strategy | For-loop scalar accumulation, ascending-index order (GAL-027). `Modelica.Math.Matrices.solve`/`solve2` map by name to the `solveLinearEquations` builtin (their MSL bodies are LAPACK-external and never inlined); `Matrices.inv` stays rejected with a diagnostic recommending `solve` (invert-then-multiply is bad numerics and has no GALEC builtin). |
+| D14 | Initial-equation `Startup` lowering | GAL-028. Ordering inside `Startup`: literal `start` mirroring of all writable variables first, then dependency-sorted initialization statements overwriting the computed subset, then `'previous(x)'` seeding. Initial equations referencing inputs ⇒ stable diagnostic; cyclic initialization ⇒ the existing algebraic-loop rejection. |
+| D15 | Rust track shape | GAL-030. Target `embedded-rust-galec` emits a self-contained `#![no_std]` crate root: one struct (block variables as fields, `[[f64; N]; M]` arrays), `startup`/`recalibrate`/`do_step` methods returning `Result<(), Signals>` (u32 newtype mirroring ErrorSignalStatus), no dependencies (transcendental builtins reference `libm` when used). Co-emitting with `galec-production` gives conformant C and Rust from one GALEC AST; the equivalence harness diffs their numerics. |
+| D16 | GALEC-template targets mirror the generic IR targets | The `template_ir` pass serializes the validated block into a language-neutral walkable tree — collision-checked base identifiers (keyword escaping is template-owned; base names never end in `_`, so an appended `_` cannot re-collide; names that cannot begin an identifier carry a `null` base name embedded templates `fail()` on), GALEC-faithful `galec_name` tokens (quoted identifiers keep their quotes) and **1-based** subscripts (0-based languages subtract in the template), T7-strict Real literal text, kind-tagged expression nodes with abstract operator names, and dual whole-array value/element forms plus a `copy` flag (array-valued languages assign wholesale, element-wise languages expand or `memcpy` — no projection logic in templates). Rendering goes through the standard codegen environment (`render_template_with_json_context`), so walking templates get the same filter/function toolbox as the generic IR targets, and **adding a language is adding a template**. The `ir` manifest value stays `dae` (GAL-001 holds — GALEC is not a canonical stage; the block context is projection output). |
+| D17 | Everything renders from the GALEC template IR — including `.alg` and C | **Supersedes the D1/D2 typed-printer emission split.** The `.alg` text renders from the embedded walking template (`rumoca-galec-codegen/src/templates/alg.jinja`) over the template IR, byte-identical to the `rumoca-ir-galec` typed printer (pinned by the parity test in `spec_0034_estimator.rs` — the printer remains the parser-facing half of the language module, used by round-trip tests and the `.alg` LSP; the parity pin is the drift guard between the two producers). The C track's `model.h.jinja`/`model.c.jinja` are walking templates owning every C spelling (`c_print` deleted); `c_mangle` survives solely as the name policy the Production Code manifest's LogicalData describes, kept in lockstep with the C template's keyword list by the keyword-fixture test in `cli_target_galec_production.rs`. GAL-008/GAL-009 are amended accordingly: templates own generated text end to end; the printer exception narrows to the language module's internal uses. |
 
 ### Conformance Ladder (GAL-021, GAL-024)
 
@@ -94,6 +111,7 @@ non-conformant (§2.2).
 | "eFMI Algorithm Code export" | Schema-valid eFMU: `__content.xml` + `schemas/` + Algorithm Code container; correct SHA-1s, UUID/ids, strict UTC timestamps | Earned (`galec`) |
 | "GALEC language conformance" | Above + round-trip parse of emitted `.alg`: print∘parse∘print idempotence | Earned (`galec`; `rumoca-ir-galec/tests/roundtrip.rs`, `--features parse`) |
 | "eFMI Production Code export" | Schema-valid eFMU co-emitting Algorithm Code **and** Production Code (§2.2); PC `manifest.xml` xmllint-valid; LogicalData maps every AC variable + all three BlockMethods once; PC `ManifestReference@checksum` = SHA-1 of the AC manifest bytes, `@manifestRefId` = AC root UUID; whole SHA-1 web recomputed from written bytes, no placeholders | Earned (`galec-production`) |
+| "GALEC-derived Rust export" | `embedded-rust-galec` renders; honest non-eFMI self-description (GAL-030); `rustc` compile check; numeric equivalence vs the C track on the golden fixtures | In progress (D15) |
 
 ### Variable Classification (GAL-020, normative)
 
@@ -154,9 +172,17 @@ array sizes rejected.
 | Manifest XSD-validate + SHA-1 recompute + id uniqueness; full-container validation (all XMLs vs XSDs, all checksums); negative schema cases (missing element, wrong order, bad enum, malformed UUID/timestamp, dim < 1) | GAL-021 |
 | `--target galec` CLI smoke + real template-CI render | GAL-011/012 |
 | Generated-C compile check (`cc -Wall -Werror`, temp dir) when C output exists | GAL-012/024 |
+| Matrix-lowering parity: Kalman-step fixture numerics vs an f64 reference; accumulation-order golden `.alg` | GAL-027/D13 |
+| `initial equation` goldens (computed initial covariance in `Startup`); negative: input-reading and cyclic initialization ⇒ stable diagnostics | GAL-028/D14 |
+| Escape-set round-trip: emitted `signals` clauses validate (declared == computed); manifest Signals/ErrorSignalStatus golden | GAL-029 |
+| Generated-Rust compile check (`rustc --edition 2021 -D warnings`, temp dir); C↔Rust numeric equivalence on golden fixtures | GAL-030/D15 |
+| Quadrotor estimator end-to-end: clocked discrete fixture exports via `galec`, `galec-production`, `embedded-rust-galec`; SIL loop against the continuous plant | GAL-027–030 |
 
 ## Non-Goals
 
+- No automatic discretization of continuous models (inline integration):
+  discrete-time clocked Modelica is the supported input (D12); continuous
+  dynamics remain a permanent, honestly-worded scope rejection (ET001).
 - GALEC does not replace DAE/Solve; export does not change Modelica semantics
   or authorize target-specific canonical-DAE rewrites.
 - No Behavioral Model (ch. 4; an eFMU is valid without one), FMU embedding, or

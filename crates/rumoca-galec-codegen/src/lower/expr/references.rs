@@ -503,7 +503,7 @@ impl ExprLowerer<'_> {
         Ok(values)
     }
 
-    fn static_integer_expression(&self, expr: &Expression) -> Option<i64> {
+    pub(super) fn static_integer_expression(&self, expr: &Expression) -> Option<i64> {
         match expr {
             Expression::Literal {
                 value: Literal::Integer(value),
@@ -772,12 +772,72 @@ impl ExprLowerer<'_> {
                 subscripts,
                 span,
             ),
+            // Array-shape builtins (`identity`, `transpose`, GAL-027) lower
+            // to `{…}` constructors; indexing selects from the lowered
+            // constructor (matrix-product operand re-lowering lands here).
+            Expression::BuiltinCall { .. } => {
+                let typed = self.lower(base)?;
+                self.select_lowered_element(typed, subscripts, span)
+            }
             _ => Err(unsupported(
                 "indexed-expression-base".to_owned(),
                 format!("indexed expression over {}", super::form_name(base)),
                 Some(span),
             )),
         }
+    }
+
+    /// Select one scalar element of an already-lowered array-shaped value
+    /// whose expression is a `{…}` constructor (the shape array builtins
+    /// produce), by statically-evaluable subscripts.
+    fn select_lowered_element(
+        &mut self,
+        typed: super::Typed,
+        subscripts: &[Subscript],
+        span: Span,
+    ) -> Result<super::Typed, GalecTargetError> {
+        if subscripts.len() != typed.rank() {
+            return Err(unsupported(
+                "array-partial-subscript".to_owned(),
+                format!(
+                    "{} subscript(s) over a rank-{} lowered array expression",
+                    subscripts.len(),
+                    typed.rank()
+                ),
+                Some(span),
+            ));
+        }
+        let mut expr = typed.expr;
+        for (subscript, dimension) in subscripts.iter().zip(&typed.shape) {
+            let Some(index) = self.static_index_value(subscript) else {
+                return Err(unsupported(
+                    "array-dynamic-subscript".to_owned(),
+                    "non-static subscript over a lowered array expression".to_owned(),
+                    Some(span),
+                ));
+            };
+            if index < 1 || index > *dimension {
+                return Err(GalecTargetError::LoweringInternal {
+                    detail: format!(
+                        "subscript {index} is outside dimension {dimension} of a lowered \
+                         array expression"
+                    ),
+                });
+            }
+            let gast::Expression::Array(mut elements) = expr else {
+                return Err(GalecTargetError::LoweringInternal {
+                    detail: "lowered array expression rank does not match its constructor \
+                             nesting"
+                        .to_owned(),
+                });
+            };
+            let position =
+                usize::try_from(index - 1).map_err(|_| GalecTargetError::LoweringInternal {
+                    detail: "lowered array subscript exceeds usize".to_owned(),
+                })?;
+            expr = elements.swap_remove(position);
+        }
+        Ok(super::Typed::new(expr, typed.ty))
     }
 
     fn lower_nested_index(
@@ -914,6 +974,13 @@ impl ExprLowerer<'_> {
                 Some(span),
             ));
         }
+        // A subscripted matrix product selects the product ELEMENT (the
+        // ascending-index sum, GAL-027) — distributing the subscripts into
+        // the operands would compute the elementwise product instead
+        // (chained products like `A*P*transpose(A)` land here).
+        if matches!(op, OpBinary::Mul) && !left.is_scalar() && !right.is_scalar() {
+            return self.matrix_product_element(lhs, rhs, &left, &right, subscripts, span);
+        }
         if left.is_scalar() && right.is_scalar() {
             return Err(unsupported(
                 "scalar-indexed-expression".to_owned(),
@@ -937,6 +1004,74 @@ impl ExprLowerer<'_> {
             rhs: Box::new(rhs),
             span,
         })
+    }
+
+    /// One statically-subscripted element of a matrix product: resolves the
+    /// subscripts, validates them against the product shape, and emits the
+    /// element's ascending-index sum via [`super::ExprLowerer::product_sum`].
+    fn matrix_product_element(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+        left: &Typed,
+        right: &Typed,
+        subscripts: &[Subscript],
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        let Some(product) = super::matrix_product_shape(left, right) else {
+            return Err(GalecTargetError::LoweringTypeMismatch {
+                context: "matrix product operands".to_owned(),
+                expected: "matching inner dimensions",
+                found: "mismatched inner dimensions",
+                span: (!span.is_dummy()).then_some(span),
+            });
+        };
+        let indices = subscripts
+            .iter()
+            .map(|subscript| self.static_index_value(subscript))
+            .collect::<Option<Vec<i64>>>()
+            .ok_or_else(|| {
+                unsupported(
+                    "array-dynamic-subscript".to_owned(),
+                    "non-static subscript over a matrix product".to_owned(),
+                    Some(span),
+                )
+            })?;
+        let element = |index: i64, extent: i64| -> Result<i64, GalecTargetError> {
+            if index < 1 || index > extent {
+                return Err(GalecTargetError::LoweringInternal {
+                    detail: format!("subscript {index} is outside matrix-product extent {extent}"),
+                });
+            }
+            Ok(index)
+        };
+        match (product, indices.as_slice()) {
+            (super::MatrixProduct::MatVec { rows, inner }, &[row]) => {
+                let row = element(row, rows)?;
+                self.product_sum(lhs, rhs, Some(row), None, inner, span)
+            }
+            (super::MatrixProduct::VecMat { inner, cols }, &[col]) => {
+                let col = element(col, cols)?;
+                self.product_sum(lhs, rhs, None, Some(col), inner, span)
+            }
+            (super::MatrixProduct::MatMat { rows, inner, cols }, &[row, col]) => {
+                let row = element(row, rows)?;
+                let col = element(col, cols)?;
+                self.product_sum(lhs, rhs, Some(row), Some(col), inner, span)
+            }
+            _ => Err(unsupported(
+                "array-partial-subscript".to_owned(),
+                format!(
+                    "{} subscript(s) over a matrix product of rank {}",
+                    indices.len(),
+                    match product {
+                        super::MatrixProduct::MatMat { .. } => 2,
+                        _ => 1,
+                    }
+                ),
+                Some(span),
+            )),
+        }
     }
 
     fn lower_indexed_function_call(

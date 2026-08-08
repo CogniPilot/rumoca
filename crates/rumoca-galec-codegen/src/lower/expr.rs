@@ -303,13 +303,7 @@ impl<'a> ExprLowerer<'a> {
                     return self.lower_vector_dot(lhs, rhs, span);
                 }
                 if !left.is_scalar() && !right.is_scalar() {
-                    return Err(unsupported(
-                        "array-multiplication".to_owned(),
-                        "non-vector array `*` requires Modelica matrix/vector product semantics; \
-                         use element-wise `.*` or wait for explicit matrix-product lowering"
-                            .to_owned(),
-                        Some(span),
-                    ));
+                    return self.lower_array_multiplication(lhs, rhs, &left, &right, span);
                 }
                 self.arithmetic(BinaryOp::Mul, left, right, span)
             }
@@ -393,6 +387,127 @@ impl<'a> ExprLowerer<'a> {
         }
         result.ok_or_else(|| GalecTargetError::LoweringInternal {
             detail: "vector dot product over an empty vector".to_owned(),
+        })
+    }
+
+    /// Array×array `*` after the vector-dot case: the MLS §10.6.4 product
+    /// forms element-unroll (GAL-027); rank-compatible operands with
+    /// mismatched inner dimensions are a type error; anything else (rank ≥ 3)
+    /// has no Modelica `*` definition.
+    fn lower_array_multiplication(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+        left: &Typed,
+        right: &Typed,
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        match matrix_product_shape(left, right) {
+            Some(product) => self.lower_matrix_product(lhs, rhs, product, span),
+            None if matrix_product_ranks(left, right) => {
+                Err(GalecTargetError::LoweringTypeMismatch {
+                    context: "matrix product operands".to_owned(),
+                    expected: "matching inner dimensions",
+                    found: "mismatched inner dimensions",
+                    span: optional(span),
+                })
+            }
+            None => Err(unsupported(
+                "array-multiplication".to_owned(),
+                "array `*` is defined for vector·vector, matrix×vector, \
+                 vector×matrix, and matrix×matrix operands only; use \
+                 element-wise `.*` for other shapes"
+                    .to_owned(),
+                Some(span),
+            )),
+        }
+    }
+
+    /// Modelica matrix/vector `*` (MLS §10.6.4) element-unrolled into nested
+    /// `{…}` constructors of ascending-index sum trees (GAL-027). The unroll
+    /// order is the normative evaluation order (trap T6): element `(i, j)`
+    /// is `a[i,1]*b[1,j] + a[i,2]*b[2,j] + …`, never re-associated.
+    fn lower_matrix_product(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+        product: MatrixProduct,
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        match product {
+            MatrixProduct::MatVec { rows, inner } => {
+                let mut elements = Vec::with_capacity(usize::try_from(rows).unwrap_or_default());
+                for row in 1..=rows {
+                    elements.push(self.product_sum(lhs, rhs, Some(row), None, inner, span)?);
+                }
+                typed_array(elements, vec![rows])
+            }
+            MatrixProduct::VecMat { inner, cols } => {
+                let mut elements = Vec::with_capacity(usize::try_from(cols).unwrap_or_default());
+                for col in 1..=cols {
+                    elements.push(self.product_sum(lhs, rhs, None, Some(col), inner, span)?);
+                }
+                typed_array(elements, vec![cols])
+            }
+            MatrixProduct::MatMat { rows, inner, cols } => {
+                let mut out_rows = Vec::with_capacity(usize::try_from(rows).unwrap_or_default());
+                for row in 1..=rows {
+                    out_rows.push(self.matrix_product_row(lhs, rhs, row, inner, cols, span)?);
+                }
+                typed_array(out_rows, vec![rows, cols])
+            }
+        }
+    }
+
+    /// One matrix×matrix result row: `cols` unrolled sum-tree elements.
+    fn matrix_product_row(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+        row: i64,
+        inner: i64,
+        cols: i64,
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        let mut elements = Vec::with_capacity(usize::try_from(cols).unwrap_or_default());
+        for col in 1..=cols {
+            elements.push(self.product_sum(lhs, rhs, Some(row), Some(col), inner, span)?);
+        }
+        typed_array(elements, vec![cols])
+    }
+
+    /// One matrix-product element: `Σ_k lhs[row, k] * rhs[k, col]` with the
+    /// vector operand (row/col `None`) indexed by `k` alone. Operands are
+    /// re-lowered per element like [`Self::lower_vector_dot`].
+    fn product_sum(
+        &mut self,
+        lhs: &Expression,
+        rhs: &Expression,
+        row: Option<i64>,
+        col: Option<i64>,
+        inner: i64,
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        let mut result = None;
+        for k in 1..=inner {
+            let left_subscripts = match row {
+                Some(row) => vec![Subscript::index(row, span), Subscript::index(k, span)],
+                None => vec![Subscript::index(k, span)],
+            };
+            let right_subscripts = match col {
+                Some(col) => vec![Subscript::index(k, span), Subscript::index(col, span)],
+                None => vec![Subscript::index(k, span)],
+            };
+            let left = self.lower(&indexed_expression(lhs.to_owned(), left_subscripts, span))?;
+            let right = self.lower(&indexed_expression(rhs.to_owned(), right_subscripts, span))?;
+            let product = self.arithmetic(BinaryOp::Mul, left, right, span)?;
+            result = Some(match result {
+                Some(acc) => self.arithmetic(BinaryOp::Add, acc, product, span)?,
+                None => product,
+            });
+        }
+        result.ok_or_else(|| GalecTargetError::LoweringInternal {
+            detail: "matrix product over an empty inner dimension".to_owned(),
         })
     }
 
@@ -610,6 +725,11 @@ impl<'a> ExprLowerer<'a> {
                 Some(span),
             ));
         }
+        // D13: MSL linear-algebra functions with LAPACK-external bodies map
+        // by name to GALEC catalog builtins instead of inlining.
+        if let Some(result) = self.lower_matrices_library_call(name.as_str(), args, span)? {
+            return Ok(result);
+        }
         let args = self.inline_expression_function_calls_in_slice(args)?;
         let Some(target) = self.inline_function_target(name.as_str()) else {
             return Err(unsupported(
@@ -641,6 +761,81 @@ impl<'a> ExprLowerer<'a> {
         };
         self.inlined_functions.pop();
         result
+    }
+
+    /// Recognize `Modelica.Math.Matrices` calls whose MSL bodies are
+    /// LAPACK-external and can never inline (D13): `solve` maps to the
+    /// GALEC `solveLinearEquations` builtin (whose
+    /// `SOLVE_LINEAR_EQUATIONS_FAILED` escape the caller's method declares,
+    /// GAL-029); `inv` and `solve2` get targeted guidance.
+    fn lower_matrices_library_call(
+        &mut self,
+        name: &str,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Option<Typed>, GalecTargetError> {
+        match name {
+            "Modelica.Math.Matrices.solve" => self.lower_linear_solve(args, span).map(Some),
+            "Modelica.Math.Matrices.solve2" => Err(unsupported(
+                "matrix-solve2".to_owned(),
+                "`Matrices.solve2` (matrix right-hand side) has no GALEC builtin; \
+                 solve per column with `Matrices.solve`"
+                    .to_owned(),
+                Some(span),
+            )),
+            "Modelica.Math.Matrices.inv" => Err(unsupported(
+                "matrix-inverse".to_owned(),
+                "`Matrices.inv` has no GALEC builtin; rewrite `inv(A) * b` as \
+                 `Matrices.solve(A, b)` (better numerics, maps to the \
+                 `solveLinearEquations` builtin)"
+                    .to_owned(),
+                Some(span),
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    /// `Matrices.solve(A, b)` → `solveLinearEquations(A, b)`: `A` square
+    /// Real `[n, n]`, `b` Real `[n]`, result `[n]` (§3.2.6).
+    fn lower_linear_solve(
+        &mut self,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        let [a, b] = args else {
+            return Err(GalecTargetError::LoweringTypeMismatch {
+                context: "Matrices.solve call".to_owned(),
+                expected: "solve(A, b) with two arguments",
+                found: "different arity",
+                span: optional(span),
+            });
+        };
+        let a = self.lower(a)?;
+        let b = self.lower(b)?;
+        let ([rows, cols], [len]) = (&a.shape[..], &b.shape[..]) else {
+            return Err(GalecTargetError::LoweringTypeMismatch {
+                context: "Matrices.solve operands".to_owned(),
+                expected: "matrix A and vector b",
+                found: "other shapes",
+                span: optional(span),
+            });
+        };
+        if rows != cols || rows != len {
+            return Err(GalecTargetError::LoweringTypeMismatch {
+                context: "Matrices.solve operands".to_owned(),
+                expected: "square A[n, n] with matching b[n]",
+                found: "mismatched dimensions",
+                span: optional(span),
+            });
+        }
+        let length = *len;
+        let a = widen_to_real(a, "Matrices.solve matrix", Some(span))?;
+        let b = widen_to_real(b, "Matrices.solve vector", Some(span))?;
+        Ok(Typed::array(
+            call("solveLinearEquations", vec![a, b]),
+            ScalarType::Real,
+            vec![length],
+        ))
     }
 
     fn inline_expression_function_calls_in_slice(
@@ -900,6 +1095,13 @@ impl<'a> ExprLowerer<'a> {
         args: &[Expression],
         span: Span,
     ) -> Result<Typed, GalecTargetError> {
+        // Array-shape builtins need shape logic the data-driven table cannot
+        // express (GAL-027); they unroll to `{…}` constructors here.
+        match function {
+            BuiltinFunction::Transpose => return self.lower_transpose(function, args, span),
+            BuiltinFunction::Identity => return self.lower_identity(function, args, span),
+            _ => {}
+        }
         let mapping = BUILTIN_MAP
             .iter()
             .find(|(modelica, _)| *modelica == function)
@@ -962,6 +1164,83 @@ impl<'a> ExprLowerer<'a> {
                 Some(span),
             )),
         }
+    }
+
+    /// `transpose(A)` element-unrolls to a reindexed `{…}` constructor
+    /// (GAL-027): result element `(i, j)` re-lowers `A[j, i]`.
+    fn lower_transpose(
+        &mut self,
+        function: BuiltinFunction,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        let [arg] = args else {
+            return Err(arity_error(function, 1, args.len(), span));
+        };
+        let typed = self.lower(arg)?;
+        let [rows, cols] = typed.shape[..] else {
+            return Err(GalecTargetError::LoweringTypeMismatch {
+                context: "transpose argument".to_owned(),
+                expected: "rank-2 array",
+                found: if typed.is_scalar() { "scalar" } else { "array" },
+                span: optional(span),
+            });
+        };
+        let mut out_rows = Vec::with_capacity(usize::try_from(cols).unwrap_or_default());
+        for i in 1..=cols {
+            let mut elements = Vec::with_capacity(usize::try_from(rows).unwrap_or_default());
+            for j in 1..=rows {
+                elements.push(self.lower(&indexed_expression(
+                    arg.to_owned(),
+                    vec![Subscript::index(j, span), Subscript::index(i, span)],
+                    span,
+                ))?);
+            }
+            out_rows.push(typed_array(elements, vec![rows])?);
+        }
+        typed_array(out_rows, vec![cols, rows])
+    }
+
+    /// `identity(n)` with a statically-evaluable `n` becomes an Integer
+    /// `{…}` constructor of 1/0 literals (MLS: `identity` is Integer-typed;
+    /// Real contexts widen through the array-literal `real` distribution).
+    fn lower_identity(
+        &mut self,
+        function: BuiltinFunction,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Typed, GalecTargetError> {
+        let [arg] = args else {
+            return Err(arity_error(function, 1, args.len(), span));
+        };
+        let Some(order) = self.static_integer_expression(arg) else {
+            return Err(unsupported(
+                "identity-dynamic-order".to_owned(),
+                "`identity` needs a statically-evaluable Integer order \
+                 (GALEC dimensions are literal, trap T11)"
+                    .to_owned(),
+                Some(span),
+            ));
+        };
+        if order < 1 {
+            return Err(unsupported(
+                "identity-dynamic-order".to_owned(),
+                format!("`identity` order {order} is not a positive Integer"),
+                Some(span),
+            ));
+        }
+        let mut out_rows = Vec::with_capacity(usize::try_from(order).unwrap_or_default());
+        for i in 1..=order {
+            let mut elements = Vec::with_capacity(usize::try_from(order).unwrap_or_default());
+            for j in 1..=order {
+                elements.push(Typed::new(
+                    gast::Expression::Integer(i64::from(i == j)),
+                    ScalarType::Integer,
+                ));
+            }
+            out_rows.push(typed_array(elements, vec![order])?);
+        }
+        typed_array(out_rows, vec![order, order])
     }
 
     /// 2-argument min/max: `imin`/`imax` for Integer operands, `min`/`max`
@@ -1128,7 +1407,9 @@ static BUILTIN_MAP: &[(BuiltinFunction, BuiltinMapping)] = &[
 /// `rumoca_ir_galec::builtins::BUILTINS`.
 #[must_use]
 pub fn emittable_builtin_targets() -> Vec<(&'static str, usize)> {
-    let mut targets = vec![("real", 1)];
+    // `real` is the trap-T5 widening cast; `solveLinearEquations` is the
+    // D13 `Matrices.solve` mapping (`lower_linear_solve`).
+    let mut targets = vec![("real", 1), ("solveLinearEquations", 2)];
     for (_, mapping) in BUILTIN_MAP {
         match mapping {
             BuiltinMapping::RealUnary(name) => targets.push((name, 1)),
@@ -1175,15 +1456,47 @@ pub(crate) fn widen_to_real(
     match typed.ty {
         ScalarType::Real => Ok(typed.expr),
         ScalarType::Integer if typed.is_scalar() => Ok(call("real", vec![typed.expr])),
-        ScalarType::Integer => Err(unsupported(
-            "array-integer-real-promotion".to_owned(),
-            format!(
-                "{context} needs Integer-array to Real-array promotion, but the current \
-                 GALEC projection only inserts scalar `real(...)` casts"
-            ),
-            span,
-        )),
+        ScalarType::Integer => {
+            if let Some(widened) = widen_integer_array_literal(&typed.expr) {
+                return Ok(widened);
+            }
+            Err(unsupported(
+                "array-integer-real-promotion".to_owned(),
+                format!(
+                    "{context} needs Integer-array to Real-array promotion, but the \
+                     current GALEC projection only widens scalars and Integer array \
+                     literals"
+                ),
+                span,
+            ))
+        }
         ScalarType::Boolean => Err(mismatch(context, "numeric", ScalarType::Boolean, span)),
+    }
+}
+
+/// Distribute Integer→Real widening over a `{…}` constructor: Integer
+/// literals become Real literals; other scalar elements get explicit
+/// `real(…)` casts (trap T5 — the conversion stays visible). Non-literal
+/// arrays (e.g. whole-array references) stay unsupported.
+fn widen_integer_array_literal(expr: &gast::Expression) -> Option<gast::Expression> {
+    match expr {
+        gast::Expression::Array(elements) => {
+            let widened = elements
+                .iter()
+                .map(widen_integer_array_element)
+                .collect::<Option<Vec<_>>>()?;
+            Some(gast::Expression::Array(widened))
+        }
+        _ => None,
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn widen_integer_array_element(expr: &gast::Expression) -> Option<gast::Expression> {
+    match expr {
+        gast::Expression::Array(_) => widen_integer_array_literal(expr),
+        gast::Expression::Integer(value) => Some(gast::Expression::Real(*value as f64)),
+        other => Some(call("real", vec![other.clone()])),
     }
 }
 
@@ -1246,6 +1559,76 @@ fn extend_index_combinations(prefixes: Vec<Vec<i64>>, values: &[i64]) -> Vec<Vec
             })
         })
         .collect()
+}
+
+/// The Modelica matrix/vector product forms of `*` (MLS §10.6.4) that
+/// element-unroll per GAL-027.
+#[derive(Clone, Copy)]
+enum MatrixProduct {
+    /// `[rows, inner] * [inner]` → `[rows]`.
+    MatVec { rows: i64, inner: i64 },
+    /// `[inner] * [inner, cols]` → `[cols]`.
+    VecMat { inner: i64, cols: i64 },
+    /// `[rows, inner] * [inner, cols]` → `[rows, cols]`.
+    MatMat { rows: i64, inner: i64, cols: i64 },
+}
+
+fn matrix_product_shape(left: &Typed, right: &Typed) -> Option<MatrixProduct> {
+    let positive = |dims: &[i64]| dims.iter().all(|&d| d >= 1);
+    match (left.shape.as_slice(), right.shape.as_slice()) {
+        ([rows, inner], [rhs_inner]) if inner == rhs_inner && positive(&[*rows, *inner]) => {
+            Some(MatrixProduct::MatVec {
+                rows: *rows,
+                inner: *inner,
+            })
+        }
+        ([inner], [rhs_inner, cols]) if inner == rhs_inner && positive(&[*inner, *cols]) => {
+            Some(MatrixProduct::VecMat {
+                inner: *inner,
+                cols: *cols,
+            })
+        }
+        ([rows, inner], [rhs_inner, cols])
+            if inner == rhs_inner && positive(&[*rows, *inner, *cols]) =>
+        {
+            Some(MatrixProduct::MatMat {
+                rows: *rows,
+                inner: *inner,
+                cols: *cols,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether the operand ranks alone form a Modelica `*` product (used to
+/// distinguish an inner-dimension mismatch from an undefined shape combo).
+fn matrix_product_ranks(left: &Typed, right: &Typed) -> bool {
+    matches!(
+        (left.rank(), right.rank()),
+        (2, 1) | (1, 2) | (2, 2) | (1, 1)
+    )
+}
+
+/// Assemble unrolled elements into one `{…}` constructor, requiring the
+/// element types the arithmetic produced to agree (they always do — every
+/// element lowers through the same operand expressions).
+fn typed_array(elements: Vec<Typed>, shape: Vec<i64>) -> Result<Typed, GalecTargetError> {
+    let Some(ty) = elements.first().map(|element| element.ty) else {
+        return Err(GalecTargetError::LoweringInternal {
+            detail: "array assembly over zero elements".to_owned(),
+        });
+    };
+    if elements.iter().any(|element| element.ty != ty) {
+        return Err(GalecTargetError::LoweringInternal {
+            detail: "array assembly produced mixed element types".to_owned(),
+        });
+    }
+    Ok(Typed::array(
+        gast::Expression::Array(elements.into_iter().map(|element| element.expr).collect()),
+        ty,
+        shape,
+    ))
 }
 
 fn vector_dot_shape(left: &Typed, right: &Typed) -> Option<i64> {

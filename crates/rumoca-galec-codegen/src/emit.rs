@@ -17,8 +17,6 @@
 //!   C-mangled struct/function naming, per-variable C types + field names,
 //!   and C-printed method statement lines.
 
-use serde::Serialize;
-
 use crate::manifest_context::algorithm_code_manifest::{
     AlgorithmCodeManifest, AlgorithmCodeManifestParts, BlockMethod, BlockMethods, Clock,
     ErrorSignalStatus, Variable as ManifestVariable,
@@ -28,10 +26,7 @@ use crate::manifest_context::production_code_manifest::TargetTypeKind;
 use crate::manifest_context::{
     FilePath, Identifier, ManifestId, NameWithoutSlashes, NormalizedText, Sha1Hex, UtcTimestamp,
 };
-use rumoca_ir_galec::ast::{
-    Block, Dimension, Expression, InterfaceKind, Name, ProtectedKind, ScalarType, Spanned,
-    Statement, TypeRef, VariableDeclaration,
-};
+use rumoca_ir_galec::ast::{Block, Name, ScalarType};
 
 use crate::diagnostic::GalecTargetError;
 use crate::package::AlgorithmCodePackage;
@@ -77,10 +72,36 @@ pub(crate) fn validate_block(block: &Block) -> Result<(), GalecTargetError> {
     Ok(())
 }
 
+/// The embedded `.alg` walking template (SPEC_0034 D17): renders the
+/// language-neutral template IR as conformant GALEC, byte-identical to the
+/// `rumoca-ir-galec` typed printer (pinned by the parity test in
+/// `tests/spec_0034_estimator.rs` — the printer stays the parser-facing
+/// half of the language module; this template owns emission).
+static ALG_TEMPLATE: &str = include_str!("templates/alg.jinja");
+
 pub(crate) fn render_block(block: &Block) -> Result<String, GalecTargetError> {
-    rumoca_ir_galec::print_block(block).map_err(|error| GalecTargetError::LoweringInternal {
-        detail: format!("GALEC printer rejected the lowered block: {error}"),
-    })
+    let context = crate::template_ir::galec_template_context_for_block(
+        block,
+        &block_display_name(&block.name),
+    )?;
+    let mut env = minijinja::Environment::new();
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    // The typed printer ends every file with a newline; minijinja strips it
+    // by default (byte parity, D17).
+    env.set_keep_trailing_newline(true);
+    env.add_function(
+        "fail",
+        |message: String| -> Result<minijinja::Value, minijinja::Error> {
+            Err(minijinja::Error::new(
+                minijinja::ErrorKind::InvalidOperation,
+                message,
+            ))
+        },
+    );
+    env.render_str(ALG_TEMPLATE, minijinja::Value::from_serialize(&context))
+        .map_err(|error| GalecTargetError::LoweringInternal {
+            detail: format!("alg template rejected the lowered block: {error}"),
+        })
 }
 
 /// Shared, minted-once packaging identity of one manifest (contract §2b /
@@ -227,257 +248,38 @@ pub(crate) fn block_display_name(name: &Name) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// C template context (the `embedded-c-galec` target, GAL-024)
+// C template context (the `embedded-c-galec` target, GAL-024/D17)
 // ---------------------------------------------------------------------------
 
-/// Typed template context (serialized shape of [`c_template_context`]).
-/// Every key is consumed by the `embedded-c-galec` `target.toml` path
-/// templates or `model.h.jinja`/`model.c.jinja`; the templates stay thin
-/// (iteration + interpolation only) while all C syntax intelligence lives
-/// in [`crate::c_print`] (D2/GAL-008 split).
-#[derive(Serialize)]
-struct CContext {
-    /// CLI model identifier (used by the `[[files]]` path templates).
-    model_name: String,
-    /// Manifest spelling of the block name, comment-safe
-    /// ([`c_comment_text`]) — interpolated in the file header comments.
-    block_name: String,
-    /// C typedef name of the block-state struct.
-    struct_name: String,
-    /// Prefix of the three exported method names
-    /// (`<prefix>_startup` / `<prefix>_recalibrate` / `<prefix>_dostep`).
-    function_prefix: String,
-    /// Header include-guard macro.
-    include_guard: String,
-    /// Manifest-listed variables — exactly the block-state struct fields.
-    variables: Vec<CVariable>,
-    /// Method bodies as C statement lines.
-    methods: CMethods,
-}
-
-#[derive(Serialize)]
-struct CVariable {
-    /// Manifest spelling (quoted-identifier content for quoted names),
-    /// comment-safe ([`c_comment_text`]) — the templates interpolate it
-    /// inside C block comments only.
-    name: String,
-    /// Manifest id (`V1`…).
-    id: String,
-    /// Manifest `blockCausality` literal.
-    causality: &'static str,
-    /// C scalar type the variable maps to.
-    c_type: &'static str,
-    /// Collision-checked C struct field name ([`crate::c_mangle`]).
-    c_name: String,
-    /// Dimension sizes (empty = scalar).
-    dimensions: Vec<u64>,
-}
-
-#[derive(Serialize)]
-struct CMethods {
-    startup: Vec<CStatement>,
-    recalibrate: Vec<CStatement>,
-    do_step: Vec<CStatement>,
-}
-
-/// One lowered statement — an assignment, the only kind the lowering emits
-/// ([`crate::lower`]); other kinds fail with `ET023`, never drop.
-#[derive(Serialize)]
-struct CStatement {
-    kind: &'static str,
-    /// GALEC-printed assignment target (e.g. `self.'previous(x)'`),
-    /// carried for traceability comments (comment-safe,
-    /// [`c_comment_text`]).
-    target: String,
-    /// GALEC-printed value expression (traceability, comment-safe).
-    value: String,
-    /// C statement lines ([`crate::c_print`]); whole-array assignments
-    /// expand to one line per element.
-    c_lines: Vec<String>,
-}
-
-/// Serialize the typed C-template context for the `embedded-c-galec`
-/// target (module docs). The block is re-validated first, exactly as in
-/// [`render_algorithm_code`] (GAL-004: no rendering path prints an
-/// un-validated package).
+/// The template-walkable context the `embedded-c-galec` walking templates
+/// consume (SPEC_0034 D16/D17) — the same language-neutral GALEC block
+/// context every GALEC-rendering target shares
+/// ([`crate::template_ir::galec_template_context`]); the C templates own
+/// every C spelling.
 ///
 /// # Errors
 ///
-/// `ET022` on C-name collisions, `ET023` for GALEC constructs the C
-/// export does not support, `ET018` for validator/printer rejections.
+/// `ET022` on base-name collisions, `ET023` for GALEC constructs the
+/// export shape does not cover, `ET018` for validator rejections.
 pub fn c_template_context(
     package: &AlgorithmCodePackage,
     model_name: &str,
 ) -> Result<serde_json::Value, GalecTargetError> {
-    validate_block(&package.block)?;
-    ensure_c_exportable(&package.block)?;
-    let names = crate::c_mangle::CNameTable::build(&package.block)?;
-    let variables = package
-        .manifest
-        .variables
-        .iter()
-        .map(|variable| {
-            let common = variable.common();
-            let spelling = common.name.as_str();
-            Ok(CVariable {
-                name: c_comment_text(spelling),
-                id: common.id.as_str().to_owned(),
-                causality: common.block_causality.as_str(),
-                c_type: c_scalar_type(variable),
-                c_name: names.c_name_by_spelling(spelling)?.to_owned(),
-                dimensions: common.dimensions.clone(),
-            })
-        })
-        .collect::<Result<Vec<_>, GalecTargetError>>()?;
-    let printer = crate::c_print::CPrinter::new(&names);
-    let function_prefix = crate::c_mangle::c_identifier(&package.block.name)?;
-    let context = CContext {
-        model_name: model_name.to_owned(),
-        block_name: c_comment_text(&block_display_name(&package.block.name)),
-        struct_name: format!("{function_prefix}State"),
-        include_guard: format!("{}_GALEC_C_H", function_prefix.to_ascii_uppercase()),
-        function_prefix,
-        variables,
-        methods: CMethods {
-            startup: statements(&package.block.startup.statements, &printer)?,
-            recalibrate: statements(&package.block.recalibrate.statements, &printer)?,
-            do_step: statements(&package.block.do_step.statements, &printer)?,
-        },
-    };
-    serde_json::to_value(&context).map_err(|error| GalecTargetError::LoweringInternal {
-        detail: format!("C template context serialization failed: {error}"),
-    })
+    crate::template_ir::galec_template_context(package, model_name)
 }
 
-/// Serialize the same typed C-template context directly from parsed GALEC
-/// Algorithm Code. This is the browser/editor path for `.alg -> .h/.c`: it
-/// validates the edited block and uses the same C name table, C printer, and
-/// C-layout templates as the package-based export, but it does not assemble an
-/// eFMI Production Code manifest or container.
+/// [`c_template_context`] directly from parsed GALEC Algorithm Code — the
+/// browser/editor path for `.alg -> .h/.c` (positional ids and
+/// declaration-kind causalities synthesized).
 ///
 /// # Errors
 ///
-/// `ET018`/`ET022`/`ET023` for validator, C-name, or unsupported C-export
-/// findings. Dimensioned variables are accepted when their dimensions are
-/// literal positive integers, matching the shape the current projection emits.
+/// Those of [`c_template_context`].
 pub fn c_template_context_for_block(
     block: &Block,
     model_name: &str,
 ) -> Result<serde_json::Value, GalecTargetError> {
-    validate_block(block)?;
-    ensure_c_exportable(block)?;
-    let names = crate::c_mangle::CNameTable::build(block)?;
-    let mut ordinal = 1usize;
-    let mut variables = Vec::new();
-    for variable in &block.interface {
-        variables.push(c_variable_for_decl(
-            &variable.decl,
-            next_variable_id(&mut ordinal),
-            interface_causality(variable.kind),
-            &names,
-        )?);
-    }
-    for entity in &block.protected {
-        variables.push(c_variable_for_decl(
-            &entity.decl,
-            next_variable_id(&mut ordinal),
-            protected_causality(entity.kind),
-            &names,
-        )?);
-    }
-    let printer = crate::c_print::CPrinter::new(&names);
-    let function_prefix = crate::c_mangle::c_identifier(&block.name)?;
-    let context = CContext {
-        model_name: model_name.to_owned(),
-        block_name: c_comment_text(&block_display_name(&block.name)),
-        struct_name: format!("{function_prefix}State"),
-        include_guard: format!("{}_GALEC_C_H", function_prefix.to_ascii_uppercase()),
-        function_prefix,
-        variables,
-        methods: CMethods {
-            startup: statements(&block.startup.statements, &printer)?,
-            recalibrate: statements(&block.recalibrate.statements, &printer)?,
-            do_step: statements(&block.do_step.statements, &printer)?,
-        },
-    };
-    serde_json::to_value(&context).map_err(|error| GalecTargetError::LoweringInternal {
-        detail: format!("C template context serialization failed: {error}"),
-    })
-}
-
-fn next_variable_id(ordinal: &mut usize) -> String {
-    let id = format!("V{ordinal}");
-    *ordinal += 1;
-    id
-}
-
-fn interface_causality(kind: InterfaceKind) -> &'static str {
-    match kind {
-        InterfaceKind::Input => "input",
-        InterfaceKind::Output => "output",
-        InterfaceKind::TunableParameter => "tunableParameter",
-    }
-}
-
-fn protected_causality(kind: ProtectedKind) -> &'static str {
-    match kind {
-        ProtectedKind::DependentParameter => "dependentParameter",
-        ProtectedKind::Constant => "constant",
-        ProtectedKind::State => "state",
-    }
-}
-
-fn c_variable_for_decl(
-    decl: &VariableDeclaration,
-    id: String,
-    causality: &'static str,
-    names: &crate::c_mangle::CNameTable,
-) -> Result<CVariable, GalecTargetError> {
-    let spelling = crate::mangle::manifest_name(&decl.name);
-    Ok(CVariable {
-        name: c_comment_text(spelling),
-        id,
-        causality,
-        c_type: c_scalar_type_for_decl(decl)?,
-        c_name: names.c_name_by_spelling(spelling)?.to_owned(),
-        dimensions: c_dimensions(&decl.dimensions)?,
-    })
-}
-
-fn c_scalar_type_for_decl(decl: &VariableDeclaration) -> Result<&'static str, GalecTargetError> {
-    match &decl.ty {
-        TypeRef::Primitive(scalar) => Ok(c_scalar_binding(*scalar).1),
-        TypeRef::Compartment(_) => Err(GalecTargetError::CExportUnsupported {
-            construct: "a state-compartment variable",
-            detail: "the standalone GALEC-to-C preview currently supports only primitive block variables"
-                .to_owned(),
-        }),
-    }
-}
-
-fn c_dimensions(dimensions: &[Dimension]) -> Result<Vec<u64>, GalecTargetError> {
-    dimensions.iter().map(c_dimension).collect()
-}
-
-fn c_dimension(dimension: &Dimension) -> Result<u64, GalecTargetError> {
-    match dimension {
-        Dimension::Expr(Expression::Integer(value)) if *value > 0 => {
-            u64::try_from(*value).map_err(|_| GalecTargetError::CExportUnsupported {
-                construct: "a too-large array dimension",
-                detail: "dimension literals must fit in the generated C declaration".to_owned(),
-            })
-        }
-        Dimension::Expr(_) => Err(GalecTargetError::CExportUnsupported {
-            construct: "a non-literal array dimension",
-            detail:
-                "the standalone GALEC-to-C preview currently supports literal positive dimensions"
-                    .to_owned(),
-        }),
-        Dimension::Derived => Err(GalecTargetError::CExportUnsupported {
-            construct: "a derived array dimension",
-            detail: "block variables need concrete dimensions for generated C fields".to_owned(),
-        }),
-    }
+    crate::template_ir::galec_template_context_for_block(block, model_name)
 }
 
 /// Reject block shapes the current lowering never produces before any C is
@@ -487,32 +289,16 @@ fn c_dimension(dimension: &Dimension) -> Result<u64, GalecTargetError> {
 /// Production Code manifest builder ([`crate::production_manifest`]), whose
 /// three-void-functions-plus-`self` description assumes exactly this shape.
 pub(crate) fn ensure_c_exportable(block: &Block) -> Result<(), GalecTargetError> {
-    let unsupported = |construct: &'static str| GalecTargetError::CExportUnsupported {
-        construct,
-        detail: "the current DAE lowering (crate::lower) never emits this construct".to_owned(),
-    };
-    if !block.compartments.is_empty() {
-        return Err(unsupported("record state compartments"));
-    }
-    if !block.error_signals.is_empty() {
-        return Err(unsupported("user-defined error signals"));
-    }
-    if !block.protected_functions.is_empty() || !block.public_functions.is_empty() {
-        return Err(unsupported("user-defined functions"));
-    }
-    for method in [&block.startup, &block.recalibrate, &block.do_step] {
-        if !method.signals.is_empty() {
-            return Err(unsupported("a block-method `signals` clause"));
-        }
-        if !method.locals.is_empty() {
-            return Err(unsupported("method-local variables"));
-        }
-    }
-    Ok(())
+    crate::template_ir::reject_unrepresented(block)
 }
 
-fn c_scalar_type(variable: &ManifestVariable) -> &'static str {
-    c_scalar_binding(manifest_scalar_type(variable)).1
+/// Whether the generated C methods return the 32-bit ErrorSignalStatus word
+/// (GAL-029): any declared method escape switches the whole block to the
+/// status ABI (uniform signatures; signal-free methods return 0).
+pub(crate) fn status_abi(block: &Block) -> bool {
+    [&block.startup, &block.recalibrate, &block.do_step]
+        .iter()
+        .any(|method| !method.signals.is_empty())
 }
 
 /// The GALEC scalar type of a manifest variable (the manifest variable kinds
@@ -539,50 +325,6 @@ pub(crate) fn c_scalar_binding(scalar: ScalarType) -> (TargetTypeKind, &'static 
     }
 }
 
-fn statements(
-    block_statements: &[Spanned<Statement>],
-    printer: &crate::c_print::CPrinter<'_>,
-) -> Result<Vec<CStatement>, GalecTargetError> {
-    block_statements
-        .iter()
-        .map(|statement| {
-            let statement = &statement.node;
-            // Non-assignment kinds fail here with ET023 (the printer owns
-            // that rejection); a kind the printer someday accepts still
-            // needs a CStatement shape before it can pass below.
-            let c_lines = printer.statement_lines(statement)?;
-            match statement {
-                Statement::Assignment { target, value } => Ok(CStatement {
-                    kind: "assignment",
-                    target: c_comment_text(&print_reference(target)?),
-                    value: c_comment_text(&print_expression(value)?),
-                    c_lines,
-                }),
-                other => Err(GalecTargetError::CExportUnsupported {
-                    construct: "a statement kind the C context does not model",
-                    detail: format!("statement {other:?} has no CStatement shape yet"),
-                }),
-            }
-        })
-        .collect()
-}
-
-fn print_expression(
-    expression: &rumoca_ir_galec::ast::Expression,
-) -> Result<String, GalecTargetError> {
-    rumoca_ir_galec::print_expression(expression).map_err(|error| {
-        GalecTargetError::LoweringInternal {
-            detail: format!("GALEC printer rejected an expression: {error}"),
-        }
-    })
-}
-
-fn print_reference(
-    reference: &rumoca_ir_galec::ast::Reference,
-) -> Result<String, GalecTargetError> {
-    print_expression(&rumoca_ir_galec::ast::Expression::Ref(reference.clone()))
-}
-
 /// Make traceability text safe inside a C block comment by breaking both the
 /// comment-close `*/` (into `* /`) and the comment-open `/*` (into `/ *`).
 /// Modelica quoted identifiers may legally contain either sequence
@@ -593,7 +335,7 @@ fn print_reference(
 /// (GAL-012: failures belong in rumoca, generated C must compile). Comments
 /// are non-normative, so the inserted spaces are display-only; C identifiers
 /// go through [`crate::c_mangle`] and never through this.
-fn c_comment_text(text: &str) -> String {
+pub(crate) fn c_comment_text(text: &str) -> String {
     text.replace("*/", "* /").replace("/*", "/ *")
 }
 

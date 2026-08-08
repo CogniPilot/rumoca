@@ -287,6 +287,41 @@ fn assert_unsupported(errors: &[GalecTargetError], feature: &str) {
 
 const GAL_025_WORDING: &str = "not yet supported by the Rumoca GALEC projection";
 
+fn add_real_vector(model: &mut dae::Dae, name: &str, len: i64) {
+    let mut vector = variable(name);
+    vector.dims = vec![len];
+    vector.start = Some(real(0.0));
+    model
+        .variables
+        .discrete_reals
+        .insert(vector.name.clone(), vector);
+}
+
+fn add_real_matrix(model: &mut dae::Dae, name: &str, rows: i64, cols: i64) {
+    let mut matrix = variable(name);
+    matrix.dims = vec![rows, cols];
+    matrix.start = Some(real(0.0));
+    model
+        .variables
+        .discrete_reals
+        .insert(matrix.name.clone(), matrix);
+}
+
+fn make_y_vector(model: &mut dae::Dae, len: i64) {
+    model
+        .variables
+        .discrete_reals
+        .get_mut(&VarName::new("y"))
+        .expect("y exists")
+        .dims = vec![len];
+    model
+        .variables
+        .parameters
+        .get_mut(&VarName::new("__pre__.y"))
+        .expect("pre y exists")
+        .dims = vec![len];
+}
+
 // ---------------------------------------------------------------------
 // 1. Scope rejections through the public API (GAL-025, GAL-016)
 // ---------------------------------------------------------------------
@@ -651,26 +686,6 @@ mod array_vector_regressions {
         subscript_expr(range(start, end))
     }
 
-    fn add_real_vector(model: &mut dae::Dae, name: &str, len: i64) {
-        let mut vector = variable(name);
-        vector.dims = vec![len];
-        vector.start = Some(real(0.0));
-        model
-            .variables
-            .discrete_reals
-            .insert(vector.name.clone(), vector);
-    }
-
-    fn add_real_matrix(model: &mut dae::Dae, name: &str, rows: i64, cols: i64) {
-        let mut matrix = variable(name);
-        matrix.dims = vec![rows, cols];
-        matrix.start = Some(real(0.0));
-        model
-            .variables
-            .discrete_reals
-            .insert(matrix.name.clone(), matrix);
-    }
-
     fn vector_model(body: Expression) -> dae::Dae {
         let mut model = model_with_body(body);
         add_real_vector(&mut model, "a", 3);
@@ -703,21 +718,6 @@ mod array_vector_regressions {
             .variables
             .parameters
             .insert(waypoints.name.clone(), waypoints);
-    }
-
-    fn make_y_vector(model: &mut dae::Dae, len: i64) {
-        model
-            .variables
-            .discrete_reals
-            .get_mut(&VarName::new("y"))
-            .expect("y exists")
-            .dims = vec![len];
-        model
-            .variables
-            .parameters
-            .get_mut(&VarName::new("__pre__.y"))
-            .expect("pre y exists")
-            .dims = vec![len];
     }
 
     #[test]
@@ -986,15 +986,23 @@ mod array_vector_regressions {
         let whole = render_algorithm_code(&whole_package).expect("whole vector render");
         assert!(whole.contains("self.y := self.a - self.b;"), "{whole}");
 
-        let c_lines = production_c_lines(&whole_package);
-        assert!(
-            c_lines.contains("self->y[0]") && c_lines.contains("(self->a[0] - self->b[0])"),
-            "{c_lines}"
-        );
-        assert!(
-            !c_lines.contains("self->y ="),
-            "C arrays must be assigned element-wise:\n{c_lines}"
-        );
+        // D16: the walkable context pre-projects whole-array values so the
+        // C template can expand element-wise without projection logic (the
+        // rendered C itself is compile-checked by the CLI suites).
+        let context = c_template_context(&whole_package, "Battery").expect("C context");
+        let assign = context["methods"]["do_step"]["statements"]
+            .as_array()
+            .expect("statements array")
+            .iter()
+            .find(|statement| statement["target"]["base_name"] == "y")
+            .expect("whole-array assignment to y");
+        assert_eq!(assign["kind"], "assign_whole", "{assign}");
+        assert_eq!(assign["copy"], false, "{assign}");
+        let elements = assign["elements"].as_array().expect("elements");
+        assert_eq!(elements.len(), 3, "{assign}");
+        assert_eq!(elements[0]["indices"][0], 1, "{assign}");
+        assert_eq!(elements[0]["value"]["op"], "sub", "{assign}");
+        assert_eq!(elements[0]["value"]["lhs"]["indices"][0], 1, "{assign}");
 
         let scalarized = render_algorithm_code(&lower(
             &vector_model(index(
@@ -1093,7 +1101,7 @@ mod array_vector_regressions {
     }
 
     #[test]
-    fn non_vector_array_multiplication_is_rejected_not_elementwise() {
+    fn matrix_multiplication_unrolls_to_ascending_index_sum_trees() {
         let mut model = model_with_body(binary(OpBinary::Mul, var("a"), var("b")));
         add_real_matrix(&mut model, "a", 2, 2);
         add_real_matrix(&mut model, "b", 2, 2);
@@ -1113,8 +1121,160 @@ mod array_vector_regressions {
         types.insert(VarName::new("a"), ScalarType::Real);
         types.insert(VarName::new("b"), ScalarType::Real);
 
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        // Element (1, 1): ascending inner index, no re-association (GAL-027);
+        // the printer parenthesizes the cross-class `*`-in-`+` mix (T6).
+        assert!(
+            alg.contains("(self.a[1, 1] * self.b[1, 1]) + (self.a[1, 2] * self.b[2, 1])"),
+            "{alg}"
+        );
+        // Element (2, 2).
+        assert!(
+            alg.contains("(self.a[2, 1] * self.b[1, 2]) + (self.a[2, 2] * self.b[2, 2])"),
+            "{alg}"
+        );
+        assert!(!alg.contains("self.a * self.b"), "{alg}");
+    }
+
+    #[test]
+    fn chained_matrix_product_takes_product_elements_not_elementwise() {
+        // `(a*b)*a`: indexing into the inner product must select the inner
+        // product ELEMENT (its sum), never distribute the subscripts
+        // elementwise — the covariance-propagation shape `A*P*transpose(A)`.
+        let mut model = model_with_body(binary(
+            OpBinary::Mul,
+            binary(OpBinary::Mul, var("a"), var("b")),
+            var("a"),
+        ));
+        add_real_matrix(&mut model, "a", 2, 2);
+        add_real_matrix(&mut model, "b", 2, 2);
+        model
+            .variables
+            .discrete_reals
+            .get_mut(&VarName::new("y"))
+            .expect("y exists")
+            .dims = vec![2, 2];
+        model
+            .variables
+            .parameters
+            .get_mut(&VarName::new("__pre__.y"))
+            .expect("pre y exists")
+            .dims = vec![2, 2];
+        let mut types = base_types();
+        types.insert(VarName::new("a"), ScalarType::Real);
+        types.insert(VarName::new("b"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        // Element (1, 1) opens with the inner product element (a*b)[1,1].
+        assert!(
+            alg.contains("((self.a[1, 1] * self.b[1, 1]) + (self.a[1, 2] * self.b[2, 1]))"),
+            "{alg}"
+        );
+        // The elementwise-distribution bug would produce this 2-term shape.
+        assert!(
+            !alg.contains("{(self.a[1, 1] * self.b[1, 1] * self.a[1, 1])"),
+            "{alg}"
+        );
+    }
+
+    #[test]
+    fn matrix_product_inner_dimension_mismatch_is_a_type_error() {
+        let mut model = model_with_body(binary(OpBinary::Mul, var("a"), var("b")));
+        add_real_matrix(&mut model, "a", 2, 3);
+        add_real_matrix(&mut model, "b", 2, 2);
+        model
+            .variables
+            .discrete_reals
+            .get_mut(&VarName::new("y"))
+            .expect("y exists")
+            .dims = vec![2, 2];
+        model
+            .variables
+            .parameters
+            .get_mut(&VarName::new("__pre__.y"))
+            .expect("pre y exists")
+            .dims = vec![2, 2];
+        let mut types = base_types();
+        types.insert(VarName::new("a"), ScalarType::Real);
+        types.insert(VarName::new("b"), ScalarType::Real);
+
         let errors = lower_err(&model, &types);
-        assert_unsupported(&errors, "array-multiplication");
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                GalecTargetError::LoweringTypeMismatch { context, .. }
+                    if context == "matrix product operands"
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn matrix_vector_product_unrolls_per_row() {
+        let mut model = model_with_body(binary(OpBinary::Mul, var("a"), var("b")));
+        add_real_matrix(&mut model, "a", 2, 3);
+        add_real_vector(&mut model, "b", 3);
+        make_y_vector(&mut model, 2);
+        let mut types = base_types();
+        types.insert(VarName::new("a"), ScalarType::Real);
+        types.insert(VarName::new("b"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        let row1 =
+            "(self.a[1, 1] * self.b[1]) + (self.a[1, 2] * self.b[2]) + (self.a[1, 3] * self.b[3])";
+        assert!(alg.contains(row1), "{alg}");
+        assert!(alg.contains("(self.a[2, 1] * self.b[1])"), "{alg}");
+    }
+
+    #[test]
+    fn transpose_reindexes_into_a_matrix_constructor() {
+        let mut model = model_with_body(builtin(BuiltinFunction::Transpose, vec![var("a")]));
+        add_real_matrix(&mut model, "a", 2, 3);
+        model
+            .variables
+            .discrete_reals
+            .get_mut(&VarName::new("y"))
+            .expect("y exists")
+            .dims = vec![3, 2];
+        model
+            .variables
+            .parameters
+            .get_mut(&VarName::new("__pre__.y"))
+            .expect("pre y exists")
+            .dims = vec![3, 2];
+        let mut types = base_types();
+        types.insert(VarName::new("a"), ScalarType::Real);
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        // Result row 1 is the first source column: A[1,1], A[2,1].
+        assert!(alg.contains("self.a[1, 1], self.a[2, 1]"), "{alg}");
+        assert!(alg.contains("self.a[1, 3], self.a[2, 3]"), "{alg}");
+    }
+
+    #[test]
+    fn identity_widens_to_real_literals_in_real_context() {
+        let mut model = model_with_body(binary(
+            OpBinary::MulElem,
+            real(0.5),
+            builtin(BuiltinFunction::Identity, vec![integer(2)]),
+        ));
+        model
+            .variables
+            .discrete_reals
+            .get_mut(&VarName::new("y"))
+            .expect("y exists")
+            .dims = vec![2, 2];
+        model
+            .variables
+            .parameters
+            .get_mut(&VarName::new("__pre__.y"))
+            .expect("pre y exists")
+            .dims = vec![2, 2];
+        let types = base_types();
+
+        let alg = render_algorithm_code(&lower(&model, &types)).expect("renders");
+        assert!(alg.contains("{1.0, 0.0}"), "{alg}");
+        assert!(alg.contains("{0.0, 1.0}"), "{alg}");
     }
 
     #[test]
@@ -1320,25 +1480,6 @@ mod array_vector_regressions {
             span: Span::DUMMY,
         });
         model.symbols.functions.insert(split.name.clone(), split);
-    }
-
-    fn production_c_lines(package: &AlgorithmCodePackage) -> String {
-        let context = c_template_context(package, "Battery").expect("C context");
-        ["startup", "recalibrate", "do_step"]
-            .into_iter()
-            .flat_map(|method| {
-                context["methods"][method]
-                    .as_array()
-                    .expect("method statements are an array")
-            })
-            .flat_map(|statement| {
-                statement["c_lines"]
-                    .as_array()
-                    .expect("statement c_lines are an array")
-            })
-            .map(|line| line.as_str().expect("C line is a string").to_owned())
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
 

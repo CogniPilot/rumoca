@@ -238,21 +238,6 @@ pub enum GalecTargetError {
         construct: &'static str,
         detail: String,
     },
-
-    /// GAL-025: initial equations are a projection-scope rejection. Startup
-    /// is built from manifest `start` values (plus the dependent-parameter
-    /// recomputation) only, so admitting a non-empty initialization
-    /// partition would silently ignore the model's initial equations.
-    #[error(
-        "model has {equations} scalar initial equation(s) \
-         ({structured_families} structured initial-equation famil(y/ies)); \
-         initial equations are not yet supported by the Rumoca GALEC \
-         projection (Startup initializes from `start` values only) [ET021]"
-    )]
-    InitialEquations {
-        equations: usize,
-        structured_families: usize,
-    },
 }
 
 impl GalecTargetError {
@@ -280,7 +265,9 @@ impl GalecTargetError {
             Self::LoweringInternal { .. } => "ET018",
             Self::UnknownVariableReference { .. } => "ET019",
             Self::LoweringTypeMismatch { .. } => "ET020",
-            Self::InitialEquations { .. } => "ET021",
+            // ET021 (blanket initial-equation rejection) retired by GAL-028:
+            // the initialization partition lowers into `Startup`; unsupported
+            // forms fail as ET017 `unsupported-feature:` diagnostics.
             Self::CNameCollision { .. } => "ET022",
             Self::CExportUnsupported { .. } => "ET023",
         }
@@ -310,7 +297,6 @@ impl GalecTargetError {
             | Self::StartDependencyCycle { .. }
             | Self::Manifest { .. }
             | Self::LoweringInternal { .. }
-            | Self::InitialEquations { .. }
             | Self::CNameCollision { .. }
             | Self::CExportUnsupported { .. } => None,
         }
