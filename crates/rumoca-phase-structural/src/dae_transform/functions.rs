@@ -479,9 +479,10 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 dae::FunctionStatementView::Assignment { definition } => {
                     self.assign_statement(target, function, &mut body, definition)?
                 }
-                dae::FunctionStatementView::AssignmentGroup { definitions } => {
-                    self.assign_group(target, function, &mut body, definitions)?
-                }
+                dae::FunctionStatementView::AssignmentGroup {
+                    definitions,
+                    conditional,
+                } => self.assign_group(target, function, &mut body, definitions, conditional)?,
                 dae::FunctionStatementView::Assertion {
                     condition,
                     message,
@@ -546,20 +547,59 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         function: &RebuiltFunction<'target>,
         body: &mut dae::FunctionBody<'target>,
         definitions: dae::FunctionDefinitionValues<'source>,
+        conditional: Option<dae::FunctionConditionalView<'source>>,
     ) -> Result<(), dae::DaeConstructionError> {
         let source = definitions.iter().collect::<Vec<_>>();
         let provenance = source
             .first()
             .expect("checked assignment group is nonempty")
             .provenance();
-        let mut assignments = Vec::with_capacity(source.len());
-        for definition in &source {
-            let target_value = function.values[definition.target().ordinal() as usize];
-            let value = self.rebuild_expression(target, body, definition.rhs())?;
-            assignments.push((target_value, value));
+        let target_values = source
+            .iter()
+            .map(|definition| function.values[definition.target().ordinal() as usize])
+            .collect::<Vec<_>>();
+        if let Some(conditional) = conditional {
+            let conditions = conditional
+                .conditions()
+                .map(|expression| self.rebuild_expression(target, body, expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            let branches = (0..conditional.branch_count())
+                .map(|ordinal| {
+                    conditional
+                        .branch(ordinal)
+                        .expect("checked function conditional branch resolves")
+                        .map(|expression| self.rebuild_expression(target, body, expression))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let fallback = conditional
+                .fallback()
+                .map(|expression| self.rebuild_expression(target, body, expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            target.functions(|functions| {
+                functions.assign_conditional_all(
+                    body,
+                    &target_values,
+                    &conditions,
+                    &branches,
+                    &fallback,
+                    provenance,
+                )
+            })?;
+        } else {
+            let assignments = source
+                .iter()
+                .zip(&target_values)
+                .map(|(definition, target_value)| {
+                    Ok((
+                        *target_value,
+                        self.rebuild_expression(target, body, definition.rhs())?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+            target.functions(|functions| functions.assign_all(body, &assignments, provenance))?;
         }
-        target.functions(|functions| functions.assign_all(body, &assignments, provenance))?;
-        for (definition, (target_value, _)) in source.into_iter().zip(assignments) {
+        for (definition, target_value) in source.into_iter().zip(target_values) {
             let target_definition = target.functions(|functions| {
                 functions.current_definition_id(body, target_value, provenance)
             })?;
@@ -639,8 +679,17 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         for statement in statements {
             let definition = match statement {
                 dae::FunctionStatementView::Assignment { definition } => definition,
-                dae::FunctionStatementView::AssignmentGroup { definitions } => {
-                    self.rebuild_loop_assignment_group(target, function, loop_body, definitions)?;
+                dae::FunctionStatementView::AssignmentGroup {
+                    definitions,
+                    conditional,
+                } => {
+                    self.rebuild_loop_assignment_group(
+                        target,
+                        function,
+                        loop_body,
+                        definitions,
+                        conditional,
+                    )?;
                     continue;
                 }
                 statement => {
@@ -677,22 +726,63 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         function: &RebuiltFunction<'target>,
         loop_body: &mut dae::FunctionLoop<'target>,
         definitions: dae::FunctionDefinitionValues<'source>,
+        conditional: Option<dae::FunctionConditionalView<'source>>,
     ) -> Result<(), dae::DaeConstructionError> {
         let source = definitions.iter().collect::<Vec<_>>();
         let provenance = source
             .first()
             .expect("checked loop assignment group is nonempty")
             .provenance();
-        let mut assignments = Vec::with_capacity(source.len());
-        for definition in &source {
-            let target_value = function.values[definition.target().ordinal() as usize];
-            let value = self.rebuild_expression(target, loop_body.body(), definition.rhs())?;
-            assignments.push((target_value, value));
+        let target_values = source
+            .iter()
+            .map(|definition| function.values[definition.target().ordinal() as usize])
+            .collect::<Vec<_>>();
+        if let Some(conditional) = conditional {
+            let conditions = conditional
+                .conditions()
+                .map(|expression| self.rebuild_expression(target, loop_body.body(), expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            let branches = (0..conditional.branch_count())
+                .map(|ordinal| {
+                    conditional
+                        .branch(ordinal)
+                        .expect("checked loop conditional branch resolves")
+                        .map(|expression| {
+                            self.rebuild_expression(target, loop_body.body(), expression)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let fallback = conditional
+                .fallback()
+                .map(|expression| self.rebuild_expression(target, loop_body.body(), expression))
+                .collect::<Result<Vec<_>, _>>()?;
+            target.functions(|functions| {
+                functions.assign_conditional_all_loop(
+                    loop_body,
+                    &target_values,
+                    &conditions,
+                    &branches,
+                    &fallback,
+                    provenance,
+                )
+            })?;
+        } else {
+            let assignments = source
+                .iter()
+                .zip(&target_values)
+                .map(|(definition, target_value)| {
+                    Ok((
+                        *target_value,
+                        self.rebuild_expression(target, loop_body.body(), definition.rhs())?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+            target.functions(|functions| {
+                functions.assign_all_loop(loop_body, &assignments, provenance)
+            })?;
         }
-        target.functions(|functions| {
-            functions.assign_all_loop(loop_body, &assignments, provenance)
-        })?;
-        for (definition, (target_value, _)) in source.into_iter().zip(assignments) {
+        for (definition, target_value) in source.into_iter().zip(target_values) {
             let target_definition = target.functions(|functions| {
                 functions.current_definition_id(loop_body.body(), target_value, provenance)
             })?;

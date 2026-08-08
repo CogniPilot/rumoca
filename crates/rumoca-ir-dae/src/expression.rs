@@ -101,6 +101,71 @@ impl<'storage, 'dae> Expressions<'storage, 'dae> {
             .find(|ordinal| record.record_field_name(*ordinal) == Some(field)))
     }
 
+    /// Recover one whole tensor from a canonical row-major family of scalar
+    /// projections of that same tensor.
+    ///
+    /// This is deliberately an exact recognition operation, not a rewriting
+    /// heuristic: every scalar must be a full-rank integer `Index` of one base,
+    /// the coordinates must enumerate the claimed extents in row-major order,
+    /// and the base must declare those exact extents. Partial, reordered,
+    /// duplicate, or mixed-base families therefore return `None`.
+    pub fn exact_row_major_projection_base(
+        &self,
+        scalars: &[ExprId<'dae>],
+        extents: &[u32],
+        provenance: DaeProvenance,
+    ) -> Result<Option<ExprId<'dae>>, DaeConstructionError> {
+        let Some(scalar_count) = extents
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+        else {
+            return Ok(None);
+        };
+        if extents.is_empty() || scalars.len() != scalar_count {
+            return Ok(None);
+        }
+        let Some(ExprNode::Index {
+            base: common_base, ..
+        }) = scalars
+            .first()
+            .and_then(|scalar| self.storage.expressions.nodes.get(scalar.index() as usize))
+        else {
+            return Ok(None);
+        };
+        let base = ExprId::from_raw(*common_base);
+        if self.storage.expr_type(base, provenance)?.dimensions() != extents {
+            return Ok(None);
+        }
+        for (linear, scalar) in scalars.iter().copied().enumerate() {
+            let Some(ExprNode::Index { base, subscripts }) =
+                self.storage.expressions.nodes.get(scalar.index() as usize)
+            else {
+                return Ok(None);
+            };
+            if base != common_base || subscripts.len as usize != extents.len() {
+                return Ok(None);
+            }
+            let mut stride = scalar_count;
+            for (subscript, extent) in self.storage.expressions.subscripts[subscripts.indices()]
+                .iter()
+                .zip(extents)
+            {
+                stride /= *extent as usize;
+                let expected = ((linear / stride) % *extent as usize) as i64 + 1;
+                let PackedSubscriptKind::Index(index) = subscript.kind else {
+                    return Ok(None);
+                };
+                if !matches!(
+                    self.storage.expressions.nodes.get(index as usize),
+                    Some(ExprNode::Literal(DaeLiteral::Integer(found))) if *found == expected
+                ) {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(base))
+    }
+
     /// Select the exact provenance for the single node inserted next.
     pub fn at<'scope>(&'scope mut self, provenance: DaeProvenance) -> ExpressionAt<'scope, 'dae> {
         ExpressionAt {

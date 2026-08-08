@@ -23,7 +23,7 @@ tests, and templates already do.
 | # | Decision | Resolution |
 |---|----------|------------|
 | D1 | `.alg` text ownership | MiniJinja over the checked GALEC semantic view (GAL-009). |
-| D2 | C text ownership | MiniJinja over the same target-neutral checked GALEC semantic view (GAL-008). |
+| D2 | C text ownership | MiniJinja over the checked `SolveAlgorithmBlock` executable view and Algorithm Code correlations (GAL-008/GAL-038). |
 | D3 | eFMI package ownership | MiniJinja and `target.toml` over a closed target-neutral semantic view; no open `serde_json::Value` or Rust eFMI schema/context types. Templates own XML hierarchy, constants, references, filenames, and C mapping. Generic declared commands compute checksums, validate schemas, and assemble artifacts from rendered bytes. `rumoca-efmi` dissolves. |
 | D4 | Provenance shape | Auxiliary artifact beside DAE with an equation-correspondence map (GAL-003); never "algorithms present ⇒ ignore f_z/f_m". |
 | D5 | Manifest `renderer` extension | Rejected: covered by D1. |

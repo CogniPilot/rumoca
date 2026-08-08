@@ -123,7 +123,14 @@ structural-parameter values are available only after instantiation.
 
 ### 5. Evaluation Decoupled from Representation
 
-Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`, `rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` is the Tier 3 solver-facing row evaluator/scalarizer, including its own tensor-kernel selection, and MUST NOT depend on a Tier 4/5 crate; the runtime state machine and simulation driver live in `rumoca-solver::runtime`. This keeps evaluation entry points explicit per representation and avoids cross-layer helper crates that hide where behavior lives.
+Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`,
+`rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` evaluates the
+shared typed Solve program vocabulary and both checked Solve roots, including
+tensor-kernel selection and `SolveAlgorithmBlock` lifecycle execution; it MUST
+NOT depend on a Tier 4/5 crate. The numerical simulation state machine and
+driver remain in `rumoca-solver::runtime`. `rumoca-eval-galec` remains an
+independent Algorithm Code oracle and MUST NOT delegate to Solve lowering or
+evaluation.
 
 Phase crates MAY depend on the evaluation crate for the IR they are actively processing
 when the phase needs compile-time evaluation of that representation. For example,
@@ -222,7 +229,7 @@ dependency inputs on reopen, not to serialize the full downstream pipeline.
 ### 12. Runtime, Backend, Simulation Session, And Visualization Layering
 
 ```
-compiler/session → DAE structural → solve-IR lowering → checked export/runtime contracts → solver backend → simulation session → reporting → visualization
+compiler/session → DAE structural → checked Algorithm Code / Solve lowering → checked export/runtime contracts → execution backend → simulation session → reporting → visualization
 ```
 
 Ownership of each link in that chain is
@@ -249,6 +256,14 @@ compiler transformation or repairs an artifact. Adding another target over an
 existing view MUST require no Rust change; adding support for another IR adds
 only its target-neutral semantic view and capability vocabulary. An export IR
 selectable by a target remains outside the canonical compiler pipeline.
+
+GALEC Production Code consumes a checked `SolveAlgorithmBlock`, never the
+high-level Algorithm Code template view. `rumoca-phase-solve` owns exhaustive
+`AlgorithmCodePackage` lowering into typed storage-neutral programs and ordered
+lifecycle actions. `rumoca-phase-codegen` exposes the completed root and its
+checked correlations; C/H templates may spell the selected ABI but MUST NOT
+choose passing mode, storage, scalar/tensor lowering, scope, scheduling,
+operation, or failure behavior.
 
 `rumoca-phase-codegen` Rust may derive target-neutral typed contexts, schedules,
 shapes, dependency/bounds proofs, symbols, and provenance. It MUST NOT spell or

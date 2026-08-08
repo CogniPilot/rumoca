@@ -337,17 +337,17 @@ fn recursive_array_expressions_execute_with_checked_values() {
     assert!(source.contains("(void)&scratch;"));
     assert!(!source.contains("(void)scratch;"));
 
+    assert_eq!(
+        source.matches("for (int32_t rumoca_galec_copy_0").count(),
+        5,
+        "each array relationship must remain one bounded runtime loop"
+    );
     for expected in [
-        "scratch[0] = (-self->a[0]);",
-        "scratch[1] = (-self->a[1]);",
-        "self->negated[0] = scratch[0];",
-        "self->negated[1] = scratch[1];",
-        "self->difference[0] = (self->a[0] - self->gain);",
-        "self->difference[1] = (self->a[1] - self->gain);",
-        "self->selected[0] = (self->choose_a ? self->a[0] : self->b[0]);",
-        "self->selected[1] = (self->choose_a ? self->a[1] : self->b[1]);",
-        "self->lifted[0] = sinf(self->a[0]);",
-        "self->lifted[1] = sinf(self->a[1]);",
+        "scratch[rumoca_galec_copy_0] = (-self->a[rumoca_galec_copy_0]);",
+        "self->negated[rumoca_galec_copy_0] = scratch[rumoca_galec_copy_0];",
+        "self->difference[rumoca_galec_copy_0] = (self->a[rumoca_galec_copy_0] - self->gain);",
+        "self->selected[rumoca_galec_copy_0] = (self->choose_a ? self->a[rumoca_galec_copy_0] : self->b[rumoca_galec_copy_0]);",
+        "self->lifted[rumoca_galec_copy_0] = sinf(self->a[rumoca_galec_copy_0]);",
     ] {
         assert!(
             source.contains(expected),
@@ -460,13 +460,18 @@ fn multi_output_user_calls_compile_and_copy_every_result() {
     })];
     let checked = CheckedAlgorithmBlock::construct(block).expect("valid multi-output GALEC block");
     let header = render(&checked, "model.h.jinja").expect("checked header");
-    let source = render(&checked, "model.c.jinja").expect("checked source");
+    let source = render(&checked, "model.c.jinja")
+        .expect("checked source")
+        .replace("\r\n", "\n");
     assert!(source.contains(
         "make_pair(\n        self,\n        self->input_value,\n        self->values,\n        &self->accepted);"
     ));
     assert!(source.contains("(void)unused_input;"));
     assert!(source.contains("float pair[2];"));
-    assert!(source.contains("rumoca_galec_out_pair[0] = pair[0];"));
+    assert!(source.contains("for (int32_t rumoca_galec_output_copy_0 = INT32_C(0);"));
+    assert!(source.contains(
+        "rumoca_galec_out_pair[rumoca_galec_output_copy_0] = pair[rumoca_galec_output_copy_0];"
+    ));
 
     let directory = tempdir().expect("temporary generated-C directory");
     let header_path = directory.path().join(format!("{MODEL}.h"));

@@ -72,18 +72,20 @@ import that path.
 |---|---|---|
 | Compilation/session orchestration | `rumoca-compile` | Pipeline coordination only; no runtime |
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Lowering Scope |
-| Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
-| DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
+| Typed executable programs plus distinct `SolveProblem` and `SolveAlgorithmBlock` roots | `rumoca-ir-solve` | Backend-neutral numerical and controller execution IR |
+| DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering | `rumoca-phase-solve` | Exhaustive semantic lowering only, not structural mutation or rendering |
 | Checked FMI component aggregate | `rumoca-ir-fmi` | Private invariant-bearing binding of DAE metadata/shape/provenance to one executable checked kernel; no ABI text or runtime behavior |
 | DAE + Solve → checked FMI component lowering | `rumoca-phase-fmi` | One target-neutral semantic projection shared by FMI 2 and FMI 3; no templates, ABI declarations, or packaging |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
 | GALEC `.alg` → checked GALEC parsing | `rumoca-phase-parse-galec` | Recoverable syntax state stays out of checked IR |
 | DAE/Solve → checked GALEC lowering | `rumoca-phase-galec` | Semantic export lowering and admissibility only; no text, templates, packaging, or target-language helpers |
 | Checked GALEC executable semantics | `rumoca-eval-galec` | Small explicit interpreter over `rumoca-ir-galec`; no DAE/Solve, lowering, rendering, target, or runtime-host dependencies |
+| Typed Solve program evaluation and `SolveAlgorithmBlock` lifecycle execution | `rumoca-eval-solve` | Production reference/scalar fallback; remains independent of GALEC evaluation |
 | Executable reference semantics for differential validation | `rumoca-reference` | Independent definitional interpreter of the Modelica event core; MUST carry no production dependency on any `rumoca-*` crate, because a reference that imported the compiler would agree with it by construction. Compiler deps are dev-only, for the differential harness. Optimizing it is a defect (SPEC_0037 verification track) |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
 | Generic checksum-web and archive assembly | `rumoca::packaging` behind `fmu-packaging` | Transactional target-declared filesystem/zip assembly only; no FMI/eFMI semantics and no scheduled-simulation feature dependency |
 | GALEC `.alg` text | `rumoca-phase-codegen` | MiniJinja renders a checked GALEC semantic view; the language IR owns no text emitter (SPEC_0034 GAL-009) |
+| GALEC-derived Production C/H text | `rumoca-phase-codegen` | MiniJinja mechanically renders checked `SolveAlgorithmBlock` operations and its preselected ABI; no semantic lowering |
 | eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0042 D3 amended) |
 | Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |

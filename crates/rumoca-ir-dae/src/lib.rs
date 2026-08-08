@@ -167,14 +167,15 @@ pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
     DomainView, Domains, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
     ExternalArgument, ExternalArgumentView, ExternalFunctionBody, ExternalFunctionView,
-    ExternalLanguage, ExternalLinkage, FunctionBody, FunctionDefinitionValues,
-    FunctionDefinitionView, FunctionFoldView, FunctionLoop, FunctionParameterView, FunctionPurity,
-    FunctionReservation, FunctionSignature, FunctionStatementView, FunctionStatements,
-    FunctionValueRole, FunctionValueView, FunctionView, Functions, InitializationOwnerView,
-    InputVariability, RangeBoundView, RangeView, RecordFieldLayout, ResidualEquationView,
-    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
-    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
-    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
+    ExternalLanguage, ExternalLinkage, FunctionBody, FunctionConditionalView,
+    FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,
+    FunctionParameterView, FunctionPurity, FunctionReservation, FunctionSignature,
+    FunctionStatementView, FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView,
+    Functions, InitializationOwnerView, InputVariability, RangeBoundView, RangeView,
+    RecordFieldLayout, ResidualEquationView, StringConversionFormatView, StructuredFamilyView,
+    SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes,
+    VariableCausality, VariableIdentity, VariableOrigin, VariableReservation, VariableRole,
+    VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

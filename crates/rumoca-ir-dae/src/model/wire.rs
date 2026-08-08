@@ -270,6 +270,7 @@ enum FunctionStatementInput {
     },
     AssignmentGroup {
         assignments: Vec<FunctionAssignmentInput>,
+        conditional: Option<FunctionConditionalInput>,
     },
     Assertion {
         condition: u32,
@@ -286,6 +287,14 @@ enum FunctionStatementInput {
         #[serde(deserialize_with = "deserialize_provenance")]
         finish_provenance: DaeProvenance,
     },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FunctionConditionalInput {
+    conditions: Vec<u32>,
+    branches: Vec<Vec<u32>>,
+    fallback: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]

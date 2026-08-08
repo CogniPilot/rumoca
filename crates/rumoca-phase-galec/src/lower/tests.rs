@@ -454,6 +454,9 @@ fn function_assertion_is_detected_before_expression_inlining() {
                 )
             })
             .unwrap();
+        assert!(user_functions::expression_calls_asserting_function(
+            view, call
+        ));
         let variables = HashMap::new();
         let previous = HashMap::new();
         let Err(rejected) = ExpressionLowerer::new(view, &variables, &previous).lower(call) else {
@@ -807,7 +810,7 @@ fn assert_atomic_multi_output_group(model: &dae::Dae) {
             .collect::<Vec<_>>();
         assert!(matches!(
             &statements[0],
-            dae::FunctionStatementView::AssignmentGroup { definitions }
+            dae::FunctionStatementView::AssignmentGroup { definitions, .. }
                 if definitions.len() == 2
         ));
         let lowered = user_functions::lower_reachable(view, HashSet::from([caller.index()]))

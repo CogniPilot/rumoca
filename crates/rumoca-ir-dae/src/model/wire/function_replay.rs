@@ -104,21 +104,29 @@ fn project_statements(
                     provenance: definition.provenance,
                 }
             }
-            FunctionStatementWire::AssignmentGroup { definitions } => {
-                FunctionStatementInput::AssignmentGroup {
-                    assignments: definitions
-                        .iter()
-                        .map(|definition| {
-                            let definition = &function.definitions[*definition as usize];
-                            FunctionAssignmentInput {
-                                target: definition.target,
-                                rhs: definition.rhs,
-                                provenance: definition.provenance,
-                            }
-                        })
-                        .collect(),
-                }
-            }
+            FunctionStatementWire::AssignmentGroup {
+                definitions,
+                conditional,
+            } => FunctionStatementInput::AssignmentGroup {
+                assignments: definitions
+                    .iter()
+                    .map(|definition| {
+                        let definition = &function.definitions[*definition as usize];
+                        FunctionAssignmentInput {
+                            target: definition.target,
+                            rhs: definition.rhs,
+                            provenance: definition.provenance,
+                        }
+                    })
+                    .collect(),
+                conditional: conditional
+                    .as_ref()
+                    .map(|conditional| FunctionConditionalInput {
+                        conditions: conditional.conditions.clone(),
+                        branches: conditional.branches.clone(),
+                        fallback: conditional.fallback.clone(),
+                    }),
+            },
             FunctionStatementWire::Assertion {
                 condition,
                 message,
@@ -323,10 +331,16 @@ enum ReplayCapability<'group, 'dae> {
 #[derive(Clone, Copy)]
 enum ReplayOp<'wire> {
     Assign(AssignmentInput),
-    AssignGroup(&'wire [FunctionAssignmentInput]),
+    AssignGroup(AssignmentGroupInput<'wire>),
     Assert(AssertionInput),
     BeginFold(FoldInput<'wire>),
     EndFold(FoldEnd),
+}
+
+#[derive(Clone, Copy)]
+struct AssignmentGroupInput<'wire> {
+    assignments: &'wire [FunctionAssignmentInput],
+    conditional: Option<&'wire FunctionConditionalInput>,
 }
 
 #[derive(Clone, Copy)]
@@ -402,8 +416,14 @@ fn flatten_operations(
             FunctionStatementInput::Assignment { .. } => {
                 operations.push(ReplayOp::Assign(assignment(statement)?));
             }
-            FunctionStatementInput::AssignmentGroup { assignments } => {
-                operations.push(ReplayOp::AssignGroup(assignments));
+            FunctionStatementInput::AssignmentGroup {
+                assignments,
+                conditional,
+            } => {
+                operations.push(ReplayOp::AssignGroup(AssignmentGroupInput {
+                    assignments,
+                    conditional: conditional.as_ref(),
+                }));
             }
             FunctionStatementInput::Assertion { .. } => {
                 operations.push(ReplayOp::Assert(assertion(statement)?));
@@ -441,8 +461,14 @@ fn push_fold_operations<'wire>(
             FunctionStatementInput::Assignment { .. } => {
                 operations.push(ReplayOp::Assign(assignment(statement)?));
             }
-            FunctionStatementInput::AssignmentGroup { assignments } => {
-                operations.push(ReplayOp::AssignGroup(assignments));
+            FunctionStatementInput::AssignmentGroup {
+                assignments,
+                conditional,
+            } => {
+                operations.push(ReplayOp::AssignGroup(AssignmentGroupInput {
+                    assignments,
+                    conditional: conditional.as_ref(),
+                }));
             }
             FunctionStatementInput::Assertion { .. } => {
                 operations.push(ReplayOp::Assert(assertion(statement)?));
@@ -596,14 +622,23 @@ fn apply_next_ready_operation<'dae>(
             }
             apply_assignment(wire, dae, ids, state, assignment)?;
         }
-        ReplayOp::AssignGroup(assignments) => {
-            if assignments
+        ReplayOp::AssignGroup(group) => {
+            if group
+                .assignments
                 .iter()
                 .any(|assignment| assignment.rhs as usize >= ids.expressions.len())
+                || group.conditional.is_some_and(|conditional| {
+                    conditional
+                        .conditions
+                        .iter()
+                        .chain(conditional.branches.iter().flatten())
+                        .chain(&conditional.fallback)
+                        .any(|expression| *expression as usize >= ids.expressions.len())
+                })
             {
                 return Ok(false);
             }
-            apply_assignment_group(wire, dae, ids, state, assignments)?;
+            apply_assignment_group(wire, dae, ids, state, group)?;
         }
         ReplayOp::Assert(assertion) => {
             if [assertion.condition, assertion.message]
@@ -684,8 +719,9 @@ fn apply_assignment_group<'dae>(
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
     state: &mut FunctionReplay<'_, '_, 'dae>,
-    inputs: &[FunctionAssignmentInput],
+    group: AssignmentGroupInput<'_>,
 ) -> Result<(), DaeConstructionError> {
+    let inputs = group.assignments;
     let provenance = inputs
         .first()
         .map(|input| input.provenance)
@@ -716,10 +752,64 @@ fn apply_assignment_group<'dae>(
         .capability
         .as_mut()
         .ok_or_else(|| incomplete("function capability", state.function_index, provenance))?;
-    dae.functions(|functions| match capability {
-        ReplayCapability::Body(body) => functions.assign_all(body, &assignments, provenance),
-        ReplayCapability::Fold(body) => functions.assign_all_loop(body, &assignments, provenance),
-        ReplayCapability::External(_) => Err(malformed("functions.external")),
+    dae.functions(|functions| match (capability, group.conditional) {
+        (ReplayCapability::Body(body), Some(conditional)) => functions.replay_conditional_all(
+            body,
+            &assignments,
+            &conditional
+                .conditions
+                .iter()
+                .map(|value| mapped_expression(ids, *value, provenance))
+                .collect::<Result<Vec<_>, _>>()?,
+            &conditional
+                .branches
+                .iter()
+                .map(|branch| {
+                    branch
+                        .iter()
+                        .map(|value| mapped_expression(ids, *value, provenance))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            &conditional
+                .fallback
+                .iter()
+                .map(|value| mapped_expression(ids, *value, provenance))
+                .collect::<Result<Vec<_>, _>>()?,
+            provenance,
+        ),
+        (ReplayCapability::Fold(body), Some(conditional)) => functions.replay_conditional_all_loop(
+            body,
+            &assignments,
+            &conditional
+                .conditions
+                .iter()
+                .map(|value| mapped_expression(ids, *value, provenance))
+                .collect::<Result<Vec<_>, _>>()?,
+            &conditional
+                .branches
+                .iter()
+                .map(|branch| {
+                    branch
+                        .iter()
+                        .map(|value| mapped_expression(ids, *value, provenance))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            &conditional
+                .fallback
+                .iter()
+                .map(|value| mapped_expression(ids, *value, provenance))
+                .collect::<Result<Vec<_>, _>>()?,
+            provenance,
+        ),
+        (ReplayCapability::Body(body), None) => {
+            functions.assign_all(body, &assignments, provenance)
+        }
+        (ReplayCapability::Fold(body), None) => {
+            functions.assign_all_loop(body, &assignments, provenance)
+        }
+        (ReplayCapability::External(_), _) => Err(malformed("functions.external")),
     })
 }
 

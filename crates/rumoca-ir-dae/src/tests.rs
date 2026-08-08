@@ -1,6 +1,7 @@
 mod derived_wire;
 mod expression_children;
 mod external_functions;
+mod function_conditionals;
 mod function_owners;
 mod function_wire;
 mod provenance;
@@ -665,6 +666,63 @@ fn row_major_family_preserves_singleton_axes_with_equal_scalar_cardinality() {
             &[3, 1]
         );
     });
+}
+
+#[test]
+fn exact_row_major_scalar_projection_recovers_only_its_whole_tensor() {
+    let source = TestSource::new("input Real matrix[2, 3];");
+    let at = source.source("input Real matrix[2, 3]", 0);
+    Dae::construct(source.map, |dae| {
+        let matrix_type =
+            dae.types(|types| types.derived(ValueType::array(ScalarType::Real, [2, 3]), at))?;
+        let matrix = dae.variables(|variables| {
+            variables.input(
+                VarName::new("matrix"),
+                matrix_type,
+                InputVariability::Continuous,
+                at,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (base, mut scalars) = dae.expressions(|expressions| {
+            let base = expressions
+                .at(at)
+                .coordinate(CoordinateInput::Input(matrix))?;
+            let mut scalars = Vec::new();
+            for row in 1..=2 {
+                for column in 1..=3 {
+                    let row = expressions.at(at).literal(DaeLiteral::Integer(row))?;
+                    let column = expressions.at(at).literal(DaeLiteral::Integer(column))?;
+                    scalars.push(expressions.at(at).index(
+                        base,
+                        [
+                            Subscript::Index {
+                                expression: row,
+                                provenance: at,
+                            },
+                            Subscript::Index {
+                                expression: column,
+                                provenance: at,
+                            },
+                        ],
+                    )?);
+                }
+            }
+            Ok((base, scalars))
+        })?;
+        let recovered = dae.expressions(|expressions| {
+            expressions.exact_row_major_projection_base(&scalars, &[2, 3], at)
+        })?;
+        assert_eq!(recovered, Some(base));
+
+        scalars.swap(0, 1);
+        let reordered = dae.expressions(|expressions| {
+            expressions.exact_row_major_projection_base(&scalars, &[2, 3], at)
+        })?;
+        assert_eq!(reordered, None);
+        Ok(())
+    })
+    .expect("exact scalar-family recovery is constructor checked");
 }
 
 #[test]

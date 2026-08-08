@@ -881,6 +881,7 @@ struct ExpressionLowerer<'a, 'dae> {
     conditional_depth: usize,
     materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
+    materialized_shared_record_fields: HashMap<(u32, usize), gast::Expression>,
     called_user_functions: HashSet<u32>,
     function_scope: Option<dae::FunctionId<'dae>>,
     temporary_locals: Vec<gast::VariableDeclaration>,
@@ -959,6 +960,7 @@ struct ConditionalActivationKey {
 enum ConditionalActivationKind {
     ConditionalScalar,
     ConditionalRecord,
+    FunctionConditional,
     ArraySelection,
     ArrayUpdate,
     Concatenation,
@@ -1062,6 +1064,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             conditional_depth: 0,
             materialized_function_values: HashMap::new(),
             materialized_function_calls: HashMap::new(),
+            materialized_shared_record_fields: HashMap::new(),
             called_user_functions: HashSet::new(),
             function_scope: None,
             temporary_locals: Vec::new(),
@@ -1150,6 +1153,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     fn finish_statement_group(&mut self) {
         self.materialized_function_values.clear();
         self.materialized_function_calls.clear();
+        self.materialized_shared_record_fields.clear();
         self.function_fold_output_cache.clear();
         self.scalar_projection_cache.clear();
         self.seen_assertion_calls.clear();

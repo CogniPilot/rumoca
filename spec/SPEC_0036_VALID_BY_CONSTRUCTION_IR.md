@@ -13,8 +13,8 @@ private aggregate without weaker or duplicate storage.
 
 ### Scope
 
-This stays `DRAFT` until AST proofs, `flat::Model`, `Dae`, and `SolveProblem`
-hide invariant fields/root validators. Solve sparsity follows
+This stays `DRAFT` until AST proofs, `flat::Model`, `Dae`, `SolveProblem`, and
+`SolveAlgorithmBlock` hide invariant fields/root validators. Solve sparsity follows
 [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
 
 Milestone acceptance rows, reservation owners, canonical arenas, equation
@@ -53,6 +53,17 @@ Each definition derives its integrator-history effect from the finalized Solve
 dependency graph. `Preserve` is constructible only with a proof that the target
 cannot reach continuous dynamics; missing, cyclic, ambiguous, or unsupported
 evidence constructs `Restart` instead.
+
+### Solve Algorithm Block Construction
+
+`SolveAlgorithmBlock::construct` is the sole construction authority for the
+GALEC-derived executable root. Its typed program, storage, lifecycle, aggregate,
+call, effect, provenance, and serialization rules are
+[SPEC_0043 §9](SPEC_0043_CONSTRUCTION_CATALOG.md#9-solve-algorithm-block-construction-catalog).
+Construction consumes one checked `AlgorithmCodePackage` and one explicit
+arithmetic profile; failure exposes no partial root. A template view may borrow
+the completed root but cannot select an operation, storage class, local scope,
+shape, alias rule, call ABI, or failure behavior.
 
 ### Flat Aggregate Construction
 

@@ -61,9 +61,9 @@ valid LOC reductions.
 
 | Trigger | Threshold | Acknowledged ceiling | Reduction owner |
 |---|---|---|---|
-| `dae-core-loc` | 11,000 | 14,500 | SPEC_0036 cutover: ranked non-wire reductions |
-| `dae-wire-loc` | 3,250 | 4,000 | SPEC_0036 cutover: operation-shaped wire |
-| `dae-total-loc` | 14,250 | 18,500 | Both items above; total follows their sum |
+| `dae-core-loc` | 11,000 | 15,000 | Retain checked conditional/tensor identity; retire downstream recovery during Solve Algorithm Block cutover |
+| `dae-wire-loc` | 3,250 | 4,250 | Operation-shaped replay; consolidate correlation replay after construction coverage lands |
+| `dae-total-loc` | 14,250 | 19,000 | Both items above; total follows their sum |
 
 **Why:** the triggers were unenforced and all three were exceeded in silence.
 The gate makes exceedance loud without blocking a landing: any measured value is
@@ -118,12 +118,14 @@ exists. Every other object inserts complete values in proven order.
 | B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
 | Runtime binding equations contribute event owners by expression occurrence | Event analysis | MLS §4.4 binding syntax and equation-section syntax have the same MLS §8.5 event surface |
 | Whole-record equality derives leaf owners only from exact record/field identities and equal complete layouts; each array field remains one tensor equation | Flat-to-DAE record-equation analysis | Aggregate routing cannot depend on rendered names or source scalarization |
+| A row-major scalar family recovers its whole tensor only when every member is an exact full-rank integer projection of one identical base, in canonical coordinate order, and the base dimensions equal the claimed extents | DAE expression construction | Source scalarization cannot force backend scalarization, while reordered, partial, duplicate, or mixed-base families cannot forge aggregate identity |
 | Straight-line function-loop scratch elimination substitutes only scalar call-locals whose definitions dominate their uses, whose expression dependencies remain unchanged through every substituted use, whose name is not assigned again in the substituted suffix, and whose final values are not read after the loop; unresolved self-reads remain explicit transitions | Flat-to-DAE function-loop analysis | Compact loop owners cannot erase loop-carried state, replace a snapshot with a later live tensor read, bypass a sequential redefinition, or erase escaping values |
 | A function loop with call-scoped actions and no carried values constructs one zero-carried compact fold over the checked domain | Flat-to-DAE function-loop analysis | Scratch substitution may expose assertion-only loops without erasing or scalarizing their per-point actions |
 | In a function with certified early-return output seeds, invariant-guard pushdown may use those exact seeded outputs as the false-arm values of compact loops; an ordinary unseeded output must already have a whole definition | Flat-to-DAE function-loop normalization | Guard pushdown preserves both the returned path and the non-return loop path without inventing an output value |
 | An ordered unit-step first-match loop compacts only from a zero seed, an exact `found == 0` guard, and an update to the current binder; its tensor reduction appends an out-of-range sentinel before `min` and maps the sentinel back to zero | Flat-to-DAE function-loop normalization | The compact form is total for empty/no-match domains and preserves the source loop's first-match semantics without scalar expansion |
 | A direct `x := x + term`, `x := x - term`, or `x := x * term` loop over a binder-dependent range compacts to the corresponding `sum` or `product` comprehension joined with its exact seed | Flat-to-DAE function-loop normalization | Additive and multiplicative identities preserve empty-domain behavior while dependent scalar iteration never enters DAE IR |
 | Conditional target certificates inside a compact function domain resolve the selected nested branch before collection and union monotonically across all domain points | Flat-to-DAE function-loop definedness analysis | A later point or an outer guard cannot erase a tensor update owned by an earlier point or nested branch |
+| A multi-target function conditional constructs its ordered branch correlation and all joined definitions in one atomic operation; target uniqueness, branch-vector completeness, expression ownership, current reaching definitions, and value-type compatibility are checked before any definition advances | DAE function-body construction | No partial join can escape, and a backend receives proof-bearing shared control flow instead of reverse-engineering it from independently projected conditional expressions |
 | Every non-input B.1c target has one definition | Discrete system | Missing or duplicate is impossible |
 | Input `m` capabilities are read-only | Variable/discrete systems | Inputs cannot be assigned |
 | B.1c dependencies use issued-order capabilities | Discrete system | Topology is incremental |
@@ -205,6 +207,25 @@ validation, superseded fallbacks, and compatibility are prohibited.
 | The checked component is non-cloneable and transfers its exact Solve kernel by value to rendering | FMI component/codegen boundary | Rendering cannot silently select a second kernel |
 | FMI 2 scalar variables and FMI 3 tensor variables derive from the same checked storage runs | Version adapters | Version projection cannot repeat equation lowering |
 | Unsupported source types fail in `rumoca-phase-fmi` before target rendering | FMI lowering | No plausible default representation |
+
+### 9. Solve Algorithm Block Construction Catalog
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| `SolveAlgorithmBlock::construct` lends branded scopes over private declaration, method, program, action, call, and correlation arenas | `rumoca-ir-solve` | One controller execution authority |
+| Construction consumes one checked Algorithm Code package identity and one explicit arithmetic profile | `rumoca-phase-solve` | Semantics and target arithmetic cannot drift |
+| Real types carry their checked representation/rounding profile; Integer carries its domain; Boolean remains Boolean | Shared typed program construction | No numeric erasure |
+| Slots derive exact scalar/aggregate type, storage class, mutability, shape, and source identity | Algorithm-block storage construction | Parallel layout metadata cannot disagree |
+| Method locals construct inside lexical scopes and cannot become persistent/interface slots | Method construction | Scratch lifetime stays bounded |
+| Startup, Recalibrate, and DoStep are each issued exactly once before root completion | Lifecycle construction | Partial lifecycle is unrepresentable |
+| Register insertion proves dominance and exact operand/result types before committing an operation | Typed program construction | Invalid bytecode cannot escape |
+| Aggregate copy, fill, constructor, projection, selection, and call-transfer operations prove shape, domain, and alias policy atomically | Aggregate program construction | Tensor relationships stay compact |
+| Calls prove exact arity, result cardinality, evaluation order, bounded acyclic reachability, and a complete ABI plan | Call construction | Templates do not invent call mechanics |
+| Branches and loops own their lexical scopes; loops require finite checked bounds and explicit step semantics | Action construction | Execution and storage remain bounded |
+| Limits, signals, closures, escape sets, and failure atomicity are explicit action effects | Method construction | Failure behavior is never implicit |
+| Every issued owner carries exact Algorithm Code correlation and provenance; the mapping is injective and complete at root close | Correlation construction | Production code remains auditable |
+| Wire decode replays the same current-version construction operations; old schemas and unchecked child deserialization are absent | Solve serialization | Bytes cannot forge execution |
+| Tests use production construction and compare the independent GALEC evaluator with Solve execution | Differential evidence | Shared lowering defects stay observable |
 
 ## References
 

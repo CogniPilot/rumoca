@@ -1147,6 +1147,7 @@ pub enum FunctionStatementView<'dae> {
     },
     AssignmentGroup {
         definitions: FunctionDefinitionValues<'dae>,
+        conditional: Option<FunctionConditionalView<'dae>>,
     },
     Assertion {
         condition: ExprId<'dae>,
@@ -1160,6 +1161,36 @@ pub enum FunctionStatementView<'dae> {
     },
 }
 
+/// Checked shared branch correlation for one atomic function assignment group.
+#[derive(Clone, Copy)]
+pub struct FunctionConditionalView<'dae> {
+    raw: &'dae FunctionConditionalWire,
+}
+
+impl<'dae> FunctionConditionalView<'dae> {
+    pub fn conditions(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> + 'dae {
+        self.raw.conditions.iter().copied().map(ExprId::from_raw)
+    }
+
+    pub fn branch_count(self) -> usize {
+        self.raw.branches.len()
+    }
+
+    pub fn branch(
+        self,
+        ordinal: usize,
+    ) -> Option<impl ExactSizeIterator<Item = ExprId<'dae>> + 'dae> {
+        self.raw
+            .branches
+            .get(ordinal)
+            .map(|values| values.iter().copied().map(ExprId::from_raw))
+    }
+
+    pub fn fallback(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> + 'dae {
+        self.raw.fallback.iter().copied().map(ExprId::from_raw)
+    }
+}
+
 impl<'dae> FunctionStatementView<'dae> {
     fn from_wire(
         dae: &'dae Dae,
@@ -1170,12 +1201,18 @@ impl<'dae> FunctionStatementView<'dae> {
             FunctionStatementWire::Assignment { definition } => Self::Assignment {
                 definition: function_definition_view(dae, function, *definition),
             },
-            FunctionStatementWire::AssignmentGroup { definitions } => Self::AssignmentGroup {
+            FunctionStatementWire::AssignmentGroup {
+                definitions,
+                conditional,
+            } => Self::AssignmentGroup {
                 definitions: FunctionDefinitionValues {
                     dae,
                     function,
                     raw: definitions,
                 },
+                conditional: conditional
+                    .as_ref()
+                    .map(|raw| FunctionConditionalView { raw }),
             },
             FunctionStatementWire::Assertion {
                 condition,

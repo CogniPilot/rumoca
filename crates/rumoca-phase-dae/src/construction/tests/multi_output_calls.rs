@@ -222,7 +222,7 @@ fn multi_result_call_defines_every_receiving_variable() {
         assert_eq!(statements.len(), 2);
         assert!(matches!(
             &statements[0],
-            dae::FunctionStatementView::AssignmentGroup { definitions }
+            dae::FunctionStatementView::AssignmentGroup { definitions, .. }
                 if definitions.len() == 2
         ));
     });

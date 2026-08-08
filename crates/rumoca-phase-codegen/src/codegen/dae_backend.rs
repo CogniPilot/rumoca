@@ -312,7 +312,7 @@ fn project_function_statement(statement: dae::FunctionStatementView<'_>) -> Valu
             "kind": "assignment",
             "definition": definition.id().ordinal(),
         }),
-        dae::FunctionStatementView::AssignmentGroup { definitions } => json!({
+        dae::FunctionStatementView::AssignmentGroup { definitions, .. } => json!({
             "kind": "assignment_group",
             "statements": definitions
                 .iter()

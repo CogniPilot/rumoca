@@ -32,6 +32,7 @@ mod function_shapes;
 mod initial_discrete_values;
 mod model_algorithm;
 mod model_events;
+mod multi_output_equations;
 mod record_equation;
 mod structured_body;
 mod variable_construction;
@@ -103,6 +104,7 @@ use model_algorithm::{
     lower_separated_array_sum_model_algorithm, lower_total_array_model_algorithm,
 };
 use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, lower_when_chains};
+use multi_output_equations::lower_multi_output_equation;
 use record_equation::lower_record_equation;
 use structured_body::{lower_structured_body, normalize_conditional_residual};
 use variable_construction::{
@@ -1679,6 +1681,24 @@ pub(super) fn pack_row_major_body<'dae>(
     extents: &[usize],
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let checked_extents = extents
+        .iter()
+        .copied()
+        .map(u32::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .ok();
+    if let Some(base) = checked_extents
+        .as_deref()
+        .map(|extents| {
+            construction.expressions(|expressions| {
+                expressions.exact_row_major_projection_base(scalars, extents, provenance)
+            })
+        })
+        .transpose()?
+        .flatten()
+    {
+        return Ok(base);
+    }
     let Some((&outer, inner_extents)) = extents.split_first() else {
         return Ok(scalars[0]);
     };
@@ -1888,70 +1908,6 @@ fn lower_ordinary_equation<'dae>(
             )?;
         }
         EquationPartition::ConsumedDiscreteValue => {}
-    }
-    Ok(())
-}
-
-fn lower_multi_output_equation<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    equation: &flat::Equation,
-    plan: &MultiOutputEquationPlan,
-    owner: dae::DaeProvenance,
-) -> Result<(), dae::DaeConstructionError> {
-    let Expression::Binary {
-        op: OpBinary::Sub,
-        lhs,
-        rhs,
-        ..
-    } = &equation.residual
-    else {
-        unreachable!("a multi-output equation plan owns a subtraction residual")
-    };
-    let Expression::Tuple { elements, .. } = lhs.as_ref() else {
-        unreachable!("a multi-output equation plan owns a receiving tuple")
-    };
-    let Expression::FunctionCall {
-        name,
-        args,
-        is_constructor: false,
-        span,
-    } = rhs.as_ref()
-    else {
-        unreachable!("a multi-output equation plan owns a function call")
-    };
-    let provenance = dae::DaeProvenance::source(*span)?;
-    let symbols = LoweringSymbols {
-        coordinates,
-        functions,
-        shapes: functions.shapes.model_values(),
-        function_body: None,
-        values: None,
-        owner_clock: None,
-    };
-    let call = lower_call_operands(
-        construction,
-        symbols,
-        &HashMap::new(),
-        name,
-        args,
-        provenance,
-    )?;
-    for (ordinal, target) in plan.outputs.iter().enumerate() {
-        if target.is_none() {
-            continue;
-        }
-        let lhs = lower_expression(
-            construction,
-            coordinates,
-            functions,
-            &elements[ordinal],
-            None,
-        )?;
-        let rhs = call.result(construction, ordinal, provenance)?;
-        let residual = generated_residual(construction, owner, lhs, rhs)?;
-        construction.continuous(|system| system.value_equation(owner, residual))?;
     }
     Ok(())
 }

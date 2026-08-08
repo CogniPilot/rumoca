@@ -403,9 +403,22 @@ fn lower_function_statement<'a, 'dae>(
             lower_function_assignment(view, definition, lowerer, statements)?;
             lowerer.finish_statement_group();
         }
-        dae::FunctionStatementView::AssignmentGroup { definitions } => {
-            for definition in definitions.iter() {
-                lower_function_assignment(view, definition, lowerer, statements)?;
+        dae::FunctionStatementView::AssignmentGroup {
+            definitions,
+            conditional,
+        } => {
+            if let Some(conditional) = conditional {
+                lower_function_conditional_group(
+                    view,
+                    definitions,
+                    conditional,
+                    lowerer,
+                    statements,
+                )?;
+            } else {
+                for definition in definitions.iter() {
+                    lower_function_assignment(view, definition, lowerer, statements)?;
+                }
             }
             lowerer.finish_statement_group();
         }
@@ -429,6 +442,134 @@ fn lower_function_statement<'a, 'dae>(
     Ok(())
 }
 
+struct LoweredFunctionConditionalBranch {
+    prefix: Vec<gast::Spanned<gast::Statement>>,
+    condition: gast::Expression,
+    body: Vec<gast::Spanned<gast::Statement>>,
+    span: Span,
+}
+
+fn lower_function_conditional_group<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: dae::FunctionDefinitionValues<'dae>,
+    conditional: dae::FunctionConditionalView<'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+    statements: &mut Vec<gast::Spanned<gast::Statement>>,
+) -> Result<(), GalecTargetError> {
+    let definitions = definitions.iter().collect::<Vec<_>>();
+    let conditions = conditional.conditions().collect::<Vec<_>>();
+    let activation_operands = conditions
+        .iter()
+        .map(|condition| condition.index())
+        .collect::<Vec<_>>();
+    let entry_materialization = lowerer.conditional_materialization_snapshot();
+    let mut branches = Vec::with_capacity(conditions.len());
+    for (ordinal, condition_id) in conditions.into_iter().enumerate() {
+        let prefix_start = lowerer.pending_prefix_statements.len();
+        let condition = lowerer.lower(condition_id)?;
+        let span = view
+            .expression(condition_id)
+            .expect("checked function conditional condition resolves")
+            .provenance()
+            .span();
+        require_boolean(&condition, span)?;
+        let prefix = lowerer.pending_prefix_statements.split_off(prefix_start);
+        let condition_materialization = lowerer.conditional_materialization_snapshot();
+        lowerer
+            .conditional_activation_path
+            .push(ConditionalActivationKey {
+                kind: ConditionalActivationKind::FunctionConditional,
+                operands: activation_operands.clone(),
+                branch: u32::try_from(ordinal).map_err(|_| GalecTargetError::LoweringInternal {
+                    detail: "function conditional branch ordinal exceeds capacity".to_owned(),
+                })?,
+            });
+        let mut body = Vec::new();
+        let values = conditional
+            .branch(ordinal)
+            .expect("checked function conditional branch resolves");
+        for (definition, value) in definitions.iter().copied().zip(values) {
+            let target = view
+                .function(definition.id().function())
+                .expect("checked function identity resolves")
+                .values()
+                .find(|candidate| candidate.id() == definition.target())
+                .expect("checked function conditional target resolves");
+            lower_function_value_assignment(
+                view,
+                target,
+                value,
+                definition.provenance().span(),
+                lowerer,
+                &mut body,
+            )?;
+        }
+        lowerer.conditional_activation_path.pop();
+        lowerer.restore_conditional_materialization(&condition_materialization);
+        branches.push(LoweredFunctionConditionalBranch {
+            prefix,
+            condition: condition.expression,
+            body,
+            span,
+        });
+    }
+
+    lowerer
+        .conditional_activation_path
+        .push(ConditionalActivationKey {
+            kind: ConditionalActivationKind::FunctionConditional,
+            operands: activation_operands,
+            branch: u32::try_from(conditional.branch_count()).map_err(|_| {
+                GalecTargetError::LoweringInternal {
+                    detail: "function conditional fallback ordinal exceeds capacity".to_owned(),
+                }
+            })?,
+        });
+    let mut fallback = Vec::new();
+    for (definition, value) in definitions.iter().copied().zip(conditional.fallback()) {
+        let target = view
+            .function(definition.id().function())
+            .expect("checked function identity resolves")
+            .values()
+            .find(|candidate| candidate.id() == definition.target())
+            .expect("checked function conditional target resolves");
+        lower_function_value_assignment(
+            view,
+            target,
+            value,
+            definition.provenance().span(),
+            lowerer,
+            &mut fallback,
+        )?;
+    }
+    lowerer.conditional_activation_path.pop();
+    lowerer.restore_conditional_materialization(&entry_materialization);
+    statements.extend(nest_function_conditional_branches(branches, fallback));
+    Ok(())
+}
+
+fn nest_function_conditional_branches(
+    branches: Vec<LoweredFunctionConditionalBranch>,
+    mut fallback: Vec<gast::Spanned<gast::Statement>>,
+) -> Vec<gast::Spanned<gast::Statement>> {
+    for branch in branches.into_iter().rev() {
+        let mut statements = branch.prefix;
+        statements.push(gast::Spanned::new(
+            gast::Statement::If(gast::IfStatement {
+                branches: vec![gast::IfBranch {
+                    condition: gast::Condition::Expression(branch.condition),
+                    body: branch.body,
+                    span: branch.span,
+                }],
+                else_body: Some(fallback),
+            }),
+            branch.span,
+        ));
+        fallback = statements;
+    }
+    fallback
+}
+
 fn lower_function_assignment<'a, 'dae>(
     view: dae::DaeView<'dae>,
     definition: dae::FunctionDefinitionView<'dae>,
@@ -441,40 +582,355 @@ fn lower_function_assignment<'a, 'dae>(
         .values()
         .find(|value| value.id() == definition.target())
         .expect("checked function definition target resolves");
+    lower_function_value_assignment(
+        view,
+        target,
+        definition.rhs(),
+        definition.provenance().span(),
+        lowerer,
+        statements,
+    )
+}
+
+fn lower_function_value_assignment<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    target: dae::FunctionValueView<'dae>,
+    expression: dae::ExprId<'dae>,
+    span: Span,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+    statements: &mut Vec<gast::Spanned<gast::Statement>>,
+) -> Result<(), GalecTargetError> {
     let target_type = view
         .value_type(target.value_type())
         .expect("checked function target type resolves");
-    if preserves_function_target(view, target, definition.rhs()) {
+    if lower_shared_record_assignment(
+        view,
+        target,
+        target_type,
+        expression,
+        span,
+        lowerer,
+        statements,
+    )? {
+        return Ok(());
+    }
+    if let dae::ExpressionOperation::Conditional(operands) = view
+        .expression(expression)
+        .expect("checked function assignment expression resolves")
+        .operation()
+    {
+        return lower_conditional_function_value_assignment(
+            view, target, operands, span, lowerer, statements,
+        );
+    }
+    if preserves_function_target(view, target, expression) {
         return Ok(());
     }
     if let Some(statement) =
-        lower_indexed_function_update(view, target, target_type, definition, lowerer)?
+        lower_indexed_function_update(view, target, target_type, expression, lowerer, span)?
     {
         statements.extend(lowerer.drain_prefix_statements());
         statements.push(statement);
         return Ok(());
     }
     if target_type.is_record() {
-        lower_record_function_assignment(view, target, target_type, definition, lowerer, statements)
+        lower_record_function_assignment(
+            view,
+            target,
+            target_type,
+            expression,
+            span,
+            lowerer,
+            statements,
+        )
     } else {
-        lower_primitive_function_assignment(target, target_type, definition, lowerer, statements)
+        lower_primitive_function_assignment(
+            target,
+            target_type,
+            expression,
+            span,
+            lowerer,
+            statements,
+        )
     }
+}
+
+fn lower_shared_record_assignment<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    target: dae::FunctionValueView<'dae>,
+    target_type: &dae::ValueType,
+    expression: dae::ExprId<'dae>,
+    span: Span,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+    statements: &mut Vec<gast::Spanned<gast::Statement>>,
+) -> Result<bool, GalecTargetError> {
+    if !target_type.is_record()
+        || !target_type.dimensions().is_empty()
+        || !lowerer
+            .materialized_shared_record_fields
+            .contains_key(&(expression.index(), 0))
+    {
+        return Ok(false);
+    }
+    for ordinal in 0..target_type.record_field_count() {
+        let (field_name, _) = view
+            .record_field(target.value_type(), ordinal)
+            .expect("checked shared record target field resolves");
+        let value = lowerer
+            .materialized_shared_record_fields
+            .get(&(expression.index(), ordinal))
+            .expect("checked shared record materializes every field")
+            .clone();
+        let destination = gast::Reference::local(record_value_field_name(target, field_name)?);
+        if matches!(&value, gast::Expression::Ref(source) if same_local_reference(&destination, source))
+        {
+            continue;
+        }
+        statements.push(gast::Spanned::new(
+            gast::Statement::Assignment {
+                target: destination,
+                value,
+            },
+            span,
+        ));
+    }
+    Ok(true)
+}
+
+fn lower_conditional_function_value_assignment<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    target: dae::FunctionValueView<'dae>,
+    operands: dae::ExpressionOperands<'dae>,
+    span: Span,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+    statements: &mut Vec<gast::Spanned<gast::Statement>>,
+) -> Result<(), GalecTargetError> {
+    materialize_common_record_conditionals(view, operands, lowerer, statements)?;
+    let activation_operands = conditional_activation_operands(operands);
+    let entry_materialization = lowerer.conditional_materialization_snapshot();
+    let mut branches = Vec::with_capacity(operands.len() / 2);
+    for ordinal in (0..operands.len() - 1).step_by(2) {
+        let condition_id = operands
+            .get(ordinal)
+            .expect("checked conditional assignment condition");
+        let prefix_start = lowerer.pending_prefix_statements.len();
+        let condition = lowerer.lower(condition_id)?;
+        require_boolean(&condition, span)?;
+        let prefix = lowerer.pending_prefix_statements.split_off(prefix_start);
+        let condition_materialization = lowerer.conditional_materialization_snapshot();
+        lowerer
+            .conditional_activation_path
+            .push(ConditionalActivationKey {
+                kind: ConditionalActivationKind::FunctionConditional,
+                operands: activation_operands.clone(),
+                branch: u32::try_from(ordinal / 2).map_err(|_| {
+                    GalecTargetError::LoweringInternal {
+                        detail: "nested function conditional branch exceeds capacity".to_owned(),
+                    }
+                })?,
+            });
+        let mut body = Vec::new();
+        lower_function_value_assignment(
+            view,
+            target,
+            operands
+                .get(ordinal + 1)
+                .expect("checked conditional assignment branch value"),
+            span,
+            lowerer,
+            &mut body,
+        )?;
+        lowerer.conditional_activation_path.pop();
+        lowerer.restore_conditional_materialization(&condition_materialization);
+        branches.push(LoweredFunctionConditionalBranch {
+            prefix,
+            condition: condition.expression,
+            body,
+            span,
+        });
+    }
+    lowerer
+        .conditional_activation_path
+        .push(ConditionalActivationKey {
+            kind: ConditionalActivationKind::FunctionConditional,
+            operands: activation_operands,
+            branch: u32::try_from(operands.len() / 2).map_err(|_| {
+                GalecTargetError::LoweringInternal {
+                    detail: "nested function conditional fallback exceeds capacity".to_owned(),
+                }
+            })?,
+        });
+    let mut fallback = Vec::new();
+    lower_function_value_assignment(
+        view,
+        target,
+        operands
+            .get(operands.len() - 1)
+            .expect("checked conditional assignment fallback"),
+        span,
+        lowerer,
+        &mut fallback,
+    )?;
+    lowerer.conditional_activation_path.pop();
+    lowerer.restore_conditional_materialization(&entry_materialization);
+    statements.extend(nest_function_conditional_branches(branches, fallback));
+    Ok(())
+}
+
+fn materialize_common_record_conditionals<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    operands: dae::ExpressionOperands<'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+    statements: &mut Vec<gast::Spanned<gast::Statement>>,
+) -> Result<(), GalecTargetError> {
+    let value_roots = (1..operands.len() - 1)
+        .step_by(2)
+        .chain(std::iter::once(operands.len() - 1))
+        .map(|ordinal| operands.get(ordinal).expect("checked conditional value"))
+        .collect::<Vec<_>>();
+    let mut common: Option<HashSet<u32>> = None;
+    for root in value_roots {
+        let mut descendants = HashSet::new();
+        dae::for_each_expression(view, root, |id, _| {
+            descendants.insert(id.index());
+        });
+        common = Some(match common {
+            Some(current) => current.intersection(&descendants).copied().collect(),
+            None => descendants,
+        });
+    }
+    let mut candidates = common.unwrap_or_default().into_iter().collect::<Vec<_>>();
+    candidates.sort_unstable();
+    for raw in candidates {
+        let Some(expression) = view.expression_id(raw as usize) else {
+            continue;
+        };
+        let node = view
+            .expression(expression)
+            .expect("checked common record expression resolves");
+        if !node.value_type().is_record()
+            || !node.value_type().dimensions().is_empty()
+            || !matches!(node.operation(), dae::ExpressionOperation::Conditional(_))
+            || expression_calls_asserting_function(view, expression)
+            || lowerer
+                .materialized_shared_record_fields
+                .contains_key(&(raw, 0))
+        {
+            continue;
+        }
+        statements.extend(materialize_shared_record(view, expression, lowerer)?);
+    }
+    Ok(())
+}
+
+pub(super) fn expression_calls_asserting_function<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> bool {
+    let mut calls_asserting_function = false;
+    dae::for_each_expression(view, expression, |_, node| {
+        let dae::ExpressionOperation::Call { function, .. } = node.operation() else {
+            return;
+        };
+        calls_asserting_function |= view
+            .function(function)
+            .is_some_and(|function| first_function_assertion(function.statements()).is_some());
+    });
+    calls_asserting_function
+}
+
+fn materialize_shared_record<'a, 'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+    let node = view
+        .expression(expression)
+        .expect("checked shared record expression resolves");
+    let record_type = node.value_type();
+    let span = node.provenance().span();
+    let mut statements = Vec::new();
+    let mut fields = Vec::with_capacity(record_type.record_field_count());
+    for ordinal in 0..record_type.record_field_count() {
+        let (field_name, field_type_id) = view
+            .record_field(node.value_type_id(), ordinal)
+            .expect("checked shared record field resolves");
+        let field_type = view
+            .value_type(field_type_id)
+            .expect("checked shared record field type resolves");
+        let name = crate::mangle::galec_variable_name(&format!(
+            "rumoca.tmp.shared.expr{}.{}",
+            expression.index(),
+            field_name
+        ))?;
+        lowerer.temporary_locals.push(gast::VariableDeclaration {
+            ty: gast::TypeRef::Primitive(scalar_type(
+                field_type.scalar_type(),
+                field_name.as_str(),
+                span,
+            )?),
+            name: name.clone(),
+            dimensions: dimensions(field_type.dimensions()),
+            range: gast::RangeAttributes::default(),
+            span,
+        });
+        if let Some(lowered) = lower_tensor_function_assignment(
+            TensorAssignment {
+                target: name.clone(),
+                target_type: field_type,
+                expression,
+                record_field: Some(ordinal),
+                span,
+            },
+            lowerer,
+        )? {
+            statements.extend(lowered.before);
+            if let Some(nested) = lowered.nested {
+                statements.push(nested);
+            }
+        } else {
+            let value = lowerer.lower_aggregate_record_field(expression, ordinal, field_type_id)?;
+            statements.extend(lowerer.drain_prefix_statements());
+            statements.push(gast::Spanned::new(
+                gast::Statement::Assignment {
+                    target: gast::Reference::local(name.clone()),
+                    value,
+                },
+                span,
+            ));
+        }
+        fields.push((
+            (expression.index(), ordinal),
+            gast::Expression::Ref(gast::Reference::local(name)),
+        ));
+    }
+    lowerer.materialized_shared_record_fields.extend(fields);
+    Ok(statements)
 }
 
 fn lower_record_function_assignment<'a, 'dae>(
     view: dae::DaeView<'dae>,
     target: dae::FunctionValueView<'dae>,
     target_type: &dae::ValueType,
-    definition: dae::FunctionDefinitionView<'dae>,
+    expression: dae::ExprId<'dae>,
+    span: Span,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
+    if let Some(call) =
+        lowerer.lower_direct_record_call_assignment(expression, target, target_type, span)?
+    {
+        statements.extend(lowerer.drain_prefix_statements());
+        statements.push(call);
+        return Ok(());
+    }
     let mut record_statements = Vec::new();
     for ordinal in 0..target_type.record_field_count() {
         lower_record_function_field(
             view,
             target,
-            definition,
+            expression,
+            span,
             ordinal,
             lowerer,
             &mut record_statements,
@@ -487,7 +943,8 @@ fn lower_record_function_assignment<'a, 'dae>(
 fn lower_record_function_field<'a, 'dae>(
     view: dae::DaeView<'dae>,
     target: dae::FunctionValueView<'dae>,
-    definition: dae::FunctionDefinitionView<'dae>,
+    expression: dae::ExprId<'dae>,
+    span: Span,
     ordinal: usize,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
@@ -498,12 +955,11 @@ fn lower_record_function_field<'a, 'dae>(
     let field_view = view
         .value_type(field_type)
         .expect("checked record target field type resolves");
-    let span = definition.provenance().span();
     if let Some(lowered) = lower_tensor_function_assignment(
         TensorAssignment {
             target: record_value_field_name(target, field_name)?,
             target_type: field_view,
-            expression: definition.rhs(),
+            expression,
             record_field: Some(ordinal),
             span,
         },
@@ -517,7 +973,7 @@ fn lower_record_function_field<'a, 'dae>(
         }
         return Ok(());
     }
-    let value = lowerer.lower_aggregate_record_field(definition.rhs(), ordinal, field_type)?;
+    let value = lowerer.lower_aggregate_record_field(expression, ordinal, field_type)?;
     statements.extend(lowerer.drain_prefix_statements());
     let target = gast::Reference::local(record_value_field_name(target, field_name)?);
     if matches!(&value, gast::Expression::Ref(source) if same_local_reference(&target, source)) {
@@ -552,17 +1008,15 @@ fn same_local_reference(lhs: &gast::Reference, rhs: &gast::Reference) -> bool {
 fn lower_primitive_function_assignment<'a, 'dae>(
     target: dae::FunctionValueView<'dae>,
     target_type: &dae::ValueType,
-    definition: dae::FunctionDefinitionView<'dae>,
+    expression: dae::ExprId<'dae>,
+    span: Span,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
-    let span = definition.provenance().span();
     let target_name = value_name(target)?;
-    if let Some(call) = lowerer.lower_direct_aggregate_call_assignment(
-        definition.rhs(),
-        target_name.clone(),
-        span,
-    )? {
+    if let Some(call) =
+        lowerer.lower_direct_aggregate_call_assignment(expression, target_name.clone(), span)?
+    {
         statements.extend(lowerer.drain_prefix_statements());
         statements.push(call);
         return Ok(());
@@ -571,7 +1025,7 @@ fn lower_primitive_function_assignment<'a, 'dae>(
         TensorAssignment {
             target: target_name.clone(),
             target_type,
-            expression: definition.rhs(),
+            expression,
             record_field: None,
             span,
         },
@@ -584,7 +1038,7 @@ fn lower_primitive_function_assignment<'a, 'dae>(
         return Ok(());
     }
     let target_scalar = scalar_type(target_type.scalar_type(), target.name().as_str(), span)?;
-    let value = lowerer.lower_aggregate_expression_as(definition.rhs(), target_scalar)?;
+    let value = lowerer.lower_aggregate_expression_as(expression, target_scalar)?;
     statements.extend(lowerer.drain_prefix_statements());
     statements.push(gast::Spanned::new(
         gast::Statement::Assignment {
@@ -698,6 +1152,22 @@ fn lower_tensor_function_assignment<'a, 'dae>(
 ) -> Result<Option<LoweredTensorAssignment>, GalecTargetError> {
     if assignment.target_type.dimensions().is_empty() {
         return Ok(None);
+    }
+    let direct = match assignment.record_field {
+        Some(field) => lowerer.direct_aggregate_record_field(assignment.expression, field)?,
+        None => lowerer.direct_aggregate_function_argument(assignment.expression)?,
+    };
+    if let Some(value) = direct {
+        return Ok(Some(LoweredTensorAssignment {
+            before: lowerer.drain_prefix_statements(),
+            nested: Some(gast::Spanned::new(
+                gast::Statement::Assignment {
+                    target: gast::Reference::local(assignment.target),
+                    value,
+                },
+                assignment.span,
+            )),
+        }));
     }
     let scalar = scalar_type(
         assignment.target_type.scalar_type(),
@@ -1299,14 +1769,15 @@ fn lower_indexed_function_update<'a, 'dae>(
     view: dae::DaeView<'dae>,
     target: dae::FunctionValueView<'dae>,
     target_type: &dae::ValueType,
-    definition: dae::FunctionDefinitionView<'dae>,
+    expression: dae::ExprId<'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
+    span: Span,
 ) -> Result<Option<gast::Spanned<gast::Statement>>, GalecTargetError> {
     if target_type.is_record() {
         return Ok(None);
     }
     let node = view
-        .expression(definition.rhs())
+        .expression(expression)
         .expect("checked function assignment rhs resolves");
     if let dae::ExpressionOperation::Conditional(operands) = node.operation()
         && operands.len() == 3
@@ -1317,17 +1788,10 @@ fn lower_indexed_function_update<'a, 'dae>(
             target_type,
             operands,
             lowerer,
-            definition.provenance().span(),
+            span,
         );
     }
-    lower_indexed_function_update_expression(
-        view,
-        target,
-        target_type,
-        definition.rhs(),
-        lowerer,
-        definition.provenance().span(),
-    )
+    lower_indexed_function_update_expression(view, target, target_type, expression, lowerer, span)
 }
 
 fn lower_conditional_indexed_function_update<'a, 'dae>(

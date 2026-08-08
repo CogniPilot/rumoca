@@ -46,7 +46,9 @@ Modelica source (.mo)
 | Formatter, doc generator | AST | Needs syntax + spans; it is a target only when it preserves every supported construct or fails closed |
 | Flat Modelica export | Flat | Original expression structure |
 | DAE residual and symbolic-analysis targets | DAE | MLS B.1 form, residual ownership, source traceability |
-| Numeric simulation and explicit-ODE products | Solve | Register-machine plus tensor bytecode |
+| Numeric simulation and explicit-ODE products | `SolveProblem` | Register-machine plus tensor bytecode |
+| eFMI Algorithm Code | checked `AlgorithmCodePackage` derived from DAE | Causal GALEC lifecycle and language semantics |
+| eFMI Production Code and GALEC-derived embedded execution | checked `SolveAlgorithmBlock` derived from `AlgorithmCodePackage` | Typed executable lifecycle, storage, effects, and ABI obligations |
 | FMI 2/3 components | checked FMI component export IR derived from DAE + Solve | DAE metadata and tensor shape plus one executable checked kernel |
 
 `rumoca-phase-codegen` renders text; execution adapters wrap toolchains and
@@ -145,7 +147,7 @@ generate simulation code.
 |---|---|
 | Instantiation and flattening are separate logical phases | Instantiation applies modifications + builds `InstanceOverlay`/`InstancedTree`; production then runs `typecheck_instanced` before flattening traverses the overlay, expands connections, and produces `flat::Model`. |
 | Arrays stay symbolic through Flat and DAE | Backends requesting scalar form call scalarization in structural/solver layers with shape metadata, not via display-string parsing |
-| Function algorithms remain structured in `Flat.functions`/`Dae.functions` | Function bodies are not lowered into solver equation buckets |
+| Function algorithms remain structured; conditional joins retain checked shared-branch correlation | Downstream projections preserve call cardinality without reconstructing control flow |
 | A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. An unsettled condition may lower only through the call-specialized guarded root/action schedule in SOLVE-C25; a proven-false or otherwise unrepresentable schedule is typed-rejected. The action is never silently discarded or routed through multi-result-call lowering. |
 | Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
 | Initial sections use declarative owners: sequential scalar assignments and `if` conditionals in an `initial algorithm` determine a `parameter` declared `fixed = false` or a discrete coordinate; an explicit initial equation `m = value` or `pre(m) = value` determines the same typed discrete initial-value owner; and `assert` becomes an assertion owner carrying its enclosing branch conditions | A discrete initial value is a checked definition, not a numeric residual: its constructor proves exact scalar type, initialization-settled reads, and unique target ownership, and Solve initializes both current and `pre` storage from it. Replayed calculated-parameter values read only parameters and constants. Where each dependency is settled at parameter-set time, the parameter set computes exactly the initialization value; where one is a `fixed = false` parameter, Solve re-applies the binding after the initialization projection, so the parameter-set value is an iteration seed. Algebraic, state, output, and input algorithm targets and every loop, `when`, or non-`assert` call statement keep `ED013` because no checked initialization owner determines them |
@@ -221,10 +223,8 @@ operators in solver equation partitions.
 
 ### Stage 4 — Solve (`rumoca-ir-solve`)
 
-**What it is:** A register-machine format for DAE functions. MLS B.1 functions
-become `ComputeBlock` graphs of scalar programs and tensor nodes without new
-mathematical content. `ComputeNode` preserves matrix, stencil, reduction, map,
-and broadcast structure for native backends or scalar fallback.
+**What it is:** Typed programs with checked DAE and Algorithm Code roots over
+shared scalar/tensor vocabulary.
 
 Canonical terminology:
 
@@ -234,6 +234,7 @@ Canonical terminology:
 | `ScalarProgramBlock` | `ScalarProgramBlock` | A group of scalar programs with one output per program |
 | `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
+| `SolveAlgorithmBlock` | `SolveAlgorithmBlock` | Checked Algorithm Code execution root |
 
 New Solve-IR APIs use `ScalarProgram` / `ScalarProgramBlock` terminology, not
 `RowBlock` / `ScalarRows`.
@@ -256,35 +257,32 @@ reinitialization is `Restart`. Runtimes may combine this construction evidence
 with the set of updates that actually changed at an event, but must not recover
 the effect from model names, row positions, or observed numerical behavior.
 
-The root `schema_version` is mandatory on serialized Solve payloads.
-Deserializers reject unsupported versions and pre-versioned `ComputeBlock` row
-payloads.
+Serialized Solve roots carry a mandatory schema version; unsupported and
+pre-versioned payloads are rejected.
 
-`SolveProblem` is the base lowered problem. Backend products that are expensive
+`SolveProblem` is the numerical DAE root. Backend products that are expensive
 or outside the canonical MLS DAE (mass-matrix form, Jacobian-vector
 scalar-program blocks) live in `SolveArtifacts`, materialized by
 `rumoca-phase-solve` only when a backend/template/runtime boundary asks.
 `lower_solve_problem` must not eagerly populate them.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C31` in
+`SolveAlgorithmBlock` is constructed only from checked Algorithm Code under an
+explicit arithmetic profile. It is not a mode of `SolveProblem`; rows
+SOLVE-C32–C38 define its complete obligations.
+
+**Contract:** rows `SOLVE-C01`–`SOLVE-C38` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
-Steady-state objectives, adjoints, parameter sensitivities, and
-optimizer-facing projections are runtime or generated-target products layered
-over Solve artifacts, not canonical `SolveProblem` payload fields.
+Objectives, adjoints, sensitivities, and optimizer projections are derived
+products, not canonical root fields.
 
-**Do here:** lower DAE-IR expression trees + for-loops to `LinearOp` sequences
-and preserve tensor nodes/sparsity metadata for downstream consumers.
+**Do here:** construct either checked root and preserve typed programs,
+provenance, and its execution contract.
 
-Sparsity metadata follows [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md):
-it is a constructor-derived may-depend certificate, distinct from numerical
-zeros and target storage format. Compact affine patterns originate from
-SPEC_0032 owners rather than scalar-row recovery.
-**Do NOT do here:** DAE-level structural transformations, MLS semantics changes,
-expression-level symbolic rewrites, concrete JIT/toolchain invocation, CUDA
-runtime compilation, native object loading, or Jinja/minijinja template
-rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
-`rumoca-phase-codegen`, respectively).
+Sparsity follows [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md); compact
+affine patterns originate from SPEC_0032 owners, never scalar-row recovery.
+**Do NOT do here:** work assigned to DAE/structural phases, concrete execution
+crates, or `rumoca-phase-codegen` by SPEC_0029.
 
 ---
 

@@ -240,8 +240,16 @@ fn push_statement_roots(statements: &[FunctionStatementInput], pending: &mut Vec
     for statement in statements {
         match statement {
             FunctionStatementInput::Assignment { rhs, .. } => pending.push(*rhs),
-            FunctionStatementInput::AssignmentGroup { assignments } => {
+            FunctionStatementInput::AssignmentGroup {
+                assignments,
+                conditional,
+            } => {
                 pending.extend(assignments.iter().map(|assignment| assignment.rhs));
+                if let Some(conditional) = conditional {
+                    pending.extend(conditional.conditions.iter().copied());
+                    pending.extend(conditional.branches.iter().flatten().copied());
+                    pending.extend(conditional.fallback.iter().copied());
+                }
             }
             FunctionStatementInput::Assertion {
                 condition, message, ..

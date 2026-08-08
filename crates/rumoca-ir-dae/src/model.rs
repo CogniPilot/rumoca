@@ -1,6 +1,8 @@
+mod construction_checks;
 mod domains;
 mod external_functions;
 mod function_checks;
+mod function_conditionals;
 mod function_loop_capability;
 mod function_reads;
 mod runtime_quotients;
@@ -55,6 +57,11 @@ use crate::{
     InitializationEquationId, InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId,
     RootId, ScalarType, StateId, StructuredRootId, TerminalId, TimeEventId, ValueTypeId,
     VariableId,
+};
+
+pub(crate) use construction_checks::{
+    check_provenance, check_type_capacity, checked_u32, duplicate, function_definition_rhs,
+    incomplete, invalid_arity, unknown,
 };
 
 /// The one supported DAE wire version.
@@ -112,7 +119,12 @@ use crate::{
 ///
 /// 28 retains atomic function assignment groups, including multi-result calls
 /// and conditional joins, as one checked statement owner during wire replay.
-pub const DAE_SCHEMA_VERSION: u16 = 28;
+///
+/// 29 retains the checked ordered branch correlation of an atomic function
+/// conditional assignment group. The joined expressions remain the value
+/// view, while code-generating projections no longer have to recover common
+/// control flow from independently projected expressions.
+pub const DAE_SCHEMA_VERSION: u16 = 29;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -131,11 +143,11 @@ use variable_types::VariableTypeCapability;
 pub use view::{
     ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
     ExpressionOperation, ExpressionView, ExternalArgumentView, ExternalFunctionView,
-    FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionParameterView,
-    FunctionStatementView, FunctionStatements, FunctionValueView, FunctionView,
-    InitializationOwnerView, RangeBoundView, RangeView, RecordFieldLayout, ResidualEquationView,
-    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
-    ValueTypeOperands, VariableIdentity, VariableView,
+    FunctionConditionalView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
+    FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
+    FunctionView, InitializationOwnerView, RangeBoundView, RangeView, RecordFieldLayout,
+    ResidualEquationView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
+    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -356,6 +368,7 @@ enum FunctionStatementWire {
     },
     AssignmentGroup {
         definitions: Vec<u32>,
+        conditional: Option<FunctionConditionalWire>,
     },
     Assertion {
         condition: u32,
@@ -367,6 +380,13 @@ enum FunctionStatementWire {
         statements: Vec<FunctionStatementWire>,
         provenance: DaeProvenance,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FunctionConditionalWire {
+    conditions: Vec<u32>,
+    branches: Vec<Vec<u32>>,
+    fallback: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1343,7 +1363,10 @@ impl<'dae> Functions<'_, 'dae> {
         if !definitions.is_empty() {
             function_build_state_mut(self.storage, body)
                 .statements
-                .push(FunctionStatementWire::AssignmentGroup { definitions });
+                .push(FunctionStatementWire::AssignmentGroup {
+                    definitions,
+                    conditional: None,
+                });
         }
         Ok(())
     }
@@ -1873,112 +1896,5 @@ impl<'dae> Functions<'_, 'dae> {
         stored.definition = Some(FunctionBodyEntry::External(entry));
         self.storage.unfilled_functions -= 1;
         Ok(())
-    }
-}
-
-pub(crate) fn check_provenance(
-    source_map: &SourceMap,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let span = provenance.span();
-    let Some((_, source)) = source_map.get_source(span.source) else {
-        return Err(DaeConstructionError::UnknownSource { span });
-    };
-    let range = span.start.0..span.end.0;
-    if range.start > range.end
-        || range.end > source.len()
-        || !source.is_char_boundary(range.start)
-        || !source.is_char_boundary(range.end)
-    {
-        return Err(DaeConstructionError::InvalidSourceRange {
-            span,
-            source_len: source.len(),
-        });
-    }
-    Ok(())
-}
-
-fn check_type_capacity(ty: &ValueType, at: DaeProvenance) -> Result<(), DaeConstructionError> {
-    if ty.is_record() || ty.scalar_count().is_some() {
-        return Ok(());
-    }
-    Err(DaeConstructionError::CapacityExceeded {
-        arena: "value type scalar layout",
-        attempted_index: usize::MAX,
-        span: at.span(),
-    })
-}
-
-pub(crate) fn checked_u32(
-    value: usize,
-    arena: &'static str,
-    at: DaeProvenance,
-) -> Result<u32, DaeConstructionError> {
-    u32::try_from(value).map_err(|_| DaeConstructionError::CapacityExceeded {
-        arena,
-        attempted_index: value,
-        span: at.span(),
-    })
-}
-
-pub(crate) fn function_definition_rhs<'dae>(
-    storage: &Storage,
-    value: FunctionValueId<'dae>,
-    definition: FunctionDefinitionId<'dae>,
-    provenance: DaeProvenance,
-) -> Result<ExprId<'dae>, DaeConstructionError> {
-    if definition.function() != value.function() {
-        return Err(DaeConstructionError::InvalidFunctionScope {
-            expected_function: Some(value.function().index()),
-            found_function: definition.function().index(),
-            span: provenance.span(),
-        });
-    }
-    let entry = function_definition_entry(storage, definition, provenance)?;
-    if entry.target != value.ordinal() {
-        return Err(DaeConstructionError::InvalidFunctionValueRead {
-            value: value.ordinal(),
-            expected_definition: None,
-            found_definition: definition.ordinal(),
-            span: provenance.span(),
-        });
-    }
-    Ok(ExprId::from_raw(entry.rhs))
-}
-
-pub(crate) fn unknown(kind: &'static str, index: u32, at: DaeProvenance) -> DaeConstructionError {
-    DaeConstructionError::UnknownId {
-        kind,
-        index,
-        span: at.span(),
-    }
-}
-
-pub(crate) fn invalid_arity(
-    expected: usize,
-    found: usize,
-    at: DaeProvenance,
-) -> DaeConstructionError {
-    DaeConstructionError::InvalidArity {
-        expected,
-        found,
-        span: at.span(),
-    }
-}
-
-pub(crate) fn duplicate(kind: &'static str, index: u32, at: DaeProvenance) -> DaeConstructionError {
-    DaeConstructionError::DuplicateDefinition {
-        kind,
-        index,
-        span: at.span(),
-    }
-}
-
-fn incomplete(kind: &'static str, index: usize, at: DaeProvenance) -> DaeConstructionError {
-    DaeConstructionError::IncompleteDefinition {
-        kind,
-        index: u32::try_from(index)
-            .expect("a decoded DAE arena cannot exceed addressable u32 capacity"),
-        span: at.span(),
     }
 }

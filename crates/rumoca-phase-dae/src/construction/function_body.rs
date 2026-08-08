@@ -344,14 +344,30 @@ pub(super) fn lower_function_conditional<'dae>(
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, input.span)?;
     let lowered = lower_function_conditional_values(construction, body, input)?;
-    construction.functions(|functions| functions.assign_all(body, &lowered, provenance))
+    construction.functions(|functions| {
+        functions.assign_conditional_all(
+            body,
+            &lowered.targets,
+            &lowered.conditions,
+            &lowered.branches,
+            &lowered.fallback,
+            provenance,
+        )
+    })
+}
+
+struct LoweredFunctionConditional<'dae> {
+    targets: Vec<dae::FunctionValueId<'dae>>,
+    conditions: Vec<dae::ExprId<'dae>>,
+    branches: Vec<Vec<dae::ExprId<'dae>>>,
+    fallback: Vec<dae::ExprId<'dae>>,
 }
 
 fn lower_function_conditional_values<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &dae::FunctionBody<'dae>,
     input: FunctionConditional<'_, '_, 'dae>,
-) -> Result<Vec<(dae::FunctionValueId<'dae>, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
+) -> Result<LoweredFunctionConditional<'dae>, dae::DaeConstructionError> {
     let conditions = input
         .blocks
         .iter()
@@ -396,38 +412,42 @@ fn lower_function_conditional_values<'dae>(
     };
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, input.span)?;
-    // Build every target's conditional value against the shared pre-conditional
-    // definitions, then commit them together. A target's branch value may read a
-    // sibling target's pre-conditional definition (`X[i] := value` while
-    // `value := value - L·X[k]`), and those reads can be mutual, so no per-target
-    // assignment order keeps every read fact current — only an atomic commit does.
-    let mut lowered = Vec::with_capacity(input.targets.len());
+    // Correlate every branch value against the shared pre-conditional
+    // definitions, then let the DAE constructor derive and commit all joined
+    // definitions together. A target's branch value may read a sibling target's
+    // pre-conditional definition (`X[i] := value` while `value := value - L·X[k]`),
+    // and those reads can be mutual, so no per-target assignment order keeps
+    // every read fact current — only an atomic commit does.
+    let mut targets = Vec::with_capacity(input.targets.len());
+    let mut branches = vec![Vec::with_capacity(input.targets.len()); branch_values.len()];
+    let mut fallback = Vec::with_capacity(input.targets.len());
     for target in input.targets {
         let target_id = function_value_coordinate(input.symbols.coordinates, target);
-        let mut values = Vec::with_capacity(branch_values.len());
-        for branch in &branch_values {
-            values.push(match branch.get(target) {
+        targets.push(target_id);
+        for (lowered_branch, branch) in branches.iter_mut().zip(&branch_values) {
+            lowered_branch.push(match branch.get(target) {
                 Some(value) => *value,
                 None => construction
                     .functions(|functions| functions.read(body, target_id, provenance))?,
             });
         }
-        let fallback = match fallback_values
-            .as_ref()
-            .and_then(|values| values.get(target))
-        {
-            Some(value) => *value,
-            None => {
-                construction.functions(|functions| functions.read(body, target_id, provenance))?
-            }
-        };
-        let branches = conditions.iter().copied().zip(values);
-        let value = construction.expressions(|expressions| {
-            expressions.at(provenance).conditional(branches, fallback)
-        })?;
-        lowered.push((target_id, value));
+        fallback.push(
+            match fallback_values
+                .as_ref()
+                .and_then(|values| values.get(target))
+            {
+                Some(value) => *value,
+                None => construction
+                    .functions(|functions| functions.read(body, target_id, provenance))?,
+            },
+        );
     }
-    Ok(lowered)
+    Ok(LoweredFunctionConditional {
+        targets,
+        conditions,
+        branches,
+        fallback,
+    })
 }
 
 struct ConditionalBranch<'scope, 'statement, 'dae> {
@@ -1377,8 +1397,16 @@ fn lower_loop_conditional<'dae>(
             ..conditional
         },
     )?;
-    construction
-        .functions(|functions| functions.assign_all_loop(&mut loop_body, &lowered, provenance))?;
+    construction.functions(|functions| {
+        functions.assign_conditional_all_loop(
+            &mut loop_body,
+            &lowered.targets,
+            &lowered.conditions,
+            &lowered.branches,
+            &lowered.fallback,
+            provenance,
+        )
+    })?;
     Ok(loop_body)
 }
 

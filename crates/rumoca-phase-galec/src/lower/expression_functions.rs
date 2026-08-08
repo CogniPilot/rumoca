@@ -86,7 +86,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 detail: "an eager-call plan referenced a non-call expression".to_owned(),
             });
         };
-        self.materialize_function_call(function, arguments, node.provenance().span())?;
+        self.materialize_function_call(call, function, arguments, node.provenance().span())?;
         Ok(())
     }
 
@@ -432,8 +432,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         if self.materialize_function_values
             && user_functions::is_directly_lowerable(self.view, function)
         {
-            return self
-                .lower_materialized_function_call(function, output, arguments, indices, span);
+            return self.lower_materialized_function_call(
+                call, function, output, arguments, indices, span,
+            );
         }
         let result = self.enter_function_call(call, function, output, arguments, indices, span)?;
         let lowered = self.lower_at(result, indices);
@@ -443,6 +444,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn lower_materialized_function_call(
         &mut self,
+        call: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
         output: u32,
         arguments: dae::ExpressionOperands<'dae>,
@@ -473,7 +475,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                         "primitive function result is missing from the flattened GALEC interface"
                             .to_owned(),
                 })?;
-        let names = self.materialize_function_call(function, arguments, span)?;
+        let names = self.materialize_function_call(call, function, arguments, span)?;
         let name = names
             .get(selected)
             .expect("checked flattened function output resolves")
@@ -490,6 +492,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn materialize_function_call(
         &mut self,
+        call: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
         arguments: dae::ExpressionOperands<'dae>,
         span: Span,
@@ -519,7 +522,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let names = if let Some(names) = self.materialized_function_calls.get(&key) {
             names.clone()
         } else {
-            let names = self.materialized_result_names(function_view, span)?;
+            let names = self.materialized_result_names(call, function_view, span)?;
             let arguments = self.lower_direct_function_arguments(function_view, arguments, span)?;
             self.pending_prefix_statements.push(gast::Spanned::new(
                 gast::Statement::MultiAssignment {
@@ -603,13 +606,80 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         )))
     }
 
+    /// Lower a single record-valued call into the flattened storage owned by
+    /// the checked destination record.
+    pub(super) fn lower_direct_record_call_assignment(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        target: dae::FunctionValueView<'dae>,
+        target_type: &dae::ValueType,
+        span: Span,
+    ) -> Result<Option<gast::Spanned<gast::Statement>>, GalecTargetError> {
+        if !target_type.is_record() || !target_type.dimensions().is_empty() {
+            return Ok(None);
+        }
+        let node = self
+            .view
+            .expression(expression)
+            .expect("checked direct record call assignment resolves");
+        let dae::ExpressionOperation::Call {
+            function,
+            output,
+            arguments,
+        } = node.operation()
+        else {
+            return Ok(None);
+        };
+        let function_view = self
+            .view
+            .function(function)
+            .expect("checked direct record call function resolves");
+        let Some(result_type) = function_view.result_types().get(output as usize) else {
+            return Ok(None);
+        };
+        if output != 0
+            || function_view.result_types().len() != 1
+            || result_type != target.value_type()
+            || !user_functions::is_directly_lowerable(self.view, function)
+        {
+            return Ok(None);
+        }
+        let arguments = self.lower_direct_function_arguments(function_view, arguments, span)?;
+        let mut targets = Vec::with_capacity(target_type.record_field_count());
+        for ordinal in 0..target_type.record_field_count() {
+            let (field_name, _) = self
+                .view
+                .record_field(target.value_type(), ordinal)
+                .expect("checked direct record target field resolves");
+            targets.push(gast::Reference::local(
+                user_functions::record_value_field_name(target, field_name)?,
+            ));
+        }
+        self.called_user_functions.insert(function.index());
+        Ok(Some(gast::Spanned::new(
+            gast::Statement::MultiAssignment {
+                targets,
+                call: gast::FunctionCall {
+                    function: user_functions::function_name(self.view, function_view)?,
+                    arguments,
+                },
+            },
+            span,
+        )))
+    }
+
     fn materialized_result_names(
         &mut self,
+        call: dae::ExprId<'dae>,
         function: dae::FunctionView<'dae>,
         span: Span,
     ) -> Result<Vec<gast::Name>, GalecTargetError> {
         let mut names = Vec::new();
-        for result_type_id in function.result_types().iter() {
+        let outputs = function
+            .values()
+            .filter(|value| value.role() == dae::FunctionValueRole::Output)
+            .collect::<Vec<_>>();
+        for (output, result_type_id) in outputs.into_iter().zip(function.result_types().iter()) {
             let result_type = self
                 .view
                 .value_type(result_type_id)
@@ -618,14 +688,18 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 self.append_materialized_record_results(
                     result_type_id,
                     result_type,
-                    function.name().as_str(),
+                    call,
+                    function,
+                    output.name().as_str(),
                     span,
                     &mut names,
                 )?;
             } else {
                 self.append_materialized_result(
                     result_type,
-                    function.name().as_str(),
+                    call,
+                    function,
+                    output.name().as_str(),
                     span,
                     &mut names,
                 )?;
@@ -638,12 +712,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         &mut self,
         result_type_id: dae::ValueTypeId<'dae>,
         result_type: &dae::ValueType,
-        function_name: &str,
+        call: dae::ExprId<'dae>,
+        function: dae::FunctionView<'dae>,
+        output_name: &str,
         span: Span,
         names: &mut Vec<gast::Name>,
     ) -> Result<(), GalecTargetError> {
         for field in 0..result_type.record_field_count() {
-            let (_, field_type) = self
+            let (field_name, field_type) = self
                 .view
                 .record_field(result_type_id, field)
                 .expect("checked direct record result field resolves");
@@ -651,7 +727,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .view
                 .value_type(field_type)
                 .expect("checked direct record result field type resolves");
-            self.append_materialized_result(field_type, function_name, span, names)?;
+            self.append_materialized_result(
+                field_type,
+                call,
+                function,
+                &format!("{output_name}.{field_name}"),
+                span,
+                names,
+            )?;
         }
         Ok(())
     }
@@ -659,15 +742,22 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     fn append_materialized_result(
         &mut self,
         result_type: &dae::ValueType,
-        function_name: &str,
+        call: dae::ExprId<'dae>,
+        function: dae::FunctionView<'dae>,
+        result_name: &str,
         span: Span,
         names: &mut Vec<gast::Name>,
     ) -> Result<(), GalecTargetError> {
-        let result_scalar = scalar_type(result_type.scalar_type(), function_name, span)?;
-        let name = gast::Name::ident(format!(
-            "rumoca_{}_call_{}",
-            self.temporary_namespace, self.temporary_counter
-        ));
+        let result_scalar = scalar_type(result_type.scalar_type(), function.name().as_str(), span)?;
+        let materialization = self.temporary_counter;
+        let name = crate::mangle::galec_variable_name(&format!(
+            "rumoca.tmp.{}.{}.{}.call{}.result{}",
+            self.temporary_namespace,
+            function.name(),
+            result_name,
+            call.index(),
+            materialization
+        ))?;
         self.temporary_counter += 1;
         self.temporary_locals.push(gast::VariableDeclaration {
             ty: gast::TypeRef::Primitive(result_scalar),
@@ -766,6 +856,18 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .expression(argument)
             .expect("checked function argument resolves");
         let span = node.provenance().span();
+
+        if let dae::ExpressionOperation::Field { base, field } = node.operation() {
+            if let Some(value) = self
+                .materialized_shared_record_fields
+                .get(&(base.index(), field as usize))
+            {
+                return Ok(Some(value.clone()));
+            }
+            if let Some(value) = self.direct_record_function_argument(base, field as usize)? {
+                return Ok(Some(value));
+            }
+        }
 
         if let dae::ExpressionOperation::FunctionValue { definition, .. } = node.operation() {
             if self.function_scope != Some(definition.id().function()) {
@@ -866,10 +968,19 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         field_type_id: dae::ValueTypeId<'dae>,
         call_span: Span,
     ) -> Result<gast::Expression, GalecTargetError> {
+        if let Some(value) = self
+            .materialized_shared_record_fields
+            .get(&(argument.index(), field))
+        {
+            return Ok(value.clone());
+        }
         let field_type = self
             .view
             .value_type(field_type_id)
             .expect("checked direct record argument field type resolves");
+        if let Some(reference) = self.direct_record_function_argument(argument, field)? {
+            return Ok(reference);
+        }
         let scalar = scalar_type(
             field_type.scalar_type(),
             "<function-record-argument>",
@@ -887,6 +998,91 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             scalar,
             call_span,
         )
+    }
+
+    /// Project one field of a checked current record directly to its flattened
+    /// GALEC storage. `FunctionValue` carries the exact reaching definition,
+    /// so this does not recover identity from source names.
+    pub(super) fn direct_record_function_argument(
+        &self,
+        argument: dae::ExprId<'dae>,
+        field: usize,
+    ) -> Result<Option<gast::Expression>, GalecTargetError> {
+        let node = self
+            .view
+            .expression(argument)
+            .expect("checked record function argument resolves");
+        let span = node.provenance().span();
+        match node.operation() {
+            dae::ExpressionOperation::FunctionValue { definition, .. }
+                if self.function_scope == Some(definition.id().function()) =>
+            {
+                let value = self
+                    .view
+                    .function(definition.id().function())
+                    .expect("checked function identity resolves")
+                    .values()
+                    .find(|value| value.id() == definition.target())
+                    .expect("checked record definition target resolves");
+                let (field_name, _) = self
+                    .view
+                    .record_field(value.value_type(), field)
+                    .expect("checked record value field resolves");
+                Ok(Some(gast::Expression::Ref(gast::Reference::Local(
+                    gast::RefPart {
+                        name: user_functions::record_value_field_name(value, field_name)?,
+                        subscripts: Vec::new(),
+                        span,
+                    },
+                ))))
+            }
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
+                parameter,
+            )) if self.function_scope == Some(parameter.function()) => {
+                let parameter = self
+                    .view
+                    .function(parameter.function())
+                    .expect("checked function identity resolves")
+                    .parameters()
+                    .find(|candidate| candidate.id() == parameter)
+                    .expect("checked record parameter resolves");
+                let (field_name, _) = self
+                    .view
+                    .record_field(parameter.value_type(), field)
+                    .expect("checked record parameter field resolves");
+                Ok(Some(gast::Expression::Ref(gast::Reference::Local(
+                    gast::RefPart {
+                        name: user_functions::record_parameter_field_name(parameter, field_name)?,
+                        subscripts: Vec::new(),
+                        span,
+                    },
+                ))))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Preserve a whole aggregate record field when the record expression or
+    /// its selected constructor field already denotes checked storage.
+    pub(super) fn direct_aggregate_record_field(
+        &self,
+        expression: dae::ExprId<'dae>,
+        field: usize,
+    ) -> Result<Option<gast::Expression>, GalecTargetError> {
+        if let Some(reference) = self.direct_record_function_argument(expression, field)? {
+            return Ok(Some(reference));
+        }
+        let node = self
+            .view
+            .expression(expression)
+            .expect("checked aggregate record field resolves");
+        let dae::ExpressionOperation::Record(fields) = node.operation() else {
+            return Ok(None);
+        };
+        let Some(field) = fields.get(field) else {
+            return Ok(None);
+        };
+        self.direct_aggregate_function_argument(field)
     }
 
     fn materialize_aggregate_function_argument(
@@ -1372,6 +1568,25 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
+        if let Some(gast::Expression::Ref(reference)) = self
+            .materialized_shared_record_fields
+            .get(&(base.index(), field))
+        {
+            let reference = match reference {
+                gast::Reference::Local(part) => gast::Reference::Local(gast::RefPart {
+                    name: part.name.clone(),
+                    subscripts: indices.to_vec(),
+                    span,
+                }),
+                gast::Reference::State(_) => {
+                    unreachable!("shared record storage is always function-local")
+                }
+            };
+            return Ok(TypedExpression {
+                expression: gast::Expression::Ref(reference),
+                scalar_type,
+            });
+        }
         let node = self
             .view
             .expression(base)
@@ -1488,7 +1703,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 detail: "record field is missing from the flattened GALEC function interface"
                     .to_owned(),
             })?;
-            let names = self.materialize_function_call(function, arguments, projection.span)?;
+            let names =
+                self.materialize_function_call(call, function, arguments, projection.span)?;
             let name = names
                 .get(selected)
                 .expect("checked flattened record output resolves")

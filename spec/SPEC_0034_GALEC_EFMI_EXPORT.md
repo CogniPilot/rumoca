@@ -9,18 +9,20 @@ conformance is **Earned** (round-trip through `rumoca-phase-parse-galec`, plus
 the `.alg` language server).
 
 ## Summary
-Rumoca exports eFMI Algorithm Code and Production Code (GALEC `.alg`, C99, and
-XML manifests in an eFMU container) as a target-language projection over
-canonical artifacts; GALEC is never a canonical IR stage.
+Rumoca exports eFMI Algorithm Code from checked GALEC and Production Code from
+its checked `SolveAlgorithmBlock` executable refinement; GALEC is never a
+canonical Modelica IR stage and MiniJinja never performs semantic lowering.
 
 ## Pipeline Placement
 
 ```text
-AST -> Flat -> DAE -> Solve                    canonical (SPEC_0007)
-DAE (+ optional provenance)
+AST -> Flat -> DAE -> SolveProblem             canonical (SPEC_0007)
+DAE
   -> rumoca-phase-galec
   -> AlgorithmCodePackage = checked GALEC + checked target-neutral correlations
-  -> typed view -> target.toml + MiniJinja -> .alg/XML/C artifacts
+       |-> typed Algorithm Code view -> MiniJinja -> .alg + AC metadata
+       `-> rumoca-phase-solve -> SolveAlgorithmBlock
+              -> typed executable view -> MiniJinja -> Production C/H + PC metadata
 ```
 
 ## Module Layout and Dependency Direction
@@ -28,6 +30,7 @@ DAE (+ optional provenance)
 ```text
 rumoca-compile -> rumoca-phase-galec -> rumoca-ir-dae/solve
                                       -> rumoca-ir-galec
+rumoca-phase-solve -> rumoca-ir-galec -> rumoca-ir-solve
 rumoca-phase-parse-galec -> rumoca-ir-galec
 rumoca-eval-galec -> rumoca-ir-galec
 rumoca-phase-codegen -> typed Algorithm Code view -> MiniJinja
@@ -45,7 +48,7 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-005 | Parity source of truth is the §3.2.6 builtin catalog: accepted constructs lower to semantic operations that templates render exactly; Appendix C names are rejected. | `rumoca-phase-galec` + `rumoca-ir-galec` | Gate/template drift emits nonexistent functions (T8). |
 | GAL-006 | Generic capability validation always runs; GALEC admissibility is additive. Manifests select checked GALEC; construction completes before rendering. | `rumoca-compile` | No validator bypass or render-time lowering (SPEC_0029 §12). |
 | GAL-007 | Unsupported features fail with stable `unsupported-feature:<feature_id>` diagnostics; errors are structured phase-local enums with stable codes and spans (SPEC_0008); no silent defaults. | `rumoca-phase-galec` | Fail early; CI-aggregatable. |
-| GAL-008 | MiniJinja templates and `target.toml` own generated C and eFMI details. Rust exposes only a closed target-neutral view and generic artifact commands; it owns no eFMI context/schema model or C/XML fragments. Dispatch fails closed. | target directories | SPEC_0029 §12. |
+| GAL-008 | Templates own syntax and artifact policy. Production C/H receives a closed checked `SolveAlgorithmBlock` view and makes no semantic choice. | target directories | SPEC_0029 §12. |
 | GAL-009 | MiniJinja renders `.alg` from the checked semantic view. Rust exposes typed semantics and provenance; it MUST NOT print fragments. | `rumoca-phase-codegen` templates | Same boundary as every IR. |
 | GAL-010 | IR owns checked Algorithm Code/correlations; parse owns `.alg` and private recovery; phase-galec owns projection/admissibility; codegen owns generic rendering and the typed view; target directories own GALEC/C/XML/package policy. No compatibility facade or codegen eFMI subsystem exists. | workspace layout | Enforce ownership. |
 | GAL-011 | GALEC output via `--target galec` / `--target embedded-c-galec`; `--emit` stays reserved for canonical IR inspection. | `rumoca` CLI | Preserves the CLI contract. |
@@ -61,18 +64,21 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-021 | Claims follow machine-checked Conformance Ladder rungs. `target.toml` declares artifact/checksum graphs and schema gates; generic commands use exact bytes and CI recomputes from disk. No placeholder checksum; lower-rung targets self-describe honestly. | target directories + generic artifact commands | Wrong checksums invalidate eFMUs. |
 | GAL-022 | Version pinning: profile string `efmi-1.0.0-beta-1`; container XSD `0.11.0` / AlgorithmCode `0.14.0` / ProductionCode `0.17.0`; `efmiVersion` fixed `"1.0.0"`. These are literals declared by the owning target's `target.toml` and templates, never Rust constants or context fields. | target directories | Beta-fixed constants change at 1.0.0 final. |
 | GAL-023 | Vendored BSD-3-Clause Beta-1 XSDs live in target assets, retain LICENSE, and are copied by declared operations. CC-BY-SA standard text/grammar/examples are not copied beyond short attributed quotes; no endorsement is implied. | target directories | License terms. |
-| GAL-024 | Embedded C is two-track: `embedded-c-galec` is a non-eFMI export; `galec-production` earns the Production Code rung. Both use C99 `float` for GALEC Real storage and arithmetic, and the Production Code manifest declares `efmiFloat32`/`32-bit` consistently. Neither fabricates a higher claim. | target templates | **Why** below. |
+| GAL-024 | Both C tracks consume one float32-profile `SolveAlgorithmBlock`; its evaluator rounds every Real operation, and Production Code declares `efmiFloat32`/`32-bit`. | Solve lowering + templates | **Why** below. |
 | GAL-025 | v1 scope rejections say "not yet supported by the Rumoca GALEC projection" — never "unsupported by eFMI". | `rumoca-phase-galec` | eFMI expects discretized models. |
-| GAL-026 | Checked GALEC data, package data, semantic views, and templates are array-native; scalarized lowering is an implementation stage, never a language-layer assumption. | IR + phase + templates | Scalarization curtails optimization. |
+| GAL-026 | Checked GALEC and Solve data are array-native; aggregate operations are first-class and templates only render them. | IR + lowering + templates | Preserve optimization. |
 | GAL-027 | `rumoca-eval-galec` defines explicit semantics for checked blocks: statement order, method transitions, signals, escape sets, `limit`, NaN comparisons, and conversions. It returns typed failures and has no lowering/codegen dependency. | `rumoca-eval-galec` | Independent proof/differential oracle. |
 | GAL-028 | Each target declares its Integer domain; range proofs cover every emitted Integer operation and the evaluator uses that domain. Unproved operations fail with provenance. Wrapping, saturation, guesses, and signed-C overflow are prohibited. | target config + proof view | Beta-1 leaves overflow undefined. |
 | GAL-029 | C targets pin C99 and a named MISRA C:2023 assurance profile. Generated artifacts disclaim compliance until project planning, guideline classification/enforcement, deviations, and review records satisfy MISRA Compliance:2020. Tool passes alone are not compliance. | C templates + assurance profile | Prevent false claims. |
 | GAL-030 | Generated C prohibits dynamic allocation, recursion, reserved identifiers, implicit narrowing, and function-like macros; loops/storage are bounded and helper arguments evaluate once. Checked construction excludes every possible C undefined behavior or export fails. | checked view + C templates | Reviewable subset. |
 | GAL-031 | Pinned assurance gates cover every emitted C/H file and produce reproducible artifacts. Accepted diagnostics require narrow machine-readable deviations naming guideline, construct, scope, rationale, and verification; global suppressions are forbidden. | target CI + records | Repeatable evidence. |
 | GAL-032 | Rumoca may claim only DO-178C project support. Evidence requires deterministic C, end-to-end traceability, requirements tests, target/tool/runtime assumptions and identities, structural-coverage inputs, and a DO-330 qualification versus independent-output-verification choice. Artifacts never claim compliance or a software level. | evidence bundle | Certification is project-level. |
-| GAL-033 | Target-stronger operations require a checked equivalent GALEC expansion; renderers select existing representations, never recover them by syntax matching. Bounded selection owns reference, extents, once-evaluated indices, and fallback: GALEC emits exhaustive selection; C emits a UB-free bounded subscript. | IR + typed view + templates | Preserve tensors through legalization. |
-| GAL-034 | C storage follows the checked lexical-use tree, never names/text. Live locals occupy the lowest scope dominating all uses; cross-scope locals remain outer and unreferenced declarations are omitted. Conditions, bounds, targets, calls, and output copies count as uses. Distinct variables never merge. | typed view + C template | Reduce safe stack lifetimes. |
-| GAL-035 | Whole-tensor checked storage references pass directly to read-only function inputs. Function-local reads require the branded reaching definition accepted at that call; computed tensors retain distinct storage. Renderers never infer this from names or spelling. | checked DAE + phase-galec | Remove redundant tensor copies. |
+| GAL-033 | Target-stronger operations and bounded selection are fully checked before rendering. | Solve construction | Preserve tensors through legalization. |
+| GAL-034 | C storage follows checked lexical scopes and storage classes, never names or text. | Solve construction | Bound stack lifetimes. |
+| GAL-035 | Whole-tensor storage, reaching definitions, and alias rules are checked call facts, never template inference. | DAE + Solve lowering | Remove redundant copies. |
+| GAL-036 | One aggregate source call becomes one action with exact result cardinality and semantic identities. | DAE + Solve lowering | Preserve readable dataflow. |
+| GAL-037 | C renders checked aggregate operations without constructing, scalarizing, fusing, or rescheduling them. | Solve view + templates | Bound source growth. |
+| GAL-038 | Independent GALEC, Solve, and C execution are compared over all lifecycle-visible effects. | evaluator/codegen tests | Avoid self-confirming defects. |
 
 **Why (GAL-016):** GALEC has no `previous()`/`sample()` (T2); `pre(x)` becomes
 protected state `'previous(x)'` committed at end of DoStep; the sample period is a
@@ -95,7 +101,7 @@ Reopening one requires amending this spec.
 | "GALEC-derived text export" | `.alg` + `manifest.xml` render; honest self-description only | Earned (`galec`; `embedded-c-galec` is the honest non-eFMI track) |
 | "eFMI Algorithm Code export" | Schema-valid eFMU: `__content.xml` + `schemas/` + Algorithm Code container; correct SHA-1s, UUID/ids, strict UTC timestamps | Earned (`galec`) |
 | "GALEC language conformance" | Above + round-trip parse of emitted `.alg`: render∘parse∘render idempotence | Earned (`galec`; `rumoca-phase-parse-galec` round-trip integration tests) |
-| "eFMI Production Code export" | Schema-valid eFMU co-emitting Algorithm Code **and** Production Code (§2.2); PC `manifest.xml` xmllint-valid; LogicalData maps every AC variable + all three BlockMethods once; PC `ManifestReference@checksum` = SHA-1 of the AC manifest bytes, `@manifestRefId` = AC root UUID; whole SHA-1 web recomputed from written bytes, no placeholders | Earned (`galec-production`) |
+| "eFMI Production Code export" | Schema-valid co-emitted AC/PC; complete LogicalData/method mapping; exact manifest reference and recomputed checksum web | Earned (`galec-production`) |
 
 ### Variable Classification (GAL-020, normative)
 
@@ -141,15 +147,17 @@ are normative by reference from them.
 | Reserved-name rejection; mangling injective + reserved-disjoint; quoted-id round-trip | GAL-015 |
 | Type-inference failure ⇒ diagnostic, not default | GAL-007 |
 | DoStep parameter-free; writable variables assigned in Startup; `start` mirrors Startup; empty Recalibrate emitted | GAL-017 |
-| Manifest XSD-validate + SHA-1 recompute + id uniqueness; full-container validation (all XMLs vs XSDs, all checksums); negative schema cases (missing element, wrong order, bad enum, malformed UUID/timestamp, dim < 1) | GAL-021 |
+| Full-container schema/checksum/id validation plus malformed-container negatives | GAL-021 |
 | `--target galec` CLI smoke + real template-CI render | GAL-011/012 |
 | Generated-C compile check (`cc -Wall -Werror`, temp dir) when C output exists | GAL-012/024 |
 | Differential execution: checked source semantics ↔ `rumoca-eval-galec` ↔ generated C/eFMI, including signal/error cases | GAL-027 |
 | Correlated-operation construction rejects malformed references/extents; GALEC renders only the conforming expansion; C renders the correlated native operation; differential tests cover every in-range index and the out-of-range fallback | GAL-026/033 |
-| Scoped-local fixtures prove branch/loop placement, dead-declaration omission, and cross-scope retention; sanitizer tests execute every branch. Compiler CI budgets representative large tensors; downstream CI owns RDD2 product budgets | GAL-026/030/034 |
-| Function-call fixtures cover current and stale local definitions, self-aliasing input/output calls, and computed tensor arguments; only the exact current storage reference is direct, with generated-C differential and stack-usage checks | GAL-026/030/035 |
+| Lexical-scope fixtures, sanitizer execution, and tensor/RDD2 stack budgets | GAL-026/030/034 |
+| Call fixtures cover reaching definitions, aliasing, computed tensors, differential execution, and stack use | GAL-026/030/035 |
+| Record-call fixtures and RDD2 ratchets pin one-call cardinality, identities, temporaries, and source size | GAL-026/030/035/036 |
+| Rank-1/2 aggregate loops and stable C/GALEC layout goldens | GAL-026/030/037 |
 | Target Integer boundary tests prove `minInteger`/`maxInteger`, conversion, arithmetic, and fail-closed unproved-overflow behavior | GAL-028 |
-| Generated-C profile preflight over every C/H artifact: forbidden constructs, fixed storage/bounds, identifier hygiene, conversion warnings, and deterministic re-render | GAL-029/030 |
+| Every C/H artifact passes profile preflight and deterministic re-render | GAL-029/030 |
 | Pinned MISRA-capable analyzer + checked-in configuration; zero unexplained findings; reviewed per-guideline records and narrow deviations before any compliance claim | GAL-029/031 |
 | Evidence-bundle schema/trace links reproduce from exact input and tool identities; negative tests reject missing/stale links | GAL-032 |
 

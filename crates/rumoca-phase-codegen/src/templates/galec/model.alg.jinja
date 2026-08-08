@@ -65,7 +65,15 @@
 {%- if value.kind == "assignment" -%}
 {{ indentation(depth) }}{{ reference(value.value.target) }} := {{ expr(value.value.value) }};{{ "\n" }}
 {%- elif value.kind == "multi_assignment" -%}
-{{ indentation(depth) }}({% for target in value.value.targets %}{{ reference(target) }}{% if not loop.last %}, {% endif %}{% endfor %}) := {{ call(value.value.call) }};{{ "\n" }}
+{{ indentation(depth) }}({{ "\n" }}
+{%- for target in value.value.targets %}
+{{ indentation(depth + 1) }}{{ reference(target) }}{% if not loop.last %},{% endif %}{{ "\n" }}
+{%- endfor %}
+{{ indentation(depth) }}) := {{ name(value.value.call.function) }}({{ "\n" }}
+{%- for argument in value.value.call.arguments %}
+{{ indentation(depth + 1) }}{{ expr(argument) }}{% if not loop.last %},{% endif %}{{ "\n" }}
+{%- endfor %}
+{{ indentation(depth) }});{{ "\n" }}
 {%- elif value.kind == "call" -%}
 {{ indentation(depth) }}{{ call(value.value) }};{{ "\n" }}
 {%- elif value.kind == "if" -%}
