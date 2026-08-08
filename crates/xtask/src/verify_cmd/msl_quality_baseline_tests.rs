@@ -1,8 +1,9 @@
 use super::{
-    super::VerifyMslParityArgs, BaselineChoice, DistributionMedian, InitialConditionStats,
-    MetricSchemaMigration, MslQualityBaselineHeader, OmcContextMigration, RuntimeRatioStats,
-    StateSelectionStats, TraceAccuracyStats, choose_baseline, load_baseline_header,
-    validate_context_migration, validate_metric_schema_migration,
+    super::VerifyMslParityArgs, BaselineChoice, CompilerContractMigrationHeader,
+    DistributionMedian, InitialConditionStats, MetricSchemaMigration, MslQualityBaselineHeader,
+    OmcContextMigration, PromotedBaselineBridge, RuntimeRatioStats, StateSelectionStats,
+    TraceAccuracyStats, choose_baseline, load_baseline_header, validate_context_migration,
+    validate_metric_schema_migration, validate_promoted_baseline_bridge,
 };
 use serde_json::json;
 use std::{fs, path::PathBuf};
@@ -10,11 +11,15 @@ use std::{fs, path::PathBuf};
 fn header(omc_version: &str) -> MslQualityBaselineHeader {
     MslQualityBaselineHeader {
         quality_gate_version: 3,
+        document_sha256: String::new(),
         run_scope: "full".to_string(),
+        git_commit: "fixture".to_string(),
         omc_version: omc_version.to_string(),
         sim_target_models: 566,
         omc_context_migration: None,
         metric_schema_migration: None,
+        compiler_contract_migration: None,
+        promoted_baseline_bridge: None,
         simulatable_attempted: 566,
         parse_models: 566,
         flatten_models: 565,
@@ -58,6 +63,32 @@ fn header(omc_version: &str) -> MslQualityBaselineHeader {
                 total_omc_only_states: 122,
             },
         },
+    }
+}
+
+fn promoted_bridge() -> PromotedBaselineBridge {
+    PromotedBaselineBridge {
+        from_quality_gate_version: 1,
+        from_git_commit: "08fac54846fd73a3471bafc6609a0d34e74f9fe3".to_string(),
+        from_sha256: "2b0a478b922583106342272bbf85411c539d50d9b9e0ca54c4dbb87621f05fe8".to_string(),
+        to_quality_gate_version: 3,
+        sim_target_models: 566,
+        evidence_git_commits: [
+            "a499eb8f15bf6af9d28f5a7011e82edfe73803b4",
+            "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b",
+            "6d57e9644b4da542a5498ee42510551e7e7ade70",
+        ]
+        .map(str::to_string)
+        .to_vec(),
+    }
+}
+
+fn compiler_contract_migration() -> CompilerContractMigrationHeader {
+    CompilerContractMigrationHeader {
+        from_contract: "permissive-dae-v1".to_string(),
+        to_contract: "checked-dae-v1".to_string(),
+        evidence_git_commit: "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b".to_string(),
+        sim_target_models: 566,
     }
 }
 
@@ -148,6 +179,60 @@ fn newer_checked_in_metric_schema_precedes_promoted_baseline() {
         choose_baseline(&promoted, &checked_in).expect("declared schema migration"),
         BaselineChoice::CheckedInMigration
     );
+}
+
+#[test]
+fn exact_promoted_v1_asset_uses_reviewed_migration_lineage() {
+    let mut promoted = header("OpenModelica 1.27.0~dev.beta.3");
+    promoted.quality_gate_version = 1;
+    promoted.git_commit = "08fac54846fd73a3471bafc6609a0d34e74f9fe3".to_string();
+    promoted.document_sha256 =
+        "2b0a478b922583106342272bbf85411c539d50d9b9e0ca54c4dbb87621f05fe8".to_string();
+
+    let mut checked_in = header("a96aa1a-cmake");
+    checked_in.omc_context_migration =
+        Some(migration("OpenModelica 1.27.0~dev.beta.3", "a96aa1a-cmake"));
+    checked_in.metric_schema_migration = Some(schema_migration());
+    checked_in.compiler_contract_migration = Some(compiler_contract_migration());
+    checked_in.promoted_baseline_bridge = Some(promoted_bridge());
+
+    assert_eq!(
+        choose_baseline(&promoted, &checked_in).expect("reviewed lineage should select"),
+        BaselineChoice::CheckedInMigration
+    );
+}
+
+#[test]
+fn promoted_baseline_bridge_rejects_any_other_old_asset() {
+    let mut promoted = header("OpenModelica 1.27.0~dev.beta.3");
+    promoted.quality_gate_version = 1;
+    promoted.git_commit = "08fac54846fd73a3471bafc6609a0d34e74f9fe3".to_string();
+    promoted.document_sha256 = "different".to_string();
+
+    let mut checked_in = header("a96aa1a-cmake");
+    checked_in.omc_context_migration =
+        Some(migration("OpenModelica 1.27.0~dev.beta.3", "a96aa1a-cmake"));
+    checked_in.metric_schema_migration = Some(schema_migration());
+    checked_in.compiler_contract_migration = Some(compiler_contract_migration());
+    checked_in.promoted_baseline_bridge = Some(promoted_bridge());
+
+    let error = choose_baseline(&promoted, &checked_in)
+        .expect_err("an unreviewed old baseline must fail closed");
+    assert!(error.to_string().contains("digest differs"), "{error}");
+}
+
+#[test]
+fn promoted_baseline_bridge_requires_the_ordered_evidence_chain() {
+    let mut baseline = header("a96aa1a-cmake");
+    baseline.metric_schema_migration = Some(schema_migration());
+    baseline.compiler_contract_migration = Some(compiler_contract_migration());
+    let mut bridge = promoted_bridge();
+    bridge.evidence_git_commits.swap(0, 1);
+    baseline.promoted_baseline_bridge = Some(bridge);
+
+    let error = validate_promoted_baseline_bridge(&baseline)
+        .expect_err("reordered evidence must fail closed");
+    assert!(error.to_string().contains("evidence chain"), "{error}");
 }
 
 #[test]

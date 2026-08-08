@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Deserializer};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,18 @@ const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
 const MSL_QUALITY_GATE_VERSION: u64 = 3;
 const PREVIOUS_MSL_QUALITY_GATE_VERSION: u64 = 2;
+const BRIDGED_PROMOTED_QUALITY_GATE_VERSION: u64 = 1;
 const MSL_QUALITY_RUN_SCOPE: &str = "full";
+const BRIDGED_PROMOTED_GIT_COMMIT: &str = "08fac54846fd73a3471bafc6609a0d34e74f9fe3";
+const BRIDGED_PROMOTED_SHA256: &str =
+    "2b0a478b922583106342272bbf85411c539d50d9b9e0ca54c4dbb87621f05fe8";
+const BRIDGED_PROMOTED_EVIDENCE_COMMITS: [&str; 3] = [
+    "a499eb8f15bf6af9d28f5a7011e82edfe73803b4",
+    "3fc9a6cb9c60e1137eb6151f29cb87e9ad35064b",
+    "6d57e9644b4da542a5498ee42510551e7e7ade70",
+];
+const CHECKED_DAE_FROM_CONTRACT: &str = "permissive-dae-v1";
+const CHECKED_DAE_TO_CONTRACT: &str = "checked-dae-v1";
 const V3_MIGRATION_CHANGE: &str = "reviewed-pointwise-oracle-boundaries-v1";
 const V3_STRICT_HIGH_BEFORE: usize = 118;
 const V3_STRICT_HIGH_AFTER: usize = 113;
@@ -25,7 +37,11 @@ const V3_EXCLUSIONS_SHA256: &str =
 #[derive(Debug, Clone, Deserialize)]
 struct MslQualityBaselineHeader {
     quality_gate_version: u64,
+    #[serde(skip)]
+    document_sha256: String,
     run_scope: String,
+    #[serde(default)]
+    git_commit: String,
     #[serde(deserialize_with = "deserialize_omc_version")]
     omc_version: String,
     sim_target_models: usize,
@@ -33,6 +49,10 @@ struct MslQualityBaselineHeader {
     omc_context_migration: Option<OmcContextMigration>,
     #[serde(default)]
     metric_schema_migration: Option<MetricSchemaMigration>,
+    #[serde(default)]
+    compiler_contract_migration: Option<CompilerContractMigrationHeader>,
+    #[serde(default)]
+    promoted_baseline_bridge: Option<PromotedBaselineBridge>,
     simulatable_attempted: usize,
     parse_models: usize,
     flatten_models: usize,
@@ -52,6 +72,24 @@ struct MslQualityBaselineHeader {
     sim_ok: usize,
     runtime_ratio_stats: RuntimeRatioStats,
     trace_accuracy_stats: TraceAccuracyStats,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CompilerContractMigrationHeader {
+    from_contract: String,
+    to_contract: String,
+    evidence_git_commit: String,
+    sim_target_models: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PromotedBaselineBridge {
+    from_quality_gate_version: u64,
+    from_git_commit: String,
+    from_sha256: String,
+    to_quality_gate_version: u64,
+    sim_target_models: usize,
+    evidence_git_commits: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -200,7 +238,11 @@ fn choose_baseline(
 ) -> Result<BaselineChoice> {
     validate_context_migration(checked_in)?;
     validate_metric_schema_migration(checked_in)?;
+    validate_promoted_baseline_bridge(checked_in)?;
     if promoted.quality_gate_version != checked_in.quality_gate_version {
+        if bridge_matches_promoted(promoted, checked_in)? {
+            return Ok(BaselineChoice::CheckedInMigration);
+        }
         let Some(migration) = checked_in.metric_schema_migration.as_ref() else {
             bail!(
                 "MSL quality schema differs without an explicit migration (promoted={}, checked-in={})",
@@ -265,6 +307,79 @@ fn choose_baseline(
     );
     validate_migration_metric_integrity(promoted, checked_in, false, true)?;
     Ok(BaselineChoice::CheckedInMigration)
+}
+
+fn bridge_matches_promoted(
+    promoted: &MslQualityBaselineHeader,
+    checked_in: &MslQualityBaselineHeader,
+) -> Result<bool> {
+    let Some(bridge) = checked_in.promoted_baseline_bridge.as_ref() else {
+        return Ok(false);
+    };
+    if bridge.from_quality_gate_version != promoted.quality_gate_version {
+        return Ok(false);
+    }
+    ensure!(
+        promoted.document_sha256 == bridge.from_sha256,
+        "promoted MSL baseline digest differs from the reviewed lineage bridge"
+    );
+    ensure!(
+        promoted.git_commit == bridge.from_git_commit,
+        "promoted MSL baseline commit differs from the reviewed lineage bridge"
+    );
+    ensure!(
+        promoted.sim_target_models == bridge.sim_target_models,
+        "promoted MSL baseline target set differs from the reviewed lineage bridge"
+    );
+    let omc_migration = checked_in
+        .omc_context_migration
+        .as_ref()
+        .context("promoted baseline bridge requires the reviewed OMC context migration")?;
+    ensure!(
+        omc_migration.from_omc_version == promoted.omc_version,
+        "promoted MSL baseline OMC context differs from the reviewed lineage bridge"
+    );
+    Ok(true)
+}
+
+fn validate_promoted_baseline_bridge(baseline: &MslQualityBaselineHeader) -> Result<()> {
+    let Some(bridge) = baseline.promoted_baseline_bridge.as_ref() else {
+        return Ok(());
+    };
+    ensure!(
+        bridge.from_quality_gate_version == BRIDGED_PROMOTED_QUALITY_GATE_VERSION
+            && bridge.to_quality_gate_version == MSL_QUALITY_GATE_VERSION,
+        "MSL promoted baseline bridge must be the reviewed version-1 to version-3 lineage"
+    );
+    ensure!(
+        bridge.from_git_commit == BRIDGED_PROMOTED_GIT_COMMIT
+            && bridge.from_sha256 == BRIDGED_PROMOTED_SHA256,
+        "MSL promoted baseline bridge source identity differs from the reviewed release asset"
+    );
+    ensure!(
+        bridge.sim_target_models == baseline.sim_target_models,
+        "MSL promoted baseline bridge target set differs from the checked-in baseline"
+    );
+    ensure!(
+        bridge.evidence_git_commits == BRIDGED_PROMOTED_EVIDENCE_COMMITS.map(str::to_string),
+        "MSL promoted baseline bridge evidence chain differs from the reviewed migrations"
+    );
+    let compiler_migration = baseline
+        .compiler_contract_migration
+        .as_ref()
+        .context("MSL promoted baseline bridge requires compiler-contract evidence")?;
+    ensure!(
+        compiler_migration.from_contract == CHECKED_DAE_FROM_CONTRACT
+            && compiler_migration.to_contract == CHECKED_DAE_TO_CONTRACT
+            && compiler_migration.evidence_git_commit == BRIDGED_PROMOTED_EVIDENCE_COMMITS[1]
+            && compiler_migration.sim_target_models == baseline.sim_target_models,
+        "MSL promoted baseline bridge compiler-contract evidence differs from the reviewed cutover"
+    );
+    ensure!(
+        baseline.metric_schema_migration.is_some(),
+        "MSL promoted baseline bridge requires comparator-policy migration evidence"
+    );
+    Ok(())
 }
 
 fn validate_context_migration(baseline: &MslQualityBaselineHeader) -> Result<()> {
@@ -616,27 +731,32 @@ fn ensure_runtime_speedup_not_regressed(label: &str, promoted: f64, checked_in: 
 }
 
 fn load_baseline_header(path: &Path) -> Result<MslQualityBaselineHeader> {
-    load_baseline_header_with_previous(path, false)
+    load_baseline_header_for_source(path, false)
 }
 
 fn load_promoted_baseline_header(path: &Path) -> Result<MslQualityBaselineHeader> {
-    load_baseline_header_with_previous(path, true)
+    load_baseline_header_for_source(path, true)
 }
 
-fn load_baseline_header_with_previous(
+fn load_baseline_header_for_source(
     path: &Path,
-    allow_previous_version: bool,
+    is_promoted_source: bool,
 ) -> Result<MslQualityBaselineHeader> {
     let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let baseline: MslQualityBaselineHeader = serde_json::from_slice(&data).map_err(|error| {
-        anyhow::anyhow!(
-            "invalid MSL quality baseline JSON in {}: {error}",
-            path.display()
-        )
-    })?;
+    let mut baseline: MslQualityBaselineHeader =
+        serde_json::from_slice(&data).map_err(|error| {
+            anyhow::anyhow!(
+                "invalid MSL quality baseline JSON in {}: {error}",
+                path.display()
+            )
+        })?;
+    baseline.document_sha256 = format!("{:x}", Sha256::digest(&data));
     let version_supported = baseline.quality_gate_version == MSL_QUALITY_GATE_VERSION
-        || (allow_previous_version
-            && baseline.quality_gate_version == PREVIOUS_MSL_QUALITY_GATE_VERSION);
+        || (is_promoted_source
+            && matches!(
+                baseline.quality_gate_version,
+                PREVIOUS_MSL_QUALITY_GATE_VERSION | BRIDGED_PROMOTED_QUALITY_GATE_VERSION
+            ));
     ensure!(
         version_supported,
         "unsupported MSL quality_gate_version={} in {}",
@@ -658,6 +778,8 @@ fn load_baseline_header_with_previous(
         .with_context(|| format!("invalid OMC context migration in {}", path.display()))?;
     validate_metric_schema_migration(&baseline)
         .with_context(|| format!("invalid metric schema migration in {}", path.display()))?;
+    validate_promoted_baseline_bridge(&baseline)
+        .with_context(|| format!("invalid promoted baseline bridge in {}", path.display()))?;
     Ok(baseline)
 }
 
