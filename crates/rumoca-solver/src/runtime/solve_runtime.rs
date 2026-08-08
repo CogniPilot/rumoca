@@ -25,8 +25,8 @@ use crate::{
     timeline::sample_time_match_with_tol,
 };
 use rumoca_eval_solve::refresh_plan::{
-    AlgebraicRefreshRow, RefreshPlan, build_algebraic_refresh_plan, build_derivative_refresh_plan,
-    build_root_refresh_plan, trace_refresh_plan,
+    AlgebraicRefreshRow, RefreshPlan, RefreshStage, build_algebraic_refresh_plan,
+    build_derivative_refresh_plan, build_root_refresh_plan, trace_refresh_plan,
 };
 use rumoca_eval_solve::{
     EvalSolveError, PreparedComputeBlock, PreparedScalarProgramBlock, RowEvalContext,
@@ -41,6 +41,8 @@ mod initial_event;
 mod initial_projection;
 mod plans;
 mod refresh_batch;
+mod refresh_projection;
+mod relation_memory;
 mod sensitivity;
 mod support;
 use discrete_rows::PreparedStructuredDiscreteRows;
@@ -62,13 +64,11 @@ use plans::{
     direct_time_root_value, direct_visible_value, prepare_manifold_projection_programs,
     root_condition_plan, total_root_condition_count, visible_value_plan,
 };
+use refresh_projection::*;
 use support::{
     copy_runtime_values, copy_runtime_values_into, reserve_runtime_index_map_capacity,
     reserve_runtime_vec_capacity, resize_runtime_values, zero_runtime_values,
 };
-
-mod refresh_projection;
-use refresh_projection::*;
 
 impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
     fn from(value: solve_eval::EvalSolveError) -> Self {
@@ -148,9 +148,13 @@ pub struct SolveRuntime {
     /// (`d(residual_row)/d[y|p]·v`). Used to propagate state and parameter seeds
     /// through the algebraic projection row by row.
     implicit_jacobian_v: PreparedScalarProgramBlock,
+    continuous_structural: solve::ContinuousStructuralArtifacts,
+    initialization_structural: solve::InitializationStructuralArtifacts,
+    algebraic_newton_caches: Vec<RefCell<crate::runtime::projection::SparseNewtonCache>>,
     algebraic_refresh: RefreshPlan,
     derivative_refresh: RefreshPlan,
     root_refresh: RefreshPlan,
+    root_refresh_after_derivative: Option<RefreshPlan>,
     /// Certified coverage for the initialization homotopy continuation; the
     /// single source of truth shared by the sweep driver and the acceptance
     /// check in [`InitialContinuationCoverage::certify`].
@@ -166,6 +170,7 @@ pub struct SolveRuntime {
     refresh_probe_scratch: RefCell<Vec<f64>>,
     refresh_tensor_scratch: RefCell<Vec<f64>>,
     static_refresh_cache: RefCell<StaticRefreshCache>,
+    parameter_static_gradient_cache: RefCell<ParameterStaticGradientCache>,
     runtime_state: solve_eval::SimulationRuntimeState,
     delay_runtime: DelayRuntime,
     root_condition_count: usize,
@@ -186,6 +191,11 @@ pub(crate) struct SolveRuntimeSnapshot {
 
 impl SolveRuntime {
     pub fn new(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
+        let continuous_structural = model.artifacts.continuous.structural.clone();
+        let initialization_structural = model.artifacts.initialization.structural.clone();
+        let algebraic_newton_caches = (0..continuous_structural.algebraic_projection().len())
+            .map(|_| RefCell::new(crate::runtime::projection::SparseNewtonCache::default()))
+            .collect();
         let implicit_scalar_programs =
             to_scalar_program_block(&model.problem.continuous.implicit_rhs)?;
         let implicit_scalar_rhs = PreparedScalarProgramBlock::new(implicit_scalar_programs)?;
@@ -194,6 +204,8 @@ impl SolveRuntime {
             to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
         let (algebraic_refresh, derivative_refresh, root_refresh) =
             build_runtime_refresh_plans(model, &implicit_scalar_rhs, &derivative_scalar_rhs)?;
+        let root_refresh_after_derivative =
+            root_refresh.certified_value_remainder_after(&derivative_refresh);
         trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
@@ -248,9 +260,13 @@ impl SolveRuntime {
                     .implicit_jacobian_v_scalar
                     .clone(),
             )?,
+            continuous_structural,
+            initialization_structural,
+            algebraic_newton_caches,
             algebraic_refresh,
             derivative_refresh,
             root_refresh,
+            root_refresh_after_derivative,
             initial_continuation,
             root_condition_rows: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
@@ -258,18 +274,14 @@ impl SolveRuntime {
             root_condition_plan,
             discrete_rhs: PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())?,
             structured_discrete_rows: PreparedStructuredDiscreteRows::new(model)?,
-            visible_name_index: model
-                .visible_names
-                .iter()
-                .enumerate()
-                .map(|(idx, name)| (name.clone(), idx))
-                .collect(),
+            visible_name_index: build_visible_name_index(model),
             visible_value_rows: PreparedScalarProgramBlock::new(model.visible_value_rows.clone())?,
             visible_value_plan,
             visible_scratch: RefCell::new(Vec::new()),
             refresh_probe_scratch: RefCell::new(Vec::new()),
             refresh_tensor_scratch: RefCell::new(Vec::new()),
             static_refresh_cache: RefCell::new(StaticRefreshCache::default()),
+            parameter_static_gradient_cache: RefCell::new(ParameterStaticGradientCache::default()),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             delay_runtime,
             root_condition_count,
@@ -382,6 +394,10 @@ impl SolveRuntime {
 
     pub fn root_condition_count(&self) -> usize {
         self.root_condition_count
+    }
+
+    pub fn derivative_settled_coordinate_can_refresh_roots(&self) -> bool {
+        self.root_refresh_after_derivative.is_some() && self.delay_runtime.event_root_count() == 0
     }
 
     pub fn full_solver_y(
@@ -517,6 +533,13 @@ impl SolveRuntime {
         }
         self.validate_refresh_inputs(args.solver_y, args.params)?;
         let incoming = copy_runtime_values(args.solver_y, "algebraic projection snapshot")?;
+        if self.value_stage_schedule_is_certified(plan) {
+            let result = self.refresh_slots_with_stages(plan, &mut args, &incoming);
+            if result.is_err() {
+                args.solver_y.copy_from_slice(&incoming);
+            }
+            return result;
+        }
         let mut causal_refresh_succeeded = plan.rows.is_empty();
         let mut causal_seed_failed = false;
         if !plan.causal_seed_rows.is_empty() {
@@ -567,6 +590,11 @@ impl SolveRuntime {
         if rows.is_empty() {
             return Ok(());
         }
+        self.prepare_static_refresh_cache(params, solver_y.len());
+        self.refresh_prepared_static_rows(rows, t, solver_y, params)
+    }
+
+    fn prepare_static_refresh_cache(&self, params: &[f64], solver_len: usize) {
         let mut cache = self.static_refresh_cache.borrow_mut();
         let params_match = cache.valid
             && cache.params.len() == params.len()
@@ -580,21 +608,33 @@ impl SolveRuntime {
             cache.params.clear();
             cache.params.extend_from_slice(params);
             cache.values.clear();
-            cache.values.resize(solver_y.len(), None);
+            cache.values.resize(solver_len, None);
         }
-        let fully_cached = rows.iter().all(|row| {
-            cache
-                .values
-                .get(row.target_index)
-                .is_some_and(Option::is_some)
-        });
+    }
+
+    fn refresh_prepared_static_rows(
+        &self,
+        rows: &[AlgebraicRefreshRow],
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let fully_cached = {
+            let cache = self.static_refresh_cache.borrow();
+            rows.iter().all(|row| {
+                cache
+                    .values
+                    .get(row.target_index)
+                    .is_some_and(Option::is_some)
+            })
+        };
         if fully_cached {
+            let cache = self.static_refresh_cache.borrow();
             for row in rows {
                 solver_y[row.target_index] = cached_static_refresh_value(&cache, row.target_index)?;
             }
             return Ok(());
         }
-        drop(cache);
 
         self.refresh_slots_once(rows, t, solver_y, params)?;
         let mut cache = self.static_refresh_cache.borrow_mut();
@@ -618,6 +658,8 @@ impl SolveRuntime {
         let projection_model = RefreshProjectionModel {
             runtime: self,
             plan: projection_plan,
+            block_indices: &plan.simultaneous_block_indices,
+            plan_validated: false,
             jacobian_v: ProjectionJacobian::SolverY {
                 block: &self.implicit_projection_jacobian_v,
                 scalar: &self.implicit_projection_scalar_jacobian_v,
@@ -668,18 +710,29 @@ impl SolveRuntime {
         )
     }
 
+    /// Whether checked Solve IR retained any lower-order state constraints.
+    ///
+    /// An empty projection artifact is a construction-time certificate that
+    /// projecting continuous states cannot change them. FMI hosts use this to
+    /// avoid reconstructing observation algebraics merely to discover that
+    /// there is no manifold system to evaluate.
+    pub fn requires_state_manifold_projection(&self) -> bool {
+        !self
+            .model
+            .problem
+            .continuous
+            .manifold_projection_plan
+            .is_empty()
+    }
+
     fn validate_refresh_inputs(
         &self,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        if self.implicit_rhs.len() < self.solver_count {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "implicit RHS has {} rows for {} solver variables",
-                self.implicit_rhs.len(),
-                self.solver_count
-            )));
-        }
+        // Refresh-plan construction already proves one implicit output for
+        // every algebraic coordinate. Explicit states are owned by derivative
+        // rows and therefore need no placeholder implicit rows.
         solve_eval::validate_input_requirements(
             self.implicit_scalar_rhs.requirements(),
             solver_y,
@@ -1039,16 +1092,45 @@ impl SolveRuntime {
         max_iters: usize,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        let mut solver_y = self.root_scratch.borrow_mut();
+        self.populate_solver_y_from_state(&mut solver_y, state)?;
+        self.eval_root_search_conditions_at_solver_y(t, params, tol, max_iters, out, &mut solver_y)
+    }
+
+    // SPEC_0021: Exception - public runtime API mirrors solver callback inputs
+    // without hiding the certified warm-start and output buffers.
+    #[allow(clippy::too_many_arguments)]
+    pub fn eval_root_search_conditions_with_guess_into(
+        &self,
+        t: f64,
+        state: &[f64],
+        params: &[f64],
+        guess: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.update_solver_y_guess_from_state(guess, state)?;
+        self.eval_root_search_conditions_at_solver_y(t, params, tol, max_iters, out, guess)
+    }
+
+    fn eval_root_search_conditions_at_solver_y(
+        &self,
+        t: f64,
+        params: &[f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+        solver_y: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
         let root_count = self.root_condition_count();
         if root_count == 0 {
             return fill_inactive_root_output(out);
         }
         validate_runtime_output_len("root search output", root_count, out.len())?;
         let model_root_count = self.model.problem.events.root_conditions.len();
-        let mut solver_y = self.root_scratch.borrow_mut();
-        self.populate_solver_y_from_state(&mut solver_y, state)?;
         if self.delay_runtime.event_root_count() > 0 {
-            self.refresh_algebraic_and_output_slots(t, &mut solver_y, params, tol, max_iters)?;
+            self.refresh_algebraic_and_output_slots(t, solver_y, params, tol, max_iters)?;
         }
         if model_root_count > 0 {
             let model_out = &mut out[..model_root_count];
@@ -1057,18 +1139,18 @@ impl SolveRuntime {
                     &self.root_refresh,
                     RefreshSlotArgs {
                         t,
-                        solver_y: &mut solver_y,
+                        solver_y,
                         params,
                         tol,
                         max_iters,
                         certify_coordinates: false,
                     },
                 )?;
-                self.eval_root_conditions_from_refreshed_solver_y(t, &solver_y, params, model_out)?;
+                self.eval_root_conditions_from_refreshed_solver_y(t, solver_y, params, model_out)?;
                 self.delay_runtime
                     .evaluate_event_roots(
                         t,
-                        &solver_y,
+                        solver_y,
                         params,
                         self.row_eval_context(),
                         &mut out[model_root_count..],
@@ -1084,25 +1166,91 @@ impl SolveRuntime {
                     &self.root_refresh,
                     RefreshSlotArgs {
                         t,
-                        solver_y: &mut solver_y,
+                        solver_y,
                         params,
                         tol,
                         max_iters,
                         certify_coordinates: false,
                     },
                 )?;
-                self.write_planned_root_search_conditions(plan, &solver_y, params, t, model_out)?;
+                self.write_planned_root_search_conditions(plan, solver_y, params, t, model_out)?;
             }
         }
         self.delay_runtime
             .evaluate_event_roots(
                 t,
-                &solver_y,
+                solver_y,
                 params,
                 self.row_eval_context(),
                 &mut out[model_root_count..],
             )
             .map_err(RuntimeSolveError::from)?;
+        validate_finite_runtime_output("root search output", out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn eval_root_search_conditions_after_derivative_settle_into(
+        &self,
+        t: f64,
+        params: &[f64],
+        solver_y: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if !self.derivative_settled_coordinate_can_refresh_roots() {
+            return Err(RuntimeSolveError::solve_ir(
+                "root refresh has no certified derivative-settled remainder".to_string(),
+            ));
+        }
+        if solver_y.len() != self.solver_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "derivative-settled solver-y length mismatch: expected {}, got {}",
+                self.solver_count,
+                solver_y.len()
+            )));
+        }
+        let remainder = self.root_refresh_after_derivative.as_ref().ok_or_else(|| {
+            RuntimeSolveError::solve_ir(
+                "root refresh derivative-settled remainder disappeared".to_string(),
+            )
+        })?;
+        if !remainder.value_stages.is_empty() {
+            self.refresh_slots_with_plan(
+                remainder,
+                RefreshSlotArgs {
+                    t,
+                    solver_y,
+                    params,
+                    tol,
+                    max_iters,
+                    certify_coordinates: false,
+                },
+            )?;
+        }
+        let root_count = self.root_condition_count();
+        if root_count == 0 {
+            return fill_inactive_root_output(out);
+        }
+        validate_runtime_output_len("root search output", root_count, out.len())?;
+        let model_root_count = self.model.problem.events.root_conditions.len();
+        if model_root_count > 0 {
+            let model_out = &mut out[..model_root_count];
+            match &self.root_condition_plan {
+                Some(plan) if plan.search_rows.is_empty() => {
+                    self.validate_root_plan_output_len(plan, model_out)?;
+                    self.write_planned_root_search_defaults(plan, params, t, model_out)?;
+                }
+                Some(plan) => {
+                    self.validate_root_plan_output_len(plan, model_out)?;
+                    self.write_planned_root_search_conditions(
+                        plan, solver_y, params, t, model_out,
+                    )?;
+                }
+                None => self
+                    .eval_root_conditions_from_refreshed_solver_y(t, solver_y, params, model_out)?,
+            }
+        }
         validate_finite_runtime_output("root search output", out)
     }
 
@@ -1243,7 +1391,15 @@ impl SolveRuntime {
     }
 }
 
-mod relation_memory;
+fn build_visible_name_index(model: &solve::SolveModel) -> HashMap<String, usize> {
+    model
+        .visible_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect()
+}
+
 fn build_runtime_refresh_plans(
     model: &solve::SolveModel,
     implicit: &PreparedScalarProgramBlock,

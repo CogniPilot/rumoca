@@ -131,6 +131,55 @@ use rumoca_solver::RuntimeSolveError;
 
 const EVENT_UPDATE_MAX_ITERS: usize = 256;
 
+/// Whether the initialized FMI ME component can supply the exact local
+/// directional derivatives required by the BDF importer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BdfCapability {
+    Eligible,
+    InitialLinearizationUnavailable { reason: String },
+}
+
+/// Probe BDF eligibility before integration by evaluating every basis direction
+/// through the same FMI ME directional-derivative operation used by BDF.
+pub fn assess_bdf_capability(
+    model: impl Into<MeModelArtifact>,
+    opts: &SimOptions,
+) -> Result<BdfCapability, SimError> {
+    let model = model.into();
+    if model.continuous_state_count() == 0 {
+        return Ok(BdfCapability::Eligible);
+    }
+    let host = instantiate_me_host(model.source(), opts)?;
+    let initial = host.initialize_component()?;
+    if initial.termination.is_some() {
+        return Ok(BdfCapability::Eligible);
+    }
+    let state_count = initial.states.len();
+    let mut seed = vec![0.0; state_count];
+    let mut sensitivity = vec![0.0; state_count];
+    for column in 0..state_count {
+        seed[column] = 1.0;
+        host.directional_derivative_into(initial.time, &initial.states, &seed, &mut sensitivity);
+        seed[column] = 0.0;
+        if let Some(error) = host.take_callback_error() {
+            if let rumoca_solver::fmi_me::MeError::DirectionalDerivativeUnavailable { reason } =
+                error.kind()
+            {
+                return Ok(BdfCapability::InitialLinearizationUnavailable {
+                    reason: reason.clone(),
+                });
+            }
+            return Err(error.into());
+        }
+        if sensitivity.iter().any(|value| !value.is_finite()) {
+            return Err(SimError::SolverError(format!(
+                "FMI directional derivative column {column} returned a non-finite value without a typed component failure"
+            )));
+        }
+    }
+    Ok(BdfCapability::Eligible)
+}
+
 pub fn build_simulation(
     model: impl Into<MeModelArtifact>,
     opts: &SimOptions,

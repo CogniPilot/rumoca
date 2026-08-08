@@ -155,6 +155,8 @@ mod state_select_enclosing_constant_test;
 mod steady_adjoint_test;
 #[path = "steady_state_sensitivity_test.rs"]
 mod steady_state_sensitivity_test;
+#[path = "structured_event_roots.rs"]
+mod structured_event_roots;
 #[path = "structured_family_corner_lowering.rs"]
 mod structured_family_corner_lowering;
 #[path = "terminate_when_regression.rs"]

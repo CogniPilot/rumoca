@@ -167,17 +167,34 @@ pub fn derive_solve_structural_artifacts(
                 None,
             )
         })?;
+    let implicit = derive_optional_compute_pattern(
+        &artifacts.continuous.implicit_jacobian_v,
+        problem.continuous.implicit_rhs.len()?,
+        solver_columns,
+    )?;
+    let manifold = derive_optional_compute_pattern(
+        &artifacts.continuous.manifold_jacobian_v,
+        problem.continuous.manifold_residual.len()?,
+        solver_columns,
+    )?;
+    let algebraic_projection = derive_y_projection_patterns(
+        implicit.as_ref(),
+        &problem.continuous.algebraic_projection_plan,
+    )?;
+    let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations(
+        implicit.as_ref(),
+        &problem.continuous.algebraic_projection_plan,
+    )?;
+    let manifold_projection = derive_y_projection_patterns(
+        manifold.as_ref(),
+        &problem.continuous.manifold_projection_plan,
+    )?;
     let continuous = rumoca_ir_solve::ContinuousStructuralArtifacts::derived(
-        derive_optional_compute_pattern(
-            &artifacts.continuous.implicit_jacobian_v,
-            problem.continuous.implicit_rhs.len()?,
-            solver_columns,
-        )?,
-        derive_optional_compute_pattern(
-            &artifacts.continuous.manifold_jacobian_v,
-            problem.continuous.manifold_residual.len()?,
-            solver_columns,
-        )?,
+        implicit,
+        algebraic_projection,
+        algebraic_invalidates_earlier,
+        manifold,
+        manifold_projection,
         derive_optional_scalar_pattern(
             &artifacts.continuous.full_jacobian_v,
             problem.continuous.derivative_rhs.len()?,
@@ -192,14 +209,184 @@ pub fn derive_solve_structural_artifacts(
                 None,
             )
         })?;
+    let initialization_residual = derive_optional_compute_pattern(
+        &artifacts.initialization.residual_jacobian_v,
+        problem.initialization.residual.len()?,
+        initialization_columns,
+    )?;
+    let initialization_projection = derive_initial_projection_patterns(
+        initialization_residual.as_ref(),
+        &problem.initialization.projection_plan,
+        solver_columns,
+    )?;
     let initialization = rumoca_ir_solve::InitializationStructuralArtifacts::derived(
-        derive_optional_compute_pattern(
-            &artifacts.initialization.residual_jacobian_v,
-            problem.initialization.residual.len()?,
-            initialization_columns,
-        )?,
+        initialization_residual,
+        initialization_projection,
     );
     Ok((continuous, initialization))
+}
+
+fn derive_algebraic_reverse_invalidations(
+    source: Option<&StructuralPattern>,
+    plan: &rumoca_ir_solve::AlgebraicProjectionPlan,
+) -> Result<Vec<bool>, EvalSolveError> {
+    let Some(source) = source else {
+        return Ok(Vec::new());
+    };
+    let column_rows = source.column_rows();
+    let mut earlier_rows = vec![false; source.rows() as usize];
+    let mut invalidations = Vec::with_capacity(plan.blocks.len());
+    for block in &plan.blocks {
+        let invalidates =
+            block
+                .y_indices
+                .iter()
+                .copied()
+                .try_fold(false, |invalidates, column| {
+                    let affected_rows = column_rows.get(column).ok_or_else(|| {
+                        sparsity_error(
+                            format!(
+                                "projection invalidation column {column} is outside 0..{}",
+                                source.columns()
+                            ),
+                            Some(source.provenance().span()),
+                        )
+                    })?;
+                    Ok::<_, EvalSolveError>(
+                        invalidates || affected_rows.iter().any(|&row| earlier_rows[row]),
+                    )
+                })?;
+        invalidations.push(invalidates);
+        for &row in &block.rows {
+            let row_count = earlier_rows.len();
+            let Some(earlier) = earlier_rows.get_mut(row) else {
+                return Err(sparsity_error(
+                    format!("projection invalidation row {row} is outside 0..{row_count}"),
+                    Some(source.provenance().span()),
+                ));
+            };
+            *earlier = true;
+        }
+    }
+    Ok(invalidations)
+}
+
+fn derive_y_projection_patterns(
+    source: Option<&StructuralPattern>,
+    plan: &rumoca_ir_solve::AlgebraicProjectionPlan,
+) -> Result<Vec<StructuralPattern>, EvalSolveError> {
+    if source.is_none() && !plan.blocks.is_empty() {
+        return Err(sparsity_error(
+            "projection plan has blocks but its Jacobian structure is unavailable",
+            None,
+        ));
+    }
+    derive_projection_patterns(
+        source,
+        plan.blocks
+            .iter()
+            .map(|block| (block.rows.as_slice(), block.y_indices.clone())),
+    )
+}
+
+fn derive_initial_projection_patterns(
+    source: Option<&StructuralPattern>,
+    plan: &rumoca_ir_solve::InitializationProjectionPlan,
+    solver_columns: usize,
+) -> Result<Vec<StructuralPattern>, EvalSolveError> {
+    if source.is_none() && !plan.blocks.is_empty() {
+        return Err(sparsity_error(
+            "initial projection plan has blocks but its Jacobian structure is unavailable",
+            None,
+        ));
+    }
+    let Some(source) = source else {
+        return Ok(Vec::new());
+    };
+    plan.blocks
+        .iter()
+        .map(|block| {
+            let columns = initial_projection_columns(&block.unknowns, solver_columns, source)?;
+            derive_projection_pattern(source, &block.rows, &columns)
+        })
+        .collect()
+}
+
+fn initial_projection_columns(
+    unknowns: &[rumoca_ir_solve::ScalarSlot],
+    solver_columns: usize,
+    source: &StructuralPattern,
+) -> Result<Vec<usize>, EvalSolveError> {
+    let span = source.provenance().span();
+    unknowns
+        .iter()
+        .map(|slot| match *slot {
+            rumoca_ir_solve::ScalarSlot::Y { index, .. } => Ok(index),
+            rumoca_ir_solve::ScalarSlot::P { index, .. } => solver_columns
+                .checked_add(index)
+                .ok_or_else(|| sparsity_error("initial projection column overflows", Some(span))),
+            _ => Err(sparsity_error(
+                format!("initial projection unknown {slot:?} is neither Y nor P storage"),
+                Some(span),
+            )),
+        })
+        .collect()
+}
+
+fn derive_projection_patterns<'a>(
+    source: Option<&StructuralPattern>,
+    blocks: impl Iterator<Item = (&'a [usize], Vec<usize>)>,
+) -> Result<Vec<StructuralPattern>, EvalSolveError> {
+    let Some(source) = source else {
+        return Ok(Vec::new());
+    };
+    blocks
+        .map(|(rows, columns)| derive_projection_pattern(source, rows, &columns))
+        .collect()
+}
+
+fn derive_projection_pattern(
+    source: &StructuralPattern,
+    rows: &[usize],
+    columns: &[usize],
+) -> Result<StructuralPattern, EvalSolveError> {
+    let span = source.provenance().span();
+    let mut dependencies = Vec::with_capacity(rows.len());
+    for &row in rows {
+        let row = u32::try_from(row)
+            .map_err(|_| sparsity_error("projection row exceeds u32", Some(span)))?;
+        if row >= source.rows() {
+            return Err(sparsity_error(
+                format!("projection row {row} is outside 0..{}", source.rows()),
+                Some(span),
+            ));
+        }
+        let mut local = Vec::new();
+        for (local_column, &source_column) in columns.iter().enumerate() {
+            let source_column = u32::try_from(source_column)
+                .map_err(|_| sparsity_error("projection column exceeds u32", Some(span)))?;
+            if source_column >= source.columns() {
+                return Err(sparsity_error(
+                    format!(
+                        "projection column {source_column} is outside 0..{}",
+                        source.columns()
+                    ),
+                    Some(span),
+                ));
+            }
+            if source.contains(row, source_column) {
+                local.push(local_column);
+            }
+        }
+        dependencies.push(local);
+    }
+    StructuralPattern::from_row_dependencies(
+        rows.len(),
+        columns.len(),
+        &dependencies,
+        source.provenance(),
+    )
+    .map_err(|error| sparsity_error(error.to_string(), Some(span)))
 }
 
 fn derive_optional_compute_pattern(

@@ -2,6 +2,7 @@ use crate::{
     AlgebraicProjectionModel, ImplicitProjectionModel, InitialHomotopySystem, RuntimeSolveError,
     project_initial_variables_with_homotopy,
 };
+use nalgebra::{DMatrix, DVector};
 
 use super::initial_continuation::InitialContinuationCoverage;
 
@@ -71,6 +72,65 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
             .algebraic_projection_plan
     }
 
+    fn algebraic_projection_plan_is_validated(&self) -> bool {
+        false
+    }
+
+    fn algebraic_projection_block_structure(
+        &self,
+        block_index: usize,
+    ) -> Option<&solve::JacobianStructure> {
+        self.runtime
+            .continuous_structural
+            .algebraic_projection()
+            .get(block_index)
+    }
+
+    fn algebraic_projection_block_invalidates_earlier(&self, block_index: usize) -> bool {
+        self.runtime
+            .continuous_structural
+            .algebraic_invalidates_earlier(block_index)
+            .unwrap_or(true)
+    }
+
+    fn solve_algebraic_newton_delta(
+        &self,
+        block_index: usize,
+        jacobian: &DMatrix<f64>,
+        residual: &[f64],
+        row_scales: &[f64],
+        variable_scales: &[f64],
+        structure: Option<&solve::StructuralPattern>,
+        tolerance: f64,
+    ) -> Option<DVector<f64>> {
+        self.runtime
+            .algebraic_newton_caches
+            .get(block_index)
+            .map_or_else(
+                || {
+                    crate::runtime::projection::scaled_newton_delta(
+                        jacobian,
+                        residual,
+                        row_scales,
+                        variable_scales,
+                        structure,
+                        tolerance,
+                    )
+                },
+                |cache| {
+                    crate::runtime::projection::scaled_newton_delta_with_cache(
+                        jacobian,
+                        residual,
+                        row_scales,
+                        variable_scales,
+                        structure,
+                        tolerance,
+                        &mut cache.borrow_mut(),
+                    )
+                },
+            )
+    }
+
     fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
         self.runtime
             .model
@@ -94,6 +154,17 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
                     .get(index)
             })
             .map(String::as_str)
+    }
+
+    fn implicit_target_assignment_is_exact(&self, row_idx: usize, target_y_index: usize) -> bool {
+        self.runtime
+            .implicit_scalar_rhs
+            .single_output_row_for_output_index(row_idx)
+            .is_some_and(|program_idx| {
+                self.runtime
+                    .implicit_scalar_rhs
+                    .certifies_exact_target_assignment(program_idx, target_y_index)
+            })
     }
 
     fn variable_name_for_y_index(&self, y_index: usize) -> Option<&str> {
@@ -159,6 +230,16 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
             .get(row_idx)
             .copied()
             .flatten()
+    }
+
+    fn initial_projection_block_structure(
+        &self,
+        block_index: usize,
+    ) -> Option<&solve::JacobianStructure> {
+        self.runtime
+            .initialization_structural
+            .projection()
+            .get(block_index)
     }
 
     fn initial_row_role(&self, row_idx: usize) -> Option<solve::InitializationRowRole> {

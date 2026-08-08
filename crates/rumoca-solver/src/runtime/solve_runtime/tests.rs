@@ -282,6 +282,7 @@ fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output(
     );
     assert!(!plan.causal_solution_certified);
     assert_eq!(plan.simultaneous_plan.blocks.len(), 1);
+    assert_eq!(plan.simultaneous_block_indices, vec![0]);
     assert_eq!(plan.simultaneous_plan.blocks[0].rows, vec![1, 2]);
     assert_eq!(plan.simultaneous_plan.blocks[0].y_indices, vec![1, 2]);
 }
@@ -879,6 +880,25 @@ fn refresh_newton_repivots_mode_dependent_coupled_residuals() {
     assert!((solver_y[1] - 1.0).abs() <= 1.0e-9);
 }
 
+fn refresh_with_value_stages(
+    runtime: &SolveRuntime,
+    solver_y: &mut [f64],
+) -> Result<(), RuntimeSolveError> {
+    let incoming = solver_y.to_vec();
+    runtime.refresh_slots_with_stages(
+        &runtime.algebraic_refresh,
+        &mut RefreshSlotArgs {
+            t: 0.0,
+            solver_y,
+            params: &[],
+            tol: 1.0e-10,
+            max_iters: 8,
+            certify_coordinates: false,
+        },
+        &incoming,
+    )
+}
+
 #[test]
 fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
     // The coupled x/y sweep diverges and must fall back to Newton. The x row
@@ -979,9 +999,8 @@ fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();
-    runtime
-        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-10, 8)
-        .expect("Newton should retain the finite causal epsilon seed");
+    refresh_with_value_stages(&runtime, &mut solver_y)
+        .expect("a numerical stage should retain its finite causal epsilon seed");
 
     assert!((solver_y[0] - 1.0).abs() <= 1.0e-9);
     assert!((solver_y[1] + 2.0).abs() <= 1.0e-9);
@@ -1297,6 +1316,32 @@ fn singular_affine_seed_falls_back_to_preserved_projection() {
         } if *coefficient == 0.0 && *error_span == span
     ));
     assert!(seed_error_allows_projection(&error));
+}
+
+#[test]
+fn staged_projection_requires_a_seed_for_every_block_coordinate() {
+    let stage = RefreshStage::ProjectionBlock {
+        block_index: 0,
+        plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0, 1],
+                y_indices: vec![0, 1],
+            }],
+        },
+        seed_rows: vec![AlgebraicRefreshRow {
+            equation_index: 0,
+            row_idx: 0,
+            output_offset: 0,
+            target_index: 0,
+            assignment_target: Some(0),
+            assignment_shape: None,
+            direct_assignment_certified: true,
+            exact_assignment_certified: false,
+        }]
+        .into_boxed_slice(),
+    };
+
+    assert!(!value_stage_seed_coverage_is_complete(&[stage]));
 }
 
 #[test]

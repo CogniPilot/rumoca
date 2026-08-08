@@ -8,6 +8,7 @@ use rumoca_phase_structural::{self as structural, BltBlock, EquationRef, Unknown
 use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
+pub(crate) mod call_scoped_actions;
 mod clocks;
 mod continuous_tensor;
 mod events;
@@ -37,13 +38,14 @@ pub(crate) fn lower_solve_problem(
     }
     let lowered = lower_layout(view)?;
     let clocks = clocks::lower_clocks(view, &lowered)?;
-    clocks::reject_clocked_continuous_feedback(view, &clocks)?;
     let structural = structural_matching(view)?;
+    clocks::reject_clocked_continuous_feedback(view, &clocks, &structural)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;
-    let (discrete, events) =
+    let (discrete, mut events) =
         events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
+    call_scoped_actions::append_collected_actions(&lowered, &discrete, &mut events)?;
     Ok(solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
         layout: lowered.layout,

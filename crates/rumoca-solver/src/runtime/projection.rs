@@ -5,20 +5,22 @@ use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
 use initial_diagnostics::initial_projection_error;
+pub(crate) use scaling::{
+    SparseNewtonCache, scaled_newton_delta, scaled_newton_delta_with_cache, scaled_unique_delta,
+};
 use scaling::{
     algebraic_block_scales, algebraic_plan_row_scales, initial_block_fallback_scales,
     initial_residual_scales, jacobian_row_scales, model_variable_scale,
-    scaled_correction_converged, scaled_newton_delta, scaled_residual_converged,
-    scaled_residual_norm, scaled_tolerance,
+    scaled_correction_converged, scaled_residual_converged, scaled_residual_norm, scaled_tolerance,
 };
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
 use step_limit::StepLimit;
 
+mod branch_continuity;
 mod homotopy;
 mod initial_diagnostics;
 mod manifold;
 mod plan;
-mod retry;
 mod scaling;
 mod singleton;
 mod step_limit;
@@ -61,6 +63,12 @@ pub trait ImplicitProjectionModel {
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot>;
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan;
     fn target_name_for_row(&self, row_idx: usize) -> Option<&str>;
+
+    /// Whether this plan is a projection of the constructor-validated Solve
+    /// aggregate rather than a third-party runtime plan.
+    fn algebraic_projection_plan_is_validated(&self) -> bool {
+        false
+    }
 
     /// Return the diagnostic name for a solver variable. Implementations may
     /// omit names without changing projection semantics.
@@ -123,6 +131,72 @@ pub trait ImplicitProjectionModel {
         true
     }
 
+    /// Compiler-derived structure for one block of the algebraic projection
+    /// plan. Absence selects the conservative dense policy for third-party
+    /// projection models.
+    fn algebraic_projection_block_structure(
+        &self,
+        _block_index: usize,
+    ) -> Option<&solve::JacobianStructure> {
+        None
+    }
+
+    /// Constructor-derived proof that changing this block can invalidate a
+    /// residual row belonging to an earlier projection block.
+    fn algebraic_projection_block_invalidates_earlier(&self, _block_index: usize) -> bool {
+        true
+    }
+
+    /// Whether construction proved that every residual in this block is affine
+    /// in solver-Y. Affine blocks have no nonlinear branch to preserve and may
+    /// take the complete Newton correction.
+    fn algebraic_projection_block_is_affine(&self, _block_index: usize) -> bool {
+        false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn solve_algebraic_newton_delta(
+        &self,
+        _block_index: usize,
+        jacobian: &DMatrix<f64>,
+        residual: &[f64],
+        row_scales: &[f64],
+        variable_scales: &[f64],
+        structure: Option<&solve::StructuralPattern>,
+        tolerance: f64,
+    ) -> Option<DVector<f64>> {
+        scaled_newton_delta(
+            jacobian,
+            residual,
+            row_scales,
+            variable_scales,
+            structure,
+            tolerance,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn solve_algebraic_sensitivity_delta(
+        &self,
+        _block_index: usize,
+        jacobian: &DMatrix<f64>,
+        residual: &[f64],
+        row_scales: &[f64],
+        variable_scales: &[f64],
+        structure: Option<&solve::StructuralPattern>,
+        tolerance: f64,
+    ) -> Option<DVector<f64>> {
+        scaled_unique_delta(
+            jacobian,
+            residual,
+            row_scales,
+            variable_scales,
+            structure,
+            tolerance,
+            None,
+        )
+    }
+
     fn eval_implicit_target_value(
         &self,
         _row_idx: usize,
@@ -132,6 +206,12 @@ pub trait ImplicitProjectionModel {
         _t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
         Ok(None)
+    }
+
+    /// Whether the constructor proved that evaluating the target isolator and
+    /// writing its value satisfies this scalar residual exactly.
+    fn implicit_target_assignment_is_exact(&self, _row_idx: usize, _target_y_index: usize) -> bool {
+        false
     }
 }
 
@@ -146,6 +226,14 @@ pub trait AlgebraicProjectionModel: ImplicitProjectionModel {
 
     fn initial_residual_len(&self) -> usize;
     fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot>;
+
+    /// Compiler-derived structure for one initialization projection block.
+    fn initial_projection_block_structure(
+        &self,
+        _block_index: usize,
+    ) -> Option<&solve::JacobianStructure> {
+        None
+    }
 
     /// What the initialization projection does with one row, when the lowered
     /// model records it. Diagnostics only; projection semantics never read it.
@@ -273,7 +361,7 @@ pub fn project_algebraic_seed_with_plan<M: ImplicitProjectionModel>(
     seed: &mut [f64],
     unit_seed: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
-    validate_algebraic_projection_plan(plan, args.state_count, y.len())?;
+    validate_projection_plan_if_needed(model, plan, args.state_count, y.len())?;
     if seed.len() < y.len() || unit_seed.len() < seed.len() {
         return Err(RuntimeSolveError::solve_ir(format!(
             "algebraic projection seed buffers have lengths {} and {}, but require at least {}",
@@ -313,16 +401,16 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             &block.rows,
             "algebraic seed projection",
         )?;
+        let jacobian =
+            algebraic_seed_block_jacobian(model, y, args.parameters, args.time, block, unit_seed)?;
         let rhs = DVector::from_iterator(
             block.rows.len(),
             block_residual.into_iter().map(|value| -value),
         );
-        let jacobian =
-            algebraic_seed_block_jacobian(model, y, args.parameters, args.time, block, unit_seed)?;
         let Some(solution) = jacobian.lu().solve(&rhs) else {
-            return Err(RuntimeSolveError::solve_ir(
-                "algebraic projection sensitivity matrix is singular".to_string(),
-            ));
+            return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {
+                reason: "algebraic projection sensitivity matrix is singular".to_string(),
+            });
         };
         for (y_index, value) in block
             .y_indices
@@ -331,13 +419,16 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             .zip(solution.iter().copied())
         {
             if !value.is_finite() {
-                return Err(RuntimeSolveError::solve_ir(format!(
-                    "algebraic projection produced a non-finite sensitivity for y[{y_index}]"
-                )));
+                return Err(RuntimeSolveError::DirectionalDerivativeUnavailable {
+                    reason: format!(
+                        "algebraic projection produced a non-finite sensitivity for y[{y_index}]"
+                    ),
+                });
             }
             seed[y_index] = value;
         }
     }
+    unit_seed.fill(0.0);
     let rows = projection_rows(plan);
     let residual = implicit_selected_jacobian_v_rows(
         model,
@@ -403,8 +494,8 @@ pub fn project_algebraics_with_plan<M: ImplicitProjectionModel>(
     args: AlgebraicProjectionArgs<'_>,
     max_iters: usize,
 ) -> Result<(), RuntimeSolveError> {
-    validate_algebraic_projection_plan(plan, args.state_count, y.len())?;
-    retry::project_with_step_limited_retry(model, plan, y, args, max_iters, false)
+    validate_projection_plan_if_needed(model, plan, args.state_count, y.len())?;
+    branch_continuity::project_with_branch_continuity(model, plan, y, args, max_iters, false)
 }
 
 pub fn project_algebraics_with_plan_certified<M: ImplicitProjectionModel>(
@@ -414,8 +505,21 @@ pub fn project_algebraics_with_plan_certified<M: ImplicitProjectionModel>(
     args: AlgebraicProjectionArgs<'_>,
     max_iters: usize,
 ) -> Result<(), RuntimeSolveError> {
-    validate_algebraic_projection_plan(plan, args.state_count, y.len())?;
-    retry::project_with_step_limited_retry(model, plan, y, args, max_iters, true)
+    validate_projection_plan_if_needed(model, plan, args.state_count, y.len())?;
+    branch_continuity::project_with_branch_continuity(model, plan, y, args, max_iters, true)
+}
+
+fn validate_projection_plan_if_needed<M: ImplicitProjectionModel>(
+    model: &M,
+    plan: &solve::AlgebraicProjectionPlan,
+    state_count: usize,
+    solver_count: usize,
+) -> Result<(), RuntimeSolveError> {
+    if model.algebraic_projection_plan_is_validated() {
+        Ok(())
+    } else {
+        validate_algebraic_projection_plan(plan, state_count, solver_count)
+    }
 }
 
 fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
@@ -427,7 +531,6 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
     step_limit: StepLimit,
     certify_coordinates: bool,
 ) -> Result<(), RuntimeSolveError> {
-    let rows = projection_rows(plan);
     for iteration in 0..max_iters {
         seed_nonfinite_projection_unknowns(y, plan);
         let mut changed = false;
@@ -440,18 +543,16 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
                 args.parameters,
                 args.time,
                 block,
+                block_index,
                 AlgebraicBlockProjectionPolicy {
                     tolerance: args.tolerance,
                     step_limit,
                     certify_coordinates,
                 },
             )?;
-            if update.changed && !earlier_row_invalidated {
-                earlier_row_invalidated = block_invalidates_earlier_rows(
-                    model,
-                    &plan.blocks[..block_index],
-                    &block.y_indices,
-                );
+            if update.changed && block_index != 0 && !earlier_row_invalidated {
+                earlier_row_invalidated =
+                    model.algebraic_projection_block_invalidates_earlier(block_index);
             }
             changed |= update.changed;
             all_settled &= update.settled;
@@ -479,6 +580,7 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
         }
     }
     seed_nonfinite_projection_unknowns(y, plan);
+    let rows = projection_rows(plan);
     let residual = implicit_selected_residuals(
         model,
         y,
@@ -507,34 +609,23 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
     ))
 }
 
-fn block_invalidates_earlier_rows<M: ImplicitProjectionModel>(
-    model: &M,
-    earlier_blocks: &[solve::AlgebraicProjectionBlock],
-    changed_y_indices: &[usize],
-) -> bool {
-    changed_y_indices.iter().any(|y_index| {
-        earlier_blocks.iter().any(|earlier| {
-            earlier
-                .rows
-                .iter()
-                .any(|row| model.implicit_jacobian_v_row_depends_on(*row, *y_index))
-        })
-    })
-}
-
 fn project_algebraic_block<M: ImplicitProjectionModel>(
     model: &M,
     y: &mut [f64],
     p: &[f64],
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
     policy: AlgebraicBlockProjectionPolicy,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let AlgebraicBlockProjectionPolicy {
         tolerance: tol,
-        step_limit,
+        mut step_limit,
         certify_coordinates,
     } = policy;
+    if model.algebraic_projection_block_is_affine(block_index) {
+        step_limit = StepLimit::None;
+    }
     require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
     let mut changed = false;
     if block.rows.is_empty() || block.y_indices.is_empty() {
@@ -577,8 +668,11 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
             settled: true,
         });
     }
-    let jacobian = algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices)?;
-    let (row_scales, variable_scales) = algebraic_block_scales(model, block, &jacobian);
+    let structure = model.algebraic_projection_block_structure(block_index);
+    let jacobian =
+        algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices, structure)?;
+    let pattern = structure.map(solve::JacobianStructure::pattern);
+    let (row_scales, variable_scales) = algebraic_block_scales(model, block, &jacobian, pattern);
     let residual_converged = scaled_residual_converged(&residual, &row_scales, tol);
     if residual_converged && !certify_coordinates {
         return Ok(ProjectionBlockUpdate {
@@ -587,7 +681,15 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         });
     }
     let before_norm = scaled_residual_norm(&residual, &row_scales);
-    let delta = scaled_newton_delta(&jacobian, &residual, &row_scales, &variable_scales, tol);
+    let delta = model.solve_algebraic_newton_delta(
+        block_index,
+        &jacobian,
+        &residual,
+        &row_scales,
+        &variable_scales,
+        pattern,
+        tol,
+    );
     let Some(delta) = delta else {
         return Ok(ProjectionBlockUpdate {
             changed,
@@ -751,6 +853,23 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let ([row], [y_index]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
         return Ok(None);
     };
+    if model.implicit_target_assignment_is_exact(*row, *y_index) {
+        let value = model
+            .eval_implicit_target_value(*row, *y_index, y, p, t)?
+            .filter(|value| value.is_finite());
+        let Some(value) = value else {
+            return Ok(Some(ProjectionBlockUpdate {
+                changed: false,
+                settled: false,
+            }));
+        };
+        let previous = y[*y_index];
+        y[*y_index] = value;
+        return Ok(Some(ProjectionBlockUpdate {
+            changed: previous != value,
+            settled: true,
+        }));
+    }
     let Some(before) = model.eval_implicit_residual_row(*row, y, p, t)? else {
         return Ok(None);
     };
@@ -1114,6 +1233,52 @@ impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
                 .unwrap_or(1.0)
         }
     }
+
+    fn algebraic_projection_block_structure(
+        &self,
+        block_index: usize,
+    ) -> Option<&solve::JacobianStructure> {
+        self.model.algebraic_projection_block_structure(block_index)
+    }
+
+    fn algebraic_projection_plan_is_validated(&self) -> bool {
+        self.model.algebraic_projection_plan_is_validated()
+    }
+
+    fn algebraic_projection_block_invalidates_earlier(&self, block_index: usize) -> bool {
+        self.model
+            .algebraic_projection_block_invalidates_earlier(block_index)
+    }
+
+    fn algebraic_projection_block_is_affine(&self, block_index: usize) -> bool {
+        self.model.algebraic_projection_block_is_affine(block_index)
+    }
+
+    fn solve_algebraic_newton_delta(
+        &self,
+        block_index: usize,
+        jacobian: &DMatrix<f64>,
+        residual: &[f64],
+        row_scales: &[f64],
+        variable_scales: &[f64],
+        structure: Option<&solve::StructuralPattern>,
+        tolerance: f64,
+    ) -> Option<DVector<f64>> {
+        self.model.solve_algebraic_newton_delta(
+            block_index,
+            jacobian,
+            residual,
+            row_scales,
+            variable_scales,
+            structure,
+            tolerance,
+        )
+    }
+
+    fn implicit_target_assignment_is_exact(&self, row_idx: usize, target_y_index: usize) -> bool {
+        self.model
+            .implicit_target_assignment_is_exact(row_idx, target_y_index)
+    }
 }
 
 impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
@@ -1136,6 +1301,13 @@ impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
 
     fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
         self.model.initial_target(row_idx)
+    }
+
+    fn initial_projection_block_structure(
+        &self,
+        block_index: usize,
+    ) -> Option<&solve::JacobianStructure> {
+        self.model.initial_projection_block_structure(block_index)
     }
 
     fn initial_row_role(&self, row_idx: usize) -> Option<solve::InitializationRowRole> {

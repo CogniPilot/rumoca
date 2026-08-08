@@ -46,6 +46,22 @@ struct CachedRootConditions {
     values: Vec<f64>,
 }
 
+#[derive(Clone)]
+struct CachedContinuousLinearization {
+    time: f64,
+    state: Vec<f64>,
+    parameters: Vec<f64>,
+    solver_y: Vec<f64>,
+}
+
+impl CachedContinuousLinearization {
+    fn matches(&self, time: f64, state: &[f64], parameters: &[f64]) -> bool {
+        self.time.to_bits() == time.to_bits()
+            && state_values_match(&self.state, state)
+            && state_values_match(&self.parameters, parameters)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct MeAlgebraicProjectionPolicy {
     state_count: usize,
@@ -126,6 +142,7 @@ pub struct SolveMeKernel {
     delay_solver_y_scratch: RefCell<Vec<f64>>,
     derivative_cache: RefCell<Option<CachedDerivative>>,
     root_cache: RefCell<Option<CachedRootConditions>>,
+    continuous_linearization_cache: RefCell<Option<CachedContinuousLinearization>>,
 
     initial_observations: Vec<MeObservation>,
     delay_step_limit: Option<f64>,
@@ -172,6 +189,7 @@ pub(crate) struct MeKernelSnapshot {
     delay_solver_y_scratch: Vec<f64>,
     derivative_cache: Option<CachedDerivative>,
     root_cache: Option<CachedRootConditions>,
+    continuous_linearization_cache: Option<CachedContinuousLinearization>,
     initial_observations: Vec<MeObservation>,
     delay_step_limit: Option<f64>,
     last_projection_changed: bool,
@@ -490,21 +508,7 @@ impl ModelExchangeKernel for SolveMeKernel {
         let time = self.continuous_eval_time();
         let settle = self.numerics_settle();
         self.with_delay_evaluation_params(time, &self.states, |params| {
-            self.with_callback_solver_y(|guess| {
-                self.runtime
-                    .eval_state_jacobian_v_ad_with_guess_into(
-                        AlgebraicLinearization {
-                            t: time,
-                            params,
-                            settle,
-                        },
-                        &self.states,
-                        seed,
-                        guess,
-                        sensitivity,
-                    )
-                    .map_err(MeError::from)
-            })
+            self.directional_derivative_at_parameters(time, params, settle, seed, sensitivity)
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
         .map_err(|error| error.at_stage(MeStage::Integration))
@@ -536,9 +540,8 @@ impl ModelExchangeKernel for SolveMeKernel {
             // Keep the ordinary accepted-point cache private by evaluating it
             // through the same standard derivative operation the importer
             // could call here. A located event stays cache-free until Event
-            // Mode consumes it. The frozen migration profile deliberately has
-            // no derivative cache, so evaluating here would immediately
-            // discard the result.
+            // Mode consumes it. The frozen solver profile caches only callback
+            // values that its importer actually requests.
             let mut accepted_derivatives = Vec::new();
             self.get_continuous_state_derivatives(&mut accepted_derivatives)?;
         }
@@ -764,6 +767,10 @@ impl ModelExchangeKernel for SolveMeKernel {
                 delay_solver_y_scratch: self.delay_solver_y_scratch.borrow().clone(),
                 derivative_cache: self.derivative_cache.borrow().clone(),
                 root_cache: self.root_cache.borrow().clone(),
+                continuous_linearization_cache: self
+                    .continuous_linearization_cache
+                    .borrow()
+                    .clone(),
                 initial_observations: self.initial_observations.clone(),
                 delay_step_limit: self.delay_step_limit,
                 last_projection_changed: self.last_projection_changed,
@@ -825,6 +832,9 @@ impl ModelExchangeKernel for SolveMeKernel {
             .borrow_mut()
             .clone_from(&state.derivative_cache);
         self.root_cache.borrow_mut().clone_from(&state.root_cache);
+        self.continuous_linearization_cache
+            .borrow_mut()
+            .clone_from(&state.continuous_linearization_cache);
         self.initial_observations
             .clone_from(&state.initial_observations);
         self.delay_step_limit = state.delay_step_limit;
@@ -995,6 +1005,23 @@ fn root_cache_bit_eq(
             left.time.to_bits() == right.time.to_bits()
                 && float_slice_bit_eq(&left.state, &right.state)
                 && float_slice_bit_eq(&left.values, &right.values)
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+fn continuous_linearization_cache_bit_eq(
+    left: Option<&CachedContinuousLinearization>,
+    right: Option<&CachedContinuousLinearization>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.time.to_bits() == right.time.to_bits()
+                && float_slice_bit_eq(&left.state, &right.state)
+                && float_slice_bit_eq(&left.parameters, &right.parameters)
+                && float_slice_bit_eq(&left.solver_y, &right.solver_y)
         }
         (None, None) => true,
         _ => false,

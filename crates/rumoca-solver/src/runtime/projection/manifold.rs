@@ -35,6 +35,13 @@ pub trait ManifoldProjectionModel {
     fn manifold_residual_len(&self) -> usize;
     fn manifold_projection_plan(&self) -> &solve::AlgebraicProjectionPlan;
 
+    fn manifold_projection_block_structure(
+        &self,
+        _block_index: usize,
+    ) -> Option<&solve::JacobianStructure> {
+        None
+    }
+
     fn manifold_variable_scale(&self, _y_index: usize) -> f64 {
         1.0
     }
@@ -140,8 +147,8 @@ fn project_state_manifold_inner<M: ManifoldProjectionModel>(
     for _ in 0..max_iters {
         let mut settled = true;
         let mut changed = false;
-        for block in &plan.blocks {
-            let update = project_manifold_block(model, y, p, t, block, tol)?;
+        for (block_index, block) in plan.blocks.iter().enumerate() {
+            let update = project_manifold_block(model, y, p, t, block, block_index, tol)?;
             settled &= update.settled;
             changed |= update.changed;
         }
@@ -173,6 +180,7 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
     p: &[f64],
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
     tol: f64,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let residual_len = model.manifold_residual_len();
@@ -195,12 +203,10 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
         seed[state] = 0.0;
         jvp.fill(0.0);
     }
-    let variable_scales = block
-        .y_indices
-        .iter()
-        .map(|&state| model.manifold_variable_scale(state))
-        .collect::<Vec<_>>();
-    let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &vec![1.0; block.rows.len()]);
+    let structure = model
+        .manifold_projection_block_structure(block_index)
+        .map(solve::JacobianStructure::pattern);
+    let (row_scales, variable_scales) = manifold_block_scales(model, block, &jacobian, structure);
     if scaled_residual_converged(&residual, &row_scales, tol) {
         return Ok(ProjectionBlockUpdate {
             changed: false,
@@ -208,8 +214,14 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
         });
     }
     let before = scaled_residual_norm(&residual, &row_scales);
-    let Some(delta) = scaled_newton_delta(&jacobian, &residual, &row_scales, &variable_scales, tol)
-    else {
+    let Some(delta) = scaled_newton_delta(
+        &jacobian,
+        &residual,
+        &row_scales,
+        &variable_scales,
+        structure,
+        tol,
+    ) else {
         return Ok(ProjectionBlockUpdate {
             changed: false,
             settled: false,
@@ -263,4 +275,24 @@ fn project_manifold_block<M: ManifoldProjectionModel>(
         changed: false,
         settled: false,
     })
+}
+
+fn manifold_block_scales<M: ManifoldProjectionModel>(
+    model: &M,
+    block: &solve::AlgebraicProjectionBlock,
+    jacobian: &DMatrix<f64>,
+    structure: Option<&solve::StructuralPattern>,
+) -> (Vec<f64>, Vec<f64>) {
+    let variable_scales = block
+        .y_indices
+        .iter()
+        .map(|&state| model.manifold_variable_scale(state))
+        .collect::<Vec<_>>();
+    let row_scales = jacobian_row_scales(
+        jacobian,
+        &variable_scales,
+        &vec![1.0; block.rows.len()],
+        structure,
+    );
+    (row_scales, variable_scales)
 }

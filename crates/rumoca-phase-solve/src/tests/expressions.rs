@@ -621,3 +621,201 @@ fn checked_function_call_is_inlined_into_solve_program() {
             .any(|operation| matches!(operation, LinearOp::Binary { .. }))
     );
 }
+
+#[test]
+fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
+    let solve = function_assertion_solve(true, -1.0, false, false);
+    assert_eq!(solve.events.root_conditions.len(), 1);
+    assert_eq!(solve.events.actions.len(), 1);
+    let mut root = [0.0];
+    rumoca_eval_solve::eval_scalar_program_block(
+        &solve.events.root_conditions,
+        &[0.0],
+        &vec![0.0; solve.layout.p_scalars()],
+        0.0,
+        None,
+        &mut root,
+    )
+    .unwrap();
+    assert_eq!(root, [1.0], "an active failing assertion is above zero");
+    let request = rumoca_eval_solve::eval_event_action_request(
+        &solve.events,
+        &[0.0],
+        &vec![0.0; solve.layout.p_scalars()],
+        0.0,
+        rumoca_eval_solve::RowEvalContext::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        request,
+        rumoca_eval_solve::EventActionRequest::AssertionFailed { ref message }
+            if message == "positive input required"
+    ));
+}
+
+#[test]
+fn inactive_conditional_call_cannot_fire_its_function_assertion() {
+    let solve = function_assertion_solve(false, -1.0, false, false);
+    assert!(
+        solve.events.root_conditions.is_empty(),
+        "a statically unreachable call must not construct an event root"
+    );
+    assert!(
+        solve.events.actions.is_empty(),
+        "a statically unreachable call must not construct an action"
+    );
+}
+
+#[test]
+fn shared_call_in_branch_condition_and_value_has_one_assertion_schedule() {
+    let solve = function_assertion_solve(true, 1.0, true, false);
+    assert_eq!(solve.events.root_conditions.len(), 1);
+    assert_eq!(solve.events.actions.len(), 1);
+}
+
+#[test]
+fn nested_call_assertion_resolves_actual_argument_in_the_caller_frame() {
+    let solve = function_assertion_solve(true, 1.0, false, true);
+    assert_eq!(solve.events.root_conditions.len(), 1);
+    assert_eq!(solve.events.actions.len(), 1);
+}
+
+fn construct_asserting_identity<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    real: dae::ValueTypeId<'dae>,
+    function_at: dae::DaeProvenance,
+    assertion_at: dae::DaeProvenance,
+) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
+    let signature = dae::FunctionSignature::new(VarName::new("f"), [real], [real], function_at);
+    model
+        .function(signature, |model, reservation| {
+            let parameter = model.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, function_at)
+            })?;
+            let output = model.functions(|functions| {
+                functions.output(&reservation, VarName::new("y"), 0, function_at)
+            })?;
+            let parameter_value = model.expressions(|expressions| {
+                expressions.at(function_at).function_parameter(parameter)
+            })?;
+            let assertion = model.expressions(|expressions| {
+                let zero = expressions
+                    .at(assertion_at)
+                    .literal(dae::DaeLiteral::Real(0.0))?;
+                expressions.at(assertion_at).binary(
+                    dae::BinaryOperator::Greater,
+                    parameter_value,
+                    zero,
+                )
+            })?;
+            let message = model.expressions(|expressions| {
+                expressions
+                    .at(assertion_at)
+                    .literal(dae::DaeLiteral::String(
+                        "positive input required".to_owned(),
+                    ))
+            })?;
+            let mut body =
+                model.functions(|functions| functions.begin(reservation, function_at))?;
+            model.functions(|functions| {
+                functions.assertion(&mut body, assertion, message, assertion_at)
+            })?;
+            model.functions(|functions| {
+                functions.assign(&mut body, output, parameter_value, function_at)
+            })?;
+            model.functions(|functions| functions.define(body, function_at))
+        })
+        .map(|(function, ())| function)
+}
+
+fn construct_call_wrapper<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    real: dae::ValueTypeId<'dae>,
+    called: dae::FunctionId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
+    let signature = dae::FunctionSignature::new(VarName::new("g"), [real], [real], at);
+    model
+        .function(signature, |model, reservation| {
+            let parameter = model.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("v"), 0, at)
+            })?;
+            let output = model
+                .functions(|functions| functions.output(&reservation, VarName::new("y"), 0, at))?;
+            let parameter_value = model
+                .expressions(|expressions| expressions.at(at).function_parameter(parameter))?;
+            let call = model
+                .expressions(|expressions| expressions.at(at).call(called, 0, [parameter_value]))?;
+            let mut body = model.functions(|functions| functions.begin(reservation, at))?;
+            model.functions(|functions| functions.assign(&mut body, output, call, at))?;
+            model.functions(|functions| functions.define(body, at))
+        })
+        .map(|(function, ())| function)
+}
+
+fn function_assertion_solve(
+    branch_active: bool,
+    call_value: f64,
+    call_controls_branch: bool,
+    nested_call: bool,
+) -> rumoca_ir_solve::SolveProblem {
+    let source = TestSource::new(
+        "function f input Real u; output Real y; assert(u > 0, \"positive input required\"); y := u; Real z; z = if active then f(value) else 0;",
+    );
+    let function_at = source.at(0, 94);
+    let assertion_at = source.at(44, 84);
+    let variable_at = source.at(95, 102);
+    let equation_at = source.at(104, 133);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), function_at)
+        })?;
+        let function = construct_asserting_identity(model, real, function_at, assertion_at)?;
+        let called_function = if nested_call {
+            construct_call_wrapper(model, real, function, function_at)?
+        } else {
+            function
+        };
+        let algebraic = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("z"),
+                real,
+                variable_at,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let z = expressions
+                .at(equation_at)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            let active = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Boolean(branch_active))?;
+            let argument = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(call_value))?;
+            let call = expressions
+                .at(equation_at)
+                .call(called_function, 0, [argument])?;
+            let fallback = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            let condition = if call_controls_branch {
+                expressions
+                    .at(equation_at)
+                    .binary(dae::BinaryOperator::Greater, call, fallback)?
+            } else {
+                active
+            };
+            let selected = expressions
+                .at(equation_at)
+                .conditional([(condition, call)], fallback)?;
+            expressions
+                .at(equation_at)
+                .binary(dae::BinaryOperator::Subtract, z, selected)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_at, residual))
+    })
+    .unwrap();
+    lower_solve_problem(&model).unwrap()
+}

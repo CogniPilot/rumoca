@@ -1,11 +1,14 @@
 //! Prepared Solve-IR evaluation and tensor-node orchestration.
 
+mod affine_eval;
 mod assignment_shape;
 #[cfg(test)]
 mod assignment_shape_tests;
+mod construction;
 mod dependency;
 #[cfg(test)]
 mod prepared_compute_block_tests;
+mod support;
 
 use std::cell::RefCell;
 
@@ -26,16 +29,19 @@ use crate::{
     record_solve_block_eval, required_registers, row_input_requirements,
     validate_input_requirements, validate_input_requirements_with_span, validate_output_len,
 };
+use affine_eval::*;
 #[cfg(test)]
 use assignment_shape::checked_expr_eval_len;
 pub use assignment_shape::{
     TargetAssignmentShape, target_assignment_shape, target_assignment_shapes,
 };
+use dependency::{parameter_static_y_gradient, row_parameter_indices};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, ComputeBlock, ComputeNode,
     LinearOp, ScalarProgramBlock, StructuralPattern, TensorOutputMap, UnaryOp,
 };
+use support::*;
 
 /// Reusable evaluator for one Solve-IR row block.
 pub struct PreparedScalarProgramBlock {
@@ -46,6 +52,7 @@ pub struct PreparedScalarProgramBlock {
     row_requirements: Vec<RowInputRequirements>,
     row_seed_loads: Vec<Box<[PreparedSeedLoad]>>,
     row_assignment_shapes: Vec<Box<[TargetAssignmentShape]>>,
+    row_parameter_static_y_gradient_params: Vec<Option<Box<[usize]>>>,
     requirements: RowInputRequirements,
     scratch: RefCell<RowEvalScratch>,
     row_output_scratch: RefCell<Vec<f64>>,
@@ -57,74 +64,7 @@ enum PreparedSeedLoad {
     Indexed { base: usize, count: usize },
 }
 
-impl Clone for PreparedScalarProgramBlock {
-    fn clone(&self) -> Self {
-        Self {
-            block: self.block.clone(),
-            output_count: self.output_count,
-            row_outputs: self.row_outputs.clone(),
-            row_registers: self.row_registers.clone(),
-            row_requirements: self.row_requirements.clone(),
-            row_seed_loads: self.row_seed_loads.clone(),
-            row_assignment_shapes: self.row_assignment_shapes.clone(),
-            requirements: self.requirements,
-            scratch: RefCell::new(RowEvalScratch::default()),
-            row_output_scratch: RefCell::new(Vec::new()),
-        }
-    }
-}
-
 impl PreparedScalarProgramBlock {
-    pub fn new(block: ScalarProgramBlock) -> Result<Self, EvalSolveError> {
-        let row_count = block.programs().len();
-        let block_span = block.program_span(0);
-        let output_count = checked_prepared_output_count(&block)?;
-        let row_outputs = Box::new(prepare_row_output_metadata(&block, output_count)?);
-        let mut row_registers =
-            prepared_vec_with_capacity(row_count, "prepared row register count", block_span)?;
-        let mut row_requirements =
-            prepared_vec_with_capacity(row_count, "prepared row requirement count", block_span)?;
-        let mut row_seed_loads =
-            prepared_vec_with_capacity(row_count, "prepared row seed load count", block_span)?;
-        let mut row_assignment_shapes = prepared_vec_with_capacity(
-            row_count,
-            "prepared row assignment shape count",
-            block_span,
-        )?;
-        let mut requirements = RowInputRequirements::default();
-        for (row_idx, row) in block.programs().iter().enumerate() {
-            let span = block.program_span(row_idx);
-            let row_requirement =
-                row_input_requirements(row).map_err(|error| error.with_source_span(span))?;
-            row_registers
-                .push(required_registers(row).map_err(|error| error.with_source_span(span))?);
-            row_requirements.push(row_requirement);
-            row_seed_loads.push(prepared_seed_loads(row, span)?);
-            row_assignment_shapes.push(
-                target_assignment_shapes(row)
-                    .map_err(|error| error.with_source_span(span))?
-                    .into_boxed_slice(),
-            );
-            requirements = requirements.merge(row_requirement);
-        }
-        Ok(Self {
-            block,
-            output_count,
-            row_outputs,
-            row_registers,
-            row_requirements,
-            row_seed_loads,
-            row_assignment_shapes,
-            requirements,
-            scratch: RefCell::new(RowEvalScratch::default()),
-            row_output_scratch: RefCell::new(Vec::new()),
-        })
-    }
-
-    pub fn from_compute_block(block: &ComputeBlock) -> Result<Self, EvalSolveError> {
-        Self::new(crate::to_scalar_program_block(block)?)
-    }
-
     pub fn block(&self) -> &ScalarProgramBlock {
         &self.block
     }
@@ -152,6 +92,20 @@ impl PreparedScalarProgramBlock {
                 == 1
                 && row.iter().all(crate::reverse::reverse_row_op_supported)
         })
+    }
+
+    /// Whether the row's complete solver-Y gradient depends only on parameters.
+    pub fn certifies_parameter_static_y_gradient(&self, row_idx: usize) -> bool {
+        self.row_parameter_static_y_gradient_params
+            .get(row_idx)
+            .is_some_and(Option::is_some)
+    }
+
+    /// Exact parameter slots whose bit patterns key a certified row gradient.
+    pub fn parameter_static_y_gradient_params(&self, row_idx: usize) -> Option<&[usize]> {
+        self.row_parameter_static_y_gradient_params
+            .get(row_idx)?
+            .as_deref()
     }
 
     pub fn reverse_row_unsupported_op_kinds(
@@ -622,11 +576,7 @@ impl PreparedScalarProgramBlock {
         )
     }
 
-    pub(crate) fn certifies_exact_target_assignment(
-        &self,
-        row_idx: usize,
-        target_y_index: usize,
-    ) -> bool {
+    pub fn certifies_exact_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
         let Some(row) = self.block.programs().get(row_idx) else {
             return false;
         };
@@ -701,7 +651,7 @@ impl PreparedScalarProgramBlock {
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval(
             "scalar_row_outputs_unchecked",
-            self.block.len(),
+            self.output_count,
             output_count,
         );
         let mut sink = OutputCursor::new(out.as_mut_slice());
@@ -732,12 +682,24 @@ impl PreparedScalarProgramBlock {
             }
         };
         let mut scratch = self.scratch.borrow_mut();
-        record_solve_block_eval("target_rows_batch", self.block.len(), rows.len());
+        record_solve_block_eval("target_rows_batch", self.output_count, rows.len());
         for row in rows {
+            let shape = row.assignment_shape.ok_or_else(|| {
+                invalid_prepared_row_with_span(
+                    "batched target assignment row has no selected assignment shape",
+                    self.block.program_span(row.row_idx),
+                )
+            })?;
+            if shape.target_y_index() != row.target_index {
+                return Err(invalid_prepared_row_with_span(
+                    "batched target assignment shape does not match its refresh target",
+                    self.block.program_span(row.row_idx),
+                ));
+            }
             let value =
                 self.eval_target_assignment_row_with_scratch(TargetAssignmentScratchRequest {
                     row_idx: row.row_idx,
-                    target_y_index: row.target_index,
+                    shape,
                     y,
                     p,
                     t,
@@ -851,12 +813,7 @@ impl PreparedScalarProgramBlock {
                     len: self.block.row_count(),
                     span: self.block.program_span(request.row_idx),
                 })?;
-        let Some(shape) = self.assignment_shape(request.row_idx, request.target_y_index) else {
-            return Err(invalid_prepared_row_with_span(
-                "batched target assignment row has no matching assignment shape",
-                self.block.program_span(request.row_idx),
-            ));
-        };
+        let shape = request.shape;
         eval_prevalidated_no_output_program(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
@@ -880,7 +837,7 @@ impl PreparedScalarProgramBlock {
             .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
     }
 
-    fn assignment_shape(
+    pub(crate) fn assignment_shape(
         &self,
         row_idx: usize,
         target_y_index: usize,
@@ -955,7 +912,7 @@ struct TargetAssignmentRowRequest<'a> {
 
 struct TargetAssignmentScratchRequest<'a> {
     row_idx: usize,
-    target_y_index: usize,
+    shape: TargetAssignmentShape,
     y: &'a [f64],
     p: &'a [f64],
     t: f64,
@@ -1297,6 +1254,8 @@ enum PreparedComputeNode {
         k: usize,
         n: usize,
         kernel: MatMulKernel,
+        lhs_pattern: StructuralPattern,
+        rhs_pattern: StructuralPattern,
     },
     LinSolve {
         setup: PreparedLinearOps,
@@ -1306,6 +1265,7 @@ enum PreparedComputeNode {
         matrix_len: usize,
         n: usize,
         kernel: LinearSolveKernel,
+        matrix_pattern: StructuralPattern,
         span: rumoca_core::Span,
     },
 }
@@ -1414,6 +1374,8 @@ fn prepared_matmul(
             k,
             n,
             kernel,
+            lhs_pattern: lhs_pattern.clone(),
+            rhs_pattern: rhs_pattern.clone(),
         },
         next_output_cursor,
     ))
@@ -1446,6 +1408,7 @@ fn prepared_linsolve(
             matrix_len,
             n,
             kernel,
+            matrix_pattern: matrix_pattern.clone(),
             span,
         },
         next_output_cursor,
@@ -1927,6 +1890,8 @@ impl PreparedComputeNode {
                 k,
                 n,
                 kernel,
+                lhs_pattern,
+                rhs_pattern,
             } => {
                 setup.eval(y, p, t, context, scratch)?;
                 ensure_register_range(&scratch.regs, "read", *lhs_start, *lhs_len)?;
@@ -1943,6 +1908,8 @@ impl PreparedComputeNode {
                         k: *k,
                         n: *n,
                         kernel: *kernel,
+                        lhs_pattern,
+                        rhs_pattern,
                     },
                     &mut out[*output_start..output_end],
                 )
@@ -1955,6 +1922,7 @@ impl PreparedComputeNode {
                 matrix_len,
                 n,
                 kernel,
+                matrix_pattern,
                 span,
             } => {
                 setup.eval(y, p, t, context, scratch)?;
@@ -1969,6 +1937,7 @@ impl PreparedComputeNode {
                     *rhs_start,
                     *n,
                     *kernel,
+                    Some(matrix_pattern),
                     &mut out[*output_start..output_end],
                 )
                 .map_err(|error| {
@@ -1989,9 +1958,3 @@ impl PreparedComputeNode {
         }
     }
 }
-
-mod affine_eval;
-use affine_eval::*;
-
-mod support;
-use support::*;

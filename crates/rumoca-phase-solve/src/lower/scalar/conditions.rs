@@ -44,16 +44,45 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(self.ops)
     }
 
-    pub(in crate::lower) fn root_program(
+    pub(in crate::lower) fn clocked_action_condition_program(
         mut self,
+        clock: dae::ClockId<'dae>,
+        guard: dae::ConditionId<'dae>,
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        let guard = self.condition(guard)?;
+        let activation = self
+            .layout
+            .clock_activations
+            .get(clock.index() as usize)
+            .copied()
+            .ok_or_else(|| {
+                LowerError::contract("clocked action has no activation parameter", span)
+            })?;
+        let activation = self.load_slot(solve::scalar_slot_p(activation), span)?;
+        let output = self.binary(dae::BinaryOperator::And, activation, guard, span)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    pub(in crate::lower) fn root_program(
+        self,
         relation: dae::RelationId<'dae>,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let relation = self
             .view
             .relation(relation)
             .expect("checked relation identity resolves");
-        let node = self.node(relation.expression());
-        let span = relation.provenance().span();
+        self.root_expression_program(relation.expression(), relation.provenance().span())
+    }
+
+    pub(in crate::lower) fn root_expression_program(
+        mut self,
+        expression: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let node = self.node(expression);
         let output = match node.operation() {
             dae::ExpressionOperation::Binary {
                 operator: dae::BinaryOperator::Less | dae::BinaryOperator::LessEqual,
@@ -74,7 +103,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 self.binary(dae::BinaryOperator::Subtract, rhs, lhs, span)?
             }
             _ => {
-                let condition = self.expression(relation.expression(), 0)?;
+                let condition = self.expression(expression, 0)?;
                 let when_true = self.constant(-1.0, span)?;
                 let when_false = self.constant(1.0, span)?;
                 self.select(condition, when_true, when_false, span)?

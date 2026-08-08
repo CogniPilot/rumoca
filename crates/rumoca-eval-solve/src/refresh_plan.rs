@@ -5,6 +5,8 @@
 //! module is `pub` only for that cross-crate consumer; nothing outside
 //! `rumoca-solver`'s runtime should construct or mutate a [`RefreshPlan`].
 
+mod schedule;
+
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::Arc,
@@ -13,7 +15,9 @@ use std::{
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_solve as solve;
 
-use crate::{EvalSolveError, PreparedScalarProgramBlock};
+use crate::{EvalSolveError, PreparedScalarProgramBlock, TargetAssignmentShape};
+
+pub use schedule::{RefreshStage, build_refresh_stages};
 
 pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshPlan) {
     if !trace_algebraic_refresh() {
@@ -110,6 +114,10 @@ pub struct AlgebraicRefreshRow {
     /// must linear-solve the row's residual for the paired variable instead
     /// of evaluating the assignment value.
     pub assignment_target: Option<usize>,
+    /// Prepared isolator selected for this exact target during construction.
+    /// Runtime execution consumes this certificate directly instead of
+    /// searching the row's other algebraically valid isolators.
+    pub assignment_shape: Option<TargetAssignmentShape>,
     /// The prepared row proves a direct target assignment, allowing an
     /// acyclic dependency-complete schedule to skip simultaneous projection.
     pub direct_assignment_certified: bool,
@@ -126,6 +134,9 @@ pub struct RefreshPlan {
     /// Complete compiler-owned BLT used to certify and solve the canonical
     /// implicit residual system after the causal seed schedule.
     pub simultaneous_plan: solve::AlgebraicProjectionPlan,
+    /// Stable indices into the complete compiler-owned BLT. Subplans retain
+    /// artifact identity instead of renumbering blocks from zero.
+    pub simultaneous_block_indices: Vec<usize>,
     /// Residual blocks that still require value settling after exact causal
     /// seed rows run. Sensitivity projection retains `simultaneous_plan`.
     pub value_projection_plan: solve::AlgebraicProjectionPlan,
@@ -140,12 +151,160 @@ pub struct RefreshPlan {
     /// Causal rows that can depend on time, state, runtime operations, or
     /// dynamic algebraics and therefore execute on every refresh.
     pub dynamic_causal_seed_rows: Vec<AlgebraicRefreshRow>,
+    /// Proof-directed value order. The complete causal warm-start precedes
+    /// the numerical projection blocks whose residuals still require settling.
+    pub value_stages: Vec<RefreshStage>,
     pub causal_solution_certified: bool,
 }
 
 impl RefreshPlan {
     pub fn source_block(&self) -> &solve::ScalarProgramBlock {
         &self.source_block
+    }
+
+    /// Derive the value stages that remain after `settled` has completed at
+    /// the identical coordinate. Shared exact assignments and atomic
+    /// projection blocks are construction-identical; uncovered stages retain
+    /// this plan's checked BLT order.
+    pub fn certified_value_remainder_after(&self, settled: &Self) -> Option<Self> {
+        if !Arc::ptr_eq(&self.source_block, &settled.source_block) {
+            return None;
+        }
+        let settled = refresh_stage_identities(&settled.value_stages);
+        let value_stages = self
+            .value_stages
+            .iter()
+            .filter_map(|stage| uncovered_refresh_stage(stage, &settled))
+            .collect();
+        let mut remainder = self.clone();
+        remainder.value_stages = value_stages;
+        Some(remainder)
+    }
+}
+
+#[derive(PartialEq)]
+enum RefreshStageIdentity {
+    ExactAssignment {
+        equation_index: usize,
+        row_idx: usize,
+        output_offset: usize,
+        target_index: usize,
+        assignment_target: Option<usize>,
+        assignment_shape: Option<TargetAssignmentShape>,
+    },
+    ProjectionBlock {
+        block_index: usize,
+        blocks: Vec<(Vec<usize>, Vec<usize>)>,
+    },
+}
+
+fn refresh_stage_identities(stages: &[RefreshStage]) -> Vec<RefreshStageIdentity> {
+    let mut identities = Vec::new();
+    for stage in stages {
+        match stage {
+            RefreshStage::CausalSeedSweep {
+                static_rows,
+                dynamic_rows,
+            }
+            | RefreshStage::ExactAssignments {
+                static_rows,
+                dynamic_rows,
+            } => identities.extend(
+                static_rows
+                    .iter()
+                    .chain(dynamic_rows.iter())
+                    .map(refresh_row_identity),
+            ),
+            RefreshStage::ProjectionBlock {
+                block_index, plan, ..
+            } => {
+                identities.push(projection_stage_identity(*block_index, plan));
+            }
+        }
+    }
+    identities
+}
+
+fn uncovered_refresh_rows(
+    rows: &[AlgebraicRefreshRow],
+    settled: &[RefreshStageIdentity],
+) -> Vec<AlgebraicRefreshRow> {
+    rows.iter()
+        .filter(|row| !settled.contains(&refresh_row_identity(row)))
+        .cloned()
+        .collect()
+}
+
+fn uncovered_refresh_stage(
+    stage: &RefreshStage,
+    settled: &[RefreshStageIdentity],
+) -> Option<RefreshStage> {
+    match stage {
+        RefreshStage::CausalSeedSweep {
+            static_rows,
+            dynamic_rows,
+        } => uncovered_causal_seed_stage(static_rows, dynamic_rows, settled),
+        RefreshStage::ExactAssignments {
+            static_rows,
+            dynamic_rows,
+        } => uncovered_exact_assignment_stage(static_rows, dynamic_rows, settled),
+        RefreshStage::ProjectionBlock {
+            block_index, plan, ..
+        } => {
+            let identity = projection_stage_identity(*block_index, plan);
+            (!settled.contains(&identity)).then(|| stage.clone())
+        }
+    }
+}
+
+fn uncovered_exact_assignment_stage(
+    static_rows: &[AlgebraicRefreshRow],
+    dynamic_rows: &[AlgebraicRefreshRow],
+    settled: &[RefreshStageIdentity],
+) -> Option<RefreshStage> {
+    let static_rows = uncovered_refresh_rows(static_rows, settled);
+    let dynamic_rows = uncovered_refresh_rows(dynamic_rows, settled);
+    (!static_rows.is_empty() || !dynamic_rows.is_empty()).then(|| RefreshStage::ExactAssignments {
+        static_rows: static_rows.into_boxed_slice(),
+        dynamic_rows: dynamic_rows.into_boxed_slice(),
+    })
+}
+
+fn uncovered_causal_seed_stage(
+    static_rows: &[AlgebraicRefreshRow],
+    dynamic_rows: &[AlgebraicRefreshRow],
+    settled: &[RefreshStageIdentity],
+) -> Option<RefreshStage> {
+    let static_rows = uncovered_refresh_rows(static_rows, settled);
+    let dynamic_rows = uncovered_refresh_rows(dynamic_rows, settled);
+    (!static_rows.is_empty() || !dynamic_rows.is_empty()).then(|| RefreshStage::CausalSeedSweep {
+        static_rows: static_rows.into_boxed_slice(),
+        dynamic_rows: dynamic_rows.into_boxed_slice(),
+    })
+}
+
+fn projection_stage_identity(
+    block_index: usize,
+    plan: &solve::AlgebraicProjectionPlan,
+) -> RefreshStageIdentity {
+    RefreshStageIdentity::ProjectionBlock {
+        block_index,
+        blocks: plan
+            .blocks
+            .iter()
+            .map(|block| (block.rows.clone(), block.y_indices.clone()))
+            .collect(),
+    }
+}
+
+fn refresh_row_identity(row: &AlgebraicRefreshRow) -> RefreshStageIdentity {
+    RefreshStageIdentity::ExactAssignment {
+        equation_index: row.equation_index,
+        row_idx: row.row_idx,
+        output_offset: row.output_offset,
+        target_index: row.target_index,
+        assignment_target: row.assignment_target,
+        assignment_shape: row.assignment_shape,
     }
 }
 
@@ -182,6 +341,7 @@ pub fn build_algebraic_refresh_plan(
         causal_solution_certified,
     )?;
     plan.simultaneous_plan = model.problem.continuous.algebraic_projection_plan.clone();
+    plan.simultaneous_block_indices = (0..plan.simultaneous_plan.blocks.len()).collect();
     configure_causal_seed_rows(&mut plan, state_count)?;
     Ok(plan)
 }
@@ -268,6 +428,7 @@ fn algebraic_refresh_rows_from_row_targets(
             output_offset: position.output_offset,
             target_index,
             assignment_target: Some(target_index),
+            assignment_shape: block.assignment_shape(position.program_index, target_index),
             direct_assignment_certified: block
                 .certifies_direct_target_assignment(position.program_index, target_index),
             exact_assignment_certified: block
@@ -342,16 +503,23 @@ fn build_dependency_refresh_plan(
         &output_positions,
         &mut rows,
     )?;
+    let selected_blocks = full_plan
+        .simultaneous_plan
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(block_idx, _)| needed_blocks.contains(block_idx))
+        .collect::<Vec<_>>();
     let simultaneous_plan = solve::AlgebraicProjectionPlan {
-        blocks: full_plan
-            .simultaneous_plan
-            .blocks
+        blocks: selected_blocks
             .iter()
-            .enumerate()
-            .filter(|(block_idx, _)| needed_blocks.contains(block_idx))
-            .map(|(_, block)| block.clone())
+            .map(|(_, block)| (*block).clone())
             .collect(),
     };
+    let simultaneous_block_indices = selected_blocks
+        .iter()
+        .map(|(local_index, _)| full_plan.simultaneous_block_indices[*local_index])
+        .collect();
     let causal_solution_certified = dependency_causal_projection_is_certified(
         implicit_block,
         &rows,
@@ -367,6 +535,7 @@ fn build_dependency_refresh_plan(
         causal_solution_certified,
     )?;
     plan.simultaneous_plan = simultaneous_plan;
+    plan.simultaneous_block_indices = simultaneous_block_indices;
     configure_causal_seed_rows(&mut plan, state_count)?;
     Ok(plan)
 }
@@ -420,6 +589,7 @@ fn append_exact_projection_owners(
             output_offset: position.output_offset,
             target_index: *target_index,
             assignment_target: Some(*target_index),
+            assignment_shape: block.assignment_shape(position.program_index, *target_index),
             direct_assignment_certified: block
                 .certifies_direct_target_assignment(position.program_index, *target_index),
             exact_assignment_certified: true,
@@ -615,6 +785,12 @@ fn configure_causal_seed_rows(
         // complete seed schedule is dependency-certified.
         plan.simultaneous_plan.clone()
     };
+    plan.value_stages = build_refresh_stages(
+        &plan.simultaneous_plan,
+        &plan.simultaneous_block_indices,
+        &plan.causal_seed_rows,
+        &plan.static_causal_seed_rows,
+    );
     Ok(())
 }
 
@@ -827,10 +1003,12 @@ fn order_refresh_rows(
     Ok(RefreshPlan {
         source_block: block,
         simultaneous_plan: solve::AlgebraicProjectionPlan::default(),
+        simultaneous_block_indices: Vec::new(),
         value_projection_plan: solve::AlgebraicProjectionPlan::default(),
         causal_seed_rows: ordered.clone(),
         static_causal_seed_rows: Vec::new(),
         dynamic_causal_seed_rows: Vec::new(),
+        value_stages: Vec::new(),
         rows: ordered,
         causal_solution_certified,
     })

@@ -590,7 +590,7 @@ impl TraceRecorder {
         if self
             .times
             .last()
-            .is_some_and(|last| sample_time_match_with_tol(*last, observation.time))
+            .is_some_and(|last| *last == observation.time)
         {
             return self.replace_latest(observation);
         }
@@ -652,9 +652,55 @@ fn empty_terminated_result(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_requires_integrator_restart, event_time_is_beyond_horizon, integration_time_reached,
+        TraceRecorder, event_requires_integrator_restart, event_time_is_beyond_horizon,
+        integration_time_reached,
     };
-    use rumoca_solver::fmi_me::MeEventCause;
+    use rumoca_solver::fmi_me::{MeEventCause, MeRuntimeOutput};
+
+    fn empty_trace_recorder() -> TraceRecorder {
+        TraceRecorder {
+            names: vec!["x".to_string()],
+            meta: Vec::new(),
+            times: Vec::new(),
+            data: vec![Vec::new()],
+        }
+    }
+
+    #[test]
+    fn trace_recorder_preserves_distinct_near_start_event_coordinate() {
+        let mut trace = empty_trace_recorder();
+        trace
+            .record(MeRuntimeOutput {
+                time: 0.0,
+                values: vec![1.0],
+            })
+            .expect("initial trace point");
+        trace
+            .record(MeRuntimeOutput {
+                time: f64::from_bits(1),
+                values: vec![2.0],
+            })
+            .expect("near-start event point");
+
+        assert_eq!(trace.times, vec![0.0, f64::from_bits(1)]);
+        assert_eq!(trace.data, vec![vec![1.0, 2.0]]);
+    }
+
+    #[test]
+    fn trace_recorder_replaces_only_the_same_superdense_coordinate() {
+        let mut trace = empty_trace_recorder();
+        for value in [1.0, 2.0] {
+            trace
+                .record(MeRuntimeOutput {
+                    time: 0.0,
+                    values: vec![value],
+                })
+                .expect("same-time trace point");
+        }
+
+        assert_eq!(trace.times, vec![0.0]);
+        assert_eq!(trace.data, vec![vec![2.0]]);
+    }
 
     #[test]
     fn integration_time_reach_is_independent_of_state_error_tolerance() {

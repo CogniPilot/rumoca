@@ -182,7 +182,7 @@ fn unlimited_newton_leaves_the_physical_branch_of_a_saturating_reluctance() {
         false,
     );
 
-    // Documents why the retry exists: the unlimited pass ends off the branch it
+    // Documents why the branch limit exists: the unlimited pass ends off the branch it
     // started on, at a negative relative permeability no soft-magnetic material has.
     assert!(
         outcome.is_err(),
@@ -196,7 +196,7 @@ fn unlimited_newton_leaves_the_physical_branch_of_a_saturating_reluctance() {
 }
 
 #[test]
-fn step_limited_retry_solves_the_saturation_knee_on_the_physical_branch() {
+fn step_limited_projection_solves_the_saturation_knee_on_the_physical_branch() {
     let model = saturating_reluctance_model(SATURATION_KNEE_TOTAL_FLUX);
     let mut y = SaturatingReluctanceModel::consistent_guess(
         SATURATION_KNEE_GUESS[0],
@@ -320,9 +320,10 @@ fn partly_solvable_args<'a>() -> AlgebraicProjectionArgs<'a> {
 }
 
 /// A projection with no solution must still fail, and must leave every unknown
-/// exactly where it found it: the retry is a second attempt, never a fallback.
+/// exactly where it found it: branch preservation is never permission to accept
+/// an unsolved residual system.
 #[test]
-fn a_step_limited_retry_that_cannot_converge_still_fails_loudly() {
+fn a_step_limited_projection_that_cannot_converge_still_fails_loudly() {
     let original = vec![-11.0, 7.0];
 
     // Control: on its own the solvable block moves `y[0]` from -11 to 3, so the

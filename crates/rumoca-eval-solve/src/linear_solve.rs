@@ -1,5 +1,6 @@
 use crate::tensor_policy::LinearSolveKernel;
 use crate::{EvalSolveError, get};
+use rumoca_ir_solve::StructuralPattern;
 
 /// Evaluate a [`LinearOp::LinearSolveComponent`] op directly, destructuring its
 /// fields. Keeps the interpreter's `eval_op` match arm to a single line.
@@ -62,6 +63,7 @@ pub(crate) fn solve_all_unchecked(
     rhs_start: u32,
     n: usize,
     kernel: LinearSolveKernel,
+    matrix_pattern: Option<&StructuralPattern>,
     out: &mut [f64],
 ) -> Result<(), EvalSolveError> {
     if n == 0 {
@@ -81,9 +83,13 @@ pub(crate) fn solve_all_unchecked(
         LinearSolveKernel::Diagonal => {
             solve_diagonal_unchecked(regs, matrix_start, rhs_start, n, out)?;
         }
-        LinearSolveKernel::SmallDense
-        | LinearSolveKernel::Dense
-        | LinearSolveKernel::SparseCandidate => {
+        LinearSolveKernel::SparseCandidate => {
+            let pattern = matrix_pattern.ok_or_else(|| {
+                linear_solve_error(n, None, "sparse kernel requires structural pattern")
+            })?;
+            solve_sparse_unchecked(regs, matrix_start, rhs_start, n, pattern, out)?;
+        }
+        LinearSolveKernel::SmallDense | LinearSolveKernel::Dense => {
             let mut matrix = build_augmented_matrix_unchecked(regs, matrix_start, rhs_start, n)?;
             if gaussian_eliminate(&mut matrix).is_none() {
                 return Err(linear_solve_error(n, None, "singular matrix"));
@@ -92,6 +98,38 @@ pub(crate) fn solve_all_unchecked(
                 *dst = matrix.solution_component(component);
             }
         }
+    }
+    Ok(())
+}
+
+fn solve_sparse_unchecked(
+    regs: &[f64],
+    matrix_start: u32,
+    rhs_start: u32,
+    n: usize,
+    pattern: &StructuralPattern,
+    out: &mut [f64],
+) -> Result<(), EvalSolveError> {
+    if pattern.rows() as usize != n || pattern.columns() as usize != n {
+        return Err(linear_solve_error(
+            n,
+            None,
+            "sparse pattern shape does not match matrix",
+        ));
+    }
+    let mut matrix = AugmentedMatrix::zeroed(n)?;
+    for row in 0..n {
+        pattern.visit_row_columns(row, |column| {
+            let offset = row * n + column;
+            matrix.set(row, column, regs[matrix_start as usize + offset]);
+        });
+        matrix.set(row, n, regs[rhs_start as usize + row]);
+    }
+    if gaussian_eliminate(&mut matrix).is_none() {
+        return Err(linear_solve_error(n, None, "singular matrix"));
+    }
+    for (component, destination) in out.iter_mut().take(n).enumerate() {
+        *destination = matrix.solution_component(component);
     }
     Ok(())
 }

@@ -70,8 +70,38 @@ fn integrating_plant_output<'dae>(
     Ok(sensed)
 }
 
+fn add_clocked_feedback<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    held: dae::DiscreteRealId<'dae>,
+    sampled: dae::DiscreteRealId<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let feedback = model.expressions(|expressions| {
+        let lhs = expressions
+            .at(at)
+            .coordinate(dae::CoordinateInput::DiscreteReal(held))?;
+        let gain = expressions.at(at).literal(dae::DaeLiteral::Real(2.0))?;
+        let source = expressions
+            .at(at)
+            .coordinate(dae::CoordinateInput::DiscreteReal(sampled))?;
+        let scaled = expressions
+            .at(at)
+            .binary(dae::BinaryOperator::Multiply, gain, source)?;
+        expressions
+            .at(at)
+            .binary(dae::BinaryOperator::Subtract, lhs, scaled)
+    })?;
+    model
+        .discrete(|discrete| discrete.real_equation(at, |equation| equation.residual(feedback)))?;
+    Ok(())
+}
+
 /// One clock, one `hold` output, and one clocked row that samples it back.
-fn clocked_hold_sample_model(source: TestSource, path: SampledPath) -> dae::Dae {
+fn clocked_hold_sample_model(
+    source: TestSource,
+    path: SampledPath,
+    explicit_sample: bool,
+) -> dae::Dae {
     let declaration = source.at(0, 6);
     let clock_at = source.at(8, 24);
     let hold_at = source.at(26, 34);
@@ -111,8 +141,13 @@ fn clocked_hold_sample_model(source: TestSource, path: SampledPath) -> dae::Dae 
         })?;
         let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
         model.clocks(|clocks| clocks.own_discrete_real(clock.into(), held, hold_at))?;
-        model
-            .clocks(|clocks| clocks.own_sampled_discrete_real(clock.into(), sampled, sample_at))?;
+        if explicit_sample {
+            model.clocks(|clocks| {
+                clocks.own_sampled_discrete_real(clock.into(), sampled, sample_at)
+            })?;
+        } else {
+            model.clocks(|clocks| clocks.own_discrete_real(clock.into(), sampled, sample_at))?;
+        }
 
         // `hold(h)`: a continuous-time value written by the clocked partition.
         let hold_residual = model.expressions(|expressions| {
@@ -153,27 +188,7 @@ fn clocked_hold_sample_model(source: TestSource, path: SampledPath) -> dae::Dae 
         })?;
 
         // `h = 2 * s`: closes the clocked feedback that MLS's left limit delays.
-        let feedback = model.expressions(|expressions| {
-            let lhs = expressions
-                .at(sample_at)
-                .coordinate(dae::CoordinateInput::DiscreteReal(held))?;
-            let gain = expressions
-                .at(sample_at)
-                .literal(dae::DaeLiteral::Real(2.0))?;
-            let source = expressions
-                .at(sample_at)
-                .coordinate(dae::CoordinateInput::DiscreteReal(sampled))?;
-            let scaled =
-                expressions
-                    .at(sample_at)
-                    .binary(dae::BinaryOperator::Multiply, gain, source)?;
-            expressions
-                .at(sample_at)
-                .binary(dae::BinaryOperator::Subtract, lhs, scaled)
-        })?;
-        model.discrete(|discrete| {
-            discrete.real_equation(sample_at, |equation| equation.residual(feedback))
-        })?;
+        add_clocked_feedback(model, held, sampled, sample_at)?;
         Ok(())
     })
     .unwrap()
@@ -189,6 +204,7 @@ fn sampled_owner_reads_its_own_tick_output_from_the_left_limit() {
     let solve = lower_solve_problem(&clocked_hold_sample_model(
         source,
         SampledPath::Instantaneous,
+        true,
     ))
     .expect("a sampled owner carries the left-limit boundary explicitly");
 
@@ -218,6 +234,7 @@ fn clocked_row_sampling_across_a_state_stays_accepted() {
     let solve = lower_solve_problem(&clocked_hold_sample_model(
         source,
         SampledPath::ThroughState,
+        true,
     ))
     .expect("a sampled plant output separated by a state stays expressible");
 
@@ -230,6 +247,35 @@ fn clocked_row_sampling_across_a_state_stays_accepted() {
             .all(|owner| owner.is_some()),
         "every clocked row keeps its periodic activation owner"
     );
+}
+
+#[test]
+fn ordinary_periodic_row_rejects_proved_instantaneous_feedback() {
+    let source = TestSource::new("Real h,s; when Clock(0.1) then s=hold(h); h=2*s; end when;");
+
+    let error = lower_solve_problem(&clocked_hold_sample_model(
+        source,
+        SampledPath::Instantaneous,
+        false,
+    ))
+    .expect_err("an ordinary periodic row cannot close an instantaneous algebraic loop");
+
+    assert!(matches!(error, LowerError::Unsupported { reason, .. }
+        if reason.contains("definition of `s`") && reason.contains("reads `y`")));
+}
+
+#[test]
+fn ordinary_periodic_feedback_across_state_stays_accepted() {
+    let source = TestSource::new("Real h,s; when Clock(0.1) then s=x; h=2*s; end when; der(x)=h;");
+
+    let solve = lower_solve_problem(&clocked_hold_sample_model(
+        source,
+        SampledPath::ThroughState,
+        false,
+    ))
+    .expect("integration breaks the same-instant dependency path");
+
+    assert_eq!(solve.clocks.periodic_event_schedules.len(), 1);
 }
 
 /// A clocked row reading a continuous-time value no clock writes is untouched

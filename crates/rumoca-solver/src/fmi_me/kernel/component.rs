@@ -19,23 +19,13 @@ impl SolveMeKernel {
             return Ok(());
         }
         let settle = self.numerics_settle();
-        self.with_delay_evaluation_params(time, &self.states, |params| {
-            self.with_callback_solver_y(|guess| {
-                self.runtime
-                    .eval_state_derivatives_with_guess_into(
-                        time,
-                        &self.states,
-                        params,
-                        guess,
-                        settle.tol,
-                        settle.max_iters,
-                        derivatives,
-                    )
-                    .map_err(MeError::from)
+        let (parameters, solver_y) = self
+            .with_delay_evaluation_params(time, &self.states, |params| {
+                self.state_derivatives_at_parameters(time, params, settle, derivatives)
             })
-        })
-        .map_err(|error| error.at_stage(MeStage::Integration))?
-        .map_err(|error| error.at_stage(MeStage::Integration))?;
+            .map_err(|error| error.at_stage(MeStage::Integration))?
+            .map_err(|error| error.at_stage(MeStage::Integration))?;
+        self.cache_continuous_linearization(time, &self.states, &parameters, &solver_y);
         self.cache_derivative(time, &self.states, derivatives);
         Ok(())
     }
@@ -55,6 +45,7 @@ impl SolveMeKernel {
             indicators.copy_from_slice(&cached);
             return Ok(());
         }
+        let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, &self.params);
         self.with_delay_evaluation_params(time, &self.states, |params| match self.root_profile {
             MeRootProfile::Component => self
                 .runtime
@@ -67,17 +58,41 @@ impl SolveMeKernel {
                     indicators,
                 )
                 .map_err(MeError::from),
-            MeRootProfile::DiffsolFrozen => self
-                .runtime
-                .eval_root_search_conditions_into(
+            MeRootProfile::DiffsolFrozen => match &mut settled_guess {
+                Some(guess)
+                    if self
+                        .runtime
+                        .derivative_settled_coordinate_can_refresh_roots() =>
+                {
+                    self.runtime
+                        .eval_root_search_conditions_after_derivative_settle_into(
+                            time,
+                            params,
+                            guess,
+                            self.tolerance.max(1.0e-10),
+                            256,
+                            indicators,
+                        )
+                }
+                Some(guess) => self.runtime.eval_root_search_conditions_with_guess_into(
+                    time,
+                    &self.states,
+                    params,
+                    guess,
+                    self.tolerance.max(1.0e-10),
+                    256,
+                    indicators,
+                ),
+                None => self.runtime.eval_root_search_conditions_into(
                     time,
                     &self.states,
                     params,
                     self.tolerance.max(1.0e-10),
                     256,
                     indicators,
-                )
-                .map_err(MeError::from),
+                ),
+            }
+            .map_err(MeError::from),
         })
         .map_err(|error| error.at_stage(MeStage::Integration))?
         .map_err(|error| error.at_stage(MeStage::Integration))?;
@@ -111,6 +126,30 @@ impl SolveMeKernel {
         solver_y: &mut [f64],
     ) -> Result<(), MeError> {
         self.canonicalize_committed_event_view(event_time, solver_y, &[])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_continuous_linearization_cache_matches(
+        &self,
+        time: f64,
+        state: &[f64],
+        parameters: &[f64],
+    ) -> bool {
+        self.continuous_linearization_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cached| cached.matches(time, state, parameters))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_cache_continuous_linearization(
+        &self,
+        time: f64,
+        state: &[f64],
+        parameters: &[f64],
+        solver_y: &[f64],
+    ) {
+        self.cache_continuous_linearization(time, state, parameters, solver_y);
     }
 
     #[cfg(test)]
@@ -163,6 +202,10 @@ impl SolveMeKernel {
                 state.derivative_cache.as_ref(),
             )
             && root_cache_bit_eq(self.root_cache.borrow().as_ref(), state.root_cache.as_ref())
+            && continuous_linearization_cache_bit_eq(
+                self.continuous_linearization_cache.borrow().as_ref(),
+                state.continuous_linearization_cache.as_ref(),
+            )
             && observations_bit_eq(&self.initial_observations, &state.initial_observations)
             && option_float_bit_eq(self.delay_step_limit, state.delay_step_limit)
             && self.last_projection_changed == state.last_projection_changed
@@ -370,6 +413,7 @@ impl SolveMeKernel {
             frozen_event_accepted_seed: None,
             derivative_cache: RefCell::new(None),
             root_cache: RefCell::new(None),
+            continuous_linearization_cache: RefCell::new(None),
             initial_observations: Vec::new(),
             delay_step_limit: None,
             last_projection_changed: false,
@@ -450,6 +494,77 @@ impl SolveMeKernel {
                 f(&mut speculative)
             }
         }
+    }
+
+    pub(super) fn directional_derivative_at_parameters(
+        &self,
+        time: f64,
+        parameters: &[f64],
+        settle: AlgebraicSettle,
+        seed: &[f64],
+        sensitivity: &mut [f64],
+    ) -> Result<(), MeError> {
+        let lin = AlgebraicLinearization {
+            t: time,
+            params: parameters,
+            settle,
+        };
+        {
+            let cache = self.continuous_linearization_cache.borrow();
+            if let Some(cached) = cache
+                .as_ref()
+                .filter(|cached| cached.matches(time, &self.states, parameters))
+            {
+                return self
+                    .runtime
+                    .eval_state_jacobian_v_at_settled_solver_y_into(
+                        lin,
+                        &cached.solver_y,
+                        seed,
+                        sensitivity,
+                    )
+                    .map_err(MeError::from);
+            }
+        }
+        self.with_callback_solver_y(|guess| {
+            let result = self
+                .runtime
+                .eval_state_jacobian_v_ad_with_guess_into(
+                    lin,
+                    &self.states,
+                    seed,
+                    guess,
+                    sensitivity,
+                )
+                .map_err(MeError::from);
+            if result.is_ok() {
+                self.cache_continuous_linearization(time, &self.states, parameters, guess);
+            }
+            result
+        })
+    }
+
+    fn state_derivatives_at_parameters(
+        &self,
+        time: f64,
+        parameters: &[f64],
+        settle: AlgebraicSettle,
+        derivatives: &mut [f64],
+    ) -> Result<(Vec<f64>, Vec<f64>), MeError> {
+        self.with_callback_solver_y(|guess| {
+            self.runtime
+                .eval_state_derivatives_with_guess_into(
+                    time,
+                    &self.states,
+                    parameters,
+                    guess,
+                    settle.tol,
+                    settle.max_iters,
+                    derivatives,
+                )
+                .map_err(MeError::from)?;
+            Ok((parameters.to_vec(), guess.clone()))
+        })
     }
 
     // -- internal solver vector ------------------------------------------
@@ -546,22 +661,16 @@ impl SolveMeKernel {
 
     // -- caches ------------------------------------------------------------
 
-    pub(super) fn cached_derivative(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return None;
-        }
+    pub(crate) fn cached_derivative(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
         let cache = self.derivative_cache.borrow();
         let cached = cache.as_ref()?;
-        if !time_match_with_tol(cached.time, time) || !state_values_match(&cached.state, state) {
+        if cached.time.to_bits() != time.to_bits() || !state_values_match(&cached.state, state) {
             return None;
         }
         Some(cached.derivative.clone())
     }
 
-    pub(super) fn cache_derivative(&self, time: f64, state: &[f64], derivative: &[f64]) {
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return;
-        }
+    pub(crate) fn cache_derivative(&self, time: f64, state: &[f64], derivative: &[f64]) {
         *self.derivative_cache.borrow_mut() = Some(CachedDerivative {
             time,
             state: state.to_vec(),
@@ -571,6 +680,7 @@ impl SolveMeKernel {
 
     pub(super) fn clear_derivative_cache(&self) {
         *self.derivative_cache.borrow_mut() = None;
+        *self.continuous_linearization_cache.borrow_mut() = None;
     }
 
     pub(super) fn clear_runtime_caches(&self) {
@@ -578,27 +688,49 @@ impl SolveMeKernel {
         *self.root_cache.borrow_mut() = None;
     }
 
-    pub(super) fn cached_root_conditions(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return None;
-        }
+    pub(crate) fn cached_root_conditions(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
         let cache = self.root_cache.borrow();
         let cached = cache.as_ref()?;
-        if !time_match_with_tol(cached.time, time) || !state_values_match(&cached.state, state) {
+        if cached.time.to_bits() != time.to_bits() || !state_values_match(&cached.state, state) {
             return None;
         }
         Some(cached.values.clone())
     }
 
-    pub(super) fn cache_root_conditions(&self, time: f64, state: &[f64], values: &[f64]) {
-        if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen) {
-            return;
-        }
+    pub(crate) fn cache_root_conditions(&self, time: f64, state: &[f64], values: &[f64]) {
         *self.root_cache.borrow_mut() = Some(CachedRootConditions {
             time,
             state: state.to_vec(),
             values: values.to_vec(),
         });
+    }
+
+    pub(super) fn cache_continuous_linearization(
+        &self,
+        time: f64,
+        state: &[f64],
+        parameters: &[f64],
+        solver_y: &[f64],
+    ) {
+        *self.continuous_linearization_cache.borrow_mut() = Some(CachedContinuousLinearization {
+            time,
+            state: state.to_vec(),
+            parameters: parameters.to_vec(),
+            solver_y: solver_y.to_vec(),
+        });
+    }
+
+    fn cached_continuous_solver_y(
+        &self,
+        time: f64,
+        state: &[f64],
+        parameters: &[f64],
+    ) -> Option<Vec<f64>> {
+        self.continuous_linearization_cache
+            .borrow()
+            .as_ref()
+            .filter(|cached| cached.matches(time, state, parameters))
+            .map(|cached| cached.solver_y.clone())
     }
 
     // -- initialization ----------------------------------------------------
@@ -717,6 +849,10 @@ impl SolveMeKernel {
         &mut self,
         states: &mut [f64],
     ) -> Result<bool, MeError> {
+        if !self.runtime.requires_state_manifold_projection() {
+            self.last_projection_changed = false;
+            return Ok(false);
+        }
         let time = self.time;
         let settle = self.numerics_settle();
         let (mut solver_y, accepted_guess) = match self.numerics_profile {
@@ -857,6 +993,7 @@ impl SolveMeKernel {
         self.solver_y_guess
             .borrow_mut()
             .copy_from_slice(frozen_solver_y);
+        self.clear_runtime_caches();
         Ok(())
     }
 
@@ -879,6 +1016,7 @@ impl SolveMeKernel {
             .unwrap_or_else(|| self.params.clone());
         let mut solver_y = self.event_iteration_solver_y(&event_entry_y)?;
         let pending_root_crossings = self.pending_root_crossings.drain(..).collect::<Vec<_>>();
+        let has_located_root_crossing = !pending_root_crossings.is_empty();
         let pending_root_overrides = pending_root_crossings
             .iter()
             .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
@@ -923,6 +1061,8 @@ impl SolveMeKernel {
         let runtime = Rc::clone(&self.runtime);
         let projection_runtime = Rc::clone(&runtime);
         let settle_projection_runtime = Rc::clone(&runtime);
+        let projection_time =
+            self.frozen_event_projection_time(event_time, has_located_root_crossing);
         let policy = self.algebraic_projection_policy();
         let tol = policy.tolerance;
         let settle = policy.settle;
@@ -938,16 +1078,15 @@ impl SolveMeKernel {
                 row_filter,
                 root_relation_overrides: root_overrides,
             },
-            move |y, p| project_algebraics(&projection_runtime, y, p, event_time, policy),
+            move |y, p| project_algebraics(&projection_runtime, y, p, projection_time, policy),
         )?;
         if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
-            && !has_typed_root_override
+            && !has_located_root_crossing
         {
-            // The frozen compatibility settle reconstructs relation memory
-            // from the numerical application point. A located crossing has a
-            // stronger, typed post-side value that the event iteration above
-            // has already settled; recomputing at the exact root would erase
-            // that value for strict relations.
+            // Without a located crossing, reconstruct relation memory from the
+            // numerical application point. Any located crossing owns its exact
+            // post side, including conditions with no separate relation-memory
+            // target; rebuilding at a snapped horizon would erase that event.
             runtime.settle_projected_runtime_and_relation_memory(
                 &mut solver_y,
                 &mut self.params,
@@ -955,7 +1094,7 @@ impl SolveMeKernel {
                 tol,
                 settle.max_iters,
                 move |y, p| {
-                    project_algebraics(&settle_projection_runtime, y, p, event_time, policy)
+                    project_algebraics(&settle_projection_runtime, y, p, projection_time, policy)
                 },
             )?;
         }
@@ -963,6 +1102,21 @@ impl SolveMeKernel {
         self.record_event_action_outcome(outcome, event_time)?;
         self.clear_runtime_caches();
         Ok(())
+    }
+
+    fn frozen_event_projection_time(
+        &self,
+        application_time: f64,
+        has_located_root_crossing: bool,
+    ) -> f64 {
+        if !has_located_root_crossing
+            || !matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
+        {
+            return application_time;
+        }
+        self.last_event_entry
+            .filter(|entry| entry.cause == MeEventCause::StateEvent)
+            .map_or(application_time, |entry| entry.event_time)
     }
 
     pub(super) fn commit_event_runtime_state(

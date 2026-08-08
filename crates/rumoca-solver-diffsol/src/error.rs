@@ -162,6 +162,9 @@ pub enum SimError {
     #[error("solve-IR evaluation failed: {0}")]
     SolveIr(String),
 
+    #[error("directional derivative is unavailable: {reason}")]
+    DirectionalDerivativeUnavailable { reason: String },
+
     #[error("diffsol runtime contract violation: {reason}")]
     RuntimeContract { reason: String },
 
@@ -254,6 +257,9 @@ impl From<RuntimeSolveError> for SimError {
             RuntimeSolveError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
                 "non-finite derivative evaluation for state '{state_name}'"
             )),
+            RuntimeSolveError::DirectionalDerivativeUnavailable { reason } => {
+                Self::DirectionalDerivativeUnavailable { reason }
+            }
             non_finite @ RuntimeSolveError::NonFiniteValue { .. } => {
                 Self::SolveIr(non_finite.to_string())
             }
@@ -272,6 +278,9 @@ impl From<MeError> for SimError {
             MeError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
                 "non-finite derivative evaluation for state '{state_name}'"
             )),
+            MeError::DirectionalDerivativeUnavailable { reason } => {
+                Self::DirectionalDerivativeUnavailable { reason }
+            }
             MeError::Contract { reason } => Self::RuntimeContract { reason },
             MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
             MeError::Allocation { context, entries } => Self::RuntimeContract {

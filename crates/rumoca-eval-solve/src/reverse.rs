@@ -93,10 +93,7 @@ pub fn reverse_scalar_block_vjp(
     let mut output_ordinal = 0usize;
     for (row_idx, row) in block.programs().iter().enumerate() {
         let register_count = program.row_registers[row_idx];
-        scratch.regs.clear();
-        scratch.regs.resize(register_count, 0.0);
-        scratch.adj.clear();
-        scratch.adj.resize(register_count, 0.0);
+        scratch.prepare(register_count);
         let span = block.program_span(row_idx);
         forward_row_tape(row, inputs, &mut scratch.regs)
             .map_err(|error| error.with_source_span(span))?;
@@ -109,6 +106,7 @@ pub fn reverse_scalar_block_vjp(
         );
         reverse_row_adjoints(row, &scratch.regs, &mut scratch.adj, cot)
             .map_err(|error| error.with_source_span(span))?;
+        debug_assert!(scratch.adj.iter().all(|value| *value == 0.0));
     }
     Ok(())
 }
@@ -140,10 +138,7 @@ pub fn reverse_scalar_row_y_gradient(
         return Ok(false);
     }
 
-    scratch.regs.clear();
-    scratch.regs.resize(program.row_registers[row_idx], 0.0);
-    scratch.adj.clear();
-    scratch.adj.resize(program.row_registers[row_idx], 0.0);
+    scratch.prepare(program.row_registers[row_idx]);
     forward_row_tape(row, inputs, &mut scratch.regs)
         .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
     add_adj(&mut scratch.adj, output_source, 1.0);
@@ -159,7 +154,16 @@ pub fn reverse_scalar_row_y_gradient(
         },
     )
     .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    debug_assert!(scratch.adj.iter().all(|value| *value == 0.0));
     Ok(true)
+}
+
+impl ReverseScratch {
+    fn prepare(&mut self, register_count: usize) {
+        self.regs.resize(register_count, 0.0);
+        self.adj.resize(register_count, 0.0);
+        debug_assert!(self.adj.iter().all(|value| *value == 0.0));
+    }
 }
 
 pub fn reverse_row_op_supported(op: &LinearOp) -> bool {
@@ -395,6 +399,7 @@ fn solve_linear_system(
         rhs_start,
         n,
         crate::tensor_policy::LinearSolveKernel::Dense,
+        None,
         &mut x,
     )?;
     Ok(x)

@@ -1,4 +1,10 @@
-use nalgebra::{DMatrix, DVector, Dyn, linalg::LU};
+use std::collections::BTreeMap;
+
+use faer::{
+    Col,
+    prelude::Solve,
+    sparse::{SparseColMat, Triplet, linalg::solvers::Lu},
+};
 use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
@@ -15,7 +21,7 @@ enum MassMatrixKind {
     Diagonal(Vec<f64>),
     Sparse {
         entries: Vec<solve::MassMatrixEntry>,
-        factorization: LU<f64, Dyn, Dyn>,
+        factorization: Box<Lu<usize, f64>>,
     },
 }
 
@@ -31,7 +37,7 @@ impl PreparedMassMatrix {
                 let factorization = factor_sparse_matrix(entries, state_count)?;
                 MassMatrixKind::Sparse {
                     entries: entries.clone(),
-                    factorization,
+                    factorization: Box::new(factorization),
                 }
             }
         };
@@ -55,11 +61,10 @@ impl PreparedMassMatrix {
                 .map(|(coefficient, value)| solve_diagonal_entry(*coefficient, value))
                 .collect(),
             MassMatrixKind::Sparse { factorization, .. } => {
-                let solution = factorization
-                    .solve(&DVector::from_column_slice(rhs))
-                    .ok_or_else(|| invalid_mass_matrix("singular state mass matrix"))?;
+                let sparse_rhs = Col::from_fn(self.state_count, |row| rhs[row]);
+                let solution = factorization.solve(&sparse_rhs);
                 if solution.iter().all(|value| value.is_finite()) {
-                    Ok(solution.as_slice().to_vec())
+                    Ok(solution.iter().copied().collect())
                 } else {
                     Err(invalid_mass_matrix(
                         "state mass-matrix solve produced a non-finite value",
@@ -149,8 +154,8 @@ fn validate_diagonal(values: &[f64], state_count: usize) -> Result<(), RuntimeSo
 fn factor_sparse_matrix(
     entries: &[solve::MassMatrixEntry],
     state_count: usize,
-) -> Result<LU<f64, Dyn, Dyn>, RuntimeSolveError> {
-    let mut matrix = DMatrix::<f64>::zeros(state_count, state_count);
+) -> Result<Lu<usize, f64>, RuntimeSolveError> {
+    let mut coefficients = BTreeMap::<(usize, usize), f64>::new();
     for entry in entries {
         if entry.row >= state_count || entry.column >= state_count {
             return Err(invalid_mass_matrix(format!(
@@ -163,7 +168,7 @@ fn factor_sparse_matrix(
                 "sparse state mass matrix contains a non-finite coefficient",
             ));
         }
-        let coefficient = &mut matrix[(entry.row, entry.column)];
+        let coefficient = coefficients.entry((entry.row, entry.column)).or_default();
         *coefficient += entry.value;
         if !coefficient.is_finite() {
             return Err(invalid_mass_matrix(
@@ -171,11 +176,18 @@ fn factor_sparse_matrix(
             ));
         }
     }
-    let factorization = matrix.lu();
-    if !factorization.is_invertible() {
-        return Err(invalid_mass_matrix("singular state mass matrix"));
-    }
-    Ok(factorization)
+    let triplets = coefficients
+        .into_iter()
+        .map(|((row, column), value)| Triplet::new(row, column, value))
+        .collect::<Vec<_>>();
+    let matrix =
+        SparseColMat::<usize, f64>::try_new_from_triplets(state_count, state_count, &triplets)
+            .map_err(|error| {
+                invalid_mass_matrix(format!("invalid sparse state mass matrix: {error}"))
+            })?;
+    matrix
+        .sp_lu()
+        .map_err(|_| invalid_mass_matrix("singular state mass matrix"))
 }
 
 fn invalid_mass_matrix(reason: impl Into<String>) -> RuntimeSolveError {

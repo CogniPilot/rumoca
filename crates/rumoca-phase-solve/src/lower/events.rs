@@ -737,7 +737,7 @@ fn lower_unconditional_discrete_real<'dae>(
 /// each forced two-sided orientation extends it until no further row is forced.
 /// A row that never becomes forced admits more than one causality and is
 /// reported at its own span, never guessed.
-fn resolve_discrete_real_definitions<'dae>(
+pub(super) fn resolve_discrete_real_definitions<'dae>(
     view: dae::DaeView<'dae>,
 ) -> Result<Vec<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)>, LowerError> {
     let count = view.discrete_real_equation_count();
@@ -916,12 +916,6 @@ fn lower_event_actions<'dae>(
                         action.provenance().span(),
                     ));
                 }
-                if condition_clock_owner(view, action.guard()).is_some() {
-                    return Err(LowerError::unsupported(
-                        "clocked assertions do not yet have checked Solve action scheduling",
-                        action.provenance().span(),
-                    ));
-                }
                 push_message_action(
                     view,
                     layout,
@@ -933,12 +927,6 @@ fn lower_event_actions<'dae>(
                 )?;
             }
             dae::EventActionOperation::Terminate { message } => {
-                if condition_clock_owner(view, action.guard()).is_some() {
-                    return Err(LowerError::unsupported(
-                        "clocked termination does not yet have checked Solve action scheduling",
-                        action.provenance().span(),
-                    ));
-                }
                 push_message_action(
                     view,
                     layout,
@@ -982,13 +970,19 @@ fn push_message_action<'dae>(
 ) -> Result<(), LowerError> {
     let span = action.provenance().span();
     let message = lower_message(view, layout, message)?;
-    let trigger_memory = condition_memory(layout, action.trigger(), span)?;
-    let program = ScalarCompiler::new(view, layout, None).edge_condition_program(
-        action.trigger(),
-        action.guard(),
-        trigger_memory,
-        span,
-    )?;
+    let compiler = ScalarCompiler::new(view, layout, None);
+    let program = match condition_clock_owner(view, action.guard()) {
+        Some(clock) => compiler.clocked_action_condition_program(clock, action.guard(), span)?,
+        None => {
+            let trigger_memory = condition_memory(layout, action.trigger(), span)?;
+            compiler.edge_condition_program(
+                action.trigger(),
+                action.guard(),
+                trigger_memory,
+                span,
+            )?
+        }
+    };
     conditions.push(program, span, actions.len());
     actions.push(solve::SolveEventAction {
         kind,
@@ -1464,11 +1458,65 @@ fn lower_roots<'dae>(
         zero_domains.push(root_zero_domain(view, relation.expression()));
         relation_memory_targets.push(relation_memory_owners.target(root.relation()));
     }
+    lower_structured_roots(
+        view,
+        layout,
+        clocks,
+        &mut rows,
+        &mut zero_domains,
+        &mut relation_memory_targets,
+    )?;
     Ok(LoweredRoots {
         programs: rows.into_scalar_block()?,
         zero_domains,
         relation_memory_targets,
     })
+}
+
+fn lower_structured_roots<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    rows: &mut ScalarRows,
+    zero_domains: &mut Vec<solve::RootZeroDomain>,
+    relation_memory_targets: &mut Vec<Option<solve::ScalarSlot>>,
+) -> Result<(), LowerError> {
+    for index in 0..view.structured_root_count() {
+        let id = view
+            .structured_root_id(index)
+            .expect("dense structured-root identity resolves");
+        let root = view
+            .structured_root(id)
+            .expect("checked structured-root identity resolves");
+        if expression_clock_owner(view, clocks, root.expression()).is_some() {
+            return Err(LowerError::non_computable(
+                "clocked structured root families are not continuously monitored",
+                root.provenance().span(),
+            ));
+        }
+        let domain = view
+            .domain(root.domain())
+            .expect("checked structured-root domain resolves")
+            .structured();
+        let points = domain.index_tuples().map_err(|error| {
+            LowerError::contract(
+                format!("structured root domain is invalid: {error}"),
+                root.provenance().span(),
+            )
+        })?;
+        for point in points {
+            let row = zero_domains.len();
+            rows.push(
+                ScalarCompiler::new(view, layout, Some((root.domain(), &point)))
+                    .root_expression_program(root.expression(), root.provenance().span())?,
+                root.provenance().span(),
+                row,
+            );
+            zero_domains.push(root_zero_domain(view, root.expression()));
+            relation_memory_targets.push(None);
+        }
+    }
+    Ok(())
 }
 
 /// The clock whose partition an expression's operands belong to, if any.

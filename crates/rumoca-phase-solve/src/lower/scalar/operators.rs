@@ -27,6 +27,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             op,
             arg: operand,
         });
+        let integer = self
+            .integer_register(operand)
+            .and_then(|value| match operator {
+                dae::UnaryOperator::Plus => unreachable!(),
+                dae::UnaryOperator::Negate => value.checked_neg(),
+                dae::UnaryOperator::Not => Some(i64::from(value == 0)),
+            });
+        self.set_integer_register(dst, integer);
         Ok(dst)
     }
 
@@ -99,7 +107,40 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             },
         };
         self.ops.push(operation);
+        let integer = self.integer_binary_result(operator, lhs, rhs);
+        self.set_integer_register(dst, integer);
         Ok(dst)
+    }
+
+    fn integer_binary_result(
+        &self,
+        operator: dae::BinaryOperator,
+        lhs: solve::Reg,
+        rhs: solve::Reg,
+    ) -> Option<i64> {
+        let lhs = self.integer_register(lhs)?;
+        let rhs = self.integer_register(rhs)?;
+        match operator {
+            dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => lhs.checked_add(rhs),
+            dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => {
+                lhs.checked_sub(rhs)
+            }
+            dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply => {
+                lhs.checked_mul(rhs)
+            }
+            dae::BinaryOperator::And => Some(i64::from(lhs != 0 && rhs != 0)),
+            dae::BinaryOperator::Or => Some(i64::from(lhs != 0 || rhs != 0)),
+            dae::BinaryOperator::Less => Some(i64::from(lhs < rhs)),
+            dae::BinaryOperator::LessEqual => Some(i64::from(lhs <= rhs)),
+            dae::BinaryOperator::Greater => Some(i64::from(lhs > rhs)),
+            dae::BinaryOperator::GreaterEqual => Some(i64::from(lhs >= rhs)),
+            dae::BinaryOperator::Equal => Some(i64::from(lhs == rhs)),
+            dae::BinaryOperator::NotEqual => Some(i64::from(lhs != rhs)),
+            dae::BinaryOperator::Divide
+            | dae::BinaryOperator::ElementwiseDivide
+            | dae::BinaryOperator::Power
+            | dae::BinaryOperator::ElementwisePower => None,
+        }
     }
 
     pub(super) fn binary_expression(
@@ -244,27 +285,51 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let fallback = operands
-            .get(operands.len() - 1)
+        let fallback_index = operands.len() - 1;
+        let mut conditions = Vec::with_capacity(fallback_index / 2);
+        let mut fallback = operands
+            .get(fallback_index)
             .expect("checked conditional has a fallback");
+        for index in (0..fallback_index).step_by(2) {
+            let condition = operands.get(index).expect("checked condition ordinal");
+            let condition_value = self.expression(condition, 0)?;
+            match self.integer_register(condition_value) {
+                Some(0) => {}
+                Some(_) => {
+                    fallback = operands
+                        .get(index + 1)
+                        .expect("checked conditional value ordinal");
+                    break;
+                }
+                None => conditions.push((
+                    condition,
+                    condition_value,
+                    operands
+                        .get(index + 1)
+                        .expect("checked conditional value ordinal"),
+                )),
+            }
+        }
+        for (condition, _, _) in &conditions {
+            self.push_activation(*condition, false);
+        }
         let mut selected = self.expression(fallback, scalar)?;
-        for index in (0..operands.len() - 1).step_by(2).rev() {
-            let condition =
-                self.expression(operands.get(index).expect("checked condition ordinal"), 0)?;
-            let value = self.expression(
-                operands
-                    .get(index + 1)
-                    .expect("checked conditional value ordinal"),
-                scalar,
-            )?;
-            let dst = self.register(span)?;
-            self.ops.push(solve::LinearOp::Select {
-                dst,
-                cond: condition,
-                if_true: value,
-                if_false: selected,
-            });
-            selected = dst;
+        for _ in 0..conditions.len() {
+            self.pop_activation();
+        }
+        for (branch, (condition, condition_value, value)) in
+            conditions.iter().copied().enumerate().rev()
+        {
+            for (previous, _, _) in conditions.iter().copied().take(branch) {
+                self.push_activation(previous, false);
+            }
+            self.push_activation(condition, true);
+            let value = self.expression(value, scalar)?;
+            self.pop_activation();
+            for _ in 0..branch {
+                self.pop_activation();
+            }
+            selected = self.select(condition_value, value, selected, span)?;
         }
         Ok(selected)
     }

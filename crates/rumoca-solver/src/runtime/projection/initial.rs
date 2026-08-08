@@ -239,8 +239,8 @@ pub(super) fn project_initial_variables_by_plan<M: AlgebraicProjectionModel>(
             break;
         }
         let mut changed = false;
-        for block in &plan.blocks {
-            let update = project_initial_block(model, y, p, t, block, tol)?;
+        for (block_index, block) in plan.blocks.iter().enumerate() {
+            let update = project_initial_block(model, y, p, t, block, block_index, tol)?;
             changed |= update.changed;
         }
         if !changed {
@@ -312,6 +312,7 @@ pub(super) fn project_initial_block<M: AlgebraicProjectionModel>(
     p: &[f64],
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
+    block_index: usize,
     tol: f64,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let mut changed = false;
@@ -328,6 +329,7 @@ pub(super) fn project_initial_block<M: AlgebraicProjectionModel>(
         t,
         rows,
         y_indices,
+        block_index,
         tol,
         row_scales: &fallback_scales,
         variable_scales: &variable_scales,
@@ -355,7 +357,10 @@ pub(super) fn project_initial_block<M: AlgebraicProjectionModel>(
         });
     }
     let jacobian = initial_block_jacobian(model, y, p, t, rows, y_indices, &residual)?;
-    let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales);
+    let structure = model
+        .initial_projection_block_structure(block_index)
+        .map(solve::JacobianStructure::pattern);
+    let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales, structure);
     let context = InitialBlockDeltaCtx {
         row_scales: &row_scales,
         ..assignment_context
@@ -404,6 +409,10 @@ fn solve_coupled_initial_block<M: AlgebraicProjectionModel>(
         residual,
         context.row_scales,
         context.variable_scales,
+        context
+            .model
+            .initial_projection_block_structure(context.block_index)
+            .map(solve::JacobianStructure::pattern),
         context.tol,
     );
     let Some(delta) = delta else {
@@ -617,6 +626,7 @@ struct InitialBlockDeltaCtx<'a, M: AlgebraicProjectionModel> {
     t: f64,
     rows: &'a [usize],
     y_indices: &'a [usize],
+    block_index: usize,
     tol: f64,
     row_scales: &'a [f64],
     variable_scales: &'a [f64],
@@ -823,7 +833,16 @@ pub(super) fn algebraic_block_jacobian(
     t: f64,
     rows: &[usize],
     y_indices: &[usize],
+    structure: Option<&solve::JacobianStructure>,
 ) -> Result<DMatrix<f64>, RuntimeSolveError> {
+    if let Some(structure) = structure {
+        validate_projection_structure(
+            structure.pattern(),
+            rows.len(),
+            y_indices.len(),
+            "algebraic",
+        )?;
+    }
     let mut jacobian = DMatrix::<f64>::zeros(rows.len(), y_indices.len());
     let mut reverse_gradient = vec![0.0; y.len()];
     let mut needs_forward_jvp = vec![true; rows.len()];
@@ -832,17 +851,40 @@ pub(super) fn algebraic_block_jacobian(
             continue;
         }
         needs_forward_jvp[row] = false;
-        for (col, y_idx) in y_indices.iter().copied().enumerate() {
-            if model.implicit_jacobian_v_row_depends_on(residual_idx, y_idx) {
-                jacobian[(row, col)] = reverse_gradient[y_idx];
-            }
-        }
+        fill_reverse_projection_row(
+            &mut jacobian,
+            ReverseProjectionRowInput {
+                row,
+                residual_idx,
+                y_indices,
+                gradient: &reverse_gradient,
+                structure: structure.map(solve::JacobianStructure::pattern),
+                model,
+            },
+        );
     }
     if needs_forward_jvp.iter().all(|needs_forward| !needs_forward) {
         return Ok(jacobian);
     }
+    if let Some(structure) = structure {
+        fill_colored_algebraic_rows(
+            &mut jacobian,
+            model,
+            y,
+            p,
+            t,
+            rows,
+            y_indices,
+            &needs_forward_jvp,
+            structure,
+        )?;
+        return Ok(jacobian);
+    }
 
-    let mut seed = vec![0.0; y.len()];
+    // The tensor JVP certificate uses the canonical `[solver-y | parameter]`
+    // seed layout. Projection colors activate only solver-y columns; parameter
+    // lanes remain explicit zero seeds.
+    let mut seed = vec![0.0; y.len().saturating_add(p.len())];
     for (col, y_idx) in y_indices.iter().copied().enumerate() {
         if y_idx >= seed.len() {
             continue;
@@ -851,7 +893,7 @@ pub(super) fn algebraic_block_jacobian(
         let mut selected_complete = true;
         for (row, residual_idx) in rows.iter().copied().enumerate() {
             if !needs_forward_jvp[row]
-                || !model.implicit_jacobian_v_row_depends_on(residual_idx, y_idx)
+                || !projection_entry_depends(None, model, row, col, residual_idx, y_idx)
             {
                 continue;
             }
@@ -877,6 +919,133 @@ pub(super) fn algebraic_block_jacobian(
         seed[y_idx] = 0.0;
     }
     Ok(jacobian)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_colored_algebraic_rows(
+    jacobian: &mut DMatrix<f64>,
+    model: &dyn ImplicitProjectionModel,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    rows: &[usize],
+    y_indices: &[usize],
+    selected_rows: &[bool],
+    structure: &solve::JacobianStructure,
+) -> Result<(), RuntimeSolveError> {
+    let column_rows = structure.pattern().column_rows();
+    // The tensor JVP certificate uses the canonical `[solver-y | parameter]`
+    // seed layout. Projection colors activate only solver-y columns; parameter
+    // lanes remain explicit zero seeds.
+    let mut seed = vec![0.0; y.len().saturating_add(p.len())];
+    let mut jvp = vec![0.0; y.len()];
+    for group in structure.coloring().groups() {
+        let mut has_dependency = false;
+        for &column in group.iter() {
+            let column = column as usize;
+            let y_index = y_indices[column];
+            let Some(seed_value) = seed.get_mut(y_index) else {
+                return Err(RuntimeSolveError::solve_ir(format!(
+                    "algebraic projection Jacobian references y index {y_index}, but the model has only {} variables",
+                    y.len()
+                )));
+            };
+            *seed_value = 1.0;
+            has_dependency |= column_rows[column].iter().any(|&row| selected_rows[row]);
+        }
+        if has_dependency {
+            model.eval_jacobian_v(y, p, t, &seed, &mut jvp)?;
+            fill_colored_group_rows(jacobian, group, &column_rows, selected_rows, &jvp, rows)?;
+        }
+        for &column in group.iter() {
+            seed[y_indices[column as usize]] = 0.0;
+        }
+    }
+    Ok(())
+}
+
+fn fill_colored_group_rows(
+    jacobian: &mut DMatrix<f64>,
+    group: &[u32],
+    column_rows: &[Vec<usize>],
+    selected_rows: &[bool],
+    jvp: &[f64],
+    rows: &[usize],
+) -> Result<(), RuntimeSolveError> {
+    for &column in group {
+        let column = column as usize;
+        for &local_row in &column_rows[column] {
+            if selected_rows[local_row] {
+                jacobian[(local_row, column)] = residual_at(
+                    jvp,
+                    rows[local_row],
+                    "colored algebraic block Jacobian-vector product",
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_projection_structure(
+    pattern: &solve::StructuralPattern,
+    rows: usize,
+    columns: usize,
+    context: &str,
+) -> Result<(), RuntimeSolveError> {
+    if pattern.rows() as usize == rows && pattern.columns() as usize == columns {
+        return Ok(());
+    }
+    Err(RuntimeSolveError::solve_ir(format!(
+        "{context} projection structure is {}x{}, expected {rows}x{columns}",
+        pattern.rows(),
+        pattern.columns()
+    )))
+}
+
+struct ReverseProjectionRowInput<'a> {
+    row: usize,
+    residual_idx: usize,
+    y_indices: &'a [usize],
+    gradient: &'a [f64],
+    structure: Option<&'a solve::StructuralPattern>,
+    model: &'a dyn ImplicitProjectionModel,
+}
+
+fn fill_reverse_projection_row(jacobian: &mut DMatrix<f64>, input: ReverseProjectionRowInput<'_>) {
+    let ReverseProjectionRowInput {
+        row,
+        residual_idx,
+        y_indices,
+        gradient,
+        structure,
+        model,
+    } = input;
+    let Some(structure) = structure else {
+        for (column, y_index) in y_indices.iter().copied().enumerate() {
+            if model.implicit_jacobian_v_row_depends_on(residual_idx, y_index) {
+                jacobian[(row, column)] = gradient[y_index];
+            }
+        }
+        return;
+    };
+    structure.visit_row_columns(row, |column| {
+        jacobian[(row, column)] = gradient[y_indices[column]];
+    });
+}
+
+fn projection_entry_depends(
+    structure: Option<&solve::StructuralPattern>,
+    model: &dyn ImplicitProjectionModel,
+    row: usize,
+    column: usize,
+    residual_idx: usize,
+    y_idx: usize,
+) -> bool {
+    structure.map_or_else(
+        || model.implicit_jacobian_v_row_depends_on(residual_idx, y_idx),
+        |pattern| pattern.contains(row as u32, column as u32),
+    )
 }
 
 pub(super) fn fill_jacobian_column_from_jvp(

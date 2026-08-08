@@ -1,9 +1,10 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, VecDeque};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
+use rumoca_phase_structural::UnknownId;
 
-use super::LoweredLayout;
+use super::{LoweredLayout, StructuralMatching};
 use crate::LowerError;
 
 pub(super) struct LoweredClocks<'dae> {
@@ -132,8 +133,8 @@ pub(super) fn lower_clocks<'dae>(
 ///
 /// **Rejected here for non-sampled clock owners** — this is the first owner
 /// that sees a whole partition together with the continuous system it reads:
-/// * a clocked row that reads a continuous-time variable which is
-///   instantaneously (algebraically) coupled to a variable the *same* clock
+/// * a clocked row that reads a continuous-time variable causally reachable
+///   through matched algebraic definitions from a variable the *same* clock
 ///   writes. Such a loop is not expressible under MLS §16.5.1; it only becomes
 ///   representable without the typed sampled-owner boundary, and the runtime
 ///   would otherwise settle it as an ordinary algebraic loop whose answer is
@@ -145,31 +146,22 @@ pub(super) fn lower_clocks<'dae>(
 pub(super) fn reject_clocked_continuous_feedback<'dae>(
     view: dae::DaeView<'dae>,
     clocks: &LoweredClocks<'dae>,
+    structural: &StructuralMatching<'dae>,
 ) -> Result<(), LowerError> {
-    let variable_count = view.variable_count();
-    if variable_count == 0 || view.clock_count() == 0 {
+    if view.variable_count() == 0 || view.clock_count() == 0 {
         return Ok(());
     }
-    let reach = InstantaneousReach::of_continuous_system(view, variable_count);
-    let written = clocked_reach_roots(view, clocks, &reach, variable_count);
-    if written.is_empty() {
-        return Ok(());
-    }
-    for index in 0..view.discrete_real_equation_count() {
+    let real_definitions = super::events::resolve_discrete_real_definitions(view)?;
+    let mut rows = Vec::new();
+    for (index, (target, value)) in real_definitions.into_iter().enumerate() {
         let equation = view
             .discrete_real_equation(index)
             .expect("dense checked discrete Real equation resolves");
-        if expression_defines_sampled_variable(view, clocks, equation.residual()) {
-            continue;
-        }
-        check_clocked_row_operands(
-            view,
-            clocks,
-            &reach,
-            &written,
-            equation.residual(),
+        rows.push((
+            dae::VariableId::from(target),
+            value,
             equation.provenance().span(),
-        )?;
+        ));
     }
     for index in 0..view.discrete_value_owner_count() {
         let id = view
@@ -178,109 +170,68 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
         let owner = view
             .discrete_value_owner(id)
             .expect("checked B.1c owner resolves");
-        let values = owner.branches().iter().flat_map(|branch| {
-            owner
-                .targets()
-                .iter()
-                .zip(branch.values().iter())
-                .filter(|(target, _)| !clocks.variable_is_sampled(dae::VariableId::from(*target)))
-        });
-        for (_, (value, provenance)) in values {
-            check_clocked_row_operands(view, clocks, &reach, &written, value, provenance.span())?;
-        }
-    }
-    Ok(())
-}
-
-fn expression_defines_sampled_variable<'dae>(
-    view: dae::DaeView<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    root: dae::ExprId<'dae>,
-) -> bool {
-    let mut sampled = false;
-    dae::for_each_expression(view, root, |_, expression| {
-        sampled |= expression
-            .variable_coordinate()
-            .is_some_and(|variable| clocks.variable_is_sampled(variable));
-    });
-    sampled
-}
-
-/// One clocked row: the operands it reads must not reach its own clock's writes
-/// through the continuous system.
-fn check_clocked_row_operands<'dae>(
-    view: dae::DaeView<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    reach: &InstantaneousReach,
-    written: &HashMap<usize, BTreeSet<usize>>,
-    root: dae::ExprId<'dae>,
-    span: rumoca_core::Span,
-) -> Result<(), LowerError> {
-    let operands = instantaneous_variables(view, [root]);
-    if operands.is_empty() {
-        return Ok(());
-    }
-    let mut row_clocks = BTreeSet::new();
-    let mut continuous = Vec::new();
-    for variable in operands.iter().copied() {
-        match variable_clock(view, clocks, variable) {
-            Some(clock) => {
-                row_clocks.insert(clock);
+        for branch in owner.branches().iter() {
+            for (target, (value, provenance)) in owner.targets().iter().zip(branch.values().iter())
+            {
+                rows.push((dae::VariableId::from(target), value, provenance.span()));
             }
-            None => continuous.push(variable),
         }
     }
-    for variable in continuous {
-        let Some(owners) = written.get(&reach.root(variable)) else {
+    let mut dependencies = InstantaneousDependencies::of_continuous_system(view, structural);
+    for &(target, value, _) in &rows {
+        if clocks.variable_is_sampled(target) {
             continue;
-        };
-        if let Some(clock) = row_clocks.intersection(owners).next().copied() {
-            return Err(LowerError::unsupported(
-                format!(
-                    "clocked partition of periodic clock {clock} samples a continuous-time value \
-                     that the same tick recomputes; MLS 16.5.1 defines sample(u) as the left \
-                     limit of u, which this identity read is not, so the partition has no \
-                     checked schedule"
-                ),
-                span,
-            ));
+        }
+        if let Some(clock) = clocks
+            .variable_owner(target)
+            .map(|(_, clock)| clock.index())
+        {
+            dependencies.add_definition(view, target.index() as usize, value, clock);
         }
     }
-    Ok(())
-}
-
-/// Roots of the instantaneous components each periodic clock writes into.
-fn clocked_reach_roots<'dae>(
-    view: dae::DaeView<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    reach: &InstantaneousReach,
-    variable_count: usize,
-) -> HashMap<usize, BTreeSet<usize>> {
-    let mut written: HashMap<usize, BTreeSet<usize>> = HashMap::new();
-    for index in 0..variable_count {
-        let Some(clock) = view
-            .variable_id(index)
-            .and_then(|id| clocks.variable_owner(id))
+    for (target, value, span) in rows {
+        if clocks.variable_is_sampled(target) {
+            continue;
+        }
+        let Some(clock) = clocks
+            .variable_owner(target)
             .map(|(_, clock)| clock.index())
         else {
             continue;
         };
-        if !reach.is_coupled(index) {
-            continue;
+        let target_index = target.index() as usize;
+        for operand in instantaneous_variables(view, [value]) {
+            if operand != target_index && dependencies.reaches(target_index, operand, clock) {
+                return Err(feedback_error(view, target_index, operand, clock, span));
+            }
         }
-        written.entry(reach.root(index)).or_default().insert(clock);
     }
-    written
+    Ok(())
 }
 
-fn variable_clock<'dae>(
-    view: dae::DaeView<'dae>,
-    clocks: &LoweredClocks<'dae>,
-    variable: usize,
-) -> Option<usize> {
-    view.variable_id(variable)
-        .and_then(|id| clocks.variable_owner(id))
-        .map(|(_, clock)| clock.index())
+fn feedback_error(
+    view: dae::DaeView<'_>,
+    target: usize,
+    operand: usize,
+    clock: usize,
+    span: rumoca_core::Span,
+) -> LowerError {
+    let name = |index| {
+        view.variable_id(index)
+            .and_then(|id| view.variable(id))
+            .map(|variable| variable.name().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string())
+    };
+    LowerError::unsupported(
+        format!(
+            "periodic clock {clock} definition of `{}` reads `{}`, which is causally reachable \
+             from that same target during the tick; MLS 16.5.1 gives an explicit sample(u) its \
+             left-limit delay, but this ordinary periodic definition has no such boundary",
+            name(target),
+            name(operand)
+        ),
+        span,
+    )
 }
 
 /// Variables an expression set reads *at the same instant*.
@@ -331,64 +282,145 @@ fn instantaneous_coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Opt
     }
 }
 
-/// Instantaneous (same-tick) algebraic components of the continuous system.
+/// Directed same-instant dependencies proved by structural matching.
 ///
-/// Every continuous equation couples the variables it reads at one instant, so
-/// the components of that relation are exactly the sets of variables that
-/// cannot be separated by a clock tick. Variables that appear in no continuous
-/// equation stay isolated and are reported as uncoupled.
-struct InstantaneousReach {
-    parent: Vec<usize>,
-    coupled: Vec<bool>,
+/// An algebraic equation contributes edges from every coordinate it reads to
+/// the algebraic coordinate structural analysis matched as its result. A row
+/// matched to a state derivative contributes no edge: integration, rather than
+/// algebraic evaluation at the tick, produces the state reached through it.
+struct InstantaneousDependencies {
+    successors: Vec<BTreeSet<DependencyEdge>>,
 }
 
-impl InstantaneousReach {
-    fn of_continuous_system<'dae>(view: dae::DaeView<'dae>, variable_count: usize) -> Self {
-        let mut reach = Self {
-            parent: (0..variable_count).collect(),
-            coupled: vec![false; variable_count],
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DependencyEdge {
+    Continuous(usize),
+    Clocked { clock: usize, target: usize },
+}
+
+impl InstantaneousDependencies {
+    fn of_continuous_system<'dae>(
+        view: dae::DaeView<'dae>,
+        structural: &StructuralMatching<'dae>,
+    ) -> Self {
+        let mut dependencies = Self {
+            successors: vec![BTreeSet::new(); view.variable_count()],
         };
+        let mut row = 0usize;
         for owner in view.continuous_owners() {
-            match owner {
-                dae::ContinuousOwnerView::Residual { equation, .. } => {
-                    reach.couple(&instantaneous_variables(view, [equation.residual()]));
-                }
-                dae::ContinuousOwnerView::Structured { family, .. } => {
-                    reach.couple(&instantaneous_variables(view, family.bodies().iter()));
-                }
-            }
+            row = dependencies.add_owner_rows(view, owner, row, structural);
         }
-        reach
+        debug_assert_eq!(row, structural.rows.len());
+        dependencies
     }
 
-    fn couple(&mut self, variables: &BTreeSet<usize>) {
-        let mut members = variables.iter().copied();
-        let Some(first) = members.next() else {
+    fn add_owner_rows<'dae>(
+        &mut self,
+        view: dae::DaeView<'dae>,
+        owner: dae::ContinuousOwnerView<'dae>,
+        first_row: usize,
+        structural: &StructuralMatching<'dae>,
+    ) -> usize {
+        let (variables, row_count) = match owner {
+            dae::ContinuousOwnerView::Residual { equation, .. } => {
+                let residual = equation.residual();
+                let variables = instantaneous_variables(view, [residual]);
+                let row_count = view
+                    .expression(residual)
+                    .expect("checked residual expression resolves")
+                    .value_type()
+                    .scalar_count()
+                    .expect("checked residual scalar capacity");
+                (variables, row_count)
+            }
+            dae::ContinuousOwnerView::Structured { family, .. } => (
+                instantaneous_variables(view, family.bodies().iter()),
+                usize::try_from(family.scalar_rows())
+                    .expect("checked structured row capacity fits the host"),
+            ),
+        };
+        let end = first_row + row_count;
+        for row in first_row..end {
+            self.add_row(row, &variables, structural);
+        }
+        end
+    }
+
+    fn add_row(
+        &mut self,
+        row: usize,
+        variables: &BTreeSet<usize>,
+        structural: &StructuralMatching<'_>,
+    ) {
+        let Some(UnknownId::Algebraic { variable, .. }) = structural.rows.get(&row) else {
             return;
         };
-        self.coupled[first] = true;
-        for member in members {
-            self.coupled[member] = true;
-            self.union(first, member);
+        let target = variable.index() as usize;
+        for source in variables.iter().copied().filter(|source| *source != target) {
+            self.successors[source].insert(DependencyEdge::Continuous(target));
         }
     }
 
-    fn is_coupled(&self, variable: usize) -> bool {
-        self.coupled.get(variable).copied().unwrap_or(false)
-    }
-
-    fn root(&self, mut variable: usize) -> usize {
-        while self.parent[variable] != variable {
-            variable = self.parent[variable];
+    fn add_definition<'dae>(
+        &mut self,
+        view: dae::DaeView<'dae>,
+        target: usize,
+        value: dae::ExprId<'dae>,
+        clock: usize,
+    ) {
+        for source in instantaneous_variables(view, [value]) {
+            if source != target {
+                self.successors[source].insert(DependencyEdge::Clocked { clock, target });
+            }
         }
-        variable
     }
 
-    fn union(&mut self, left: usize, right: usize) {
-        let left = self.root(left);
-        let right = self.root(right);
-        if left != right {
-            self.parent[right] = left;
+    fn reaches(&self, start: usize, goal: usize, clock: usize) -> bool {
+        let mut visited = vec![false; self.successors.len()];
+        let mut frontier = VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(variable) = frontier.pop_front() {
+            if self.enqueue_successors(variable, goal, clock, &mut visited, &mut frontier) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn enqueue_successors(
+        &self,
+        variable: usize,
+        goal: usize,
+        clock: usize,
+        visited: &mut [bool],
+        frontier: &mut VecDeque<usize>,
+    ) -> bool {
+        for edge in self.successors[variable].iter().copied() {
+            let Some(successor) = edge.target_on_clock(clock) else {
+                continue;
+            };
+            if successor == goal {
+                return true;
+            }
+            if visited[successor] {
+                continue;
+            }
+            visited[successor] = true;
+            frontier.push_back(successor);
+        }
+        false
+    }
+}
+
+impl DependencyEdge {
+    fn target_on_clock(self, clock: usize) -> Option<usize> {
+        match self {
+            Self::Continuous(target) => Some(target),
+            Self::Clocked {
+                clock: owner,
+                target,
+            } if owner == clock => Some(target),
+            Self::Clocked { .. } => None,
         }
     }
 }

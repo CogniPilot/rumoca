@@ -75,6 +75,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ));
         }
         let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
+        if let Some(selected) = self.constant_index_scalar(&runtime_indices, &base_dimensions) {
+            return self.expression(base, selected);
+        }
         let zero = self.constant(0.0, span)?;
         let mut selected = self.binary(dae::BinaryOperator::Divide, zero, zero, span)?;
         let count = base_dimensions
@@ -112,6 +115,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             indices.push(self.expression(expression, 0)?);
         }
         Ok(indices)
+    }
+
+    fn constant_index_scalar(&self, indices: &[solve::Reg], dimensions: &[u32]) -> Option<usize> {
+        let coordinates = indices
+            .iter()
+            .zip(dimensions)
+            .map(|(&index, &extent)| {
+                let index = self.integer_register(index)?.checked_sub(1)?;
+                let coordinate = u32::try_from(index).ok()?;
+                (coordinate < extent).then_some(coordinate)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        flatten_coordinates(dimensions, &coordinates)
     }
 
     fn dynamic_coordinate_match(
@@ -159,6 +175,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?;
         let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
+        if let Some(selected) = self.constant_index_scalar(&runtime_indices, &base_dimensions) {
+            return if selected == base_scalar {
+                self.expression(value, 0)
+            } else {
+                self.expression(base, base_scalar)
+            };
+        }
         let matches = self.dynamic_coordinate_match(&runtime_indices, &coordinates, span)?;
         let updated = self.expression(value, 0)?;
         let unchanged = self.expression(base, base_scalar)?;
@@ -193,6 +216,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })?;
         let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
+        if let Some(selected) = self.constant_index_scalar(&runtime_indices, &base_dimensions) {
+            return if selected == base_record {
+                self.record_field(value, field, field_scalar, span)
+            } else {
+                let field_width = self
+                    .view
+                    .record_field_layout(self.node(base).value_type_id(), field)
+                    .expect("checked record projection has a finite field layout")
+                    .field_width();
+                self.record_field(base, field, base_record * field_width + field_scalar, span)
+            };
+        }
         let matches = self.dynamic_coordinate_match(&runtime_indices, &coordinates, span)?;
         let updated = self.record_field(value, field, field_scalar, span)?;
         let field_width = self

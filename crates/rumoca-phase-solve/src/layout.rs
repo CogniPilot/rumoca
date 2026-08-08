@@ -3,6 +3,7 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::LowerError;
+use crate::lower::call_scoped_actions::CallScopedActionCollector;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StorageClass {
@@ -27,6 +28,7 @@ pub(crate) struct LoweredLayout<'dae> {
     pub(crate) delay_values: Vec<usize>,
     pub(crate) layout: solve::VarLayout,
     pub(crate) solve_layout: solve::SolveLayout,
+    pub(crate) call_scoped_actions: std::cell::RefCell<CallScopedActionCollector>,
     pub(crate) marker: std::marker::PhantomData<&'dae mut &'dae ()>,
 }
 
@@ -139,6 +141,7 @@ pub(crate) fn lower_layout<'dae>(
         delay_values: runtime.delay_values,
         layout,
         solve_layout,
+        call_scoped_actions: std::cell::RefCell::default(),
         marker: std::marker::PhantomData,
     })
 }

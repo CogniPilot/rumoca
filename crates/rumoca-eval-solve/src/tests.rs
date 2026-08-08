@@ -10,6 +10,58 @@ fn fixture_span() -> rumoca_core::Span {
     )
 }
 
+#[test]
+fn parameter_static_gradient_certificate_rejects_y_and_time_varying_coefficients() {
+    let prepare = |row| {
+        let block = ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()])
+            .expect("gradient-certificate fixture is source-backed");
+        PreparedScalarProgramBlock::new(block).expect("gradient-certificate fixture prepares")
+    };
+    let parameter_affine = prepare(vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::LoadY { dst: 1, index: 0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::LoadTime { dst: 3 },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Add,
+            lhs: 2,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ]);
+    let time_coefficient = prepare(vec![
+        LinearOp::LoadTime { dst: 0 },
+        LinearOp::LoadY { dst: 1, index: 0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ]);
+    let nonlinear = prepare(vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::Binary {
+            dst: 1,
+            op: BinaryOp::Mul,
+            lhs: 0,
+            rhs: 0,
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ]);
+
+    assert!(parameter_affine.certifies_parameter_static_y_gradient(0));
+    assert!(!time_coefficient.certifies_parameter_static_y_gradient(0));
+    assert!(!nonlinear.certifies_parameter_static_y_gradient(0));
+}
+
 fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
     let table_id = 1_u64;
     (
@@ -837,6 +889,7 @@ fn batched_linsolve_rejects_short_output_instead_of_truncating() {
         4,
         2,
         crate::tensor_policy::LinearSolveKernel::Dense,
+        None,
         &mut out,
     )
     .expect_err("a short output buffer must not truncate a linear solution");

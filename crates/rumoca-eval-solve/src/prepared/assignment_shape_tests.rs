@@ -165,6 +165,81 @@ fn affine_shape_isolates_either_factor_of_two_solver_coordinates() {
 }
 
 #[test]
+fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
+    let row = vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::LoadY { dst: 1, index: 1 },
+        LinearOp::LoadY { dst: 2, index: 2 },
+        LinearOp::Binary {
+            dst: 3,
+            op: BinaryOp::Mul,
+            lhs: 1,
+            rhs: 2,
+        },
+        LinearOp::Binary {
+            dst: 4,
+            op: BinaryOp::Sub,
+            lhs: 0,
+            rhs: 3,
+        },
+        LinearOp::StoreOutput { src: 4 },
+    ];
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(
+        vec![row],
+        fixture_span()
+            .require_provenance("selected isolator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("scalar fixture is computable");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("affine row should prepare");
+    let selected = prepared
+        .assignment_shape(0, 1)
+        .expect("the first factor has an isolator");
+    let refresh = crate::refresh_plan::AlgebraicRefreshRow {
+        equation_index: 0,
+        row_idx: 0,
+        output_offset: 0,
+        target_index: 1,
+        assignment_target: Some(1),
+        assignment_shape: Some(selected),
+        direct_assignment_certified: false,
+        exact_assignment_certified: true,
+    };
+    let mut y = vec![6.0, 99.0, 2.0];
+
+    prepared
+        .apply_target_assignment_rows_unchecked_with_context(
+            std::slice::from_ref(&refresh),
+            &mut y,
+            &[],
+            0.0,
+            RowEvalContext::default(),
+        )
+        .expect("the selected target certificate should execute directly");
+    assert_eq!(y, vec![6.0, 3.0, 2.0]);
+
+    let mismatched = crate::refresh_plan::AlgebraicRefreshRow {
+        target_index: 2,
+        assignment_target: Some(2),
+        ..refresh
+    };
+    let error = prepared
+        .apply_target_assignment_rows_unchecked_with_context(
+            &[mismatched],
+            &mut y,
+            &[],
+            0.0,
+            RowEvalContext::default(),
+        )
+        .expect_err("a selected isolator cannot be reused for another target");
+    assert!(
+        error
+            .to_string()
+            .contains("shape does not match its refresh target")
+    );
+}
+
+#[test]
 fn affine_shape_isolates_a_coordinate_from_negated_zero_sum() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },

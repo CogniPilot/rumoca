@@ -1,11 +1,14 @@
 mod arrays;
 mod builtins;
+mod call_scoped_actions;
 mod conditions;
 mod constants;
 mod coordinates;
 mod functions;
 mod operators;
 mod selector;
+
+use std::collections::HashSet;
 
 use super::*;
 
@@ -32,6 +35,11 @@ pub(super) struct ParameterBindingSubstitutions<'dae> {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum ScalarContextFrame<'dae> {
+    Activation {
+        parent: u64,
+        condition: dae::ExprId<'dae>,
+        expected: bool,
+    },
     Function {
         parent: u64,
         function: dae::FunctionId<'dae>,
@@ -58,6 +66,41 @@ enum ScalarContextFrame<'dae> {
     },
 }
 
+#[derive(Clone, Copy)]
+struct ActivationGuard<'dae> {
+    condition: dae::ExprId<'dae>,
+    expected: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FunctionFoldCacheDependency<'dae> {
+    fold: dae::FunctionFoldId<'dae>,
+    values: Vec<Vec<solve::Reg>>,
+    domain_point: Vec<i64>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FunctionFoldOutputCacheKey<'dae> {
+    function_context: u64,
+    fold: dae::FunctionFoldId<'dae>,
+    carried: u32,
+    scalar: usize,
+    dependencies: Vec<FunctionFoldCacheDependency<'dae>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ActiveCallAssertion<'dae> {
+    function: dae::FunctionId<'dae>,
+    arguments: Vec<dae::ExprId<'dae>>,
+}
+
+#[derive(Clone)]
+struct FunctionArgumentsFrame<'dae> {
+    function: dae::FunctionId<'dae>,
+    arguments: Vec<dae::ExprId<'dae>>,
+    activation_base: usize,
+}
+
 impl<'dae> ParameterBindingSubstitutions<'dae> {
     pub(super) const fn new(bindings: HashMap<u32, dae::ExprId<'dae>>) -> Self {
         Self { bindings }
@@ -74,8 +117,9 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
-    function_arguments: Vec<(dae::FunctionId<'dae>, Vec<dae::ExprId<'dae>>)>,
+    function_arguments: Vec<FunctionArgumentsFrame<'dae>>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
+    activation_path: Vec<ActivationGuard<'dae>>,
     active_clock: Option<dae::ClockId<'dae>>,
     sampled_source: bool,
     derivative_definitions: Option<&'layout DerivativeRowIndex<'dae>>,
@@ -84,8 +128,13 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     active_parameters: Vec<u32>,
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
+    integer_registers: Vec<Option<i64>>,
     expression_cache: HashMap<(u64, dae::ExprId<'dae>, usize), solve::Reg>,
+    function_fold_output_cache: HashMap<FunctionFoldOutputCacheKey<'dae>, solve::Reg>,
+    active_call_assertions: HashSet<ActiveCallAssertion<'dae>>,
+    call_action_compilation: bool,
     context_ids: HashMap<ScalarContextFrame<'dae>, u64>,
+    context_frames: HashMap<u64, ScalarContextFrame<'dae>>,
     context_stack: Vec<u64>,
     context_id: u64,
     next_context_id: u64,
@@ -105,6 +154,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .unwrap_or_default(),
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
+            activation_path: Vec::new(),
             active_clock: None,
             sampled_source: false,
             derivative_definitions: None,
@@ -113,8 +163,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             active_parameters: Vec::new(),
             ops: Vec::new(),
             next_register: 0,
+            integer_registers: Vec::new(),
             expression_cache: HashMap::new(),
+            function_fold_output_cache: HashMap::new(),
+            active_call_assertions: HashSet::new(),
+            call_action_compilation: false,
             context_ids: HashMap::new(),
+            context_frames: HashMap::new(),
             context_stack: Vec::new(),
             context_id: 0,
             next_context_id: 1,
@@ -127,7 +182,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             None => {
                 let id = self.next_context_id;
                 self.next_context_id += 1;
-                self.context_ids.insert(frame, id);
+                self.context_ids.insert(frame.clone(), id);
+                self.context_frames.insert(id, frame);
                 id
             }
         };
@@ -142,6 +198,25 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .expect("semantic scalar context has a parent");
     }
 
+    fn push_activation(&mut self, condition: dae::ExprId<'dae>, expected: bool) {
+        self.enter_context(ScalarContextFrame::Activation {
+            parent: self.context_id,
+            condition,
+            expected,
+        });
+        self.activation_path.push(ActivationGuard {
+            condition,
+            expected,
+        });
+    }
+
+    fn pop_activation(&mut self) {
+        self.activation_path
+            .pop()
+            .expect("activation path has a guard");
+        self.leave_context();
+    }
+
     fn suspend_context(&mut self) -> u64 {
         let suspended = self.context_id;
         self.context_id = self.context_stack.pop().unwrap_or(0);
@@ -151,6 +226,94 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn resume_context(&mut self, suspended: u64) {
         self.context_stack.push(self.context_id);
         self.context_id = suspended;
+    }
+
+    fn function_fold_cache_key(
+        &self,
+        fold: dae::FunctionFoldId<'dae>,
+        carried: u32,
+        scalar: usize,
+    ) -> FunctionFoldOutputCacheKey<'dae> {
+        let dependencies = self
+            .function_fold_values
+            .iter()
+            .filter(|(active, _)| self.function_fold_reads_active_fold(fold, *active))
+            .map(|(active, values)| {
+                let domain = self
+                    .view
+                    .function_fold(*active)
+                    .expect("active function fold resolves")
+                    .domain();
+                let domain_point = self
+                    .domain_points
+                    .iter()
+                    .rev()
+                    .find_map(|(candidate, point)| (*candidate == domain).then(|| point.clone()))
+                    .expect("active function fold owns a domain point");
+                FunctionFoldCacheDependency {
+                    fold: *active,
+                    values: values.clone(),
+                    domain_point,
+                }
+            })
+            .collect();
+        FunctionFoldOutputCacheKey {
+            function_context: self.owning_function_context(fold.function()),
+            fold,
+            carried,
+            scalar,
+            dependencies,
+        }
+    }
+
+    fn function_fold_reads_active_fold(
+        &self,
+        fold: dae::FunctionFoldId<'dae>,
+        active: dae::FunctionFoldId<'dae>,
+    ) -> bool {
+        let fold = self
+            .view
+            .function_fold(fold)
+            .expect("checked function fold resolves");
+        fold.initial_values()
+            .rhs_iter()
+            .chain(fold.update_values().rhs_iter())
+            .any(|root| {
+                let mut reads_active = false;
+                dae::for_each_expression(self.view, root, |_, expression| {
+                    reads_active |= matches!(
+                        expression.operation(),
+                        dae::ExpressionOperation::FunctionFoldParameter {
+                            fold: candidate,
+                            ..
+                        } if candidate == active
+                    );
+                });
+                reads_active
+            })
+    }
+
+    fn owning_function_context(&self, function: dae::FunctionId<'dae>) -> u64 {
+        let mut context = self.context_id;
+        while context != 0 {
+            let frame = self
+                .context_frames
+                .get(&context)
+                .expect("non-root scalar context has a frame");
+            match frame {
+                ScalarContextFrame::Function {
+                    function: candidate,
+                    ..
+                } if *candidate == function => return context,
+                ScalarContextFrame::Activation { parent, .. }
+                | ScalarContextFrame::Function { parent, .. }
+                | ScalarContextFrame::Domain { parent, .. }
+                | ScalarContextFrame::Fold { parent, .. }
+                | ScalarContextFrame::Parameter { parent, .. }
+                | ScalarContextFrame::Derivative { parent, .. } => context = *parent,
+            }
+        }
+        0
     }
 
     /// Let this program resolve a derivative coordinate through the continuous
@@ -337,7 +500,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<solve::Reg, LowerError> {
         let key = (self.context_id, expression, scalar);
-        if let Some(register) = self.expression_cache.get(&key).copied() {
+        if let Some(register) = self.cached_dominating_expression(expression, scalar) {
             return Ok(register);
         }
         let node = self.node(expression);
@@ -435,6 +598,51 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(result)
     }
 
+    /// Reuse only a value computed on the current activation path.
+    ///
+    /// Every DAE expression is pure. An ancestor activation dominates its
+    /// descendants, so its value (and any call assertion scheduled while
+    /// computing it) is already available there. A function boundary stops
+    /// the search because the same body expression can have different actual
+    /// arguments in another call, and siblings never dominate one another.
+    fn cached_dominating_expression(
+        &self,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Option<solve::Reg> {
+        let mut context = self.context_id;
+        loop {
+            if let Some(register) = self
+                .expression_cache
+                .get(&(context, expression, scalar))
+                .copied()
+            {
+                return Some(register);
+            }
+            if context == 0 {
+                return None;
+            }
+            match self
+                .context_frames
+                .get(&context)
+                .expect("non-root scalar context has a frame")
+            {
+                ScalarContextFrame::Function { .. } => return None,
+                ScalarContextFrame::Activation { parent, .. }
+                | ScalarContextFrame::Domain { parent, .. }
+                | ScalarContextFrame::Fold { parent, .. }
+                | ScalarContextFrame::Parameter { parent, .. }
+                | ScalarContextFrame::Derivative { parent, .. } => context = *parent,
+            }
+        }
+    }
+
+    fn current_function_frame_matches(&self, call: &ActiveCallAssertion<'dae>) -> bool {
+        self.function_arguments.last().is_some_and(|frame| {
+            frame.function == call.function && frame.arguments == call.arguments
+        })
+    }
+
     fn array_update(
         &mut self,
         base: dae::ExprId<'dae>,
@@ -515,13 +723,38 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             if_true: when_true,
             if_false: when_false,
         });
+        let value = match self.integer_register(condition) {
+            Some(0) => self.integer_register(when_false),
+            Some(_) => self.integer_register(when_true),
+            None if self.integer_register(when_true) == self.integer_register(when_false) => {
+                self.integer_register(when_true)
+            }
+            None => None,
+        };
+        self.set_integer_register(dst, value);
         Ok(dst)
     }
 
     fn constant(&mut self, value: f64, span: Span) -> Result<solve::Reg, LowerError> {
         let dst = self.register(span)?;
         self.ops.push(solve::LinearOp::Const { dst, value });
+        self.set_integer_register(dst, exact_i64(value));
         Ok(dst)
+    }
+
+    fn integer_register(&self, register: solve::Reg) -> Option<i64> {
+        self.integer_registers
+            .get(register as usize)
+            .copied()
+            .flatten()
+    }
+
+    fn set_integer_register(&mut self, register: solve::Reg, value: Option<i64>) {
+        let slot = self
+            .integer_registers
+            .get_mut(register as usize)
+            .expect("registered Solve scalar owns constant metadata");
+        *slot = value;
     }
 
     fn register(&mut self, span: Span) -> Result<solve::Reg, LowerError> {
@@ -530,6 +763,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .next_register
             .checked_add(1)
             .ok_or_else(|| LowerError::contract("Solve register index overflow", span))?;
+        self.integer_registers.push(None);
         Ok(register)
     }
 
@@ -555,6 +789,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             format!("scalar projection {scalar} exceeds expression size {count}"),
             node.provenance().span(),
         ))
+    }
+}
+
+fn exact_i64(value: f64) -> Option<i64> {
+    if value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
+    {
+        Some(value as i64)
+    } else {
+        None
     }
 }
 

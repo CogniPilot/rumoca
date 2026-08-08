@@ -6,6 +6,8 @@
 
 use super::*;
 
+type RecordCondition<'dae> = (dae::ExprId<'dae>, solve::Reg, dae::ExprId<'dae>);
+
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     pub(super) fn function_fold_parameter(
         &self,
@@ -50,26 +52,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 function,
                 output,
                 arguments,
-            } => {
-                if self.function_arguments.len() >= 256 {
-                    return Err(LowerError::non_computable(
-                        "function lowering exceeded the checked recursion limit",
-                        span,
-                    ));
-                }
-                let result = self.function_result(function, output, span)?;
-                let arguments: Vec<_> = arguments.iter().collect();
-                self.enter_context(ScalarContextFrame::Function {
-                    parent: self.context_id,
-                    function,
-                    arguments: arguments.clone(),
-                });
-                self.function_arguments.push((function, arguments));
-                let lowered = self.record_field(result, field, scalar, span);
-                self.function_arguments.pop();
-                self.leave_context();
-                lowered
-            }
+            } => self.record_call_field(function, output, arguments, field, scalar, span),
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.record_field(definition.rhs(), field, scalar, span)
             }
@@ -77,28 +60,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 parameter,
             )) => self.function_parameter_record_field(parameter, field, scalar, span),
             dae::ExpressionOperation::Conditional(operands) => {
-                let fallback = operands
-                    .get(operands.len() - 1)
-                    .expect("checked conditional has a fallback");
-                let mut selected = self.record_field(fallback, field, scalar, span)?;
-                for ordinal in (0..operands.len() - 1).step_by(2).rev() {
-                    let condition = self.expression(
-                        operands
-                            .get(ordinal)
-                            .expect("checked conditional condition ordinal"),
-                        0,
-                    )?;
-                    let value = self.record_field(
-                        operands
-                            .get(ordinal + 1)
-                            .expect("checked conditional value ordinal"),
-                        field,
-                        scalar,
-                        span,
-                    )?;
-                    selected = self.select(condition, value, selected, span)?;
-                }
-                Ok(selected)
+                self.record_conditional_field(operands, field, scalar, span)
             }
             dae::ExpressionOperation::Array(elements) => {
                 let first = elements.get(0).expect("checked record array is nonempty");
@@ -128,6 +90,145 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
     }
 
+    fn record_call_field(
+        &mut self,
+        function: dae::FunctionId<'dae>,
+        output: u32,
+        arguments: dae::ExpressionOperands<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if self.function_arguments.len() >= 256 {
+            return Err(LowerError::non_computable(
+                "function lowering exceeded the checked recursion limit",
+                span,
+            ));
+        }
+        let result = self.function_result(function, output, span)?;
+        let arguments: Vec<_> = arguments.iter().collect();
+        let assertion = ActiveCallAssertion {
+            function,
+            arguments: arguments.clone(),
+        };
+        if self.call_action_compilation
+            && self.active_call_assertions.contains(&assertion)
+            && self.current_function_frame_matches(&assertion)
+        {
+            return self.record_field(result, field, scalar, span);
+        }
+        self.enter_context(ScalarContextFrame::Function {
+            parent: self.context_id,
+            function,
+            arguments: arguments.clone(),
+        });
+        self.function_arguments.push(FunctionArgumentsFrame {
+            function,
+            arguments,
+            activation_base: self.activation_path.len(),
+        });
+        let owns_assertion = self.active_call_assertions.insert(assertion.clone());
+        let lowered = if owns_assertion {
+            self.schedule_function_assertions(
+                self.view
+                    .function(function)
+                    .expect("checked function identity resolves")
+                    .statements(),
+                span,
+            )
+        } else {
+            Ok(())
+        };
+        let lowered = lowered.and_then(|()| self.record_field(result, field, scalar, span));
+        if owns_assertion {
+            self.active_call_assertions.remove(&assertion);
+        }
+        self.function_arguments.pop();
+        self.leave_context();
+        lowered
+    }
+
+    fn record_conditional_field(
+        &mut self,
+        operands: dae::ExpressionOperands<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let (conditions, fallback) = self.record_conditions(operands)?;
+        self.push_inactive_conditions(&conditions);
+        let mut selected = self.record_field(fallback, field, scalar, span)?;
+        self.pop_activations(conditions.len());
+        for (branch, condition) in conditions.iter().copied().enumerate().rev() {
+            let value = self.record_conditional_branch(
+                &conditions[..branch],
+                condition,
+                field,
+                scalar,
+                span,
+            )?;
+            selected = self.select(condition.1, value, selected, span)?;
+        }
+        Ok(selected)
+    }
+
+    fn record_conditions(
+        &mut self,
+        operands: dae::ExpressionOperands<'dae>,
+    ) -> Result<(Vec<RecordCondition<'dae>>, dae::ExprId<'dae>), LowerError> {
+        let fallback_index = operands.len() - 1;
+        let mut conditions = Vec::with_capacity(fallback_index / 2);
+        let mut fallback = operands
+            .get(fallback_index)
+            .expect("checked conditional has a fallback");
+        for ordinal in (0..fallback_index).step_by(2) {
+            let condition = operands
+                .get(ordinal)
+                .expect("checked conditional condition ordinal");
+            let register = self.expression(condition, 0)?;
+            if self.integer_register(register) == Some(0) {
+                continue;
+            }
+            let value = operands
+                .get(ordinal + 1)
+                .expect("checked conditional value ordinal");
+            if self.integer_register(register).is_some() {
+                fallback = value;
+                break;
+            }
+            conditions.push((condition, register, value));
+        }
+        Ok((conditions, fallback))
+    }
+
+    fn record_conditional_branch(
+        &mut self,
+        previous: &[RecordCondition<'dae>],
+        condition: RecordCondition<'dae>,
+        field: usize,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        self.push_inactive_conditions(previous);
+        self.push_activation(condition.0, true);
+        let value = self.record_field(condition.2, field, scalar, span);
+        self.pop_activation();
+        self.pop_activations(previous.len());
+        value
+    }
+
+    fn push_inactive_conditions(&mut self, conditions: &[RecordCondition<'dae>]) {
+        for (condition, _, _) in conditions {
+            self.push_activation(*condition, false);
+        }
+    }
+
+    fn pop_activations(&mut self, count: usize) {
+        for _ in 0..count {
+            self.pop_activation();
+        }
+    }
+
     fn function_parameter_record_field(
         &mut self,
         parameter: dae::FunctionParameterId<'dae>,
@@ -136,22 +237,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let context = self.suspend_context();
-        let Some((function, arguments)) = self.function_arguments.pop() else {
+        let Some(frame) = self.function_arguments.pop() else {
             self.resume_context(context);
             return Err(LowerError::contract(
                 "record function parameter escaped its checked call",
                 span,
             ));
         };
-        let argument = (function == parameter.function())
-            .then(|| arguments.get(parameter.ordinal() as usize).copied())
+        let suspended_activations = self.activation_path.split_off(frame.activation_base);
+        let argument = (frame.function == parameter.function())
+            .then(|| frame.arguments.get(parameter.ordinal() as usize).copied())
             .flatten();
         let lowered = argument
             .ok_or_else(|| {
                 LowerError::contract("record function parameter has no checked argument", span)
             })
             .and_then(|argument| self.record_field(argument, field, scalar, span));
-        self.function_arguments.push((function, arguments));
+        self.activation_path.extend(suspended_activations);
+        self.function_arguments.push(frame);
         self.resume_context(context);
         lowered
     }
@@ -272,6 +375,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        let cache_key = self.function_fold_cache_key(fold, carried, scalar);
+        if let Some(output) = self.function_fold_output_cache.get(&cache_key).copied() {
+            return Ok(output);
+        }
         let fold_view = self
             .view
             .function_fold(fold)
@@ -336,13 +443,15 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 "checked DAE fold preserves carried arity"
             );
         }
-        values
+        let output = values
             .get(carried as usize)
             .and_then(|value| value.get(scalar))
             .copied()
             .ok_or_else(|| {
                 LowerError::contract("function fold output scalar is out of range", span)
-            })
+            })?;
+        self.function_fold_output_cache.insert(cache_key, output);
+        Ok(output)
     }
 
     pub(super) fn function_parameter(
@@ -352,15 +461,16 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let context = self.suspend_context();
-        let Some((function, arguments)) = self.function_arguments.pop() else {
+        let Some(frame) = self.function_arguments.pop() else {
             self.resume_context(context);
             return Err(LowerError::non_computable(
                 "function parameter escaped its checked call owner",
                 span,
             ));
         };
-        let argument = (function == parameter.function())
-            .then(|| arguments.get(parameter.ordinal() as usize).copied())
+        let suspended_activations = self.activation_path.split_off(frame.activation_base);
+        let argument = (frame.function == parameter.function())
+            .then(|| frame.arguments.get(parameter.ordinal() as usize).copied())
             .flatten();
         let lowered = argument
             .ok_or_else(|| {
@@ -370,7 +480,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )
             })
             .and_then(|argument| self.expression(argument, scalar));
-        self.function_arguments.push((function, arguments));
+        self.activation_path.extend(suspended_activations);
+        self.function_arguments.push(frame);
         self.resume_context(context);
         lowered
     }
@@ -391,13 +502,42 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         }
         let result = self.function_result(function, output, span)?;
         let arguments: Vec<_> = arguments.iter().collect();
+        let assertion = ActiveCallAssertion {
+            function,
+            arguments: arguments.clone(),
+        };
+        if self.call_action_compilation
+            && self.active_call_assertions.contains(&assertion)
+            && self.current_function_frame_matches(&assertion)
+        {
+            return self.expression(result, scalar);
+        }
         self.enter_context(ScalarContextFrame::Function {
             parent: self.context_id,
             function,
             arguments: arguments.clone(),
         });
-        self.function_arguments.push((function, arguments));
-        let lowered = self.expression(result, scalar);
+        self.function_arguments.push(FunctionArgumentsFrame {
+            function,
+            arguments,
+            activation_base: self.activation_path.len(),
+        });
+        let owns_assertion = self.active_call_assertions.insert(assertion.clone());
+        let lowered = if owns_assertion {
+            self.schedule_function_assertions(
+                self.view
+                    .function(function)
+                    .expect("checked function identity resolves")
+                    .statements(),
+                span,
+            )
+        } else {
+            Ok(())
+        };
+        let lowered = lowered.and_then(|()| self.expression(result, scalar));
+        if owns_assertion {
+            self.active_call_assertions.remove(&assertion);
+        }
         self.function_arguments.pop();
         self.leave_context();
         lowered
@@ -429,28 +569,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        if function_has_call_scoped_actions(definition.statements()) {
-            return Err(LowerError::non_computable(
-                format!(
-                    "function `{}` owns call-scoped assertions, which Solve cannot yet schedule",
-                    definition.name()
-                ),
-                span,
-            ));
-        }
         definition
             .result_values()
             .rhs(output as usize)
             .ok_or_else(|| LowerError::contract("function result ordinal is out of range", span))
     }
-}
-
-fn function_has_call_scoped_actions(statements: dae::FunctionStatements<'_>) -> bool {
-    statements.into_iter().any(|statement| match statement {
-        dae::FunctionStatementView::Assignment { .. } => false,
-        dae::FunctionStatementView::Assertion { .. } => true,
-        dae::FunctionStatementView::For { statements, .. } => {
-            function_has_call_scoped_actions(statements)
-        }
-    })
 }

@@ -63,6 +63,38 @@ impl SolveRuntime {
         )
     }
 
+    /// Evaluate the state Jacobian-vector product at a solver vector that the
+    /// caller already settled for this exact linearization coordinate.
+    ///
+    /// This is an internal FMI callback optimization. The ME component owns
+    /// the bitwise coordinate cache and invalidates it on lifecycle mutation;
+    /// callers that cannot supply that proof use
+    /// [`Self::eval_state_jacobian_v_ad_with_guess_into`] instead.
+    pub(crate) fn eval_state_jacobian_v_at_settled_solver_y_into(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        solver_y: &[f64],
+        seed: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.validate_refresh_inputs(solver_y, lin.params)?;
+        let mut scratch = self.derivative_scratch.borrow_mut();
+        let StateDerivativeScratch {
+            seed_buf,
+            unit_seed,
+            ..
+        } = &mut *scratch;
+        self.eval_derivative_jacobian_v_from_settled_solver_y(
+            lin,
+            solver_y,
+            seed,
+            self.state_count,
+            seed_buf,
+            unit_seed,
+            out,
+        )
+    }
+
     /// Like [`Self::eval_state_jacobian_v_ad_into`], but the input `seed` spans
     /// the full `[solver-y | parameter]` space and is copied in its entirety, so
     /// parameter tangents are honored. Seeding a unit vector in a parameter slot
@@ -485,6 +517,30 @@ impl SolveRuntime {
         validate_derivative_output_len(out, self.state_count)?;
         // (1) Linearization point: project the algebraics from the caller's seed.
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
+        self.eval_derivative_jacobian_v_from_settled_solver_y(
+            lin,
+            solver_y,
+            seed,
+            seed_copy_len,
+            seed_buf,
+            unit_seed,
+            out,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_derivative_jacobian_v_from_settled_solver_y(
+        &self,
+        lin: AlgebraicLinearization<'_>,
+        solver_y: &[f64],
+        seed: &[f64],
+        seed_copy_len: usize,
+        seed_buf: &mut Vec<f64>,
+        unit_seed: &mut Vec<f64>,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let AlgebraicLinearization { t, params, .. } = lin;
+        validate_derivative_output_len(out, self.state_count)?;
         // The JVP rows seed both solver-y and parameters (`SeedMode::SolverYAndP`),
         // so the seed vector spans `[solver-y | parameter]` space. We copy the
         // leading `seed_copy_len` entries from the caller (state-only for the
@@ -546,6 +602,8 @@ impl SolveRuntime {
         let projection_model = RefreshProjectionModel {
             runtime: self,
             plan: &plan.simultaneous_plan,
+            block_indices: &plan.simultaneous_block_indices,
+            plan_validated: false,
             jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.implicit_jacobian_v),
         };
         project_algebraic_seed_with_plan(

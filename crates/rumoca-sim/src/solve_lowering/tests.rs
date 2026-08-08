@@ -1,7 +1,9 @@
 use rumoca_compile::compile::{Session, SessionConfig};
 
 use super::entry::lower_dae_for_simulation;
-use crate::{SimOptions, simulate_dae};
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+use crate::SimulationSession;
+use crate::{SimOptions, SimSolverMode, simulate_dae, simulate_dae_with_diagnostics};
 
 mod coincident_strict;
 
@@ -146,6 +148,60 @@ fn checked_transcendental_builtins_execute_end_to_end() {
         result.data[y]
             .iter()
             .all(|value| (value - expected).abs() <= 1.0e-10)
+    );
+}
+
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+#[test]
+fn auto_selects_explicit_host_for_undefined_initial_directional_derivative() {
+    let dae = compile(
+        concat!(
+            "model UndefinedInitialLinearization\n",
+            "  Real x(start=0, fixed=true);\n",
+            "  output Real angle;\n",
+            "equation\n",
+            "  angle = atan2(x, x);\n",
+            "  der(x) = angle;\n",
+            "end UndefinedInitialLinearization;\n",
+        ),
+        "UndefinedInitialLinearization",
+    );
+    let options = SimOptions {
+        t_end: 0.01,
+        dt: Some(0.005),
+        solver_mode: SimSolverMode::Auto,
+        ..SimOptions::default()
+    };
+
+    let result = simulate_dae_with_diagnostics(&dae, &options)
+        .expect("auto must select the finite explicit value path before integration");
+    let x = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("state output");
+    assert!(result.data[x].iter().all(|value| *value == 0.0));
+
+    let mut session = SimulationSession::new(&dae, options.clone())
+        .expect("an automatic live session must make the same capability decision");
+    session
+        .advance_to(options.t_end)
+        .expect("the selected explicit live session advances");
+    assert_eq!(session.get("x").expect("state query"), Some(0.0));
+
+    let bdf_error = simulate_dae_with_diagnostics(
+        &dae,
+        &SimOptions {
+            solver_mode: SimSolverMode::Bdf,
+            ..options
+        },
+    )
+    .expect_err("an explicit BDF request must retain the unavailable derivative failure");
+    assert!(
+        bdf_error
+            .to_string()
+            .contains("directional derivative is unavailable"),
+        "unexpected BDF error: {bdf_error}"
     );
 }
 

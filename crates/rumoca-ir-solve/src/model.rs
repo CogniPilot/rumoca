@@ -82,19 +82,34 @@ impl JacobianStructure {
 #[derive(Clone, Debug, Default)]
 pub struct ContinuousStructuralArtifacts {
     implicit: Option<JacobianStructure>,
+    algebraic_projection: Box<[JacobianStructure]>,
+    algebraic_invalidates_earlier: Box<[bool]>,
     manifold: Option<JacobianStructure>,
+    manifold_projection: Box<[JacobianStructure]>,
     derivative: Option<JacobianStructure>,
 }
 
 impl ContinuousStructuralArtifacts {
     pub fn derived(
         implicit: Option<StructuralPattern>,
+        algebraic_projection: Vec<StructuralPattern>,
+        algebraic_invalidates_earlier: Vec<bool>,
         manifold: Option<StructuralPattern>,
+        manifold_projection: Vec<StructuralPattern>,
         derivative: Option<StructuralPattern>,
     ) -> Self {
         Self {
             implicit: implicit.map(JacobianStructure::derived),
+            algebraic_projection: algebraic_projection
+                .into_iter()
+                .map(JacobianStructure::derived)
+                .collect(),
+            algebraic_invalidates_earlier: algebraic_invalidates_earlier.into_boxed_slice(),
             manifold: manifold.map(JacobianStructure::derived),
+            manifold_projection: manifold_projection
+                .into_iter()
+                .map(JacobianStructure::derived)
+                .collect(),
             derivative: derivative.map(JacobianStructure::derived),
         }
     }
@@ -103,8 +118,20 @@ impl ContinuousStructuralArtifacts {
         self.implicit.as_ref()
     }
 
+    pub fn algebraic_projection(&self) -> &[JacobianStructure] {
+        &self.algebraic_projection
+    }
+
+    pub fn algebraic_invalidates_earlier(&self, block_index: usize) -> Option<bool> {
+        self.algebraic_invalidates_earlier.get(block_index).copied()
+    }
+
     pub const fn manifold(&self) -> Option<&JacobianStructure> {
         self.manifold.as_ref()
+    }
+
+    pub fn manifold_projection(&self) -> &[JacobianStructure] {
+        &self.manifold_projection
     }
 
     pub const fn derivative(&self) -> Option<&JacobianStructure> {
@@ -115,17 +142,29 @@ impl ContinuousStructuralArtifacts {
 #[derive(Clone, Debug, Default)]
 pub struct InitializationStructuralArtifacts {
     residual: Option<JacobianStructure>,
+    projection: Box<[JacobianStructure]>,
 }
 
 impl InitializationStructuralArtifacts {
-    pub fn derived(residual: Option<StructuralPattern>) -> Self {
+    pub fn derived(
+        residual: Option<StructuralPattern>,
+        projection: Vec<StructuralPattern>,
+    ) -> Self {
         Self {
             residual: residual.map(JacobianStructure::derived),
+            projection: projection
+                .into_iter()
+                .map(JacobianStructure::derived)
+                .collect(),
         }
     }
 
     pub const fn residual(&self) -> Option<&JacobianStructure> {
         self.residual.as_ref()
+    }
+
+    pub fn projection(&self) -> &[JacobianStructure] {
+        &self.projection
     }
 }
 

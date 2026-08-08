@@ -226,6 +226,11 @@ pub enum MeError {
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
 
+    /// The value path is valid, but the local directional derivative required
+    /// by a derivative-based importer does not exist.
+    #[error("directional derivative is unavailable: {reason}")]
+    DirectionalDerivativeUnavailable { reason: String },
+
     /// The host used the component outside its contract, or the component
     /// produced a vector whose shape contradicts its own model description.
     #[error("{reason}")]
@@ -317,6 +322,9 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
                 message: singular.to_string(),
             },
             Runtime::NonFiniteDerivative { state_name } => Self::NonFiniteDerivative { state_name },
+            Runtime::DirectionalDerivativeUnavailable { reason } => {
+                Self::DirectionalDerivativeUnavailable { reason }
+            }
             non_finite @ Runtime::NonFiniteValue { .. } => Self::Evaluation {
                 message: non_finite.to_string(),
             },

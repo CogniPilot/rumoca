@@ -138,13 +138,10 @@ impl SolveRuntime {
     pub(super) fn can_batch_assignment_refresh(&self, plan: &[AlgebraicRefreshRow]) -> bool {
         plan.iter().all(|row| {
             row.assignment_target == Some(row.target_index)
+                && row
+                    .assignment_shape
+                    .is_some_and(|shape| shape.target_y_index() == row.target_index)
                 && row.output_offset == 0
-                && self
-                    .implicit_scalar_rhs
-                    .row_has_assignment_shape(row.row_idx)
-                && self
-                    .implicit_scalar_rhs
-                    .can_evaluate_target_assignment(row.row_idx, row.target_index)
         })
     }
 

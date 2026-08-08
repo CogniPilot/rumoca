@@ -314,7 +314,12 @@ impl StructuralPattern {
             } => {
                 let start = row_offsets[row as usize] as usize;
                 let end = row_offsets[row as usize + 1] as usize;
-                column_indices[start..end].binary_search(&column).is_ok()
+                let row_columns = &column_indices[start..end];
+                if row_columns.len() <= 8 {
+                    row_columns.contains(&column)
+                } else {
+                    row_columns.binary_search(&column).is_ok()
+                }
             }
         }
     }
@@ -336,6 +341,57 @@ impl StructuralPattern {
                 *upper_bandwidth as usize,
             ),
             PatternRepresentation::Csr { column_indices, .. } => Some(column_indices.len()),
+        }
+    }
+
+    /// Materialize the certified relation in deterministic row-major order.
+    /// Runtime and backend storage policies may consume this view without
+    /// rediscovering dependencies from programs or numerical values.
+    pub fn nonzero_coordinates(&self) -> Vec<(usize, usize)> {
+        let capacity = self.nonzero_upper_bound().unwrap_or(0);
+        let mut coordinates = Vec::with_capacity(capacity);
+        for row in 0..self.rows as usize {
+            self.visit_row_columns(row, |column| coordinates.push((row, column)));
+        }
+        coordinates
+    }
+
+    /// Visit the certified columns in one row without materializing the
+    /// complete sparse relation. Columns are yielded in ascending order.
+    #[inline]
+    pub fn visit_row_columns(&self, row: usize, mut visitor: impl FnMut(usize)) {
+        debug_assert!(row < self.rows as usize);
+        match &self.representation {
+            PatternRepresentation::Empty => {}
+            PatternRepresentation::Full => {
+                (0..self.columns as usize).for_each(&mut visitor);
+            }
+            PatternRepresentation::Diagonal => {
+                if row < self.columns as usize {
+                    visitor(row);
+                }
+            }
+            PatternRepresentation::Banded {
+                lower_bandwidth,
+                upper_bandwidth,
+            } => {
+                let start = row.saturating_sub(*lower_bandwidth as usize);
+                let end = row
+                    .saturating_add(*upper_bandwidth as usize)
+                    .saturating_add(1)
+                    .min(self.columns as usize);
+                (start..end).for_each(&mut visitor);
+            }
+            PatternRepresentation::Csr {
+                row_offsets,
+                column_indices,
+            } => {
+                let start = row_offsets[row] as usize;
+                let end = row_offsets[row + 1] as usize;
+                column_indices[start..end]
+                    .iter()
+                    .for_each(|column| visitor(*column as usize));
+            }
         }
     }
 

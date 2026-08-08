@@ -255,7 +255,7 @@ fn nonlinear_right_limit_implicit_jvp() -> solve::ScalarProgramBlock {
 }
 
 fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
-    use solve::LinearOp::{Binary, LoadY, StoreOutput};
+    use solve::LinearOp::{Binary, LoadSeed, LoadY, StoreOutput};
     let derivative = block(
         vec![vec![LoadY { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
         "fmi_me_right_limit_derivative.mo",
@@ -284,6 +284,10 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
         "fmi_me_right_limit_implicit.mo",
     );
     let implicit_jvp = nonlinear_right_limit_implicit_jvp();
+    let derivative_jvp = block(
+        vec![vec![LoadSeed { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
+        "fmi_me_right_limit_derivative_jvp.mo",
+    );
     solve::SolveModel {
         problem: solve::SolveProblem {
             continuous: solve::ContinuousSolveSystem {
@@ -318,6 +322,7 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
                     implicit_jvp.clone(),
                 ),
                 implicit_jacobian_v_scalar: implicit_jvp,
+                full_jacobian_v: derivative_jvp,
                 ..Default::default()
             },
             ..Default::default()
@@ -646,6 +651,106 @@ fn instantiate_with_numerics(
         },
     )
     .expect("fixture instantiates")
+}
+
+#[test]
+fn callback_caches_require_the_exact_fmi_coordinate_in_frozen_mode() {
+    let model = harmonic_oscillator();
+    let kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let time = 0.25_f64;
+    let adjacent_time = f64::from_bits(time.to_bits() + 1);
+    let state = [2.0, 3.0];
+    let adjacent_state = [f64::from_bits(2.0f64.to_bits() + 1), 3.0];
+
+    kernel.cache_derivative(time, &state, &[4.0, 5.0]);
+    assert_eq!(kernel.cached_derivative(time, &state), Some(vec![4.0, 5.0]));
+    assert_eq!(kernel.cached_derivative(adjacent_time, &state), None);
+    assert_eq!(kernel.cached_derivative(time, &adjacent_state), None);
+
+    kernel.cache_root_conditions(time, &state, &[6.0]);
+    assert_eq!(kernel.cached_root_conditions(time, &state), Some(vec![6.0]));
+    assert_eq!(kernel.cached_root_conditions(adjacent_time, &state), None);
+    assert_eq!(kernel.cached_root_conditions(time, &adjacent_state), None);
+}
+
+#[test]
+fn repeated_directional_seeds_reuse_only_the_exact_settled_coordinate() {
+    let model = nonlinear_right_limit_seed_model();
+    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let state = [4.0];
+    let mut derivative = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut derivative)
+        .expect("the nonlinear algebraic coordinate should settle");
+    assert_eq!(derivative, vec![2.0]);
+    assert!(kernel.verification_continuous_linearization_cache_matches(0.0, &state, &[]));
+
+    let mut sensitivity = vec![f64::NAN];
+    kernel
+        .get_directional_derivative(&[1.0], &mut sensitivity)
+        .expect("the cached exact coordinate should support another seed");
+    assert_eq!(sensitivity, vec![0.25]);
+
+    let adjacent_time = f64::from_bits(1);
+    kernel
+        .set_time(MeTime::at(adjacent_time))
+        .expect("the adjacent finite time is a legal FMI coordinate");
+    assert!(!kernel.verification_continuous_linearization_cache_matches(
+        adjacent_time,
+        &state,
+        &[]
+    ));
+    kernel
+        .get_directional_derivative(&[1.0], &mut sensitivity)
+        .expect("a coordinate miss must fall back to checked settling");
+    assert_eq!(sensitivity, vec![0.25]);
+    assert!(kernel.verification_continuous_linearization_cache_matches(adjacent_time, &state, &[]));
+}
+
+#[test]
+fn roots_refresh_from_the_exact_derivative_algebraic_branch() {
+    let mut model = nonlinear_right_limit_seed_model();
+    model.problem.events.root_conditions = block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_cached_root_branch.mo",
+    );
+    let kernel = SolveMeKernel::instantiate(
+        MeModelSource::new(&model),
+        &MeInstanceConfig {
+            instance_name: "fmi-me-cached-root-test",
+            tolerance: 1.0e-10,
+            start_time: 0.0,
+            stop_time: 1.0,
+            root_profile: super::MeRootProfile::DiffsolFrozen,
+            numerics_profile: super::MeNumericsProfile::DiffsolFrozen,
+        },
+    )
+    .expect("cached-root fixture instantiates");
+    kernel.verification_cache_continuous_linearization(0.0, &[4.0], &[], &[4.0, -2.0]);
+    let mut indicators = Vec::new();
+
+    kernel
+        .get_event_indicators(&mut indicators)
+        .expect("the complete root refresh should retain the derivative's settled branch");
+
+    assert_eq!(indicators, vec![-2.0]);
+}
+
+#[test]
+fn empty_manifold_artifact_does_not_settle_unrelated_observation_algebraics() {
+    let model = nonlinear_right_limit_seed_model();
+    let mut kernel = instantiate_with_numerics(&model, super::MeNumericsProfile::DiffsolFrozen);
+    let mut state = [-1.0];
+
+    let changed = kernel
+        .project_continuous_states(&mut state)
+        .expect("an empty checked manifold artifact certifies an unchanged state");
+
+    assert!(!changed);
+    assert_eq!(state, [-1.0]);
 }
 
 #[test]

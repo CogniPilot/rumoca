@@ -11,6 +11,10 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
             "/../../examples/models/NeuralODETensor.mo"
         ))
         .expect("NeuralODETensor should compile");
+    result.dae.inspect(|view| {
+        assert_eq!(view.root_count(), 0);
+        assert_eq!(view.structured_root_count(), 0);
+    });
     let opts = SimOptions {
         t_end: 0.2,
         dt: Some(0.02),

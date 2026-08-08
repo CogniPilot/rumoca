@@ -44,6 +44,9 @@ pub enum RuntimeSolveError {
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
 
+    #[error("algebraic directional derivative is unavailable: {reason}")]
+    DirectionalDerivativeUnavailable { reason: String },
+
     #[error(
         "non-finite ({kind}) value computed for `{name}`{}",
         span_suffix(*.span)

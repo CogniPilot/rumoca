@@ -64,6 +64,9 @@ pub enum SimError {
     #[error("solve-IR evaluation failed: {0}")]
     SolveIr(String),
 
+    #[error("directional derivative is unavailable: {reason}")]
+    DirectionalDerivativeUnavailable { reason: String },
+
     #[error("rk45 runtime contract violation: {reason}")]
     RuntimeContract { reason: String },
 
@@ -99,6 +102,9 @@ impl From<MeError> for SimError {
             MeError::UnsupportedModel { reason } => Self::UnsupportedModel { reason },
             MeError::Evaluation { message } => Self::SolveIr(message),
             MeError::NonFiniteDerivative { state_name } => Self::NonFiniteDerivative { state_name },
+            MeError::DirectionalDerivativeUnavailable { reason } => {
+                Self::DirectionalDerivativeUnavailable { reason }
+            }
             MeError::Contract { reason } => Self::RuntimeContract { reason },
             MeError::Assertion { time, message } => Self::AssertionFailed { time, message },
             MeError::Allocation { context, entries } => Self::Allocation { context, entries },

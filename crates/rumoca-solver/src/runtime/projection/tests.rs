@@ -2,6 +2,18 @@ use std::cell::Cell;
 
 use super::*;
 
+#[path = "tests/scaled_systems.rs"]
+mod scaled_systems;
+
+#[path = "tests/manifold.rs"]
+mod manifold;
+
+#[path = "tests/certification.rs"]
+mod certification;
+
+#[path = "tests/saturation.rs"]
+mod saturation;
+
 fn project_initial_y_plan<M: AlgebraicProjectionModel>(
     model: &M,
     y: &mut [f64],
@@ -80,6 +92,7 @@ struct ContinuousCausalAssignmentModel {
     residual_row_calls: Cell<usize>,
     jacobian_calls: Cell<usize>,
     target_value: f64,
+    exact_assignment: bool,
     plan: solve::AlgebraicProjectionPlan,
 }
 
@@ -280,6 +293,10 @@ impl ImplicitProjectionModel for ContinuousCausalAssignmentModel {
         Ok(Some(self.target_value))
     }
 
+    fn implicit_target_assignment_is_exact(&self, _row_idx: usize, _target_y_index: usize) -> bool {
+        self.exact_assignment
+    }
+
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
         Some(solve::scalar_slot_y(row_idx))
     }
@@ -313,6 +330,10 @@ struct ReverseRowProjectionModel {
 }
 
 impl ImplicitProjectionModel for ReverseRowProjectionModel {
+    fn algebraic_projection_block_is_affine(&self, _block_index: usize) -> bool {
+        true
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],
@@ -382,6 +403,10 @@ impl ImplicitProjectionModel for ReverseRowProjectionModel {
 }
 
 impl ImplicitProjectionModel for SparseRowSelectiveProjectionModel {
+    fn algebraic_projection_block_is_affine(&self, _block_index: usize) -> bool {
+        true
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],
@@ -449,6 +474,10 @@ impl ImplicitProjectionModel for SparseRowSelectiveProjectionModel {
 }
 
 impl ImplicitProjectionModel for RowSelectiveBlockProjectionModel {
+    fn algebraic_projection_block_is_affine(&self, _block_index: usize) -> bool {
+        true
+    }
+
     fn eval_residual(
         &self,
         y: &[f64],
@@ -1097,6 +1126,7 @@ fn continuous_singleton_assignment_avoids_jacobian_projection() {
         residual_row_calls: Cell::new(0),
         jacobian_calls: Cell::new(0),
         target_value: 5.0,
+        exact_assignment: true,
         plan: solve::AlgebraicProjectionPlan {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
@@ -1111,9 +1141,8 @@ fn continuous_singleton_assignment_avoids_jacobian_projection() {
 
     assert_eq!(y, vec![5.0]);
     assert_eq!(model.residual_calls.get(), 0);
-    // One residual checks the current value and one certifies the assigned
-    // value. A one-block plan has no later producer that can invalidate it.
-    assert_eq!(model.residual_row_calls.get(), 2);
+    // The constructor certificate makes runtime residual re-proving redundant.
+    assert_eq!(model.residual_row_calls.get(), 0);
     assert_eq!(model.jacobian_calls.get(), 0);
 }
 
@@ -1272,6 +1301,7 @@ fn continuous_singleton_assignment_does_not_accept_inexact_improvement() {
         residual_row_calls: Cell::new(0),
         jacobian_calls: Cell::new(0),
         target_value: 4.0,
+        exact_assignment: false,
         plan: solve::AlgebraicProjectionPlan {
             blocks: vec![solve::AlgebraicProjectionBlock {
                 rows: vec![0],
@@ -1369,6 +1399,7 @@ fn project_algebraic_block_rejects_rectangular_inventory() {
         &[],
         0.0,
         &block,
+        0,
         AlgebraicBlockProjectionPolicy {
             tolerance: 1.0e-12,
             step_limit: StepLimit::None,
@@ -1399,6 +1430,7 @@ fn project_algebraic_block_rejects_row_outside_residual_vector() {
         &[],
         0.0,
         &block,
+        0,
         AlgebraicBlockProjectionPolicy {
             tolerance: 1.0e-12,
             step_limit: StepLimit::None,
@@ -1532,7 +1564,7 @@ fn project_initial_block_rejects_rectangular_inventory() {
     };
     let mut y = vec![0.0, 0.0];
 
-    let err = project_initial_block(&model, &mut y, &[], 0.0, &block, 1.0e-12)
+    let err = project_initial_block(&model, &mut y, &[], 0.0, &block, 0, 1.0e-12)
         .expect_err("rectangular initial projection inventory must be rejected");
 
     assert!(err.to_string().contains("2 residual rows but 1 unknowns"));
@@ -1548,7 +1580,7 @@ fn project_initial_block_rejects_rectangular_targeted_inventory() {
     };
     let mut y = vec![0.0, 0.0];
 
-    let err = project_initial_block(&model, &mut y, &[], 0.0, &block, 1.0e-12)
+    let err = project_initial_block(&model, &mut y, &[], 0.0, &block, 0, 1.0e-12)
         .expect_err("row targets must not bypass the square-block contract");
 
     assert!(err.to_string().contains("1 residual rows but 2 unknowns"));
@@ -1701,274 +1733,3 @@ fn project_initial_variables_solves_fixed_false_parameter_unknown() {
 
     assert!((p[0] - 2.0).abs() <= 1.0e-10);
 }
-
-struct NominalScaledProjectionModel {
-    plan: solve::AlgebraicProjectionPlan,
-    coefficient: f64,
-    rhs: f64,
-    variable_scale: f64,
-}
-
-impl ImplicitProjectionModel for NominalScaledProjectionModel {
-    fn eval_residual(
-        &self,
-        y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        out[0] = self.coefficient * y[0] - self.rhs;
-        Ok(())
-    }
-
-    fn eval_jacobian_v(
-        &self,
-        _y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        v: &[f64],
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        out[0] = self.coefficient * v[0];
-        Ok(())
-    }
-
-    fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
-        Some(solve::scalar_slot_y(row_idx))
-    }
-
-    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
-        &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        Some("small")
-    }
-
-    fn variable_scale_for_y_index(&self, _y_index: usize) -> f64 {
-        self.variable_scale
-    }
-}
-
-#[test]
-fn nominal_scaled_projection_corrects_small_physical_residual() {
-    let model = NominalScaledProjectionModel {
-        plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
-                rows: vec![0],
-                y_indices: vec![0],
-            }],
-        },
-        coefficient: 1.0,
-        rhs: 0.0,
-        variable_scale: 1.0e-9,
-    };
-    let mut y = vec![5.0e-13];
-
-    project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-6)
-        .expect("nominal-scaled tolerance should require the small residual correction");
-
-    assert!(
-        y[0].abs() <= 1.0e-15,
-        "scaled residual was not corrected: {y:?}"
-    );
-}
-
-#[test]
-fn projection_row_scale_includes_jacobian_coefficient() {
-    let model = NominalScaledProjectionModel {
-        plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
-                rows: vec![0],
-                y_indices: vec![0],
-            }],
-        },
-        coefficient: 1.0e-12,
-        rhs: 1.0e-3,
-        variable_scale: 1.0e12,
-    };
-    let mut y = vec![0.0];
-
-    project_algebraics(&model, &mut y, &[], 0.0, 0, 1.0e-6)
-        .expect("Jacobian-scaled residual should not accept the unprojected initial value");
-
-    assert!(
-        (y[0] - 1.0e9).abs() <= 1.0e-6,
-        "unexpected projection: {y:?}"
-    );
-}
-
-#[test]
-fn scaled_newton_system_normalizes_mixed_magnitude_columns() {
-    let jacobian = DMatrix::from_diagonal(&DVector::from_vec(vec![1.0e-12, 1.0e12]));
-    let delta = scaled_newton_delta(
-        &jacobian,
-        &[-1.0, -1.0],
-        &[1.0, 1.0],
-        &[1.0e12, 1.0e-12],
-        1.0e-12,
-    )
-    .expect("scaled diagonal system should solve");
-
-    assert!((delta[0] - 1.0e12).abs() <= 1.0e-4);
-    assert!((delta[1] - 1.0e-12).abs() <= f64::EPSILON);
-}
-
-/// `eps = 100*Modelica.Constants.eps` feeding a guarded division, the shape
-/// `Modelica.Magnetic.FluxTubes.Basic.ElectroMagneticConverter` uses for
-/// `L_stat = noEvent(if abs(i) > eps then abs(Psi/i) else abs(Psi/eps))`.
-///
-/// Row 0 assigns the tiny constant; its residual at the `0.0` seed is already
-/// far below any usable tolerance, so a "must strictly improve the residual"
-/// rule rejects the assignment and leaves the divisor at zero. Row 1 then
-/// evaluates `0/0`.
-struct TinyConstantDivisorInitialModel {
-    divisor: f64,
-    plan: solve::AlgebraicProjectionPlan,
-}
-
-impl TinyConstantDivisorInitialModel {
-    fn residual_row(&self, row_idx: usize, y: &[f64]) -> Option<f64> {
-        match row_idx {
-            0 => Some(y[0] - self.divisor),
-            1 => Some(y[1] - 0.0 / y[0]),
-            _ => None,
-        }
-    }
-}
-
-impl ImplicitProjectionModel for TinyConstantDivisorInitialModel {
-    fn eval_residual(
-        &self,
-        y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        for (row, slot) in out.iter_mut().enumerate() {
-            *slot = self.residual_row(row, y).unwrap_or(0.0);
-        }
-        Ok(())
-    }
-
-    fn eval_jacobian_v(
-        &self,
-        _y: &[f64],
-        _p: &[f64],
-        _t: f64,
-        v: &[f64],
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        out.copy_from_slice(v);
-        Ok(())
-    }
-
-    fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
-        Some(solve::scalar_slot_y(row_idx))
-    }
-
-    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
-        &self.plan
-    }
-
-    fn target_name_for_row(&self, _row_idx: usize) -> Option<&str> {
-        None
-    }
-}
-
-impl AlgebraicProjectionModel for TinyConstantDivisorInitialModel {
-    fn eval_initial_residual(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        self.eval_residual(y, p, t, out)
-    }
-
-    fn eval_initial_jacobian_v(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        v: &[f64],
-        out: &mut [f64],
-    ) -> Result<(), RuntimeSolveError> {
-        self.eval_jacobian_v(y, p, t, v, out)
-    }
-
-    fn initial_residual_len(&self) -> usize {
-        2
-    }
-
-    fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
-        Some(solve::scalar_slot_y(row_idx))
-    }
-
-    fn eval_initial_target_value(
-        &self,
-        row_idx: usize,
-        _target_y_index: usize,
-        y: &[f64],
-        _p: &[f64],
-        _t: f64,
-    ) -> Result<Option<f64>, RuntimeSolveError> {
-        Ok(match row_idx {
-            0 => Some(self.divisor),
-            1 => Some(0.0 / y[0]),
-            _ => None,
-        })
-    }
-
-    fn eval_initial_residual_row(
-        &self,
-        row_idx: usize,
-        y: &[f64],
-        _p: &[f64],
-        _t: f64,
-    ) -> Result<Option<f64>, RuntimeSolveError> {
-        Ok(self.residual_row(row_idx, y))
-    }
-}
-
-#[test]
-fn initial_singleton_assignment_writes_sub_tolerance_constant_divisor() {
-    let model = TinyConstantDivisorInitialModel {
-        divisor: 2.220_446_049_250_313e-14,
-        plan: solve::AlgebraicProjectionPlan {
-            blocks: vec![
-                solve::AlgebraicProjectionBlock {
-                    rows: vec![0],
-                    y_indices: vec![0],
-                },
-                solve::AlgebraicProjectionBlock {
-                    rows: vec![1],
-                    y_indices: vec![1],
-                },
-            ],
-        },
-    };
-    let mut y = vec![0.0, 0.0];
-
-    project_initial_y_plan(&model, &mut y, &[], 0.0, &model.plan, 1.0e-6)
-        .expect("a sub-tolerance constant assignment must still be written");
-
-    assert!(
-        (y[0] - model.divisor).abs() <= f64::EPSILON * model.divisor,
-        "divisor left at its seed: {y:?}"
-    );
-    assert!(
-        y[1].is_finite(),
-        "guarded quotient stayed non-finite: {y:?}"
-    );
-}
-
-#[path = "tests/manifold.rs"]
-mod manifold;
-
-#[path = "tests/certification.rs"]
-mod certification;
-
-#[path = "tests/saturation.rs"]
-mod saturation;

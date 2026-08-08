@@ -503,6 +503,7 @@ mod tests {
             output_offset: 0,
             target_index: 0,
             assignment_target: None,
+            assignment_shape: None,
             direct_assignment_certified: false,
             exact_assignment_certified: false,
         }

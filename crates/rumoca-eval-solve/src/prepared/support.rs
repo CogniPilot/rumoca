@@ -45,13 +45,15 @@ impl PreparedLinearOps {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct MatMulEvalSpec {
+pub(super) struct MatMulEvalSpec<'a> {
     pub(super) lhs_start: usize,
     pub(super) rhs_start: usize,
     pub(super) m: usize,
     pub(super) k: usize,
     pub(super) n: usize,
     pub(super) kernel: MatMulKernel,
+    pub(super) lhs_pattern: &'a rumoca_ir_solve::StructuralPattern,
+    pub(super) rhs_pattern: &'a rumoca_ir_solve::StructuralPattern,
 }
 
 pub(super) fn eval_matmul_with_policy(
@@ -66,6 +68,8 @@ pub(super) fn eval_matmul_with_policy(
         k,
         n,
         kernel,
+        lhs_pattern: _,
+        rhs_pattern: _,
     } = spec;
     let output_len = m
         .checked_mul(n)
@@ -81,7 +85,10 @@ pub(super) fn eval_matmul_with_policy(
         MatMulKernel::DiagonalRight => {
             return eval_right_diagonal_matmul(regs, lhs_start, rhs_start, m, k, out);
         }
-        MatMulKernel::SmallDense | MatMulKernel::Dense | MatMulKernel::SparseCandidate => {}
+        MatMulKernel::SparseCandidate => {
+            return eval_sparse_matmul(regs, spec, out);
+        }
+        MatMulKernel::SmallDense | MatMulKernel::Dense => {}
     }
     for row in 0..m {
         for col in 0..n {
@@ -93,6 +100,66 @@ pub(super) fn eval_matmul_with_policy(
         }
     }
     Ok(())
+}
+
+fn eval_sparse_matmul(
+    regs: &[f64],
+    spec: MatMulEvalSpec<'_>,
+    out: &mut [f64],
+) -> Result<(), EvalSolveError> {
+    let MatMulEvalSpec {
+        lhs_start: _,
+        rhs_start: _,
+        m,
+        k,
+        n,
+        lhs_pattern,
+        rhs_pattern,
+        ..
+    } = spec;
+    if lhs_pattern.rows() as usize != m
+        || lhs_pattern.columns() as usize != k
+        || rhs_pattern.rows() as usize != k
+        || rhs_pattern.columns() as usize != n
+    {
+        return Err(invalid_prepared_row(
+            "sparse matmul pattern shape does not match operands",
+        ));
+    }
+    out.fill(0.0);
+    for row in 0..m {
+        accumulate_sparse_matmul_row(regs, spec, row, out);
+    }
+    Ok(())
+}
+
+fn accumulate_sparse_matmul_row(
+    regs: &[f64],
+    spec: MatMulEvalSpec<'_>,
+    row: usize,
+    out: &mut [f64],
+) {
+    for inner in 0..spec.k {
+        if !spec.lhs_pattern.contains(row as u32, inner as u32) {
+            continue;
+        }
+        accumulate_sparse_matmul_inner(regs, spec, row, inner, out);
+    }
+}
+
+fn accumulate_sparse_matmul_inner(
+    regs: &[f64],
+    spec: MatMulEvalSpec<'_>,
+    row: usize,
+    inner: usize,
+    out: &mut [f64],
+) {
+    let lhs = regs[spec.lhs_start + row * spec.k + inner];
+    for column in 0..spec.n {
+        if spec.rhs_pattern.contains(inner as u32, column as u32) {
+            out[row * spec.n + column] += lhs * regs[spec.rhs_start + inner * spec.n + column];
+        }
+    }
 }
 
 pub(super) fn checked_product(

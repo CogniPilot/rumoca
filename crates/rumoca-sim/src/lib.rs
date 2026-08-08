@@ -125,7 +125,27 @@ pub fn simulate_solve_model(
     }
 }
 
-#[cfg(feature = "solver-diffsol")]
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+fn simulate_solve_model_auto(
+    model: &rumoca_ir_solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    match rumoca_solver_diffsol::assess_bdf_capability(model, opts)
+        .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
+    {
+        rumoca_solver_diffsol::BdfCapability::Eligible => simulate_solve_model_diffsol(model, opts),
+        rumoca_solver_diffsol::BdfCapability::InitialLinearizationUnavailable { reason } => {
+            tracing::debug!(
+                target: "rumoca_sim::solver_selection",
+                %reason,
+                "auto selected rk-like because the initial BDF linearization is unavailable"
+            );
+            simulate_solve_model_rk45(model, opts)
+        }
+    }
+}
+
+#[cfg(all(feature = "solver-diffsol", not(feature = "solver-rk45")))]
 fn simulate_solve_model_auto(
     model: &rumoca_ir_solve::SolveModel,
     opts: &SimOptions,
@@ -213,7 +233,16 @@ pub fn simulate_with_diagnostics_auto_nan_trace(
     result
 }
 
-#[cfg(feature = "solver-diffsol")]
+#[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+fn simulate_with_auto_diagnostics(
+    dae_model: &dae::Dae,
+    opts: &SimOptions,
+) -> Result<SimResult, SimulationDiagnosticError> {
+    let model = solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)?;
+    simulate_solve_model_auto(&model, opts)
+}
+
+#[cfg(all(feature = "solver-diffsol", not(feature = "solver-rk45")))]
 fn simulate_with_auto_diagnostics(
     dae_model: &dae::Dae,
     opts: &SimOptions,

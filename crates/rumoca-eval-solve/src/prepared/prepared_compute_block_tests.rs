@@ -1,8 +1,8 @@
 use super::*;
 use rumoca_core::{SourceId, Span, StructuredIndexBinder, StructuredIndexDomain};
 use rumoca_ir_solve::{
-    AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock,
-    TensorNodeMetadata,
+    AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp, PatternDerivation,
+    PatternProvenance, ScalarProgramBlock, StructuralPattern, TensorNodeMetadata,
 };
 
 fn test_domain() -> StructuredIndexDomain {
@@ -44,11 +44,154 @@ fn test_span(name: &'static str) -> Span {
     Span::from_offsets(SourceId::from_source_name(name), 1, 2)
 }
 
+fn test_pattern(rows: usize, columns: usize, dependencies: &[Vec<usize>]) -> StructuralPattern {
+    let provenance = PatternProvenance::derived(
+        PatternDerivation::TensorOperand,
+        test_span("prepared_sparse_tensor.mo"),
+    )
+    .expect("fixture provenance");
+    StructuralPattern::from_row_dependencies(rows, columns, dependencies, provenance)
+        .expect("fixture structural pattern")
+}
+
+fn tridiagonal_dependencies(size: usize) -> Vec<Vec<usize>> {
+    (0..size)
+        .map(|row| {
+            (0..size)
+                .filter(|column| row.abs_diff(*column) <= 1)
+                .collect()
+        })
+        .collect()
+}
+
 fn const_store_row(value: f64) -> Vec<LinearOp> {
     vec![
         LinearOp::Const { dst: 0, value },
         LinearOp::StoreOutput { src: 0 },
     ]
+}
+
+#[test]
+fn prepared_linsolve_executes_sparse_candidate_with_proven_pattern() {
+    let size = 24;
+    let dependencies = tridiagonal_dependencies(size);
+    let mut setup_ops = Vec::with_capacity(size * size + size);
+    for row in 0..size {
+        for column in 0..size {
+            setup_ops.push(LinearOp::Const {
+                dst: (row * size + column) as u32,
+                value: if row == column {
+                    4.0
+                } else if row.abs_diff(column) == 1 {
+                    -1.0
+                } else {
+                    0.0
+                },
+            });
+        }
+    }
+    for row in 0..size {
+        setup_ops.push(LinearOp::Const {
+            dst: (size * size + row) as u32,
+            value: 1.0,
+        });
+    }
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::LinSolve {
+            setup_ops,
+            matrix_start: 0,
+            rhs_start: (size * size) as u32,
+            n: size,
+            next_reg: (size * size + size) as u32,
+            matrix_pattern: test_pattern(size, size, &dependencies),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_sparse_linsolve.mo"),
+        }],
+    };
+    let prepared = PreparedComputeBlock::new(&block).expect("sparse LinSolve should prepare");
+    assert!(matches!(
+        prepared.nodes.as_slice(),
+        [PreparedComputeNode::LinSolve {
+            kernel: LinearSolveKernel::SparseCandidate,
+            ..
+        }]
+    ));
+    let mut output = vec![0.0; size];
+    prepared
+        .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut output)
+        .expect("sparse LinSolve should evaluate");
+    for row in 0..size {
+        let mut reconstructed = 4.0 * output[row];
+        if row > 0 {
+            reconstructed -= output[row - 1];
+        }
+        if row + 1 < size {
+            reconstructed -= output[row + 1];
+        }
+        assert!((reconstructed - 1.0).abs() <= 1.0e-12);
+    }
+}
+
+#[test]
+fn prepared_matmul_executes_sparse_candidate_with_proven_pattern() {
+    let size = 20;
+    let lhs_dependencies = tridiagonal_dependencies(size);
+    let rhs_dependencies = vec![(0..size).collect::<Vec<_>>(); size];
+    let lhs_ops = (0..size * size)
+        .map(|offset| LinearOp::Const {
+            dst: offset as u32,
+            value: if (offset / size).abs_diff(offset % size) <= 1 {
+                1.0
+            } else {
+                0.0
+            },
+        })
+        .collect();
+    let rhs_ops = (0..size * size)
+        .map(|offset| LinearOp::Const {
+            dst: (size * size + offset) as u32,
+            value: 1.0,
+        })
+        .collect();
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::MatMul {
+            lhs_ops,
+            lhs_start: 0,
+            rhs_ops,
+            rhs_start: (size * size) as u32,
+            m: size,
+            k: size,
+            n: size,
+            lhs_pattern: test_pattern(size, size, &lhs_dependencies),
+            rhs_pattern: test_pattern(size, size, &rhs_dependencies),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_sparse_matmul.mo"),
+        }],
+    };
+    let prepared = PreparedComputeBlock::new(&block).expect("sparse MatMul should prepare");
+    assert!(matches!(
+        prepared.nodes.as_slice(),
+        [PreparedComputeNode::MatMul {
+            kernel: MatMulKernel::SparseCandidate,
+            ..
+        }]
+    ));
+    let mut output = vec![0.0; size * size];
+    prepared
+        .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut output)
+        .expect("sparse MatMul should evaluate");
+    for row in 0..size {
+        let expected = if row == 0 || row + 1 == size {
+            2.0
+        } else {
+            3.0
+        };
+        assert!(
+            output[row * size..(row + 1) * size]
+                .iter()
+                .all(|value| (*value - expected).abs() <= f64::EPSILON)
+        );
+    }
 }
 
 #[test]

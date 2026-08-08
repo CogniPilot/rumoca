@@ -137,13 +137,14 @@ fn me_rhs_callbacks_preserve_frozen_algebraic_seed_and_commit_policy() {
 /// SPEC_0038 phase 2 freezes the retired driver's event-vector ownership.
 /// When a located root is tolerance-equal to an output target just before it,
 /// the event clock snaps to the target but the driver's non-state lanes still
-/// come from the located full vector. A strict condition can distinguish those
-/// two floating-point instants even though the projection accepts either seed.
+/// come from the located full vector. The fixture places its strict condition
+/// between the two exact algebraic solutions, so it tests event ownership rather
+/// than depending on a particular Newton correction or residual tolerance.
 #[test]
 fn frozen_me_state_event_keeps_located_nonstate_lanes_when_time_snaps_back() {
     const HORIZON: f64 = 0.22;
-    const LOCATED_ROOT: f64 = 0.220_000_000_000_002_5;
-    const THRESHOLD: f64 = 2.000_009_079_934_896;
+    const LOCATED_ROOT: f64 = 0.220_05;
+    const THRESHOLD: f64 = 2.000_05;
 
     let model = strict_algebraic_threshold_condition_memory_model();
     let opts = SimOptions {

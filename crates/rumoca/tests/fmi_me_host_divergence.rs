@@ -2,7 +2,8 @@
 //!
 //! Both solver plugins drive the shared FMI 3 ME kernel. These tests pin the
 //! canonical settled observation at a scheduled event boundary and the
-//! continuous trajectory away from that boundary.
+//! continuous trajectory away from that boundary. A host may retain extra
+//! left- and right-limit evidence around the canonical event coordinate.
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae_with_diagnostics};
@@ -68,8 +69,20 @@ fn samples_at_the_event(result: &SimResult) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// A sample exactly on a scheduled event observes the single settled
-/// superdense value, independent of the numerical solver plugin.
+fn settled_sample_at(result: &SimResult, event_time: f64) -> (f64, f64) {
+    let vs = channel(result, "Vs");
+    result
+        .times
+        .iter()
+        .copied()
+        .zip(vs.iter().copied())
+        .rev()
+        .find(|(time, _)| time.to_bits() == event_time.to_bits())
+        .unwrap_or_else(|| panic!("missing exact event sample at {event_time}"))
+}
+
+/// The final sample at the exact scheduled coordinate observes the settled
+/// value, independent of additional host-owned superdense evidence.
 #[test]
 fn the_two_hosts_agree_on_the_observation_at_a_scheduled_event_instant() {
     let diffsol = run(SimSolverMode::Bdf);
@@ -78,8 +91,19 @@ fn the_two_hosts_agree_on_the_observation_at_a_scheduled_event_instant() {
     let diffsol_rows = samples_at_the_event(&diffsol);
     let me_kernel_rows = samples_at_the_event(&me_kernel);
 
-    assert_eq!(diffsol_rows, vec![(0.5, 24.0)]);
-    assert_eq!(me_kernel_rows, diffsol_rows);
+    assert_eq!(settled_sample_at(&diffsol, 0.5), (0.5, 24.0));
+    assert_eq!(settled_sample_at(&me_kernel, 0.5), (0.5, 24.0));
+
+    assert_eq!(
+        diffsol_rows,
+        vec![
+            (0.5, 0.0),
+            (f64::from_bits(0.5_f64.to_bits() + 1), 24.0),
+            (0.5, 24.0)
+        ],
+        "Diffsol must retain the left limit, right limit, and settled semantic row"
+    );
+    assert_eq!(me_kernel_rows, vec![(0.5, 24.0)]);
 
     assert!(
         diffsol_rows
@@ -88,12 +112,6 @@ fn the_two_hosts_agree_on_the_observation_at_a_scheduled_event_instant() {
             .all(|(time, value)| time.is_finite() && value.is_finite()),
         "event observations must be finite: diffsol={diffsol_rows:?}, \
          kernel={me_kernel_rows:?}"
-    );
-
-    assert_eq!(
-        diffsol.times.len(),
-        me_kernel.times.len(),
-        "solver plugins must preserve the shared kernel's trace shape"
     );
 }
 
