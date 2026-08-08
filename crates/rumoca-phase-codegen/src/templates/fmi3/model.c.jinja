@@ -46,6 +46,9 @@ static void initialize_values(ModelInstance* m) {
 {%- endfor %}{% endfor %}
 }
 static fmi3Status refresh_algebraics(ModelInstance* m) {
+{%- if solve.continuous.algebraic_assignment_plan.programs|length == 0 %}
+    (void)m;
+{%- endif %}
 {%- for program in solve.continuous.algebraic_assignment_plan.programs %}
     {
     double r[{{ program.temporary_count if program.temporary_count > 0 else 1 }}]; (void)r;

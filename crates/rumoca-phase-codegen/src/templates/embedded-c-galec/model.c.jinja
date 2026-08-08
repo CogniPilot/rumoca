@@ -145,8 +145,21 @@
 {%- endfor -%}
 {%- endif -%}
 {%- endmacro -%}
+{%- macro c_condition(value) -%}
+{%- if value.kind == "binary" -%}
+{%- if value.value.op.kind in ["lt", "gt", "le", "ge", "eq", "ne"] and (value.value.lhs.scalar.kind == "real" or value.value.rhs.scalar.kind == "real") -%}
+({{ expr(value) }})
+{%- else -%}
+{{ expr(value) }}
+{%- endif -%}
+{%- elif value.kind in ["paren", "if", "not"] -%}
+{{ expr(value) }}
+{%- else -%}
+({{ expr(value) }})
+{%- endif -%}
+{%- endmacro -%}
 {%- macro branch(value, keyword) -%}
-    {{ keyword }} ({{ expr(value.condition.value) }}) {
+    {{ keyword }} {{ c_condition(value.condition.value) }} {
 {{ statements(value.body) }}    }
 {%- endmacro -%}
 {%- macro statements(values) -%}
@@ -254,6 +267,7 @@ static void {{ symbol(c_symbols, name_text(value.name)) }}({{ c_model }}State *s
 
 #include <math.h>
 
+{%- if algorithm_code.package.block.semantic_uses.sign %}
 static inline float rumoca_galec_sign(float value) {
     float result = 0.0f;
     if (value > 0.0f) {
@@ -265,9 +279,13 @@ static inline float rumoca_galec_sign(float value) {
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.real_min or algorithm_code.package.block.semantic_uses.real_max %}
 /* GALEC Real min/max select by a relational comparison. C99 fmin/fmax
  * instead discard one qNaN operand, so they are not semantic substitutes.
  * Functions also guarantee that each argument is evaluated exactly once. */
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.real_min %}
 static inline float rumoca_galec_min(float u1, float u2) {
     float result = u2;
     if (u1 < u2) {
@@ -275,6 +293,8 @@ static inline float rumoca_galec_min(float u1, float u2) {
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.real_max %}
 static inline float rumoca_galec_max(float u1, float u2) {
     float result = u2;
     if (u1 > u2) {
@@ -282,8 +302,12 @@ static inline float rumoca_galec_max(float u1, float u2) {
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.compare_lt or algorithm_code.package.block.semantic_uses.compare_gt or algorithm_code.package.block.semantic_uses.compare_le or algorithm_code.package.block.semantic_uses.compare_ge or algorithm_code.package.block.semantic_uses.compare_eq or algorithm_code.package.block.semantic_uses.compare_ne %}
 /* GALEC comparisons signal NAN and evaluate to false if either operand is
  * NaN. In particular, C's native != result for NaN is not GALEC-conformant. */
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.compare_lt %}
 static inline bool rumoca_galec_compare_lt(uint32_t *status, float lhs, float rhs) {
     bool result = false;
     if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
@@ -293,6 +317,8 @@ static inline bool rumoca_galec_compare_lt(uint32_t *status, float lhs, float rh
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.compare_gt %}
 static inline bool rumoca_galec_compare_gt(uint32_t *status, float lhs, float rhs) {
     bool result = false;
     if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
@@ -302,6 +328,8 @@ static inline bool rumoca_galec_compare_gt(uint32_t *status, float lhs, float rh
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.compare_le %}
 static inline bool rumoca_galec_compare_le(uint32_t *status, float lhs, float rhs) {
     bool result = false;
     if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
@@ -311,6 +339,8 @@ static inline bool rumoca_galec_compare_le(uint32_t *status, float lhs, float rh
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.compare_ge %}
 static inline bool rumoca_galec_compare_ge(uint32_t *status, float lhs, float rhs) {
     bool result = false;
     if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
@@ -320,6 +350,8 @@ static inline bool rumoca_galec_compare_ge(uint32_t *status, float lhs, float rh
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.compare_eq %}
 static inline bool rumoca_galec_compare_eq(uint32_t *status, float lhs, float rhs) {
     bool result = false;
     if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
@@ -329,6 +361,8 @@ static inline bool rumoca_galec_compare_eq(uint32_t *status, float lhs, float rh
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.compare_ne %}
 static inline bool rumoca_galec_compare_ne(uint32_t *status, float lhs, float rhs) {
     bool result = false;
     if ((isnan(lhs) != 0) || (isnan(rhs) != 0)) {
@@ -338,6 +372,8 @@ static inline bool rumoca_galec_compare_ne(uint32_t *status, float lhs, float rh
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.integer_min %}
 static inline int32_t rumoca_galec_imin(int32_t lhs, int32_t rhs) {
     int32_t result = rhs;
     if (lhs < rhs) {
@@ -345,6 +381,8 @@ static inline int32_t rumoca_galec_imin(int32_t lhs, int32_t rhs) {
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.integer_max %}
 static inline int32_t rumoca_galec_imax(int32_t lhs, int32_t rhs) {
     int32_t result = rhs;
     if (lhs > rhs) {
@@ -352,11 +390,14 @@ static inline int32_t rumoca_galec_imax(int32_t lhs, int32_t rhs) {
     }
     return result;
 }
+{%- endif %}
+{%- if algorithm_code.package.block.semantic_uses.division_towards_zero %}
 /* Checked construction proves a nonzero divisor and excludes INT32_MIN / -1
  * before this helper can be emitted (SPEC_0034 GAL-028/GAL-030). */
 static inline int32_t rumoca_galec_division_towards_zero(int32_t lhs, int32_t rhs) {
     return lhs / rhs;
 }
+{%- endif %}
 
 {%- for function in algorithm_code.package.block.protected_functions %}
 {{ function_signature(function) }};

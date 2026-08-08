@@ -45,6 +45,20 @@ end EmbeddedGalecSmoke;
 
 const MODEL: &str = "EmbeddedGalecSmoke";
 
+const MIN_MAX_MODEL: &str = "EmbeddedGalecMinMax";
+
+const MIN_MAX_FIXTURE: &str = "\
+model EmbeddedGalecMinMax
+  constant Real samplePeriod = 0.1;
+  input Real u;
+  discrete output Real y(start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    y = min(u, max(u, 0.0));
+  end when;
+end EmbeddedGalecMinMax;
+";
+
 /// Continuous model the capability gate must reject (GAL-006).
 const CONTINUOUS_FIXTURE: &str = "\
 model EmbeddedGalecContinuous
@@ -76,7 +90,7 @@ int main(void) {
 
 const MIN_MAX_DRIVER: &str = r#"
 #include <math.h>
-#include "EmbeddedGalecSmoke.c"
+#include "EmbeddedGalecMinMax.c"
 
 int main(void) {
     const float qnan = NAN;
@@ -126,12 +140,23 @@ fn build_sources(work_dir: &Path, out_dir: &Path) -> String {
 fn real_min_max_use_order_sensitive_relational_nan_semantics() {
     let dir = tempdir().expect("tempdir");
     let out_dir = dir.path().join("out");
-    build_sources(dir.path(), &out_dir);
+    let file = write_fixture(dir.path(), MIN_MAX_MODEL, MIN_MAX_FIXTURE);
+    let output = run_compile_embedded_c_galec(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "min/max fixture failed to compile: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let driver = out_dir.join("min_max.c");
     fs::write(&driver, MIN_MAX_DRIVER).expect("write min/max driver");
-    let generated_source =
-        fs::read_to_string(out_dir.join(format!("{MODEL}.c"))).expect("read generated C source");
+    let generated_source = fs::read_to_string(out_dir.join(format!("{MIN_MAX_MODEL}.c")))
+        .expect("read generated C source");
+    assert!(
+        generated_source.contains("static inline float rumoca_galec_min")
+            && generated_source.contains("static inline float rumoca_galec_max"),
+        "reachable min/max helpers were not emitted"
+    );
     let program = out_dir.join("min_max");
     let compile = assurance_c99_cc()
         .arg("-o")
@@ -168,6 +193,21 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
     let source = out_dir.join(format!("{MODEL}.c"));
     assert!(header.is_file(), "missing {}", header.display());
     assert!(source.is_file(), "missing {}", source.display());
+    let source_text = fs::read_to_string(&source).expect("read generated C source");
+    for unused_helper in [
+        "static inline float rumoca_galec_sign",
+        "static inline float rumoca_galec_min",
+        "static inline float rumoca_galec_max",
+        "static inline bool rumoca_galec_compare_",
+        "static inline int32_t rumoca_galec_imin",
+        "static inline int32_t rumoca_galec_imax",
+        "static inline int32_t rumoca_galec_division_towards_zero",
+    ] {
+        assert!(
+            !source_text.contains(unused_helper),
+            "unreachable helper `{unused_helper}` was emitted"
+        );
+    }
     for generated in [&header, &source] {
         let bytes = fs::read(generated).expect("read generated C artifact");
         assert!(

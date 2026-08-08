@@ -507,6 +507,12 @@ fn embedded_c_commensurate_clocks_match_rumoca_tick_for_tick() {
     ];
 
     compile_embedded_c(dir.path(), &out_dir, "MultirateCounter", MULTIRATE_COUNTER);
+    let generated = fs::read_to_string(out_dir.join("MultirateCounter.c"))
+        .expect("read generated multirate source");
+    assert!(
+        generated.contains("if (self->clockDivider0_0 == 0)"),
+        "native equality conditions must have exactly one parenthesis pair:\n{generated}"
+    );
     let c_ticks = run_c_ticks(&out_dir, "MultirateCounter", MULTIRATE_DRIVER, fields.len());
     let ref_ticks = reference_ticks("MultirateCounter", MULTIRATE_COUNTER, &fields, 0.0, 0.1, 5);
 

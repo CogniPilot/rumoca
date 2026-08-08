@@ -1,5 +1,6 @@
 //! Target-neutral expression shape evidence for checked Algorithm Code.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_galec::ast;
@@ -17,6 +18,52 @@ pub(super) struct TypedBlockView<'a> {
     recalibrate: TypedMethodView<'a>,
     do_step: TypedMethodView<'a>,
     public_functions: Vec<TypedFunctionView<'a>>,
+    semantic_uses: SemanticOperationUses,
+}
+
+/// Target-neutral inventory of operations present in checked Algorithm Code.
+/// Templates use this semantic evidence to emit only the runtime support that
+/// the block can reach.
+#[derive(Debug, Clone, Default, Serialize)]
+struct SemanticOperationUses {
+    sign: bool,
+    real_min: bool,
+    real_max: bool,
+    integer_min: bool,
+    integer_max: bool,
+    division_towards_zero: bool,
+    compare_lt: bool,
+    compare_gt: bool,
+    compare_le: bool,
+    compare_ge: bool,
+    compare_eq: bool,
+    compare_ne: bool,
+}
+
+impl SemanticOperationUses {
+    fn observe_call(&mut self, function: &str) {
+        match function {
+            "sign" => self.sign = true,
+            "min" => self.real_min = true,
+            "max" => self.real_max = true,
+            "imin" => self.integer_min = true,
+            "imax" => self.integer_max = true,
+            "divisionTowardsZero" => self.division_towards_zero = true,
+            _ => {}
+        }
+    }
+
+    fn observe_real_comparison(&mut self, op: ast::BinaryOp) {
+        match op {
+            ast::BinaryOp::Lt => self.compare_lt = true,
+            ast::BinaryOp::Gt => self.compare_gt = true,
+            ast::BinaryOp::Le => self.compare_le = true,
+            ast::BinaryOp::Ge => self.compare_ge = true,
+            ast::BinaryOp::Eq => self.compare_eq = true,
+            ast::BinaryOp::Ne => self.compare_ne = true,
+            _ => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,25 +217,32 @@ struct TypedIfExpressionView<'a> {
 
 pub(super) fn block(block: &ast::Block) -> Result<TypedBlockView<'_>, String> {
     let shapes = BlockShapes::new(block);
+    let protected_functions = block
+        .protected_functions
+        .iter()
+        .map(|function| shapes.function(function))
+        .collect::<Result<_, _>>()?;
+    let startup = shapes.method(&block.startup)?;
+    let recalibrate = shapes.method(&block.recalibrate)?;
+    let do_step = shapes.method(&block.do_step)?;
+    let public_functions = block
+        .public_functions
+        .iter()
+        .map(|function| shapes.function(function))
+        .collect::<Result<_, _>>()?;
+    let semantic_uses = shapes.semantic_uses.borrow().clone();
     Ok(TypedBlockView {
         name: &block.name,
         interface: &block.interface,
         compartments: &block.compartments,
         protected: &block.protected,
         error_signals: &block.error_signals,
-        protected_functions: block
-            .protected_functions
-            .iter()
-            .map(|function| shapes.function(function))
-            .collect::<Result<_, _>>()?,
-        startup: shapes.method(&block.startup)?,
-        recalibrate: shapes.method(&block.recalibrate)?,
-        do_step: shapes.method(&block.do_step)?,
-        public_functions: block
-            .public_functions
-            .iter()
-            .map(|function| shapes.function(function))
-            .collect::<Result<_, _>>()?,
+        protected_functions,
+        startup,
+        recalibrate,
+        do_step,
+        public_functions,
+        semantic_uses,
     })
 }
 
@@ -196,6 +250,7 @@ struct BlockShapes<'a> {
     state: HashMap<&'a str, &'a ast::VariableDeclaration>,
     compartments: HashMap<&'a str, &'a ast::StateCompartment>,
     functions: HashMap<&'a str, &'a ast::UserFunction>,
+    semantic_uses: RefCell<SemanticOperationUses>,
 }
 
 impl<'a> BlockShapes<'a> {
@@ -226,6 +281,7 @@ impl<'a> BlockShapes<'a> {
             state,
             compartments,
             functions,
+            semantic_uses: RefCell::new(SemanticOperationUses::default()),
         }
     }
 
@@ -509,10 +565,15 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
     }
 
     fn call(&self, call: &'a ast::FunctionCall) -> Result<TypedCallView<'a>, String> {
+        let lifted_base = rumoca_ir_galec::builtins::find_lifted_base(call.function.lexeme())
+            .map(|builtin| builtin.name);
+        self.block
+            .semantic_uses
+            .borrow_mut()
+            .observe_call(lifted_base.unwrap_or_else(|| call.function.lexeme()));
         Ok(TypedCallView {
             function: &call.function,
-            lifted_base: rumoca_ir_galec::builtins::find_lifted_base(call.function.lexeme())
-                .map(|builtin| builtin.name),
+            lifted_base,
             user_function: self.block.functions.contains_key(call.function.lexeme()),
             arguments: call
                 .arguments
@@ -540,6 +601,13 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
                 .and_then(|declaration| reference_shape(declaration, part))?,
             ast::Reference::State(parts) => self.block.state_reference_shape(parts)?,
         };
+        let parts = match reference {
+            ast::Reference::Local(part) => std::slice::from_ref(part),
+            ast::Reference::State(parts) => parts.as_slice(),
+        };
+        for subscript in parts.iter().flat_map(|part| &part.subscripts) {
+            self.expression(subscript)?;
+        }
         Ok(TypedReferenceView {
             rank: shape.rank,
             extents: shape.extents,
@@ -687,6 +755,12 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
     ) -> Result<(ShapeEvidence, TypedExpressionNodeView<'a>), String> {
         let lhs = Box::new(self.expression(lhs)?);
         let rhs = Box::new(self.expression(rhs)?);
+        if lhs.scalar == Some(ast::ScalarType::Real) || rhs.scalar == Some(ast::ScalarType::Real) {
+            self.block
+                .semantic_uses
+                .borrow_mut()
+                .observe_real_comparison(op);
+        }
         let shape = if matches!(
             op.precedence_class(),
             ast::PrecedenceClass::Power
