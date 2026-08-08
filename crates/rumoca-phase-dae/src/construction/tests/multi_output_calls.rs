@@ -6,7 +6,7 @@
 
 use super::super::*;
 use super::support::*;
-use rumoca_core::Reference;
+use rumoca_core::{Reference, ResolvedFunctionReference};
 
 /// The constructed function of that name, by walking the DAE's function ids.
 fn constructed_function<'dae>(view: dae::DaeView<'dae>, name: &str) -> dae::FunctionView<'dae> {
@@ -127,7 +127,9 @@ fn multi_output_call(
     span: Span,
 ) -> rumoca_core::Statement {
     rumoca_core::Statement::FunctionCall {
-        comp: test_component_reference("two", span),
+        comp: rumoca_core::Reference::from_component_reference(test_component_reference(
+            "two", span,
+        )),
         args: vec![Expression::VarRef {
             name: Reference::new("u"),
             subscripts: Vec::new(),
@@ -142,9 +144,22 @@ fn multi_output_call(
 }
 
 /// Assemble the model `caller(1.0)` over the two functions above.
-fn model_with(caller: rumoca_core::Function, two: rumoca_core::Function) -> flat::Model {
+fn model_with(mut caller: rumoca_core::Function, two: rumoca_core::Function) -> flat::Model {
     let mut model = test_model();
     model.add_function(two);
+    let two_instance = model.functions[&VarName::new("two")]
+        .instance_id
+        .expect("Flat assigns the selected callee an exact instance");
+    let Some(rumoca_core::Statement::FunctionCall { comp, .. }) = caller.body.first_mut() else {
+        panic!("the caller fixture starts with its multi-result call")
+    };
+    *comp = comp
+        .clone()
+        .with_resolved_function(ResolvedFunctionReference {
+            instance_id: two_instance,
+            base_part_count: 1,
+            transitively_non_replaceable: true,
+        });
     model.add_function(caller);
     model.is_partial = true;
     model
@@ -152,9 +167,16 @@ fn model_with(caller: rumoca_core::Function, two: rumoca_core::Function) -> flat
 
 fn add_caller_equation(model: &mut flat::Model, source: &TestSource) {
     let call_span = source.span("caller(1.0)", 0);
+    let caller_instance = model.functions[&VarName::new("caller")]
+        .instance_id
+        .expect("Flat assigns the selected caller an exact instance");
     model.add_equation(flat::Equation::new(
         Expression::FunctionCall {
-            name: Reference::new("caller"),
+            name: Reference::new("caller").with_resolved_function(ResolvedFunctionReference {
+                instance_id: caller_instance,
+                base_part_count: 1,
+                transitively_non_replaceable: true,
+            }),
             args: vec![Expression::Literal {
                 value: Literal::Real(1.0),
                 span: source.span("1.0", 0),

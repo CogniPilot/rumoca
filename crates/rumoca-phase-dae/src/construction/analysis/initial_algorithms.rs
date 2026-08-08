@@ -288,7 +288,7 @@ fn reject_unsupported_statements(
                 span,
                 ..
             } => {
-                let callee = comp.to_var_name();
+                let callee = comp.as_str();
                 let detail = if outputs.iter().all(Option::is_none) {
                     format!(
                         "a call statement to `{callee}` names a callee the Flat function table \
@@ -895,10 +895,12 @@ fn assertion_call<'statement>(
             outputs,
             span,
         } if outputs.iter().all(Option::is_none) => {
-            let name = comp.to_var_name();
-            if flat.functions.contains_key(&name)
-                || rumoca_core::runtime_flow_action_function_short_name(name.as_str())
-                    != Some("assert")
+            let name = comp.as_str();
+            if comp
+                .resolved_function()
+                .and_then(|resolved| flat.get_function_instance(resolved.instance_id))
+                .is_some()
+                || rumoca_core::runtime_flow_action_function_short_name(name) != Some("assert")
             {
                 return None;
             }

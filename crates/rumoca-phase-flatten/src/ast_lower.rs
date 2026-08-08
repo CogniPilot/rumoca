@@ -336,7 +336,9 @@ fn lower_function_call_statement(
         });
     }
     Ok(rumoca_core::Statement::FunctionCall {
-        comp: function_component_ref_from_ast(comp, context)?,
+        comp: rumoca_core::Reference::from_component_reference(function_component_ref_from_ast(
+            comp, context,
+        )?),
         args: args
             .iter()
             .map(|arg| expression_from_ast_with_context(arg, context))

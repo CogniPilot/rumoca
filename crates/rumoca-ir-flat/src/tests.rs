@@ -306,7 +306,11 @@ fn flat_wire_requires_the_declared_purity_of_an_external_function() {
 #[test]
 fn algorithm_outputs_keep_function_call_targets() {
     let statements = vec![Statement::FunctionCall {
-        comp: component_reference("f", DefId::new(2), Vec::new()),
+        comp: rumoca_core::Reference::from_component_reference(component_reference(
+            "f",
+            DefId::new(2),
+            Vec::new(),
+        )),
         args: Vec::new(),
         outputs: vec![Some(component_reference(
             "y",

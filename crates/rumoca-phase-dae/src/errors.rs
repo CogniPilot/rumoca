@@ -13,7 +13,9 @@ pub type ToDaeResult<T> = BoxedResult<T, ToDaeError>;
 
 #[derive(Debug, Clone, Error, Diagnostic)]
 pub enum ToDaeError {
-    #[error("unbalanced model: {equations} equations, {unknowns} unknowns (balance = {balance})")]
+    #[error(
+        "unbalanced model: {equations} equations, {unknowns} unknowns (balance = {balance}); {detail}"
+    )]
     #[diagnostic(
         code(rumoca::todae::ED001),
         help("MLS §4.9 requires a balanced non-partial model; breakdown: {detail}")

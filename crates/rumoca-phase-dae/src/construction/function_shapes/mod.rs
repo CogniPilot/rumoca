@@ -1172,10 +1172,9 @@ impl ShapeAnalyzer<'_> {
                 if outputs.iter().all(Option::is_none) {
                     return Ok(());
                 }
-                let function = comp.to_var_name();
+                let function = comp.var_name().clone();
                 let input_values = self.analysis.proven_input_values(&function, args, values);
-                let reference = rumoca_core::Reference::from_component_reference(comp.clone());
-                self.certify_regular_call(&reference, function, inputs, input_values, *span)?;
+                self.certify_regular_call(comp, function, inputs, input_values, *span)?;
                 Ok(())
             }
             rumoca_core::Statement::Reinit {

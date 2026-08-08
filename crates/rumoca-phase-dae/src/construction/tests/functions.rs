@@ -381,7 +381,10 @@ fn integer_assertion_function(source: &TestSource) -> rumoca_core::Function {
         // Algorithm assert syntax is the predefined zero-output call shape
         // Flat production currently retains.
         rumoca_core::Statement::FunctionCall {
-            comp: test_component_reference("assert", assertion_span),
+            comp: rumoca_core::Reference::from_component_reference(test_component_reference(
+                "assert",
+                assertion_span,
+            )),
             args: vec![
                 Expression::Binary {
                     op: OpBinary::Ge,
@@ -433,7 +436,10 @@ fn real_assertion_function(source: &TestSource) -> rumoca_core::Function {
     ));
     function.body = vec![
         rumoca_core::Statement::FunctionCall {
-            comp: test_component_reference("assert", assertion_span),
+            comp: rumoca_core::Reference::from_component_reference(test_component_reference(
+                "assert",
+                assertion_span,
+            )),
             args: vec![
                 Expression::Binary {
                     op: OpBinary::Ge,
@@ -609,6 +615,11 @@ fn declared_function_named_assert_is_not_predefined_assertion_elision() {
         },
         span: source.span("y := 1", 0),
     });
+    let mut model = test_model();
+    model.add_function(user_assert);
+    let assert_instance = model.functions[&VarName::new("assert")]
+        .instance_id
+        .expect("Flat assigns the declared assert function an exact instance");
     let mut caller = rumoca_core::Function::new("f", source.span("function f", 0));
     caller.add_output(integer_function_param(
         "y",
@@ -617,7 +628,15 @@ fn declared_function_named_assert_is_not_predefined_assertion_elision() {
     ));
     caller.body = vec![
         rumoca_core::Statement::FunctionCall {
-            comp: test_component_reference("assert", call_statement_span),
+            comp: rumoca_core::Reference::from_component_reference(test_component_reference(
+                "assert",
+                call_statement_span,
+            ))
+            .with_resolved_function(ResolvedFunctionReference {
+                instance_id: assert_instance,
+                base_part_count: 1,
+                transitively_non_replaceable: true,
+            }),
             args: Vec::new(),
             outputs: Vec::new(),
             span: call_statement_span,
@@ -631,8 +650,6 @@ fn declared_function_named_assert_is_not_predefined_assertion_elision() {
             span: source.span("y := 1", 1),
         },
     ];
-    let mut model = test_model();
-    model.add_function(user_assert);
     model.add_function(caller);
     model.is_partial = true;
     let call_span = source.span("f()", 0);
@@ -660,13 +677,16 @@ fn declared_function_named_assert_is_not_predefined_assertion_elision() {
 
     let error = construct(&model, source.map)
         .expect_err("a declared function named assert remains an ordinary call");
-    assert!(matches!(
-        error,
+    assert!(
+        matches!(
+        &error,
         ToDaeError::UnsupportedFlatSemantics { feature, detail, span }
             if feature == "function call statement"
                 && detail.contains("without reading a result")
-                && span == call_statement_span
-    ));
+                && *span == call_statement_span
+        ),
+        "{error:?}"
+    );
 }
 
 #[test]

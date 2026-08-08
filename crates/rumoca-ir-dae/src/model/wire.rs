@@ -61,7 +61,7 @@ impl Serialize for FrozenStorage {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("DaeStorage", 23)?;
+        let mut state = serializer.serialize_struct("DaeStorage", 24)?;
         state.serialize_field(
             "predefined_string_declaration",
             &self.predefined_string_declaration,
@@ -100,6 +100,7 @@ impl Serialize for FrozenStorage {
         state.serialize_field("relations", &self.relations)?;
         state.serialize_field("conditions", &self.conditions)?;
         state.serialize_field("roots", &self.roots)?;
+        state.serialize_field("structured_roots", &self.structured_roots)?;
         state.serialize_field("time_events", &self.time_events)?;
         state.serialize_field("event_actions", &self.event_actions)?;
         state.serialize_field("clocks", &self.clocks)?;
@@ -144,6 +145,7 @@ struct StorageWire {
     relations: Vec<RelationEntryWire>,
     conditions: Vec<ConditionEntryWire>,
     roots: Vec<RootEntryWire>,
+    structured_roots: Vec<StructuredRootEntryWire>,
     time_events: Vec<TimeEventEntryWire>,
     event_actions: Vec<EventActionEntryWire>,
     clocks: Vec<ClockEntryWire>,
@@ -463,6 +465,15 @@ struct RootEntryWire {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct StructuredRootEntryWire {
+    domain: u32,
+    expression: u32,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TimeEventEntryWire {
     instant: Option<ClockRationalWire>,
     deadline: Option<u32>,
@@ -729,6 +740,7 @@ fn reconstruct<'dae>(
     define_variables(wire, dae, &ids, variable_reservations)?;
     define_conditions(wire, dae, &ids)?;
     reconstruct_roots(wire, dae, &ids)?;
+    reconstruct_structured_roots(wire, dae, &ids)?;
     reconstruct_events(wire, dae, &ids)?;
     reconstruct_equation_systems(wire, dae, &ids)?;
     reconstruct_initial_discrete_values(wire, dae, &ids)?;
@@ -1644,6 +1656,27 @@ fn reconstruct_roots<'dae>(
         let id =
             dae.conditions(|conditions| conditions.root(relation, activation, root.provenance))?;
         expect_ordinal("root", index, id.index(), root.provenance)?;
+    }
+    Ok(())
+}
+
+fn reconstruct_structured_roots<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    for (index, root) in wire.structured_roots.iter().enumerate() {
+        let domain = mapped(&ids.domains, root.domain, "domain", root.provenance)?;
+        let expression = mapped(
+            &ids.expressions,
+            root.expression,
+            "expression",
+            root.provenance,
+        )?;
+        let id = dae.conditions(|conditions| {
+            conditions.structured_root(domain, expression, root.provenance)
+        })?;
+        expect_ordinal("structured root", index, id.index(), root.provenance)?;
     }
     Ok(())
 }

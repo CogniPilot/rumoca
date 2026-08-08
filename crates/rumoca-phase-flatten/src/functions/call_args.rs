@@ -96,25 +96,6 @@ impl FunctionCatalog {
                 ))
             })
     }
-
-    fn for_component_reference(
-        &self,
-        reference: &rumoca_core::ComponentReference,
-        span: rumoca_core::Span,
-    ) -> Result<Option<FunctionSignature>, FlattenError> {
-        let def_id = reference.target_def_id();
-        let Some(instance_id) = self.unique_instance_by_def.get(&def_id) else {
-            return Ok(None);
-        };
-        let Some(instance_id) = instance_id else {
-            return Err(FlattenError::invalid_function_call_args(
-                reference.to_var_name().as_str(),
-                "call target declaration has multiple Flat function instances",
-                span,
-            ));
-        };
-        Ok(self.by_instance.get(instance_id).cloned())
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -277,8 +258,8 @@ impl CallArgumentMaterializer {
         else {
             return Ok(None);
         };
-        let rewritten_comp = self.rewrite_component_reference(comp)?;
-        let Some(signature) = self.catalog.for_component_reference(comp, *span)? else {
+        let rewritten_comp = self.rewrite_reference(comp)?;
+        let Some(signature) = self.catalog.for_reference(comp)? else {
             return Ok(Some(rumoca_core::Statement::FunctionCall {
                 comp: rewritten_comp,
                 args: self.rewrite_expressions(args)?,

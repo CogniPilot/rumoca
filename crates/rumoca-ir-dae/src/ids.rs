@@ -130,6 +130,8 @@ branded_ids! {
     RelationId;
     /// Identity of one continuously monitored root surface.
     RootId;
+    /// Identity of one compact family of continuously monitored root surfaces.
+    StructuredRootId;
     /// Identity of one scheduled event instant.
     TimeEventId;
     /// Identity of one guarded runtime event action.

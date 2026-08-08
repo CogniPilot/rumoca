@@ -14,8 +14,8 @@
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Span,
-    Statement, StatementBlock, Subscript,
+    ComponentReference, ComprehensionIndex, Expression, ForIndex, Function, Literal, Reference,
+    Span, Statement, StatementBlock, Subscript,
 };
 
 use rumoca_core::ExpressionVisitor;
@@ -740,17 +740,17 @@ fn eval_stmt_list(
 
 /// Evaluate a function call statement.
 fn eval_fn_call_stmt(
-    comp: &ComponentReference,
+    comp: &Reference,
     args: &[Expression],
     outputs: &[Option<ComponentReference>],
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<FlowControl, EvalError> {
-    let func_name = component_ref_to_name(comp);
+    let func_name = comp.as_str();
 
     // Skip special built-in statements that appear as function calls
     // These are runtime-only operations that should be no-ops during constant evaluation
-    match func_name.as_str() {
+    match func_name {
         "assert" | "print" | "terminate" | "Modelica.Utilities.Streams.print" => {
             return Ok(FlowControl::Continue);
         }
@@ -761,7 +761,7 @@ fn eval_fn_call_stmt(
         .iter()
         .map(|a| eval_expr_in_function(a, env, eval))
         .collect::<Result<_, _>>()?;
-    let result = call_function(&func_name, arg_values, eval)?;
+    let result = call_function(func_name, arg_values, eval)?;
     if !outputs.is_empty() {
         assign_fn_outputs(outputs, result, env, eval)?;
     }

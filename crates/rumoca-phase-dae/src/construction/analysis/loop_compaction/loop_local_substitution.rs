@@ -149,7 +149,7 @@ fn inline_dominated_loop_locals(
             || outputs.contains(&target)
             || statements_read_name(outer_suffix, &target)
             || statements_read_nonrewritable_name(suffix, &target)
-            || statements_partially_assign_name(suffix, &target)
+            || statements_assign_name(suffix, &target)
             || expression_reads_name(&value, &target)
             || expression_dependencies_change(&value, suffix)
         {

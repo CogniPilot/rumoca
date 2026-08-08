@@ -81,7 +81,9 @@ fn vectorization_certificate_rejects_replaceable_exposure_parent() {
     tree.definitions.classes.insert("P".to_string(), package);
     let index = ast::ClassDefIndex::from_tree(&tree);
     let reference = core_structured_comp_ref(&[("P", package_id), ("f", function_id)]);
-    let request = FunctionRequest::from_component_reference(&reference);
+    let request = FunctionRequest::from_reference(
+        &rumoca_core::Reference::from_component_reference(reference),
+    );
 
     assert!(!request_proves_transitive_non_replaceability(
         &index, &request
@@ -105,7 +107,9 @@ fn vectorization_certificate_ignores_replaceable_nested_sibling() {
     tree.definitions.classes.insert("P".to_string(), package);
     let index = ast::ClassDefIndex::from_tree(&tree);
     let reference = core_structured_comp_ref(&[("P", package_id), ("f", function_id)]);
-    let request = FunctionRequest::from_component_reference(&reference);
+    let request = FunctionRequest::from_reference(
+        &rumoca_core::Reference::from_component_reference(reference),
+    );
 
     assert!(request_proves_transitive_non_replaceability(
         &index, &request
@@ -125,7 +129,9 @@ fn vectorization_certificate_rejects_unresolved_short_alias() {
     tree.definitions.classes.insert("f".to_string(), function);
     let index = ast::ClassDefIndex::from_tree(&tree);
     let reference = core_structured_comp_ref(&[("f", function_id)]);
-    let request = FunctionRequest::from_component_reference(&reference);
+    let request = FunctionRequest::from_reference(
+        &rumoca_core::Reference::from_component_reference(reference),
+    );
 
     assert!(!request_proves_transitive_non_replaceability(
         &index, &request

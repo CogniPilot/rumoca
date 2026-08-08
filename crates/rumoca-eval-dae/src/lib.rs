@@ -9,4 +9,7 @@ mod numeric;
 mod projection;
 
 pub use numeric::{NumericEvaluationError, NumericEvaluationErrorKind, NumericEvaluator};
-pub use projection::{ProjectionError, for_each_scalar_coordinate};
+pub use projection::{
+    ProjectionError, ScalarCoordinateProjectionCache, for_each_scalar_coordinate,
+    for_each_scalar_coordinate_cached,
+};

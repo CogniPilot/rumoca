@@ -146,8 +146,9 @@ where
             }
             dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => self
                 .function_fold_values
-                .last()
-                .filter(|(active, _)| *active == fold)
+                .iter()
+                .rev()
+                .find(|(active, _)| *active == fold)
                 .and_then(|(_, values)| values.get(carried as usize))
                 .cloned()
                 .ok_or_else(|| {
@@ -760,33 +761,27 @@ where
         &mut self,
         base: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
-        result_type: &dae::ValueType,
+        _result_type: &dae::ValueType,
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
         let base_node = self
             .view
             .expression(base)
             .expect("checked index base resolves");
-        if !result_type.is_scalar() || subscripts.len() != base_node.value_type().dimensions().len()
-        {
-            return Err(failure(
-                NumericEvaluationErrorKind::UnsupportedOperation,
-                "numeric evaluation currently requires fully scalar array selection",
-                span,
-            ));
-        }
-        let flat = self.scalar_subscript_index(base_node, subscripts, span)?;
-        self.expression(base)?
-            .get(flat)
-            .copied()
-            .map(|value| vec![value])
-            .ok_or_else(|| {
-                failure(
-                    NumericEvaluationErrorKind::OutOfBounds,
-                    "checked array selection did not resolve",
-                    span,
-                )
+        let selected = self.selected_flat_indices(base_node, subscripts, span)?;
+        let base = self.expression(base)?;
+        selected
+            .into_iter()
+            .map(|flat| {
+                base.get(flat).copied().ok_or_else(|| {
+                    failure(
+                        NumericEvaluationErrorKind::OutOfBounds,
+                        "checked array selection did not resolve",
+                        span,
+                    )
+                })
             })
+            .collect()
     }
 
     fn array_update(
@@ -800,89 +795,90 @@ where
             .view
             .expression(base)
             .expect("checked array-update base resolves");
-        let flat = self.scalar_subscript_index(base_node, subscripts, span)?;
+        let targets = self.selected_flat_indices(base_node, subscripts, span)?;
         let updated = self.expression(value)?;
-        let [value] = updated.as_slice() else {
+        if updated.len() != targets.len() {
             return Err(failure(
                 NumericEvaluationErrorKind::ShapeMismatch,
-                "scalar array update received a nonscalar value",
+                format!(
+                    "array update selects {} values but received {}",
+                    targets.len(),
+                    updated.len()
+                ),
                 span,
             ));
-        };
+        }
         let mut result = self.expression(base)?;
-        let target = result.get_mut(flat).ok_or_else(|| {
-            failure(
-                NumericEvaluationErrorKind::OutOfBounds,
-                "checked array update did not resolve",
-                span,
-            )
-        })?;
-        *target = *value;
+        for (flat, value) in targets.into_iter().zip(updated) {
+            let target = result.get_mut(flat).ok_or_else(|| {
+                failure(
+                    NumericEvaluationErrorKind::OutOfBounds,
+                    "checked array update did not resolve",
+                    span,
+                )
+            })?;
+            *target = value;
+        }
         Ok(result)
     }
 
-    fn scalar_subscript_index(
+    fn selected_flat_indices(
         &mut self,
         base_node: dae::ExpressionView<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
         span: Span,
-    ) -> Result<usize, NumericEvaluationError> {
-        if subscripts.len() != base_node.value_type().dimensions().len() {
+    ) -> Result<Vec<usize>, NumericEvaluationError> {
+        let dimensions = base_node.value_type().dimensions();
+        if subscripts.len() != dimensions.len() {
             return Err(failure(
                 NumericEvaluationErrorKind::UnsupportedOperation,
-                "numeric evaluation currently requires fully scalar array selection",
+                "numeric evaluation requires one subscript per array dimension",
                 span,
             ));
         }
-        let mut flat = 0usize;
-        for (axis, extent) in base_node
-            .value_type()
-            .dimensions()
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            let dae::SubscriptView::Index {
-                expression,
-                provenance,
-            } = subscripts
+
+        let mut flats = vec![0usize];
+        for (axis, extent) in dimensions.iter().copied().enumerate() {
+            let selected = match subscripts
                 .get(axis)
-                .expect("checked index has one subscript per selected axis")
-            else {
-                return Err(failure(
-                    NumericEvaluationErrorKind::UnsupportedOperation,
-                    "numeric evaluation does not support whole or slice selection",
-                    span,
-                ));
+                .expect("checked update has one subscript per selected axis")
+            {
+                dae::SubscriptView::Index {
+                    expression,
+                    provenance,
+                } => self.validated_indices(expression, extent, provenance.span())?,
+                dae::SubscriptView::Whole { .. } => (0..extent as usize).collect(),
+                dae::SubscriptView::Slice {
+                    expression,
+                    provenance,
+                } => self.validated_indices(expression, extent, provenance.span())?,
             };
-            let index = self.expression(expression)?;
-            let [index] = index.as_slice() else {
-                return Err(failure(
-                    NumericEvaluationErrorKind::ShapeMismatch,
-                    "array index is not scalar",
-                    provenance.span(),
-                ));
-            };
-            let rounded = index.round();
-            if *index != rounded || rounded < 1.0 || rounded > f64::from(extent) {
-                return Err(failure(
-                    NumericEvaluationErrorKind::OutOfBounds,
-                    format!("array index {index} is outside 1..={extent}"),
-                    provenance.span(),
-                ));
-            }
-            flat = flat
-                .checked_mul(extent as usize)
-                .and_then(|value| value.checked_add(rounded as usize - 1))
-                .ok_or_else(|| {
-                    failure(
-                        NumericEvaluationErrorKind::Overflow,
-                        "array index calculation overflowed",
-                        span,
-                    )
-                })?;
+
+            flats = expand_flat_indices(flats, &selected, extent, span)?;
         }
-        Ok(flat)
+        Ok(flats)
+    }
+
+    fn validated_indices(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        extent: u32,
+        span: Span,
+    ) -> Result<Vec<usize>, NumericEvaluationError> {
+        self.expression(expression)?
+            .into_iter()
+            .map(|index| {
+                let rounded = index.round();
+                if index != rounded || rounded < 1.0 || rounded > f64::from(extent) {
+                    return Err(failure(
+                        NumericEvaluationErrorKind::OutOfBounds,
+                        format!("array index {index} is outside 1..={extent}"),
+                        span,
+                    ));
+                }
+                Ok(rounded as usize - 1)
+            })
+            .collect()
     }
 
     fn builtin(
@@ -1584,6 +1580,45 @@ fn row_major_coordinates(extents: &[u32], index: usize) -> Option<Vec<u32>> {
         remainder /= *extent as usize;
     }
     Some(coordinates)
+}
+
+fn expand_flat_indices(
+    flats: Vec<usize>,
+    selected: &[usize],
+    extent: u32,
+    span: Span,
+) -> Result<Vec<usize>, NumericEvaluationError> {
+    let capacity = flats.len().checked_mul(selected.len()).ok_or_else(|| {
+        failure(
+            NumericEvaluationErrorKind::Overflow,
+            "array selection size overflowed",
+            span,
+        )
+    })?;
+    let mut expanded = Vec::with_capacity(capacity);
+    for flat in flats {
+        for index in selected {
+            expanded.push(checked_expanded_index(flat, *index, extent, span)?);
+        }
+    }
+    Ok(expanded)
+}
+
+fn checked_expanded_index(
+    flat: usize,
+    index: usize,
+    extent: u32,
+    span: Span,
+) -> Result<usize, NumericEvaluationError> {
+    flat.checked_mul(extent as usize)
+        .and_then(|value| value.checked_add(index))
+        .ok_or_else(|| {
+            failure(
+                NumericEvaluationErrorKind::Overflow,
+                "array index calculation overflowed",
+                span,
+            )
+        })
 }
 
 fn flatten_coordinates(extents: &[u32], coordinates: &[u32]) -> Option<usize> {

@@ -648,7 +648,6 @@ fn lower_conditional_multi_output_call<'dae>(
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(call.span)?;
-    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
     let operands = lower_call_operands(
         construction,
         LoweringSymbols {
@@ -660,7 +659,7 @@ fn lower_conditional_multi_output_call<'dae>(
             owner_clock: None,
         },
         binders,
-        &reference,
+        call.callee,
         call.args,
         provenance,
     )?;
@@ -1391,7 +1390,6 @@ fn lower_function_loop_multi_output_call<'dae>(
     call: FunctionMultiOutputCall<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(call.span)?;
-    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
     let operands = lower_call_operands(
         construction,
         LoweringSymbols {
@@ -1403,7 +1401,7 @@ fn lower_function_loop_multi_output_call<'dae>(
             owner_clock: None,
         },
         binders,
-        &reference,
+        call.callee,
         call.args,
         provenance,
     )?;

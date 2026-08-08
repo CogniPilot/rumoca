@@ -58,6 +58,9 @@ pub(in crate::construction) fn equation_partition<'flat>(
     if aggregate_connections.members.contains(&row) {
         return Ok(EquationPartition::ConsumedDiscreteValue);
     }
+    if connection_bridges_discrete_real_to_continuous(equation, roles) {
+        return Ok(EquationPartition::Continuous);
+    }
     if let Some(plan) = discrete_connection_assignment(flat, equation, roles, connection_ranks)? {
         return Ok(EquationPartition::DiscreteValue(plan));
     }
@@ -112,6 +115,56 @@ pub(in crate::construction) fn equation_partition<'flat>(
             unreachable!("the target was selected as a discrete coordinate")
         }
     }
+}
+
+/// Preserve a connector equality from sampled `Real` storage to a continuous
+/// pass-through coordinate as one continuous residual.
+///
+/// Appendix-B continuous equations may read `z`.  Treating the row as another
+/// B.1b owner merely because flattening rendered the discrete endpoint on the
+/// left consumes the only equation that defines the continuous endpoint.  The
+/// test is deliberately symmetric so source order cannot change ownership.
+fn connection_bridges_discrete_real_to_continuous(
+    equation: &flat::Equation,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> bool {
+    if !matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
+        return false;
+    }
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &equation.residual
+    else {
+        return false;
+    };
+    let Some(lhs_role) = direct_reference_role(lhs, roles) else {
+        return false;
+    };
+    let Some(rhs_role) = direct_reference_role(rhs, roles) else {
+        return false;
+    };
+    (matches!(lhs_role, PlannedRole::DiscreteReal) && is_continuous_unknown(rhs_role))
+        || (matches!(rhs_role, PlannedRole::DiscreteReal) && is_continuous_unknown(lhs_role))
+}
+
+fn direct_reference_role(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<PlannedRole> {
+    let Expression::VarRef { name, .. } = expression else {
+        return None;
+    };
+    roles.get(name.var_name()).copied()
+}
+
+const fn is_continuous_unknown(role: PlannedRole) -> bool {
+    matches!(
+        role,
+        PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output
+    )
 }
 
 fn discrete_connection_assignment<'flat>(

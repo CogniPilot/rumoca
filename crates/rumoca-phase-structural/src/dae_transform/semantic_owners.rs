@@ -41,7 +41,14 @@ pub(super) fn rebuild_semantic_owners<'target>(
         identities.clocks,
     )?;
     rebuild_discrete_equations(source, target, expressions, identities.conditions)?;
-    rebuild_roots(source, target, identities.conditions, &relations)?;
+    rebuild_roots(
+        source,
+        target,
+        expressions,
+        identities.domains,
+        identities.conditions,
+        &relations,
+    )?;
     rebuild_events(
         source,
         target,

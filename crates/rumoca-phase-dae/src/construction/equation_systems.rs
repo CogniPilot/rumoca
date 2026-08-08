@@ -106,6 +106,12 @@ pub(super) fn lower_equation_expression<'dae>(
     expression: &Expression,
     generated_root: Option<dae::DaeGeneration>,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let normalized = normalize_conditional_residual(expression);
+    let expression = normalized.as_ref().unwrap_or(expression);
+    let generated_root = normalized
+        .is_some()
+        .then_some(dae::DaeGeneration::ConditionLowering)
+        .or(generated_root);
     match owner_clock {
         Some(clock) => lower_clocked_expression(
             construction,

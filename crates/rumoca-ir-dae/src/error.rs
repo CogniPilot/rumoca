@@ -52,6 +52,10 @@ pub enum DaeConstructionError {
     InvalidClockedOperand { operator: &'static str, span: Span },
     #[error("expression form is outside the checked DAE lowering grammar")]
     InvalidExpressionForm { span: Span },
+    #[error(
+        "event-generating relation in a structured equation requires a compact structured event owner"
+    )]
+    UnsupportedStructuredEvent { span: Span },
     #[error("clock-domain analysis did not construct the required exact clock owner")]
     MissingClockDomainOwner { span: Span },
     #[error("{arena} exceeded its u32 identity capacity at {attempted_index}")]
@@ -304,6 +308,7 @@ impl DaeConstructionError {
             | Self::MissingPreviousClockOwner { span }
             | Self::InvalidClockedOperand { span, .. }
             | Self::InvalidExpressionForm { span }
+            | Self::UnsupportedStructuredEvent { span }
             | Self::MissingClockDomainOwner { span }
             | Self::CapacityExceeded { span, .. }
             | Self::UnknownId { span, .. }

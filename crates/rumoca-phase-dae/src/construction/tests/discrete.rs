@@ -385,6 +385,80 @@ fn when_discrete_real_lowers_to_condition_owned_b1b_residual() {
 }
 
 #[test]
+fn discrete_real_connection_keeps_continuous_pass_through_equation() {
+    let source = TestSource::new(
+        "model M output Real source; output Real forwarded; equation \
+         when true then source = 1.0; end when; connect(source, forwarded); end M;",
+    );
+    let mut model = test_model();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "source",
+        "output Real source",
+        8,
+        Vec::new(),
+        false,
+    );
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "forwarded",
+        "output Real forwarded",
+        9,
+        Vec::new(),
+        false,
+    );
+    for name in ["source", "forwarded"] {
+        let variable = model.variables.get_mut(&VarName::new(name)).unwrap();
+        variable.causality = Causality::Output(Default::default());
+        variable.component_ref = Some(test_component_reference(
+            name,
+            source.span(&format!("output Real {name}"), 0),
+        ));
+    }
+    let condition_span = source.span("true", 0);
+    let assignment_span = source.span("source = 1.0", 0);
+    let mut branch = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: condition_span,
+        },
+        condition_span,
+    );
+    branch.add_equation(flat::WhenEquation::assign(
+        VarName::new("source"),
+        Expression::Literal {
+            value: Literal::Real(1.0),
+            span: source.span("1.0", 0),
+        },
+        assignment_span,
+        "sampled source",
+    ));
+    model.when_chains.push(flat::WhenChain::new(
+        branch,
+        source.span("when true then source = 1.0; end when", 0),
+    ));
+    let connection_span = source.span("connect(source, forwarded)", 0);
+    model.add_equation(connection_equation(
+        scalar_connection_reference(&source, "source", 2),
+        scalar_connection_reference(&source, "forwarded", 1),
+        connection_span,
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_real_equation_count(), 1);
+        assert_eq!(view.continuous_owner_count(), 1);
+        let owner = view.continuous_owner(0).unwrap();
+        let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
+            panic!("a scalar connection remains one residual owner");
+        };
+        assert_eq!(equation.provenance().span(), connection_span);
+    });
+}
+
+#[test]
 fn array_discrete_real_binding_keeps_one_target_shaped_b1b_owner() {
     let source = TestSource::new("model M discrete Real z[3] = {1.0, 2.0, 3.0}; end M;");
     let declaration_span = source.span("discrete Real z[3]", 0);
@@ -958,6 +1032,28 @@ fn b1c_classification_keeps_discrete_controlled_real_equations_continuous() {
     dae.inspect(|view| {
         assert_eq!(view.continuous_equation_count(), 1);
         assert_eq!(view.discrete_value_owner_count(), 1);
+        let dae::ContinuousOwnerView::Residual { equation, .. } =
+            view.continuous_owners().next().unwrap()
+        else {
+            panic!("the scalar equation must remain a scalar owner");
+        };
+        let residual = view.expression(equation.residual()).unwrap();
+        let dae::ExpressionOperation::Binary {
+            operator: dae::BinaryOperator::Subtract,
+            lhs,
+            rhs,
+        } = residual.operation()
+        else {
+            panic!("a branch-invariant target must form one causal residual");
+        };
+        assert!(matches!(
+            view.expression(lhs).unwrap().operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(_))
+        ));
+        assert!(matches!(
+            view.expression(rhs).unwrap().operation(),
+            dae::ExpressionOperation::Conditional(_)
+        ));
     });
 }
 

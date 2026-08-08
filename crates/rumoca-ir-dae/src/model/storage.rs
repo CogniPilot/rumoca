@@ -66,6 +66,7 @@ impl Storage {
             relations: self.relations.into_boxed_slice(),
             conditions: self.conditions.into_boxed_slice(),
             roots: self.roots.into_boxed_slice(),
+            structured_roots: self.structured_roots.into_boxed_slice(),
             time_events: self.time_events.into_boxed_slice(),
             event_actions: self.event_actions.into_boxed_slice(),
             clocks: self.clocks.into_boxed_slice(),
@@ -539,6 +540,24 @@ impl Storage {
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         self.expect_closed_expression(relation, at)?;
+        self.expect_relation_node(relation, at)
+    }
+
+    pub(crate) fn expect_domain_relation(
+        &self,
+        relation: ExprId<'_>,
+        domain: DomainId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        self.expect_domain_expression(relation, domain, at)?;
+        self.expect_relation_node(relation, at)
+    }
+
+    fn expect_relation_node(
+        &self,
+        relation: ExprId<'_>,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         let ty = self.expr_type(relation, at)?;
         let node = self
             .expressions

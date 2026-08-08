@@ -92,14 +92,13 @@ fn analyze_event_function_call_statements(
 
 fn analyze_event_function_call(
     context: &ModelEventCallContext<'_>,
-    component: &rumoca_core::ComponentReference,
+    component: &rumoca_core::Reference,
     arguments: &[Expression],
     outputs: &[Option<rumoca_core::ComponentReference>],
     span: Span,
 ) -> Result<ModelEventFunctionCallPlan, ToDaeError> {
-    let function_reference = rumoca_core::Reference::from_component_reference(component.clone());
     let call = context.shapes.call_certificate(
-        &function_reference,
+        component,
         arguments,
         context.shapes.model_values(),
         span,
@@ -114,7 +113,7 @@ fn analyze_event_function_call(
             format!(
                 "function-call assignment receives {} results from `{}`, which declares {}",
                 outputs.len(),
-                function_reference.as_str(),
+                component.as_str(),
                 certificate.results.len()
             ),
             span,

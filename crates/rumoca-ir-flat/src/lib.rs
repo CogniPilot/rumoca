@@ -300,6 +300,13 @@ impl Model {
         self.functions.get(name)
     }
 
+    /// Get a function by its exact collected instance identity.
+    pub fn get_function_instance(&self, instance_id: FunctionInstanceId) -> Option<&Function> {
+        self.functions
+            .values()
+            .find(|function| function.instance_id == Some(instance_id))
+    }
+
     /// Register one occurrence that flattening materializes itself and return
     /// its exact identity.
     ///

@@ -63,15 +63,6 @@ impl FunctionRequest {
         }
     }
 
-    pub(super) fn from_component_reference(reference: &rumoca_core::ComponentReference) -> Self {
-        Self {
-            name: component_ref_name(reference),
-            target_def_id: Some(reference.target_def_id()),
-            target_instance_id: None,
-            component_ref: Some(reference.clone()),
-        }
-    }
-
     pub(super) fn from_name(name: String) -> Self {
         Self {
             name,

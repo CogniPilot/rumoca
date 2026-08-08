@@ -10,7 +10,7 @@ pub(super) struct AlgorithmStatementContext<'scope, 'shape, 'dae> {
 }
 
 pub(super) struct AlgorithmFunctionCall<'source> {
-    pub(super) component: &'source rumoca_core::ComponentReference,
+    pub(super) component: &'source rumoca_core::Reference,
     pub(super) arguments: &'source [Expression],
     pub(super) outputs: &'source [Option<rumoca_core::ComponentReference>],
     pub(super) span: Span,
@@ -167,10 +167,8 @@ pub(super) fn lower_algorithm_function_call<'dae>(
     call: AlgorithmFunctionCall<'_>,
 ) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
     let guard = statement_guard(construction, context)?;
-    let function_reference =
-        rumoca_core::Reference::from_component_reference(call.component.clone());
     let function = context.functions.select(
-        &function_reference,
+        call.component,
         call.arguments,
         context.functions.shapes.model_values(),
         call.span,

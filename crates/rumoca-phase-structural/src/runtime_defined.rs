@@ -74,6 +74,15 @@ fn collect_condition_dependencies<'dae>(
             .expect("dense relation resolves");
         collect_expression_variables(view, relation.expression(), defined);
     }
+    for index in 0..view.structured_root_count() {
+        let root = view
+            .structured_root(
+                view.structured_root_id(index)
+                    .expect("dense structured-root identity"),
+            )
+            .expect("dense structured-root resolves");
+        collect_expression_variables(view, root.expression(), defined);
+    }
     for index in 0..view.condition_count() {
         let condition = view
             .condition(view.condition_id(index).expect("dense condition identity"))

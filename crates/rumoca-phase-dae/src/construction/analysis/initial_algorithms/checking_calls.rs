@@ -79,7 +79,9 @@ pub(super) fn checking_call<'flat>(
     if !outputs.iter().all(Option::is_none) {
         return None;
     }
-    let function = flat.functions.get(&comp.to_var_name())?;
+    let function = comp
+        .resolved_function()
+        .and_then(|resolved| flat.get_function_instance(resolved.instance_id))?;
     Some(CheckingCall {
         flat,
         function,

@@ -6,6 +6,7 @@
 
 use rumoca_ir_dae as dae;
 
+use super::declarations::RebuiltDomain;
 use super::variables::{ReservedVariable, TargetVariable};
 
 pub(super) fn rebuild_relations<'target>(
@@ -83,6 +84,8 @@ pub(super) fn define_conditions<'target>(
 pub(super) fn rebuild_roots<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    domains: &[RebuiltDomain<'target>],
     conditions: &[dae::ConditionId<'target>],
     relations: &[dae::RelationId<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
@@ -95,6 +98,21 @@ pub(super) fn rebuild_roots<'target>(
             target.root(
                 relations[root.relation().index() as usize],
                 conditions[root.activation().index() as usize],
+                root.provenance(),
+            )
+        })?;
+    }
+    for index in 0..source.structured_root_count() {
+        let id = source
+            .structured_root_id(index)
+            .expect("finalized structured-root ordinal resolves");
+        let root = source
+            .structured_root(id)
+            .expect("finalized structured-root identity resolves");
+        target.conditions(|target| {
+            target.structured_root(
+                domains[root.domain().index() as usize].id,
+                expressions[root.expression().index() as usize],
                 root.provenance(),
             )
         })?;

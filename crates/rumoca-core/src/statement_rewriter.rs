@@ -1,6 +1,6 @@
 use crate::{
     ComponentRefPart, ComponentReference, ExpressionRewriter, FallibleExpressionRewriter, ForIndex,
-    Statement, StatementBlock,
+    Reference, Statement, StatementBlock,
 };
 
 pub trait StatementRewriter: ExpressionRewriter {
@@ -59,7 +59,7 @@ pub trait StatementRewriter: ExpressionRewriter {
                 outputs,
                 span,
             } => Statement::FunctionCall {
-                comp: self.rewrite_component_reference(comp),
+                comp: self.rewrite_reference(comp),
                 args: self.rewrite_expressions(args),
                 outputs: outputs
                     .iter()
@@ -136,6 +136,16 @@ pub trait StatementRewriter: ExpressionRewriter {
         .expect("rewriting a checked reference preserves its nonempty shape")
     }
 
+    fn rewrite_reference(&mut self, reference: &Reference) -> Reference {
+        let Some(component) = reference.component_ref() else {
+            return reference.clone();
+        };
+        reference.with_rewritten_component_reference(
+            reference.as_str(),
+            self.rewrite_component_reference(component),
+        )
+    }
+
     fn rewrite_component_ref_part(&mut self, part: &ComponentRefPart) -> ComponentRefPart {
         ComponentRefPart {
             ident: part.ident.clone(),
@@ -206,7 +216,7 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
                 outputs,
                 span,
             } => Ok(Statement::FunctionCall {
-                comp: self.rewrite_component_reference(comp)?,
+                comp: self.rewrite_reference(comp)?,
                 args: self.rewrite_expressions(args)?,
                 outputs: outputs
                     .iter()
@@ -291,6 +301,16 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
                 .collect::<Result<Vec<_>, Self::Error>>()?,
         )
         .expect("rewriting a checked reference preserves its nonempty shape"))
+    }
+
+    fn rewrite_reference(&mut self, reference: &Reference) -> Result<Reference, Self::Error> {
+        let Some(component) = reference.component_ref() else {
+            return Ok(reference.clone());
+        };
+        Ok(reference.with_rewritten_component_reference(
+            reference.as_str(),
+            self.rewrite_component_reference(component)?,
+        ))
     }
 
     fn rewrite_component_ref_part(

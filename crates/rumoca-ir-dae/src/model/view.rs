@@ -167,6 +167,7 @@ impl<'dae> DaeView<'dae> {
         relation_count => relations,
         condition_count => conditions,
         root_count => roots,
+        structured_root_count => structured_roots,
         time_event_count => time_events,
         event_action_count => event_actions,
         clock_count => clocks,
@@ -186,6 +187,7 @@ impl<'dae> DaeView<'dae> {
         relation_id => (RelationId, relations),
         condition_id => (ConditionId, conditions),
         root_id => (RootId, roots),
+        structured_root_id => (StructuredRootId, structured_roots),
         time_event_id => (TimeEventId, time_events),
         event_action_id => (EventActionId, event_actions),
         clock_id => (ClockId, clocks),
@@ -553,6 +555,15 @@ impl<'dae> DaeView<'dae> {
     pub fn relation(self, id: RelationId<'dae>) -> Option<RelationView<'dae>> {
         let entry = self.dae.storage.relations.get(id.index() as usize)?;
         Some(RelationView {
+            expression: ExprId::from_raw(entry.expression),
+            provenance: entry.provenance,
+        })
+    }
+
+    pub fn structured_root(self, id: StructuredRootId<'dae>) -> Option<StructuredRootView<'dae>> {
+        let entry = self.dae.storage.structured_roots.get(id.index() as usize)?;
+        Some(StructuredRootView {
+            domain: DomainId::from_raw(entry.domain),
             expression: ExprId::from_raw(entry.expression),
             provenance: entry.provenance,
         })
@@ -1606,7 +1617,7 @@ pub enum SubscriptView<'dae> {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoordinateView<'dae> {
     Parameter(ParameterId<'dae>),
     Input(InputId<'dae>),

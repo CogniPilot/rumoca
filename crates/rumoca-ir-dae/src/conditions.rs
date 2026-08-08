@@ -2,8 +2,8 @@ use std::marker::PhantomData;
 
 use crate::model::{Storage, check_provenance, checked_u32, duplicate, unknown};
 use crate::{
-    ClockId, ConditionId, DaeConstructionError, DaeProvenance, ExprId, RelationId, RootId,
-    ScalarType,
+    ClockId, ConditionId, DaeConstructionError, DaeProvenance, DomainId, ExprId, RelationId,
+    RootId, ScalarType, StructuredRootId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
@@ -39,6 +39,15 @@ pub(crate) struct ConditionEntry {
 pub(crate) struct RootEntry {
     pub(crate) relation: u32,
     pub(crate) activation: u32,
+    pub(crate) provenance: DaeProvenance,
+}
+
+/// One tensor-native family of root surfaces over a checked compact domain.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StructuredRootEntry {
+    pub(crate) domain: u32,
+    pub(crate) expression: u32,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -117,6 +126,27 @@ impl<'dae> RootView<'dae> {
 
     pub const fn activation(self) -> ConditionId<'dae> {
         self.activation
+    }
+
+    pub const fn provenance(self) -> DaeProvenance {
+        self.provenance
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StructuredRootView<'dae> {
+    pub(crate) domain: DomainId<'dae>,
+    pub(crate) expression: ExprId<'dae>,
+    pub(crate) provenance: DaeProvenance,
+}
+
+impl<'dae> StructuredRootView<'dae> {
+    pub const fn domain(self) -> DomainId<'dae> {
+        self.domain
+    }
+
+    pub const fn expression(self) -> ExprId<'dae> {
+        self.expression
     }
 
     pub const fn provenance(self) -> DaeProvenance {
@@ -236,6 +266,30 @@ impl<'dae> Conditions<'_, 'dae> {
             provenance,
         });
         Ok(RootId::from_raw(raw))
+    }
+
+    /// Own every scalar root obtained by substituting one point of `domain`
+    /// into a scalar Boolean relation expression.
+    pub fn structured_root(
+        &mut self,
+        domain: DomainId<'dae>,
+        expression: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<StructuredRootId<'dae>, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        self.storage
+            .expect_domain_relation(expression, domain, provenance)?;
+        let raw = checked_u32(
+            self.storage.structured_roots.len(),
+            "structured root arena",
+            provenance,
+        )?;
+        self.storage.structured_roots.push(StructuredRootEntry {
+            domain: domain.index(),
+            expression: expression.index(),
+            provenance,
+        });
+        Ok(StructuredRootId::from_raw(raw))
     }
 
     fn checked_node(

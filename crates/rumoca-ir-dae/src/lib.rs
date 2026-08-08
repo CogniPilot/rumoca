@@ -131,6 +131,7 @@ pub use clocks::{
 };
 pub use conditions::{
     ConditionInput, ConditionOperation, ConditionView, Conditions, RelationView, RootView,
+    StructuredRootView,
 };
 pub use discrete_values::{
     DiscreteBranchActivation, DiscreteValueBranchValues, DiscreteValueBranchView,
@@ -159,7 +160,8 @@ pub use ids::{
     DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
     FunctionId, FunctionParameterId, FunctionValueId, InitialDiscreteValueId,
     InitializationEquationId, InitializationFamilyId, InputId, ParameterId, PeriodicClockId,
-    PreviousId, RelationId, RootId, StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
+    PreviousId, RelationId, RootId, StateId, StructuredRootId, TerminalId, TimeEventId,
+    ValueTypeId, VariableId,
 };
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,

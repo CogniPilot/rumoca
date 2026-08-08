@@ -114,6 +114,31 @@ impl ExpressionEventPlans {
             .find_map(|occurrence| occurrence.names(operands).then_some(occurrence.plan))
     }
 
+    /// Whether any materialized scalar view at `span` proved an event owner.
+    ///
+    /// Structured lowering replaces those scalar operands with binders, so an
+    /// exact occurrence lookup cannot succeed there. This span-level query is
+    /// used only to select the compact structured-event path or fail closed;
+    /// it must never select one scalar plan as the structured family's owner.
+    pub(in crate::construction) fn contains_span(&self, span: Span) -> bool {
+        self.by_span.contains_key(&span)
+    }
+
+    /// Whether every materialized occurrence at `span` is one continuously
+    /// monitored state relation.
+    ///
+    /// This is the construction proof for the first compact structured-event
+    /// subset. Scheduled and dynamic time-event families require different
+    /// owners and remain fail-closed.
+    pub(in crate::construction) fn is_structured_state_relation(&self, span: Span) -> bool {
+        self.by_span.get(&span).is_some_and(|occurrences| {
+            !occurrences.is_empty()
+                && occurrences
+                    .iter()
+                    .all(|occurrence| matches!(occurrence.plan, ExpressionEventPlan::StateRelation))
+        })
+    }
+
     /// Collected owners in source order, one per occurrence, so the checked DAE
     /// arenas they build are deterministic across runs.
     pub(in crate::construction) fn ordered(

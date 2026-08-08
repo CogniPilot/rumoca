@@ -62,6 +62,28 @@ impl<'storage, 'dae> Expressions<'storage, 'dae> {
         Ok(self.storage.expr_type(expression, provenance)?.clone())
     }
 
+    /// Read the constructor-derived variability of an expression already
+    /// owned by this aggregate.
+    pub fn variability(
+        &self,
+        expression: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<ExpressionVariability, DaeConstructionError> {
+        self.storage.expr_variability(expression, provenance)
+    }
+
+    /// Read the innermost compact domain whose binder the expression captures.
+    pub fn binder_domain(
+        &self,
+        expression: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<Option<DomainId<'dae>>, DaeConstructionError> {
+        Ok(self
+            .storage
+            .expr_binder_domain(expression, provenance)?
+            .map(DomainId::from_raw))
+    }
+
     /// Ordinal of the field `field` declares in the record layout of `base`.
     ///
     /// The record layout is the authority on which fields a value declares and

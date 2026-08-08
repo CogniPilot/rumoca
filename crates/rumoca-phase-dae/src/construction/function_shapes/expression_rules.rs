@@ -802,8 +802,8 @@ fn checked_builtin_extent(
 
 /// MLS §10.4.4: `cat(dim, A, B, …)` concatenates the operands along `dim`,
 /// summing their extent there while every other extent must match. The checked
-/// rule here settles `dim = 1`: the result extent along the first axis is the
-/// sum of the operands' first extents, and the trailing shape is shared.
+/// rule here settles dimensions 1 and 2: the result extent along the selected
+/// axis is the sum of the operand extents, and every other extent is shared.
 fn cat_shape(
     arguments: &[Expression],
     values: &ShapeEnvironment,
@@ -817,21 +817,23 @@ fn cat_shape(
             span,
         ));
     };
-    if evaluate_shape_integer(dimension, values)? != 1 || operands.is_empty() {
+    let dimension = evaluate_shape_integer(dimension, values)?;
+    if !(1..=2).contains(&dimension) || operands.is_empty() {
         return Err(ToDaeError::unsupported_flat(
             "function shape proof",
-            "cat has an exact checked shape only along dimension 1",
+            "cat has an exact checked shape only along dimensions 1 and 2",
             span,
         ));
     }
+    let axis = usize::try_from(dimension - 1).expect("dimensions 1 and 2 fit usize");
     let mut result: Option<ValueShape> = None;
     let mut extent: u32 = 0;
     for operand in operands {
         let shape = expression_shape(operand, values, function_result)?;
-        let Some((leading, trailing)) = shape.split_first() else {
+        let Some(selected_extent) = shape.get(axis).copied() else {
             return shape_mismatch(span);
         };
-        extent = extent.checked_add(*leading).ok_or_else(|| {
+        extent = extent.checked_add(selected_extent).ok_or_else(|| {
             ToDaeError::unsupported_flat(
                 "function shape proof",
                 "cat extent exceeds the DAE shape domain",
@@ -840,12 +842,18 @@ fn cat_shape(
         })?;
         match &result {
             None => result = Some(shape.clone()),
-            Some(existing) if existing.get(1..) == Some(trailing) => {}
+            Some(existing)
+                if existing.len() == shape.len()
+                    && existing
+                        .iter()
+                        .zip(&shape)
+                        .enumerate()
+                        .all(|(index, (left, right))| index == axis || left == right) => {}
             Some(_) => return shape_mismatch(span),
         }
     }
     let mut result = result.expect("cat proved at least one operand");
-    result[0] = extent;
+    result[axis] = extent;
     Ok(result)
 }
 

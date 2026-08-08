@@ -310,7 +310,7 @@ end Lib;
             .iter()
             .filter_map(|statement| match statement {
                 rumoca_core::Statement::FunctionCall { comp, .. } => {
-                    Some(comp.to_var_name().as_str().to_string())
+                    Some(comp.as_str().to_string())
                 }
                 _ => None,
             })

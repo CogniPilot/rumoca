@@ -4,7 +4,7 @@ use rumoca_core::{
 };
 use rumoca_ir_dae::{
     BinaryOperator, CoordinateInput, Dae, DaeConstructionError, DaeLiteral, DaeProvenance, ExprId,
-    ExpressionOperation, Expressions, PureBuiltin, ScalarType, ValueType,
+    ExpressionOperation, Expressions, PureBuiltin, ScalarType, Subscript, ValueType,
 };
 
 use super::NumericEvaluator;
@@ -47,6 +47,94 @@ fn real_literals<'dae>(
                 .literal(DaeLiteral::Real(f64::from(value)))
         })
         .collect()
+}
+
+#[test]
+fn array_update_evaluates_whole_and_slice_selections_row_major() {
+    let text = "matrix[:, 2] := {10, 20}; matrix[2, {1, 3}] := {40, 60}";
+    let mut source_map = SourceMap::new();
+    let source = source_map.add("array_update.mo", text);
+    let at = DaeProvenance::source(Span::from_offsets(source, 0, text.len())).unwrap();
+    let dae = Dae::construct(source_map, |dae| {
+        dae.expressions(|expressions| {
+            let values = real_literals(expressions, at, 1..=6)?;
+            let rows = values
+                .chunks_exact(3)
+                .map(|row| expressions.at(at).array(row.iter().copied()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let matrix = expressions.at(at).array(rows)?;
+
+            let two = expressions.at(at).literal(DaeLiteral::Integer(2))?;
+            expressions.at(at).index(
+                matrix,
+                [
+                    Subscript::Index {
+                        expression: two,
+                        provenance: at,
+                    },
+                    Subscript::Whole { provenance: at },
+                ],
+            )?;
+            let column_values = real_literals(expressions, at, [10, 20])?;
+            let column_values = expressions.at(at).array(column_values)?;
+            let column_update = expressions.at(at).array_update(
+                matrix,
+                column_values,
+                [
+                    Subscript::Whole { provenance: at },
+                    Subscript::Index {
+                        expression: two,
+                        provenance: at,
+                    },
+                ],
+            )?;
+
+            let columns = [1, 3]
+                .into_iter()
+                .map(|value| expressions.at(at).literal(DaeLiteral::Integer(value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let columns = expressions.at(at).array(columns)?;
+            let row_values = real_literals(expressions, at, [40, 60])?;
+            let row_values = expressions.at(at).array(row_values)?;
+            expressions.at(at).array_update(
+                column_update,
+                row_values,
+                [
+                    Subscript::Index {
+                        expression: two,
+                        provenance: at,
+                    },
+                    Subscript::Slice {
+                        expression: columns,
+                        provenance: at,
+                    },
+                ],
+            )?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    dae.inspect(|view| {
+        let selection = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .find(|id| {
+                matches!(
+                    view.expression(*id).unwrap().operation(),
+                    ExpressionOperation::Index { .. }
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            NumericEvaluator::new(view).expression(selection).unwrap(),
+            [4.0, 5.0, 6.0]
+        );
+        let update = view.expression_id(view.expression_count() - 1).unwrap();
+        assert_eq!(
+            NumericEvaluator::new(view).expression(update).unwrap(),
+            [1.0, 10.0, 3.0, 40.0, 20.0, 60.0]
+        );
+    });
 }
 
 #[test]

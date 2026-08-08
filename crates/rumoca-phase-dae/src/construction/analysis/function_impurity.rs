@@ -145,20 +145,15 @@ fn reject_impure_calls_in_statement(
 /// A multi-output statement call names its callee directly, not through an
 /// expression node, so it is proven against the same Flat identity.
 fn reject_impure_target(
-    target: &rumoca_core::ComponentReference,
+    target: &rumoca_core::Reference,
     flat: &flat::Model,
     context: &str,
     span: Span,
 ) -> Result<(), ToDaeError> {
-    let name = VarName::new(
-        target
-            .parts()
-            .iter()
-            .map(|part| part.ident.as_str())
-            .collect::<Vec<_>>()
-            .join("."),
-    );
-    match flat.functions.get(&name) {
+    let function = target
+        .resolved_function()
+        .and_then(|resolved| flat.get_function_instance(resolved.instance_id));
+    match function {
         Some(function) if !function.pure => Err(ToDaeError::unsupported_flat(
             "impure call context",
             format!(

@@ -489,7 +489,9 @@ pub enum Statement {
         span: Span,
     },
     FunctionCall {
-        comp: ComponentReference,
+        /// Callable identity. Flattening resolves this to the exact collected
+        /// function instance before the statement crosses the Flat boundary.
+        comp: Reference,
         args: Vec<Expression>,
         /// Positional output targets. `None` preserves an MLS skipped output
         /// slot such as the middle entry in `(x, , z) := f()`.

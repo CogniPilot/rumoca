@@ -751,6 +751,7 @@ fn record_param_reference(param: &str, _span: rumoca_core::Span) -> rumoca_core:
 /// 2. Rewrite FieldAccess in the body to VarRef.
 /// 3. Walk all equations/functions and decompose call-site arguments.
 pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(), FlattenError> {
+    seed_complete_record_defaults(flat);
     // Each pass decomposes one record-nesting level of every function input;
     // record types cannot legally be recursive, so the fixpoint is bounded by
     // the deepest record nesting in the model.
@@ -764,6 +765,58 @@ pub(crate) fn lower_record_function_params(flat: &mut flat::Model) -> Result<(),
         "record parameter lowering did not converge after {MAX_RECORD_NESTING_PASSES} passes \
          (record type nesting too deep or cyclic)"
     )))
+}
+
+fn seed_complete_record_defaults(flat: &mut flat::Model) {
+    let constructors = flat
+        .functions
+        .values()
+        .filter(|function| function.is_constructor)
+        .filter_map(|function| {
+            let def_id = function.def_id?;
+            let instance_id = function.instance_id?;
+            function
+                .inputs
+                .iter()
+                .all(|input| input.default.is_some())
+                .then(|| {
+                    (
+                        (def_id, function.name.as_str().to_string()),
+                        (function.name.clone(), instance_id),
+                    )
+                })
+        })
+        .collect::<HashMap<_, _>>();
+    for function in flat
+        .functions
+        .values_mut()
+        .filter(|function| !function.is_constructor)
+    {
+        for value in function.outputs.iter_mut().chain(&mut function.locals) {
+            if value.default.is_some() || value.type_class != Some(rumoca_core::ClassType::Record) {
+                continue;
+            }
+            let Some(type_def_id) = value.type_def_id else {
+                continue;
+            };
+            let Some((constructor_name, instance_id)) =
+                constructors.get(&(type_def_id, value.type_name.clone()))
+            else {
+                continue;
+            };
+            value.default = Some(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::from_var_name(constructor_name.clone())
+                    .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                        instance_id: *instance_id,
+                        base_part_count: 0,
+                        transitively_non_replaceable: false,
+                    }),
+                args: Vec::new(),
+                is_constructor: true,
+                span: value.span,
+            });
+        }
+    }
 }
 
 /// One decomposition pass. Returns whether any record parameter was decomposed.
@@ -1316,13 +1369,9 @@ impl StatementRewriter for RecordCallArgDecomposer<'_> {
         else {
             return self.walk_statement(stmt);
         };
-        let rewritten_comp = self.rewrite_component_reference(comp);
-        let call_name = rumoca_core::Reference::with_component_reference(
-            rewritten_comp.to_var_name().as_str().to_string(),
-            rewritten_comp.clone(),
-        );
+        let rewritten_comp = self.rewrite_reference(comp);
         let rewritten_args = self.rewrite_expressions(args);
-        let args = self.args_for_call(&call_name, rewritten_args);
+        let args = self.args_for_call(&rewritten_comp, rewritten_args);
         rumoca_core::Statement::FunctionCall {
             comp: rewritten_comp,
             args,

@@ -496,10 +496,12 @@ pub(in crate::construction) fn function_assertion<'statement>(
             outputs,
             span,
         } if outputs.iter().all(Option::is_none) => {
-            let name = comp.to_var_name();
-            if flat.functions.contains_key(&name)
-                || rumoca_core::runtime_flow_action_function_short_name(name.as_str())
-                    != Some("assert")
+            let name = comp.as_str();
+            if comp
+                .resolved_function()
+                .and_then(|resolved| flat.get_function_instance(resolved.instance_id))
+                .is_some()
+                || rumoca_core::runtime_flow_action_function_short_name(name) != Some("assert")
             {
                 return Ok(None);
             }
@@ -634,7 +636,7 @@ fn validate_function_assignment_target(
 }
 
 pub(super) struct MultiOutputCallStatement<'statement> {
-    pub(super) callee: &'statement rumoca_core::ComponentReference,
+    pub(super) callee: &'statement rumoca_core::Reference,
     pub(super) args: &'statement [Expression],
     pub(super) outputs: &'statement [Option<rumoca_core::ComponentReference>],
     pub(super) span: Span,
@@ -657,17 +659,44 @@ fn plan_function_multi_output_call(
     context: FunctionValidationContext<'_>,
 ) -> Result<FunctionStatementPlan, ToDaeError> {
     require_span(call.span, "function multi-result call statement")?;
-    if call.callee.parts().is_empty()
-        || call.callee.parts().iter().any(|part| !part.subs.is_empty())
-    {
+    let Some(component) = call.callee.component_ref() else {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            "a multi-result call statement requires one structured function reference",
+            call.span,
+        ));
+    };
+    if component.parts().iter().any(|part| !part.subs.is_empty()) {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
             "a multi-result call statement requires one resolved, unsubscripted function",
             call.span,
         ));
     }
-    let callee_name = call.callee.to_var_name();
-    let Some(callee) = context.flat.functions.get(&callee_name) else {
+    // A statement call that reads no result defines nothing, so no DAE owner
+    // observes it. MLS §12.3 admits such a call for its effect, but this body
+    // has no effect owner either way.
+    if call.outputs.iter().all(Option::is_none) {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!(
+                "`{}` calls `{}` as a statement without reading a result, which the canonical \
+                 DAE has no owner for",
+                context.function.name,
+                call.callee.var_name()
+            ),
+            call.span,
+        ));
+    }
+    let callee_name = call.callee.var_name();
+    let Some(resolved) = call.callee.resolved_function() else {
+        return Err(ToDaeError::unsupported_flat(
+            "function call statement",
+            format!("`{callee_name}` has no exact Flat function instance"),
+            call.span,
+        ));
+    };
+    let Some(callee) = context.flat.get_function_instance(resolved.instance_id) else {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
             format!("`{callee_name}` is not a declared function of the flat model"),
@@ -706,22 +735,6 @@ fn plan_function_multi_output_call(
             call.span,
         ));
     }
-    // A statement call that reads no result defines nothing, so no DAE owner
-    // observes it. MLS §12.3 admits such a call for its effect, but only an
-    // impure context has an effect to keep; this body has no owner for one
-    // either way, so the rejection names the missing owner and not a purity
-    // the caller may not have.
-    if call.outputs.iter().all(Option::is_none) {
-        return Err(ToDaeError::unsupported_flat(
-            "function call statement",
-            format!(
-                "`{}` calls `{callee_name}` as a statement without reading a result, which the \
-                 canonical DAE has no owner for",
-                context.function.name
-            ),
-            call.span,
-        ));
-    }
     if call.outputs.len() > callee.outputs.len() {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
@@ -741,14 +754,22 @@ fn plan_function_multi_output_call(
             context.shapes,
         )?;
     }
-    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
     let key = context
         .shape_analysis
-        .call_key(&reference, call.args, context.shapes, call.span)?;
+        .call_key(call.callee, call.args, context.shapes, call.span)?;
     let certificate = context
         .shape_analysis
         .certificate(&key)
         .expect("call_key proves the certificate it returns a key for");
+    plan_multi_output_call_receivers(call, callee_name, certificate, context)
+}
+
+fn plan_multi_output_call_receivers(
+    call: MultiOutputCallStatement<'_>,
+    callee_name: &VarName,
+    certificate: &FunctionShapeCertificate,
+    context: FunctionValidationContext<'_>,
+) -> Result<FunctionStatementPlan, ToDaeError> {
     if let Some(assembly) =
         plan_record_multi_output_assembly(call.outputs, certificate, call.span, context)?
     {
@@ -763,7 +784,7 @@ fn plan_function_multi_output_call(
         outputs.push(Some(plan_multi_output_receiver(
             target,
             ordinal,
-            &callee_name,
+            callee_name,
             certificate,
             call.span,
             context,

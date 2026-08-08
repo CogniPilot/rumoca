@@ -593,7 +593,7 @@ fn remap_statements(
                 outputs,
                 ..
             } => {
-                remap_component_reference(comp, ctx, locals)?;
+                remap_statement_callee(comp, ctx, locals)?;
                 for arg in args {
                     remap_expression_with_locals(arg, ctx, locals)?;
                 }
@@ -621,6 +621,20 @@ fn remap_statements(
             }
         }
     }
+    Ok(())
+}
+
+fn remap_statement_callee(
+    reference: &mut rumoca_core::Reference,
+    ctx: &RenameContext<'_>,
+    locals: &HashSet<String>,
+) -> Result<(), crate::errors::FlattenError> {
+    let Some(mut component) = reference.component_ref().cloned() else {
+        return Ok(());
+    };
+    remap_component_reference(&mut component, ctx, locals)?;
+    *reference = reference
+        .with_rewritten_component_reference(component.to_var_name().as_str(), component.clone());
     Ok(())
 }
 

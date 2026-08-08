@@ -310,13 +310,6 @@ impl CollectedFunctionCallCanonicalizer<'_> {
         self.canonical_functions.by_reference(reference)
     }
 
-    fn sole_canonical_function_for_declaration(
-        &self,
-        def_id: rumoca_core::DefId,
-    ) -> Option<&CanonicalFunction> {
-        self.canonical_functions.sole_by_def(def_id)
-    }
-
     fn occurrence_proves_transitive_nonreplaceability(
         &mut self,
         reference: &rumoca_core::Reference,
@@ -343,32 +336,6 @@ impl CollectedFunctionCallCanonicalizer<'_> {
         );
         self.nonreplaceability_by_path.insert(key, proven);
         proven
-    }
-
-    /// Restate a statement call's callee path so it spells the collected
-    /// function table's key for that callee.
-    ///
-    /// A statement call (MLS §11.2.1 zero-output, §11.2.1.1 multi-output) names
-    /// its callee by a bare `ComponentReference`: the use-site path, one exact
-    /// `DefId` per segment, with no rendered companion to carry the
-    /// lookup-qualified spelling an expression call keeps in its `Reference`.
-    /// A call written inside the class that declares the callee therefore
-    /// spells one segment while the collected table is keyed by the declaration
-    /// path, and every consumer that resolves a callee by rendered name — flat
-    /// reachability, and the DAE's owner and shape discovery — reads the two as
-    /// different callables. Restating the path here closes that gap with the
-    /// same exact enclosing `DefId`s the expression form uses, and only when
-    /// the rebuilt path spells the collected key exactly.
-    fn canonical_callee_path(
-        &self,
-        callee: &rumoca_core::ComponentReference,
-    ) -> Option<rumoca_core::ComponentReference> {
-        let rendered = callee.to_var_name();
-        if self.canonical_functions.by_name.contains_key(&rendered) {
-            return None;
-        }
-        let canonical = self.sole_canonical_function_for_declaration(callee.target_def_id())?;
-        callable_scope_identity::scope_qualified_path(self.class_index, callee, &canonical.name)
     }
 }
 
@@ -478,10 +445,23 @@ impl StatementRewriter for CollectedFunctionCallCanonicalizer<'_> {
         else {
             return self.walk_statement(statement);
         };
+        let canonical_call = self.rewrite_expression(&rumoca_core::Expression::FunctionCall {
+            name: comp.clone(),
+            args: Vec::new(),
+            is_constructor: false,
+            span: *span,
+        });
+        let rumoca_core::Expression::FunctionCall {
+            name: comp,
+            args: empty_args,
+            ..
+        } = canonical_call
+        else {
+            unreachable!("function-call canonicalization preserves call shape");
+        };
+        debug_assert!(empty_args.is_empty());
         rumoca_core::Statement::FunctionCall {
-            comp: self.canonical_callee_path(comp).unwrap_or_else(|| {
-                rumoca_core::StatementRewriter::rewrite_component_reference(self, comp)
-            }),
+            comp,
             args: self.rewrite_expressions(args),
             outputs: outputs
                 .iter()

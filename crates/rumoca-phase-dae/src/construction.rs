@@ -104,7 +104,7 @@ use model_algorithm::{
 };
 use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, lower_when_chains};
 use record_equation::lower_record_equation;
-use structured_body::lower_structured_body;
+use structured_body::{lower_structured_body, normalize_conditional_residual};
 use variable_construction::{
     VariableConstructionPlan, VariableDefinitionContext, define_reserved_variables,
     insert_variable_identities, plan_variable_construction,
@@ -682,7 +682,7 @@ fn lower_multi_output_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
-    callee: &rumoca_core::ComponentReference,
+    callee: &rumoca_core::Reference,
     args: &[Expression],
     span: Span,
     outputs: &[Option<FunctionAssignmentPlan>],
@@ -732,7 +732,7 @@ fn lower_record_multi_output_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
-    callee: &rumoca_core::ComponentReference,
+    callee: &rumoca_core::Reference,
     arguments: &[Expression],
     span: Span,
     plan: &FunctionRecordCallAssemblyPlan,
@@ -812,7 +812,7 @@ struct FunctionAssignment<'statement> {
 }
 
 struct FunctionMultiOutputCall<'statement> {
-    callee: &'statement rumoca_core::ComponentReference,
+    callee: &'statement rumoca_core::Reference,
     args: &'statement [Expression],
     span: Span,
     outputs: &'statement [Option<FunctionAssignmentPlan>],
@@ -837,7 +837,6 @@ fn lower_function_multi_output_call<'dae>(
     call: FunctionMultiOutputCall<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(call.span)?;
-    let reference = rumoca_core::Reference::from_component_reference(call.callee.clone());
     let binders = HashMap::new();
     let operands = lower_call_operands(
         construction,
@@ -850,7 +849,7 @@ fn lower_function_multi_output_call<'dae>(
             owner_clock: None,
         },
         &binders,
-        &reference,
+        call.callee,
         call.args,
         provenance,
     )?;
@@ -894,13 +893,12 @@ fn lower_function_record_multi_output_assembly<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     body: &mut dae::FunctionBody<'dae>,
-    callee: &rumoca_core::ComponentReference,
+    callee: &rumoca_core::Reference,
     args: &[Expression],
     span: Span,
     plan: &FunctionRecordCallAssemblyPlan,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(span)?;
-    let reference = rumoca_core::Reference::from_component_reference(callee.clone());
     let operands = lower_call_operands(
         construction,
         LoweringSymbols {
@@ -912,7 +910,7 @@ fn lower_function_record_multi_output_assembly<'dae>(
             owner_clock: None,
         },
         &HashMap::new(),
-        &reference,
+        callee,
         args,
         provenance,
     )?;

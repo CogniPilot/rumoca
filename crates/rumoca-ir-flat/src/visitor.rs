@@ -30,7 +30,7 @@ use crate::{
 };
 use indexmap::IndexSet;
 
-use rumoca_core::{ExpressionVisitor, FallibleExpressionVisitor};
+use rumoca_core::{ExpressionVisitor, FallibleExpressionVisitor, Reference};
 
 pub enum StatementScope<'a> {
     ForStatement(&'a [ForIndex]),
@@ -117,11 +117,13 @@ pub trait StatementVisitor: ExpressionVisitor {
 
     fn visit_statement_function_call(
         &mut self,
-        comp: &ComponentReference,
+        comp: &Reference,
         args: &[Expression],
         outputs: &[Option<ComponentReference>],
     ) {
-        self.visit_component_reference(comp);
+        if let Some(component) = comp.component_ref() {
+            self.visit_component_reference(component);
+        }
         for arg in args {
             self.visit_expression(arg);
         }
@@ -265,11 +267,13 @@ pub trait FallibleStatementVisitor: FallibleExpressionVisitor {
 
     fn visit_statement_function_call(
         &mut self,
-        comp: &ComponentReference,
+        comp: &Reference,
         args: &[Expression],
         outputs: &[Option<ComponentReference>],
     ) -> Result<(), Self::Error> {
-        self.visit_component_reference(comp)?;
+        if let Some(component) = comp.component_ref() {
+            self.visit_component_reference(component)?;
+        }
         for arg in args {
             self.visit_expression(arg)?;
         }
@@ -419,11 +423,13 @@ impl StatementVisitor for AlgorithmOutputCollector {
 
     fn visit_statement_function_call(
         &mut self,
-        comp: &ComponentReference,
+        comp: &Reference,
         args: &[Expression],
         outputs: &[Option<ComponentReference>],
     ) {
-        self.visit_component_reference(comp);
+        if let Some(component) = comp.component_ref() {
+            self.visit_component_reference(component);
+        }
         for arg in args {
             self.visit_expression(arg);
         }

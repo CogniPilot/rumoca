@@ -40,17 +40,40 @@ pub use types::{
 
 /// Analyze and BLT-sort a checked DAE view.
 pub fn sort<'dae>(view: dae::DaeView<'dae>) -> Result<SortedDae<'dae>, StructuralError> {
+    #[cfg(feature = "tracing")]
+    let stage_start = std::time::Instant::now();
     let incidence = incidence::build_incidence(view)?;
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "rumoca_phase_structural::timing",
+        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
+        equations = incidence.n_eq,
+        unknowns = incidence.n_var,
+        "built scalar incidence"
+    );
     if incidence.n_eq == 0 && incidence.n_var == 0 {
         return Err(StructuralError::EmptySystem);
     }
     let preferences = explicit_derivative_preferences(view, &incidence);
     let (match_eq, match_var) = maximum_matching(&incidence, &preferences);
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "rumoca_phase_structural::timing",
+        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
+        "completed structural matching"
+    );
     require_perfect_matching(view, &incidence, &match_eq, &match_var)?;
     let adjacency =
         incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
     let diagnostics = diagnostics::collect_warnings(view, &incidence, &match_eq, &adjacency);
     let blocks = blt::build_blt_blocks(&incidence, &match_eq, &adjacency);
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        target: "rumoca_phase_structural::timing",
+        elapsed_seconds = stage_start.elapsed().as_secs_f64(),
+        blocks = blocks.len(),
+        "completed BLT analysis"
+    );
     let matching = match_eq
         .iter()
         .enumerate()

@@ -161,13 +161,14 @@ impl rumoca_core::ExpressionVisitor for FunctionCallCollector<'_> {
 impl rumoca_ir_flat::visitor::StatementVisitor for FunctionCallCollector<'_> {
     fn visit_statement_function_call(
         &mut self,
-        comp: &rumoca_core::ComponentReference,
+        comp: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
         outputs: &[Option<rumoca_core::ComponentReference>],
     ) {
-        self.calls
-            .insert(FunctionRequest::from_component_reference(comp));
-        self.visit_component_reference(comp);
+        self.calls.insert(FunctionRequest::from_reference(comp));
+        if let Some(component) = comp.component_ref() {
+            self.visit_component_reference(component);
+        }
         for arg in args {
             self.visit_expression(arg);
         }

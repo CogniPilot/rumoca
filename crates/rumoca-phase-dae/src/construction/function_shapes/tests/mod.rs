@@ -25,6 +25,58 @@ fn array(extent: usize, span: Span) -> Expression {
     }
 }
 
+fn zeros(extents: &[i64], span: Span) -> Expression {
+    Expression::BuiltinCall {
+        function: BuiltinFunction::Zeros,
+        args: extents
+            .iter()
+            .map(|extent| Expression::Literal {
+                value: Literal::Integer(*extent),
+                span,
+            })
+            .collect(),
+        span,
+    }
+}
+
+#[test]
+fn explicit_cat_proves_matrix_concatenation_along_both_dimensions() {
+    let mut sources = SourceMap::new();
+    let source = sources.add("matrix_cat.mo", "cat(2, zeros(3, 3), zeros(3, 9));");
+    let span = Span::from_offsets(source, 0, 36);
+    let dimension = |value| Expression::Literal {
+        value: Literal::Integer(value),
+        span,
+    };
+    let cat = |axis, left, right| Expression::BuiltinCall {
+        function: BuiltinFunction::Cat,
+        args: vec![dimension(axis), left, right],
+        span,
+    };
+    let model = flat::Model::new();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+        .expect("the empty model has a valid shape environment");
+
+    assert_eq!(
+        analysis
+            .expression_shape(
+                &cat(2, zeros(&[3, 3], span), zeros(&[3, 9], span)),
+                analysis.model_values(),
+            )
+            .expect("horizontal matrix cat has an exact shape"),
+        vec![3, 12]
+    );
+    assert_eq!(
+        analysis
+            .expression_shape(
+                &cat(1, zeros(&[3, 4], span), zeros(&[6, 4], span)),
+                analysis.model_values(),
+            )
+            .expect("vertical matrix cat has an exact shape"),
+        vec![9, 4]
+    );
+}
+
 #[test]
 fn ones_shape_is_constructed_from_exact_extents() {
     let mut sources = SourceMap::new();

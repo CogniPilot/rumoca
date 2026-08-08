@@ -4,7 +4,7 @@ pub mod rows;
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_eval_dae::for_each_scalar_coordinate;
+use rumoca_eval_dae::{ScalarCoordinateProjectionCache, for_each_scalar_coordinate_cached};
 use rumoca_ir_dae as dae;
 
 use crate::incidence::rows::{IncidenceRows, IncidenceRowsBuilder};
@@ -93,8 +93,11 @@ pub(crate) fn build_incidence<'dae>(
         equation_refs: Vec::new(),
         equation_spans: Vec::new(),
         structured_matching: Vec::new(),
+        projection_cache: ScalarCoordinateProjectionCache::default(),
     };
     for owner in view.continuous_owners() {
+        #[cfg(feature = "tracing")]
+        let owner_start = std::time::Instant::now();
         match owner {
             dae::ContinuousOwnerView::Residual { equation, .. } => {
                 builder.push_expression(equation.residual(), 0, None, equation.provenance())?;
@@ -103,6 +106,13 @@ pub(crate) fn build_incidence<'dae>(
                 builder.push_family(family)?;
             }
         }
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            target: "rumoca_phase_structural::timing",
+            rows = builder.rows.row_count(),
+            elapsed_seconds = owner_start.elapsed().as_secs_f64(),
+            "projected continuous owner"
+        );
     }
     let eq_unknowns = builder.rows.finish();
     let n_eq = eq_unknowns.len();
@@ -219,6 +229,7 @@ struct IncidenceBuilder<'map, 'dae> {
     equation_refs: Vec<EquationRef>,
     equation_spans: Vec<rumoca_core::Span>,
     structured_matching: Vec<StructuredMatchingFamily>,
+    projection_cache: ScalarCoordinateProjectionCache<'dae>,
 }
 
 impl<'dae> IncidenceBuilder<'_, 'dae> {
@@ -230,13 +241,15 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         owner: dae::DaeProvenance,
     ) -> Result<(), StructuralError> {
         let mut occurrences = Vec::new();
-        for_each_scalar_coordinate(
+        let unknown_map = self.unknown_map;
+        for_each_scalar_coordinate_cached(
             self.view,
             expression,
             scalar,
             domain_point,
+            &mut self.projection_cache,
             |coordinate, scalar| {
-                if let Some(unknown) = self.resolve_coordinate(coordinate, scalar) {
+                if let Some(unknown) = resolve_coordinate(unknown_map, coordinate, scalar) {
                     occurrences.push(unknown);
                 }
             },
@@ -293,46 +306,46 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         }
         Ok(())
     }
+}
 
-    fn resolve_coordinate(
-        &self,
-        coordinate: dae::CoordinateView<'dae>,
-        scalar: usize,
-    ) -> Option<usize> {
-        let scalar = u32::try_from(scalar).ok()?;
-        let key = match coordinate {
-            dae::CoordinateView::Derivative(state) => UnknownKey::Derivative {
-                variable: state.index(),
-                scalar,
-            },
-            dae::CoordinateView::Algebraic(variable) => UnknownKey::Algebraic {
-                variable: variable.index(),
-                scalar,
-            },
-            dae::CoordinateView::Parameter(_)
-            | dae::CoordinateView::Input(_)
-            | dae::CoordinateView::State(_)
-            | dae::CoordinateView::DiscreteReal(_)
-            | dae::CoordinateView::DiscreteValue(_)
-            | dae::CoordinateView::PreDiscreteReal(_)
-            | dae::CoordinateView::PreDiscreteValue(_)
-            // A `pre()` read is the coordinate's settled left limit at event
-            // entry, not the unknown itself, so it carries no incidence — the
-            // Mean shape's `y_last = f*pre(x)` must not read as an equation
-            // that solves for `x`.
-            | dae::CoordinateView::PreState(_)
-            | dae::CoordinateView::PreAlgebraic(_)
-            | dae::CoordinateView::Time
-            | dae::CoordinateView::ClockInterval(_)
-            | dae::CoordinateView::Condition(_)
-            | dae::CoordinateView::Delay(_)
-            | dae::CoordinateView::Previous(_)
-            | dae::CoordinateView::Terminal(_)
-            | dae::CoordinateView::Binder(_)
-            | dae::CoordinateView::FunctionParameter(_) => return None,
-        };
-        self.unknown_map.get(&key).copied()
-    }
+fn resolve_coordinate(
+    unknown_map: &HashMap<UnknownKey, usize>,
+    coordinate: dae::CoordinateView<'_>,
+    scalar: usize,
+) -> Option<usize> {
+    let scalar = u32::try_from(scalar).ok()?;
+    let key = match coordinate {
+        dae::CoordinateView::Derivative(state) => UnknownKey::Derivative {
+            variable: state.index(),
+            scalar,
+        },
+        dae::CoordinateView::Algebraic(variable) => UnknownKey::Algebraic {
+            variable: variable.index(),
+            scalar,
+        },
+        dae::CoordinateView::Parameter(_)
+        | dae::CoordinateView::Input(_)
+        | dae::CoordinateView::State(_)
+        | dae::CoordinateView::DiscreteReal(_)
+        | dae::CoordinateView::DiscreteValue(_)
+        | dae::CoordinateView::PreDiscreteReal(_)
+        | dae::CoordinateView::PreDiscreteValue(_)
+        // A `pre()` read is the coordinate's settled left limit at event
+        // entry, not the unknown itself, so it carries no incidence — the
+        // Mean shape's `y_last = f*pre(x)` must not read as an equation
+        // that solves for `x`.
+        | dae::CoordinateView::PreState(_)
+        | dae::CoordinateView::PreAlgebraic(_)
+        | dae::CoordinateView::Time
+        | dae::CoordinateView::ClockInterval(_)
+        | dae::CoordinateView::Condition(_)
+        | dae::CoordinateView::Delay(_)
+        | dae::CoordinateView::Previous(_)
+        | dae::CoordinateView::Terminal(_)
+        | dae::CoordinateView::Binder(_)
+        | dae::CoordinateView::FunctionParameter(_) => return None,
+    };
+    unknown_map.get(&key).copied()
 }
 
 fn derive_structured_matching(

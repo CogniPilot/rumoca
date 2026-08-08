@@ -272,7 +272,7 @@ fn lower_expression_event<'dae>(
     span: Span,
     lowered: dae::ExprId<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    if symbols.function_body.is_some() || !binders.is_empty() {
+    if symbols.function_body.is_some() {
         return Ok(());
     }
     // Expansions such as MLS §15.3 `actualStream` build several nodes from one
@@ -291,21 +291,41 @@ fn lower_expression_event<'dae>(
         .expression_events
         .plan(span, &[lhs.as_ref(), rhs.as_ref()]);
     let provenance = dae::DaeProvenance::source(span)?;
+    if !binders.is_empty() {
+        let variability =
+            construction.expressions(|expressions| expressions.variability(lowered, provenance))?;
+        // A compact binder is a compile-time Integer coordinate. Relations
+        // used only to select parameter/comprehension values are therefore
+        // settled before simulation and own no MLS §8.5 event, even when
+        // their source span is shared by materialized runtime occurrences.
+        if variability < dae::ExpressionVariability::Continuous {
+            return Ok(());
+        }
+    }
+    if !binders.is_empty()
+        && plan.is_none()
+        && symbols.functions.expression_events.contains_span(span)
+    {
+        if !symbols
+            .functions
+            .expression_events
+            .is_structured_state_relation(span)
+        {
+            return Err(dae::DaeConstructionError::UnsupportedStructuredEvent { span });
+        }
+        let domain = construction
+            .expressions(|expressions| expressions.binder_domain(lowered, provenance))?;
+        if let Some(domain) = domain {
+            construction
+                .conditions(|conditions| conditions.structured_root(domain, lowered, provenance))?;
+        } else {
+            lower_state_relation_root(construction, lowered, provenance)?;
+        }
+        return Ok(());
+    }
     match plan {
         Some(ExpressionEventPlan::StateRelation) => {
-            let relation =
-                construction.conditions(|conditions| conditions.relation(lowered, provenance))?;
-            let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
-            construction.conditions(|conditions| {
-                conditions.define(
-                    condition,
-                    dae::ConditionInput::Relation(relation),
-                    provenance,
-                )
-            })?;
-            construction
-                .conditions(|conditions| conditions.root(relation, condition, provenance))
-                .map(|_| ())
+            lower_state_relation_root(construction, lowered, provenance)
         }
         Some(ExpressionEventPlan::DynamicTimeEvent(operand)) => {
             let deadline = match operand {
@@ -326,6 +346,26 @@ fn lower_expression_event<'dae>(
         }
         _ => Ok(()),
     }
+}
+
+fn lower_state_relation_root<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    lowered: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let relation =
+        construction.conditions(|conditions| conditions.relation(lowered, provenance))?;
+    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
+    construction.conditions(|conditions| {
+        conditions.define(
+            condition,
+            dae::ConditionInput::Relation(relation),
+            provenance,
+        )
+    })?;
+    construction
+        .conditions(|conditions| conditions.root(relation, condition, provenance))
+        .map(|_| ())
 }
 
 /// MLS numeric promotion makes an Integer threshold comparable with `time`.
@@ -535,9 +575,10 @@ fn lower_builtin_expression<'dae>(
 /// Concatenation along a settled dimension has an exact checked owner: every
 /// result element is a bounds-checked index into one operand, and the array node
 /// assembles them. The first argument is the concatenation dimension; the rest
-/// are the operands. This lowers concatenation along dimension 1 of rank-one
-/// operands — the vector assembly the geometric-control stack uses to build
-/// SE_2(3) tangents — which stays fully within checked index and array owners.
+/// are the operands. Rank-one dimension-1 concatenation is expanded into
+/// checked element reads. Rank-two-or-greater concatenation along dimensions 1
+/// and 2 reuses the checked concatenation owners; no promotion changes the
+/// value because explicit `cat` has already proved equal operand ranks.
 fn lower_cat<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
@@ -559,25 +600,48 @@ fn lower_cat<'dae>(
             span: provenance.span(),
         });
     }
-    // Only concatenation along the first axis has an element-index owner here.
-    if !matches!(
-        dimension,
+    let concatenation_dimension = match dimension {
         Expression::Literal {
-            value: rumoca_core::Literal::Integer(1),
+            value: rumoca_core::Literal::Integer(value @ 1..=2),
             ..
+        } => *value as usize,
+        _ => {
+            return Err(dae::DaeConstructionError::ShapeMismatch {
+                span: provenance.span(),
+            });
         }
-    ) {
+    };
+    let bases = operands
+        .iter()
+        .map(|operand| lower_expression_scoped(construction, symbols, binders, operand, None))
+        .collect::<Result<Vec<_>, _>>()?;
+    let dimensions = bases
+        .iter()
+        .map(|base| {
+            construction
+                .expressions(|expressions| expressions.value_type(*base, provenance))
+                .map(|value_type| value_type.dimensions().to_vec())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(first_dimensions) = dimensions.first() else {
+        unreachable!("cat arity check proves at least one operand")
+    };
+    if first_dimensions.len() >= 2 {
+        let builtin = match concatenation_dimension {
+            1 => dae::PureBuiltin::PromotedCat1,
+            2 => dae::PureBuiltin::PromotedCat2,
+            _ => unreachable!("literal match accepts dimensions 1 and 2"),
+        };
+        return construction
+            .expressions(|expressions| expressions.at(provenance).builtin(builtin, bases));
+    }
+    if concatenation_dimension != 1 {
         return Err(dae::DaeConstructionError::ShapeMismatch {
             span: provenance.span(),
         });
     }
     let mut elements = Vec::new();
-    for operand in operands {
-        let base = lower_expression_scoped(construction, symbols, binders, operand, None)?;
-        let dimensions = construction
-            .expressions(|expressions| expressions.value_type(base, provenance))?
-            .dimensions()
-            .to_vec();
+    for (base, dimensions) in bases.into_iter().zip(dimensions) {
         let [length] = dimensions.as_slice() else {
             // Only rank-one operands assemble as a flat element index here.
             return Err(dae::DaeConstructionError::ShapeMismatch {

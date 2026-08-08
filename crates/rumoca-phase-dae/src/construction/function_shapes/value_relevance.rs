@@ -206,7 +206,7 @@ fn for_each_call(
     });
     for_each_statement(&function.body, &mut |statement| {
         if let rumoca_core::Statement::FunctionCall { comp, args, .. } = statement {
-            visit(&comp.to_var_name(), args);
+            visit(comp.var_name(), args);
         }
     });
 }
@@ -375,7 +375,9 @@ fn statement_expressions(statement: &rumoca_core::Statement) -> Vec<&Expression>
             expressions.extend(blocks.iter().map(|block| &block.cond));
         }
         rumoca_core::Statement::FunctionCall { comp, args, .. } => {
-            expressions.extend(component_subscript_expressions(comp));
+            if let Some(component) = comp.component_ref() {
+                expressions.extend(component_subscript_expressions(component));
+            }
             expressions.extend(args);
         }
         rumoca_core::Statement::Assert {

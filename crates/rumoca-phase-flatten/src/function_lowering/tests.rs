@@ -200,6 +200,54 @@ fn record_param_lowering_uses_constructor_signature_metadata() {
 }
 
 #[test]
+fn complete_record_field_defaults_seed_one_aggregate_function_local() {
+    let mut flat = flat::Model::new();
+    let mut constructor = record_constructor();
+    constructor.inputs[0].default = Some(rumoca_core::Expression::Literal {
+        value: Literal::Real(1.0),
+        span: test_span(),
+    });
+    constructor.inputs[1].default = Some(rumoca_core::Expression::Array {
+        elements: vec![
+            rumoca_core::Expression::Literal {
+                value: Literal::Real(2.0),
+                span: test_span(),
+            };
+            3
+        ],
+        is_matrix: false,
+        span: test_span(),
+    });
+    flat.add_function(constructor);
+    let constructor_instance = flat.functions[&VarName::new("Pkg.Record")]
+        .instance_id
+        .expect("constructor instance");
+
+    let mut function = rumoca_core::Function::new("Pkg.useLocal", test_span());
+    function.locals.push(
+        crate::test_support::aggregate_param("localRecord", "Pkg.Record", Vec::new(), test_span())
+            .with_def_id(RECORD_VALUE_DEF_ID)
+            .with_type_class(ClassType::Record)
+            .with_type_def_id(RECORD_DEF_ID),
+    );
+    flat.add_function(function);
+
+    lower_record_function_params(&mut flat).expect("record defaults should be constructed");
+
+    let default = flat.functions[&VarName::new("Pkg.useLocal")].locals[0]
+        .default
+        .as_ref()
+        .expect("complete field defaults seed the record local");
+    assert!(matches!(
+        default,
+        rumoca_core::Expression::FunctionCall { name, args, is_constructor: true, .. }
+            if args.is_empty()
+                && name.resolved_function().map(|resolved| resolved.instance_id)
+                    == Some(constructor_instance)
+    ));
+}
+
+#[test]
 fn record_param_lowering_follows_function_identity_before_name_canonicalization() {
     let mut flat = flat::Model::new();
     flat.add_function(record_constructor());

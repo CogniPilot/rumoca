@@ -23,7 +23,7 @@ use crate::clocks::{
 };
 use crate::conditions::{
     ConditionEntry, ConditionOperation, ConditionView, Conditions, RelationEntry, RelationView,
-    RootEntry, RootView,
+    RootEntry, RootView, StructuredRootEntry, StructuredRootView,
 };
 use crate::discrete_values::{
     DiscreteBranchActivationEntry, DiscreteValueBranchEntry, DiscreteValueOwnerEntry,
@@ -53,7 +53,8 @@ use crate::{
     DiscreteValueId, DiscreteValueOwnerId, DomainBinderId, DomainId, EventActionId, ExprId,
     FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
     InitializationEquationId, InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId,
-    RootId, ScalarType, StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
+    RootId, ScalarType, StateId, StructuredRootId, TerminalId, TimeEventId, ValueTypeId,
+    VariableId,
 };
 
 /// The one supported DAE wire version.
@@ -105,7 +106,10 @@ use crate::{
 /// use this provenance for their generated continuous root surfaces.
 ///
 /// 25 appends the checked cross-clock value-transfer expression node.
-pub const DAE_SCHEMA_VERSION: u16 = 26;
+///
+/// 27 adds compact structured root families. Checked replay derives their
+/// scalar coverage from the referenced domain and binder-scoped relation.
+pub const DAE_SCHEMA_VERSION: u16 = 27;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -422,6 +426,7 @@ pub(crate) struct Storage {
     pub(crate) conditions: Vec<ConditionEntry>,
     pub(crate) condition_owner_clocks: Vec<Option<u32>>,
     pub(crate) roots: Vec<RootEntry>,
+    pub(crate) structured_roots: Vec<StructuredRootEntry>,
     pub(crate) time_events: Vec<TimeEventEntry>,
     pub(crate) event_actions: Vec<EventActionEntry>,
     pub(crate) clocks: Vec<ClockEntry>,
@@ -469,6 +474,7 @@ struct FrozenStorage {
     relations: Box<[RelationEntry]>,
     conditions: Box<[ConditionEntry]>,
     roots: Box<[RootEntry]>,
+    structured_roots: Box<[StructuredRootEntry]>,
     time_events: Box<[TimeEventEntry]>,
     event_actions: Box<[EventActionEntry]>,
     clocks: Box<[ClockEntry]>,
