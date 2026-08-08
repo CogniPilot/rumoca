@@ -1,4 +1,5 @@
 mod cache;
+mod certified_cohort;
 mod compiler_contract_migration;
 mod parity_measurement;
 mod reference_stage;
@@ -9,10 +10,12 @@ mod tests;
 
 use super::*;
 use cache::*;
+use certified_cohort::*;
 use compiler_contract_migration::*;
 use indexmap::{IndexMap, IndexSet};
 pub(super) use parity_measurement::*;
 pub(super) use reference_stage::*;
+use rumoca_test_msl::msl_tools::band_table::BandLabel;
 use runtime_cohort::*;
 use status::*;
 
@@ -285,6 +288,11 @@ pub(super) struct MslQualityBaseline {
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_ratio_cohort_models: Option<IndexSet<String>>,
+    /// Exact model identities certified in the strict-high band by this
+    /// baseline. Aggregate counts cannot prove that one certified model did
+    /// not disappear while another entered, so the baseline owns the roster.
+    #[serde(default, skip_serializing_if = "IndexSet::is_empty")]
+    certified_strict_high_models: IndexSet<String>,
     #[serde(default)]
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
     tensor_preservation: MslTensorPreservationBaseline,
@@ -495,8 +503,10 @@ pub(super) fn omc_parity_cache_dir() -> PathBuf {
 
 pub(super) fn load_msl_quality_baseline(path: &Path) -> io::Result<MslQualityBaseline> {
     let file = File::open(path)?;
-    serde_json::from_reader(file)
-        .map_err(|error| io::Error::other(format!("invalid MSL quality baseline JSON: {error}")))
+    let baseline: MslQualityBaseline = serde_json::from_reader(file)
+        .map_err(|error| io::Error::other(format!("invalid MSL quality baseline JSON: {error}")))?;
+    validate_certified_strict_high_roster(&baseline)?;
+    Ok(baseline)
 }
 
 pub(super) fn omc_simulation_reference_path() -> PathBuf {
@@ -1016,6 +1026,7 @@ pub(super) fn current_msl_quality_baseline(
             (!parity.runtime_model_ratios.is_empty())
                 .then(|| parity.runtime_model_ratios.keys().cloned().collect())
         }),
+        certified_strict_high_models: IndexSet::new(),
         trace_accuracy_stats: parity_input.and_then(|parity| parity.trace_accuracy_stats.clone()),
         tensor_preservation: MslTensorPreservationBaseline {
             models_reported: gate_input.tensor_models_reported,
@@ -1161,6 +1172,23 @@ pub(super) fn write_current_msl_quality_snapshot(
             root.insert(
                 "parity_unmeasured_reason".to_string(),
                 serde_json::Value::String(reason.detail()),
+            );
+        }
+        if let Some(cohort) = measurement.cohort() {
+            let certified = cohort
+                .table
+                .rows
+                .iter()
+                .filter(|row| row.band == BandLabel::High)
+                .map(|row| row.model_name.clone())
+                .collect::<IndexSet<_>>();
+            root.insert(
+                "certified_strict_high_models".to_string(),
+                serde_json::to_value(certified).map_err(|error| {
+                    io::Error::other(format!(
+                        "failed to serialize certified strict-high roster: {error}"
+                    ))
+                })?,
             );
         }
     }
@@ -1804,16 +1832,9 @@ pub(super) fn enforce_msl_quality_gate(
     }
     // A departure out of the strict-high band is invisible to every aggregate:
     // one model leaving and another entering holds `agreement_high` flat. The
-    // per-model table is the only artifact that can see it, so the gate reads it
-    // — and a cohort run that cannot diff against its predecessor fails rather
-    // than passing with that reading silently switched off.
-    for reason in [
-        measurement.cohort_movement_unverified_reason(),
-        measurement.departed_strict_high_reason(),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    // resolved baseline owns the certified identities, and the current table
+    // proves each one is still strict-high. Workflow history is diagnostic only.
+    for reason in certified_cohort_regression_reasons(&baseline, &measurement) {
         gate_failure = Some(match gate_failure {
             Some(existing) => format!("{existing}; {reason}"),
             None => reason,

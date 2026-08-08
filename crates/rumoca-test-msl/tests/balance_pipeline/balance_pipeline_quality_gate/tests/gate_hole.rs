@@ -34,6 +34,63 @@ fn parity_with(trace: MslTraceAccuracyStatsBaseline) -> MslParityGateInput {
     }
 }
 
+fn measured_cohort(strict_high: usize, near: usize) -> MslParityMeasurement {
+    let trace = trace_stats(strict_high + near, strict_high, near);
+    MslParityMeasurement::measured(
+        parity_with(trace),
+        MslCohortReading {
+            table: parity_measurement::fixtures::cohort_table(strict_high, near),
+            transitions: None,
+            previous_not_diffable: None,
+            persisted: true,
+        },
+    )
+}
+
+#[test]
+fn baseline_roster_accepts_every_certified_model_remaining_strict_high() {
+    let baseline = MslQualityBaseline {
+        certified_strict_high_models: IndexSet::from_iter(["High0".into(), "High1".into()]),
+        trace_accuracy_stats: Some(trace_stats(2, 2, 0)),
+        ..baseline_quality_template()
+    };
+
+    assert!(certified_cohort_regression_reasons(&baseline, &measured_cohort(2, 0)).is_empty());
+}
+
+#[test]
+fn baseline_roster_catches_identity_loss_when_aggregate_count_is_flat() {
+    let baseline = MslQualityBaseline {
+        certified_strict_high_models: IndexSet::from_iter(["High0".into(), "High2".into()]),
+        trace_accuracy_stats: Some(trace_stats(2, 2, 0)),
+        ..baseline_quality_template()
+    };
+
+    let reasons = certified_cohort_regression_reasons(&baseline, &measured_cohort(2, 0));
+    assert_eq!(reasons.len(), 1, "got: {reasons:?}");
+    assert!(reasons[0].contains("High2"), "got: {reasons:?}");
+    assert!(
+        reasons[0].contains("no current cohort row"),
+        "got: {reasons:?}"
+    );
+}
+
+#[test]
+fn baseline_roster_count_must_equal_the_certified_aggregate() {
+    let baseline = MslQualityBaseline {
+        certified_strict_high_models: IndexSet::from_iter(["High0".into()]),
+        trace_accuracy_stats: Some(trace_stats(2, 2, 0)),
+        ..baseline_quality_template()
+    };
+
+    let reasons = certified_cohort_regression_reasons(&baseline, &measured_cohort(2, 0));
+    assert_eq!(reasons.len(), 1, "got: {reasons:?}");
+    assert!(
+        reasons[0].contains("owns 1 model identities"),
+        "got: {reasons:?}"
+    );
+}
+
 #[test]
 fn unmeasured_parity_is_a_gate_failure_on_a_baseline_relative_run() {
     let baseline = MslQualityBaseline {

@@ -159,8 +159,8 @@ All rows are mandatory; otherwise the gate reports `parity unmeasured`.
 | Band table has one row per target and binds its comparator output | `band_table::ensure_comparable` |
 | Table counts and digest match its rows | `band_table::ensure_comparable` |
 | Table bands equal the reference bands | `band_table_disagreement` |
-| Full cohort can diff its predecessor table | `cohort_movement_unverified_reason` |
-| No actionable strict-high departure occurred | `departed_strict_high_reason` |
+| Full cohort can identify every baseline-certified strict-high model | `certified_cohort_regression_reasons` |
+| No baseline-certified strict-high model departed or changed band | `certified_model_regression` |
 | Reference `total_models` equals `sim_target_models` | `load_current_msl_parity_gate_input_required` |
 | Reference has no OMC assertion failures | `load_current_msl_parity_gate_input_required` |
 

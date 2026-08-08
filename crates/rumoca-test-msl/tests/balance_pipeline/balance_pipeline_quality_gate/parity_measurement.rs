@@ -66,20 +66,12 @@
 //! [`MslParityMeasurement::gate_failure_reason`] turns it into a gate reason, so
 //! an incomplete reference fails the run rather than shrinking it to `sim_ok`.
 //!
-//! The table makes two further gate readings possible, and both are failures
-//! rather than notes:
-//!
-//! * [`MslParityMeasurement::departed_strict_high_reason`] — a model that held
-//!   the strict-high band and is no longer compared, which no aggregate can show
-//!   because one model leaving and another entering leaves them unchanged.
-//! * [`MslParityMeasurement::cohort_movement_unverified_reason`] — a full-cohort
-//!   run with no predecessor table to diff against, which would leave the rule
-//!   above silently inert. CI restores the predecessor before the gate runs.
+//! Previous-table transitions remain diagnostic output. The quality ratchet is
+//! owned by the resolved baseline's exact strict-high roster; an arbitrary
+//! earlier workflow artifact is not certification evidence.
 
 use super::*;
-use rumoca_test_msl::msl_tools::band_table::{
-    self, BandTable, BandTableRunScope, BandTransitions, ExitReason,
-};
+use rumoca_test_msl::msl_tools::band_table::{self, BandTable, BandTableRunScope, BandTransitions};
 use std::sync::OnceLock;
 
 /// Fixed prefix every "no parity reading" line starts with. Operators and the
@@ -211,15 +203,6 @@ impl MslCohortReading {
                 self.table.models_compared()
             ),
         }
-    }
-
-    /// Strict-high models that are no longer compared. Empty when there is no
-    /// previous table to diff against.
-    pub(crate) fn departed_strict_high(&self) -> Vec<&band_table::LeftModel> {
-        self.transitions
-            .as_ref()
-            .map(|transitions| transitions.departed_strict_high().collect())
-            .unwrap_or_default()
     }
 
     /// Models still compared over fewer channels than before, rendered one per
@@ -402,75 +385,6 @@ impl MslParityMeasurement {
             "{PARITY_UNMEASURED_HEADLINE} over every sim_ok trace ({}); a Tier 2 run \
              without comparator bands reports no parity number",
             reason.detail()
-        ))
-    }
-
-    /// Gate reason for a cohort certification that could not compare itself to
-    /// its predecessor.
-    ///
-    /// Cohort movement is the whole point of the artifact, and every rule that
-    /// reads it — the departed-strict-high gate above, the LEFT list, the
-    /// coverage-drop list — is inert without a predecessor to diff against. A
-    /// certification that cannot state its movement must say so and fail, not
-    /// pass with the rules silently switched off. SPEC 0033 puts the predecessor
-    /// in the acceptance contract for exactly this reason; CI supplies it by
-    /// restoring the last certification's table before the gate runs.
-    ///
-    /// Only full-scope runs are held to it: a focused run makes no cohort claim.
-    pub(crate) fn cohort_movement_unverified_reason(&self) -> Option<String> {
-        let cohort = self.cohort()?;
-        if cohort.table.run_scope != BandTableRunScope::Full || cohort.transitions.is_some() {
-            return None;
-        }
-        let detail = cohort.previous_not_diffable.as_deref().unwrap_or(
-            "no previous certification band table was present in the results directory; CI \
-             restores it as msl_band_table_previous.json before the gate",
-        );
-        Some(format!(
-            "cohort movement is unverified: this certification has no predecessor band table to \
-             diff against, so no model can be reported as having left the strict-high band \
-             ({detail})"
-        ))
-    }
-
-    /// Gate reason for models that held the strict-high band and are no longer
-    /// compared.
-    ///
-    /// The aggregate band count cannot catch this: one model leaving and another
-    /// entering leaves `agreement_high` flat while the population behind the
-    /// number changes. A strict-high model that stops being compared is a
-    /// regression unless it moved to a reviewed pointwise-oracle boundary, so
-    /// actionable departures fail the run by name rather than being visible
-    /// only to a reader diffing two artifacts.
-    pub(crate) fn departed_strict_high_reason(&self) -> Option<String> {
-        let departed = self
-            .cohort()?
-            .departed_strict_high()
-            .into_iter()
-            .filter(|left| {
-                !matches!(
-                    left.exit_reason,
-                    ExitReason::Excluded | ExitReason::TraceNonidentifiable
-                )
-            })
-            .collect::<Vec<_>>();
-        if departed.is_empty() {
-            return None;
-        }
-        Some(format!(
-            "{} model(s) left the strict-high band's compared set since the previous \
-             certification: {}",
-            departed.len(),
-            departed
-                .iter()
-                .map(|left| format!(
-                    "{} ({}: {})",
-                    left.model_name,
-                    left.exit_reason.as_str(),
-                    left.exit_detail.as_deref().unwrap_or("no detail recorded")
-                ))
-                .collect::<Vec<_>>()
-                .join("; ")
         ))
     }
 }
@@ -752,7 +666,7 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fixtures::{band_metric, cohort_for, cohort_or_empty, cohort_table, cohort_table_tagged};
+    use fixtures::{band_metric, cohort_for, cohort_or_empty, cohort_table};
 
     fn stats_with(models_compared: usize, agreement_high: usize) -> MslTraceAccuracyStatsBaseline {
         MslTraceAccuracyStatsBaseline {
@@ -1093,130 +1007,6 @@ mod tests {
         assert!(detail.contains("reference reports 4"), "got: {detail}");
     }
 
-    /// A model that held the strict-high band and is no longer compared is a
-    /// regression in the only band the project quotes. It cannot be seen in any
-    /// aggregate — one leaving and one entering holds `agreement_high` flat — so
-    /// the gate reads the per-model table for it.
-    #[test]
-    fn a_strict_high_model_that_left_the_compared_set_fails_the_gate() {
-        let previous = cohort_table_tagged("previous", 2, 0);
-        let current = band_table::derive_band_table(
-            &serde_json::json!({
-                "models": {
-                    "High0": band_metric("High0", 10, 0),
-                    "High2": band_metric("High2", 10, 0)
-                },
-                "missing_trace": {},
-                "skipped": {}
-            }),
-            Some(&serde_json::json!({
-                "git_commit": "cert1234",
-                "sim_target_models": ["High0", "High1", "High2"],
-                "model_results": [
-                    {"model_name": "High0", "phase_reached": "Success", "sim_status": "sim_ok"},
-                    {"model_name": "High1", "phase_reached": "Success", "sim_status": "sim_solver_fail"},
-                    {"model_name": "High2", "phase_reached": "Success", "sim_status": "sim_ok"}
-                ]
-            })),
-            &std::collections::BTreeMap::new(),
-            fixtures::fixture_meta("current"),
-        )
-        .expect("derive current table");
-        let transitions = band_table::diff_band_tables(&previous, &current);
-        // The headline is flat: two strict-high models before, two after.
-        assert_eq!(previous.strict_high_models(), current.strict_high_models());
-
-        let measurement = MslParityMeasurement::measured(
-            gate_input_with(Some("OpenModelica 1.25.0"), Some(stats_with(2, 2))),
-            MslCohortReading {
-                table: current,
-                transitions: Some(transitions),
-                previous_not_diffable: None,
-                persisted: true,
-            },
-        );
-
-        let reason = measurement
-            .departed_strict_high_reason()
-            .expect("a strict-high departure must fail the run");
-        assert!(reason.contains("High1"), "got: {reason}");
-        assert!(reason.contains("sim_failed"), "got: {reason}");
-    }
-
-    /// The departed-strict-high rule reads `transitions`, so a run with no
-    /// predecessor has it switched off. A certification cannot pass with its
-    /// movement rules inert: the absence is itself a gate reason.
-    #[test]
-    fn a_cohort_run_with_no_predecessor_table_fails_rather_than_skipping_the_movement_rules() {
-        let measurement = MslParityMeasurement::measured(
-            gate_input_with(Some("OpenModelica 1.25.0"), Some(stats_with(2, 2))),
-            MslCohortReading {
-                table: cohort_table(2, 0),
-                transitions: None,
-                previous_not_diffable: None,
-                persisted: true,
-            },
-        );
-
-        let reason = measurement
-            .cohort_movement_unverified_reason()
-            .expect("a cohort run that cannot diff must fail, not pass quietly");
-        assert!(
-            reason.contains("no predecessor band table"),
-            "got: {reason}"
-        );
-        assert!(
-            reason.contains("left the strict-high band"),
-            "the reason must name the rule that is inert, got: {reason}"
-        );
-        assert!(
-            measurement.departed_strict_high_reason().is_none(),
-            "the departure rule genuinely cannot fire here; that is the point"
-        );
-    }
-
-    /// A focused run makes no cohort claim, so it is not held to the predecessor
-    /// requirement.
-    #[test]
-    fn a_focused_run_is_not_required_to_have_a_predecessor() {
-        let mut table = cohort_table(2, 0);
-        table.run_scope = BandTableRunScope::Partial;
-        let measurement = MslParityMeasurement::measured(
-            gate_input_with(Some("OpenModelica 1.25.0"), Some(stats_with(2, 2))),
-            MslCohortReading {
-                table,
-                transitions: None,
-                previous_not_diffable: None,
-                persisted: false,
-            },
-        );
-
-        assert!(measurement.cohort_movement_unverified_reason().is_none());
-    }
-
-    /// A predecessor that could not be diffed against is not the same as none,
-    /// and the gate reason carries the stated reason.
-    #[test]
-    fn a_predecessor_that_could_not_be_diffed_names_why_in_the_gate_reason() {
-        let measurement = MslParityMeasurement::measured(
-            gate_input_with(Some("OpenModelica 1.25.0"), Some(stats_with(2, 2))),
-            MslCohortReading {
-                table: cohort_table(2, 0),
-                transitions: None,
-                previous_not_diffable: Some(
-                    "run_scope_mismatch: the previous table is 'partial' over 20 models"
-                        .to_string(),
-                ),
-                persisted: true,
-            },
-        );
-
-        let reason = measurement
-            .cohort_movement_unverified_reason()
-            .expect("a stripe predecessor is still no predecessor");
-        assert!(reason.contains("run_scope_mismatch"), "got: {reason}");
-    }
-
     /// SPEC 0033 requires the skipped and missing counts beside `models_compared`:
     /// the same compared count means something different depending on how many
     /// candidates were dropped to reach it.
@@ -1233,24 +1023,6 @@ mod tests {
         assert!(line.contains("skipped "), "got: {line}");
         assert!(line.contains("missing-trace "), "got: {line}");
         assert!(line.contains("not-attempted "), "got: {line}");
-    }
-
-    #[test]
-    fn a_run_with_no_strict_high_departure_has_no_gate_reason() {
-        let table = cohort_table(2, 0);
-        let transitions = band_table::diff_band_tables(&table, &table);
-
-        let measurement = MslParityMeasurement::measured(
-            gate_input_with(Some("OpenModelica 1.25.0"), Some(stats_with(2, 2))),
-            MslCohortReading {
-                table,
-                transitions: Some(transitions),
-                previous_not_diffable: None,
-                persisted: true,
-            },
-        );
-
-        assert!(measurement.departed_strict_high_reason().is_none());
     }
 
     /// A focused (Tier 1) run that would displace the cohort table writes
@@ -1324,6 +1096,5 @@ mod tests {
         );
         assert!(lines[0].contains("over 3 channels"), "got: {lines:?}");
         assert!(lines[0].contains("was 165"), "got: {lines:?}");
-        assert!(cohort.departed_strict_high().is_empty());
     }
 }

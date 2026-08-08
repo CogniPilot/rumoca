@@ -128,6 +128,7 @@ fn baseline_quality_template() -> MslQualityBaseline {
         runtime_context: None,
         runtime_ratio_stats: None,
         runtime_ratio_cohort_models: None,
+        certified_strict_high_models: IndexSet::new(),
         trace_accuracy_stats: None,
         tensor_preservation: MslTensorPreservationBaseline {
             models_reported: 0,
@@ -1609,6 +1610,14 @@ fn checked_quality_baseline_has_versioned_oracle_policy_migration_and_tensor_kpi
     assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
     assert_eq!(baseline.flatten_models, 444);
     assert_eq!(baseline.tensor_preservation.report_errors, 0);
+    assert_eq!(baseline.certified_strict_high_models.len(), 113);
+    assert_eq!(
+        baseline
+            .trace_accuracy_stats
+            .as_ref()
+            .map(|trace| trace.agreement_high),
+        Some(baseline.certified_strict_high_models.len())
+    );
 
     let migration = baseline
         .metric_schema_migration

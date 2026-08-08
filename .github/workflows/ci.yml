@@ -1154,59 +1154,6 @@ jobs:
             nix-store --import
           nix build .#msl-artifacts --out-link result-msl-artifacts
 
-      # The gate reports cohort movement against the previous full-cohort table, and
-      # a full-scope run that cannot diff fails rather than passing with that
-      # reading switched off (SPEC 0033 acceptance contract). Supply the
-      # predecessor here; the gate is what judges its absence.
-      - name: Restore the predecessor full-cohort band table
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WORKFLOW: ${{ github.workflow }}
-        run: |
-          set -euo pipefail
-          mkdir -p target/msl/results target/msl/predecessor
-          head_branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          base_branch="${GITHUB_BASE_REF:-main}"
-          mapfile -t candidate_runs < <(
-            {
-              gh run list \
-                --workflow "${WORKFLOW}" \
-                --branch "${head_branch}" \
-                --limit 20 \
-                --json databaseId \
-                --jq '.[].databaseId' || true
-              if [[ "${base_branch}" != "${head_branch}" ]]; then
-                gh run list \
-                  --workflow "${WORKFLOW}" \
-                  --branch "${base_branch}" \
-                  --limit 20 \
-                  --json databaseId \
-                  --jq '.[].databaseId' || true
-              fi
-            } | awk '!seen[$0]++'
-          )
-          for candidate_run in "${candidate_runs[@]}"; do
-            if [[ "${candidate_run}" == "${GITHUB_RUN_ID}" ]]; then
-              continue
-            fi
-            candidate_dir="target/msl/predecessor/run-${candidate_run}"
-            mkdir -p "${candidate_dir}"
-            if ! gh run download "${candidate_run}" \
-              --name msl-compatibility-report \
-              --dir "${candidate_dir}"; then
-              continue
-            fi
-            table="${candidate_dir}/msl_band_table.json"
-            if [[ ! -s "${table}" ]]; then
-              continue
-            fi
-            cp "${table}" target/msl/results/msl_band_table_previous.json
-            echo "Predecessor cohort table staged from run ${candidate_run}."
-            exit 0
-          done
-          echo "::warning title=No predecessor band table::no earlier CI run published msl_band_table.json; the quality gate will report cohort movement as unverified"
-
       - name: Merge shards + run quality gate
         run: |
           cargo xtask verify msl-parity \

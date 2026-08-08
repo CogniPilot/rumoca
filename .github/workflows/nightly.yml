@@ -479,47 +479,6 @@ jobs:
           done
           echo "All $EXPECTED_SHARDS shards reported."
 
-      # Cohort movement is only checkable against the previous certification, so
-      # the gate needs that certification's band table on disk before it runs.
-      # Restoring it as `msl_band_table_previous.json` is what lets the
-      # departed-strict-high rule fire at all: without it every nightly is a
-      # first certification, and a model can leave the strict-high band with the
-      # rule that would catch it silently inert. A missing predecessor is not
-      # swallowed here — the gate itself fails on it (SPEC 0033 acceptance
-      # contract), and this step only supplies what it can find.
-      - name: Restore the previous certification's band table
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WORKFLOW: ${{ github.workflow }}
-        run: |
-          set -euo pipefail
-          mkdir -p target/msl/results target/msl/predecessor
-          # The most recent completed sweep on this repository, excluding this
-          # run. Failures here are not fatal: the gate is what rejects a
-          # certification with no predecessor, and it must see the real state
-          # rather than a state this step invented.
-          previous_run="$(gh run list \
-            --workflow "${WORKFLOW}" \
-            --status completed \
-            --limit 20 \
-            --json databaseId \
-            --jq "[.[] | select(.databaseId != ${GITHUB_RUN_ID})] | .[0].databaseId" || true)"
-          if [[ -z "${previous_run:-}" || "${previous_run}" == "null" ]]; then
-            echo "::warning title=No predecessor sweep::no earlier completed sweep was found; the quality gate will report cohort movement as unverified"
-            exit 0
-          fi
-          gh run download "${previous_run}" \
-            --name msl-sweep-reports \
-            --dir target/msl/predecessor || true
-          table="target/msl/predecessor/msl_band_table.json"
-          if [[ -s "$table" ]]; then
-            cp "$table" target/msl/results/msl_band_table_previous.json
-            echo "Predecessor cohort table staged from run ${previous_run}; this run's movement will be diffed against it."
-          else
-            echo "::warning title=No predecessor band table::run ${previous_run} published no msl_band_table.json; the quality gate will report cohort movement as unverified"
-          fi
-
       # `continue-on-error` covers exactly one accepted outcome: the merged set
       # did not clear the pre-cutover ratchet. Everything else the command can
       # get wrong (a stripe that will not merge, a summary it refuses to write)
@@ -733,7 +692,6 @@ jobs:
             target/msl/results/omc_simulation_reference.json
             target/msl/results/sim_trace_comparison.json
             target/msl/results/msl_band_table.json
-            target/msl/results/msl_band_table_previous.json
             target/msl/results/msl_package_pass_rates.md
             target/msl/results/msl_package_trace_accuracy.md
             target/msl/results/mls_contract_coverage.md
