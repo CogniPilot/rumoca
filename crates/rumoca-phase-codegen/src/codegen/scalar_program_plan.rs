@@ -959,7 +959,9 @@ fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
             "fallback_register_count",
             "fallback",
         ],
-        LinearOp::PureCall { .. } => &["kind", "dst", "input_starts", "owner"],
+        LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. } => {
+            &["kind", "dst", "input_starts", "owner"]
+        }
         LinearOp::StoreOutputFoldTensorUpdate { .. } => &[
             "kind",
             "source_base",

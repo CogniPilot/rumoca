@@ -1085,6 +1085,29 @@ fn program_output_dependencies_with_fold(
                     );
                 }
             }
+            LinearOp::PureCallDirectional {
+                dst_start,
+                input_starts,
+                site,
+            } => {
+                let mut dependency = DependencyState::empty();
+                for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+                    for offset in 0..value_type.scalar_count() as usize {
+                        dependency =
+                            dependency.union(register(&registers, start + offset as Reg, span)?);
+                    }
+                }
+                let output_count = site.output_scalar_count().ok_or_else(|| {
+                    sparsity_error("directional pure-call output width overflows", span)
+                })?;
+                for offset in 0..output_count {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.clone(),
+                    );
+                }
+            }
             LinearOp::StoreOutputFoldTensorUpdate {
                 source_base,
                 source_stride,

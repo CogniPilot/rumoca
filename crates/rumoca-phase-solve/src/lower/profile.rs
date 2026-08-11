@@ -51,7 +51,8 @@ pub(super) fn typed_owner_calls(table: &solve::SolvePureCallTable) {
     for owner in table.owners() {
         let mut calls = BTreeMap::<u32, usize>::new();
         let mut scopes = BTreeMap::<u32, TypedCallScopes>::new();
-        collect_typed_calls(owner.body(), &mut calls, &mut scopes, 0, 0);
+        let mut operations = TypedOperationCounts::default();
+        collect_typed_calls(owner.body(), &mut calls, &mut scopes, &mut operations, 0, 0);
         let calls = calls
             .into_iter()
             .map(|(callee, count)| format!("{callee}:{count}"))
@@ -68,9 +69,15 @@ pub(super) fn typed_owner_calls(table: &solve::SolvePureCallTable) {
             .collect::<Vec<_>>()
             .join(",");
         eprintln!(
-            "rumoca-ir-profile kind=typed-owner-calls owner={} direct_ops={} calls=[{calls}] scopes=[{scopes}]",
+            "rumoca-ir-profile kind=typed-owner-calls owner={} direct_ops={} recursive_ops={} scalar_ops={} tensor_ops={} conditionals={} maps={} folds={} calls=[{calls}] scopes=[{scopes}]",
             owner.id().index(),
             owner.body().operations().len(),
+            operations.total,
+            operations.scalar,
+            operations.tensor,
+            operations.conditionals,
+            operations.maps,
+            operations.folds,
         );
     }
 }
@@ -82,16 +89,29 @@ struct TypedCallScopes {
     iterative: usize,
 }
 
+#[derive(Default)]
+struct TypedOperationCounts {
+    total: usize,
+    scalar: usize,
+    tensor: usize,
+    conditionals: usize,
+    maps: usize,
+    folds: usize,
+}
+
 fn collect_typed_calls(
     program: &solve::TypedProgram,
     calls: &mut BTreeMap<u32, usize>,
     scopes: &mut BTreeMap<u32, TypedCallScopes>,
+    operations: &mut TypedOperationCounts,
     conditional_depth: usize,
     iterative_depth: usize,
 ) {
     for operation in program.operations() {
+        operations.total += 1;
         match operation.operation() {
             solve::SolveOperation::Call { owner, .. } => {
+                operations.scalar += 1;
                 *calls.entry(owner.index()).or_default() += 1;
                 let scope = scopes.entry(owner.index()).or_default();
                 if iterative_depth != 0 {
@@ -105,10 +125,12 @@ fn collect_typed_calls(
             solve::SolveOperation::Conditional {
                 if_true, if_false, ..
             } => {
+                operations.conditionals += 1;
                 collect_typed_calls(
                     if_true.body(),
                     calls,
                     scopes,
+                    operations,
                     conditional_depth + 1,
                     iterative_depth,
                 );
@@ -116,27 +138,53 @@ fn collect_typed_calls(
                     if_false.body(),
                     calls,
                     scopes,
+                    operations,
                     conditional_depth + 1,
                     iterative_depth,
                 );
             }
-            solve::SolveOperation::Map { body, .. } => collect_typed_calls(
-                body.body(),
-                calls,
-                scopes,
-                conditional_depth,
-                iterative_depth + 1,
-            ),
-            solve::SolveOperation::Fold { transition, .. } => {
+            solve::SolveOperation::Map { body, .. } => {
+                operations.maps += 1;
                 collect_typed_calls(
-                    transition.body(),
+                    body.body(),
                     calls,
                     scopes,
+                    operations,
                     conditional_depth,
                     iterative_depth + 1,
                 );
             }
-            _ => {}
+            solve::SolveOperation::Fold { transition, .. } => {
+                operations.folds += 1;
+                collect_typed_calls(
+                    transition.body(),
+                    calls,
+                    scopes,
+                    operations,
+                    conditional_depth,
+                    iterative_depth + 1,
+                );
+            }
+            solve::SolveOperation::Scale { .. }
+            | solve::SolveOperation::BroadcastBinary { .. }
+            | solve::SolveOperation::Transpose { .. }
+            | solve::SolveOperation::MatrixMultiply { .. }
+            | solve::SolveOperation::Cross { .. }
+            | solve::SolveOperation::Reduce { .. }
+            | solve::SolveOperation::Identity { .. }
+            | solve::SolveOperation::Diagonal { .. }
+            | solve::SolveOperation::Concatenate { .. }
+            | solve::SolveOperation::Fill { .. }
+            | solve::SolveOperation::ConstructAggregate { .. }
+            | solve::SolveOperation::ProjectElement { .. }
+            | solve::SolveOperation::ProjectElementDynamic { .. }
+            | solve::SolveOperation::ProjectSlice { .. }
+            | solve::SolveOperation::ProjectView { .. }
+            | solve::SolveOperation::SelectElement { .. }
+            | solve::SolveOperation::UpdateElement { .. }
+            | solve::SolveOperation::UpdateSlice { .. }
+            | solve::SolveOperation::UpdateView { .. } => operations.tensor += 1,
+            _ => operations.scalar += 1,
         }
     }
 }

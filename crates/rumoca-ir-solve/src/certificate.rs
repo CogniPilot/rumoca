@@ -262,6 +262,7 @@ fn program_dependencies(program: &[LinearOp]) -> Option<BTreeSet<DependencySlot>
             | LinearOp::Compare { .. }
             | LinearOp::Select { .. }
             | LinearOp::PureCall { .. }
+            | LinearOp::PureCallDirectional { .. }
             | LinearOp::StoreOutputFoldTensorUpdate { .. }
             | LinearOp::StoreOutputFunctionFold { .. }
             | LinearOp::StoreOutputRange { .. }

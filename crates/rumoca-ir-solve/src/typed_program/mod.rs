@@ -5,8 +5,9 @@ mod program;
 mod types;
 
 pub use call::{
-    SolvePureCallIdentity, SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner,
-    SolvePureCallOwnerId, SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
+    SolvePureCallDirectionalOwner, SolvePureCallDirectionalSite, SolvePureCallIdentity,
+    SolvePureCallOutput, SolvePureCallOutputKind, SolvePureCallOwner, SolvePureCallOwnerId,
+    SolvePureCallSite, SolvePureCallTable, SolvePureCallTableBuilder,
 };
 pub use program::{
     ProgramRegister, ProgramSlot, ProgramTensorViewAxis, SolveBinaryOperator, SolveCompareOperator,

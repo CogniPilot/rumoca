@@ -19,9 +19,9 @@ use std::{
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, ScalarProgramRegisterFlow,
     SolveEventActionKind, SolveEventMessagePart, SolveEventPartition,
-    SolveProblemShapeContractError, SolvePureCallSite, SolvePureCallTable, SolveScalarType,
-    SolveStringConversionFormat, SolveStringConversionSource, SolveValueKind, SolveValueType,
-    UnaryOp, resolve_indexed_slot,
+    SolveProblemShapeContractError, SolvePureCallDirectionalSite, SolvePureCallSite,
+    SolvePureCallTable, SolveScalarType, SolveStringConversionFormat, SolveStringConversionSource,
+    SolveValueKind, SolveValueType, UnaryOp, resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
@@ -69,6 +69,7 @@ pub use table_runtime::{
 };
 pub use typed_program::{
     TypedProgramEvalError, TypedValue, TypedValueConstructionError, eval_pure_call,
+    eval_pure_call_directional,
 };
 pub use update_rows::{
     UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_value_exact,
@@ -2636,6 +2637,21 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                     self.set(dst_start + offset as Reg, value)?;
                 }
             }
+            LinearOp::PureCallDirectional {
+                dst_start,
+                input_starts,
+                site,
+            } => {
+                let values = eval_pure_call_directional_payload(
+                    self.input.context.pure_calls,
+                    &site,
+                    &input_starts,
+                    |register| self.get(register),
+                )?;
+                for (offset, value) in values.into_iter().enumerate() {
+                    self.set(dst_start + offset as Reg, value)?;
+                }
+            }
             LinearOp::StoreOutputFoldTensorUpdate {
                 source_base,
                 source_stride,
@@ -3256,6 +3272,20 @@ fn eval_row_prepared_fast(
                 site,
             } => {
                 let values = eval_pure_call_payload(
+                    input.context.pure_calls,
+                    site,
+                    input_starts,
+                    |register| Ok(regs[register as usize]),
+                )?;
+                regs[*dst_start as usize..*dst_start as usize + values.len()]
+                    .copy_from_slice(&values);
+            }
+            LinearOp::PureCallDirectional {
+                dst_start,
+                input_starts,
+                site,
+            } => {
+                let values = eval_pure_call_directional_payload(
                     input.context.pure_calls,
                     site,
                     input_starts,
@@ -4108,6 +4138,7 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::GuardedFunctionFold { .. } => "GuardedFunctionFold",
         LinearOp::FunctionConditional { .. } => "FunctionConditional",
         LinearOp::PureCall { .. } => "PureCall",
+        LinearOp::PureCallDirectional { .. } => "PureCallDirectional",
         LinearOp::StoreOutputFoldTensorUpdate { .. } => "StoreOutputFoldTensorUpdate",
         LinearOp::StoreOutputFunctionFold { .. } => "StoreOutputFunctionFold",
         LinearOp::StoreOutputRange { .. } => "StoreOutputRange",
@@ -4127,8 +4158,54 @@ fn eval_pure_call_payload(
     if !table.matches_site(site) || input_starts.len() != site.inputs().len() {
         return Err(invalid_row("pure-call site does not match its model owner"));
     }
-    let mut arguments = Vec::with_capacity(site.inputs().len());
-    for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
+    eval_typed_call_payload(
+        table,
+        site.owner(),
+        site.inputs(),
+        site.output_scalar_count(),
+        input_starts,
+        &mut read,
+        false,
+    )
+}
+
+fn eval_pure_call_directional_payload(
+    table: Option<&SolvePureCallTable>,
+    site: &SolvePureCallDirectionalSite,
+    input_starts: &[Reg],
+    mut read: impl FnMut(Reg) -> Result<f64, EvalSolveError>,
+) -> Result<Vec<f64>, EvalSolveError> {
+    let table = table.ok_or(EvalSolveError::MissingRuntimeState {
+        operation: "PureCallDirectional table",
+    })?;
+    if !table.matches_directional_site(site) || input_starts.len() != site.inputs().len() {
+        return Err(invalid_row(
+            "directional pure-call site does not match its model owner",
+        ));
+    }
+    eval_typed_call_payload(
+        table,
+        site.owner(),
+        site.inputs(),
+        site.output_scalar_count(),
+        input_starts,
+        &mut read,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_typed_call_payload(
+    table: &SolvePureCallTable,
+    owner: rumoca_ir_solve::SolvePureCallOwnerId,
+    inputs: &[SolveValueType],
+    output_count: Option<usize>,
+    input_starts: &[Reg],
+    read: &mut impl FnMut(Reg) -> Result<f64, EvalSolveError>,
+    directional: bool,
+) -> Result<Vec<f64>, EvalSolveError> {
+    let mut arguments = Vec::with_capacity(inputs.len());
+    for (&start, value_type) in input_starts.iter().zip(inputs) {
         let mut elements = Vec::with_capacity(value_type.scalar_count() as usize);
         for offset in 0..value_type.scalar_count() as usize {
             let register =
@@ -4144,11 +4221,14 @@ fn eval_pure_call_payload(
                 .map_err(|error| invalid_row(error.to_string()))?,
         );
     }
-    let outputs = typed_program::eval_pure_call(table, site.owner(), &arguments)
-        .map_err(|error| invalid_row(error.to_string()))?;
+    let outputs = if directional {
+        typed_program::eval_pure_call_directional(table, owner, &arguments)
+    } else {
+        typed_program::eval_pure_call(table, owner, &arguments)
+    }
+    .map_err(|error| invalid_row(error.to_string()))?;
     let mut flattened = Vec::with_capacity(
-        site.output_scalar_count()
-            .ok_or_else(|| invalid_row("pure-call output width overflows"))?,
+        output_count.ok_or_else(|| invalid_row("pure-call output width overflows"))?,
     );
     for output in outputs {
         flattened.extend(output.elements().iter().copied().map(typed_kind_to_scalar));

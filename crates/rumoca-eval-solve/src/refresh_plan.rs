@@ -1188,6 +1188,7 @@ fn parameter_static_refresh_program(
         | solve::LinearOp::Compare { .. }
         | solve::LinearOp::Select { .. }
         | solve::LinearOp::PureCall { .. }
+        | solve::LinearOp::PureCallDirectional { .. }
         | solve::LinearOp::StoreOutputFoldTensorUpdate { .. }
         | solve::LinearOp::StoreOutputRange { .. }
         | solve::LinearOp::StoreOutput { .. } => true,

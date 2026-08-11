@@ -523,6 +523,69 @@ mod tests {
     }
 
     #[test]
+    fn compiled_directional_owner_executes_checked_typed_jvp() {
+        let span = fixture_span();
+        let provenance = span
+            .require_provenance("Cranelift directional owner fixture")
+            .expect("fixture span is source-backed");
+        let profile = rumoca_ir_solve::SolveArithmeticProfile::construct(
+            rumoca_ir_solve::SolveRealFormat::Binary64,
+            rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
+            rumoca_ir_solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
+        );
+        let real = rumoca_ir_solve::SolveValueType::scalar(rumoca_ir_solve::SolveScalarType::real(
+            profile,
+        ));
+        let table = rumoca_ir_solve::SolvePureCallTable::construct(profile, |table| {
+            table.add_owner(
+                rumoca_ir_solve::SolvePureCallIdentity::issued(NonZeroU64::new(3).unwrap()),
+                vec![real.clone()],
+                vec![rumoca_ir_solve::SolvePureCallOutput::result(real.clone())],
+                span,
+                |builder, inputs, outputs| {
+                    let input = builder.load(inputs[0], span)?;
+                    let square = builder.binary(
+                        rumoca_ir_solve::SolveBinaryOperator::Multiply,
+                        input,
+                        input,
+                        span,
+                    )?;
+                    builder.store(outputs[0], square, span)
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let site = table.owners()[0]
+            .call_site()
+            .directional()
+            .expect("square owner has a directional relation")
+            .clone();
+        let rows = ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 3.0 },
+                LinearOp::Const { dst: 1, value: 1.0 },
+                LinearOp::PureCallDirectional {
+                    dst_start: 2,
+                    input_starts: Box::new([0, 1]),
+                    site,
+                },
+                LinearOp::StoreOutput { src: 3 },
+            ]],
+            provenance,
+        )
+        .unwrap();
+        let pure_calls = compile_pure_call_table(&table).unwrap();
+        let compiled =
+            compile_expression_scalar_program_block_with_pure_calls(&rows, &pure_calls).unwrap();
+        let mut output = [0.0];
+
+        compiled.call(&[], &[], 0.0, &mut output).unwrap();
+
+        assert_eq!(output, [6.0]);
+    }
+
+    #[test]
     fn compiled_conditional_projections_share_issued_native_call_storage() {
         use rumoca_ir_solve::{
             SolveArithmeticProfile, SolveBinaryOperator, SolveIntegerDomain, SolvePureCallIdentity,

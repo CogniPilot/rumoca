@@ -172,13 +172,54 @@ pub fn eval_pure_call(
     eval_owner(table, owner, arguments)
 }
 
+/// Evaluate the construction-issued compact directional relation of one
+/// typed owner. Arguments and results use the directional site's aggregate
+/// primal/tangent ABI; tensor coordinates are materialized only as payload.
+pub fn eval_pure_call_directional(
+    table: &SolvePureCallTable,
+    owner: SolvePureCallOwnerId,
+    arguments: &[TypedValue],
+) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    let owner = table
+        .owner(owner)
+        .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
+    eval_directional_owner(table, owner, arguments)
+}
+
+#[derive(Clone, Copy)]
+enum EvaluationMode {
+    Primal,
+    Directional,
+}
+
 fn eval_owner(
     table: &SolvePureCallTable,
     owner: &SolvePureCallOwner,
     arguments: &[TypedValue],
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
     let mut invocations = InvocationScope::new(table);
-    eval_owner_in_scope(table, owner, arguments, &mut invocations)
+    eval_owner_in_scope(
+        table,
+        owner,
+        arguments,
+        &mut invocations,
+        EvaluationMode::Primal,
+    )
+}
+
+fn eval_directional_owner(
+    table: &SolvePureCallTable,
+    owner: &SolvePureCallOwner,
+    arguments: &[TypedValue],
+) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
+    let mut invocations = InvocationScope::new(table);
+    eval_owner_in_scope(
+        table,
+        owner,
+        arguments,
+        &mut invocations,
+        EvaluationMode::Directional,
+    )
 }
 
 fn eval_owner_in_scope(
@@ -186,16 +227,33 @@ fn eval_owner_in_scope(
     owner: &SolvePureCallOwner,
     arguments: &[TypedValue],
     invocations: &mut InvocationScope,
+    mode: EvaluationMode,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
-    validate_arguments(owner, arguments)?;
-    let mut frame = EvalFrame::new(table, owner.body(), invocations);
+    let (inputs, outputs, body) = match mode {
+        EvaluationMode::Primal => (owner.inputs(), owner.outputs(), owner.body()),
+        EvaluationMode::Directional => {
+            let directional =
+                owner
+                    .directional()
+                    .ok_or(TypedProgramEvalError::InvalidCheckedProgram {
+                        operation: "evaluate unavailable directional owner",
+                        provenance: owner.provenance(),
+                    })?;
+            (
+                directional.inputs(),
+                directional.outputs(),
+                directional.body(),
+            )
+        }
+    };
+    validate_arguments(inputs, arguments, owner.provenance())?;
+    let mut frame = EvalFrame::new(table, body, invocations, mode);
     for (slot, value) in frame.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
     frame.run()?;
     let output_start = arguments.len();
-    owner
-        .outputs()
+    outputs
         .iter()
         .enumerate()
         .map(|(output, _)| {
@@ -221,28 +279,31 @@ fn eval_pure_call_with_invocation_counts(
         .owner(owner)
         .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
     let mut invocations = InvocationScope::new(table);
-    let outputs = eval_owner_in_scope(table, owner, arguments, &mut invocations)?;
+    let outputs = eval_owner_in_scope(
+        table,
+        owner,
+        arguments,
+        &mut invocations,
+        EvaluationMode::Primal,
+    )?;
     Ok((outputs, invocations.misses))
 }
 
 fn validate_arguments(
-    owner: &SolvePureCallOwner,
+    inputs: &[SolveValueType],
     arguments: &[TypedValue],
+    provenance: Span,
 ) -> Result<(), TypedProgramEvalError> {
-    let invalid = if owner.inputs().len() != arguments.len() {
-        Some(arguments.len().min(owner.inputs().len()))
+    let invalid = if inputs.len() != arguments.len() {
+        Some(arguments.len().min(inputs.len()))
     } else {
-        owner
-            .inputs()
+        inputs
             .iter()
             .zip(arguments)
             .position(|(expected, actual)| expected != actual.value_type())
     };
     match invalid {
-        Some(index) => Err(TypedProgramEvalError::InvalidArgument {
-            index,
-            provenance: owner.provenance(),
-        }),
+        Some(index) => Err(TypedProgramEvalError::InvalidArgument { index, provenance }),
         None => Ok(()),
     }
 }
@@ -252,6 +313,7 @@ fn eval_region(
     region: &SolveProgramRegion,
     arguments: &[TypedValue],
     invocations: &mut InvocationScope,
+    mode: EvaluationMode,
 ) -> Result<Vec<TypedValue>, TypedProgramEvalError> {
     if region.inputs().len() != arguments.len()
         || region
@@ -265,7 +327,7 @@ fn eval_region(
             provenance: region.provenance(),
         });
     }
-    let mut frame = EvalFrame::new(table, region.body(), invocations);
+    let mut frame = EvalFrame::new(table, region.body(), invocations, mode);
     for (slot, value) in frame.slots.iter_mut().zip(arguments) {
         *slot = Some(value.clone());
     }
@@ -340,6 +402,7 @@ struct EvalFrame<'model, 'scope> {
     table: &'model SolvePureCallTable,
     program: &'model TypedProgram,
     invocations: &'scope mut InvocationScope,
+    mode: EvaluationMode,
     slots: Vec<Option<TypedValue>>,
     registers: Vec<Option<TypedValue>>,
 }
@@ -349,11 +412,13 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
         table: &'model SolvePureCallTable,
         program: &'model TypedProgram,
         invocations: &'scope mut InvocationScope,
+        mode: EvaluationMode,
     ) -> Self {
         Self {
             table,
             program,
             invocations,
+            mode,
             slots: vec![None; program.slots().len()],
             registers: vec![None; program.register_types().len()],
         }
@@ -642,7 +707,13 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                     .collect::<Result<Vec<_>, _>>()?,
             );
             let mut iteration = InvocationScope::new(self.table);
-            carried = eval_region(self.table, transition, &arguments, &mut iteration)?;
+            carried = eval_region(
+                self.table,
+                transition,
+                &arguments,
+                &mut iteration,
+                self.mode,
+            )?;
         }
         if carried.len() != destinations.len() {
             return invalid("transfer compact fold outputs", provenance);
@@ -679,7 +750,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                     .collect::<Result<Vec<_>, _>>()?,
             );
             let mut iteration = InvocationScope::new(self.table);
-            let outputs = eval_region(self.table, body, &arguments, &mut iteration)?;
+            let outputs = eval_region(self.table, body, &arguments, &mut iteration, self.mode)?;
             let [output] = outputs.as_slice() else {
                 return invalid("collect compact map output", provenance);
             };
@@ -719,7 +790,7 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .iter()
             .map(|capture| self.read(*capture, provenance).cloned())
             .collect::<Result<Vec<_>, _>>()?;
-        let outputs = eval_region(self.table, selected, &captures, self.invocations)?;
+        let outputs = eval_region(self.table, selected, &captures, self.invocations, self.mode)?;
         if outputs.len() != destinations.len() {
             return invalid("transfer structured region outputs", provenance);
         }
@@ -987,7 +1058,10 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
             .table
             .owner(owner)
             .ok_or(TypedProgramEvalError::UnknownOwner { owner })?;
-        let outputs = eval_owner(self.table, called, &arguments)?;
+        let outputs = match self.mode {
+            EvaluationMode::Primal => eval_owner(self.table, called, &arguments)?,
+            EvaluationMode::Directional => eval_directional_owner(self.table, called, &arguments)?,
+        };
         self.invocations
             .insert(owner, outputs.clone(), provenance)?;
         self.transfer_call_outputs(outputs, destinations, provenance)

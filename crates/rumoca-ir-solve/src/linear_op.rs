@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::SolvePureCallSite;
+use crate::{SolvePureCallDirectionalSite, SolvePureCallSite};
 
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
@@ -907,6 +907,14 @@ pub enum LinearOp {
         input_starts: Box<[Reg]>,
         site: SolvePureCallSite,
     },
+    /// Invoke the checked compact directional relation of one issued typed
+    /// pure-call owner. Inputs and outputs use its aggregate primal/tangent
+    /// ABI; no function body or tensor coordinate is embedded here.
+    PureCallDirectional {
+        dst_start: Reg,
+        input_starts: Box<[Reg]>,
+        site: SolvePureCallDirectionalSite,
+    },
     /// Produce one aggregate carried output by applying a compact tensor
     /// update to the current carried tuple.
     ///
@@ -1025,6 +1033,7 @@ impl LinearOp {
             Self::GuardedFunctionFold { .. } => "GuardedFunctionFold",
             Self::FunctionConditional { .. } => "FunctionConditional",
             Self::PureCall { .. } => "PureCall",
+            Self::PureCallDirectional { .. } => "PureCallDirectional",
             Self::StoreOutputFoldTensorUpdate { .. } => "StoreOutputFoldTensorUpdate",
             Self::StoreOutputFunctionFold { .. } => "StoreOutputFunctionFold",
             Self::StoreOutputRange { .. } => "StoreOutputRange",
@@ -1070,6 +1079,7 @@ impl LinearOp {
             | Self::GuardedFunctionFold { dst_start, .. }
             | Self::FunctionConditional { dst_start, .. }
             | Self::PureCall { dst_start, .. }
+            | Self::PureCallDirectional { dst_start, .. }
             | Self::MatrixMultiply { dst_start, .. }
             | Self::TensorBinary { dst_start, .. }
             | Self::TensorCross { dst_start, .. }
@@ -1099,6 +1109,9 @@ impl LinearOp {
             }
             Self::FunctionConditional { program, .. } => program.result_count,
             Self::PureCall { site, .. } => site.output_scalar_count().unwrap_or(usize::MAX),
+            Self::PureCallDirectional { site, .. } => {
+                site.output_scalar_count().unwrap_or(usize::MAX)
+            }
             Self::MatrixMultiply {
                 rows,
                 columns,
@@ -1920,6 +1933,29 @@ fn validate_op_sources(
                 let count = value_type.scalar_count() as usize;
                 require_register_range(op_index, "PureCall", start, count, initialized)?;
                 let range_last = register_range_last(op_index, "PureCall", start, count)?;
+                last = Some(last.map_or(range_last, |current: Reg| current.max(range_last)));
+            }
+            Ok(last)
+        }
+        LinearOp::PureCallDirectional {
+            ref input_starts,
+            ref site,
+            ..
+        } => {
+            if input_starts.len() != site.inputs().len()
+                || site.output_scalar_count().is_none_or(|count| count == 0)
+            {
+                return Err(ScalarProgramRegisterError::InvalidPureCall {
+                    op_index,
+                    reason: "typed directional call interface has invalid input or output width",
+                });
+            }
+            let mut last = None;
+            for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
+                let count = value_type.scalar_count() as usize;
+                require_register_range(op_index, "PureCallDirectional", start, count, initialized)?;
+                let range_last =
+                    register_range_last(op_index, "PureCallDirectional", start, count)?;
                 last = Some(last.map_or(range_last, |current: Reg| current.max(range_last)));
             }
             Ok(last)

@@ -4052,12 +4052,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         )>,
         LowerError,
     > {
-        // Continuous programs still require the compact typed JVP owner. Keep
-        // them on the existing path until that owner is construction-complete;
-        // clocked estimator programs need no numerical AD and cut over now.
-        if (self.active_clock.is_none() && !self.call_action_compilation)
-            || !self.function_arguments.is_empty()
-        {
+        // A root call is represented by its issued compact owner in every
+        // execution domain. Calls encountered while constructing an owner's
+        // body remain on the nested-call path so construction establishes the
+        // closed owner graph exactly once.
+        if !self.function_arguments.is_empty() {
             return Ok(None);
         }
         let owner = match self.node(call).operation() {
@@ -4094,6 +4093,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 }
                 LowerError::contract(error.to_string(), span)
             })?;
+        if self.active_clock.is_none()
+            && !self.call_action_compilation
+            && registered.site.directional().is_none()
+        {
+            if profile_ir {
+                eprintln!(
+                    "rumoca-typed-pure-call stage=retain-legacy-no-directional function={} span={span:?}",
+                    self.function_name_for_diagnostic(function)
+                );
+            }
+            return Ok(None);
+        }
         let function_id = function;
         let function = self.view.function(function_id).ok_or_else(|| {
             LowerError::contract("typed pure-call function does not resolve", span)

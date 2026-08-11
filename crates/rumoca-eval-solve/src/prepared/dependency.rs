@@ -408,6 +408,16 @@ impl<'a> YDependencyAnalyzer<'a> {
                 .any(|(start, value_type)| {
                     self.register_range_depends(*start, value_type.scalar_count() as usize)
                 }),
+            LinearOp::PureCallDirectional {
+                input_starts,
+                site,
+                ..
+            } => input_starts
+                .iter()
+                .zip(site.inputs())
+                .any(|(start, value_type)| {
+                    self.register_range_depends(*start, value_type.scalar_count() as usize)
+                }),
             LinearOp::Const { .. }
             | LinearOp::LoadTime { .. }
             | LinearOp::LoadP { .. }

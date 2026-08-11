@@ -1,3 +1,4 @@
+mod directional;
 mod tensor;
 pub(in crate::typed_program) mod wire;
 

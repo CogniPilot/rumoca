@@ -10,7 +10,8 @@ use rumoca_ir_solve::{
 };
 
 use super::{
-    TypedProgramEvalError, TypedValue, eval_pure_call, eval_pure_call_with_invocation_counts,
+    TypedProgramEvalError, TypedValue, eval_pure_call, eval_pure_call_directional,
+    eval_pure_call_with_invocation_counts,
 };
 
 fn span(start: usize) -> Span {
@@ -648,6 +649,208 @@ fn compact_fold_executes_one_transition_owner_over_the_checked_domain() {
 }
 
 #[test]
+fn directional_fold_differentiates_only_the_selected_structured_region() {
+    let arithmetic = profile(SolveRealFormat::Binary64);
+    let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 8,
+            display_name: "i".into(),
+            lower: 1,
+            upper: 3,
+            step: 1,
+        }],
+    };
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            identity(107),
+            vec![real.clone()],
+            vec![SolvePureCallOutput::result(real.clone())],
+            span(610),
+            |builder, inputs, outputs| {
+                let initial = builder.load(inputs[0], span(611))?;
+                let result = builder.fold(
+                    domain,
+                    &[initial],
+                    &[],
+                    span(612),
+                    |transition, carried, _captures, binders, outputs| {
+                        let carried = transition.load(carried[0], span(613))?;
+                        let binder = transition.load(binders[0], span(614))?;
+                        let three = transition
+                            .constant(SolveValue::integer(arithmetic, 3).unwrap(), span(615))?;
+                        let before_last = transition.compare(
+                            SolveCompareOperator::Less,
+                            binder,
+                            three,
+                            span(616),
+                        )?;
+                        let selected = transition.conditional(
+                            before_last,
+                            &[carried],
+                            vec![real.clone()],
+                            span(617),
+                            |region, inputs, outputs| {
+                                let value = region.load(inputs[0], span(618))?;
+                                let two = region
+                                    .constant(SolveValue::real(arithmetic, 2.0), span(619))?;
+                                let value = region.binary(
+                                    SolveBinaryOperator::Multiply,
+                                    value,
+                                    two,
+                                    span(620),
+                                )?;
+                                region.store(outputs[0], value, span(621))
+                            },
+                            |region, inputs, outputs| {
+                                let value = region.load(inputs[0], span(622))?;
+                                let three = region
+                                    .constant(SolveValue::real(arithmetic, 3.0), span(623))?;
+                                let value = region.binary(
+                                    SolveBinaryOperator::Multiply,
+                                    value,
+                                    three,
+                                    span(624),
+                                )?;
+                                region.store(outputs[0], value, span(625))
+                            },
+                        )?;
+                        transition.store(outputs[0], selected[0], span(626))
+                    },
+                )?;
+                builder.store(outputs[0], result[0], span(627))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let value = |number| {
+        TypedValue::construct(
+            real.clone(),
+            vec![real_kind(SolveRealFormat::Binary64, number)],
+        )
+        .unwrap()
+    };
+
+    let outputs =
+        eval_pure_call_directional(&table, table.owners()[0].id(), &[value(5.0), value(1.0)])
+            .unwrap();
+
+    assert_eq!(
+        outputs[0].elements(),
+        [real_kind(SolveRealFormat::Binary64, 60.0)]
+    );
+    assert_eq!(
+        outputs[1].elements(),
+        [real_kind(SolveRealFormat::Binary64, 12.0)]
+    );
+    let directional = table.owners()[0].directional().unwrap();
+    assert!(
+        directional
+            .body()
+            .operations()
+            .iter()
+            .any(|operation| matches!(
+                operation.operation(),
+                rumoca_ir_solve::SolveOperation::Fold { .. }
+            ))
+    );
+}
+
+#[test]
+fn directional_scalar_guards_match_checked_ad_at_singular_values() {
+    let arithmetic = profile(SolveRealFormat::Binary64);
+    let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let value = |number| {
+        TypedValue::construct(
+            real.clone(),
+            vec![real_kind(SolveRealFormat::Binary64, number)],
+        )
+        .unwrap()
+    };
+    let unary_cases = [
+        (SolveUnaryOperator::Asin, 1.0, 0.0, 0.0),
+        (SolveUnaryOperator::Acos, 1.0, 0.0, 0.0),
+        (SolveUnaryOperator::Log, 0.0, 1.0, 0.0),
+        (SolveUnaryOperator::Log10, 0.0, 1.0, 0.0),
+        (SolveUnaryOperator::Sqrt, 0.0, 1.0, 0.0),
+    ];
+    for (case, (operator, primal, tangent, expected_tangent)) in unary_cases.into_iter().enumerate()
+    {
+        let table = SolvePureCallTable::construct(arithmetic, |table| {
+            table.add_owner(
+                identity(200 + case as u64),
+                vec![real.clone()],
+                vec![SolvePureCallOutput::result(real.clone())],
+                span(800 + case * 10),
+                |builder, inputs, outputs| {
+                    let input = builder.load(inputs[0], span(801 + case * 10))?;
+                    let result = builder.unary(operator, input, span(802 + case * 10))?;
+                    builder.store(outputs[0], result, span(803 + case * 10))
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let outputs = eval_pure_call_directional(
+            &table,
+            table.owners()[0].id(),
+            &[value(primal), value(tangent)],
+        )
+        .unwrap();
+        assert_eq!(
+            outputs[1].elements(),
+            [real_kind(SolveRealFormat::Binary64, expected_tangent)]
+        );
+    }
+
+    let binary_cases = [
+        (SolveBinaryOperator::Divide, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0),
+        (SolveBinaryOperator::Power, 0.0, 2.0, 1.0, 0.0, 0.0, 2.0),
+        (SolveBinaryOperator::Power, -2.0, 0.0, 2.0, 1.0, 4.0, 0.0),
+    ];
+    for (case, (operator, lhs, lhs_tangent, rhs, rhs_tangent, expected, expected_tangent)) in
+        binary_cases.into_iter().enumerate()
+    {
+        let table = SolvePureCallTable::construct(arithmetic, |table| {
+            table.add_owner(
+                identity(300 + case as u64),
+                vec![real.clone(), real.clone()],
+                vec![SolvePureCallOutput::result(real.clone())],
+                span(900 + case * 10),
+                |builder, inputs, outputs| {
+                    let lhs = builder.load(inputs[0], span(901 + case * 10))?;
+                    let rhs = builder.load(inputs[1], span(902 + case * 10))?;
+                    let result = builder.binary(operator, lhs, rhs, span(903 + case * 10))?;
+                    builder.store(outputs[0], result, span(904 + case * 10))
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let outputs = eval_pure_call_directional(
+            &table,
+            table.owners()[0].id(),
+            &[
+                value(lhs),
+                value(lhs_tangent),
+                value(rhs),
+                value(rhs_tangent),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            outputs[0].elements(),
+            [real_kind(SolveRealFormat::Binary64, expected)]
+        );
+        assert_eq!(
+            outputs[1].elements(),
+            [real_kind(SolveRealFormat::Binary64, expected_tangent)]
+        );
+    }
+}
+
+#[test]
 fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let matrix = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2, 3]).unwrap();
@@ -732,6 +935,69 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
         outputs[4].elements(),
         [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0].map(real_value)
     );
+}
+
+#[test]
+fn compact_tensor_directional_owner_preserves_aggregate_operations() {
+    let arithmetic = profile(SolveRealFormat::Binary64);
+    let matrix = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2, 3]).unwrap();
+    let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
+    let result = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2]).unwrap();
+    let scalar = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            identity(108),
+            vec![matrix.clone(), vector.clone(), scalar.clone()],
+            vec![
+                SolvePureCallOutput::result(result.clone()),
+                SolvePureCallOutput::result(scalar.clone()),
+            ],
+            span(700),
+            |builder, inputs, outputs| {
+                let matrix = builder.load(inputs[0], span(701))?;
+                let vector = builder.load(inputs[1], span(702))?;
+                let scalar = builder.load(inputs[2], span(703))?;
+                let scaled = builder.scale(matrix, scalar, span(704))?;
+                let product = builder.matrix_multiply(scaled, vector, span(705))?;
+                let sum = builder.reduce(SolveReductionOperator::Sum, product, span(706))?;
+                builder.store(outputs[0], product, span(707))?;
+                builder.store(outputs[1], sum, span(708))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let owner = &table.owners()[0];
+    let directional = owner.directional().expect("tensor owner is differentiable");
+    assert!(
+        directional
+            .body()
+            .operations()
+            .iter()
+            .any(|operation| matches!(
+                operation.operation(),
+                rumoca_ir_solve::SolveOperation::MatrixMultiply { .. }
+            ))
+    );
+    let real_value = |value| real_kind(SolveRealFormat::Binary64, value);
+    let typed = |value_type: SolveValueType, values: &[f64]| {
+        TypedValue::construct(value_type, values.iter().copied().map(real_value).collect()).unwrap()
+    };
+    let arguments = [
+        typed(matrix.clone(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+        typed(matrix, &[0.0; 6]),
+        typed(vector.clone(), &[1.0; 3]),
+        typed(vector, &[0.0; 3]),
+        typed(scalar.clone(), &[2.0]),
+        typed(scalar, &[1.0]),
+    ];
+
+    let outputs = eval_pure_call_directional(&table, owner.id(), &arguments).unwrap();
+
+    assert_eq!(outputs[0].elements(), [12.0, 30.0].map(real_value));
+    assert_eq!(outputs[1].elements(), [6.0, 15.0].map(real_value));
+    assert_eq!(outputs[2].elements(), [42.0].map(real_value));
+    assert_eq!(outputs[3].elements(), [21.0].map(real_value));
 }
 
 #[test]

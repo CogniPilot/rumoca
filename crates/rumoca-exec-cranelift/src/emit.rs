@@ -1155,8 +1155,12 @@ fn row_uses_table_ops(row: &[LinearOp]) -> bool {
 }
 
 fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
-    row.iter()
-        .any(|operation| matches!(operation, LinearOp::PureCall { .. }))
+    row.iter().any(|operation| {
+        matches!(
+            operation,
+            LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. }
+        )
+    })
 }
 
 struct CraneliftEmitter {
@@ -2125,7 +2129,9 @@ struct RowLowerCtx<'a, 'b> {
     conditional_functions: &'a HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, FuncId>,
     pure_call_functions:
         &'a HashMap<rumoca_ir_solve::SolvePureCallOwnerId, typed_program::PureCallImport>,
-    pure_call_results: HashMap<rumoca_ir_solve::SolvePureCallOwnerId, StackSlot>,
+    // Primal and directional helpers for one owner have different result
+    // layouts and therefore cannot share an invocation cache entry.
+    pure_call_results: HashMap<(rumoca_ir_solve::SolvePureCallOwnerId, bool), StackSlot>,
     nested_fold_results: HashMap<NestedFoldCallKey, StackSlot>,
     conditional_results: HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, StackSlot>,
     fold_carried_versions: Vec<u32>,
@@ -2592,6 +2598,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 input_starts,
                 site,
             } => self.lower_pure_call(dst_start, &input_starts, &site),
+            LinearOp::PureCallDirectional {
+                dst_start,
+                input_starts,
+                site,
+            } => self.lower_pure_call_directional(dst_start, &input_starts, &site),
             LinearOp::StoreOutputFoldTensorUpdate { .. }
             | LinearOp::StoreOutputFunctionFold { .. } => Err(CompileError::Backend(
                 "aggregate fold output escaped function-fold lowering".to_string(),
@@ -2692,12 +2703,16 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         input_starts: &[u32],
         site: &rumoca_ir_solve::SolvePureCallSite,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let import = self.pure_call_functions.get(&site.owner()).ok_or_else(|| {
-            CompileError::Backend(format!(
-                "typed pure-call owner {} has no native helper",
-                site.owner().index()
-            ))
-        })?;
+        let import = self
+            .pure_call_functions
+            .get(&site.owner())
+            .cloned()
+            .ok_or_else(|| {
+                CompileError::Backend(format!(
+                    "typed pure-call owner {} has no native helper",
+                    site.owner().index()
+                ))
+            })?;
         if input_starts.len() != site.inputs().len()
             || import.inputs.as_ref() != site.inputs()
             || import.outputs.as_ref() != site.outputs()
@@ -2706,14 +2721,78 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 "typed pure-call native interface mismatch".to_string(),
             ));
         }
-        if let Some(output_slot) = self.pure_call_results.get(&site.owner()).copied() {
-            self.load_pure_call_results(dst_start, site, output_slot)?;
+        self.lower_typed_pure_call(
+            dst_start,
+            input_starts,
+            site.owner(),
+            site.inputs(),
+            site.outputs(),
+            import.function,
+            false,
+        )
+    }
+
+    fn lower_pure_call_directional(
+        &mut self,
+        dst_start: u32,
+        input_starts: &[u32],
+        site: &rumoca_ir_solve::SolvePureCallDirectionalSite,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let import = self
+            .pure_call_functions
+            .get(&site.owner())
+            .cloned()
+            .ok_or_else(|| {
+                CompileError::Backend(format!(
+                    "typed directional owner {} has no native helper",
+                    site.owner().index()
+                ))
+            })?;
+        let directional = import.directional.ok_or_else(|| {
+            CompileError::Backend(format!(
+                "typed owner {} has no directional native helper",
+                site.owner().index()
+            ))
+        })?;
+        if input_starts.len() != site.inputs().len()
+            || directional.inputs.as_ref() != site.inputs()
+            || directional.outputs.as_ref() != site.outputs()
+        {
+            return Err(CompileError::Backend(
+                "typed directional native interface mismatch".to_string(),
+            ));
+        }
+        self.lower_typed_pure_call(
+            dst_start,
+            input_starts,
+            site.owner(),
+            site.inputs(),
+            site.outputs(),
+            directional.function,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_typed_pure_call(
+        &mut self,
+        dst_start: u32,
+        input_starts: &[u32],
+        owner: rumoca_ir_solve::SolvePureCallOwnerId,
+        inputs: &[rumoca_ir_solve::SolveValueType],
+        outputs: &[rumoca_ir_solve::SolvePureCallOutput],
+        function: FuncId,
+        directional: bool,
+    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        let cache_key = (owner, directional);
+        if let Some(output_slot) = self.pure_call_results.get(&cache_key).copied() {
+            self.load_typed_call_results(dst_start, outputs, output_slot)?;
             return Ok(None);
         }
-        let input_cells = site.inputs().iter().try_fold(0usize, |count, value_type| {
+        let input_cells = inputs.iter().try_fold(0usize, |count, value_type| {
             count.checked_add(value_type.scalar_count() as usize)
         });
-        let output_cells = site.outputs().iter().try_fold(0usize, |count, output| {
+        let output_cells = outputs.iter().try_fold(0usize, |count, output| {
             count.checked_add(output.value_type().scalar_count() as usize)
         });
         let input_cells = input_cells
@@ -2727,7 +2806,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let input_ptr = self.fb.ins().stack_addr(pointer_type, input_slot, 0);
         let output_ptr = self.fb.ins().stack_addr(pointer_type, output_slot, 0);
         let mut input_cell = 0usize;
-        for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+        for (start, value_type) in input_starts.iter().zip(inputs) {
             for offset in 0..value_type.scalar_count() as usize {
                 let register = checked_reg_offset(*start, offset, "typed pure-call input")?;
                 let value = self.lookup(register)?;
@@ -2740,23 +2819,21 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 input_cell += 1;
             }
         }
-        let function = self
-            .module
-            .declare_func_in_func(import.function, self.fb.func);
+        let function = self.module.declare_func_in_func(function, self.fb.func);
         self.fb.ins().call(function, &[input_ptr, output_ptr]);
-        self.pure_call_results.insert(site.owner(), output_slot);
-        self.load_pure_call_results(dst_start, site, output_slot)?;
+        self.pure_call_results.insert(cache_key, output_slot);
+        self.load_typed_call_results(dst_start, outputs, output_slot)?;
         Ok(None)
     }
 
-    fn load_pure_call_results(
+    fn load_typed_call_results(
         &mut self,
         dst_start: u32,
-        site: &rumoca_ir_solve::SolvePureCallSite,
+        outputs: &[rumoca_ir_solve::SolvePureCallOutput],
         output_slot: StackSlot,
     ) -> Result<(), CompileError> {
         let mut output_cell = 0usize;
-        for output in site.outputs() {
+        for output in outputs {
             for _ in 0..output.value_type().scalar_count() {
                 let value = self.fb.ins().stack_load(
                     typed_cell_type(output.value_type().element_type()),
@@ -6368,6 +6445,13 @@ fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
                 LinearOp::PureCall { site, .. } => site.output_scalar_count().ok_or_else(|| {
                     CompileError::Backend("typed pure-call output width overflows".to_string())
                 })?,
+                LinearOp::PureCallDirectional { site, .. } => {
+                    site.output_scalar_count().ok_or_else(|| {
+                        CompileError::Backend(
+                            "typed directional output width overflows".to_string(),
+                        )
+                    })?
+                }
                 LinearOp::MatrixMultiply {
                     rows,
                     columns,
@@ -6499,6 +6583,7 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
             | LinearOp::GuardedFunctionFold { .. }
             | LinearOp::FunctionConditional { .. }
             | LinearOp::PureCall { .. }
+            | LinearOp::PureCallDirectional { .. }
             | LinearOp::Move { .. }
             | LinearOp::LinearSolveComponent { .. }
             | LinearOp::DotProduct { .. }
@@ -6569,6 +6654,7 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
         | LinearOp::GuardedFunctionFold { .. }
         | LinearOp::FunctionConditional { .. }
         | LinearOp::PureCall { .. }
+        | LinearOp::PureCallDirectional { .. }
         | LinearOp::Move { .. }
         | LinearOp::LinearSolveComponent { .. }
         | LinearOp::DotProduct { .. }
@@ -7174,6 +7260,27 @@ fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
             }
             Ok(Some(last as usize))
         }
+        LinearOp::PureCallDirectional {
+            dst_start,
+            input_starts,
+            site,
+        } => {
+            let output_count = site.output_scalar_count().ok_or_else(|| {
+                CompileError::Backend(
+                    "typed directional pure-call output width overflows".to_string(),
+                )
+            })?;
+            let mut last =
+                checked_range_last_reg(dst_start, output_count, "directional pure call output")?;
+            for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+                last = last.max(checked_range_last_reg(
+                    *start,
+                    value_type.scalar_count() as usize,
+                    "directional pure call input",
+                )?);
+            }
+            Ok(Some(last as usize))
+        }
         LinearOp::StoreOutput { src } => Ok(Some(src as usize)),
     }
 }
@@ -7228,6 +7335,7 @@ fn dst_reg(op: LinearOp) -> Option<usize> {
         | LinearOp::GuardedFunctionFold { dst_start, .. }
         | LinearOp::FunctionConditional { dst_start, .. }
         | LinearOp::PureCall { dst_start, .. }
+        | LinearOp::PureCallDirectional { dst_start, .. }
         | LinearOp::MatrixMultiply { dst_start, .. }
         | LinearOp::TensorBinary { dst_start, .. }
         | LinearOp::TensorCross { dst_start, .. } => Some(dst_start as usize),
@@ -7252,6 +7360,19 @@ fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileErr
             if input_starts.len() != site.inputs().len() {
                 return Err(CompileError::Backend(
                     "typed pure-call input ABI mismatch".to_string(),
+                ));
+            }
+            for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+                validate_reg_range_defined(defined, *start, value_type.scalar_count() as usize)?;
+            }
+            Ok(())
+        }
+        LinearOp::PureCallDirectional {
+            input_starts, site, ..
+        } => {
+            if input_starts.len() != site.inputs().len() {
+                return Err(CompileError::Backend(
+                    "typed directional pure-call input ABI mismatch".to_string(),
                 ));
             }
             for (start, value_type) in input_starts.iter().zip(site.inputs()) {

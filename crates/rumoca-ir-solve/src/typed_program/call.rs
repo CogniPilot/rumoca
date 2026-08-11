@@ -84,6 +84,20 @@ pub(super) struct SolvePureCallInterface {
     pub(super) outputs: Box<[SolvePureCallOutput]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SolvePureCallDirectionalInterface {
+    pub(super) id: SolvePureCallOwnerId,
+    pub(super) inputs: Box<[SolveValueType]>,
+    pub(super) outputs: Box<[SolvePureCallOutput]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolvePureCallDirectionalOwner {
+    inputs: Box<[SolveValueType]>,
+    outputs: Box<[SolvePureCallOutput]>,
+    body: TypedProgram,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallOwner {
     id: SolvePureCallOwnerId,
@@ -91,7 +105,20 @@ pub struct SolvePureCallOwner {
     inputs: Box<[SolveValueType]>,
     outputs: Box<[SolvePureCallOutput]>,
     body: TypedProgram,
+    #[serde(skip)]
+    directional: Option<SolvePureCallDirectionalOwner>,
     provenance: Span,
+}
+
+/// Checked compact interface for directional evaluation of one issued owner.
+///
+/// Real aggregate inputs/results are represented by adjacent primal and
+/// tangent typed values. Integer and Boolean values remain primal-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolvePureCallDirectionalSite {
+    owner: SolvePureCallOwnerId,
+    inputs: Box<[SolveValueType]>,
+    outputs: Box<[SolvePureCallOutput]>,
 }
 
 /// Checked compact interface carried by one scalar-program invocation of an
@@ -106,6 +133,7 @@ pub struct SolvePureCallSite {
     owner: SolvePureCallOwnerId,
     inputs: Box<[SolveValueType]>,
     outputs: Box<[SolvePureCallOutput]>,
+    directional: Option<Box<SolvePureCallDirectionalSite>>,
 }
 
 impl SolvePureCallSite {
@@ -126,9 +154,79 @@ impl SolvePureCallSite {
 
     #[must_use]
     pub fn output_scalar_count(&self) -> Option<usize> {
-        self.outputs.iter().try_fold(0usize, |count, output| {
-            count.checked_add(output.value_type.scalar_count() as usize)
-        })
+        output_scalar_count(&self.outputs)
+    }
+
+    #[must_use]
+    pub fn directional(&self) -> Option<&SolvePureCallDirectionalSite> {
+        self.directional.as_deref()
+    }
+}
+
+impl SolvePureCallDirectionalSite {
+    #[must_use]
+    pub const fn owner(&self) -> SolvePureCallOwnerId {
+        self.owner
+    }
+
+    #[must_use]
+    pub const fn inputs(&self) -> &[SolveValueType] {
+        &self.inputs
+    }
+
+    #[must_use]
+    pub const fn outputs(&self) -> &[SolvePureCallOutput] {
+        &self.outputs
+    }
+
+    #[must_use]
+    pub fn output_scalar_count(&self) -> Option<usize> {
+        output_scalar_count(&self.outputs)
+    }
+}
+
+impl SolvePureCallDirectionalOwner {
+    pub(super) fn new(
+        inputs: Vec<SolveValueType>,
+        outputs: Vec<SolvePureCallOutput>,
+        body: TypedProgram,
+    ) -> Self {
+        Self {
+            inputs: inputs.into_boxed_slice(),
+            outputs: outputs.into_boxed_slice(),
+            body,
+        }
+    }
+
+    #[must_use]
+    pub const fn inputs(&self) -> &[SolveValueType] {
+        &self.inputs
+    }
+
+    #[must_use]
+    pub const fn outputs(&self) -> &[SolvePureCallOutput] {
+        &self.outputs
+    }
+
+    #[must_use]
+    pub const fn body(&self) -> &TypedProgram {
+        &self.body
+    }
+
+    fn interface(&self, id: SolvePureCallOwnerId) -> SolvePureCallDirectionalInterface {
+        SolvePureCallDirectionalInterface {
+            id,
+            inputs: self.inputs.clone(),
+            outputs: self.outputs.clone(),
+        }
+    }
+
+    fn call_site(&self, owner: SolvePureCallOwnerId) -> SolvePureCallDirectionalSite {
+        SolvePureCallDirectionalSite {
+            owner,
+            inputs: self.inputs.clone(),
+            outputs: self.outputs.clone(),
+        }
     }
 }
 
@@ -159,6 +257,11 @@ impl SolvePureCallOwner {
     }
 
     #[must_use]
+    pub const fn directional(&self) -> Option<&SolvePureCallDirectionalOwner> {
+        self.directional.as_ref()
+    }
+
+    #[must_use]
     pub const fn provenance(&self) -> Span {
         self.provenance
     }
@@ -177,6 +280,10 @@ impl SolvePureCallOwner {
             owner: self.id,
             inputs: self.inputs.clone(),
             outputs: self.outputs.clone(),
+            directional: self
+                .directional
+                .as_ref()
+                .map(|directional| Box::new(directional.call_site(self.id))),
         }
     }
 }
@@ -239,8 +346,26 @@ impl SolvePureCallTable {
 
     #[must_use]
     pub fn matches_site(&self, site: &SolvePureCallSite) -> bool {
-        self.owner(site.owner)
-            .is_some_and(|owner| owner.inputs == site.inputs && owner.outputs == site.outputs)
+        self.owner(site.owner).is_some_and(|owner| {
+            owner.inputs == site.inputs
+                && owner.outputs == site.outputs
+                && owner
+                    .directional
+                    .as_ref()
+                    .map(|directional| (directional.inputs.as_ref(), directional.outputs.as_ref()))
+                    == site.directional.as_deref().map(|directional| {
+                        (directional.inputs.as_ref(), directional.outputs.as_ref())
+                    })
+        })
+    }
+
+    #[must_use]
+    pub fn matches_directional_site(&self, site: &SolvePureCallDirectionalSite) -> bool {
+        self.owner(site.owner).is_some_and(|owner| {
+            owner.directional.as_ref().is_some_and(|directional| {
+                directional.inputs == site.inputs && directional.outputs == site.outputs
+            })
+        })
     }
 }
 
@@ -309,12 +434,25 @@ impl SolvePureCallTableBuilder {
             build(builder, &input_slots, &output_slots)
         })?;
         validate_owner_body(&body, &inputs, &outputs, provenance)?;
+        let directional_interfaces = self
+            .owners
+            .iter()
+            .map(|owner| {
+                owner
+                    .directional
+                    .as_ref()
+                    .map(|directional| directional.interface(owner.id))
+            })
+            .collect::<Vec<_>>();
+        let directional =
+            body.derive_directional_owner(&inputs, &outputs, directional_interfaces, provenance)?;
         self.owners.push(SolvePureCallOwner {
             id,
             identity,
             inputs: inputs.into_boxed_slice(),
             outputs: outputs.into_boxed_slice(),
             body,
+            directional,
             provenance,
         });
         Ok(id)
@@ -327,6 +465,12 @@ impl SolvePureCallTableBuilder {
             .filter(|owner| owner.id == id)
             .map(SolvePureCallOwner::call_site)
     }
+}
+
+fn output_scalar_count(outputs: &[SolvePureCallOutput]) -> Option<usize> {
+    outputs.iter().try_fold(0usize, |count, output| {
+        count.checked_add(output.value_type.scalar_count() as usize)
+    })
 }
 
 fn require_owner_interface(
@@ -464,12 +608,30 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                 replay_program(&owner.body, &interfaces).map_err(serde::de::Error::custom)?;
             validate_owner_body(&body, &owner.inputs, &owner.outputs, owner.provenance)
                 .map_err(serde::de::Error::custom)?;
+            let directional_interfaces = owners
+                .iter()
+                .map(|prior| {
+                    prior
+                        .directional
+                        .as_ref()
+                        .map(|directional| directional.interface(prior.id))
+                })
+                .collect::<Vec<_>>();
+            let directional = body
+                .derive_directional_owner(
+                    &owner.inputs,
+                    &owner.outputs,
+                    directional_interfaces,
+                    owner.provenance,
+                )
+                .map_err(serde::de::Error::custom)?;
             owners.push(SolvePureCallOwner {
                 id: owner.id,
                 identity: owner.identity,
                 inputs: owner.inputs,
                 outputs: owner.outputs,
                 body,
+                directional,
                 provenance: owner.provenance,
             });
         }

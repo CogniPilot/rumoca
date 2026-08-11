@@ -22,6 +22,111 @@ fn eval_residual_rows(
     output
 }
 
+fn eval_residual_rows_with_pure_calls(
+    rows: &rumoca_ir_solve::ScalarProgramBlock,
+    pure_calls: &rumoca_ir_solve::SolvePureCallTable,
+    y: &[f64],
+    p: &[f64],
+) -> Vec<f64> {
+    let output_count = rows
+        .output_indices()
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |index| index + 1);
+    let mut output = vec![0.0; output_count];
+    rumoca_eval_solve::eval_scalar_program_block_with_context(
+        rows,
+        y,
+        p,
+        0.0,
+        rumoca_eval_solve::RowEvalContext {
+            pure_calls: Some(pure_calls),
+            ..Default::default()
+        },
+        &mut output,
+    )
+    .unwrap();
+    output
+}
+
+#[test]
+fn pure_call_ad_invokes_one_checked_directional_owner() {
+    let source = TestSource::new("Real y; y = square(time);");
+    let owner = source.at(0, 27);
+    let span = owner.span();
+    let provenance = span
+        .require_provenance("typed directional AD fixture")
+        .expect("fixture span is source-backed");
+    let arithmetic = rumoca_ir_solve::SolveArithmeticProfile::construct(
+        rumoca_ir_solve::SolveRealFormat::Binary64,
+        rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
+        rumoca_ir_solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
+    );
+    let real =
+        rumoca_ir_solve::SolveValueType::scalar(rumoca_ir_solve::SolveScalarType::real(arithmetic));
+    let table = rumoca_ir_solve::SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            rumoca_ir_solve::SolvePureCallIdentity::issued(std::num::NonZeroU64::new(1).unwrap()),
+            vec![real.clone()],
+            vec![rumoca_ir_solve::SolvePureCallOutput::result(real.clone())],
+            span,
+            |builder, inputs, outputs| {
+                let input = builder.load(inputs[0], span)?;
+                let square = builder.binary(
+                    rumoca_ir_solve::SolveBinaryOperator::Multiply,
+                    input,
+                    input,
+                    span,
+                )?;
+                builder.store(outputs[0], square, span)
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let primal = vec![vec![
+        LinearOp::LoadY { dst: 0, index: 0 },
+        LinearOp::PureCall {
+            dst_start: 1,
+            input_starts: Box::new([0]),
+            site: table.owners()[0].call_site(),
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ]];
+
+    let derived = crate::lower_scalar_program_block_ad(&primal)
+        .expect("differentiate through the checked typed owner");
+    assert_eq!(
+        derived[0]
+            .iter()
+            .filter(|operation| matches!(operation, LinearOp::PureCallDirectional { .. }))
+            .count(),
+        1
+    );
+    assert!(!derived[0].iter().any(|operation| matches!(
+        operation,
+        LinearOp::FunctionFold { .. } | LinearOp::GuardedFunctionFold { .. }
+    )));
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(derived, provenance).unwrap();
+    let mut output = [0.0];
+    rumoca_eval_solve::eval_scalar_program_block_with_context(
+        &block,
+        &[3.0],
+        &[],
+        0.0,
+        rumoca_eval_solve::RowEvalContext {
+            seed: Some(&[1.0]),
+            pure_calls: Some(&table),
+            ..Default::default()
+        },
+        &mut output,
+    )
+    .unwrap();
+
+    assert_eq!(output, [6.0]);
+}
+
 #[test]
 fn function_conditional_ad_keeps_primal_predicate_and_dual_result_tuple() {
     let conditional = rumoca_ir_solve::FunctionConditionalProgram::checked(
@@ -1237,38 +1342,58 @@ fn function_conditional_captures_preceding_definition_once_per_call_frame() {
     })
     .unwrap();
 
-    let solve = lower_solve_problem(&model).unwrap();
+    let package = lower_solve_package(&model).unwrap();
+    let solve = &package.problem;
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
-    let conditionals = rows
+    let sites = rows
         .programs()
         .iter()
         .map(|row| {
             row.iter()
                 .find_map(|operation| match operation {
-                    LinearOp::FunctionConditional { program, .. } => Some(program),
+                    LinearOp::PureCall { site, .. } => Some(site),
                     _ => None,
                 })
-                .unwrap_or_else(|| {
-                    panic!("function conditional remains one checked owner: {row:#?}")
-                })
+                .unwrap_or_else(|| panic!("function call remains one checked owner: {row:#?}"))
         })
         .collect::<Vec<_>>();
-    let conditional = conditionals[0];
-    assert!(
-        std::sync::Arc::ptr_eq(conditionals[0], conditionals[1]),
+    assert_eq!(
+        sites[0].owner(),
+        sites[1].owner(),
         "independent residual projections retain one exact call-frame owner"
     );
+    let owner = package.pure_calls.owner(sites[0].owner()).unwrap();
+    let (captures, if_true, if_false) = owner
+        .body()
+        .operations()
+        .iter()
+        .find_map(|operation| match operation.operation() {
+            rumoca_ir_solve::SolveOperation::Conditional {
+                captures,
+                if_true,
+                if_false,
+                ..
+            } => Some((captures, if_true, if_false)),
+            _ => None,
+        })
+        .expect("typed owner retains one checked lazy conditional");
 
-    assert_eq!(conditional.capture_count, 1);
     assert_eq!(
-        rows.programs()[0]
+        captures.len(),
+        3,
+        "the checked region captures the condition, input, and preceding definition as typed values"
+    );
+    assert_eq!(
+        owner
+            .body()
+            .operations()
             .iter()
             .filter(|operation| matches!(
-                operation,
-                LinearOp::Binary {
-                    op: rumoca_ir_solve::BinaryOp::Mul,
+                operation.operation(),
+                rumoca_ir_solve::SolveOperation::Binary {
+                    operator: rumoca_ir_solve::SolveBinaryOperator::Multiply,
                     ..
                 }
             ))
@@ -1277,21 +1402,24 @@ fn function_conditional_captures_preceding_definition_once_per_call_frame() {
         "the preceding definition is computed once in the parent"
     );
     assert!(
-        conditional
-            .arms
+        if_true
+            .body()
+            .operations()
             .iter()
-            .flat_map(|arm| arm.condition.iter().chain(&arm.result))
-            .chain(&conditional.fallback)
+            .chain(if_false.body().operations())
             .all(|operation| !matches!(
-                operation,
-                LinearOp::Binary {
-                    op: rumoca_ir_solve::BinaryOp::Mul,
+                operation.operation(),
+                rumoca_ir_solve::SolveOperation::Binary {
+                    operator: rumoca_ir_solve::SolveBinaryOperator::Multiply,
                     ..
                 }
             )),
         "lazy regions load the captured definition instead of rebuilding it"
     );
-    assert_eq!(eval_residual_rows(rows, &[0.0, 0.0], &[]), [-8.0, -8.0]);
+    assert_eq!(
+        eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[0.0, 0.0], &[]),
+        [-8.0, -8.0]
+    );
 }
 
 #[test]
@@ -1383,44 +1511,68 @@ fn function_conditional_captures_tensor_definition_as_one_semantic_range() {
     })
     .unwrap();
 
-    let solve = lower_solve_problem(&model).unwrap();
+    let package = lower_solve_package(&model).unwrap();
+    let solve = &package.problem;
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
-    let conditional = rows.programs()[0]
+    let site = rows.programs()[0]
         .iter()
         .find_map(|operation| match operation {
-            LinearOp::FunctionConditional { program, .. } => Some(program),
+            LinearOp::PureCall { site, .. } => Some(site),
             _ => None,
         })
-        .expect("tensor conditional remains one checked owner");
-    let region_operations = conditional
-        .arms
+        .expect("tensor call remains one checked owner");
+    let owner = package.pure_calls.owner(site.owner()).unwrap();
+    let (captures, destinations, if_true, if_false) = owner
+        .body()
+        .operations()
         .iter()
-        .flat_map(|arm| arm.condition.iter().chain(&arm.result))
-        .chain(&conditional.fallback)
+        .find_map(|operation| match operation.operation() {
+            rumoca_ir_solve::SolveOperation::Conditional {
+                captures,
+                destinations,
+                if_true,
+                if_false,
+                ..
+            } => Some((captures, destinations, if_true, if_false)),
+            _ => None,
+        })
+        .expect("typed owner retains one checked tensor conditional");
+    let region_operations = if_true
+        .body()
+        .operations()
+        .iter()
+        .chain(if_false.body().operations())
         .collect::<Vec<_>>();
 
-    assert_eq!(conditional.capture_count, 3);
-    assert_eq!(conditional.target_widths.as_ref(), &[3]);
+    assert_eq!(
+        captures.len(),
+        3,
+        "condition, input, and definition remain three typed captures rather than seven scalar lanes"
+    );
+    assert_eq!(destinations.len(), 1, "the vector is one typed result");
+    assert_eq!(
+        owner.body().register_types()[destinations[0].index()].dimensions(),
+        &[3]
+    );
     assert_eq!(
         region_operations
             .iter()
             .filter(|operation| matches!(
-                operation,
-                LinearOp::LoadFunctionConditionalCaptureRange { count: 3, .. }
+                operation.operation(),
+                rumoca_ir_solve::SolveOperation::Load { .. }
             ))
             .count(),
-        2,
-        "both result regions consume the definition as one compact tensor range"
+        6,
+        "both result regions load each of their three typed captures exactly once"
     );
-    assert!(
-        region_operations
-            .iter()
-            .all(|operation| !matches!(operation, LinearOp::LoadFunctionConditionalCapture { .. }))
-    );
+    assert!(region_operations.iter().all(|operation| !matches!(
+        operation.operation(),
+        rumoca_ir_solve::SolveOperation::ProjectElement { .. }
+    )));
     assert_eq!(
-        eval_residual_rows(rows, &[0.0; 3], &[1.0, 2.0, 3.0]),
+        eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[0.0; 3], &[1.0, 2.0, 3.0]),
         [-1.0, -2.0, -3.0]
     );
 }
@@ -1530,47 +1682,68 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
-    let conditional = rows.programs()[0]
+    let site = rows.programs()[0]
         .iter()
         .find_map(|operation| match operation {
-            LinearOp::FunctionConditional { program, .. } => Some(program),
+            LinearOp::PureCall { site, .. } => Some(site),
             _ => None,
         })
-        .expect("aggregate conditional expression remains one checked lazy owner");
+        .expect("aggregate call remains one checked owner");
+    let owner = package.pure_calls.owner(site.owner()).unwrap();
+    let (destinations, if_true, if_false) = owner
+        .body()
+        .operations()
+        .iter()
+        .find_map(|operation| match operation.operation() {
+            rumoca_ir_solve::SolveOperation::Conditional {
+                destinations,
+                if_true,
+                if_false,
+                ..
+            } => Some((destinations, if_true, if_false)),
+            _ => None,
+        })
+        .expect("typed owner retains one checked lazy conditional");
 
-    assert!(
-        conditional.owner.is_some(),
-        "an aggregate expression conditional receives an issued semantic owner"
-    );
-    assert_eq!(conditional.target_widths.as_ref(), &[3]);
-    assert!(
-        conditional
-            .arms
-            .iter()
-            .flat_map(|arm| arm.result.iter())
-            .chain(&conditional.fallback)
-            .all(|operation| !matches!(operation, LinearOp::StoreOutput { .. }))
+    assert_eq!(
+        destinations.len(),
+        2,
+        "the tensor result and branch-local assertion predicate form one correlated tuple"
     );
     assert_eq!(
-        conditional
-            .arms
+        owner.body().register_types()[destinations[0].index()].dimensions(),
+        &[3]
+    );
+    assert!(
+        if_true
+            .body()
+            .operations()
             .iter()
-            .flat_map(|arm| arm.result.iter())
-            .chain(&conditional.fallback)
-            .filter(|operation| matches!(
-                operation,
-                LinearOp::StoreOutputRange {
-                    count: 3,
-                    stride: 1,
-                    ..
-                }
+            .chain(if_false.body().operations())
+            .all(|operation| !matches!(
+                operation.operation(),
+                rumoca_ir_solve::SolveOperation::ProjectElement { .. }
             ))
+    );
+    assert_eq!(
+        [if_true, if_false]
+            .iter()
+            .filter(|region| region.body().operations().iter().any(|operation| {
+                let rumoca_ir_solve::SolveOperation::Store { slot, .. } = operation.operation()
+                else {
+                    return false;
+                };
+                region.body().slots()[slot.index()]
+                    .value_type()
+                    .dimensions()
+                    == [3]
+            }))
             .count(),
         2,
         "each lazy branch retains one checked tensor projection until its final output ABI"
     );
     assert_eq!(
-        eval_residual_rows(rows, &[0.0; 3], &[1.0, 2.0, 3.0]),
+        eval_residual_rows_with_pure_calls(rows, &package.pure_calls, &[0.0; 3], &[1.0, 2.0, 3.0]),
         [-1.0, -2.0, -3.0]
     );
     assert_eq!(solve.events.root_conditions.len(), 1);

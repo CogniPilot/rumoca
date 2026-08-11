@@ -947,9 +947,14 @@ impl AdBuilder {
                 capture_start,
                 program,
             } => self.lower_function_conditional(dst_start, capture_start, program),
-            LinearOp::PureCall { .. } => Err(unsupported(
-                "typed pure-call JVP owner has not been constructed",
-            )),
+            LinearOp::PureCall {
+                dst_start,
+                input_starts,
+                site,
+            } => self.lower_pure_call(dst_start, &input_starts, site),
+            LinearOp::PureCallDirectional { .. } => {
+                Err(unsupported("unexpected directional call in primal row"))
+            }
             LinearOp::StoreOutputFoldTensorUpdate {
                 source_base,
                 source_stride,
@@ -1047,6 +1052,125 @@ impl AdBuilder {
             } => self.lower_store_range(start, count, stride),
             LinearOp::StoreOutput { src } => self.lower_store(src),
         }
+    }
+
+    fn lower_pure_call(
+        &mut self,
+        dst_start: Reg,
+        input_starts: &[Reg],
+        site: rumoca_ir_solve::SolvePureCallSite,
+    ) -> Result<(), LowerError> {
+        let directional = site.directional().cloned().ok_or_else(|| {
+            unsupported("typed pure-call directional owner has not been constructed")
+        })?;
+        if input_starts.len() != site.inputs().len() {
+            return Err(unsupported("typed pure-call AD input interface mismatch"));
+        }
+        let mut directional_inputs = Vec::with_capacity(directional.inputs().len());
+        for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
+            let count = value_type.scalar_count() as usize;
+            let mut primals = Vec::with_capacity(count);
+            let mut tangents = Vec::with_capacity(count);
+            for offset in 0..count {
+                let register =
+                    checked_ad_reg_offset(start, offset, self.span, "typed pure-call AD input")?;
+                let value = self.lookup(register)?;
+                primals.push(value.re);
+                tangents.push(value.du);
+            }
+            directional_inputs.push(self.pack_registers(&primals)?);
+            if matches!(
+                value_type.element_type(),
+                rumoca_ir_solve::SolveScalarType::Real { .. }
+            ) {
+                directional_inputs.push(self.pack_registers(&tangents)?);
+            }
+        }
+        if directional_inputs.len() != directional.inputs().len() {
+            return Err(unsupported(
+                "typed pure-call directional input ABI does not match primal owner",
+            ));
+        }
+        let output_count = directional
+            .output_scalar_count()
+            .ok_or_else(|| unsupported("typed pure-call directional output width overflows"))?;
+        let directional_start = self.next_reg;
+        for _ in 0..output_count {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::PureCallDirectional {
+            dst_start: directional_start,
+            input_starts: directional_inputs.into_boxed_slice(),
+            site: directional,
+        });
+
+        let mut primal_offset = 0usize;
+        let mut directional_offset = 0usize;
+        for output in site.outputs() {
+            let count = output.value_type().scalar_count() as usize;
+            let has_tangent = output.kind() == rumoca_ir_solve::SolvePureCallOutputKind::Result
+                && matches!(
+                    output.value_type().element_type(),
+                    rumoca_ir_solve::SolveScalarType::Real { .. }
+                );
+            let primal_start = checked_ad_reg_offset(
+                directional_start,
+                directional_offset,
+                self.span,
+                "typed pure-call directional primal output",
+            )?;
+            directional_offset = directional_offset
+                .checked_add(count)
+                .ok_or_else(|| unsupported("typed pure-call directional output overflow"))?;
+            let tangent_start = has_tangent
+                .then(|| {
+                    checked_ad_reg_offset(
+                        directional_start,
+                        directional_offset,
+                        self.span,
+                        "typed pure-call directional tangent output",
+                    )
+                })
+                .transpose()?;
+            if has_tangent {
+                directional_offset = directional_offset
+                    .checked_add(count)
+                    .ok_or_else(|| unsupported("typed pure-call tangent output overflow"))?;
+            }
+            for element in 0..count {
+                let primal_register = checked_ad_reg_offset(
+                    dst_start,
+                    primal_offset + element,
+                    self.span,
+                    "typed pure-call primal result",
+                )?;
+                let re = checked_ad_reg_offset(
+                    primal_start,
+                    element,
+                    self.span,
+                    "typed pure-call directional primal element",
+                )?;
+                let du = match tangent_start {
+                    Some(start) => checked_ad_reg_offset(
+                        start,
+                        element,
+                        self.span,
+                        "typed pure-call directional tangent element",
+                    )?,
+                    None => self.zero_reg()?,
+                };
+                self.bind(primal_register, DualReg { re, du })?;
+            }
+            primal_offset = primal_offset
+                .checked_add(count)
+                .ok_or_else(|| unsupported("typed pure-call primal output overflow"))?;
+        }
+        if directional_offset != output_count {
+            return Err(unsupported(
+                "typed pure-call directional output ABI does not match primal owner",
+            ));
+        }
+        Ok(())
     }
 
     fn lower_load_fold_carried(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {

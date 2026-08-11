@@ -746,6 +746,7 @@ fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
         | solve::LinearOp::GuardedFunctionFold { .. }
         | solve::LinearOp::FunctionConditional { .. }
         | solve::LinearOp::PureCall { .. }
+        | solve::LinearOp::PureCallDirectional { .. }
         | solve::LinearOp::StoreOutputFoldTensorUpdate { .. }
         | solve::LinearOp::StoreOutputFunctionFold { .. }
         | solve::LinearOp::StoreOutputRange { .. }

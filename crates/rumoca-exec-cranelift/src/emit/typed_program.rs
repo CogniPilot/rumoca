@@ -31,6 +31,14 @@ pub(super) struct PureCallImport {
     pub(super) function: FuncId,
     pub(super) inputs: Box<[solve::SolveValueType]>,
     pub(super) outputs: Box<[solve::SolvePureCallOutput]>,
+    pub(super) directional: Option<Box<PureCallDirectionalImport>>,
+}
+
+#[derive(Clone)]
+pub(super) struct PureCallDirectionalImport {
+    pub(super) function: FuncId,
+    pub(super) inputs: Box<[solve::SolveValueType]>,
+    pub(super) outputs: Box<[solve::SolvePureCallOutput]>,
 }
 
 struct PureCallSymbol {
@@ -45,6 +53,7 @@ struct PureCallSymbol {
 pub(crate) struct CompiledPureCallTable {
     _module: JITModule,
     symbols: Box<[PureCallSymbol]>,
+    directional_symbols: Box<[Option<PureCallSymbol>]>,
     _profile: Option<profiling::ProfileSession>,
 }
 
@@ -58,6 +67,9 @@ impl CompiledPureCallTable {
 
     pub(super) fn register_symbols(&self, builder: &mut JITBuilder) {
         for symbol in &self.symbols {
+            builder.symbol(&symbol.name, symbol.address);
+        }
+        for symbol in self.directional_symbols.iter().flatten() {
             builder.symbol(&symbol.name, symbol.address);
         }
     }
@@ -75,12 +87,30 @@ impl CompiledPureCallTable {
             let function = module
                 .declare_function(&symbol.name, Linkage::Import, &signature)
                 .map_err(to_backend_err)?;
+            let directional = self
+                .directional_symbols
+                .get(symbol.owner.index() as usize)
+                .and_then(Option::as_ref)
+                .map(|directional| {
+                    module
+                        .declare_function(&directional.name, Linkage::Import, &signature)
+                        .map(|function| {
+                            Box::new(PureCallDirectionalImport {
+                                function,
+                                inputs: directional.inputs.clone(),
+                                outputs: directional.outputs.clone(),
+                            })
+                        })
+                        .map_err(to_backend_err)
+                })
+                .transpose()?;
             imports.insert(
                 symbol.owner,
                 PureCallImport {
                     function,
                     inputs: symbol.inputs.clone(),
                     outputs: symbol.outputs.clone(),
+                    directional,
                 },
             );
         }
@@ -149,6 +179,7 @@ struct TableCompiler {
     module: JITModule,
     math: MathImports,
     functions: Vec<FuncId>,
+    directional_functions: Vec<Option<FuncId>>,
     profile_function: Option<FuncId>,
 }
 
@@ -170,11 +201,25 @@ impl TableCompiler {
         signature.params.push(AbiParam::new(pointer_type));
         signature.params.push(AbiParam::new(pointer_type));
         let mut functions = Vec::with_capacity(table.owners().len());
+        let mut directional_functions = Vec::with_capacity(table.owners().len());
         for owner in table.owners() {
             let name = owner_symbol(table_id, owner.id());
             functions.push(
                 module
                     .declare_function(&name, Linkage::Export, &signature)
+                    .map_err(to_backend_err)?,
+            );
+            directional_functions.push(
+                owner
+                    .directional()
+                    .map(|_| {
+                        module.declare_function(
+                            &directional_owner_symbol(table_id, owner.id()),
+                            Linkage::Export,
+                            &signature,
+                        )
+                    })
+                    .transpose()
                     .map_err(to_backend_err)?,
             );
         }
@@ -195,6 +240,7 @@ impl TableCompiler {
             module,
             math: MathImports::default(),
             functions,
+            directional_functions,
             profile_function,
         })
     }
@@ -202,6 +248,9 @@ impl TableCompiler {
     fn compile_all(&mut self, table: &solve::SolvePureCallTable) -> Result<(), CompileError> {
         for owner in table.owners() {
             self.compile_owner(table, owner)?;
+            if owner.directional().is_some() {
+                self.compile_directional_owner(table, owner)?;
+            }
         }
         self.module.finalize_definitions().map_err(to_backend_err)
     }
@@ -215,6 +264,58 @@ impl TableCompiler {
             .functions
             .get(owner.id().index() as usize)
             .ok_or_else(|| CompileError::Backend("typed owner function is missing".into()))?;
+        let functions = self.functions.iter().copied().map(Some).collect::<Vec<_>>();
+        self.compile_program(
+            table,
+            owner.id(),
+            function,
+            owner.body(),
+            owner.inputs().len(),
+            owner.outputs().len(),
+            &functions,
+            false,
+        )
+    }
+
+    fn compile_directional_owner(
+        &mut self,
+        table: &solve::SolvePureCallTable,
+        owner: &solve::SolvePureCallOwner,
+    ) -> Result<(), CompileError> {
+        let directional = owner
+            .directional()
+            .ok_or_else(|| CompileError::Backend("typed directional owner is missing".into()))?;
+        let function = self
+            .directional_functions
+            .get(owner.id().index() as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| CompileError::Backend("typed directional function is missing".into()))?;
+        let functions = self.directional_functions.clone();
+        self.compile_program(
+            table,
+            owner.id(),
+            function,
+            directional.body(),
+            directional.inputs().len(),
+            directional.outputs().len(),
+            &functions,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compile_program(
+        &mut self,
+        table: &solve::SolvePureCallTable,
+        owner: solve::SolvePureCallOwnerId,
+        function: FuncId,
+        program: &solve::TypedProgram,
+        input_count: usize,
+        output_count: usize,
+        functions: &[Option<FuncId>],
+        directional: bool,
+    ) -> Result<(), CompileError> {
         let pointer_type = self.module.target_config().pointer_type();
         let mut context = self.module.make_context();
         context
@@ -245,14 +346,12 @@ impl TableCompiler {
                         CompileError::Backend("typed profile table id overflows i64".into())
                     })?,
                 );
-                let owner = builder
-                    .ins()
-                    .iconst(types::I64, i64::from(owner.id().index()));
+                let owner = builder.ins().iconst(types::I64, i64::from(owner.index()));
                 builder.ins().call(profile_function, &[table, owner]);
             }
-            let layout = ProgramLayout::owner(owner)?;
+            let layout = ProgramLayout::new(program, input_count, output_count)?;
             let tape = create_tape(&mut builder, pointer_type, layout.tape_cells)?;
-            let invocation_layout = InvocationCacheLayout::new(table, owner.body())?;
+            let invocation_layout = InvocationCacheLayout::new(table, program, directional)?;
             if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && invocation_layout.has_entries() {
                 let mut entries = invocation_layout
                     .entries
@@ -262,7 +361,7 @@ impl TableCompiler {
                 entries.sort();
                 eprintln!(
                     "rumoca-ir-profile kind=native-invocation-cache owner={} entries=[{}]",
-                    owner.id().index(),
+                    owner.index(),
                     entries.join(","),
                 );
             }
@@ -279,12 +378,12 @@ impl TableCompiler {
                 output: parameters[1],
                 tape,
                 layout: &layout,
-                functions: &self.functions,
+                functions,
                 invocation_cache,
                 invocation_layout: invocation_cache.map(|_| &invocation_layout),
                 flags: MemFlags::new(),
             };
-            lowerer.lower(owner.body())?;
+            lowerer.lower(program)?;
             builder.ins().return_(&[]);
             builder.finalize();
         }
@@ -302,6 +401,7 @@ impl TableCompiler {
         table: &solve::SolvePureCallTable,
     ) -> Result<CompiledPureCallTable, CompileError> {
         let mut symbols = Vec::with_capacity(table.owners().len());
+        let mut directional_symbols = Vec::with_capacity(table.owners().len());
         for owner in table.owners() {
             let function = self.functions[owner.id().index() as usize];
             let address = self.module.get_finalized_function(function);
@@ -318,10 +418,39 @@ impl TableCompiler {
                 inputs: owner.inputs().into(),
                 outputs: owner.outputs().into(),
             });
+            let directional_symbol = match (
+                owner.directional(),
+                self.directional_functions[owner.id().index() as usize],
+            ) {
+                (Some(directional), Some(function)) => {
+                    let address = self.module.get_finalized_function(function);
+                    if address.is_null() {
+                        return Err(CompileError::Backend(format!(
+                            "Cranelift returned a null typed directional owner {} function",
+                            owner.id().index()
+                        )));
+                    }
+                    Some(PureCallSymbol {
+                        owner: owner.id(),
+                        name: directional_owner_symbol(self.table_id, owner.id()),
+                        address,
+                        inputs: directional.inputs().into(),
+                        outputs: directional.outputs().into(),
+                    })
+                }
+                (None, None) => None,
+                _ => {
+                    return Err(CompileError::Backend(
+                        "typed directional owner/function mismatch".into(),
+                    ));
+                }
+            };
+            directional_symbols.push(directional_symbol);
         }
         Ok(CompiledPureCallTable {
             _module: self.module,
             symbols: symbols.into_boxed_slice(),
+            directional_symbols: directional_symbols.into_boxed_slice(),
             _profile: self
                 .profile_function
                 .is_some()
@@ -332,6 +461,13 @@ impl TableCompiler {
 
 fn owner_symbol(table: usize, owner: solve::SolvePureCallOwnerId) -> String {
     format!("rumoca_typed_pure_call_{table}_{}", owner.index())
+}
+
+fn directional_owner_symbol(table: usize, owner: solve::SolvePureCallOwnerId) -> String {
+    format!(
+        "rumoca_typed_pure_call_directional_{table}_{}",
+        owner.index()
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,6 +512,7 @@ impl InvocationCacheLayout {
     fn new(
         table: &solve::SolvePureCallTable,
         program: &solve::TypedProgram,
+        directional: bool,
     ) -> Result<Self, CompileError> {
         let mut counts = vec![0u32; table.owners().len()];
         collect_non_iterative_calls(program, &mut counts)?;
@@ -393,7 +530,19 @@ impl InvocationCacheLayout {
                 .owners()
                 .get(index)
                 .ok_or_else(|| CompileError::Backend("typed invocation owner is missing".into()))?;
-            let output_cells = owner.outputs().iter().try_fold(0u32, |count, output| {
+            let outputs = if directional {
+                owner
+                    .directional()
+                    .ok_or_else(|| {
+                        CompileError::Backend(
+                            "directional invocation references unavailable owner".into(),
+                        )
+                    })?
+                    .outputs()
+            } else {
+                owner.outputs()
+            };
+            let output_cells = outputs.iter().try_fold(0u32, |count, output| {
                 checked_cells(
                     count,
                     output.value_type().scalar_count(),
@@ -452,10 +601,6 @@ fn collect_non_iterative_calls(
 }
 
 impl ProgramLayout {
-    fn owner(owner: &solve::SolvePureCallOwner) -> Result<Self, CompileError> {
-        Self::new(owner.body(), owner.inputs().len(), owner.outputs().len())
-    }
-
     fn region(region: &solve::SolveProgramRegion) -> Result<Self, CompileError> {
         Self::new(region.body(), region.inputs().len(), region.outputs().len())
     }
@@ -762,7 +907,7 @@ struct ProgramLowerer<'a, 'b> {
     output: Value,
     tape: Value,
     layout: &'a ProgramLayout,
-    functions: &'a [FuncId],
+    functions: &'a [Option<FuncId>],
     invocation_cache: Option<Value>,
     invocation_layout: Option<&'a InvocationCacheLayout>,
     flags: MemFlags,
@@ -1177,9 +1322,11 @@ impl ProgramLowerer<'_, '_> {
         arguments: &[solve::SolveRegisterId],
         output: Value,
     ) -> Result<(), CompileError> {
-        let function = *self
+        let function = self
             .functions
             .get(owner.index() as usize)
+            .copied()
+            .flatten()
             .ok_or_else(|| CompileError::Backend("nested typed call owner is missing".into()))?;
         let argument_cells = arguments.iter().try_fold(0u32, |count, argument| {
             checked_cells(
