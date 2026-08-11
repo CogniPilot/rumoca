@@ -413,6 +413,9 @@ impl<'a> BodyEmitter<'a> {
                     "WASM backend does not yet support discrete random solve-IR ops".to_string(),
                 );
             }
+            LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. } => {
+                return Err("WASM backend does not yet support typed pure-call ops".to_string());
+            }
             LinearOp::Unary { dst, op, arg } => self.emit_unary(dst, op, arg)?,
             LinearOp::Binary { dst, op, lhs, rhs } => self.emit_binary(dst, op, lhs, rhs)?,
             LinearOp::Compare { dst, op, lhs, rhs } => self.emit_compare(dst, op, lhs, rhs)?,
