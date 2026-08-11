@@ -5,6 +5,7 @@
 //! module is `pub` only for that cross-crate consumer; nothing outside
 //! `rumoca-solver`'s runtime should construct or mutate a [`RefreshPlan`].
 
+mod dependency_domain;
 mod schedule;
 mod source_catalog;
 #[cfg(test)]
@@ -20,6 +21,8 @@ use rumoca_ir_solve as solve;
 use crate::prepared::{assignment_shape_reads_y_index, row_y_input_ranges};
 use crate::sparsity::program_output_y_dependencies;
 use crate::{EvalSolveError, PreparedScalarProgramBlock};
+
+use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 
 pub use rumoca_ir_solve::{
     AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
@@ -549,7 +552,7 @@ pub fn build_continuous_refresh_owners(
         problem,
         &catalog,
         &algebraic,
-        root_dependencies,
+        CompactYDependencySet::from_explicit(root_dependencies),
         catalog.positions(),
     )?;
     let event_dependencies = event_consumer_dependencies(problem, state_count)?;
@@ -578,8 +581,8 @@ pub fn build_continuous_refresh_owners(
 fn event_consumer_dependencies(
     problem: &solve::SolveProblem,
     state_count: usize,
-) -> Result<IndexSet<usize>, EvalSolveError> {
-    let mut dependencies = IndexSet::new();
+) -> Result<CompactYDependencySet, EvalSolveError> {
+    let mut dependencies = CompactYDependencySet::default();
     for block in [
         &problem.discrete.runtime_assignment_rhs,
         &problem.discrete.post_commit_assignment_rhs,
@@ -587,15 +590,11 @@ fn event_consumer_dependencies(
         &problem.discrete.rhs,
         &problem.events.action_conditions,
     ] {
-        extend_dependency_set(
-            &mut dependencies,
-            scalar_program_block_dependencies(block, state_count)?,
-            first_block_span(block),
-        )?;
+        dependencies
+            .extend_explicit(scalar_program_block_dependencies(block, state_count)?)
+            .map_err(|error| compact_dependency_error(error, first_block_span(block)))?;
     }
-    extend_dependency_set(
-        &mut dependencies,
-        compute_block_dependencies(&problem.discrete.structured_rhs, state_count)?,
+    let structured_span =
         problem
             .discrete
             .structured_rhs
@@ -607,21 +606,19 @@ fn event_consumer_dependencies(
                 | solve::ComputeNode::LinSolve { span, .. }
                 | solve::ComputeNode::Map { span, .. }
                 | solve::ComputeNode::AffineStencil { span, .. } => Some(*span),
-            }),
-    )?;
+            });
+    dependencies
+        .extend(compute_block_dependencies(
+            &problem.discrete.structured_rhs,
+            state_count,
+        )?)
+        .map_err(|error| compact_dependency_error(error, structured_span))?;
     for program in &problem.discrete.guarded_assignments {
-        for index in row_y_input_ranges(program.program())
-            .into_iter()
-            .flatten()
-            .filter(|index| *index >= state_count)
-        {
-            reserve_refresh_index_set_capacity(
-                &mut dependencies,
-                1,
-                "event guarded dependency set",
-                Some(program.span()),
-            )?;
-            dependencies.insert(index);
+        for mut range in row_y_input_ranges(program.program()) {
+            range.start = range.start.max(state_count);
+            dependencies
+                .insert_range(range)
+                .map_err(|error| compact_dependency_error(error, Some(program.span())))?;
         }
     }
     Ok(dependencies)
@@ -630,16 +627,15 @@ fn event_consumer_dependencies(
 fn compute_block_dependencies(
     block: &solve::ComputeBlock,
     state_count: usize,
-) -> Result<IndexSet<usize>, EvalSolveError> {
-    let mut dependencies = IndexSet::new();
+) -> Result<CompactYDependencySet, EvalSolveError> {
+    block.validate_shape_contract("continuous refresh dependency certificate")?;
+    let mut dependencies = CompactYDependencySet::default();
     for node in &block.nodes {
         match node {
             solve::ComputeNode::ScalarPrograms(block) => {
-                extend_dependency_set(
-                    &mut dependencies,
-                    scalar_program_block_dependencies(block, state_count)?,
-                    first_block_span(block),
-                )?;
+                dependencies
+                    .extend_explicit(scalar_program_block_dependencies(block, state_count)?)
+                    .map_err(|error| compact_dependency_error(error, first_block_span(block)))?;
             }
             solve::ComputeNode::MatMul {
                 lhs_ops,
@@ -655,45 +651,90 @@ fn compute_block_dependencies(
             } => {
                 extend_program_dependencies(&mut dependencies, setup_ops, state_count, Some(*span))?
             }
-            solve::ComputeNode::Map { base_ops, span, .. }
-            | solve::ComputeNode::AffineStencil { base_ops, span, .. } => {
-                extend_program_dependencies(&mut dependencies, base_ops, state_count, Some(*span))?;
+            solve::ComputeNode::Map {
+                domain,
+                base_ops,
+                load_strides,
+                span,
+                ..
+            }
+            | solve::ComputeNode::AffineStencil {
+                domain,
+                base_ops,
+                load_strides,
+                span,
+                ..
+            } => {
+                extend_affine_program_dependencies(
+                    &mut dependencies,
+                    domain,
+                    base_ops,
+                    load_strides,
+                    state_count,
+                    *span,
+                )?;
             }
         }
     }
     Ok(dependencies)
 }
 
-fn extend_program_dependencies(
-    dependencies: &mut IndexSet<usize>,
-    program: &[solve::LinearOp],
+fn extend_affine_program_dependencies(
+    dependencies: &mut CompactYDependencySet,
+    domain: &rumoca_core::StructuredIndexDomain,
+    base_ops: &[solve::LinearOp],
+    load_strides: &[solve::AffineStencilLoadStride],
     state_count: usize,
-    span: Option<rumoca_core::Span>,
+    span: rumoca_core::Span,
 ) -> Result<(), EvalSolveError> {
-    for index in row_y_input_ranges(program)
-        .into_iter()
-        .flatten()
-        .filter(|index| *index >= state_count)
-    {
-        reserve_refresh_index_set_capacity(
-            dependencies,
-            1,
-            "compact compute dependency set",
-            span,
-        )?;
-        dependencies.insert(index);
+    let point_count = domain
+        .scalar_count()
+        .map_err(|error| EvalSolveError::InvalidRow {
+            message: format!("continuous refresh dependency domain is invalid: {error:?}"),
+            span: Some(span),
+        })?;
+    if point_count == 0 {
+        return Ok(());
+    }
+    extend_program_dependencies(dependencies, base_ops, state_count, Some(span))?;
+    for (op_position, operation) in base_ops.iter().enumerate() {
+        let solve::LinearOp::LoadY { index, .. } = operation else {
+            continue;
+        };
+        let terms = load_strides
+            .iter()
+            .filter(|stride| stride.op_position == op_position)
+            .flat_map(|stride| stride.terms.iter());
+        dependencies
+            .insert_affine(*index, domain, terms)
+            .map_err(|error| compact_dependency_error(error, Some(span)))?;
     }
     Ok(())
 }
 
-fn extend_dependency_set(
-    target: &mut IndexSet<usize>,
-    source: IndexSet<usize>,
+fn extend_program_dependencies(
+    dependencies: &mut CompactYDependencySet,
+    program: &[solve::LinearOp],
+    state_count: usize,
     span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
-    reserve_refresh_index_set_capacity(target, source.len(), "refresh dependency set", span)?;
-    target.extend(source);
+    for mut range in row_y_input_ranges(program) {
+        range.start = range.start.max(state_count);
+        dependencies
+            .insert_range(range)
+            .map_err(|error| compact_dependency_error(error, span))?;
+    }
     Ok(())
+}
+
+fn compact_dependency_error(
+    error: CompactYDependencyError,
+    span: Option<rumoca_core::Span>,
+) -> EvalSolveError {
+    EvalSolveError::InvalidRow {
+        message: error.to_string(),
+        span,
+    }
 }
 
 /// Build the algebraic refresh closure required by a collection of scalar
@@ -831,7 +872,7 @@ fn build_dependency_refresh_plan(
         problem,
         implicit_block,
         full_plan,
-        initial_deps,
+        CompactYDependencySet::from_explicit(initial_deps),
         &output_positions,
     )
 }
@@ -840,7 +881,7 @@ fn build_dependency_refresh_plan_from_access<A: RefreshProgramAccess + ?Sized>(
     problem: &solve::SolveProblem,
     implicit_block: &A,
     full_plan: &RefreshPlan,
-    initial_deps: IndexSet<usize>,
+    initial_deps: CompactYDependencySet,
     output_positions: &IndexMap<usize, OutputRowPosition>,
 ) -> Result<RefreshPlan, EvalSolveError> {
     let state_count = problem.solve_layout.state_scalar_count();
@@ -1042,21 +1083,18 @@ fn dependency_blocks_by_target(
 fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
     plan: &RefreshPlan,
     implicit_block: &A,
-    initial_deps: IndexSet<usize>,
+    initial_deps: CompactYDependencySet,
     target_to_row: &IndexMap<usize, solve::RefreshScalarProgramSource>,
     block_by_target: &IndexMap<usize, usize>,
     output_positions: &IndexMap<usize, OutputRowPosition>,
     state_count: usize,
 ) -> Result<(IndexSet<usize>, IndexSet<usize>), EvalSolveError> {
     let span = implicit_block.first_span();
+    let mut stack = initial_deps
+        .into_seed_stack(target_to_row.keys().chain(block_by_target.keys()).copied())
+        .map_err(|error| compact_dependency_error(error, span))?;
     let mut needed = IndexSet::new();
-    reserve_refresh_index_set_capacity(
-        &mut needed,
-        initial_deps.len(),
-        "dependency needed set",
-        span,
-    )?;
-    let mut stack = initial_deps.into_iter().collect::<Vec<_>>();
+    reserve_refresh_index_set_capacity(&mut needed, stack.len(), "dependency needed set", span)?;
     let mut needed_blocks = IndexSet::new();
     reserve_refresh_index_set_capacity(
         &mut needed_blocks,

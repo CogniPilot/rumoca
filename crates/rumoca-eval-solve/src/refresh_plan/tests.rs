@@ -151,3 +151,179 @@ fn lazy_conditional_regions_are_recursively_fail_closed() {
     ]);
     assert!(!certifies(&program));
 }
+
+#[test]
+fn affine_compute_dependencies_include_every_shifted_solver_y_coordinate() {
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 3,
+            step: 1,
+        }],
+    };
+    let block = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::AffineStencil {
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("fixture has a valid dense output map"),
+            domain,
+            base_ops: checked(vec![
+                solve::LinearOp::LoadY { dst: 0, index: 10 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            load_strides: vec![solve::AffineStencilLoadStride {
+                op_position: 0,
+                terms: vec![solve::AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 2,
+                }],
+            }],
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span: rumoca_core::Span::DUMMY,
+        }],
+    };
+
+    let dependencies = compute_block_dependencies(&block, 10)
+        .expect("checked affine metadata has a finite dependency image");
+
+    assert_eq!(
+        dependencies
+            .into_seed_stack(9..16)
+            .expect("issued refresh candidates fit compact storage"),
+        vec![10, 12, 14]
+    );
+}
+
+#[test]
+fn map_dependencies_accumulate_negative_stride_terms_without_expansion() {
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 3,
+            step: 1,
+        }],
+    };
+    let block = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::Map {
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("fixture has a valid dense output map"),
+            domain,
+            base_ops: checked(vec![
+                solve::LinearOp::LoadY { dst: 0, index: 14 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            load_strides: vec![
+                solve::AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -1,
+                    }],
+                },
+                solve::AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -1,
+                    }],
+                },
+            ],
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span: rumoca_core::Span::DUMMY,
+        }],
+    };
+
+    let dependencies = compute_block_dependencies(&block, 10)
+        .expect("checked affine metadata has a finite dependency image");
+
+    assert_eq!(
+        dependencies
+            .into_seed_stack(9..16)
+            .expect("issued refresh candidates fit compact storage"),
+        vec![10, 12, 14]
+    );
+}
+
+#[test]
+fn affine_dependency_storage_is_independent_of_domain_cardinality() {
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 1_000_000,
+            step: 1,
+        }],
+    };
+    let block = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::AffineStencil {
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("fixture has a valid dense output map"),
+            domain,
+            base_ops: checked(vec![
+                solve::LinearOp::LoadY { dst: 0, index: 10 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            load_strides: vec![solve::AffineStencilLoadStride {
+                op_position: 0,
+                terms: vec![solve::AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 2,
+                }],
+            }],
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span: rumoca_core::Span::DUMMY,
+        }],
+    };
+
+    let dependencies = compute_block_dependencies(&block, 10)
+        .expect("million-point affine metadata remains compact");
+
+    assert!(dependencies.may_contain(10));
+    assert!(dependencies.may_contain(2_000_008));
+    assert!(!dependencies.may_contain(2_000_007));
+}
+
+#[test]
+fn empty_affine_domain_has_no_runtime_y_dependencies() {
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 0,
+            step: 1,
+        }],
+    };
+    let block = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::Map {
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("empty domain still has a checked output map"),
+            domain,
+            base_ops: checked(vec![
+                solve::LinearOp::LoadY { dst: 0, index: 10 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: solve::TensorNodeMetadata::default(),
+            span: rumoca_core::Span::DUMMY,
+        }],
+    };
+
+    let dependencies = compute_block_dependencies(&block, 10)
+        .expect("empty affine domains are valid and execute no body");
+
+    assert!(
+        dependencies
+            .into_seed_stack([10])
+            .expect("issued refresh candidates fit compact storage")
+            .is_empty()
+    );
+}
