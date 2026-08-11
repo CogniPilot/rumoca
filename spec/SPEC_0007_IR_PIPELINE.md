@@ -271,7 +271,7 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 explicit arithmetic profile. It is not a mode of `SolveProblem`; rows
 SOLVE-C32–C38 define its complete obligations.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C55` in
+**Contract:** rows `SOLVE-C01`–`SOLVE-C56` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
 Objectives, adjoints, sensitivities, and optimizer projections are derived

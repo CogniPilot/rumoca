@@ -196,6 +196,20 @@ or changing mission semantics earns no roadmap credit.
   schedule boundary, not the Kalman transaction. Artifacts:
   `/tmp/rdd2-c56-event-transaction-runtime.perf.data` and
   `/tmp/rdd2-c56-event-transaction-runtime-{self,inclusive}.txt`.
+- A construction-attribution run maps the hottest schedule to the 83-row
+  continuous plant refresh owner: 1,315 direct operations become 6,272
+  recursive operations because its `bodyAngularVelocityRate[1:3]` row still
+  enters a 95-call legacy `FunctionFoldProgram` tree (65 unique fold programs,
+  3,348 unique fold operations). The typed model call table already owns
+  `LinearAlgebra.solveSPD` and `RigidBody.bodyAngularVelocityRate`; however,
+  continuous scalar lowering explicitly rejects typed calls because the
+  typed-call JVP relation is not constructed, and `ad.rs` fails closed with
+  `typed pure-call JVP owner has not been constructed`. This is the first
+  divergent representation layer. SOLVE-C56 now requires directional
+  evaluation over the sole tensor-native typed owner and a compiler-issued
+  refresh schedule/remainder relation; translating it to another scalar fold
+  body or recognizing equal runtime schedules is forbidden. Artifact:
+  `/tmp/rdd2-c56-refresh-attribution.{json,stderr}`.
 - A source-level matrix-chain experiment changed the continuous log-linear
   controller from `J * K * x` to `J * (K * x)` and replaced
   `J * diagonal(gain) * error` with `J * (gain .* error)`. Best time was
@@ -443,6 +457,17 @@ Review checkpoint R1:
   identity/remainder proofs before sharing work across derivative, root, or
   event coordinates; do not compare the repeated 89-row schedules or fold
   bodies structurally.
+- [x] Specify SOLVE-C56: compiler-issued continuous refresh owners, complete
+  coordinate invalidation, exact construction-issued coverage/remainder
+  relations, construction-time assignment schedules, and directional
+  evaluation of the sole typed pure-call owner without a derivative body or
+  tensor-coordinate expansion.
+- [ ] Construct and wire-replay the SOLVE-C56 owner/relation artifacts; remove
+  runtime `Arc::ptr_eq`, reconstructed `RefreshStageIdentity`, pointer-keyed
+  schedule identity, and runtime exact-assignment program materialization.
+- [ ] Give every reachable typed operation a checked compact directional rule,
+  cut continuous scalar lowering over to issued typed calls, and prove
+  interpreter/native primal/JVP parity including lazy branch and fold cases.
 - [ ] Repeat until the full warmed mission is >=10x faster than real time.
 
 Review checkpoint R2 (repeat after every three material performance changes,
@@ -652,6 +677,7 @@ Review checkpoint R5:
 | 2026-08-11 | R2 SOLVE-C55 aggregate-capture checkpoint (open) | The sole DAE-to-typed expression lowerer previously accepted only function parameters and compact-domain binders. Giving event transactions a second coordinate lowerer would split semantics, while feeding one scalar register per tensor element would violate the range-preserving contract. | Added one closed semantic model-coordinate key catalog to the existing typed lowerer. A captured model tensor remains one typed register, is ordered deterministically by issued coordinate kind/id, and is reconstructed through nested `Conditional`, `Fold`, and `Map` regions without coordinate enumeration. Function-only owners retain an empty model-coordinate environment. `cargo check -p rumoca-ir-solve -p rumoca-phase-solve` passes. Next attach checked storage sources/atomic targets and a transaction body through this same lowering path, then add construction and interpreter/native parity tests. |
 | 2026-08-11 | R2 SOLVE-C55 checked-interface review (open) | Attaching the first transaction body exposed two proof obligations that could not remain implicit: call-scoped predicates must be returned and checked with the same invocation as target values, and the finalized model must prove every transaction site against its sole issued pure-call table. Enabling the whole-problem construction gate also exposed older multi-output-root and conditional-B.1c certificate defects that phase lowering had returned without validation. | Solve schema 55 now gives each eligible transaction an aggregate storage-input ABI, an atomic final-target prefix, and a Boolean assertion-predicate suffix with exact aligned `Assert` actions. Whole-problem validation checks storage/clock bounds; `SolveModel` wire replay visits every scalar and transaction call site and rejects a missing or mismatched owner. The visitor now exposes transactions explicitly. Root refresh roles derive per stored output of one compact multi-output program, and conditional B.1c owners correctly construct as event equations. Solve IR is 160/160 and Phase Solve is 86/86. A fresh real RDD2 canary passes with three eligible transactions: owners 349/350/351; estimator owner 351 has 55 aggregate inputs (397 scalar payload), 28 aggregate targets (286 payload), eight statements, nine predicates/actions, and clock owner 1. Artifact: `/tmp/rdd2-solve-c55-reviewed.json`. Runtime execution, legacy-row suppression, interpreter/native parity, settled certificates, and the one-call-per-tick proof remain open. Strict clippy still reports the roadmap's pre-existing excessive-nesting/too-many-lines debt in legacy DAE/Solve validators; no new transaction module finding is present, so the strict gate is not claimed green. |
 | 2026-08-11 | R2 schema-56 event-transaction cutover review | Runtime suppression could not be inferred from target ranges, spans, bodies, or equal scalar plans. One issued assertion predicate can also have several legacy action projections, so a one-to-one action mapping failed closed on the real RDD2 model. | Solve schema 56 carries a target-aligned legacy-owner inventory, event-plan transaction owner/reverse-bijection proof, and a nonempty exact action-index set per predicate. Whole-model replay proves compact target equality, clock equality, complete scalar/guarded producer-program coverage, unique transaction/action claims, and exact action equality. Runtime adapters derive scalar payloads only at the final ABI/storage boundary, evaluate native owners once on the first tick pass, precheck predicates and target bounds, commit atomically, and hold later passes. Compiled-call errors are fatal rather than silently falling back to the interpreter. The post-review helper split introduces no strict-lint finding in the new event runtime files; the affected suites pass 952 unit tests plus three doctests, and a fresh real schema-56 canary passes. Release best improves `0.457804617 -> 0.396933454 s`; `step` falls `304 -> 102` calls for 101 ticks. Post-cutover perf attributes 65.48% inclusive to assignment schedules, led by schedule 3 at 29.98%; estimator-internal `predict` remains 502 calls. Proceed with the compiler-issued refresh-execution owner/remainder contract, not graph comparison or cache recovery. Artifacts: `/tmp/rdd2-c56-event-transaction-runtime-{self,inclusive}.txt` and `/tmp/rdd2-c56-tests-final.txt`. |
+| 2026-08-11 | R2 continuous refresh/JVP contract review | The 83-row plant refresh schedule owns 29.98% inclusive runtime and reaches a 95-call legacy fold tree even though the model call table already owns the same rigid-body/SPD computation as compact typed programs. The first divergence is deliberate: continuous scalar lowering declines issued typed calls, and scalar AD rejects `PureCall`, because no checked typed directional relation exists. Existing refresh remainders use `Arc::ptr_eq` plus reconstructed row/block identities, while native assignment schedules clone and filter exact-target programs during runtime setup. | Added SOLVE-C56 and construction-catalog obligations before implementation. One compiler-issued owner must now carry exact row/output/stage/target ownership, purpose, complete coordinate invalidation, and construction-issued coverage/remainder relations. Its assignment schedule is constructed once, not recovered at runtime. Continuous AD evaluates the sole typed owner under a checked compact primal/tangent mode: Real payloads carry tangent lanes, conditions stay primal, lazy regions select before differentiating, and tensor/fold/map operations remain compact. Interpreter, Cranelift, GALEC, and Production C share this relation; no derivative body, legacy scalar fold translation, pointer/body identity, expansion, or recollapse is permitted. |
 
 ## Current next action
 
