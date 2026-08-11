@@ -5,6 +5,7 @@ mod function_checks;
 mod function_conditionals;
 mod function_loop_capability;
 mod function_reads;
+mod function_scopes;
 mod runtime_quotients;
 mod storage;
 mod value_types;
@@ -146,6 +147,7 @@ use function_checks::*;
 pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
 };
+pub use function_scopes::{FunctionScopeRelation, FunctionScopeView};
 pub use value_types::ValueTypes;
 use variable_types::VariableTypeCapability;
 
@@ -295,6 +297,14 @@ pub(crate) struct FunctionEntry {
     pub(crate) values: Vec<FunctionValueEntry>,
     output_values: Vec<u32>,
     pub(crate) definitions: Vec<FunctionDefinitionEntry>,
+    /// Region that owned each definition when construction issued it.
+    ///
+    /// Element `n` answers for `definitions[n]`: `None` when the definition was
+    /// issued by the function's top-level body, and `Some(fold)` when the
+    /// lexically innermost open loop was that fold. The vector always advances
+    /// with `definitions`, so a definition identity and its issuing scope are
+    /// one construction fact and cannot drift apart.
+    pub(crate) definition_scopes: Vec<Option<u32>>,
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
     definition: Option<FunctionBodyEntry>,
@@ -333,12 +343,18 @@ struct FunctionBuildState {
     current_values: Vec<Option<u32>>,
     statements: Vec<FunctionStatementWire>,
     carried_targets: rustc_hash::FxHashSet<u32>,
+    /// Lexically innermost open loop, or `None` at the function's top level.
+    ///
+    /// Every definition insertion reads this one field, so the issuing scope is
+    /// recorded by the same act that issues the definition identity.
+    active_fold: Option<u32>,
 }
 
 struct FunctionLoopParent<'dae> {
     domain: Option<DomainId<'dae>>,
     statements: Vec<FunctionStatementWire>,
     carried_targets: rustc_hash::FxHashSet<u32>,
+    active_fold: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -408,6 +424,8 @@ pub(crate) struct FunctionDefinitionWire {
 pub(crate) struct FunctionFoldEntry {
     pub(crate) function: u32,
     pub(crate) ordinal: u32,
+    /// Owner-local ordinal of the loop this one is lexically nested inside.
+    pub(crate) parent: Option<u32>,
     pub(crate) domain: u32,
     pub(crate) targets: Vec<u32>,
     pub(crate) parameter_definitions: Vec<u32>,
@@ -1101,6 +1119,7 @@ impl<'dae> Functions<'_, 'dae> {
             values: Vec::new(),
             output_values: Vec::new(),
             definitions: Vec::new(),
+            definition_scopes: Vec::new(),
             folds: Vec::new(),
             declaration,
             definition: None,
@@ -1265,6 +1284,7 @@ impl<'dae> Functions<'_, 'dae> {
             current_values: vec![None; entry.values.len()],
             statements: Vec::new(),
             carried_targets: rustc_hash::FxHashSet::default(),
+            active_fold: None,
         });
         Ok(FunctionBody {
             function: reservation.function,
@@ -1604,9 +1624,11 @@ impl<'dae> Functions<'_, 'dae> {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let enclosing_fold = function_build_state(self.storage, &parent).active_fold;
         let fold = reserve_function_fold(
             self.storage,
             parent.function,
+            enclosing_fold,
             domain,
             raw_targets,
             initial_values,
@@ -1620,8 +1642,12 @@ impl<'dae> Functions<'_, 'dae> {
             domain: parent.domain,
             statements: std::mem::take(&mut build.statements),
             carried_targets: std::mem::replace(&mut build.carried_targets, seen),
+            active_fold: build.active_fold.replace(fold.ordinal()),
         };
         parent.domain = Some(domain);
+        // The entry parameters below are issued with this fold already open, so
+        // they are recorded as its own region's definitions rather than the
+        // enclosing scope's.
         for (carried, target) in targets.iter().enumerate() {
             let definition = next_function_definition_id(self.storage, parent.function, generated)?;
             let parameter = crate::expression::insert_function_fold_parameter(
@@ -1757,6 +1783,19 @@ impl<'dae> Functions<'_, 'dae> {
         self.storage.function_folds[raw as usize].update_definitions = updates;
         let generated =
             DaeProvenance::generated(DaeGeneration::FunctionLoopLowering, provenance.span())?;
+        let state = loop_body
+            .states
+            .pop()
+            .ok_or(DaeConstructionError::IncompleteDefinition {
+                kind: "function loop parent state",
+                index: loop_body.fold.ordinal(),
+                span: provenance.span(),
+            })?;
+        // The loop's result of each carried target is a value of the scope that
+        // encloses the loop: it is what the statements after the loop read.
+        // Closing the region before those definitions are issued is what makes
+        // the recorded scope state that fact rather than assert it.
+        function_build_state_mut(self.storage, &loop_body.body).active_fold = state.active_fold;
         for (carried, target) in targets.iter().enumerate() {
             let definition =
                 next_function_definition_id(self.storage, loop_body.body.function, generated)?;
@@ -1785,14 +1824,6 @@ impl<'dae> Functions<'_, 'dae> {
             function_build_state_mut(self.storage, &loop_body.body).current_values
                 [*target as usize] = Some(definition.ordinal());
         }
-        let state = loop_body
-            .states
-            .pop()
-            .ok_or(DaeConstructionError::IncompleteDefinition {
-                kind: "function loop parent state",
-                index: loop_body.fold.ordinal(),
-                span: provenance.span(),
-            })?;
         let build = function_build_state_mut(self.storage, &loop_body.body);
         let loop_statements = std::mem::take(&mut build.statements);
         build.statements = state.statements;

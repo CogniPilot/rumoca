@@ -20,7 +20,7 @@ pub(super) struct EnvironmentLayout<'dae> {
         Range<usize>,
     )>,
     pub(super) values: Vec<(
-        dae::FunctionValueId<'dae>,
+        dae::FunctionDefinitionId<'dae>,
         dae::ValueTypeId<'dae>,
         Range<usize>,
     )>,
@@ -41,6 +41,15 @@ pub(super) struct RegionContext<'dae> {
     pub(super) predicate_count: usize,
     pub(super) direct_assertion_count: usize,
 }
+
+/// One value a region publishes, paired with the type the target it lands on
+/// declares.
+///
+/// The region's output slots are typed from those declarations, so a branch
+/// value only becomes a region output after it is taken to that type. Carrying
+/// the pair as one value is what makes the two impossible to separate: there is
+/// no expression here that some caller could publish without its target type.
+pub(super) type RegionOutput<'dae> = (dae::ValueTypeId<'dae>, dae::ExprId<'dae>);
 
 pub(super) fn function_value_type<'dae>(
     view: dae::DaeView<'dae>,
@@ -63,7 +72,7 @@ pub(super) fn lower_region_values<'program, 'dae>(
     outputs: &[solve::ProgramSlot<'program>],
     environment: &EnvironmentLayout<'dae>,
     context: &RegionContext<'dae>,
-    expressions: &[dae::ExprId<'dae>],
+    results: &[RegionOutput<'dae>],
     pending_predicates: &[usize],
     provenance: rumoca_core::Span,
 ) -> Result<(), solve::SolveProgramConstructionError> {
@@ -151,8 +160,16 @@ pub(super) fn lower_region_values<'program, 'dae>(
         direct_assertion_count: context.direct_assertion_count,
     };
     let mut values = Vec::new();
-    for expression in expressions {
-        values.extend(lowerer.expression(*expression)?.leaves);
+    for (value_type, expression) in results {
+        // Publishing at the target's declared type is the same rule the
+        // in-order statement path applies; a correlated group's branch is just
+        // that definition's right-hand side evaluated under a condition. The
+        // region's output slot was typed from that declaration, so the branch
+        // value has to reach it as that type - an Integer branch under a Real
+        // target converts here, exactly as the ordinary statement would.
+        let value = lowerer.expression(*expression)?;
+        let value = lowerer.coerce_value(value, *value_type, provenance)?;
+        values.extend(value.leaves);
     }
     for slot in pending_predicates {
         let predicate = match lowerer.predicate_values.get(*slot).copied().flatten() {
@@ -319,13 +336,20 @@ pub(super) fn lower_region_assignment_chain<'program, 'dae>(
     provenance: rumoca_core::Span,
 ) -> Result<(), solve::SolveProgramConstructionError> {
     if conditions.is_empty() {
+        if value_types.len() != fallback.len() {
+            return Err(solve::SolveProgramConstructionError::InvalidCallOutput { provenance });
+        }
+        let results = value_types
+            .into_iter()
+            .zip(fallback)
+            .collect::<Vec<RegionOutput<'dae>>>();
         return lower_region_values(
             builder,
             inputs,
             outputs,
             environment,
             context,
-            &fallback,
+            &results,
             &pending,
             provenance,
         );

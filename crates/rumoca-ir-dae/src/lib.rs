@@ -148,8 +148,8 @@ pub use events::{
     EventActionOperation, EventActionView, Events, TimeEventOperation, TimeEventView,
 };
 pub use expr_query::{
-    expr_contains_der_of, expr_contains_der_of_any, expr_contains_var, expr_refers_to_var,
-    for_each_expression, for_each_expression_pruned,
+    ExpressionTraversal, expr_contains_der_of, expr_contains_der_of_any, expr_contains_var,
+    expr_refers_to_var, for_each_expression, for_each_expression_pruned,
 };
 pub use expression::{
     BinaryOperator, CoordinateInput, DaeLiteral, ExpressionAt, ExpressionVariability, Expressions,
@@ -170,13 +170,13 @@ pub use model::{
     ExternalArgument, ExternalArgumentView, ExternalFunctionBody, ExternalFunctionView,
     ExternalLanguage, ExternalLinkage, FunctionBody, FunctionConditionalView,
     FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,
-    FunctionParameterView, FunctionPurity, FunctionReservation, FunctionSignature,
-    FunctionStatementView, FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView,
-    Functions, InitializationOwnerView, InputVariability, RangeBoundView, RangeView,
-    RecordFieldLayout, ResidualEquationView, StringConversionFormatView, StructuredFamilyView,
-    SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes,
-    VariableCausality, VariableIdentity, VariableOrigin, VariableReservation, VariableRole,
-    VariableView, Variables,
+    FunctionParameterView, FunctionPurity, FunctionReservation, FunctionScopeRelation,
+    FunctionScopeView, FunctionSignature, FunctionStatementView, FunctionStatements,
+    FunctionValueRole, FunctionValueView, FunctionView, Functions, InitializationOwnerView,
+    InputVariability, RangeBoundView, RangeView, RecordFieldLayout, ResidualEquationView,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
+    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
 pub use model_event_transactions::{
     ModelEventDefinition, ModelEventDefinitionView, ModelEventStep, ModelEventStepView,

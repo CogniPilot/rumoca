@@ -1287,10 +1287,10 @@ impl ExactSizeIterator for FunctionStatements<'_> {}
 
 #[derive(Clone, Copy)]
 pub struct FunctionFoldView<'dae> {
-    dae: &'dae Dae,
-    id: FunctionFoldId<'dae>,
-    entry: &'dae FunctionFoldEntry,
-    marker: PhantomData<&'dae mut &'dae ()>,
+    pub(super) dae: &'dae Dae,
+    pub(super) id: FunctionFoldId<'dae>,
+    pub(super) entry: &'dae FunctionFoldEntry,
+    pub(super) marker: PhantomData<&'dae mut &'dae ()>,
 }
 
 impl<'dae> FunctionFoldView<'dae> {

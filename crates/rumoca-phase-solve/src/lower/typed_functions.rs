@@ -2,6 +2,7 @@
 
 mod assertions;
 mod captures;
+mod folds;
 pub(in crate::lower) mod model_events;
 mod regions;
 mod tensor;
@@ -345,7 +346,7 @@ fn register_call<'dae>(
             {
                 let value = lowerer
                     .function_values
-                    .get(&definition.target())
+                    .get(&definition.id())
                     .cloned()
                     .ok_or(solve::SolveProgramConstructionError::InvalidCallOutput {
                         provenance: definition.provenance().span(),
@@ -556,7 +557,15 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
     builder: &'builder mut solve::TypedProgramBuilder<'program>,
     model_coordinates: HashMap<ModelCoordinateKey<'dae>, LoweredValue<'program, 'dae>>,
     parameters: HashMap<dae::FunctionParameterId<'dae>, LoweredValue<'program, 'dae>>,
-    function_values: HashMap<dae::FunctionValueId<'dae>, LoweredValue<'program, 'dae>>,
+    /// Values of the function's construction-issued SSA definitions.
+    ///
+    /// The key is the definition identity the DAE issued, not the assigned
+    /// value alone: one function value owns a distinct definition for every
+    /// redefinition, for a loop's entry parameter, and for a loop's output.
+    /// Keying by definition is what lets a read name the exact reaching
+    /// definition, so a demand that arrives before its defining statement was
+    /// lowered resolves that definition instead of an unrelated live value.
+    function_values: HashMap<dae::FunctionDefinitionId<'dae>, LoweredValue<'program, 'dae>>,
     fold_parameters: HashMap<(dae::FunctionFoldId<'dae>, u32), LoweredValue<'program, 'dae>>,
     fold_values: HashMap<dae::FunctionFoldId<'dae>, Vec<LoweredValue<'program, 'dae>>>,
     binders: HashMap<(u32, u32), solve::ProgramRegister<'program>>,
@@ -570,6 +579,40 @@ struct ExpressionLowerer<'builder, 'program, 'dae> {
 }
 
 impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
+    /// Value one definition holds, at the type its target declares.
+    ///
+    /// DAE assignment compatibility admits an Integer right-hand side under a
+    /// Real target, so the right-hand side's own type is not the type of the
+    /// definition. Consumers read the definition through the target's declared
+    /// type, which makes the declared type the only correct type to store: this
+    /// is the single place that turns a right-hand side into a definition
+    /// value, so a demand-ordered capture and an in-order statement always
+    /// agree.
+    ///
+    /// Every demand for a definition's value reaches it through the one
+    /// memoizing resolver, `function_definition_value`: the in-order
+    /// `Assignment` statement arm, the reverse-demand capture path, and a
+    /// fold's entry value all call that resolver, so one definition owns one
+    /// value at one type no matter which demand arrives first. A correlated
+    /// conditional group applies the same rule at its region-output boundary,
+    /// where a branch value is taken to its target's declared type before it
+    /// becomes a region output. Each of those four demands is pinned by its own
+    /// regression in `tests.rs` - the ordinary-statement, reverse-demand
+    /// capture, fold-carry, and correlated-branch coercion tests - so bypassing
+    /// this rule at any one of them turns a test red on its own.
+    fn definition_value(
+        &mut self,
+        definition: dae::FunctionDefinitionView<'dae>,
+    ) -> Result<LoweredValue<'program, 'dae>, solve::SolveProgramConstructionError> {
+        let value = self.expression(definition.rhs())?;
+        let target_type = function_value_type(
+            self.view,
+            definition.target(),
+            definition.provenance().span(),
+        )?;
+        self.coerce_value(value, target_type, definition.provenance().span())
+    }
+
     fn statements(
         &mut self,
         statements: dae::FunctionStatements<'dae>,
@@ -577,34 +620,15 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         for statement in statements {
             match statement {
                 dae::FunctionStatementView::Assignment { definition } => {
-                    let value = self.expression(definition.rhs())?;
-                    let target_type = function_value_type(
-                        self.view,
-                        definition.target(),
-                        definition.provenance().span(),
-                    )?;
-                    let value =
-                        self.coerce_value(value, target_type, definition.provenance().span())?;
-                    self.function_values.insert(definition.target(), value);
+                    self.function_definition_value(definition)?;
                 }
                 dae::FunctionStatementView::AssignmentGroup {
                     definitions,
                     conditional: None,
                 } => {
-                    let values = definitions
-                        .iter()
-                        .map(|definition| {
-                            let value = self.expression(definition.rhs())?;
-                            let target_type = function_value_type(
-                                self.view,
-                                definition.target(),
-                                definition.provenance().span(),
-                            )?;
-                            self.coerce_value(value, target_type, definition.provenance().span())
-                                .map(|value| (definition.target(), value))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    self.function_values.extend(values);
+                    for definition in definitions.iter() {
+                        self.function_definition_value(definition)?;
+                    }
                 }
                 dae::FunctionStatementView::Assertion {
                     condition,
@@ -632,13 +656,21 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
                         .view
                         .function_fold(fold)
                         .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-                    if fold.targets().len() != values.len() {
+                    if fold.output_values().len() != values.len() {
                         return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
                             provenance: provenance.span(),
                         });
                     }
                     let domain = fold.domain();
-                    self.function_values.extend(fold.targets().zip(values));
+                    // The loop's exit value of each carried target belongs to
+                    // the output definition the fold issued, not to the
+                    // in-body definitions that produced it.
+                    self.function_values.extend(
+                        fold.output_values()
+                            .iter()
+                            .map(|definition| definition.id())
+                            .zip(values),
+                    );
                     self.loop_assertions(statements, &mut vec![domain], provenance.span())?;
                 }
             }
@@ -728,7 +760,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .structured()
             .clone();
         let body_type = boolean_map_type(self.view, remaining, arithmetic_profile(), provenance)?;
-        let (captures, environment) = self.capture_environment_for([condition]);
+        let (captures, environment) = self.capture_environment_for([condition])?;
         let context = RegionContext {
             view: self.view,
             callees: self.callees.clone(),
@@ -761,223 +793,6 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         )
     }
 
-    fn function_fold(
-        &mut self,
-        fold: dae::FunctionFoldId<'dae>,
-        provenance: rumoca_core::Span,
-    ) -> Result<Vec<LoweredValue<'program, 'dae>>, solve::SolveProgramConstructionError> {
-        if let Some(values) = self.fold_values.get(&fold) {
-            return Ok(values.clone());
-        }
-        let fold_view = self
-            .view
-            .function_fold(fold)
-            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?;
-        let initial_expressions = fold_view.initial_values().rhs_iter().collect::<Vec<_>>();
-        let update_expressions = fold_view.update_values().rhs_iter().collect::<Vec<_>>();
-        let carried_targets = fold_view.targets().collect::<Vec<_>>();
-        if initial_expressions.is_empty()
-            && update_expressions.is_empty()
-            && carried_targets.is_empty()
-        {
-            self.fold_values.insert(fold, Vec::new());
-            return Ok(Vec::new());
-        }
-        if initial_expressions.is_empty() || initial_expressions.len() != update_expressions.len() {
-            return Err(solve::SolveProgramConstructionError::InvalidFold { provenance });
-        }
-        if carried_targets.len() != initial_expressions.len() {
-            return Err(solve::SolveProgramConstructionError::InvalidFold { provenance });
-        }
-        if !self
-            .pending_predicates(update_expressions.iter().copied())
-            .is_empty()
-        {
-            return Err(solve::SolveProgramConstructionError::InvalidCallInterface { provenance });
-        }
-        let mut initial = Vec::with_capacity(initial_expressions.len());
-        let mut initial_flat = Vec::new();
-        let mut carried_layout = Vec::with_capacity(initial_expressions.len());
-        for (ordinal, expression) in initial_expressions.iter().copied().enumerate() {
-            let value = self.expression(expression)?;
-            let start = initial_flat.len();
-            initial_flat.extend(value.leaves.iter().copied());
-            let carried = u32::try_from(ordinal).map_err(|_| {
-                solve::SolveProgramConstructionError::IdentityOverflow { provenance }
-            })?;
-            carried_layout.push((carried, value.value_type, start..initial_flat.len()));
-            initial.push(value);
-        }
-        let domain_id = fold_view.domain();
-        let domain = self
-            .view
-            .domain(domain_id)
-            .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
-            .structured()
-            .clone();
-        let (captures, environment) = self.capture_environment_for_fold(
-            update_expressions.iter().copied(),
-            fold,
-            &carried_targets,
-        );
-        let context = RegionContext {
-            view: self.view,
-            callees: self.callees.clone(),
-            predicate_ranges: self.predicate_ranges.clone(),
-            predicate_count: self.predicate_values.len(),
-            direct_assertion_count: self.direct_assertion_count,
-        };
-        let transition_layout = carried_layout.clone();
-        let destinations = self.builder.fold(
-            domain,
-            &initial_flat,
-            &captures,
-            provenance,
-            move |builder, carried, captures, binders, outputs| {
-                let loaded_captures = captures
-                    .iter()
-                    .map(|capture| builder.load(*capture, provenance))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let parameters = environment
-                    .parameters
-                    .iter()
-                    .map(|(id, value_type, range)| {
-                        (
-                            *id,
-                            LoweredValue {
-                                value_type: *value_type,
-                                leaves: loaded_captures[range.clone()].to_vec(),
-                            },
-                        )
-                    })
-                    .collect();
-                let model_coordinates = environment
-                    .model_coordinates
-                    .iter()
-                    .map(|(key, value_type, range)| {
-                        (
-                            *key,
-                            LoweredValue {
-                                value_type: *value_type,
-                                leaves: loaded_captures[range.clone()].to_vec(),
-                            },
-                        )
-                    })
-                    .collect();
-                let mut function_values = environment
-                    .values
-                    .iter()
-                    .map(|(id, value_type, range)| {
-                        (
-                            *id,
-                            LoweredValue {
-                                value_type: *value_type,
-                                leaves: loaded_captures[range.clone()].to_vec(),
-                            },
-                        )
-                    })
-                    .collect::<HashMap<_, _>>();
-                let mut fold_parameters = environment
-                    .fold_parameters
-                    .iter()
-                    .map(|(fold, carried, value_type, range)| {
-                        (
-                            (*fold, *carried),
-                            LoweredValue {
-                                value_type: *value_type,
-                                leaves: loaded_captures[range.clone()].to_vec(),
-                            },
-                        )
-                    })
-                    .collect::<HashMap<_, _>>();
-                let mut loaded_carried = Vec::with_capacity(carried.len());
-                for slot in carried {
-                    loaded_carried.push(builder.load(*slot, provenance)?);
-                }
-                for (ordinal, value_type, range) in &transition_layout {
-                    let value = LoweredValue {
-                        value_type: *value_type,
-                        leaves: loaded_carried[range.clone()].to_vec(),
-                    };
-                    fold_parameters.insert((fold, *ordinal), value.clone());
-                    let target = carried_targets
-                        .get(*ordinal as usize)
-                        .ok_or(solve::SolveProgramConstructionError::InvalidFold { provenance })?;
-                    function_values.insert(*target, value);
-                }
-                let mut binder_values = environment
-                    .binders
-                    .iter()
-                    .map(|(binder, range)| {
-                        let [register] = &loaded_captures[range.clone()] else {
-                            unreachable!("checked binder capture owns one scalar register")
-                        };
-                        (*binder, *register)
-                    })
-                    .collect::<HashMap<_, _>>();
-                for (ordinal, slot) in binders.iter().enumerate() {
-                    let register = builder.load(*slot, provenance)?;
-                    let ordinal = u32::try_from(ordinal).map_err(|_| {
-                        solve::SolveProgramConstructionError::IdentityOverflow { provenance }
-                    })?;
-                    binder_values.insert((domain_id.index(), ordinal), register);
-                }
-                let mut lowerer = ExpressionLowerer {
-                    view: context.view,
-                    builder,
-                    model_coordinates,
-                    parameters,
-                    function_values,
-                    fold_parameters,
-                    fold_values: HashMap::new(),
-                    binders: binder_values,
-                    callees: context.callees,
-                    predicate_ranges: context.predicate_ranges,
-                    cache: HashMap::new(),
-                    call_values: HashMap::new(),
-                    predicate_values: vec![None; context.predicate_count],
-                    next_direct_assertion: 0,
-                    direct_assertion_count: context.direct_assertion_count,
-                };
-                let mut updated = Vec::new();
-                for (expression, (ordinal, value_type, _)) in
-                    update_expressions.iter().zip(&transition_layout)
-                {
-                    let value = lowerer.expression(*expression)?;
-                    let value = lowerer.coerce_value(value, *value_type, provenance)?;
-                    let target = carried_targets
-                        .get(*ordinal as usize)
-                        .ok_or(solve::SolveProgramConstructionError::InvalidFold { provenance })?;
-                    // The DAE fold tuple is ordered by the function's
-                    // sequential redefinitions. A later tuple member reads
-                    // the completed value of every preceding target, while a
-                    // FunctionFoldParameter continues to name the iteration's
-                    // entry value. Preserve that issued order directly.
-                    lowerer.function_values.insert(*target, value.clone());
-                    updated.extend(value.leaves);
-                }
-                if updated.len() != outputs.len() {
-                    return Err(solve::SolveProgramConstructionError::InvalidCallOutput {
-                        provenance,
-                    });
-                }
-                for (output, value) in outputs.iter().zip(updated) {
-                    lowerer.builder.store(*output, value, provenance)?;
-                }
-                Ok(())
-            },
-        )?;
-        let values = carried_layout
-            .iter()
-            .map(|(_, value_type, range)| LoweredValue {
-                value_type: *value_type,
-                leaves: destinations[range.clone()].to_vec(),
-            })
-            .collect::<Vec<_>>();
-        self.fold_values.insert(fold, values.clone());
-        Ok(values)
-    }
-
     fn conditional(
         &mut self,
         value_type: dae::ValueTypeId<'dae>,
@@ -996,7 +811,8 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
             pending.len(),
         ));
-        let (captures, environment) = self.capture_environment_for(operands[1..].iter().copied());
+        let (captures, environment) =
+            self.capture_environment_for(operands[1..].iter().copied())?;
         let context = RegionContext {
             view: self.view,
             callees: self.callees.clone(),
@@ -1132,6 +948,16 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         else {
             return Err(solve::SolveProgramConstructionError::InvalidRegion { provenance });
         };
+        // Every arm of the chain publishes the same correlated tuple, so each
+        // arm owes exactly one value per declared target. Proving that here
+        // makes the value/target pairing below total for the whole recursion.
+        if branches
+            .iter()
+            .any(|branch| branch.len() != value_types.len())
+            || fallback.len() != value_types.len()
+        {
+            return Err(solve::SolveProgramConstructionError::InvalidCallOutput { provenance });
+        }
         if !self
             .pending_predicates(std::iter::once(*condition_expression))
             .is_empty()
@@ -1158,7 +984,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .copied()
             .chain(branches.iter().flatten().copied())
             .chain(fallback.iter().copied());
-        let (captures, environment) = self.capture_environment_for(capture_roots);
+        let (captures, environment) = self.capture_environment_for(capture_roots)?;
         let context = RegionContext {
             view: self.view,
             callees: self.callees.clone(),
@@ -1168,7 +994,11 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         };
         let true_environment = environment.clone();
         let true_context = context.clone();
-        let true_branch = branch.clone();
+        let true_branch = value_types
+            .iter()
+            .copied()
+            .zip(branch.iter().copied())
+            .collect::<Vec<_>>();
         let true_pending = pending.to_vec();
         let false_pending = pending.to_vec();
         let false_value_types = value_types.to_vec();
@@ -1281,7 +1111,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         )?;
         for (definition, (value_type, range)) in definitions.iter().zip(value_ranges) {
             self.function_values.insert(
-                definition.target(),
+                definition.id(),
                 LoweredValue {
                     value_type,
                     leaves: destinations[range].to_vec(),
@@ -1396,11 +1226,9 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             dae::ExpressionOperation::Index { base, subscripts } => {
                 self.index(node.value_type_id(), base, subscripts, at)?
             }
-            dae::ExpressionOperation::FunctionValue { value, definition } => self
-                .function_values
-                .get(&value)
-                .cloned()
-                .map_or_else(|| self.expression(definition.rhs()), Ok)?,
+            dae::ExpressionOperation::FunctionValue { definition, .. } => {
+                self.function_definition_value(definition)?
+            }
             dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
                 self.fold_parameters.get(&(fold, carried)).cloned().ok_or(
                     solve::SolveProgramConstructionError::InvalidCallInterface { provenance: at },
@@ -1522,7 +1350,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let [body_type] = body_types.as_slice() else {
                 return Err(solve::SolveProgramConstructionError::InvalidMap { provenance: at });
             };
-            let (captures, environment) = self.capture_environment_for([body]);
+            let (captures, environment) = self.capture_environment_for([body])?;
             let context = RegionContext {
                 view: self.view,
                 callees: self.callees.clone(),
