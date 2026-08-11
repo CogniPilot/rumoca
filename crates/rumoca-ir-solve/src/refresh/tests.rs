@@ -297,6 +297,52 @@ fn wire_reconstructs_the_root_remainder_relation() {
 }
 
 #[test]
+fn wire_reconstructs_clock_remainders_after_event_coverage() {
+    let event_rows = vec![row(0)];
+    let event = RefreshPlan {
+        rows: event_rows.clone(),
+        causal_seed_rows: event_rows.clone(),
+        dynamic_causal_seed_rows: event_rows,
+        causal_solution_certified: true,
+        ..RefreshPlan::default()
+    };
+    let clock_rows = vec![row(0), row(1)];
+    let clock = RefreshPlan {
+        rows: clock_rows.clone(),
+        causal_seed_rows: clock_rows.clone(),
+        dynamic_causal_seed_rows: clock_rows,
+        causal_solution_certified: true,
+        ..RefreshPlan::default()
+    };
+    let owners = ContinuousRefreshOwners::checked(
+        RefreshPlan::default(),
+        RefreshPlan::default(),
+        RefreshPlan::default(),
+        event,
+        vec![clock],
+    )
+    .unwrap();
+
+    let [relation] = owners.clock_events_after_event() else {
+        panic!("one clock owner must issue one event-settled relation")
+    };
+    assert_eq!(relation.remainder().causal_seed_rows, [row(1)]);
+    assert_eq!(relation.remainder().dynamic_causal_seed_rows, [row(1)]);
+    assert_ne!(
+        relation.remainder().dynamic_causal_sequence,
+        owners.clock_events()[0].dynamic_causal_sequence
+    );
+
+    let wire = serde_json::to_value(&owners).unwrap();
+    assert!(wire.get("clock_events_after_event").is_none());
+    let replayed: ContinuousRefreshOwners = serde_json::from_value(wire).unwrap();
+    let [relation] = replayed.clock_events_after_event() else {
+        panic!("wire replay must reissue one event-settled clock relation")
+    };
+    assert_eq!(relation.remainder().dynamic_causal_seed_rows, [row(1)]);
+}
+
+#[test]
 fn construction_issues_distinct_sequence_identities() {
     let owners = ContinuousRefreshOwners::checked(
         RefreshPlan::default(),

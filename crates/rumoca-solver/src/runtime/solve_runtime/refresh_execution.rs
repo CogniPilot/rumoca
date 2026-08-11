@@ -121,7 +121,7 @@ impl SolveRuntime {
                 certify_coordinates: true,
             },
         )?;
-        for (clock_index, plan) in self.clock_event_refresh.iter().enumerate() {
+        for (clock_index, relation) in self.clock_event_refresh_after_event.iter().enumerate() {
             let owner = self
                 .model
                 .problem
@@ -130,7 +130,7 @@ impl SolveRuntime {
                 .ok_or_else(|| RuntimeSolveError::solve_ir("invalid event refresh clock"))?;
             if self.periodic_clock_active(owner, t, "event refresh")? {
                 self.refresh_slots_with_plan(
-                    plan,
+                    relation.remainder(),
                     RefreshSlotArgs {
                         t,
                         solver_y: &mut *solver_y,

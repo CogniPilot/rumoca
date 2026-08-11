@@ -256,8 +256,8 @@ pub struct SolveRuntime {
     derivative_refresh: RefreshPlan,
     root_refresh: RefreshPlan,
     event_refresh: RefreshPlan,
-    clock_event_refresh: Vec<RefreshPlan>,
     root_refresh_after_derivative: Option<solve::RefreshRemainderRelation>,
+    clock_event_refresh_after_event: Vec<solve::RefreshRemainderRelation>,
     /// Certified coverage for the initialization homotopy continuation; the
     /// single source of truth shared by the sweep driver and the acceptance
     /// check in [`InitialContinuationCoverage::certify`].
@@ -474,6 +474,14 @@ impl SolveRuntime {
             &refresh_program_rows,
         );
         let root_refresh_after_derivative = refresh_owners.root_after_derivative().cloned();
+        let clock_event_refresh_after_event = refresh_owners.clock_events_after_event().to_vec();
+        if clock_event_refresh_after_event.len() != clock_event_refresh.len() {
+            return Err(EvalSolveError::InvalidRow {
+                message: "clock refresh remainder inventory does not match clock owners"
+                    .to_string(),
+                span: None,
+            });
+        }
         trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
@@ -561,8 +569,8 @@ impl SolveRuntime {
             derivative_refresh,
             root_refresh,
             event_refresh,
-            clock_event_refresh,
             root_refresh_after_derivative,
+            clock_event_refresh_after_event,
             initial_continuation,
             root_condition_rows: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),

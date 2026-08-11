@@ -248,6 +248,8 @@ pub struct ContinuousRefreshOwners {
     exact_assignment_schedules: Vec<ExactRefreshAssignmentSchedule>,
     #[serde(skip)]
     root_after_derivative: Option<RefreshRemainderRelation>,
+    #[serde(skip)]
+    clock_events_after_event: Vec<RefreshRemainderRelation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -413,6 +415,7 @@ impl ContinuousRefreshOwners {
     #[must_use]
     pub const fn is_issued(&self) -> bool {
         self.root_after_derivative.is_some()
+            && self.clock_events_after_event.len() == self.clock_events.len()
     }
 
     fn checked(
@@ -438,6 +441,22 @@ impl ContinuousRefreshOwners {
         }
         let mut root_after_derivative = root.issue_value_remainder_after(&derivative);
         issue_refresh_sequence_ids(&mut root_after_derivative.remainder, 4)?;
+        let relation_owner_start = 5usize.checked_add(clock_events.len()).ok_or_else(|| {
+            ContinuousRefreshConstructionError {
+                reason: "continuous refresh relation owner count overflows".to_string(),
+            }
+        })?;
+        let mut clock_events_after_event = Vec::with_capacity(clock_events.len());
+        for (clock, plan) in clock_events.iter().enumerate() {
+            let mut relation = plan.issue_value_remainder_after(&event);
+            let owner = relation_owner_start.checked_add(clock).ok_or_else(|| {
+                ContinuousRefreshConstructionError {
+                    reason: "continuous refresh relation owner count overflows".to_string(),
+                }
+            })?;
+            issue_refresh_sequence_ids(&mut relation.remainder, owner)?;
+            clock_events_after_event.push(relation);
+        }
         Ok(Self {
             algebraic,
             derivative,
@@ -447,6 +466,7 @@ impl ContinuousRefreshOwners {
             exact_assignment_programs: Vec::new(),
             exact_assignment_schedules: Vec::new(),
             root_after_derivative: Some(root_after_derivative),
+            clock_events_after_event,
         })
     }
 
@@ -581,6 +601,7 @@ impl ContinuousRefreshOwners {
             exact_assignment_programs,
             exact_assignment_schedules,
             root_after_derivative,
+            clock_events_after_event,
         } = self;
         exact_assignment_programs.clear();
         exact_assignment_schedules.clear();
@@ -590,6 +611,11 @@ impl ContinuousRefreshOwners {
             .chain(clock_events.iter())
             .chain(
                 root_after_derivative
+                    .iter()
+                    .map(|relation| relation.remainder()),
+            )
+            .chain(
+                clock_events_after_event
                     .iter()
                     .map(|relation| relation.remainder()),
             )
@@ -633,6 +659,11 @@ impl ContinuousRefreshOwners {
     #[must_use]
     pub const fn root_after_derivative(&self) -> Option<&RefreshRemainderRelation> {
         self.root_after_derivative.as_ref()
+    }
+
+    #[must_use]
+    pub fn clock_events_after_event(&self) -> &[RefreshRemainderRelation] {
+        &self.clock_events_after_event
     }
 }
 
