@@ -29,25 +29,96 @@ pub fn for_each_expression<'dae>(
 /// when the expression is already an owned leaf for the query. Shared nodes
 /// are visited once. This keeps dependency selection at the checked DAE
 /// boundary without requiring consumers to reproduce the expression grammar.
+///
+/// A query that walks many roots against one DAE should own an
+/// [`ExpressionTraversal`] and call [`ExpressionTraversal::visit_pruned`]
+/// instead: this entry point sizes a fresh visited set per call, which costs
+/// the whole arena on every root.
 pub fn for_each_expression_pruned<'dae>(
     dae: DaeView<'dae>,
     root: ExprId<'dae>,
-    mut visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
+    visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
 ) {
-    let mut pending = vec![root];
-    let mut visited = vec![false; dae.expression_count()];
-    while let Some(expression) = pending.pop() {
-        let index = expression.index() as usize;
-        if visited[index] {
-            continue;
+    ExpressionTraversal::new().visit_pruned(dae, [root], visit);
+}
+
+/// Reusable workspace for pruned expression walks over one DAE.
+///
+/// The visited set is the whole expression arena, so allocating one per root
+/// makes a multi-root query cost `roots * arena` before it looks at a single
+/// operand. This workspace is allocated once and reused: each pass stamps
+/// nodes with a fresh generation instead of clearing, and the pending stack is
+/// kept across passes so a steady-state query allocates nothing at all.
+///
+/// [`visit_pruned`](Self::visit_pruned) takes all of a pass's roots together
+/// and shares one visited set across them. A node reachable from several roots
+/// is therefore visited once per pass rather than once per root, which is the
+/// exact semantics an accumulating query wants: the visitor decides from the
+/// node alone, so a second arrival could only repeat the first answer.
+#[derive(Debug, Default)]
+pub struct ExpressionTraversal<'dae> {
+    stamps: Vec<u32>,
+    generation: u32,
+    pending: Vec<ExprId<'dae>>,
+}
+
+impl<'dae> ExpressionTraversal<'dae> {
+    /// An empty workspace that sizes itself on its first pass.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            stamps: Vec::new(),
+            generation: 0,
+            pending: Vec::new(),
         }
-        visited[index] = true;
-        let node = dae
-            .expression(expression)
-            .expect("a branded expression identity resolves in its owning DAE");
-        if visit(expression, node) {
-            push_children(dae, node.operation(), &mut pending);
+    }
+
+    /// Visit every expression reachable from `roots`, pruned by the visitor.
+    ///
+    /// The visitor returns `true` to descend into an expression's operands and
+    /// `false` when the expression is an owned leaf for the query. Roots are
+    /// visited in the order given.
+    pub fn visit_pruned(
+        &mut self,
+        dae: DaeView<'dae>,
+        roots: impl IntoIterator<Item = ExprId<'dae>>,
+        mut visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
+    ) {
+        let generation = self.begin_pass(dae);
+        self.pending.clear();
+        self.pending.extend(roots);
+        self.pending.reverse();
+        while let Some(expression) = self.pending.pop() {
+            let index = expression.index() as usize;
+            if self.stamps[index] == generation {
+                continue;
+            }
+            self.stamps[index] = generation;
+            let node = dae
+                .expression(expression)
+                .expect("a branded expression identity resolves in its owning DAE");
+            if visit(expression, node) {
+                push_children(dae, node.operation(), &mut self.pending);
+            }
         }
+    }
+
+    /// Open one pass and return the stamp that marks it.
+    ///
+    /// Stamp `0` means "never visited", so a wrapped generation counter is
+    /// restarted from a cleared table rather than colliding with stale marks.
+    fn begin_pass(&mut self, dae: DaeView<'dae>) -> u32 {
+        if self.stamps.len() < dae.expression_count() {
+            self.stamps.resize(dae.expression_count(), 0);
+        }
+        match self.generation.checked_add(1) {
+            Some(generation) => self.generation = generation,
+            None => {
+                self.stamps.fill(0);
+                self.generation = 1;
+            }
+        }
+        self.generation
     }
 }
 

@@ -1,5 +1,7 @@
 //! Linear register-based ops used by compiled evaluators.
 
+// SPEC_0021 file-size exception - split plan: extract the tensor-node op variants and their accessors into linear_op/tensor.rs, keeping scalar register ops here; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+
 use rumoca_core::StructuredIndexDomain;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

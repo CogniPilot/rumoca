@@ -6,6 +6,8 @@
 //! [`RowEvalContext::external_tables`]. Impure random-generator streams are
 //! carried by [`SimulationRuntimeState`] and are never process-global.
 
+// SPEC_0021 file-size exception - split plan: extract external-table access and the impure random-stream runtime state into eval-solve/src/runtime_state.rs, leaving this file as the row-evaluation facade; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+
 use std::{
     cell::RefCell,
     collections::BTreeMap,

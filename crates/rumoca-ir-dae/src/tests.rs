@@ -3,6 +3,7 @@ mod expression_children;
 mod external_functions;
 mod function_conditionals;
 mod function_owners;
+mod function_scopes;
 mod function_wire;
 mod model_event_transactions;
 mod provenance;

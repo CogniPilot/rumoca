@@ -1732,6 +1732,42 @@ fn test_solve_ir_owns_backend_neutral_row_ops() {
         solve_text.contains("pub enum LinearOp"),
         "rumoca-ir-solve must own the backend-neutral row operation IR"
     );
+    // Core-structure freeze (dev/2026-08-11-core-structure-decisions.md §1,
+    // rung 1): the superseded scalar op vocabulary is semantically frozen at 50
+    // variants — new Solve semantics land as typed operations only. The enum
+    // is scheduled for rename to `ScalarOp` (wire-neutral; serde tags by
+    // variant) and eventual deletion at the end of the migration ladder.
+    // Adding a variant here requires amending the ratified structure decision.
+    let variant_count = {
+        let start = solve_text
+            .find("pub enum LinearOp {")
+            .expect("LinearOp enum start");
+        let body = &solve_text[start..];
+        let end = body
+            .find(
+                "
+}",
+            )
+            .expect("LinearOp enum end");
+        body[..end]
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                line.starts_with("    ")
+                    && !line.starts_with("     ")
+                    && trimmed
+                        .chars()
+                        .next()
+                        .is_some_and(|first| first.is_ascii_uppercase())
+                    && (trimmed.contains('{') || trimmed.contains(',') || trimmed.contains('('))
+            })
+            .count()
+    };
+    assert_eq!(
+        variant_count, 50,
+        "superseded scalar op vocabulary is frozen at 50 variants; \
+         new semantics land as typed operations (core-structure decision §1)"
+    );
     assert!(
         root.join("crates/rumoca-phase-solve/src/lower.rs").exists(),
         "DAE-to-solve row lowering must live in rumoca-phase-solve"

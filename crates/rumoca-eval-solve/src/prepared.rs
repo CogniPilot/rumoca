@@ -1,5 +1,7 @@
 //! Prepared Solve-IR evaluation and tensor-node orchestration.
 
+// SPEC_0021 file-size exception - split plan: extract tensor-node orchestration into prepared/tensor_nodes.rs, leaving prepared row evaluation and its module facade here; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
+
 mod affine_eval;
 mod assignment_shape;
 #[cfg(test)]

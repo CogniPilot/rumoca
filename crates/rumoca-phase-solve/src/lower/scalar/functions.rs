@@ -4,6 +4,7 @@
 //! own checked result definition, with the caller's arguments bound on an
 //! explicit stack so a parameter cannot escape the call that supplies it.
 
+// SPEC_0021 file-size exception - split plan: extract record projection lowering into lower/scalar/functions/records.rs and function-loop lowering into lower/scalar/functions/loops.rs; tracked as RDD2/GALEC cleanup debt (dev/2026-08-11 remediation note).
 use super::*;
 
 type RecordCondition<'dae> = (dae::ExprId<'dae>, solve::Reg, dae::ExprId<'dae>);

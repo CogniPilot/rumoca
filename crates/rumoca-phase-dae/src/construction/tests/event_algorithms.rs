@@ -1,7 +1,111 @@
-use rumoca_core::Reference;
+use rumoca_core::{Reference, TypeId};
 
 use super::super::*;
 use super::support::*;
+
+/// MLS §11.1: the statements of a model algorithm section that are not inside a
+/// `when` run whenever the section runs. A discrete assignment written there is
+/// therefore not a statement without an activation — its activation is the
+/// section's own unconditional one, and the transaction step it produces must
+/// carry that `Always` condition rather than borrowing an enclosing branch that
+/// does not exist.
+/// Declare one `Real` whose variability is discrete, so it lands on a
+/// `DiscreteReal` coordinate rather than the B.1c discrete-value arena.
+fn add_discrete_real_variable(
+    model: &mut flat::Model,
+    source: &TestSource,
+    name: &str,
+    declaration: &str,
+    type_id: u32,
+) {
+    let mut variable = flat::Variable::empty_with_span(source.span(declaration, 0));
+    variable.name = VarName::new(name);
+    variable.instance_id = test_instance_id(name);
+    variable.type_id = TypeId::new(type_id);
+    variable.variability = Variability::Discrete(Default::default());
+    variable.is_primitive = true;
+    register_test_real_type(model, variable.type_id, &[]);
+    model.add_variable(variable.name.clone(), variable);
+    model
+        .variable_type_names
+        .insert(VarName::new(name), "Real".to_string());
+}
+
+#[test]
+fn model_algorithm_assignment_outside_when_activates_unconditionally() {
+    let source = TestSource::new(
+        "model M discrete Real y; algorithm y := 0.0; when true then y := 1.0; end when; end M;",
+    );
+    let mut model = test_model();
+    add_discrete_real_variable(&mut model, &source, "y", "discrete Real y", 63);
+    let unguarded_span = source.span("y := 0.0", 0);
+    let guarded_span = source.span("y := 1.0", 0);
+    let when_span = source.span("when true then y := 1.0; end when", 0);
+    model.algorithms.push(flat::Algorithm::new(
+        vec![
+            rumoca_core::Statement::Assignment {
+                comp: test_component_reference("y", unguarded_span),
+                value: Expression::Literal {
+                    value: Literal::Real(0.0),
+                    span: source.span("0.0", 0),
+                },
+                span: unguarded_span,
+            },
+            rumoca_core::Statement::When {
+                blocks: vec![rumoca_core::StatementBlock {
+                    cond: Expression::Literal {
+                        value: Literal::Boolean(true),
+                        span: source.span("true", 0),
+                    },
+                    stmts: vec![rumoca_core::Statement::Assignment {
+                        comp: test_component_reference("y", guarded_span),
+                        value: Expression::Literal {
+                            value: Literal::Real(1.0),
+                            span: source.span("1.0", 0),
+                        },
+                        span: guarded_span,
+                    }],
+                }],
+                span: when_span,
+            },
+        ],
+        source.span("algorithm", 0),
+        "algorithm section",
+    ));
+    model.is_partial = true;
+
+    let dae = construct(&model, source.map)
+        .expect("a statement written outside every when lowers on the section activation");
+    dae.inspect(|view| {
+        assert_eq!(view.model_event_transaction_count(), 1);
+        let transaction = view
+            .model_event_transaction(view.model_event_transaction_id(0).unwrap())
+            .unwrap();
+        assert_eq!(transaction.steps().len(), 2);
+        let unguarded = transaction.steps().next().unwrap();
+        for condition in [unguarded.trigger(), unguarded.guard()] {
+            assert!(
+                matches!(
+                    view.condition(condition).unwrap().operation(),
+                    dae::ConditionOperation::Always
+                ),
+                "an unbranched section statement runs on the section's own activation"
+            );
+        }
+        assert_eq!(unguarded.definitions().len(), 1);
+        assert_eq!(
+            unguarded.definitions().next().unwrap().provenance().span(),
+            unguarded_span
+        );
+        // The `when` beside it keeps its own event activation, so the section
+        // activation never leaks into a guarded step.
+        let guarded = transaction.steps().nth(1).unwrap();
+        assert!(!matches!(
+            view.condition(guarded.guard()).unwrap().operation(),
+            dae::ConditionOperation::Always
+        ));
+    });
+}
 
 #[test]
 fn model_event_algorithm_sequential_read_after_write_uses_new_value() {
