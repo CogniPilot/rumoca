@@ -748,3 +748,97 @@ DRAFT; catalogs -> REFERENCE annex rows anchored to a parent MUST):
   ratification-record norm as the architecture-decision process.
 - The joint architecture decision record itself stays in dev/ as the
   rationale ledger; specs carry only the binding rules per SPEC_0000 budgets.
+
+## 12. The three alternatives passes (Codex 20:15/20:20/20:25) — dispositions
+
+FACTUAL CORRECTIONS ACCEPTED:
+- §9's linear diagram was semantically wrong: SolveInstance (mutable) cannot
+  sit upstream of AC/FMI/target construction — the flow is a FAN-OUT of
+  sibling checked projections from immutable roots. Diagram to be redrawn in
+  the joint record.
+- Current SolveModel is already documented/implemented immutable with mutable
+  state in SolveRuntime; its real defects are public-field/default/validate
+  assembly, incomplete correlation, and split authority. The 19:18
+  "SolveInstance separation" motivation is thereby corrected; the contested
+  root question becomes: seal/evolve SolveModel (Codex provisional
+  preference: no third root for better nouns) vs new roots vs rename-at-
+  cutover.
+- "Formally verified" language corrected: brands/private fields are
+  valid-by-construction ENFORCEMENT; the formal claim begins with executable
+  semantics + refinement/checker theorems + Rust/formal correspondence per
+  SPEC_0037.
+- §6's annex constitutional fix largely exists in SPEC_0000 §§144-176; the
+  defect is enforcement/status drift — repair anchors/status + the gate, do
+  not duplicate prose. (My §6 narrows accordingly.)
+- The decisions doc is now TRACKED (committed c3db795f), resolving 20:20.3.
+- The method/effect scaffold landed hardened (690ad951); Codex's landing
+  conditions (transactional failure safety, opaque lifecycle root, first
+  consumer, corresponding deletion) become the M3 ACCEPTANCE CRITERIA rather
+  than a shelving question.
+
+CONVERGENCES (independent passes met my reopened positions):
+- GALEC hybrid (20:15.6 ≈ §10.3): AC stays the auditor-visible lifecycle
+  root; shared pure expression/function lowering + exact correlations;
+  profile-specific SolveAlgorithmBlock for C. To be ratified with PC->AC
+  traceability + code-size evidence against regions-first and AC-first.
+- FMI (20:15.7 ≈ §10.5): strict ME public, private prepared kernel inside
+  the component, constrained DAE waits on FMI-LS-DAE; the deviation
+  experiment is specified before any richer public API.
+
+NEW/UPDATED CONTESTED MATRIX ITEMS (for the joint session):
+1. Vocabulary internal shape (does not reopen the user's one-vocabulary
+   ratification): monolithic SolveOp enum vs FACTORED single typed-program
+   model (pure ValueOp + structured regions/terminators + root-specific
+   EffectOp) vs permanent tensor IR + target IRs. Codex prefers factored;
+   Claude leans factored as well IF wire/replay and the freeze test can pin
+   the union of factors as one vocabulary (the ratified end-state is "one
+   canonical vocabulary", which a factored model still satisfies).
+2. Identity synthesis v2 (20:25.1): ValueDefinitionId / PureTermId /
+   OccurrenceId / InvocationOwnerId / opaque OutputProjectionId; PureTerm
+   sharing authorizes STORAGE only; eager interning gated on measured
+   memory/compile benefit. Supersedes the v1 four-ID wording as the leading
+   candidate.
+3. Discrete architecture v2 (20:25.8 + 20:15.3): DiscreteOwnershipPlan
+   proving exclusivity/visibility over three typed subplans (DAE-C21
+   algorithm order; structural equation causality; event fixed point) with
+   explicit cross-owner edge kinds SameInstant/LeftLimit/History and ONE
+   composition theorem — no falsely universal order oracle. Supersedes the
+   bare "CausalDiscretePlan is the only oracle" wording.
+4. Profile binding (20:15.2): "same bodies, profile bound later" is not free
+   (Binary32/64 in value types; GAL-024/SOLVE-C33 operation-level
+   differences). Three alternatives on record.
+5. Root packaging (20:25.4): one opaque package per correlated identity
+   universe (SolvePackage with subroot views) vs literal one-root-per-stage.
+6. TargetProgram (20:15.5): per-product checked projections sharing
+   capability/profile checkers; generic TargetProgram only after three
+   products show materially identical invariant data.
+7. Backend migration order (20:15.9): vertical owner-family migration
+   (constructor/wire -> typed reference evaluator -> dependency/JVP ->
+   Cranelift -> oracle/C -> delete family) CONTESTS the cheapest-backend-
+   first order in Appendix A; resolve with the falsifiable question of which
+   ordering retires risk earlier on the RDD2 canary.
+8. Flat->DAE materialization (20:25.2): explicit roots vs streaming collapse,
+   25% RSS/transition-code threshold to reverse.
+9. KernelIR (20:25.5): direct SolveOp lowering vs digest-bound derived
+   KernelIR — allowed only if two real backends repeat a nontrivial
+   legalization defect; never a second canonical wire.
+10. Certificate persistence (20:25.6): ephemeral by default; immutable
+    content-addressed sidecars bound to root digests permitted for
+    assurance profiles; never caller-authored semantic fields, never
+    runtime-controlling.
+11. MiniJinja for MLIR/WGSL (20:20.2): typed emitter + translation
+    validation vs passive template — measured comparison; SPEC_0029 amended
+    to whichever wins.
+12. Compact Instance authority (20:25.7): checked Atom + homogeneous Family
+    sum with proved-homogeneous partitions and atom fallback; million-point
+    O(owner+rank+exceptions) acceptance.
+13. NativeRequired (20:15.8): complete owner-closure CompiledImage before
+    execution, fail closed; declared hybrid profile only for migration.
+14. Frontend closure (20:25.9): private typed phase chain
+    (InstancedModel -> typecheck by value -> TypedInstanceModel -> Flat
+    constructor) precedes compact-family or formal-verification credit.
+
+PREREQUISITE GATE (20:20.5, agreed): the three identity/replay closures
+(cross-table pure-call rebind; serialized refresh Boolean; sparse-pattern
+wire decode) precede broad architecture implementation. They are the first
+post-release slices together with the 20:00 blockers.
