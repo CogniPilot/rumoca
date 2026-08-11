@@ -764,6 +764,7 @@ pub enum SolveActionConstructionError {
     StatefulEffectInStatelessMethod { provenance: Span },
     InvalidLoopDomain { provenance: Span },
     EmptyBranch { provenance: Span },
+    OrphanedConstruction { provenance: Span },
     InvalidCondition { provenance: Span },
     UndeclaredSignal { provenance: Span },
     EmptySignalEffect { provenance: Span },
@@ -788,6 +789,7 @@ impl SolveActionConstructionError {
             Self::IdentityOverflow { provenance }
             | Self::ProfileMismatch { provenance }
             | Self::UnclosedBlock { provenance }
+            | Self::OrphanedConstruction { provenance }
             | Self::UnnamedSignalEffect { provenance }
             | Self::UnsettableSignalTest { provenance }
             | Self::InvalidInterface { provenance }
@@ -829,6 +831,9 @@ impl std::fmt::Display for SolveActionConstructionError {
             Self::WireMismatch => "method wire does not replay through checked construction",
             Self::IdentityOverflow { .. } => "method identity capacity exceeded",
             Self::ProfileMismatch { .. } => "method value type does not belong to the profile",
+            Self::OrphanedConstruction { .. } => {
+                "method construction issued scopes or closures the body does not reach"
+            }
             Self::UnclosedBlock { .. } => {
                 "a nested lexical block was abandoned by a swallowed construction error"
             }

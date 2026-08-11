@@ -216,6 +216,7 @@ impl<'method> SolveMethodBuilder<'method> {
             .pop()
             .ok_or(SolveActionConstructionError::UnclosedBlock { provenance })?;
         let body = SolveActionBlock::issued(open.scope, open.locals, open.actions, open.provenance);
+        require_no_orphans(&body, self.scopes.len(), self.closures.len(), provenance)?;
         let results =
             interface.parameters().len()..interface.parameters().len() + interface.results().len();
         if results.clone().any(|index| !self.defined[index]) {
@@ -1040,8 +1041,71 @@ fn require_bounded_domain(
         .binders
         .iter()
         .all(|binder| integers.contains(binder.lower) && integers.contains(binder.upper));
-    if domain.binders.is_empty() || count == 0 || !bounded {
+    let _ = count;
+    if domain.binders.is_empty() || !bounded {
         return Err(SolveActionConstructionError::InvalidLoopDomain { provenance });
     }
     Ok(())
+}
+
+/// SPEC_0036/SPEC_0043: a published method must reach every arena entry it
+/// caused to be issued. Arm builders mutate the scope/closure arenas before
+/// their post-close validation runs, so a caller that swallows a late arm
+/// error (for example `EmptyBranch`) leaves fully-closed orphan scopes and
+/// closures behind while the block stack is balanced. `finish` therefore
+/// re-derives reachability from the body alone and fails closed on any
+/// issued-but-unreachable entry; wire replay rebuilds from the body, so an
+/// orphan would otherwise decode into a different aggregate. Ordinals are
+/// never truncated or reused: a callback may have let a `MethodCell` escape,
+/// and reissuing its ordinal would alias it (ABA).
+fn require_no_orphans(
+    body: &SolveActionBlock,
+    issued_scopes: usize,
+    issued_closures: usize,
+    provenance: Span,
+) -> Result<(), SolveActionConstructionError> {
+    let mut scopes = vec![false; issued_scopes];
+    let mut closures = vec![false; issued_closures];
+    mark_reachable(body, &mut scopes, &mut closures);
+    if scopes.iter().any(|seen| !seen) || closures.iter().any(|seen| !seen) {
+        return Err(SolveActionConstructionError::OrphanedConstruction { provenance });
+    }
+    Ok(())
+}
+
+fn mark_reachable(block: &SolveActionBlock, scopes: &mut [bool], closures: &mut [bool]) {
+    if let Some(seen) = scopes.get_mut(block.scope().index()) {
+        *seen = true;
+    }
+    for spanned in block.actions() {
+        match spanned.action() {
+            SolveAction::Branch {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                if let SolveBranchCondition::Signal(check) = condition {
+                    if let Some(closure) = check.closure() {
+                        if let Some(seen) = closures.get_mut(closure.index()) {
+                            *seen = true;
+                        }
+                    }
+                }
+                mark_reachable(if_true, scopes, closures);
+                mark_reachable(if_false, scopes, closures);
+            }
+            SolveAction::Loop { body, .. } => mark_reachable(body, scopes, closures),
+            SolveAction::Signal {
+                closures: reraised, ..
+            } => {
+                for closure in reraised.iter() {
+                    if let Some(seen) = closures.get_mut(closure.index()) {
+                        *seen = true;
+                    }
+                }
+            }
+            SolveAction::Assign { .. } | SolveAction::Invoke { .. } | SolveAction::Limit { .. } => {
+            }
+        }
+    }
 }

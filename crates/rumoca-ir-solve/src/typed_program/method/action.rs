@@ -196,7 +196,8 @@ pub enum SolveAction {
         if_true: SolveActionBlock,
         if_false: SolveActionBlock,
     },
-    /// One statically bounded loop over a checked finite, non-empty domain.
+    /// One statically bounded loop over a checked finite domain; a
+    /// statically empty domain constructs and executes zero trips.
     Loop {
         domain: StructuredIndexDomain,
         /// Issued by the loop, one per domain binder; never a wire input.

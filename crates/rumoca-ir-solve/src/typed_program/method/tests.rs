@@ -820,22 +820,28 @@ fn looping_table(
 }
 
 #[test]
-fn bounded_loops_require_finite_non_empty_domains() {
+fn bounded_loops_require_finite_domains_and_admit_zero_trips() {
     let bounded = looping_table(&loop_domain(3, 1)).expect("a finite non-empty domain constructs");
     assert!(matches!(
         bounded.methods()[0].body().actions()[1].action(),
         SolveAction::Loop { .. }
     ));
-    for domain in [loop_domain(3, 0), loop_domain(0, 1)] {
-        let error =
-            looping_table(&domain).expect_err("only finite non-empty loop domains construct");
-        assert_eq!(
-            error,
-            SolveActionConstructionError::InvalidLoopDomain {
-                provenance: span(2)
-            }
-        );
-    }
+    // A checked finite GALEC range may execute zero trips (Codex 20:35): the
+    // statically-empty domain constructs and the loop body simply never runs.
+    let zero_trip =
+        looping_table(&loop_domain(0, 1)).expect("a statically empty domain executes zero trips");
+    assert!(matches!(
+        zero_trip.methods()[0].body().actions()[1].action(),
+        SolveAction::Loop { .. }
+    ));
+    let error = looping_table(&loop_domain(3, 0))
+        .expect_err("a zero-step domain is invalid, not zero-trip");
+    assert_eq!(
+        error,
+        SolveActionConstructionError::InvalidLoopDomain {
+            provenance: span(2)
+        }
+    );
 }
 
 #[test]
@@ -1536,6 +1542,46 @@ fn a_signalling_conversion_without_a_named_signal_row_fails_closed() {
         error,
         SolveActionConstructionError::UnnamedSignalEffect {
             provenance: span(1)
+        }
+    );
+}
+
+/// Codex 20:35 stop-ship red fixture: both arms close SUCCESSFULLY after
+/// declaring only locals, so the arenas already hold their scopes when the
+/// post-close `EmptyBranch` validation fires. A caller that swallows that
+/// error leaves the block stack balanced; `finish` must still fail because
+/// the body cannot reach the orphaned arm scopes.
+#[test]
+fn a_swallowed_empty_branch_cannot_publish_orphan_scopes() {
+    let root = table(|methods| {
+        methods.add_method(
+            SolveMethodKind::Stateful,
+            controller_interface(SolveSignalSet::EMPTY),
+            span(0),
+            |method, cells| {
+                let condition = boolean_constant(method, span(1))?;
+                let swallowed = method.branch(
+                    SolveBranchConditionSpec::Value(condition),
+                    span(4),
+                    |arm, _closure| arm.declare_local(real(), None, span(5)).map(|_| ()),
+                    |arm| arm.declare_local(real(), None, span(6)).map(|_| ()),
+                );
+                assert_eq!(
+                    swallowed,
+                    Err(SolveActionConstructionError::EmptyBranch {
+                        provenance: span(4)
+                    })
+                );
+                method.assign(&[cells.results()[0]], &[], span(7), constant_program)
+            },
+        )?;
+        Ok(())
+    })
+    .expect_err("swallowed empty-branch arenas must not publish");
+    assert_eq!(
+        root,
+        SolveActionConstructionError::OrphanedConstruction {
+            provenance: span(0)
         }
     );
 }
