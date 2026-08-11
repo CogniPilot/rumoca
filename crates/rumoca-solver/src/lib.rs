@@ -91,10 +91,10 @@ pub use runtime::solve_ops::{
 #[cfg(not(kani))]
 pub use runtime::solve_runtime::{
     AlgebraicLinearization, AlgebraicSettle, CompiledSolveAssignmentSchedule,
-    CompiledSolveExpression, CompiledSolveJacobianExpression, EventUpdateRowFilter,
-    InitialEventObservation, ProjectedEventUpdateInput, ProjectedInitialEventInput,
-    ProjectedInitialEventOutcome, ProjectedPostInitialEventInput, SolveExecutionBackend,
-    SolveRuntime,
+    CompiledSolveEventTransaction, CompiledSolveExpression, CompiledSolveJacobianExpression,
+    EventTransactionExecution, EventUpdateRowFilter, InitialEventObservation,
+    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
+    ProjectedPostInitialEventInput, SolveExecutionBackend, SolveRuntime,
 };
 #[cfg(not(kani))]
 pub use runtime::time::{

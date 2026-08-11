@@ -6,6 +6,12 @@ struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
 
 struct CraneliftAssignmentSchedule(rumoca_exec_cranelift::CompiledAssignmentSchedule);
 
+struct CraneliftEventTransaction {
+    pure_calls: rumoca_exec_cranelift::CompiledPureCallTable,
+    site: rumoca_ir_solve::SolvePureCallSite,
+    cells: std::cell::RefCell<(Vec<u64>, Vec<u64>)>,
+}
+
 impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
     fn call(
         &self,
@@ -47,6 +53,16 @@ impl rumoca_solver::CompiledSolveAssignmentSchedule for CraneliftAssignmentSched
     ) -> Result<(), String> {
         self.0
             .call_with_external_tables(y, p, t, external_tables)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl rumoca_solver::CompiledSolveEventTransaction for CraneliftEventTransaction {
+    fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), String> {
+        let mut cells = self.cells.borrow_mut();
+        let (input_cells, output_cells) = &mut *cells;
+        self.pure_calls
+            .call_scalar_payload(&self.site, input, output, input_cells, output_cells)
             .map_err(|error| error.to_string())
     }
 }
@@ -106,6 +122,23 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         compiled
             .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
+    }
+
+    fn compile_event_transaction(
+        &self,
+        program: &rumoca_ir_solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventTransaction>, String> {
+        self.pure_calls
+            .as_ref()
+            .cloned()
+            .map(|pure_calls| {
+                Rc::new(CraneliftEventTransaction {
+                    pure_calls,
+                    site: program.site().clone(),
+                    cells: std::cell::RefCell::new((Vec::new(), Vec::new())),
+                }) as Rc<_>
+            })
+            .ok_or_else(|| "the typed pure-call table is unavailable".to_string())
     }
 }
 

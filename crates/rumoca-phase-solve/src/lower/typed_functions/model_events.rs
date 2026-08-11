@@ -14,11 +14,129 @@ use super::{
 };
 use crate::LowerError;
 use crate::layout::LoweredLayout;
+use crate::lower::call_scoped_actions::CallAssertionProjection;
 use crate::lower::clocks::LoweredClocks;
 use crate::lower::{
     delay_value_scalar_slot, pre_variable_scalar_slot, previous_value_scalar_slot,
     variable_scalar_slot,
 };
+
+pub(in crate::lower) struct PendingEventTransaction<'dae> {
+    site: solve::SolvePureCallSite,
+    inputs: Vec<(solve::ScalarSlot, solve::SolveValueType)>,
+    targets: Vec<(solve::ScalarSlot, solve::SolveValueType)>,
+    target_variables: Vec<dae::VariableId<'dae>>,
+    legacy_owners: Vec<solve::EventTransactionLegacyOwner>,
+    assertions: Vec<(solve::SolveEventAction, CallAssertionProjection)>,
+    statement_count: usize,
+    clock_owner: solve::PeriodicClockId,
+    provenance: rumoca_core::ProvenanceSpan,
+}
+
+impl<'dae> PendingEventTransaction<'dae> {
+    pub(in crate::lower) fn target_projections(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            dae::VariableId<'dae>,
+            solve::ScalarSlot,
+            &solve::SolveValueType,
+        ),
+    > {
+        self.target_variables
+            .iter()
+            .copied()
+            .zip(self.targets.iter())
+            .map(|(variable, (base, value_type))| (variable, *base, value_type))
+    }
+
+    #[cfg(test)]
+    pub(super) fn input_types(&self) -> impl Iterator<Item = &solve::SolveValueType> {
+        self.inputs.iter().map(|(_, value_type)| value_type)
+    }
+
+    #[cfg(test)]
+    pub(super) fn target_types(&self) -> impl Iterator<Item = &solve::SolveValueType> {
+        self.targets.iter().map(|(_, value_type)| value_type)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn statement_count(&self) -> usize {
+        self.statement_count
+    }
+
+    #[cfg(test)]
+    pub(super) const fn clock_owner(&self) -> solve::PeriodicClockId {
+        self.clock_owner
+    }
+
+    #[cfg(test)]
+    pub(super) const fn site(&self) -> &solve::SolvePureCallSite {
+        &self.site
+    }
+
+    pub(in crate::lower) fn push_legacy_owner(
+        &mut self,
+        owner: solve::EventTransactionLegacyOwner,
+    ) {
+        self.legacy_owners.push(owner);
+    }
+
+    pub(in crate::lower) fn provenance(&self) -> rumoca_core::Span {
+        self.provenance.span()
+    }
+
+    pub(in crate::lower) fn finish(
+        self,
+        action_indices: &HashMap<CallAssertionProjection, Vec<usize>>,
+    ) -> Result<solve::EventTransactionProgram, LowerError> {
+        let span = self.provenance.span();
+        let mut assertions = Vec::with_capacity(self.assertions.len());
+        let mut assertion_action_indices = Vec::with_capacity(self.assertions.len());
+        for (action, projection) in self.assertions {
+            let action_indices = action_indices.get(&projection).cloned().ok_or_else(|| {
+                LowerError::contract(
+                    "event transaction lost its compiler-issued assertion action projection",
+                    span,
+                )
+            })?;
+            assertions.push(action);
+            assertion_action_indices.push(action_indices);
+        }
+        solve::EventTransactionProgram::checked(
+            solve::EventTransactionConstruction {
+                site: self.site,
+                inputs: self.inputs,
+                targets: self.targets,
+                legacy_owners: self.legacy_owners,
+                assertions,
+                assertion_action_indices,
+                statement_count: self.statement_count,
+                clock_owner: Some(self.clock_owner),
+            },
+            self.provenance,
+        )
+        .map_err(Into::into)
+    }
+}
+
+#[derive(Clone)]
+struct RegisteredTransactionAssertion<'dae> {
+    assertion: RegisteredAssertion<'dae>,
+    projection: CallAssertionProjection,
+}
+
+type RegisteredExpressionCalls<'dae> = (
+    HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
+    HashMap<dae::ExprId<'dae>, Range<usize>>,
+    Vec<RegisteredTransactionAssertion<'dae>>,
+);
+
+type EligibleEventTransaction<'dae> = (
+    dae::ClockId<'dae>,
+    Vec<(dae::ExprId<'dae>, dae::ValueTypeId<'dae>)>,
+    usize,
+);
 
 /// One semantic model-storage coordinate captured by a typed owner.
 ///
@@ -104,7 +222,10 @@ impl<'dae> PureCallRegistry<'dae> {
         coordinate_types: &[(ModelCoordinateKey<'dae>, dae::ValueTypeId<'dae>)],
         provenance: rumoca_core::Span,
     ) -> Result<
-        (solve::SolvePureCallSite, Vec<RegisteredAssertion<'dae>>),
+        (
+            solve::SolvePureCallSite,
+            Vec<RegisteredTransactionAssertion<'dae>>,
+        ),
         solve::SolveProgramConstructionError,
     > {
         let (callees, predicate_ranges, assertions) =
@@ -187,21 +308,15 @@ impl<'dae> PureCallRegistry<'dae> {
         &mut self,
         view: dae::DaeView<'dae>,
         expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
-    ) -> Result<
-        (
-            HashMap<dae::ExprId<'dae>, RegisteredCall<'dae>>,
-            HashMap<dae::ExprId<'dae>, Range<usize>>,
-            Vec<RegisteredAssertion<'dae>>,
-        ),
-        solve::SolveProgramConstructionError,
-    > {
+    ) -> Result<RegisteredExpressionCalls<'dae>, solve::SolveProgramConstructionError> {
         let mut roots = Vec::new();
         let mut seen = HashSet::new();
         for expression in expressions {
             dae::for_each_expression(view, expression, |projection, node| {
-                if let dae::ExpressionOperation::Call { owner, .. } = node.operation()
-                    && seen.insert(owner)
-                {
+                let dae::ExpressionOperation::Call { owner, .. } = node.operation() else {
+                    return;
+                };
+                if seen.insert(owner) {
                     roots.push((owner, projection));
                 }
             });
@@ -223,7 +338,15 @@ impl<'dae> PureCallRegistry<'dae> {
                 })?;
             predicate_ranges.insert(owner, predicate_count..end);
             predicate_count = end;
-            assertions.extend(registered.assertions.iter().cloned());
+            assertions.extend(registered.assertions.iter().cloned().enumerate().map(
+                |(output_offset, assertion)| RegisteredTransactionAssertion {
+                    assertion,
+                    projection: CallAssertionProjection {
+                        owner: registered.owner,
+                        output_offset,
+                    },
+                },
+            ));
             callees.insert(owner, registered);
         }
         Ok((callees, predicate_ranges, assertions))
@@ -234,7 +357,7 @@ pub(in crate::lower) fn lower_model_event_transactions<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-) -> Result<Vec<solve::EventTransactionProgram>, LowerError> {
+) -> Result<Vec<PendingEventTransaction<'dae>>, LowerError> {
     let mut programs = Vec::new();
     let mut registry = layout.pure_calls.borrow_mut();
     for index in 0..view.model_event_transaction_count() {
@@ -257,22 +380,30 @@ pub(in crate::lower) fn lower_model_event_transactions<'dae>(
             .map_err(|error| LowerError::contract(error.to_string(), provenance))?;
         let assertions = assertions
             .into_iter()
-            .map(|assertion| event_transaction_assertion(view, assertion, solve_clock, provenance))
+            .map(|registered| {
+                event_transaction_assertion(view, registered.assertion, solve_clock, provenance)
+                    .map(|action| (action, registered.projection))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let inputs = transaction_inputs(view, layout, &coordinate_types, provenance)?;
         let targets = transaction_targets(view, layout, transaction, &definitions, provenance)?;
         let provenance_span = provenance
             .require_provenance("model-event transaction")
             .map_err(|error| LowerError::contract(error.to_string(), provenance))?;
-        programs.push(solve::EventTransactionProgram::checked(
+        programs.push(PendingEventTransaction {
             site,
             inputs,
-            targets,
+            target_variables: targets.iter().map(|target| target.0).collect(),
+            targets: targets
+                .into_iter()
+                .map(|(_, base, value_type)| (base, value_type))
+                .collect(),
+            legacy_owners: Vec::new(),
             assertions,
             statement_count,
-            Some(solve_clock),
-            provenance_span,
-        )?);
+            clock_owner: solve_clock,
+            provenance: provenance_span,
+        });
     }
     Ok(programs)
 }
@@ -301,12 +432,25 @@ fn transaction_targets<'dae>(
     transaction: dae::ModelEventTransactionView<'dae>,
     definitions: &[(dae::ExprId<'dae>, dae::ValueTypeId<'dae>)],
     provenance: rumoca_core::Span,
-) -> Result<Vec<(solve::ScalarSlot, solve::SolveValueType)>, LowerError> {
+) -> Result<
+    Vec<(
+        dae::VariableId<'dae>,
+        solve::ScalarSlot,
+        solve::SolveValueType,
+    )>,
+    LowerError,
+> {
     transaction
         .targets()
         .zip(definitions)
         .map(|(target, (_, value_type))| {
+            let variable = view
+                .variable_id(target.variable() as usize)
+                .ok_or_else(|| {
+                    LowerError::contract("transaction target variable is out of bounds", provenance)
+                })?;
             Ok((
+                variable,
                 variable_scalar_slot(layout, target.variable(), 0, provenance)?,
                 lower_primitive_type(view, *value_type, arithmetic_profile())
                     .map_err(|error| LowerError::contract(error.to_string(), provenance))?,
@@ -349,11 +493,7 @@ fn event_transaction_assertion<'dae>(
 fn eligible_event_transaction<'dae>(
     view: dae::DaeView<'dae>,
     transaction: dae::ModelEventTransactionView<'dae>,
-) -> Option<(
-    dae::ClockId<'dae>,
-    Vec<(dae::ExprId<'dae>, dae::ValueTypeId<'dae>)>,
-    usize,
-)> {
+) -> Option<EligibleEventTransaction<'dae>> {
     let steps = transaction.steps().collect::<Vec<_>>();
     let clock = steps.first()?.clock()?;
     if steps.iter().any(|step| {

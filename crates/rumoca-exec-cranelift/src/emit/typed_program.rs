@@ -86,6 +86,62 @@ impl CompiledPureCallTable {
         }
         Ok(imports)
     }
+
+    pub(crate) fn call_cells(
+        &self,
+        site: &solve::SolvePureCallSite,
+        input: &[u64],
+        output: &mut [u64],
+    ) -> Result<(), CompileError> {
+        let symbol = self
+            .symbols
+            .get(site.owner().index() as usize)
+            .filter(|symbol| {
+                symbol.owner == site.owner()
+                    && symbol.inputs.as_ref() == site.inputs()
+                    && symbol.outputs.as_ref() == site.outputs()
+            })
+            .ok_or_else(|| {
+                CompileError::Input(format!(
+                    "typed call site {} does not match its compiled owner",
+                    site.owner().index()
+                ))
+            })?;
+        let input_count = scalar_type_count(&symbol.inputs, "typed call input")?;
+        let output_count = symbol.outputs.iter().try_fold(0usize, |count, value| {
+            count
+                .checked_add(value.value_type().scalar_count() as usize)
+                .ok_or_else(|| CompileError::Input("typed call output count overflows".into()))
+        })?;
+        if input.len() != input_count || output.len() != output_count {
+            return Err(CompileError::Input(format!(
+                "typed call payload has {}/{} cells; expected {input_count}/{output_count}",
+                input.len(),
+                output.len()
+            )));
+        }
+        type TypedCall = unsafe extern "C" fn(*const u64, *mut u64);
+        // SAFETY: `symbol.address` is the finalized address of a Cranelift
+        // function constructed with exactly the two-pointer `TypedCall` ABI.
+        // The checked site/interface and cell extents are proved above, and
+        // the owning JIT module remains alive in `self` for this call.
+        let call: TypedCall = unsafe { std::mem::transmute(symbol.address) };
+        // SAFETY: both slices have the exact checked cell extents required by
+        // the compiled owner and remain valid for the duration of the call.
+        unsafe { call(input.as_ptr(), output.as_mut_ptr()) };
+        Ok(())
+    }
+}
+
+fn scalar_type_count(
+    types: &[solve::SolveValueType],
+    context: &str,
+) -> Result<usize, CompileError> {
+    types.iter().try_fold(0usize, |count, value_type| {
+        count
+            .checked_add(value_type.scalar_count() as usize)
+            .ok_or_else(|| CompileError::Input(format!("{context} count overflows")))
+    })
 }
 
 struct TableCompiler {

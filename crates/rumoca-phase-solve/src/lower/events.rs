@@ -26,7 +26,14 @@ pub(super) fn lower_discrete_and_events<'dae>(
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
     continuous: &solve::ContinuousSolveSystem,
-) -> Result<(solve::DiscreteSolveSystem, solve::SolveEventPartition), LowerError> {
+) -> Result<
+    (
+        solve::DiscreteSolveSystem,
+        solve::SolveEventPartition,
+        Vec<super::typed_functions::model_events::PendingEventTransaction<'dae>>,
+    ),
+    LowerError,
+> {
     let mut discrete = DiscreteRows::new(view);
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
     lower_discrete_value_owners(view, layout, clocks, &mut discrete)?;
@@ -44,15 +51,17 @@ pub(super) fn lower_discrete_and_events<'dae>(
     let roots = lower_roots(view, layout, clocks, &discrete.relation_memory_owners)?;
     let (scheduled_time_events, dynamic_time_event_rhs) = lower_time_events(view, layout)?;
     let delays = lower_delays(view, layout)?;
-    let event_iteration_plan = build_event_iteration_plan(view, layout, &discrete)?;
-    let event_transactions =
+    let mut event_transactions =
         super::typed_functions::lower_model_event_transactions(view, layout, clocks)?;
+    for (program_index, transaction) in event_transactions.iter_mut().enumerate() {
+        discrete.claim_event_transaction(view, program_index, transaction)?;
+    }
+    let event_iteration_plan = build_event_iteration_plan(view, layout, &discrete)?;
     let mut discrete = discrete.finish(
         &roots.relation_memory_targets,
         &layout.solve_layout.relation_memory_parameter_indices,
     )?;
     discrete.event_iteration_plan = event_iteration_plan;
-    discrete.event_transactions = event_transactions;
     derive_integrator_history_effects(
         &mut discrete,
         continuous,
@@ -79,7 +88,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
         delays,
         ..solve::SolveEventPartition::default()
     };
-    Ok((discrete, events))
+    Ok((discrete, events, event_transactions))
 }
 
 fn build_event_iteration_plan<'dae>(
@@ -262,6 +271,10 @@ enum EventIterationOwnerClaim {
         program_index: usize,
         target_range_index: usize,
     },
+    EventTransaction {
+        program_index: usize,
+        target_index: usize,
+    },
 }
 
 impl<'dae> DiscreteRows<'dae> {
@@ -322,6 +335,12 @@ impl<'dae> DiscreteRows<'dae> {
                     span,
                 ));
             }
+            Some(EventIterationOwnerClaim::EventTransaction { .. }) => {
+                return Err(LowerError::contract(
+                    "event coordinate has both scalar and transaction owners",
+                    span,
+                ));
+            }
         }
         Ok(())
     }
@@ -370,6 +389,81 @@ impl<'dae> DiscreteRows<'dae> {
         Ok(())
     }
 
+    fn claim_event_transaction(
+        &mut self,
+        view: dae::DaeView<'dae>,
+        program_index: usize,
+        transaction: &mut super::typed_functions::model_events::PendingEventTransaction<'dae>,
+    ) -> Result<(), LowerError> {
+        let transaction_span = transaction.provenance();
+        let targets = transaction
+            .target_projections()
+            .map(|(variable, base, value_type)| {
+                (variable, base, value_type.scalar_count() as usize)
+            })
+            .collect::<Vec<_>>();
+        for (target_index, (variable, base, scalar_count)) in targets.into_iter().enumerate() {
+            let span = view
+                .variable(variable)
+                .map(|variable| variable.declaration().span())
+                .ok_or_else(|| {
+                    LowerError::contract(
+                        "checked transaction target variable no longer resolves",
+                        transaction_span,
+                    )
+                })?;
+            let claim = self
+                .event_iteration_owners
+                .get_mut(variable.index() as usize)
+                .ok_or_else(|| {
+                    LowerError::contract("transaction target variable is out of bounds", span)
+                })?;
+            let legacy = match claim.take() {
+                Some(EventIterationOwnerClaim::ScalarRows {
+                    start_row,
+                    base: legacy_base,
+                    claimed,
+                }) if legacy_base == base && claimed == scalar_count => {
+                    solve::EventTransactionLegacyOwner::ScalarRows { start_row }
+                }
+                Some(EventIterationOwnerClaim::StructuredUpdate { update_index }) => {
+                    solve::EventTransactionLegacyOwner::StructuredUpdate { update_index }
+                }
+                Some(EventIterationOwnerClaim::GuardedAssignment {
+                    program_index,
+                    target_range_index,
+                }) => solve::EventTransactionLegacyOwner::GuardedAssignment {
+                    program_index,
+                    target_range_index,
+                },
+                Some(EventIterationOwnerClaim::ScalarRows { .. }) => {
+                    return Err(LowerError::contract(
+                        "transaction target does not exactly cover its scalar producer",
+                        span,
+                    ));
+                }
+                Some(EventIterationOwnerClaim::EventTransaction { .. }) => {
+                    return Err(LowerError::contract(
+                        "transaction target is already owned by another transaction",
+                        span,
+                    ));
+                }
+                None => {
+                    return Err(LowerError::contract(
+                        "transaction target has no exact legacy event producer",
+                        span,
+                    ));
+                }
+            };
+            transaction.push_legacy_owner(legacy);
+            *claim = Some(EventIterationOwnerClaim::EventTransaction {
+                program_index,
+                target_index,
+            });
+        }
+        Ok(())
+    }
+
     fn event_iteration_owner(
         &self,
         variable: dae::VariableId<'dae>,
@@ -401,6 +495,13 @@ impl<'dae> DiscreteRows<'dae> {
             }) => Ok(solve::EventIterationOwner::GuardedAssignment {
                 program_index,
                 target_range_index,
+            }),
+            Some(EventIterationOwnerClaim::EventTransaction {
+                program_index,
+                target_index,
+            }) => Ok(solve::EventIterationOwner::EventTransaction {
+                program_index,
+                target_index,
             }),
         }
     }

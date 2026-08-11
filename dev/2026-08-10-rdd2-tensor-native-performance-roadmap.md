@@ -24,11 +24,11 @@ on it.
 
 ## Current completion snapshot
 
-Overall completion is approximately **48%**. This is a weighted acceptance
+Overall completion is approximately **50%**. This is a weighted acceptance
 estimate, not a count of changed lines or checked boxes:
 
 - Phase 1, lazy guarded-fold correctness and ownership: **100%**.
-- Phase 2, tensor-native hot-path architecture and performance: **about 78%**.
+- Phase 2, tensor-native hot-path architecture and performance: **about 82%**.
   The checked model-level table has collapsed 10,374 call occurrences to 326
   issued owners, and all typed scalar, tensor, `Conditional`, `Fold`, and `Map`
   operations now have final-boundary Cranelift lowering. Native/interpreter
@@ -144,9 +144,11 @@ or changing mission semantics earns no roadmap credit.
   unconditional inactive 6x6 GPS/mocap Cholesky folds in the optical-flow
   action schedule. The strict-prefix/conditional-owner fix reduces the warmed
   result to 0.505802826 s best and preserves 101 points at final time 0.5.
-- The current result is 0.9885x real time and remains 10.12x slower than the
-  0.05 s wall-time acceptance threshold. It is therefore a large correctness
-  and work-elimination win, not completion of the performance objective.
+- The current post-review result averages `0.397493436 s` and bests
+  `0.396933454 s` over three timed runs after one warmup. That is 1.26x real
+  time and remains 7.94x slower than the 0.05 s wall-time acceptance
+  threshold. It is therefore a correctness and work-elimination win, not
+  completion of the performance objective.
 - The 2026-08-11 typed-fold storage review proved that every compact carried
   tuple was copied into a transition frame and back on every domain point,
   while functional tensor updates copied their complete aggregate even when
@@ -165,18 +167,35 @@ or changing mission semantics earns no roadmap credit.
   artifact. Focused Phase Solve is 85/85; the combined evaluator, Cranelift,
   solver, formatting, and documentation-test command exits successfully.
   Artifact: `/tmp/rdd2-fold-frame-reviewed-release-v1.json`.
-- The matching runtime-only profile averages `0.468361593 s` and bests
-  `0.463151654 s`. The largest self symbols are legacy compact fold 65
-  (`7.21%`), typed 15x15 estimator `solveSPD` owner 145 (`5.04%`), continuous
-  rigid-body 3x3 `solveSPD` owner 30 (`4.79%`), assignment schedule 1
-  (`4.41%`), estimator `step` owner 342 (`4.37%`), and schedules 5/4/3/2
-  (`4.05/3.55/3.35/2.97%`). All assignment schedules together are about 20%
-  self time and the leading legacy compact folds about another 20%. Dynamic
-  counts remain `step=304` and nested estimator `solveSPD=301` for 101 task
-  points; continuous assertion-associated rigid-body owners execute 2,054
-  times. Artifacts: `/tmp/rdd2-fold-frame-v1.perf.data`,
-  `/tmp/rdd2-fold-frame-v1-report.txt`, and
-  `/tmp/rdd2-ordered-b1c-call-count-v1.stderr`.
+- Solve schema 56 now proves exact event-transaction replacement before the
+  runtime cutover: every compact target is aligned with its compiler-issued
+  legacy scalar/structured/guarded producer, every producer program is covered
+  as a complete execution unit, every predicate covers a nonempty set of exact
+  legacy action indices, and event-plan ownership points back to the aggregate
+  transaction. The runtime evaluates the target/predicate tuple once on the
+  first clock pass, commits the complete tuple only after all predicates pass,
+  holds it on later passes, and skips only the checked legacy inventory.
+  The reviewed release 0.5 s optical slice averages `0.399150423 s` and bests
+  `0.397781312 s` over five timed runs after one warmup (101 points, exact final
+  time), versus the prior `0.458440113/0.457804617 s` reviewed baseline: a
+  13.1% best-time improvement. A post-refactor three-run audit improves the
+  average/best slightly to `0.397493436/0.396933454 s`. Dynamic counts are
+  `transaction 351=102` and
+  `step 342=102` for 101 ticks, down from `step=304`; nested `predict 110=502`
+  remains an internal correlation issue. Artifacts:
+  `/tmp/rdd2-solve-c56.json`,
+  `/tmp/rdd2-c56-event-transaction-call-count.{json,stderr}`, and
+  `/tmp/rdd2-c56-event-transaction-runtime.perf.data`.
+- The post-cutover runtime-only 30-run profile averages `0.405530348 s` and
+  bests `0.404333654 s` with 12,807 samples. Assignment schedules own 65.48%
+  inclusive, led by schedule 3 at 29.98%; schedules 1/5/4/2/6 own another
+  11.11/7.35/6.98/5.92/2.93%. The largest self symbols are compact fold 65
+  (8.85%), typed owner 30 (5.69%), schedule 1 (5.02%), fold 72 (4.84%),
+  schedule 5 (4.67%), fold 63 (4.63%), schedule 4 (4.26%), and schedule 3
+  (4.13%). This makes the next bottleneck the checked refresh-execution
+  schedule boundary, not the Kalman transaction. Artifacts:
+  `/tmp/rdd2-c56-event-transaction-runtime.perf.data` and
+  `/tmp/rdd2-c56-event-transaction-runtime-{self,inclusive}.txt`.
 - A source-level matrix-chain experiment changed the continuous log-linear
   controller from `J * K * x` to `J * (K * x)` and replaced
   `J * diagonal(gain) * error` with `J * (gain .* error)`. Best time was
@@ -409,6 +428,11 @@ Review checkpoint R1:
   target support is unavailable.
 - [ ] Eliminate redundant certified refreshes and copies only with dependency
   and temporal-ownership proof.
+- [x] Execute one checked mixed B.1b/B.1c `EventTransactionProgram` per active
+  first clock pass, suppress only its exact construction-issued legacy
+  producer/action projections, and commit its complete aggregate target tuple
+  atomically. Solve IR 161/161 and Phase Solve 86/86 pass; runtime and native
+  regressions prove first-pass hold and one aggregate payload invocation.
 - [x] Give typed functional updates checked last-use storage forwarding and
   carry compact fold tuples across native loop backedges by swapping owned
   frames instead of copying aggregate payloads. Retain read-only input and
@@ -627,35 +651,25 @@ Review checkpoint R5:
 | 2026-08-11 | R2 DAE-C21 construction/wire implementation review | The new owner had to preserve statement order and issued call identity without reconstructing either from B.1b/B.1c projections. Review also required failure-atomic validation, one transaction owner per mutable target, exact role/type/clock checks, and schema-gated checked replay. | DAE schema 31 now owns checked mixed discrete-Real/discrete-value model-event transactions. Phase lowering records one aggregate definition region per source assignment/function call/compact loop, retaining sequential SSA values and exact guards; no tensor coordinate is enumerated. Positive, forged-role, undeclared-target, duplicate-owner, and wire-round-trip tests pass. A sampled mixed-result regression proves one Real/Boolean call followed by a new-Real read remains a two-step transaction with one issued call identity. Full DAE IR is 146/146 and Phase DAE is 214/214 at this checkpoint. The real RDD2 DAE contains five transactions; `MixedInvariantNavigationEstimator` is one clock-owned transaction with 28 aggregate targets, eight ordered steps, and 28 definitions. Its first 12 result definitions and six later status projections all retain exact call owner 10965; navigation projection is a second exact owner 10995. Artifact: `/tmp/rdd2-dae-c21.json`. |
 | 2026-08-11 | R2 SOLVE-C55 aggregate-capture checkpoint (open) | The sole DAE-to-typed expression lowerer previously accepted only function parameters and compact-domain binders. Giving event transactions a second coordinate lowerer would split semantics, while feeding one scalar register per tensor element would violate the range-preserving contract. | Added one closed semantic model-coordinate key catalog to the existing typed lowerer. A captured model tensor remains one typed register, is ordered deterministically by issued coordinate kind/id, and is reconstructed through nested `Conditional`, `Fold`, and `Map` regions without coordinate enumeration. Function-only owners retain an empty model-coordinate environment. `cargo check -p rumoca-ir-solve -p rumoca-phase-solve` passes. Next attach checked storage sources/atomic targets and a transaction body through this same lowering path, then add construction and interpreter/native parity tests. |
 | 2026-08-11 | R2 SOLVE-C55 checked-interface review (open) | Attaching the first transaction body exposed two proof obligations that could not remain implicit: call-scoped predicates must be returned and checked with the same invocation as target values, and the finalized model must prove every transaction site against its sole issued pure-call table. Enabling the whole-problem construction gate also exposed older multi-output-root and conditional-B.1c certificate defects that phase lowering had returned without validation. | Solve schema 55 now gives each eligible transaction an aggregate storage-input ABI, an atomic final-target prefix, and a Boolean assertion-predicate suffix with exact aligned `Assert` actions. Whole-problem validation checks storage/clock bounds; `SolveModel` wire replay visits every scalar and transaction call site and rejects a missing or mismatched owner. The visitor now exposes transactions explicitly. Root refresh roles derive per stored output of one compact multi-output program, and conditional B.1c owners correctly construct as event equations. Solve IR is 160/160 and Phase Solve is 86/86. A fresh real RDD2 canary passes with three eligible transactions: owners 349/350/351; estimator owner 351 has 55 aggregate inputs (397 scalar payload), 28 aggregate targets (286 payload), eight statements, nine predicates/actions, and clock owner 1. Artifact: `/tmp/rdd2-solve-c55-reviewed.json`. Runtime execution, legacy-row suppression, interpreter/native parity, settled certificates, and the one-call-per-tick proof remain open. Strict clippy still reports the roadmap's pre-existing excessive-nesting/too-many-lines debt in legacy DAE/Solve validators; no new transaction module finding is present, so the strict gate is not claimed green. |
+| 2026-08-11 | R2 schema-56 event-transaction cutover review | Runtime suppression could not be inferred from target ranges, spans, bodies, or equal scalar plans. One issued assertion predicate can also have several legacy action projections, so a one-to-one action mapping failed closed on the real RDD2 model. | Solve schema 56 carries a target-aligned legacy-owner inventory, event-plan transaction owner/reverse-bijection proof, and a nonempty exact action-index set per predicate. Whole-model replay proves compact target equality, clock equality, complete scalar/guarded producer-program coverage, unique transaction/action claims, and exact action equality. Runtime adapters derive scalar payloads only at the final ABI/storage boundary, evaluate native owners once on the first tick pass, precheck predicates and target bounds, commit atomically, and hold later passes. Compiled-call errors are fatal rather than silently falling back to the interpreter. The post-review helper split introduces no strict-lint finding in the new event runtime files; the affected suites pass 952 unit tests plus three doctests, and a fresh real schema-56 canary passes. Release best improves `0.457804617 -> 0.396933454 s`; `step` falls `304 -> 102` calls for 101 ticks. Post-cutover perf attributes 65.48% inclusive to assignment schedules, led by schedule 3 at 29.98%; estimator-internal `predict` remains 502 calls. Proceed with the compiler-issued refresh-execution owner/remainder contract, not graph comparison or cache recovery. Artifacts: `/tmp/rdd2-c56-event-transaction-runtime-{self,inclusive}.txt` and `/tmp/rdd2-c56-tests-final.txt`. |
 
 ## Current next action
 
-DAE-C21 is implemented and the first checked SOLVE-C55 transaction interfaces
-are proven on the real estimator. Now execute each `EventTransactionProgram`
-once per eligible activation through the shared typed interpreter and
-Cranelift owner. The runtime must load aggregate storage inputs, evaluate the
-complete target/predicate tuple in one invocation scope, check all predicates,
-commit every target atomically, and issue exact clock-first-pass,
-settled/invalidation, and history effects. Prove interpreter/native parity and
-one `step` invocation per estimator tick before deleting or disabling the
-executable B.1b/B.1c projections covered by the transaction. A persistent
-backend cache or a list of already scalarized guarded programs is not an
-acceptable bridge.
-
-After that event cutover, unify continuous refresh execution with the checked
+The schema-56 event cutover now executes `MultiSensorInvariant.step` once per
+estimator tick and suppresses only its exact checked legacy projections. Next
+unify continuous refresh execution with the checked
 typed Solve program boundary. Construction must issue one exact
 refresh-stage owner and remainder/invalidation certificate covering time,
 Y/P generations, event/pre state, external tables, arithmetic/AD mode, and the
 ordered target tuple. Derivative, root, event, interpreter, Cranelift, GALEC,
 and Production C consumers must use that same owner. The repeated 89-row
 schedules and their 9-point fold helpers may not be shared by body equality or
-pointer coincidence. In parallel within that owner contract, complete the
-event transaction proof so `MultiSensorInvariant.step` executes once—not 304
-times—for 101 estimator ticks, without hoisting inactive corrections. The
-inclusive call graph additionally proves that three distinct outer residual
-batches enter the same issued `step` owner; the invocation certificate must
-therefore survive the outer-program boundary instead of resetting inside each
-native residual call.
+pointer coincidence. The event transaction already reduces
+`MultiSensorInvariant.step` to one checked execution per tick; the remaining
+`predict=502` count for 101 ticks must be addressed only if the new issued
+refresh contract proves those invocations share the same semantic coordinate.
+The certificate must survive the outer-program boundary instead of resetting
+inside each native residual call, without hoisting inactive corrections.
 
 Then repeat native/interpreter parity, dynamic call counts, the 0.5 s release
 benchmark, and runtime-only `perf`. Optimize `solveSPD` further only if it

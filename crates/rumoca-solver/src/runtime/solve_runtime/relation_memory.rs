@@ -643,6 +643,9 @@ impl SolveRuntime {
         let mut active_rows = self.event_action_active_row_indices.borrow_mut();
         active_rows.clear();
         for (row, action) in events.actions.iter().enumerate() {
+            if self.event_transaction_coverage.event_actions[row] {
+                continue;
+            }
             let active = match action.clock_owner {
                 Some(owner) => self.periodic_clock_active(owner, t, "event action")?,
                 None => true,
@@ -661,6 +664,7 @@ impl SolveRuntime {
             t,
             &mut values,
         )?;
+        self.project_event_transaction_action_values(t, &mut values)?;
         match solve_eval::event_action_request_from_values(
             events,
             y,

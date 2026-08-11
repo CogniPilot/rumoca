@@ -1,7 +1,7 @@
 //! Single-source DAE pure-function lowering into the checked typed vocabulary.
 
 mod assertions;
-mod model_events;
+pub(in crate::lower) mod model_events;
 mod regions;
 mod tensor;
 

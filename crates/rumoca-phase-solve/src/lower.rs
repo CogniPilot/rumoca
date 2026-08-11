@@ -48,9 +48,16 @@ pub(crate) fn lower_solve_problem(
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;
-    let (discrete, mut events) =
+    let (mut discrete, mut events, event_transactions) =
         events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
-    call_scoped_actions::append_collected_actions(view, &lowered, &clocks, &discrete, &mut events)?;
+    discrete.event_transactions = call_scoped_actions::append_collected_actions(
+        view,
+        &lowered,
+        &clocks,
+        &discrete,
+        &mut events,
+        event_transactions,
+    )?;
     let pure_calls = lowered.pure_calls.borrow_mut().finish();
     if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
         eprintln!(

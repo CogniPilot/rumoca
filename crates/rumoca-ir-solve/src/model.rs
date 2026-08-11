@@ -303,6 +303,10 @@ pub enum EventIterationOwner {
         program_index: usize,
         target_range_index: usize,
     },
+    EventTransaction {
+        program_index: usize,
+        target_index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
@@ -393,6 +397,26 @@ pub struct EventTransactionTarget {
     value_type: SolveValueType,
 }
 
+/// Exact legacy executable owner replaced by one aggregate transaction target.
+///
+/// This is a compiler-issued projection, not a runtime recovery hint. Whole
+/// problem validation proves that it defines the same compact storage range as
+/// the aligned transaction target and that producer programs are covered as
+/// complete execution units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub enum EventTransactionLegacyOwner {
+    ScalarRows {
+        start_row: usize,
+    },
+    StructuredUpdate {
+        update_index: usize,
+    },
+    GuardedAssignment {
+        program_index: usize,
+        target_range_index: usize,
+    },
+}
+
 impl EventTransactionTarget {
     #[must_use]
     pub const fn base(&self) -> ScalarSlot {
@@ -415,10 +439,28 @@ pub struct EventTransactionProgram {
     site: SolvePureCallSite,
     inputs: Box<[EventTransactionInput]>,
     targets: Box<[EventTransactionTarget]>,
+    legacy_owners: Box<[EventTransactionLegacyOwner]>,
     assertions: Box<[SolveEventAction]>,
+    assertion_action_indices: Box<[Box<[usize]>]>,
     statement_count: usize,
     clock_owner: Option<PeriodicClockId>,
     span: Span,
+}
+
+/// Uncommitted inputs to the checked event-transaction constructor.
+///
+/// This carrier may be assembled by a phase or wire adapter, but it cannot be
+/// used as executable Solve IR until [`EventTransactionProgram::checked`]
+/// validates and owns every column.
+pub struct EventTransactionConstruction {
+    pub site: SolvePureCallSite,
+    pub inputs: Vec<(ScalarSlot, SolveValueType)>,
+    pub targets: Vec<(ScalarSlot, SolveValueType)>,
+    pub legacy_owners: Vec<EventTransactionLegacyOwner>,
+    pub assertions: Vec<SolveEventAction>,
+    pub assertion_action_indices: Vec<Vec<usize>>,
+    pub statement_count: usize,
+    pub clock_owner: Option<PeriodicClockId>,
 }
 
 #[derive(Deserialize)]
@@ -427,7 +469,9 @@ struct EventTransactionProgramWire {
     site: SolvePureCallSite,
     inputs: Vec<EventTransactionInputWire>,
     targets: Vec<EventTransactionTargetWire>,
+    legacy_owners: Vec<EventTransactionLegacyOwner>,
     assertions: Vec<SolveEventAction>,
+    assertion_action_indices: Vec<Vec<usize>>,
     statement_count: usize,
     clock_owner: Option<PeriodicClockId>,
     span: Span,
@@ -458,16 +502,24 @@ impl<'de> Deserialize<'de> for EventTransactionProgram {
             .require_provenance("EventTransactionProgram")
             .map_err(serde::de::Error::custom)?;
         Self::checked(
-            wire.site,
-            wire.inputs
-                .into_iter()
-                .map(|input| (input.source, input.value_type)),
-            wire.targets
-                .into_iter()
-                .map(|target| (target.base, target.value_type)),
-            wire.assertions,
-            wire.statement_count,
-            wire.clock_owner,
+            EventTransactionConstruction {
+                site: wire.site,
+                inputs: wire
+                    .inputs
+                    .into_iter()
+                    .map(|input| (input.source, input.value_type))
+                    .collect(),
+                targets: wire
+                    .targets
+                    .into_iter()
+                    .map(|target| (target.base, target.value_type))
+                    .collect(),
+                legacy_owners: wire.legacy_owners,
+                assertions: wire.assertions,
+                assertion_action_indices: wire.assertion_action_indices,
+                statement_count: wire.statement_count,
+                clock_owner: wire.clock_owner,
+            },
             provenance,
         )
         .map_err(serde::de::Error::custom)
@@ -476,42 +528,40 @@ impl<'de> Deserialize<'de> for EventTransactionProgram {
 
 impl EventTransactionProgram {
     pub fn checked(
-        site: SolvePureCallSite,
-        inputs: impl IntoIterator<Item = (ScalarSlot, SolveValueType)>,
-        targets: impl IntoIterator<Item = (ScalarSlot, SolveValueType)>,
-        assertions: impl IntoIterator<Item = SolveEventAction>,
-        statement_count: usize,
-        clock_owner: Option<PeriodicClockId>,
+        construction: EventTransactionConstruction,
         provenance: ProvenanceSpan,
     ) -> Result<Self, SolveProblemShapeContractError> {
         let span = provenance.span();
-        let inputs = inputs
+        let inputs = construction
+            .inputs
             .into_iter()
             .map(|(source, value_type)| EventTransactionInput { source, value_type })
             .collect::<Box<[_]>>();
-        let targets = targets
+        let targets = construction
+            .targets
             .into_iter()
             .map(|(base, value_type)| EventTransactionTarget { base, value_type })
             .collect::<Box<[_]>>();
-        let assertions = assertions.into_iter().collect::<Box<[_]>>();
-        validate_event_transaction_interface(
-            &site,
-            &inputs,
-            &targets,
-            &assertions,
-            statement_count,
-            clock_owner,
-            span,
-        )?;
-        Ok(Self {
-            site,
+        let legacy_owners = construction.legacy_owners.into_boxed_slice();
+        let assertions = construction.assertions.into_boxed_slice();
+        let assertion_action_indices = construction
+            .assertion_action_indices
+            .into_iter()
+            .map(Vec::into_boxed_slice)
+            .collect::<Box<[_]>>();
+        let program = Self {
+            site: construction.site,
             inputs,
             targets,
+            legacy_owners,
             assertions,
-            statement_count,
-            clock_owner,
+            assertion_action_indices,
+            statement_count: construction.statement_count,
+            clock_owner: construction.clock_owner,
             span,
-        })
+        };
+        validate_event_transaction_interface(&program)?;
+        Ok(program)
     }
 
     #[must_use]
@@ -529,10 +579,22 @@ impl EventTransactionProgram {
         &self.targets
     }
 
+    /// Row-aligned compiler-issued projection to the legacy B.1b/B.1c owner.
+    #[must_use]
+    pub const fn legacy_owners(&self) -> &[EventTransactionLegacyOwner] {
+        &self.legacy_owners
+    }
+
     /// Ordered actions aligned with the assertion-predicate result suffix.
     #[must_use]
     pub const fn assertions(&self) -> &[SolveEventAction] {
         &self.assertions
+    }
+
+    /// Exact event-action output replaced by each predicate suffix lane.
+    #[must_use]
+    pub const fn assertion_action_indices(&self) -> &[Box<[usize]>] {
+        &self.assertion_action_indices
     }
 
     /// Number of call-scoped assertion predicates returned atomically after
@@ -559,21 +621,31 @@ impl EventTransactionProgram {
 }
 
 fn validate_event_transaction_interface(
-    site: &SolvePureCallSite,
-    inputs: &[EventTransactionInput],
-    targets: &[EventTransactionTarget],
-    assertions: &[SolveEventAction],
-    statement_count: usize,
-    clock_owner: Option<PeriodicClockId>,
-    span: Span,
+    program: &EventTransactionProgram,
 ) -> Result<(), SolveProblemShapeContractError> {
+    let EventTransactionProgram {
+        site,
+        inputs,
+        targets,
+        legacy_owners,
+        assertions,
+        assertion_action_indices,
+        statement_count,
+        clock_owner,
+        span,
+    } = program;
     let invalid = |detail| SolveProblemShapeContractError::EventTransactionProgram {
         program_index: 0,
         detail,
-        span: Some(span),
+        span: Some(*span),
     };
-    if statement_count == 0 || targets.is_empty() {
+    if *statement_count == 0 || targets.is_empty() {
         return Err(invalid("statement or target catalog is empty"));
+    }
+    if legacy_owners.len() != targets.len() {
+        return Err(invalid(
+            "legacy producer projections do not cover the complete target tuple",
+        ));
     }
     if site.inputs().len() != inputs.len()
         || site
@@ -608,9 +680,22 @@ fn validate_event_transaction_interface(
             "assertion actions do not cover the checked predicate suffix",
         ));
     }
+    if assertion_action_indices.len() != assertions.len() {
+        return Err(invalid(
+            "event-action projections do not cover the predicate suffix",
+        ));
+    }
+    if assertion_action_indices
+        .iter()
+        .any(|indices| indices.is_empty())
+    {
+        return Err(invalid(
+            "one assertion predicate has no legacy event-action projection",
+        ));
+    }
     if assertions.iter().any(|action| {
         !matches!(action.kind, SolveEventActionKind::Assert)
-            || action.clock_owner != clock_owner
+            || action.clock_owner != *clock_owner
             || action.span.is_dummy()
     }) {
         return Err(invalid(
@@ -1099,7 +1184,7 @@ pub struct ScheduledRootCondition {
     pub phase_seconds: f64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct SolveEventAction {
     pub kind: SolveEventActionKind,
     pub message: SolveEventMessage,
@@ -1114,12 +1199,12 @@ pub struct SolveEventAction {
     pub clock_owner: Option<PeriodicClockId>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct SolveEventMessage {
     pub parts: Vec<SolveEventMessagePart>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum SolveEventMessagePart {
     Text(String),
     Conversion {
@@ -1136,7 +1221,7 @@ pub enum SolveStringConversionSource {
     Boolean,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum SolveStringConversionFormat {
     Options {
         minimum_length: Option<Vec<LinearOp>>,
@@ -1145,7 +1230,7 @@ pub enum SolveStringConversionFormat {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum SolveEventActionKind {
     Assert,
     Terminate,

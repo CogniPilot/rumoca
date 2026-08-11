@@ -113,14 +113,18 @@ fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
         let [program] = programs.as_slice() else {
             panic!("one exact periodic event transaction expected")
         };
-        assert_eq!(program.inputs().len(), 2);
-        assert_eq!(program.inputs()[0].value_type().scalar_count(), 2);
-        assert_eq!(program.inputs()[1].value_type().scalar_count(), 1);
-        assert_eq!(program.targets().len(), 2);
-        assert_eq!(program.targets()[0].value_type().scalar_count(), 2);
-        assert_eq!(program.targets()[1].value_type().scalar_count(), 1);
+        let input_widths = program
+            .input_types()
+            .map(|value_type| value_type.scalar_count())
+            .collect::<Vec<_>>();
+        assert_eq!(input_widths, [2, 1]);
+        let target_widths = program
+            .target_types()
+            .map(|value_type| value_type.scalar_count())
+            .collect::<Vec<_>>();
+        assert_eq!(target_widths, [2, 1]);
         assert_eq!(program.statement_count(), 1);
-        assert!(program.clock_owner().is_some());
+        let _clock_owner = program.clock_owner();
         let table = layout.pure_calls.borrow_mut().finish();
         assert_eq!(table.owners().len(), 1);
         assert!(table.matches_site(program.site()));

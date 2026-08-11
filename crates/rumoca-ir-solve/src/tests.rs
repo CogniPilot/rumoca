@@ -860,20 +860,24 @@ fn event_transaction_fixture_with_table() -> (EventTransactionProgram, SolvePure
         )
         .unwrap();
     let transaction = EventTransactionProgram::checked(
-        table.call_site(owner).unwrap(),
-        [(scalar_slot_p(2), tensor.clone())],
-        [(scalar_slot_p(8), tensor)],
-        [SolveEventAction {
-            kind: SolveEventActionKind::Assert,
-            message: SolveEventMessage {
-                parts: vec![SolveEventMessagePart::Text("checked".to_string())],
-            },
-            span: fixture_span(),
-            origin: "source".to_string(),
+        EventTransactionConstruction {
+            site: table.call_site(owner).unwrap(),
+            inputs: vec![(scalar_slot_p(2), tensor.clone())],
+            targets: vec![(scalar_slot_p(0), tensor)],
+            legacy_owners: vec![EventTransactionLegacyOwner::ScalarRows { start_row: 0 }],
+            assertions: vec![SolveEventAction {
+                kind: SolveEventActionKind::Assert,
+                message: SolveEventMessage {
+                    parts: vec![SolveEventMessagePart::Text("checked".to_string())],
+                },
+                span: fixture_span(),
+                origin: "source".to_string(),
+                clock_owner: None,
+            }],
+            assertion_action_indices: vec![vec![0]],
+            statement_count: 2,
             clock_owner: None,
-        }],
-        2,
-        None,
+        },
         fixture_provenance(),
     )
     .expect("one aggregate input and atomic target form a transaction");
@@ -891,7 +895,7 @@ fn event_transaction_owns_compact_typed_storage_ranges() {
     assert_eq!(transaction.inputs()[0].source(), scalar_slot_p(2));
     assert_eq!(transaction.inputs()[0].value_type().scalar_count(), 2);
     assert_eq!(transaction.targets().len(), 1);
-    assert_eq!(transaction.targets()[0].base(), scalar_slot_p(8));
+    assert_eq!(transaction.targets()[0].base(), scalar_slot_p(0));
     assert_eq!(transaction.statement_count(), 2);
     assert_eq!(transaction.assertion_count(), 1);
 }
@@ -924,13 +928,106 @@ fn event_transaction_wire_rejects_a_result_in_its_assertion_suffix() {
 }
 
 #[test]
+fn event_transaction_wire_requires_complete_legacy_and_action_projections() {
+    let mut missing_owner = serde_json::to_value(event_transaction_fixture()).unwrap();
+    missing_owner["legacy_owners"] = serde_json::json!([]);
+    let owner_error = serde_json::from_value::<EventTransactionProgram>(missing_owner).unwrap_err();
+    assert!(
+        owner_error
+            .to_string()
+            .contains("legacy producer projections do not cover the complete target tuple")
+    );
+
+    let mut missing_action = serde_json::to_value(event_transaction_fixture()).unwrap();
+    missing_action["assertion_action_indices"][0] = serde_json::json!([]);
+    let action_error =
+        serde_json::from_value::<EventTransactionProgram>(missing_action).unwrap_err();
+    assert!(
+        action_error
+            .to_string()
+            .contains("one assertion predicate has no legacy event-action projection")
+    );
+}
+
+#[test]
 fn solve_model_wire_rejects_a_forged_event_transaction_call_owner() {
     let (transaction, pure_calls) = event_transaction_fixture_with_table();
-    let mut problem = SolveProblem::default();
-    problem.layout = VarLayout::from_parts(IndexMap::new(), 0, 10);
-    problem.discrete.event_transactions.push(transaction);
+    let solve_layout = SolveLayout {
+        variable_storage_runs: vec![SolveVariableStorageRun {
+            base: scalar_slot_p(0),
+            scalar_count: 2,
+            role: SolveVariableStorageRole::DiscreteReal,
+            value_kind: SolveVariableValueKind::Real,
+        }],
+        variable_declarations: vec![SolveVariableDeclaration::new(
+            SolveVariableStorageRole::DiscreteReal,
+            SolveVariableValueKind::Real,
+        )],
+        compiled_parameter_len: 6,
+        discrete_real_scalar_names: vec!["x[1]".into(), "x[2]".into()],
+        pre_param_bindings: vec![
+            PreParamBinding {
+                dest_p_index: 4,
+                source: PreParamSource::P { index: 0 },
+                clock_schedule: None,
+            },
+            PreParamBinding {
+                dest_p_index: 5,
+                source: PreParamSource::P { index: 1 },
+                clock_schedule: None,
+            },
+        ],
+        ..SolveLayout::default()
+    };
+    let discrete = DiscreteSolveSystem {
+        rhs: ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::StoreOutput { src: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_provenance(),
+        )
+        .unwrap(),
+        update_targets: vec![scalar_slot_p(0), scalar_slot_p(1)],
+        row_roles: vec![DiscreteRowRole::Equation; 2],
+        pre_modes: vec![DiscreteEventPreMode::FollowCurrent; 2],
+        observation_refresh: vec![false; 2],
+        integrator_history_effects: vec![IntegratorHistoryEffect::Preserve; 2],
+        clock_owners: vec![None; 2],
+        event_iteration_plan: EventIterationPlan {
+            runs: vec![EventIterationRun {
+                variable: 0,
+                pre_binding_start: 0,
+                owner: EventIterationOwner::EventTransaction {
+                    program_index: 0,
+                    target_index: 0,
+                },
+            }],
+        },
+        event_transactions: vec![transaction.clone()],
+        ..DiscreteSolveSystem::default()
+    };
+    let events = SolveEventPartition {
+        actions: transaction.assertions().to_vec(),
+        action_conditions: ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_provenance(),
+        )
+        .unwrap(),
+        ..SolveEventPartition::default()
+    };
     let model = SolveModel {
-        problem,
+        problem: SolveProblem {
+            layout: VarLayout::from_parts(IndexMap::new(), 0, 6),
+            solve_layout,
+            discrete,
+            events,
+            ..SolveProblem::default()
+        },
         pure_calls,
         ..SolveModel::default()
     };

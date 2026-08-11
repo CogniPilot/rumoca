@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::lower::call_scoped_actions::{
-    CollectedCallAssertion, CollectedCallAssertionProgram, CollectedCallAssertionRoot,
+    CallAssertionProjection, CollectedCallAssertion, CollectedCallAssertionProgram,
+    CollectedCallAssertionRoot,
 };
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
@@ -44,6 +45,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 },
                 message,
                 assertion.provenance,
+                Some(CallAssertionProjection {
+                    owner: registered.owner,
+                    output_offset,
+                }),
             )?;
         }
         Ok(())
@@ -267,7 +272,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .transpose()?
             .map(CollectedCallAssertionRoot::Ready);
         let action_program = self.call_assertion_action(condition, None, call_span)?;
-        self.insert_assertion(root_program, action_program, message, provenance)
+        self.insert_assertion(root_program, action_program, message, provenance, None)
     }
 
     fn collect_fold_assertion(
@@ -286,7 +291,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .transpose()?
             .map(CollectedCallAssertionRoot::Ready);
         let action_program = self.call_assertion_action(condition, Some(fold), call_span)?;
-        self.insert_assertion(root_program, action_program, message, provenance)
+        self.insert_assertion(root_program, action_program, message, provenance, None)
     }
 
     fn insert_assertion(
@@ -295,6 +300,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         action_program: CollectedCallAssertionProgram<'dae>,
         message: String,
         provenance: dae::DaeProvenance,
+        projection: Option<CallAssertionProjection>,
     ) -> Result<(), LowerError> {
         self.layout
             .call_scoped_actions
@@ -312,6 +318,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     clock_owner: None,
                 },
                 clock_index: self.active_clock.map(|clock| clock.index() as usize),
+                projection,
             });
         Ok(())
     }

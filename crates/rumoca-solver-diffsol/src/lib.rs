@@ -81,6 +81,13 @@ struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
 struct CraneliftAssignmentSchedule(rumoca_exec_cranelift::CompiledAssignmentSchedule);
 
 #[cfg(not(target_arch = "wasm32"))]
+struct CraneliftEventTransaction {
+    pure_calls: rumoca_exec_cranelift::CompiledPureCallTable,
+    site: rumoca_ir_solve::SolvePureCallSite,
+    cells: RefCell<(Vec<u64>, Vec<u64>)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
     fn call(
         &self,
@@ -129,7 +136,20 @@ impl rumoca_solver::CompiledSolveAssignmentSchedule for CraneliftAssignmentSched
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct CraneliftExecutionBackend;
+impl rumoca_solver::CompiledSolveEventTransaction for CraneliftEventTransaction {
+    fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), String> {
+        let mut cells = self.cells.borrow_mut();
+        let (input_cells, output_cells) = &mut *cells;
+        self.pure_calls
+            .call_scalar_payload(&self.site, input, output, input_cells, output_cells)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CraneliftExecutionBackend {
+    pure_calls: Option<rumoca_exec_cranelift::CompiledPureCallTable>,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
@@ -137,7 +157,15 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
-        rumoca_exec_cranelift::compile_expression_scalar_program_block(block)
+        let compiled = match &self.pure_calls {
+            Some(pure_calls) => {
+                rumoca_exec_cranelift::compile_expression_scalar_program_block_with_pure_calls(
+                    block, pure_calls,
+                )
+            }
+            None => rumoca_exec_cranelift::compile_expression_scalar_program_block(block),
+        };
+        compiled
             .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
     }
@@ -146,7 +174,15 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         &self,
         block: &rumoca_ir_solve::ScalarProgramBlock,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, String> {
-        rumoca_exec_cranelift::compile_jacobian_scalar_program_block(block)
+        let compiled = match &self.pure_calls {
+            Some(pure_calls) => {
+                rumoca_exec_cranelift::compile_jacobian_scalar_program_block_with_pure_calls(
+                    block, pure_calls,
+                )
+            }
+            None => rumoca_exec_cranelift::compile_jacobian_scalar_program_block(block),
+        };
+        compiled
             .map(|compiled| Rc::new(CraneliftJacobianExpression(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
     }
@@ -156,9 +192,34 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
         programs: &[Vec<rumoca_ir_solve::LinearOp>],
         target_y_indices: &[usize],
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
-        rumoca_exec_cranelift::compile_assignment_schedule(programs, target_y_indices)
+        let compiled = match &self.pure_calls {
+            Some(pure_calls) => rumoca_exec_cranelift::compile_assignment_schedule_with_pure_calls(
+                programs,
+                target_y_indices,
+                pure_calls,
+            ),
+            None => rumoca_exec_cranelift::compile_assignment_schedule(programs, target_y_indices),
+        };
+        compiled
             .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)
             .map_err(|error| error.to_string())
+    }
+
+    fn compile_event_transaction(
+        &self,
+        program: &rumoca_ir_solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventTransaction>, String> {
+        self.pure_calls
+            .as_ref()
+            .cloned()
+            .map(|pure_calls| {
+                Rc::new(CraneliftEventTransaction {
+                    pure_calls,
+                    site: program.site().clone(),
+                    cells: RefCell::new((Vec::new(), Vec::new())),
+                }) as Rc<_>
+            })
+            .ok_or_else(|| "the typed pure-call table is unavailable".to_string())
     }
 }
 
@@ -167,9 +228,10 @@ fn new_solve_runtime(
 ) -> Result<SolveRuntime, rumoca_eval_solve::EvalSolveError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let pure_calls = rumoca_exec_cranelift::compile_pure_call_table(&model.pure_calls).ok();
         return SolveRuntime::new_with_execution_backend(
             model,
-            Some(Rc::new(CraneliftExecutionBackend)),
+            Some(Rc::new(CraneliftExecutionBackend { pure_calls })),
         );
     }
     #[cfg(target_arch = "wasm32")]

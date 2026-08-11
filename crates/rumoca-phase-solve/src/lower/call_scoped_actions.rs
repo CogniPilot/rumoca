@@ -4,11 +4,18 @@
 //! a guarded root surface and a row-aligned guarded assertion action instead.
 
 use rumoca_ir_solve as solve;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{LoweredLayout, clocks::LoweredClocks};
 use crate::LowerError;
 use crate::lower::scalar::{DeferredCallAssertion, ScalarCompiler};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct CallAssertionProjection {
+    pub(super) owner: solve::SolvePureCallOwnerId,
+    pub(super) output_offset: usize,
+}
 
 #[derive(PartialEq)]
 pub(super) enum CollectedCallAssertionProgram<'dae> {
@@ -36,6 +43,7 @@ pub(super) struct CollectedCallAssertion<'dae> {
     pub(super) action_program: CollectedCallAssertionProgram<'dae>,
     pub(super) action: solve::SolveEventAction,
     pub(super) clock_index: Option<usize>,
+    pub(super) projection: Option<CallAssertionProjection>,
 }
 
 #[derive(Default)]
@@ -47,6 +55,7 @@ impl<'dae> CallScopedActionCollector<'dae> {
     pub(super) fn insert(&mut self, action: CollectedCallAssertion<'dae>) {
         let duplicate = self.actions.iter().any(|existing| {
             existing.action.span == action.action.span
+                && existing.projection == action.projection
                 && existing.root_program == action.root_program
                 && match (&existing.action_program, &action.action_program) {
                     (
@@ -88,21 +97,27 @@ pub(super) fn append_collected_actions<'dae>(
     clocks: &LoweredClocks<'dae>,
     discrete: &solve::DiscreteSolveSystem,
     events: &mut solve::SolveEventPartition,
-) -> Result<(), LowerError> {
+    transactions: Vec<crate::lower::typed_functions::model_events::PendingEventTransaction<'dae>>,
+) -> Result<Vec<solve::EventTransactionProgram>, LowerError> {
     let collected = std::mem::take(&mut layout.call_scoped_actions.borrow_mut().actions);
-    if collected.is_empty() {
-        return Ok(());
-    }
-    append_roots(events, &collected)?;
-    append_actions(view, layout, events, clocks, collected)?;
-    events.root_relation_refresh_roles = solve::derive_root_relation_refresh_roles(
-        &events.root_conditions,
-        &discrete.runtime_assignment_rhs,
-        &discrete.runtime_assignment_targets,
-        layout.solve_layout.state_scalar_count,
-        layout.solve_layout.solver_scalar_count(),
-    )?;
-    Ok(())
+    let action_indices = if collected.is_empty() {
+        HashMap::new()
+    } else {
+        append_roots(events, &collected)?;
+        let action_indices = append_actions(view, layout, events, clocks, collected)?;
+        events.root_relation_refresh_roles = solve::derive_root_relation_refresh_roles(
+            &events.root_conditions,
+            &discrete.runtime_assignment_rhs,
+            &discrete.runtime_assignment_targets,
+            layout.solve_layout.state_scalar_count,
+            layout.solve_layout.solver_scalar_count(),
+        )?;
+        action_indices
+    };
+    transactions
+        .into_iter()
+        .map(|transaction| transaction.finish(&action_indices))
+        .collect()
 }
 
 fn append_roots(
@@ -161,15 +176,22 @@ fn append_actions<'dae>(
     events: &mut solve::SolveEventPartition,
     clocks: &LoweredClocks<'dae>,
     collected: Vec<CollectedCallAssertion<'dae>>,
-) -> Result<(), LowerError> {
+) -> Result<HashMap<CallAssertionProjection, Vec<usize>>, LowerError> {
     let first_span = collected[0].action.span;
     let mut programs = events.action_conditions.programs().to_vec();
     let mut spans = events.action_conditions.program_spans().to_vec();
     let mut outputs = events.action_conditions.output_indices().to_vec();
     let mut deferred = Vec::new();
     let mut shared: Vec<SharedProgram> = Vec::new();
+    let mut action_indices = HashMap::new();
     for mut action in collected {
         let action_index = events.actions.len();
+        if let Some(projection) = action.projection {
+            action_indices
+                .entry(projection)
+                .or_insert_with(Vec::new)
+                .push(action_index);
+        }
         match action.action_program {
             CollectedCallAssertionProgram::Ready(program) => {
                 programs.push(program);
@@ -215,7 +237,7 @@ fn append_actions<'dae>(
     events.action_conditions =
         solve::ScalarProgramBlock::with_output_indices(programs, spans, outputs)
             .map_err(|error| LowerError::contract(error.to_string(), first_span))?;
-    Ok(())
+    Ok(action_indices)
 }
 
 struct SharedProgram {

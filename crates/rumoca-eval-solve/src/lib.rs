@@ -29,6 +29,7 @@ pub mod linear_solve;
 pub mod nan_trace;
 mod ops;
 mod prepared;
+mod prepared_event_transaction;
 mod prepared_guarded_assignment;
 mod random_runtime;
 pub mod refresh_plan;
@@ -51,6 +52,7 @@ pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
     TargetAssignmentShape, target_assignment_shape, target_assignment_shapes,
 };
+pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
@@ -4154,7 +4156,7 @@ fn eval_pure_call_payload(
     Ok(flattened)
 }
 
-fn typed_kind_from_scalar(
+pub(crate) fn typed_kind_from_scalar(
     value: f64,
     value_type: &SolveValueType,
 ) -> Result<SolveValueKind, EvalSolveError> {
@@ -4181,7 +4183,7 @@ fn typed_kind_from_scalar(
     })
 }
 
-fn typed_kind_to_scalar(value: SolveValueKind) -> f64 {
+pub(crate) fn typed_kind_to_scalar(value: SolveValueKind) -> f64 {
     match value {
         SolveValueKind::Real32(bits) => f32::from_bits(bits) as f64,
         SolveValueKind::Real64(bits) => f64::from_bits(bits),

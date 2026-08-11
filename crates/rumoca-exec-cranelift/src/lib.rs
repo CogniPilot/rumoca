@@ -28,6 +28,124 @@ impl std::fmt::Display for CompileError {
 
 impl std::error::Error for CompileError {}
 
+impl CompiledPureCallTable {
+    /// Invoke one exact checked owner from flattened runtime storage values.
+    ///
+    /// `input_cells` and `output_cells` are caller-owned reusable final-ABI
+    /// buffers; aggregate shapes remain in `site` and are not scalar IR.
+    pub fn call_scalar_payload(
+        &self,
+        site: &rumoca_ir_solve::SolvePureCallSite,
+        input: &[f64],
+        output: &mut [f64],
+        input_cells: &mut Vec<u64>,
+        output_cells: &mut Vec<u64>,
+    ) -> Result<(), CompileError> {
+        let input_count = site.inputs().iter().try_fold(0usize, |count, value_type| {
+            count
+                .checked_add(value_type.scalar_count() as usize)
+                .ok_or_else(|| CompileError::Input("typed input payload count overflows".into()))
+        })?;
+        let output_count = site
+            .output_scalar_count()
+            .ok_or_else(|| CompileError::Input("typed output payload count overflows".into()))?;
+        if input.len() != input_count || output.len() != output_count {
+            return Err(CompileError::Input(format!(
+                "typed scalar payload has {}/{} values; expected {input_count}/{output_count}",
+                input.len(),
+                output.len()
+            )));
+        }
+        input_cells.clear();
+        input_cells.reserve(input_count);
+        let mut input_offset = 0usize;
+        for value_type in site.inputs() {
+            let end = input_offset + value_type.scalar_count() as usize;
+            encode_typed_cells(value_type, &input[input_offset..end], input_cells)?;
+            input_offset = end;
+        }
+        output_cells.clear();
+        output_cells.resize(output_count, 0);
+        self.jit.call_cells(site, input_cells, output_cells)?;
+        let mut output_offset = 0usize;
+        for value in site.outputs() {
+            let count = value.value_type().scalar_count() as usize;
+            let end = output_offset + count;
+            decode_typed_cells(
+                value.value_type(),
+                &output_cells[output_offset..end],
+                &mut output[output_offset..end],
+            );
+            output_offset = end;
+        }
+        Ok(())
+    }
+}
+
+fn encode_typed_cells(
+    value_type: &rumoca_ir_solve::SolveValueType,
+    values: &[f64],
+    cells: &mut Vec<u64>,
+) -> Result<(), CompileError> {
+    use rumoca_ir_solve::{SolveRealFormat, SolveScalarType};
+    match value_type.element_type() {
+        SolveScalarType::Real {
+            format: SolveRealFormat::Binary32,
+            ..
+        } => cells.extend(
+            values
+                .iter()
+                .map(|value| u64::from((*value as f32).to_bits())),
+        ),
+        SolveScalarType::Real {
+            format: SolveRealFormat::Binary64,
+            ..
+        } => cells.extend(values.iter().map(|value| value.to_bits())),
+        SolveScalarType::Integer(domain) => {
+            for &value in values {
+                if !value.is_finite() || value.fract() != 0.0 {
+                    return Err(CompileError::Input(
+                        "typed Integer input is not integral".into(),
+                    ));
+                }
+                let integer = value as i64;
+                if !domain.contains(integer) || integer as f64 != value {
+                    return Err(CompileError::Input(
+                        "typed Integer input is outside its domain".into(),
+                    ));
+                }
+                cells.push(integer as u64);
+            }
+        }
+        SolveScalarType::Boolean => {
+            cells.extend(values.iter().map(|value| u64::from(*value != 0.0)));
+        }
+    }
+    Ok(())
+}
+
+fn decode_typed_cells(
+    value_type: &rumoca_ir_solve::SolveValueType,
+    cells: &[u64],
+    values: &mut [f64],
+) {
+    use rumoca_ir_solve::{SolveRealFormat, SolveScalarType};
+    for (value, cell) in values.iter_mut().zip(cells) {
+        *value = match value_type.element_type() {
+            SolveScalarType::Real {
+                format: SolveRealFormat::Binary32,
+                ..
+            } => f32::from_bits(*cell as u32) as f64,
+            SolveScalarType::Real {
+                format: SolveRealFormat::Binary64,
+                ..
+            } => f64::from_bits(*cell),
+            SolveScalarType::Integer(_) => *cell as i64 as f64,
+            SolveScalarType::Boolean => f64::from(*cell != 0),
+        };
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CompiledInputRequirements {
     pub y_len: usize,
@@ -341,6 +459,67 @@ mod tests {
             .call(&[], &[], 0.0, &mut output)
             .expect("execute native typed owner");
         assert_eq!(output, [9.0]);
+    }
+
+    #[test]
+    fn compiled_typed_owner_invokes_one_aggregate_transaction_payload() {
+        let span = fixture_span();
+        let integer_domain = rumoca_ir_solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX)
+            .expect("full Integer domain");
+        let profile = rumoca_ir_solve::SolveArithmeticProfile::construct(
+            rumoca_ir_solve::SolveRealFormat::Binary64,
+            rumoca_ir_solve::SolveRoundingMode::NearestTiesToEven,
+            integer_domain,
+        );
+        let tensor = rumoca_ir_solve::SolveValueType::tensor(
+            rumoca_ir_solve::SolveScalarType::real(profile),
+            vec![2],
+        )
+        .unwrap();
+        let boolean =
+            rumoca_ir_solve::SolveValueType::scalar(rumoca_ir_solve::SolveScalarType::Boolean);
+        let mut owner_id = None;
+        let table = rumoca_ir_solve::SolvePureCallTable::construct(profile, |table| {
+            owner_id = Some(table.add_owner(
+                rumoca_ir_solve::SolvePureCallIdentity::issued(NonZeroU64::new(2).unwrap()),
+                vec![tensor.clone(), boolean.clone()],
+                vec![
+                    rumoca_ir_solve::SolvePureCallOutput::result(tensor.clone()),
+                    rumoca_ir_solve::SolvePureCallOutput::assertion_predicate(),
+                ],
+                span,
+                |program, inputs, outputs| {
+                    let tensor = program.load(inputs[0], span)?;
+                    let predicate = program.load(inputs[1], span)?;
+                    program.store(outputs[0], tensor, span)?;
+                    program.store(outputs[1], predicate, span)
+                },
+            )?);
+            Ok(())
+        })
+        .unwrap();
+        let site = table
+            .owner(owner_id.unwrap())
+            .expect("owner resolves")
+            .call_site();
+        let compiled = compile_pure_call_table(&table).unwrap();
+        let mut output = [0.0; 3];
+        let mut input_cells = Vec::new();
+        let mut output_cells = Vec::new();
+
+        compiled
+            .call_scalar_payload(
+                &site,
+                &[1.25, -2.5, 1.0],
+                &mut output,
+                &mut input_cells,
+                &mut output_cells,
+            )
+            .unwrap();
+
+        assert_eq!(output, [1.25, -2.5, 1.0]);
+        assert_eq!(input_cells.len(), 3);
+        assert_eq!(output_cells.len(), 3);
     }
 
     #[test]

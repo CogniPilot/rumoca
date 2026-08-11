@@ -32,12 +32,16 @@ use rumoca_eval_solve::refresh_plan::{
     trace_refresh_plan,
 };
 use rumoca_eval_solve::{
-    EvalSolveError, PreparedComputeBlock, PreparedGuardedAssignmentProgram,
-    PreparedScalarProgramBlock, RowEvalContext, to_scalar_program_block,
+    EvalSolveError, PreparedComputeBlock, PreparedEventTransactionProgram,
+    PreparedGuardedAssignmentProgram, PreparedScalarProgramBlock, RowEvalContext,
+    to_scalar_program_block,
 };
 
 mod coupled_event;
 mod discrete_rows;
+mod event_transactions;
+pub use event_transactions::EventTransactionExecution;
+use event_transactions::PreparedEventTransactionCoverage;
 mod event_update;
 mod guarded_assignments;
 mod initial_continuation;
@@ -115,6 +119,11 @@ pub trait CompiledSolveAssignmentSchedule {
     ) -> Result<(), String>;
 }
 
+/// Backend-neutral callable for one checked aggregate event transaction.
+pub trait CompiledSolveEventTransaction {
+    fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), String>;
+}
+
 /// Optional execution adapter injected by a concrete simulation backend.
 pub trait SolveExecutionBackend {
     fn compile_expression(
@@ -132,6 +141,11 @@ pub trait SolveExecutionBackend {
         programs: &[Vec<solve::LinearOp>],
         target_y_indices: &[usize],
     ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String>;
+
+    fn compile_event_transaction(
+        &self,
+        program: &solve::EventTransactionProgram,
+    ) -> Result<Rc<dyn CompiledSolveEventTransaction>, String>;
 }
 
 #[derive(Clone)]
@@ -265,6 +279,8 @@ pub struct SolveRuntime {
     root_condition_plan: Option<RootConditionPlan>,
     discrete_rhs: PreparedScalarProgramBlock,
     guarded_assignment_programs: Vec<PreparedGuardedAssignmentProgram>,
+    event_transaction_programs: Vec<PreparedEventTransactionProgram>,
+    event_transaction_coverage: PreparedEventTransactionCoverage,
     runtime_assignment_rhs: PreparedScalarProgramBlock,
     post_commit_assignment_rhs: PreparedScalarProgramBlock,
     update_values_scratch: RefCell<Vec<f64>>,
@@ -292,6 +308,9 @@ pub struct SolveRuntime {
     failed_discrete_rows: RefCell<BTreeSet<usize>>,
     compiled_guarded_assignments: RefCell<HashMap<usize, Rc<dyn CompiledSolveExpression>>>,
     failed_guarded_assignments: RefCell<BTreeSet<usize>>,
+    compiled_event_transactions: Vec<Option<Rc<dyn CompiledSolveEventTransaction>>>,
+    event_transaction_input_scratch: RefCell<Vec<f64>>,
+    event_transaction_output_scratch: RefCell<Vec<Vec<f64>>>,
     compiled_root_rows: RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
     failed_root_rows: RefCell<BTreeSet<usize>>,
     compiled_visible_rows: RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
@@ -391,6 +410,29 @@ impl SolveRuntime {
             .iter()
             .map(PreparedGuardedAssignmentProgram::new)
             .collect::<Result<Vec<_>, _>>()?;
+        let event_transaction_programs = model
+            .problem
+            .discrete
+            .event_transactions
+            .iter()
+            .map(|program| PreparedEventTransactionProgram::new(program, &model.pure_calls))
+            .collect::<Result<Vec<_>, _>>()?;
+        let event_transaction_output_scratch = event_transaction_programs
+            .iter()
+            .map(|program| vec![0.0; program.output_scalar_count()])
+            .collect();
+        let event_transaction_coverage = PreparedEventTransactionCoverage::new(model);
+        let compiled_event_transactions = event_transaction_programs
+            .iter()
+            .map(|prepared| {
+                execution_backend.as_ref().and_then(|backend| {
+                    optional_compiled(
+                        "event_transaction",
+                        backend.compile_event_transaction(prepared.program()),
+                    )
+                })
+            })
+            .collect();
         let compiled_derivative_rhs = execution_backend.as_ref().and_then(|backend| {
             optional_compiled(
                 "derivative_rhs",
@@ -524,6 +566,8 @@ impl SolveRuntime {
             root_condition_plan,
             discrete_rhs: PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())?,
             guarded_assignment_programs,
+            event_transaction_programs,
+            event_transaction_coverage,
             runtime_assignment_rhs: PreparedScalarProgramBlock::new(
                 model.problem.discrete.runtime_assignment_rhs.clone(),
             )?,
@@ -556,6 +600,9 @@ impl SolveRuntime {
             failed_discrete_rows: RefCell::new(BTreeSet::new()),
             compiled_guarded_assignments: RefCell::new(HashMap::new()),
             failed_guarded_assignments: RefCell::new(BTreeSet::new()),
+            compiled_event_transactions,
+            event_transaction_input_scratch: RefCell::new(Vec::new()),
+            event_transaction_output_scratch: RefCell::new(event_transaction_output_scratch),
             compiled_root_rows: RefCell::new(HashMap::new()),
             failed_root_rows: RefCell::new(BTreeSet::new()),
             compiled_visible_rows: RefCell::new(HashMap::new()),

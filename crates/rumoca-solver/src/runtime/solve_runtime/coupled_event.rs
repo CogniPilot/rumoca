@@ -146,6 +146,9 @@ impl SolveRuntime {
             .copied()
             .enumerate()
         {
+            if self.event_transaction_coverage.discrete_rows[row] {
+                continue;
+            }
             if !self.discrete_row_active_at(row, t)? {
                 continue;
             }
@@ -163,36 +166,7 @@ impl SolveRuntime {
                 CoupledEventResidual::Discrete { row },
             )?;
         }
-        for (program_index, owner) in self
-            .model
-            .problem
-            .discrete
-            .guarded_assignments
-            .iter()
-            .enumerate()
-        {
-            if !self.guarded_assignment_accepts_snapshot(program_index, snapshot, t)? {
-                continue;
-            }
-            let mut output = 0usize;
-            for range in owner.target_ranges() {
-                for offset in 0..range.count() {
-                    let target = guarded_target_at(range.base(), offset)?;
-                    if let Some(unknown) = self.real_event_unknown(target) {
-                        push_coupled_inventory_entry(
-                            &mut inventory,
-                            unknown,
-                            CoupledEventResidual::Guarded {
-                                program: program_index,
-                                output,
-                                target,
-                            },
-                        )?;
-                    }
-                    output += 1;
-                }
-            }
-        }
+        self.append_guarded_coupled_inventory(&mut inventory, snapshot, t)?;
         for (row_index, row) in self
             .structured_discrete_rows
             .rows()
@@ -200,6 +174,9 @@ impl SolveRuntime {
             .copied()
             .enumerate()
         {
+            if self.event_transaction_coverage.structured_updates[row.update_index] {
+                continue;
+            }
             if !self.structured_discrete_row_active_at(row, t)? {
                 continue;
             }
@@ -217,6 +194,73 @@ impl SolveRuntime {
             )?;
         }
         Ok(inventory)
+    }
+
+    fn append_guarded_coupled_inventory(
+        &self,
+        inventory: &mut CoupledEventInventory,
+        snapshot: &DiscretePreSnapshot<'_>,
+        t: f64,
+    ) -> Result<(), RuntimeSolveError> {
+        for (program_index, owner) in self
+            .model
+            .problem
+            .discrete
+            .guarded_assignments
+            .iter()
+            .enumerate()
+        {
+            if self.event_transaction_coverage.guarded_assignments[program_index]
+                || !self.guarded_assignment_accepts_snapshot(program_index, snapshot, t)?
+            {
+                continue;
+            }
+            self.append_one_guarded_coupled_inventory(inventory, program_index, owner)?;
+        }
+        Ok(())
+    }
+
+    fn append_one_guarded_coupled_inventory(
+        &self,
+        inventory: &mut CoupledEventInventory,
+        program_index: usize,
+        owner: &solve::GuardedAssignmentProgram,
+    ) -> Result<(), RuntimeSolveError> {
+        let mut output = 0usize;
+        for range in owner.target_ranges() {
+            self.append_guarded_range_coupled_inventory(
+                inventory,
+                program_index,
+                range,
+                &mut output,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn append_guarded_range_coupled_inventory(
+        &self,
+        inventory: &mut CoupledEventInventory,
+        program_index: usize,
+        range: &solve::GuardedAssignmentTargetRange,
+        output: &mut usize,
+    ) -> Result<(), RuntimeSolveError> {
+        for offset in 0..range.count() {
+            let target = guarded_target_at(range.base(), offset)?;
+            if let Some(unknown) = self.real_event_unknown(target) {
+                push_coupled_inventory_entry(
+                    inventory,
+                    unknown,
+                    CoupledEventResidual::Guarded {
+                        program: program_index,
+                        output: *output,
+                        target,
+                    },
+                )?;
+            }
+            *output += 1;
+        }
+        Ok(())
     }
 
     fn real_event_unknown(&self, target: solve::ScalarSlot) -> Option<CoupledEventUnknown> {

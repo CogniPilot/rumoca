@@ -51,7 +51,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 55;
+pub const SOLVE_SCHEMA_VERSION: u16 = 56;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -1018,6 +1018,7 @@ struct EventIterationClaims {
     scalar_rows: BTreeSet<usize>,
     structured_updates: BTreeSet<usize>,
     guarded_ranges: BTreeSet<(usize, usize)>,
+    transaction_targets: BTreeSet<(usize, usize)>,
 }
 
 fn validate_event_iteration_plan(
@@ -1034,6 +1035,7 @@ fn validate_event_iteration_plan(
         })
         .collect::<BTreeSet<_>>();
     let mut claims = EventIterationClaims::default();
+    validate_event_transaction_legacy_coverage(problem, &mut claims)?;
     for (row, run) in problem
         .discrete
         .event_iteration_plan
@@ -1051,7 +1053,8 @@ fn validate_event_iteration_plan(
     }
     validate_scalar_event_producers(problem, &claims.scalar_rows)?;
     validate_structured_event_producers(problem, &claims.structured_updates)?;
-    validate_guarded_event_producers(problem, &claims.guarded_ranges)
+    validate_guarded_event_producers(problem, &claims.guarded_ranges)?;
+    validate_event_transaction_target_claims(problem, &claims.transaction_targets)
 }
 
 fn validate_event_iteration_run(
@@ -1220,8 +1223,364 @@ fn validate_event_iteration_owner(
                 &mut claims.guarded_ranges,
             )?;
         }
+        EventIterationOwner::EventTransaction {
+            program_index,
+            target_index,
+        } => validate_event_transaction_owner(
+            problem,
+            row,
+            program_index,
+            target_index,
+            storage,
+            &mut claims.transaction_targets,
+        )?,
     }
     Ok(())
+}
+
+fn validate_event_transaction_owner(
+    problem: &SolveProblem,
+    row: usize,
+    program_index: usize,
+    target_index: usize,
+    storage: SolveVariableStorageRun,
+    claimed_targets: &mut BTreeSet<(usize, usize)>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let transaction = problem
+        .discrete
+        .event_transactions
+        .get(program_index)
+        .ok_or_else(|| event_iteration_contract(row, "transaction owner is out of bounds"))?;
+    let target = transaction
+        .targets()
+        .get(target_index)
+        .ok_or_else(|| event_iteration_contract(row, "transaction target is out of bounds"))?;
+    if target.base() != storage.base
+        || target.value_type().scalar_count() as usize != storage.scalar_count
+    {
+        return Err(event_iteration_contract(
+            row,
+            "transaction target does not define the run",
+        ));
+    }
+    if !claimed_targets.insert((program_index, target_index)) {
+        return Err(event_iteration_contract(
+            row,
+            "transaction target is claimed more than once",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_event_transaction_target_claims(
+    problem: &SolveProblem,
+    claimed_targets: &BTreeSet<(usize, usize)>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let expected = problem
+        .discrete
+        .event_transactions
+        .iter()
+        .enumerate()
+        .flat_map(|(program_index, program)| {
+            (0..program.targets().len()).map(move |target_index| (program_index, target_index))
+        })
+        .collect::<BTreeSet<_>>();
+    if &expected != claimed_targets {
+        return Err(event_iteration_contract(
+            0,
+            "event-plan runs do not exactly cover transaction targets",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_event_transaction_legacy_coverage(
+    problem: &SolveProblem,
+    claims: &mut EventIterationClaims,
+) -> Result<(), SolveProblemShapeContractError> {
+    let mut scalar_transaction = HashMap::new();
+    let mut guarded_transaction = HashMap::new();
+    let mut legacy = EventTransactionLegacyClaims {
+        event_iteration: claims,
+        scalar_transaction: &mut scalar_transaction,
+        guarded_transaction: &mut guarded_transaction,
+    };
+    for (program_index, transaction) in problem.discrete.event_transactions.iter().enumerate() {
+        for (target, owner) in transaction
+            .targets()
+            .iter()
+            .zip(transaction.legacy_owners())
+        {
+            legacy.claim(problem, program_index, transaction, target, *owner)?;
+        }
+    }
+    validate_complete_scalar_program_coverage(problem, &scalar_transaction)?;
+    validate_complete_guarded_program_coverage(problem, &guarded_transaction)
+}
+
+struct EventTransactionLegacyClaims<'a> {
+    event_iteration: &'a mut EventIterationClaims,
+    scalar_transaction: &'a mut HashMap<usize, usize>,
+    guarded_transaction: &'a mut HashMap<(usize, usize), usize>,
+}
+
+impl EventTransactionLegacyClaims<'_> {
+    fn claim(
+        &mut self,
+        problem: &SolveProblem,
+        transaction_index: usize,
+        transaction: &EventTransactionProgram,
+        target: &EventTransactionTarget,
+        owner: EventTransactionLegacyOwner,
+    ) -> Result<(), SolveProblemShapeContractError> {
+        let storage = exact_transaction_target_storage(problem, target).ok_or_else(|| {
+            event_transaction_contract(
+                transaction_index,
+                "transaction target is not one complete canonical variable-storage run",
+                transaction.span(),
+            )
+        })?;
+        match owner {
+            EventTransactionLegacyOwner::ScalarRows { start_row } => {
+                self.claim_scalar(problem, transaction_index, transaction, target, start_row)
+            }
+            EventTransactionLegacyOwner::StructuredUpdate { update_index } => self
+                .claim_structured(
+                    problem,
+                    transaction_index,
+                    transaction,
+                    storage,
+                    update_index,
+                ),
+            EventTransactionLegacyOwner::GuardedAssignment {
+                program_index,
+                target_range_index,
+            } => self.claim_guarded(
+                problem,
+                transaction_index,
+                transaction,
+                storage,
+                (program_index, target_range_index),
+            ),
+        }
+    }
+
+    fn claim_scalar(
+        &mut self,
+        problem: &SolveProblem,
+        transaction_index: usize,
+        transaction: &EventTransactionProgram,
+        target: &EventTransactionTarget,
+        start_row: usize,
+    ) -> Result<(), SolveProblemShapeContractError> {
+        let width = target.value_type().scalar_count() as usize;
+        let current_base = scalar_slot_index(target.base()).ok_or_else(|| {
+            event_transaction_contract(
+                transaction_index,
+                "transaction scalar target is not P-backed",
+                transaction.span(),
+            )
+        })?;
+        validate_scalar_event_owner(
+            problem,
+            transaction_index,
+            start_row,
+            width,
+            current_base,
+            &mut self.event_iteration.scalar_rows,
+        )?;
+        for row in start_row..start_row + width {
+            require_unique_legacy_scalar_row(
+                self.scalar_transaction,
+                row,
+                transaction_index,
+                transaction.span(),
+            )?;
+        }
+        require_transaction_clock(
+            problem.discrete.clock_owners[start_row],
+            transaction.clock_owner(),
+            transaction_index,
+            transaction.span(),
+        )
+    }
+
+    fn claim_structured(
+        &mut self,
+        problem: &SolveProblem,
+        transaction_index: usize,
+        transaction: &EventTransactionProgram,
+        storage: SolveVariableStorageRun,
+        update_index: usize,
+    ) -> Result<(), SolveProblemShapeContractError> {
+        validate_structured_event_owner(
+            problem,
+            transaction_index,
+            update_index,
+            storage,
+            &mut self.event_iteration.structured_updates,
+        )?;
+        require_transaction_clock(
+            problem.discrete.structured_updates[update_index].clock_owner,
+            transaction.clock_owner(),
+            transaction_index,
+            transaction.span(),
+        )
+    }
+
+    fn claim_guarded(
+        &mut self,
+        problem: &SolveProblem,
+        transaction_index: usize,
+        transaction: &EventTransactionProgram,
+        storage: SolveVariableStorageRun,
+        guarded: (usize, usize),
+    ) -> Result<(), SolveProblemShapeContractError> {
+        let (program_index, target_range_index) = guarded;
+        validate_guarded_event_owner(
+            problem,
+            transaction_index,
+            program_index,
+            target_range_index,
+            storage,
+            &mut self.event_iteration.guarded_ranges,
+        )?;
+        if self
+            .guarded_transaction
+            .insert(guarded, transaction_index)
+            .is_some()
+        {
+            return Err(event_transaction_contract(
+                transaction_index,
+                "legacy guarded target is covered more than once",
+                transaction.span(),
+            ));
+        }
+        require_transaction_clock(
+            problem.discrete.guarded_assignments[program_index].clock_owner(),
+            transaction.clock_owner(),
+            transaction_index,
+            transaction.span(),
+        )
+    }
+}
+
+fn require_unique_legacy_scalar_row(
+    owners: &mut HashMap<usize, usize>,
+    row: usize,
+    transaction_index: usize,
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    if owners.insert(row, transaction_index).is_none() {
+        return Ok(());
+    }
+    Err(event_transaction_contract(
+        transaction_index,
+        "legacy scalar row is covered more than once",
+        span,
+    ))
+}
+
+fn exact_transaction_target_storage(
+    problem: &SolveProblem,
+    target: &EventTransactionTarget,
+) -> Option<SolveVariableStorageRun> {
+    problem
+        .solve_layout
+        .variable_storage_runs
+        .iter()
+        .copied()
+        .find(|storage| {
+            storage.base == target.base()
+                && storage.scalar_count == target.value_type().scalar_count() as usize
+                && storage.event_iteration_kind().is_some()
+        })
+}
+
+const fn scalar_slot_index(slot: ScalarSlot) -> Option<usize> {
+    match slot {
+        ScalarSlot::P { index, .. } => Some(index),
+        ScalarSlot::Y { .. } | ScalarSlot::Time | ScalarSlot::Constant(_) => None,
+    }
+}
+
+fn require_transaction_clock(
+    legacy: Option<PeriodicClockId>,
+    transaction: Option<PeriodicClockId>,
+    program_index: usize,
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    if legacy == transaction {
+        return Ok(());
+    }
+    Err(event_transaction_contract(
+        program_index,
+        "legacy producer and transaction clocks disagree",
+        span,
+    ))
+}
+
+fn validate_complete_scalar_program_coverage(
+    problem: &SolveProblem,
+    owners: &HashMap<usize, usize>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let mut output_cursor = 0usize;
+    for program in problem.discrete.rhs.programs() {
+        let count = ScalarProgramBlock::program_output_count(program);
+        let outputs = &problem.discrete.rhs.output_indices()[output_cursor..output_cursor + count];
+        output_cursor += count;
+        let Some(transaction) = outputs
+            .iter()
+            .find_map(|output| owners.get(output))
+            .copied()
+        else {
+            continue;
+        };
+        if outputs
+            .iter()
+            .any(|output| owners.get(output) != Some(&transaction))
+        {
+            return Err(event_iteration_contract(
+                transaction,
+                "a transaction does not cover one complete scalar producer program",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_complete_guarded_program_coverage(
+    problem: &SolveProblem,
+    owners: &HashMap<(usize, usize), usize>,
+) -> Result<(), SolveProblemShapeContractError> {
+    for (program_index, program) in problem.discrete.guarded_assignments.iter().enumerate() {
+        let Some(transaction) = (0..program.target_ranges().len())
+            .find_map(|target| owners.get(&(program_index, target)).copied())
+        else {
+            continue;
+        };
+        if (0..program.target_ranges().len())
+            .any(|target| owners.get(&(program_index, target)) != Some(&transaction))
+        {
+            return Err(event_iteration_contract(
+                transaction,
+                "a transaction does not cover one complete guarded producer program",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn event_transaction_contract(
+    program_index: usize,
+    detail: &'static str,
+    span: Span,
+) -> SolveProblemShapeContractError {
+    SolveProblemShapeContractError::EventTransactionProgram {
+        program_index,
+        detail,
+        span: Some(span),
+    }
 }
 
 fn validate_guarded_event_owner(
@@ -1663,6 +2022,7 @@ fn validate_event_transaction_shape(
     problem: &SolveProblem,
     clock_count: usize,
 ) -> Result<(), SolveProblemShapeContractError> {
+    let mut claimed_actions = BTreeSet::new();
     for (program_index, program) in problem.discrete.event_transactions.iter().enumerate() {
         if let Some(clock) = program.clock_owner() {
             validate_indices(
@@ -1699,6 +2059,69 @@ fn validate_event_transaction_shape(
                 detail: "assertion clock owner is out of bounds",
                 span: Some(program.span()),
             });
+        }
+        validate_event_transaction_action_projections(
+            problem,
+            program_index,
+            program,
+            &mut claimed_actions,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_event_transaction_action_projections(
+    problem: &SolveProblem,
+    program_index: usize,
+    program: &EventTransactionProgram,
+    claimed_actions: &mut BTreeSet<usize>,
+) -> Result<(), SolveProblemShapeContractError> {
+    for (assertion, action_indices) in program
+        .assertions()
+        .iter()
+        .zip(program.assertion_action_indices())
+    {
+        validate_event_transaction_action_group(
+            problem,
+            program_index,
+            program.span(),
+            assertion,
+            action_indices,
+            claimed_actions,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_event_transaction_action_group(
+    problem: &SolveProblem,
+    program_index: usize,
+    span: Span,
+    assertion: &SolveEventAction,
+    action_indices: &[usize],
+    claimed_actions: &mut BTreeSet<usize>,
+) -> Result<(), SolveProblemShapeContractError> {
+    for &action_index in action_indices {
+        let action = problem.events.actions.get(action_index).ok_or_else(|| {
+            event_transaction_contract(
+                program_index,
+                "assertion action projection is out of bounds",
+                span,
+            )
+        })?;
+        if action != assertion {
+            return Err(event_transaction_contract(
+                program_index,
+                "assertion action projection does not match its predicate action",
+                span,
+            ));
+        }
+        if !claimed_actions.insert(action_index) {
+            return Err(event_transaction_contract(
+                program_index,
+                "assertion action projection is covered more than once",
+                span,
+            ));
         }
     }
     Ok(())
