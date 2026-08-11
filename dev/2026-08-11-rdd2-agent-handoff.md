@@ -50,6 +50,8 @@ materialized only at the final backend/template boundary.
 
 Recent commits:
 
+- `95315052 Store compact refresh row selections`
+- `e72f9dd3 Reuse event-settled clock refresh owners`
 - `ae636cce Issue canonical continuous refresh schedules`
 - `8c0e28d1 Document rejected Cranelift optimization experiments`
 - `e5ddf351 Issue exact causal refresh remainders`
@@ -97,26 +99,34 @@ Latest verified result after `e5ddf351`:
 - Best `0.150515297 s`.
 - About 3.32x realtime; still approximately 3.01x slower than the 0.05 s gate.
 
-The current uncommitted clock-after-event relation slice has also completed an
-exact release canary:
+The committed clock-after-event relation slice has also completed an exact
+release canary from the rebuilt binary:
 
 - 101 output points, final time exactly 0.5 s.
-- Average `0.1477608889 s`.
-- Best `0.146462222 s`.
+- Average `0.1474226518 s`.
+- Best `0.146777937 s`.
 - About 3.41x realtime and still approximately 2.93x slower than the gate.
 - Short-slice native counts remain owner 30 = 143, owner 22 = 107, and owner
   145 = 3, so the improvement is reduced covered assignment work rather than
   a changed call-cache policy.
 
+The schema-59 compact-selection release rebuild is performance-neutral and
+preserves the same mission endpoint:
+
+- 101 output points, final time exactly 0.5 s.
+- Average `0.149262073 s`.
+- Best `0.147334356 s`.
+- About 3.39x realtime; the 0.05 s acceptance gate remains open.
+
 Fresh delayed runtime-only perf capture:
 
-- `/tmp/rdd2-schema58-runtime-only.perf.data`
-- 11,864 samples, zero lost samples.
-- 80-run average `0.152721013 s`, best `0.151042603 s`.
-- Owner 30: 13.13%.
-- Owner 22: 6.00%.
-- Assignment schedules 3 and 5: 5.18% and 4.29%.
-- `memmove`: 4.26%.
+- `/tmp/rdd2-schema58-clock-after-event-runtime-only.perf.data`
+- 5,863 samples at 499 Hz, zero lost samples.
+- 80-run average `0.148941707 s`, best `0.147759861 s`.
+- Owner 30: 13.10%.
+- Owner 22: 5.89%.
+- Assignment schedules 3 and 5: 5.14% and 4.76%.
+- `memmove`: 4.35%.
 
 Direct RK timing from a temporary diagnostic build, recorded in
 `/tmp/rdd2-rk-breakdown.stderr`:
@@ -155,70 +165,62 @@ Do not repeat these without a new representation:
    constructor instead filters the already ordered causal schedule and restores
    107 calls and baseline performance.
 
-## Current uncommitted worktree
+## Latest completed implementation slice
 
-There is one coherent implementation slice across four files:
+Commit `95315052` advances the Solve wire schema to 59 and removes cloned row
+metadata from every stored causal/stage schedule:
+
+- `RefreshPlan.rows` remains the sole canonical `AlgebraicRefreshRow` catalog.
+- `causal_seed_rows`, static/dynamic partitions, exact-assignment stages, and
+  projection seeds now store checked ordered `u32` catalog positions in
+  `RefreshRowSelection`.
+- Construction rejects out-of-range or repeated positions. Outer checked wire
+  replay validates every selection and stage before exposing the model.
+- Evaluator, solver, native schedule preparation, root planning, and
+  continuation use a zero-allocation borrowed `RefreshRows` view.
+- Remainder construction filters compact positions and never clones row
+  metadata or expression graphs.
+- Exact-assignment construction uses temporary row references only; final
+  scalar materialization remains at the backend boundary.
+- A wire regression proves `[0]` is serialized rather than a duplicated row
+  object. The golden schema fixture is updated to 59.
+
+Verification completed:
+
+- Solve IR 172/172 plus three doctests.
+- Evaluator 139/139.
+- Cranelift 59/59.
+- Phase Solve 87/87.
+- Production codegen 99/99.
+- Solver 288/288.
+- Diffsol 107/107.
+- Clean release canary: 101 points through exactly 0.5 s, with the timing above.
+- `git diff --check` is clean for the committed slice.
+- The scheduled R2 review and measurements are in the live roadmap.
+
+Commit `e72f9dd3` immediately before it owns the event-settled clock remainder.
+That relation remains construction-issued and wire-replayed; runtime performs
+no union, filtering, graph comparison, expansion, or recollapse.
+
+One unrelated uncommitted edit currently exists:
 
 ```text
- M crates/rumoca-ir-solve/src/refresh.rs
- M crates/rumoca-ir-solve/src/refresh/tests.rs
- M crates/rumoca-solver/src/runtime/solve_runtime.rs
- M crates/rumoca-solver/src/runtime/solve_runtime/refresh_execution.rs
+ M crates/rumoca-exec-wasm/src/emit.rs
+ M crates/rumoca-phase-codegen/src/templates/embedded-c-galec/model.c.jinja
+ M crates/rumoca-phase-codegen/src/templates/embedded-c-galec/model.h.jinja
+ M crates/rumoca-phase-codegen/src/templates/galec-production/pc_manifest.xml.jinja
 ```
 
-It completes the construction-issued `clock_events_after_event` relation
-inventory:
-
-- a skipped/private `Vec<RefreshRemainderRelation>` field;
-- issuance of one clock-plan remainder after the event plan;
-- unique sequence IDs after the normal clock owners;
-- inclusion in exact-assignment schedule rebuilding;
-- a read-only accessor;
-- `is_issued` checks relation cardinality;
-- wire replay reconstructs the private relation and a focused test proves
-  covered row 0 is removed while uncovered row 1 remains;
-- `SolveRuntime` retains the issued relations and fails closed if their count
-  differs from the clock-owner inventory;
-- immediately after event refresh, each active clock executes the issued
-  remainder rather than its complete plan.
-
-This is a safe same-coordinate boundary: event refresh immediately precedes
-the clock refresh and no state mutation occurs between them. The runtime does
-not compare, union, filter, expand, or recollapse plans. It only consumes the
-checked directional relation issued by Solve IR.
-
-Verification completed for this slice:
-
-- the 12 focused refresh construction/wire tests pass;
-- `cargo check -p rumoca-solver` passes;
-- `git diff --check` passes;
-- the exact release canary and native call counts above pass.
-
-The full affected test gate was started, but its final output was lost at the
-agent handoff boundary. Re-run it before committing rather than assuming it
-passed:
-
-```bash
-cargo test -p rumoca-ir-solve
-cargo test -p rumoca-solver --lib
-cargo test -p rumoca-solver-diffsol --lib
-cargo fmt --all -- --check
-```
-
-Then capture delayed runtime-only `perf`, inspect the diff as a scheduled R2
-review, update the roadmap review log, and commit this slice if those gates are
-green. Do not mix the next compact-row-selection refactor into this commit.
-
-The next extension should cover earlier active clocks as well, but only with a
-construction-issued ordered coverage relation. Do not dynamically union plans
-or filter rows at runtime.
+These appeared concurrently and were deliberately not staged or edited. The
+WASM change adds unsupported typed-pure-call match arms and is the reason
+workspace-wide `cargo fmt --all -- --check` currently reports a line-wrap
+diff. Preserve and coordinate all four edits rather than folding them into the
+RDD2 commits accidentally.
 
 ## Remaining architectural work
 
 SOLVE-C56 remains open:
 
-- Replace cloned row metadata in `RefreshPlan` and `RefreshStage` with compact,
-  construction-issued selections into a canonical row catalog.
 - Add the complete coordinate/invalidation certificate over time, Y/P
   generations, event/pre/previous/history generations, external tables,
   impure state, and arithmetic/AD mode.
@@ -236,9 +238,11 @@ SOLVE-C56 remains open:
 
 ## Performance next steps
 
-After completing the clock-after-event relation gates:
+Next:
 
-1. Re-run runtime-only perf with delayed collection. The command pattern is:
+1. Construct the complete coordinate/invalidation certificate in Solve IR and
+   replay it from wire data before authorizing any broader refresh/call reuse.
+2. Re-run runtime-only perf with delayed collection. The command pattern is:
 
 ```bash
 nix shell nixpkgs#linuxPackages.perf -c perf record \
@@ -253,12 +257,12 @@ nix shell nixpkgs#linuxPackages.perf -c perf record \
   --iterations 80 --warmups 2 --json
 ```
 
-2. Measure derivative/root/event categories separately. Event work must fall
+3. Measure derivative/root/event categories separately. Event work must fall
    materially; micro-optimizing `solveSPD` alone cannot reach 0.05 s.
-3. Only add a first-class Cholesky/SPD tensor operation through an explicit
+4. Only add a first-class Cholesky/SPD tensor operation through an explicit
    source-issued semantic intrinsic and a spec update. Never recognize
    `solveSPD` by function name or expanded body pattern.
-4. Preserve solver and mission semantics for acceptance. The 500 1 kHz event
+5. Preserve solver and mission semantics for acceptance. The 500 1 kHz event
    boundaries are legitimate and must not be skipped.
 
 ## Environment
