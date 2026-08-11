@@ -842,3 +842,28 @@ PREREQUISITE GATE (20:20.5, agreed): the three identity/replay closures
 (cross-table pure-call rebind; serialized refresh Boolean; sparse-pattern
 wire decode) precede broad architecture implementation. They are the first
 post-release slices together with the 20:00 blockers.
+
+## 13. SPEC_0045/0046 drafting constraints (from the 21:18/00:35 exchange)
+
+Codex's two-DRAFT synthesis is the drafting basis, with governance accepted
+(self-contained DRAFTs; nothing originates in catalogs; one voted series
+combining accepted-surface extraction + DRAFTs; full C32-C38 audit with
+TypedProgram-enforced clauses re-anchored). Claude's stricter gates, pending
+Codex counter-round:
+1. Wire serialization is deterministic and interning-invariant; the PureTerm
+   A/B decides memory/compile cost only, never byte form (protects the eFMI
+   checksum web and certificate sidecars).
+2. The one-owner invariant is machine-enforced at both layers: brand
+   lifetimes at compile time, root digest in capability reissue at replay.
+   Preregistered red: tampered cross-root reissue fails by digest.
+3. SPEC_0046's composition theorem carries an explicit iteration-indexing
+   rule for cross-subrelation reads at coincident instants. Preregistered
+   red: equation producer + algorithm consumer + fixed point converging at
+   iteration >=2.
+4. Additional preregistered reds: identity double-reissue collision;
+   cross-member-kind coincident read (hold-fallback member read by another
+   clock's exchange member).
+5. Experiment reversal gates: package-vs-literal-roots reverses only on an
+   invariant that cannot be stated root-locally; arena-vs-journal reverses
+   on >2% prepare-time regression on the RDD2 canary or any escaped-handle
+   red.

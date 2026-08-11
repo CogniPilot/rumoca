@@ -751,14 +751,18 @@ Review checkpoint R5:
 
 | 2026-08-11 | OPEN FINDING: touchdown transient in the optical mission trace | One-sample, 41-column discontinuity at t=24.745 s (touchdown): `M_ground_b[2]` 0 -> -5.52 -> +0.07 N·m across single 5 ms samples; `bodyAngularVelocityRate[2]` reaches -254.4 rad/s^2; propagates into `plant.imu.*` and the estimator's IMU inputs. Global max omega 0.3337 rad/s occurs AT this sample (in-mission max is 0.3004 at t=5.355). Found by adversarial review of the mission-evidence claims, not by the original audit. | Investigate whether this is a legitimate contact impulse under 5 ms sampling or a contact-model/integration defect; mission-criteria checks must bound or exclude the landing transient explicitly; OMC comparison must compare the landing window with matched solver settings before attributing differences |
 | 2026-08-11 | Post-checkpoint three-angle audit — checkpoint, not release | The signed series through `18c8354a` reduced the dirty tree and contains real fixes, but three independent read-only audits found merge stop-ships: reachable empty-target call/assertion loss; cross-table method and pure-call rebinding; swallowed closed-branch method corruption; unconsumed 4.9k-line method scaffold; caller-controlled refresh proof Boolean; sparse-pattern child-wire forgery and wrong-shaped public `Full`; generated-C Startup limit mismatch for external inputs; ordinary unignored oracle tests deliberately red; contract evidence authenticated by substring; Kani claim broader than the proved kernel; unimplemented C57/AlgorithmBlock behavior left normative in ACCEPTED specs. | Retain the narrow definition-identity, activation, ID-sync, symbol, and schema improvements; revert/shelve `690ad951`; amend/reland pattern/codegen/oracle/contract/spec slices as detailed in the mailbox. Replace the committed C57 EXCHANGE/HOLD-FALLBACK rule with one total lazy next-value per producer, and move all pre-implementation rules to DRAFT. No performance or architecture completion credit until the corrected checkpoint is clean and the alternatives negotiation ratifies the core shape. |
+| 2026-08-11 | Independent architecture/spec synthesis — two truth-first DRAFT candidates | Three read-only passes converged on a focused `SPEC_0045` for executable identity/replay and `SPEC_0046` for scheduled-discrete ownership. Mandatory identity capabilities are definition, occurrence, invocation, and opaque projection; optional PureTerm interning is storage-only and measurement-gated. The discrete composition root owns coverage but preserves distinct algorithm order, activation-aware equation causality, synchronous Clock topology, and Appendix-B iteration; guarded producers issue total lazy next values and coincident Boolean schedules form one exact event-instant solution. Governance review found the ledger's proposal to place future rows in SPEC_0040/0043 invalid and found that the whole SOLVE-C32--C38 range, not only literal `pending` rows, needs a current-vs-future audit. | Keep both proposals self-contained and non-overriding. First land PROPOSED drafts, then after review/vote move them to DRAFT while atomically extracting unimplemented rules from ACCEPTED SPEC_0007/0029 and their owned catalogs. Do not promote any clause until its vertical slice includes an opaque constructor, current-version wire replay, reference evaluator/first production consumer, forged-input reds, and same-change deletion. Packaging, child-arena versus journal, PureTerm interning, and universal-order versus activation-aware execution remain experiment-gated, not ratified. |
 
 ## Current next action
 
-First checkpoint the current typed-scope/capture work as a small, reviewable,
-signed slice after it closes the exact definition/coercion regressions and
-passes its focused gates. The live worktree is still based on `07e9d5df` with
-more than ninety changed/untracked paths, so neither its semantics nor its
-speed are checkpoint evidence.
+Treat the signed tree through `6c2a2b58` as a review checkpoint, not a release.
+Claude accepted the three-angle disposition: first produce the corrected
+checkpoint series (including shelving the unconsumed method/effect scaffold,
+truthing accepted specs, and amending pattern/codegen/oracle/contract/proof
+claims), then close the three execution-integrity P0s and the typed-scope
+blockers. Preserve the small commit cadence and require each correction to be
+green-or-reverted; the current performance and mission artifacts receive no new
+credit from this checkpoint work.
 
 Before another broad implementation batch, pass an explicit core-architecture
 convergence gate. Codex and Claude independently map the current compiler,
