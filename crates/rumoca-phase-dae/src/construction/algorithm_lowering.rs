@@ -13,8 +13,55 @@ pub(super) struct AlgorithmEnvironment<'scope, 'shape, 'dae> {
 #[derive(Clone, Copy)]
 struct AlgorithmOwner<'dae> {
     discrete_owner: Option<DiscreteValueOwnerHandle>,
+    /// The enclosing `if`/`when` branch activation, or `None` at the section's
+    /// own statement level.
+    ///
+    /// This stays optional because it answers a question only a *branch* can
+    /// answer: whether a condition written here composes with an enclosing one
+    /// or is itself the event trigger. It is not the activation a statement
+    /// executes under — [`AlgorithmOwner::activation`] is.
     parent: Option<EventGuard<'dae>>,
+    /// The section's unconditional activation, issued once for the whole
+    /// algorithm section before any statement is lowered.
+    unconditional: EventGuard<'dae>,
     span: Span,
+}
+
+impl<'dae> AlgorithmOwner<'dae> {
+    /// The activation every statement beneath this owner executes under.
+    ///
+    /// MLS §11.1 runs the statements of an algorithm section that are not
+    /// inside a `when` every time the section runs, so a statement written
+    /// outside every branch does not lack an activation — its activation is
+    /// `true`. Reading it through this one accessor is what keeps the discrete
+    /// value definition, the model-event transaction step, and the assertion
+    /// guard of the same statement on the same condition.
+    fn activation(&self) -> EventGuard<'dae> {
+        self.parent.unwrap_or(self.unconditional)
+    }
+}
+
+/// Issue the unconditional activation of one model algorithm section.
+///
+/// One section owns exactly one such activation, minted before its first
+/// statement, so every consumer of a top-level statement borrows the same
+/// checked `Always` condition instead of minting a private one per statement.
+fn unconditional_algorithm_activation<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    span: Span,
+) -> Result<EventGuard<'dae>, dae::DaeConstructionError> {
+    let always = always_condition(construction, span)?;
+    Ok(EventGuard {
+        trigger: always,
+        condition: always,
+        owner_clock: None,
+        branch_provenance: dae::DaeProvenance::generated(
+            dae::DaeGeneration::AlgorithmEquation,
+            span,
+        )?,
+        always: true,
+        parent_activation: None,
+    })
 }
 
 pub(super) struct ModelAlgorithmsRequest<'scope, 'shape, 'dae> {
@@ -113,6 +160,8 @@ pub(super) fn lower_algorithms<'dae>(
                     transaction_steps: Some(&transaction_steps),
                     ..request.environment
                 };
+                let unconditional =
+                    unconditional_algorithm_activation(lowering.construction, algorithm.span)?;
                 lower_algorithm_statements(
                     lowering.construction,
                     lowering.discrete_values,
@@ -120,6 +169,7 @@ pub(super) fn lower_algorithms<'dae>(
                     AlgorithmOwner {
                         discrete_owner,
                         parent: None,
+                        unconditional,
                         span: algorithm.span,
                     },
                     &mut values,
@@ -368,9 +418,7 @@ fn record_model_event_step<'dae>(
     if updates.is_empty() {
         return Ok(());
     }
-    let guard = owner
-        .parent
-        .expect("event statements execute beneath an analyzed activation owner");
+    let guard = owner.activation();
     let provenance = dae::DaeProvenance::source(span)?;
     let definitions = updates.iter().map(|(target, value)| {
         dae::ModelEventDefinition::new(
@@ -398,7 +446,7 @@ fn algorithm_statement_context<'scope, 'shape, 'dae>(
         coordinates: environment.coordinates,
         functions: environment.functions,
         values,
-        parent: owner.parent,
+        parent: Some(owner.activation()),
         owner_span: owner.span,
     }
 }
@@ -459,13 +507,15 @@ fn lower_algorithm_assertion<'dae>(
         condition,
     )?;
     let failed = negate_condition(construction, condition, span)?;
-    let (trigger, action_guard) = match owner.parent {
-        Some(parent) => (
-            parent.trigger,
-            combine_conditions(construction, parent.condition, failed, false, span)?,
-        ),
-        None => (always_condition(construction, span)?, failed),
+    let activation = owner.activation();
+    // An unconditional activation contributes nothing to conjoin: the failure
+    // condition alone is the action guard.
+    let action_guard = if activation.always {
+        failed
+    } else {
+        combine_conditions(construction, activation.condition, failed, false, span)?
     };
+    let trigger = activation.trigger;
     let message = lower_expression(
         construction,
         environment.coordinates,

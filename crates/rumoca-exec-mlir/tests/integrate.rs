@@ -86,7 +86,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
     let derivative_rhs_cb =
         ComputeBlock::from_scalar_program_block(spb(rhs_rows.clone(), "integrate_derivative.mo"));
 
-    rumoca_ir_solve::SolveModel {
+    let mut model = rumoca_ir_solve::SolveModel {
         problem: SolveProblem {
             schema_version: rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
             layout: rumoca_ir_solve::VarLayout::from_parts(Default::default(), 1, 1),
@@ -101,6 +101,10 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
                 manifold_residual: ComputeBlock::default(),
                 manifold_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                // Not an authored field: the refresh owners are derived from
+                // the finished problem below, so the literal only reserves the
+                // slot Solve lowering fills.
+                refresh_owners: rumoca_ir_solve::ContinuousRefreshOwners::default(),
             },
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
@@ -111,10 +115,10 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 update_rhs: ScalarProgramBlock::default(),
                 update_targets: Vec::new(),
             },
-            discrete: DiscreteSolveSystem {
-                rhs: zero_rb.clone(),
-                ..Default::default()
-            },
+            // `der(x) = -x` owns no discrete variable, so the discrete system
+            // is empty. A one-row RHS with no update target would claim a
+            // discrete program that assigns nothing.
+            discrete: DiscreteSolveSystem::default(),
             events: SolveEventPartition::default(),
             clocks: SolveClockPartition::default(),
             solve_layout: decay_solve_layout(),
@@ -138,7 +142,22 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         visible_names: vec!["x".to_string()],
         visible_value_rows: ScalarProgramBlock::default(),
         variable_meta: Vec::new(),
-    }
+    };
+    issue_refresh_owners(&mut model);
+    model
+}
+
+/// Issue the checked continuous refresh owners of a finished fixture problem.
+///
+/// Solve lowering issues them from the whole problem once it is complete
+/// (`rumoca-phase-solve/src/lower.rs`), and every runtime fixture in the
+/// workspace re-derives them the same way rather than hand-writing plans, so a
+/// fixture can never carry a refresh inventory the real pipeline would not
+/// produce for the same problem.
+fn issue_refresh_owners(model: &mut rumoca_ir_solve::SolveModel) {
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+            .expect("fixture problem issues checked continuous refresh owners");
 }
 
 #[test]

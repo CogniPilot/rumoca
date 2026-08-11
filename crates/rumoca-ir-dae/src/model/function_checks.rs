@@ -251,6 +251,7 @@ pub(super) fn function_fold_raw(
 pub(super) fn reserve_function_fold<'dae>(
     storage: &mut Storage,
     function: FunctionId<'dae>,
+    parent: Option<u32>,
     domain: DomainId<'dae>,
     targets: Vec<u32>,
     initial_values: Vec<u32>,
@@ -268,9 +269,17 @@ pub(super) fn reserve_function_fold<'dae>(
         provenance,
     )?;
     storage.functions[function.index() as usize].folds.push(raw);
+    // A nested loop is reserved while its parent is open, so the parent ordinal
+    // is always strictly smaller: the scope forest can never contain a cycle.
+    if parent.is_some_and(|parent| parent >= ordinal) {
+        return Err(DaeConstructionError::InvalidRecursiveFunctionGroup {
+            span: provenance.span(),
+        });
+    }
     storage.function_folds.push(FunctionFoldEntry {
         function: function.index(),
         ordinal,
+        parent,
         domain: domain.index(),
         targets,
         parameter_definitions: Vec::new(),
@@ -342,11 +351,19 @@ pub(super) fn insert_function_definition<'dae>(
         "function definition arena",
         provenance,
     )?;
+    // Issuing the identity and recording the region that issued it is one act.
+    // Nothing downstream may recover the region from insertion order.
+    let scope = function
+        .build
+        .as_ref()
+        .ok_or_else(|| unknown("function body", target.function().index(), provenance))?
+        .active_fold;
     function.definitions.push(FunctionDefinitionEntry {
         target: target.ordinal(),
         rhs: rhs.index(),
         provenance,
     });
+    function.definition_scopes.push(scope);
     Ok(FunctionDefinitionId::from_raw(
         target.function().index(),
         ordinal,

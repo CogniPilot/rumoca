@@ -1,5 +1,169 @@
 use super::*;
 
+/// A statically empty compact loop domain is well-formed MLS §11.2.2, and the
+/// guarded transition inside it therefore joins no value. Construction must
+/// admit that vacuous conditional and store no assignment group for it, because
+/// there is no definition an assignment group could own.
+#[test]
+fn a_conditional_that_joins_no_value_is_admitted_and_stores_no_assignment_group() {
+    let source = TestSource::new(
+        "function f output Real y; algorithm y := 0; for k in 1:0 loop if k > 0 then end if; end for; end f;",
+    );
+    let function_at = source.source("function f", 0);
+    let output_at = source.source("output Real y", 0);
+    let assignment_at = source.source("y := 0", 0);
+    let zero_at = source.source("0", 0);
+    let loop_at = source.source("for k in 1:0 loop", 0);
+    let condition_at = source.source("k > 0", 0);
+    let condition_zero_at = source.source("0", 2);
+    let conditional_at = source.source("if k > 0 then end if", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, zero, assignment_at)
+                })?;
+                let domain = dae.domains(|domains| {
+                    domains.structured(
+                        StructuredIndexDomain {
+                            binders: vec![StructuredIndexBinder {
+                                id: 0,
+                                display_name: "k".to_string(),
+                                lower: 1,
+                                upper: 0,
+                                step: 1,
+                            }],
+                        },
+                        loop_at,
+                    )
+                })?;
+                let mut loop_body = dae
+                    .functions(|functions| functions.begin_loop(body, domain, [output], loop_at))?;
+                let k = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_at)
+                        .binder(DomainBinderId::from_raw(domain.index(), 0))
+                })?;
+                let bound = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_zero_at)
+                        .literal(DaeLiteral::Integer(0))
+                })?;
+                let condition = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_at)
+                        .binary(BinaryOperator::Greater, k, bound)
+                })?;
+                // A forged join keeps its rectangularity proof: an empty target
+                // list admits only empty branches and an empty fallback.
+                for (branches, fallback) in
+                    [(vec![vec![k]], Vec::new()), (vec![Vec::new()], vec![k])]
+                {
+                    let forged = dae.functions(|functions| {
+                        functions.assign_conditional_all_loop(
+                            &mut loop_body,
+                            &[],
+                            &[condition],
+                            &branches,
+                            &fallback,
+                            conditional_at,
+                        )
+                    });
+                    assert!(
+                        matches!(
+                            forged,
+                            Err(DaeConstructionError::InvalidArity {
+                                expected: 0,
+                                found: 1,
+                                ..
+                            })
+                        ),
+                        "a forged vacuous join must keep its arity proof: {forged:?}"
+                    );
+                }
+                let no_condition = dae.functions(|functions| {
+                    functions.assign_conditional_all_loop(
+                        &mut loop_body,
+                        &[],
+                        &[],
+                        &[],
+                        &[],
+                        conditional_at,
+                    )
+                });
+                assert!(matches!(
+                    no_condition,
+                    Err(DaeConstructionError::InvalidArity {
+                        expected: 0,
+                        found: 0,
+                        ..
+                    })
+                ));
+
+                dae.functions(|functions| {
+                    functions.assign_conditional_all_loop(
+                        &mut loop_body,
+                        &[],
+                        &[condition],
+                        &[Vec::new()],
+                        &[],
+                        conditional_at,
+                    )
+                })?;
+                let body = dae.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("a conditional over a statically empty domain constructs vacuously");
+
+    let inspect = |view: DaeView<'_>| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let statements = function.statements().collect::<Vec<_>>();
+        let FunctionStatementView::For {
+            fold, statements, ..
+        } = statements[1].clone()
+        else {
+            panic!("the empty-domain loop stays a compact fold");
+        };
+        assert_eq!(
+            statements.count(),
+            0,
+            "a vacuous conditional owns no assignment group"
+        );
+        let fold = view.function_fold(fold).unwrap();
+        assert_eq!(view.domain(fold.domain()).unwrap().scalar_count(), 0);
+        // The carried value leaves the fold exactly as it entered it.
+        assert_eq!(fold.update_values().len(), 1);
+        assert_eq!(
+            fold.update_values().rhs(0),
+            fold.parameter_values().rhs(0),
+            "an empty domain carries its value through unchanged"
+        );
+    };
+    dae.inspect(inspect);
+    let encoded = serde_json::to_string(&dae).unwrap();
+    serde_json::from_str::<Dae>(&encoded)
+        .unwrap()
+        .inspect(inspect);
+    let binary = bincode::serialize(&dae).unwrap();
+    bincode::deserialize::<Dae>(&binary)
+        .unwrap()
+        .inspect(inspect);
+}
+
 #[test]
 fn correlated_function_conditional_round_trips_and_rejects_duplicate_targets() {
     let source = TestSource::new(

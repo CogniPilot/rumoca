@@ -10,6 +10,16 @@ impl<'dae> Functions<'_, 'dae> {
     /// The correlation is constructed with the resulting definitions, so a
     /// downstream projection can preserve shared branch evaluation without
     /// matching independently derived conditional expression trees.
+    ///
+    /// A conditional that writes no value contributes no statement. Its whole
+    /// effect is the join it names, so an empty target list *is* the empty
+    /// effect — there is nothing for a later read to observe and nothing a
+    /// projection could preserve. This is the same rule [`assign_all`] applies
+    /// to an empty assignment list, and keeping the two in step is what lets
+    /// every stored [`FunctionStatementWire::AssignmentGroup`] carry at least
+    /// one definition, so replay never has to reconstruct an empty group.
+    ///
+    /// [`assign_all`]: Functions::assign_all
     pub fn assign_conditional_all(
         &mut self,
         body: &mut FunctionBody<'dae>,
@@ -24,6 +34,10 @@ impl<'dae> Functions<'_, 'dae> {
         self.validate_conditional_values(
             body, targets, conditions, branches, fallback, provenance,
         )?;
+
+        if targets.is_empty() {
+            return Ok(());
+        }
 
         let assignments =
             self.join_conditional_values(targets, conditions, branches, fallback, provenance)?;
@@ -48,6 +62,10 @@ impl<'dae> Functions<'_, 'dae> {
 
     /// Replay a serialized conditional correlation whose joined expressions
     /// have already been reconstructed in the expression arena.
+    ///
+    /// A vacuous conditional stores no assignment group, so no wire ever
+    /// replays one; the empty list is still accepted here so replay accepts
+    /// exactly the correlations construction can issue.
     pub(crate) fn replay_conditional_all(
         &mut self,
         body: &mut FunctionBody<'dae>,
@@ -66,6 +84,9 @@ impl<'dae> Functions<'_, 'dae> {
         )?;
         validate_unique_targets(assignments.iter().map(|(target, _)| *target), provenance)?;
         self.validate_joined_expressions(assignments, conditions, branches, fallback, provenance)?;
+        if assignments.is_empty() {
+            return Ok(());
+        }
         self.assign_all(body, assignments, provenance)?;
         let FunctionStatementWire::AssignmentGroup { conditional, .. } =
             function_build_state_mut(self.storage, body)
@@ -252,6 +273,23 @@ impl<'dae> Functions<'_, 'dae> {
     }
 }
 
+/// Prove that one conditional's condition, branch, and fallback lists describe
+/// the same rectangular join as its target list.
+///
+/// A conditional must own at least one condition — MLS §11.5 has no `if` with
+/// no `if` part — and every branch must carry exactly one value per target, in
+/// target order, so the join can pair them positionally.
+///
+/// The target list itself may be *empty*, and that is not a defect: it is the
+/// vacuous join, the conditional that writes nothing. A statically empty
+/// compact loop domain reaches exactly this shape. `for k in 1:(column - 1)`
+/// with `column == 1` is a well-formed MLS §11.2.2 iteration whose domain has
+/// no point, so no point of it can define a value, so the guarded transition
+/// inside it joins none. Demanding a target here would reject valid Modelica
+/// for having a provably dead body, and the rectangularity this function
+/// protects holds vacuously over an empty target list: every branch and the
+/// fallback are then required to be empty too, which the checks below still
+/// enforce.
 fn validate_conditional_arity(
     target_count: usize,
     conditions: &[ExprId<'_>],
@@ -262,7 +300,7 @@ fn validate_conditional_arity(
     if conditions.is_empty() || conditions.len() != branches.len() {
         return Err(invalid_arity(conditions.len(), branches.len(), provenance));
     }
-    if target_count == 0 || fallback.len() != target_count {
+    if fallback.len() != target_count {
         return Err(invalid_arity(target_count, fallback.len(), provenance));
     }
     if let Some(branch) = branches.iter().find(|branch| branch.len() != target_count) {
