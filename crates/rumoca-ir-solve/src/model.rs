@@ -56,7 +56,7 @@ pub struct InitializationProjectionBlock {
     pub unknowns: Vec<ScalarSlot>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct SolveArtifacts {
     pub continuous: ContinuousSolveArtifacts,
     pub initialization: InitializationSolveArtifacts,
@@ -197,10 +197,9 @@ pub struct MassMatrixEntry {
     pub value: f64,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct ContinuousSolveArtifacts {
-    /// Constructor-derived metadata; canonical Solve wire reconstructs it.
-    #[serde(skip)]
+    /// Constructor-derived metadata; canonical Solve replay reconstructs it.
     pub structural: ContinuousStructuralArtifacts,
     pub mass_matrix: MassMatrix,
     pub implicit_jacobian_v: ComputeBlock,
@@ -218,10 +217,9 @@ pub struct ContinuousSolveArtifacts {
     pub full_jacobian_v: ScalarProgramBlock,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct InitializationSolveArtifacts {
-    /// Constructor-derived metadata; canonical Solve wire reconstructs it.
-    #[serde(skip)]
+    /// Constructor-derived metadata; canonical Solve replay reconstructs it.
     pub structural: InitializationStructuralArtifacts,
     pub residual_jacobian_v: ComputeBlock,
 }
@@ -1764,7 +1762,7 @@ impl SolveVariableMeta {
 ///
 /// This is pure data. DAE inspection, scalarization, start evaluation, and
 /// mass-matrix extraction happen before this value is constructed.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct SolveModel {
     pub problem: SolveProblem,
     /// Exact pure DAE call frames shared by value, root, action, and visible
@@ -1780,44 +1778,6 @@ pub struct SolveModel {
     pub visible_names: Vec<String>,
     pub visible_value_rows: ScalarProgramBlock,
     pub variable_meta: Vec<SolveVariableMeta>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SolveModelWire {
-    problem: SolveProblem,
-    pure_calls: SolvePureCallTable,
-    artifacts: SolveArtifacts,
-    initial_y: Vec<f64>,
-    solver_nominals: Vec<f64>,
-    parameters: Vec<f64>,
-    external_tables: ExternalTables,
-    visible_names: Vec<String>,
-    visible_value_rows: ScalarProgramBlock,
-    variable_meta: Vec<SolveVariableMeta>,
-}
-
-impl<'de> Deserialize<'de> for SolveModel {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = SolveModelWire::deserialize(deserializer)?;
-        let model = Self {
-            problem: wire.problem,
-            pure_calls: wire.pure_calls,
-            artifacts: wire.artifacts,
-            initial_y: wire.initial_y,
-            solver_nominals: wire.solver_nominals,
-            parameters: wire.parameters,
-            external_tables: wire.external_tables,
-            visible_names: wire.visible_names,
-            visible_value_rows: wire.visible_value_rows,
-            variable_meta: wire.variable_meta,
-        };
-        model.validate().map_err(serde::de::Error::custom)?;
-        Ok(model)
-    }
 }
 
 impl SolveModel {

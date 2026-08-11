@@ -1052,8 +1052,17 @@ fn build_worker_prepared_simulation(
             );
         },
         |solve_model| {
+            let solve_model_wire = match rumoca_phase_solve::solve_model_wire(solve_model) {
+                Ok(wire) => wire,
+                Err(error) => {
+                    solve_error = Some(format!(
+                        "constructed SolveModel cannot be represented by the canonical wire: {error}"
+                    ));
+                    return;
+                }
+            };
             observe_solve_model_artifact(
-                solve_model,
+                &solve_model_wire,
                 progress,
                 request,
                 &solve_completed,

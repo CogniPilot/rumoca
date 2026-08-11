@@ -9,6 +9,7 @@ mod artifacts;
 mod error;
 mod layout;
 mod lower;
+mod model_wire;
 
 pub mod ad;
 pub mod diagnostic_codes;
@@ -19,6 +20,10 @@ pub use ad::{
 };
 pub use error::LowerError;
 pub use layout::build_var_layout;
+pub use model_wire::{
+    SOLVE_MODEL_SCHEMA_VERSION, SolveModelWireError, SolveModelWireRef, deserialize_solve_model,
+    solve_model_wire,
+};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;

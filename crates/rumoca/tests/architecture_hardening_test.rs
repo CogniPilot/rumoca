@@ -1317,9 +1317,13 @@ fn test_sim_facade_cross_crate_exports_are_curated() {
     );
     assert!(
         root_exports.iter().any(|export| {
-            export == "pub use rumoca_phase_solve::{lower_solve_artifacts, lower_solve_problem};"
+            export
+                .split_whitespace()
+                .collect::<String>()
+                .replace(",};", "};")
+                == "pubuserumoca_phase_solve::{deserialize_solve_model,lower_solve_artifacts,lower_solve_problem,solve_model_wire};"
         }),
-        "rumoca-sim may expose solve lowering/artifact preparation as its simulation-preparation facade"
+        "rumoca-sim may expose checked Solve wire replay and solve lowering/artifact preparation as its simulation-preparation facade"
     );
     assert!(
         root_exports

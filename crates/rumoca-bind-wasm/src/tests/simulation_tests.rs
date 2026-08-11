@@ -294,8 +294,9 @@ fn lower_to_solve_json_feeds_diffsol_simulation() {
         (value["t_end"].as_f64().unwrap() - 1.0).abs() < 1e-9,
         "payload should carry the resolved t_end"
     );
-    let model: rumoca_ir_solve::SolveModel =
-        serde_json::from_value(value["solve_model"].clone()).expect("deserialize solve_model");
+    let solve_json = serde_json::to_string(&value["solve_model"]).expect("encode solve_model");
+    let mut deserializer = serde_json::Deserializer::from_str(&solve_json);
+    let model = rumoca_sim::deserialize_solve_model(&mut deserializer).expect("replay solve_model");
 
     let opts = rumoca_sim::SimOptions {
         solver_mode: rumoca_sim::SimSolverMode::Bdf,

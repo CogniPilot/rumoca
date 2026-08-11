@@ -4,9 +4,9 @@
 //! (stiff/implicit) pulls relaxed-SIMD via faer/pulp, which a single combined
 //! module would require at instantiation — hard-failing the whole package on
 //! older browsers. So diffsol lives here, in a *separate* module that:
-//!   1. carries no compiler — it deserializes a `SolveModel` the main module
-//!      already lowered (the boundary is lossless; see the
-//!      `solve_model_round_trip` test), and
+//!   1. carries no Modelica front end — it replays a canonical `SolveModel`
+//!      wire the main module already lowered, mechanically rebuilding the
+//!      derived solver artifacts (see the `solve_model_round_trip` test), and
 //!   2. is loaded lazily by JS only after feature-detecting relaxed-SIMD, so an
 //!      old browser never has to instantiate it (the stiff solver is simply
 //!      greyed out in the UI instead of breaking the page).
@@ -25,6 +25,7 @@ use wasm_bindgen::prelude::*;
 /// annotation when the caller defers).
 #[derive(Deserialize)]
 struct DiffsolInput {
+    #[serde(deserialize_with = "rumoca_phase_solve::deserialize_solve_model")]
     solve_model: SolveModel,
     #[serde(default)]
     t_end: f64,

@@ -53,8 +53,10 @@ pub(crate) fn lower_model_to_solve_json_impl(
         let (opts, _solver_label) = build_simulation_options(&result, t_end, dt, "bdf");
         let parameter_overrides = parse_parameter_overrides(parameter_overrides_json)?;
         let solve_model = lower_solve_model_with_overrides(&result, &opts, &parameter_overrides)?;
+        let solve_model_wire = rumoca_sim::solve_model_wire(&solve_model)
+            .map_err(|error| WasmError::new(format!("SolveModel wire error: {error}")))?;
         let payload = serde_json::json!({
-            "solve_model": solve_model,
+            "solve_model": solve_model_wire,
             "t_end": opts.t_end,
             "dt": opts.dt.unwrap_or(0.0),
         });

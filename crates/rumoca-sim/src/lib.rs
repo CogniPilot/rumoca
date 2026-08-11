@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 /// [`rumoca_eval_solve::nan_trace`].
 pub use rumoca_eval_solve::nan_trace;
 use rumoca_ir_dae as dae;
-pub use rumoca_phase_solve::{lower_solve_artifacts, lower_solve_problem};
+pub use rumoca_phase_solve::{
+    deserialize_solve_model, lower_solve_artifacts, lower_solve_problem, solve_model_wire,
+};
 pub use rumoca_solver::{
     BackendState, DiffsolMethod, LoopStats, RuntimeProgressSnapshot, RuntimeStopSchedule,
     RuntimeTraceContext, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
@@ -110,11 +112,10 @@ pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
 /// Simulate an already-lowered [`rumoca_ir_solve::SolveModel`], skipping the
 /// DAE→solve lowering, dispatching by `opts.solver_mode`. This is the
-/// runtime-only entry the lazy diffsol WASM addon uses: the main module emits a
-/// SolveModel, the addon deserializes and simulates it without carrying the
-/// compiler. The skipped (`#[serde(skip)]`) layout fields are lowering-only and
-/// not read here, so a serialized→deserialized SolveModel simulates identically
-/// (pinned by `solve_model_round_trip` in crates/rumoca/tests).
+/// runtime entry the lazy diffsol WASM addon uses: the main module emits the
+/// canonical SolveModel construction inputs, and checked phase-Solve replay
+/// reconstructs every derived executable/structural artifact before this
+/// function can receive the model (pinned by `solve_model_round_trip`).
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub fn simulate_solve_model(
     model: &rumoca_ir_solve::SolveModel,

@@ -1036,9 +1036,10 @@ fn solve_model_wire_rejects_a_forged_event_transaction_call_owner() {
         .validate()
         .expect("fixture has one exact issued owner");
 
-    let mut wire = serde_json::to_value(model).unwrap();
-    wire["problem"]["discrete"]["event_transactions"][0]["site"]["owner"] = serde_json::json!(1);
-    let error = serde_json::from_value::<SolveModel>(wire).unwrap_err();
+    let mut wire = serde_json::to_value(&model.problem).unwrap();
+    wire["discrete"]["event_transactions"][0]["site"]["owner"] = serde_json::json!(1);
+    let problem = serde_json::from_value::<SolveProblem>(wire).unwrap();
+    let error = validate_problem_pure_call_sites(&problem, &model.pure_calls).unwrap_err();
     assert!(
         error.to_string().contains(
             "discrete.event_transactions references pure-call owner 1 with a missing or mismatched interface"
@@ -1422,28 +1423,6 @@ fn solve_problem_json_has_supported_schema_version() {
             .expect_err("unsupported SolveProblem schema version must fail");
         assert!(err.to_string().contains("unsupported Solve schema_version"));
     }
-}
-
-#[test]
-fn solve_model_json_requires_the_checked_pure_call_table() {
-    let model = SolveModel::default();
-    let mut wire = serde_json::to_value(&model).expect("SolveModel serializes");
-    let call_table = wire
-        .get("pure_calls")
-        .expect("SolveModel wire owns its pure-call table");
-    assert_eq!(
-        call_table
-            .get("owners")
-            .and_then(serde_json::Value::as_array)
-            .map(Vec::len),
-        Some(0)
-    );
-    wire.as_object_mut()
-        .expect("SolveModel wire is an object")
-        .remove("pure_calls");
-    let error = serde_json::from_value::<SolveModel>(wire)
-        .expect_err("wire cannot omit the model-level call owner table");
-    assert!(error.to_string().contains("pure_calls"), "{error}");
 }
 
 #[test]
