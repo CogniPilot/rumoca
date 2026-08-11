@@ -1017,13 +1017,6 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
-contract_id = 'EXPR-040'
-case_id = 'expr_040_integer_event_trigger'
-test_file = 'tests/expr_contracts.rs'
-kind = 'Compile'
-outcome = 'Accept'
-
-[[cases]]
 contract_id = 'FUNC-001'
 case_id = 'func_001_input_output_ok'
 test_file = 'tests/func_contracts.rs'
@@ -2445,6 +2438,34 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'ARR-041'
+case_id = 'arr_041_diagonal_of_vector_accepted'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-041'
+case_id = 'arr_041_diagonal_of_matrix_rejected'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ARR-042'
+case_id = 'arr_042_outer_product_of_vectors_accepted'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ARR-042'
+case_id = 'arr_042_outer_product_of_matrix_rejected'
+test_file = 'tests/arr_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'ALG-011'
 case_id = 'alg_011_non_boolean_when_condition_rejected'
 test_file = 'tests/alg_contracts.rs'
@@ -2790,6 +2811,27 @@ outcome = 'Reject'
 [[cases]]
 contract_id = 'FUNC-034'
 case_id = 'func_034_input_default_depends_on_output_rejected'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-036'
+case_id = 'func_036_external_object_without_destructor_rejected'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-036'
+case_id = 'func_036_external_object_replaceable_constructor_rejected'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-037'
+case_id = 'func_037_external_object_destructor_with_output_rejected'
 test_file = 'tests/func_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'

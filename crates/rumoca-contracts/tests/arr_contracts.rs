@@ -1,6 +1,6 @@
 //! ARR (Array) contract tests - MLS §10
 //!
-//! Tests for the 40 array contracts defined in SPEC_0022.
+//! Tests for the 42 array contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -1451,5 +1451,91 @@ fn arr_026_a_genuine_scalar_component_is_still_rejected_when_subscripted() {
         FailedPhase::Typecheck,
         "ET009",
         "`c` has 0 dimension(s) but is subscripted with 1 subscript(s)",
+    );
+}
+
+// =============================================================================
+// ARR-041: diagonal(v) requires a vector and returns a square matrix
+// (MLS §10.3.5)
+// =============================================================================
+
+#[test]
+fn arr_041_diagonal_of_vector_accepted() {
+    expect_success(
+        r#"
+        model Test
+            Real v[3] = {1, 2, 3};
+            Real m[3, 3];
+            Real x(start = 0, fixed = true);
+        equation
+            m = diagonal(v);
+            der(x) = m[2, 2];
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn arr_041_diagonal_of_matrix_rejected() {
+    expect_failure_in_phase_with_detail(
+        r#"
+        model Test
+            Real a[2, 2] = {{1, 0}, {0, 1}};
+            Real m[2, 2];
+            Real x(start = 0, fixed = true);
+        equation
+            m = diagonal(a);
+            der(x) = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::ToDae,
+        "ED020",
+        "expression shape mismatch",
+    );
+}
+
+// =============================================================================
+// ARR-042: outerProduct(v1, v2) requires two vectors and keeps their extents
+// (MLS §10.3.5)
+// =============================================================================
+
+#[test]
+fn arr_042_outer_product_of_vectors_accepted() {
+    expect_success(
+        r#"
+        model Test
+            Real a[2] = {1, 2};
+            Real b[3] = {1, 2, 3};
+            Real m[2, 3];
+            Real x(start = 0, fixed = true);
+        equation
+            m = outerProduct(a, b);
+            der(x) = m[2, 3];
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn arr_042_outer_product_of_matrix_rejected() {
+    expect_failure_in_phase_with_detail(
+        r#"
+        model Test
+            Real a[2, 2] = {{1, 0}, {0, 1}};
+            Real b[3] = {1, 2, 3};
+            Real m[2, 3];
+            Real x(start = 0, fixed = true);
+        equation
+            m = outerProduct(a, b);
+            der(x) = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::ToDae,
+        "ED020",
+        "expression shape mismatch",
     );
 }

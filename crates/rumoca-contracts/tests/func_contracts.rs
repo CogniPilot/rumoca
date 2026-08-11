@@ -1,6 +1,6 @@
 //! FUNC (Function) contract tests - MLS §12
 //!
-//! Tests for the 35 function contracts defined in SPEC_0022.
+//! Tests for the 38 function contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -1195,5 +1195,132 @@ fn func_027_vectorized_args_size_mismatch_rejected() {
         "M",
         FailedPhase::Flatten,
         "EF016",
+    );
+}
+
+// =============================================================================
+// FUNC-036: ExternalObject lifecycle shape (MLS §12.9.7)
+// "The owner uses the `class` restriction, directly extends ExternalObject and
+//  owns exactly a non-replaceable constructor and destructor function"
+// =============================================================================
+
+#[test]
+fn func_036_external_object_without_destructor_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        class Handle
+            extends ExternalObject;
+            function constructor
+                output Handle object;
+                external "C" object = create();
+            end constructor;
+        end Handle;
+
+        model M
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+        end M;
+    "#,
+        "M",
+        "ER132",
+    );
+}
+
+#[test]
+fn func_036_external_object_replaceable_constructor_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        class Handle
+            extends ExternalObject;
+            replaceable function constructor
+                output Handle object;
+                external "C" object = create();
+            end constructor;
+            function destructor
+                input Handle object;
+                external "C" release(object);
+            end destructor;
+        end Handle;
+
+        model M
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+        end M;
+    "#,
+        "M",
+        "ER132",
+    );
+}
+
+// =============================================================================
+// FUNC-037: ExternalObject lifecycle signatures (MLS §12.9.7)
+// "constructor has one output of the owning type; destructor has one input of
+//  that type and no outputs"
+// =============================================================================
+
+#[test]
+fn func_037_external_object_destructor_with_output_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        class Handle
+            extends ExternalObject;
+            function constructor
+                output Handle object;
+                external "C" object = create();
+            end constructor;
+            function destructor
+                input Handle object;
+                output Integer status;
+                external "C" status = release(object);
+            end destructor;
+        end Handle;
+
+        model M
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+        end M;
+    "#,
+        "M",
+        "ER133",
+    );
+}
+
+// =============================================================================
+// FUNC-038: ExternalObject lifecycle calls (MLS §12.9.7)
+// "constructor and destructor cannot be called explicitly"
+//
+// Registry status is Partial: only the clause tested below is enforced. The
+// second clause ("each constructed object is constructed and destroyed exactly
+// once") has no implementation, so this test is deliberately absent from
+// `data/contract_cases.toml` and FUNC-038 is not in IMPLEMENTED_CONTRACT_IDS.
+// =============================================================================
+
+#[test]
+fn func_038_explicit_destructor_call_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        class Handle
+            extends ExternalObject;
+            function constructor
+                output Handle object;
+                external "C" object = create();
+            end constructor;
+            function destructor
+                input Handle object;
+                external "C" release(object);
+            end destructor;
+        end Handle;
+
+        model M
+            Handle object;
+        algorithm
+            Handle.destructor(object);
+        end M;
+    "#,
+        "M",
+        "ER134",
     );
 }

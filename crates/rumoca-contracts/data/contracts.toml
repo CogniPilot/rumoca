@@ -650,6 +650,24 @@ status = 'Implemented'
 tier = 1
 
 [[contracts]]
+id = 'ARR-041'
+category = 'Array'
+name = 'diagonal vector shape'
+mls_ref = '§10.3.5'
+requirement = 'diagonal(v) requires a vector and returns a square matrix with both extents equal to size(v, 1)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'ARR-042'
+category = 'Array'
+name = 'outer product shape'
+mls_ref = '§10.3.5'
+requirement = 'outerProduct(v1, v2) requires two vectors and returns a matrix with extents size(v1, 1) and size(v2, 1)'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
 id = 'CLK-001'
 category = 'Clock'
 name = 'Clock not in function'
@@ -2122,7 +2140,8 @@ category = 'Expression'
 name = 'Event triggering operators'
 mls_ref = '§3.7.2'
 requirement = 'div, ceil, floor, integer can only change values at events and will trigger events as needed'
-status = 'Implemented'
+status = 'Partial'
+notes = 'div/ceil/floor/integer are constructed and lowered as pure builtins (Solve UnaryOp::Floor/Ceil, no relation-memory owner), so no event root is generated at their step points; the contract therefore holds only for arguments that are already discrete between events.'
 tier = 1
 
 [[contracts]]
@@ -2438,6 +2457,34 @@ name = 'Derivative ordering'
 mls_ref = '§12.7.1'
 requirement = 'Most restrictive derivative annotations should be written first'
 status = 'NotApplicable'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-036'
+category = 'Function'
+name = 'ExternalObject lifecycle shape'
+mls_ref = '§12.9.7'
+requirement = 'ExternalObject owner uses the specialized class `class`, directly extends ExternalObject, owns exactly non-replaceable constructor and destructor functions, and owns no other elements'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-037'
+category = 'Function'
+name = 'ExternalObject lifecycle signatures'
+mls_ref = '§12.9.7'
+requirement = 'Constructor has exactly one output of the owning ExternalObject type; destructor has exactly one input of that type and no outputs'
+status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'FUNC-038'
+category = 'Function'
+name = 'ExternalObject lifecycle calls'
+mls_ref = '§12.9.7'
+requirement = 'Constructor and destructor cannot be called explicitly; each constructed object is constructed and destroyed exactly once'
+status = 'Partial'
+notes = 'Only the first clause is enforced: Resolve rejects explicit constructor/destructor calls with ER134. The exactly-once construction/destruction clause is unimplemented - no phase tracks ExternalObject lifetime or emits a destructor call, and ExternalObject values cannot reach the DAE at all (construction rejects them with UnsupportedFlatSemantics).'
 tier = 1
 
 [[contracts]]
@@ -3320,6 +3367,16 @@ name = 'DAE structure'
 mls_ref = 'App B'
 requirement = 'System shall consist of differential equations, discrete equations, discrete-valued assignments, and condition equations'
 status = 'Implemented'
+tier = 1
+
+[[contracts]]
+id = 'SIM-010'
+category = 'Simulation'
+name = 'Clocked event-iteration participation'
+mls_ref = 'App B'
+requirement = 'Clocked variables use previous values, and a clock partition is solved once per tick, in the first event iteration of that tick; that restriction governs fixed-point re-iteration of the partition, not value exchange between producers inside that single solution, and clocked lanes do not participate in ordinary z == pre(z), m == pre(m) convergence'
+status = 'Partial'
+notes = 'Partial as of 2026-08-11. Implemented and covered: the first-event-iteration restriction on clock solving and the exclusion of clocked lanes from the ordinary z == pre(z), m == pre(m) fixed point — bounded-proof covered by crates/rumoca-solver/src/verification/event_iteration.rs, whose atomic pre-advance property leaves clocked lanes unchanged, and exercised by tests/sim_contracts.rs::sim_010_clocked_counter_advances_once_per_tick. Not implemented: same-tick value exchange between producers inside that single partition solution, owned by SPEC_0040 SOLVE-C57 (pending: dev/2026-08-11-clock-partition-transaction-design.md, pre-implementation). Per the crate Partial convention the test is therefore absent from data/contract_cases.toml and SIM-010 is absent from IMPLEMENTED_CONTRACT_IDS.'
 tier = 1
 
 [[contracts]]

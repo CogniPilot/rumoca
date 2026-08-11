@@ -5,7 +5,7 @@
 //!
 //! # Overview
 //!
-//! The MLS defines 432 contracts across 18 categories. This framework:
+//! The MLS defines 438 contracts across 18 categories. This framework:
 //! - Registers all contracts with metadata
 //! - Provides test infrastructure and macros
 //! - Tracks compliance status
@@ -103,6 +103,8 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "ARR-038",
     "ARR-039",
     "ARR-040",
+    "ARR-041",
+    "ARR-042",
     "CLK-001",
     "CLK-002",
     "CLK-003",
@@ -261,7 +263,6 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "EXPR-037",
     "EXPR-038",
     "EXPR-039",
-    "EXPR-040",
     "FUNC-001",
     "FUNC-002",
     "FUNC-003",
@@ -289,6 +290,8 @@ pub const IMPLEMENTED_CONTRACT_IDS: &[&str] = &[
     "FUNC-032",
     "FUNC-033",
     "FUNC-034",
+    "FUNC-036",
+    "FUNC-037",
     "INST-001",
     "INST-002",
     "INST-003",
@@ -469,11 +472,11 @@ mod tests {
     #[test]
     fn test_registry_has_all_contracts() {
         let registry = create_registry();
-        // SPEC_0022 defines 432 contracts
+        // SPEC_0022 defines 438 contracts
         assert_eq!(
             registry.len(),
-            432,
-            "Expected 432 contracts, got {}",
+            438,
+            "Expected 438 contracts, got {}",
             registry.len()
         );
     }
@@ -496,15 +499,15 @@ mod tests {
         assert_eq!(registry.count_by_category(ContractCategory::Equation), 38);
         assert_eq!(registry.count_by_category(ContractCategory::Algorithm), 17);
         assert_eq!(registry.count_by_category(ContractCategory::Connection), 30);
-        assert_eq!(registry.count_by_category(ContractCategory::Function), 35);
+        assert_eq!(registry.count_by_category(ContractCategory::Function), 38);
         assert_eq!(registry.count_by_category(ContractCategory::Type), 35);
-        assert_eq!(registry.count_by_category(ContractCategory::Array), 40);
+        assert_eq!(registry.count_by_category(ContractCategory::Array), 42);
         assert_eq!(registry.count_by_category(ContractCategory::Package), 12);
         assert_eq!(
             registry.count_by_category(ContractCategory::OperatorRecord),
             11
         );
-        assert_eq!(registry.count_by_category(ContractCategory::Simulation), 9);
+        assert_eq!(registry.count_by_category(ContractCategory::Simulation), 10);
         assert_eq!(registry.count_by_category(ContractCategory::Clock), 20);
         assert_eq!(registry.count_by_category(ContractCategory::Stream), 11);
         assert_eq!(

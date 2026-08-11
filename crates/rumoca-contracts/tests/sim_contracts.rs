@@ -1,6 +1,6 @@
 //! SIM (Simulation) contract tests - MLS §8.6, App B
 //!
-//! Tests for the 9 simulation contracts defined in SPEC_0022.
+//! Tests for the 10 simulation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::{Dae, FailedPhase, VariableRole};
 use rumoca_compile::{Session, SessionConfig};
@@ -1158,4 +1158,61 @@ fn sim_009_pre_of_continuous_state_in_when_condition_is_rejected() {
         FailedPhase::ToDae,
         "ED019",
     );
+}
+
+// =============================================================================
+// SIM-010: Clocked event-iteration participation (MLS App B)
+// "Clocked variables use previous values, and a clock partition is solved once
+//  per tick, in the first event iteration of that tick"; that restriction
+//  bounds fixed-point RE-ITERATION of the partition, not value exchange between
+//  producers inside that single solution, and clocked lanes do not participate
+//  in ordinary z == pre(z), m == pre(m) convergence.
+//
+// Registry status is Partial: only the first clause is implemented. The
+// once-per-tick restriction and the excluded clocked lanes hold and are covered
+// by the test below plus the bounded proof in
+// `crates/rumoca-solver/src/verification/event_iteration.rs`, whose atomic
+// pre-advance property leaves clocked lanes unchanged. Same-tick value exchange
+// between producers inside that one solution does NOT hold: the partition is
+// evaluated against an event-entry snapshot, so a producer reading another
+// producer's target on the same tick can read the previous tick's value. That
+// clause is owned by SPEC_0040 SOLVE-C57 (pending:
+// `dev/2026-08-11-clock-partition-transaction-design.md`, pre-implementation),
+// so this test is deliberately absent from `data/contract_cases.toml` and
+// SIM-010 is not in IMPLEMENTED_CONTRACT_IDS.
+//
+// When the SOLVE-C57 owner lands, this section gains the exchange cases from
+// that design (reverse-ordered unconditional B.1b chain, mixed B.1b/B.1c chain)
+// and only then may SIM-010 be promoted out of Partial. Note what promotion
+// does NOT require: an `And(clock, predicate)` producer without a per-tick
+// totality proof stays a hold-fallback member under SOLVE-C07/C10/C47/C49, so
+// its target still holds and a same-tick reader still observes the left limit.
+// =============================================================================
+
+#[test]
+fn sim_010_clocked_counter_advances_once_per_tick() {
+    // `previous(k)` is owned by the clock, not by the ordinary `pre` fixed
+    // point: the clocked equation runs once in the first event iteration of a
+    // tick. If the clocked lane were advanced with the ordinary `z == pre(z)`
+    // lanes, the counter would gain one increment per extra event iteration
+    // and outrun the tick count.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Clock c = Clock(0.1);
+            discrete Real k(start = 0, fixed = true);
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+            when c then
+                k = previous(k) + 1;
+            end when;
+        end M;
+    "#,
+        "M",
+        0.35,
+    );
+    // Clock(0.1) ticks at t = 0, 0.1, 0.2 and 0.3 within the horizon, so the
+    // clocked counter must read exactly 4.
+    assert_eq!(trace.final_value("k"), 4.0);
 }

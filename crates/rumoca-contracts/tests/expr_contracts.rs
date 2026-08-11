@@ -617,8 +617,23 @@ fn expr_039_noevent_usage() {
 }
 
 // =============================================================================
-// EXPR-040: Event triggering operators
-// "div, ceil, floor, integer can only change values at events"
+// EXPR-040: Event triggering operators (MLS §3.7.2)
+// "div, ceil, floor, integer can only change values at events and will trigger
+// events as needed"
+//
+// Registry status is Partial: event generation for div/ceil/floor/integer is
+// unimplemented. They are constructed and lowered as pure builtins (Solve
+// UnaryOp::Floor/Ceil, no relation-memory owner), so no event root exists at
+// their step points and the requirement holds only for arguments that are
+// already discrete between events. The test below therefore asserts nothing
+// beyond successful compilation, and EXPR-040 is deliberately absent from
+// `data/contract_cases.toml` and from IMPLEMENTED_CONTRACT_IDS.
+//
+// A future event-root implementation must make this test assert the behavior,
+// not just the compile: that `integer(x)` owns an event root over the crossing
+// of each integer step point, that `n` is held constant between those events
+// rather than tracking `x` continuously, and that the state event is reported
+// at the crossing time. Only then may EXPR-040 be promoted out of Partial.
 // =============================================================================
 
 #[test]
