@@ -8,7 +8,7 @@ pub(super) fn static_refresh_parameter_indices<'a>(
     let mut row_indices = BTreeSet::new();
     for plan in plans {
         row_indices.extend(
-            plan.static_causal_seed_rows
+            plan.static_causal_rows()
                 .iter()
                 .filter_map(|row| program_rows.get(&row.source()).copied()),
         );
@@ -17,7 +17,7 @@ pub(super) fn static_refresh_parameter_indices<'a>(
                 RefreshStage::CausalSeedSweep { static_rows, .. }
                 | RefreshStage::ExactAssignments { static_rows, .. } => {
                     row_indices.extend(
-                        static_rows
+                        plan.selected_rows(static_rows)
                             .iter()
                             .filter_map(|row| program_rows.get(&row.source()).copied()),
                     );
@@ -223,14 +223,14 @@ impl SolveRuntime {
         args: &mut RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
         self.refresh_parameter_static_seed_rows(
-            &plan.static_causal_seed_rows,
+            plan.static_causal_rows(),
             plan.static_causal_sequence,
             args.t,
             args.solver_y,
             args.params,
         )?;
         self.refresh_slots_once(
-            &plan.dynamic_causal_seed_rows,
+            plan.dynamic_causal_rows(),
             plan.dynamic_causal_sequence,
             args.t,
             args.solver_y,
@@ -240,7 +240,7 @@ impl SolveRuntime {
 
     fn refresh_parameter_static_seed_rows(
         &self,
-        rows: &[AlgebraicRefreshRow],
+        rows: solve::RefreshRows<'_>,
         sequence: solve::RefreshSequenceId,
         t: f64,
         solver_y: &mut [f64],
@@ -281,7 +281,7 @@ impl SolveRuntime {
 
     pub(super) fn refresh_prepared_static_rows(
         &self,
-        rows: &[AlgebraicRefreshRow],
+        rows: solve::RefreshRows<'_>,
         sequence: solve::RefreshSequenceId,
         t: f64,
         solver_y: &mut [f64],
@@ -298,7 +298,7 @@ impl SolveRuntime {
         };
         if fully_cached {
             let cache = self.static_refresh_cache.borrow();
-            for row in rows {
+            for row in rows.iter() {
                 solver_y[row.target_index()] =
                     cached_static_refresh_value(&cache, row.target_index())?;
             }
@@ -307,7 +307,7 @@ impl SolveRuntime {
 
         self.refresh_slots_once(rows, sequence, t, solver_y, params)?;
         let mut cache = self.static_refresh_cache.borrow_mut();
-        for row in rows {
+        for row in rows.iter() {
             cache.values[row.target_index()] = Some(solver_y[row.target_index()]);
         }
         Ok(())
@@ -559,7 +559,7 @@ impl SolveRuntime {
 
     pub(super) fn refresh_slots_once(
         &self,
-        plan: &[AlgebraicRefreshRow],
+        plan: solve::RefreshRows<'_>,
         sequence: solve::RefreshSequenceId,
         t: f64,
         solver_y: &mut [f64],
@@ -572,7 +572,7 @@ impl SolveRuntime {
         if self.can_batch_assignment_refresh(plan) {
             self.implicit_scalar_rhs
                 .apply_target_assignment_rows_unchecked_with_context(
-                    plan,
+                    plan.iter(),
                     |row| self.refresh_program_rows.get(&row.source()).copied(),
                     solver_y,
                     params,
@@ -745,10 +745,10 @@ impl SolveRuntime {
 
     fn validate_refresh_values(
         &self,
-        plan: &[AlgebraicRefreshRow],
+        plan: solve::RefreshRows<'_>,
         solver_y: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        for row in plan {
+        for row in plan.iter() {
             let value = solver_y[row.target_index()];
             if !value.is_finite() {
                 return Err(self.non_finite_value_error(row.target_index(), value));

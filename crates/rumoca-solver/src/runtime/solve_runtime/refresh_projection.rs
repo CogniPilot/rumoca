@@ -726,7 +726,7 @@ impl SolveRuntime {
         let structural = self.continuous_structural.algebraic_projection();
         plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()
             && !plan.value_stages.is_empty()
-            && value_stage_seed_coverage_is_complete(&plan.value_stages)
+            && value_stage_seed_coverage_is_complete(plan)
             && plan
                 .simultaneous_block_indices
                 .iter()
@@ -774,8 +774,8 @@ impl SolveRuntime {
                 let seeded = self.refresh_stage_seed_sweep(
                     *static_sequence,
                     *dynamic_sequence,
-                    static_rows,
-                    dynamic_rows,
+                    complete_plan.selected_rows(static_rows),
+                    complete_plan.selected_rows(dynamic_rows),
                     args,
                     incoming,
                 )?;
@@ -790,8 +790,8 @@ impl SolveRuntime {
                 let assigned = self.refresh_stage_seed_sweep(
                     *static_sequence,
                     *dynamic_sequence,
-                    static_rows,
-                    dynamic_rows,
+                    complete_plan.selected_rows(static_rows),
+                    complete_plan.selected_rows(dynamic_rows),
                     args,
                     incoming,
                 )?;
@@ -806,7 +806,7 @@ impl SolveRuntime {
                 *seed_sequence,
                 *block_index,
                 plan,
-                seed_rows,
+                complete_plan.selected_rows(seed_rows),
                 complete_plan,
                 args,
                 incoming,
@@ -832,7 +832,7 @@ impl SolveRuntime {
         seed_sequence: solve::RefreshSequenceId,
         block_index: usize,
         plan: &solve::AlgebraicProjectionPlan,
-        seed_rows: &[AlgebraicRefreshRow],
+        seed_rows: solve::RefreshRows<'_>,
         complete_plan: &RefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
@@ -852,8 +852,8 @@ impl SolveRuntime {
         &self,
         static_sequence: solve::RefreshSequenceId,
         dynamic_sequence: solve::RefreshSequenceId,
-        static_rows: &[AlgebraicRefreshRow],
-        dynamic_rows: &[AlgebraicRefreshRow],
+        static_rows: solve::RefreshRows<'_>,
+        dynamic_rows: solve::RefreshRows<'_>,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<bool, RuntimeSolveError> {
@@ -923,15 +923,18 @@ impl SolveRuntime {
     }
 }
 
-pub(super) fn value_stage_seed_coverage_is_complete(stages: &[RefreshStage]) -> bool {
-    stages.iter().all(|stage| match stage {
+pub(super) fn value_stage_seed_coverage_is_complete(plan: &RefreshPlan) -> bool {
+    plan.value_stages.iter().all(|stage| match stage {
         RefreshStage::ProjectionBlock {
-            plan, seed_rows, ..
-        } => plan.blocks.iter().all(|block| {
-            block
-                .y_indices
-                .iter()
-                .all(|target| seed_rows.iter().any(|row| row.target_index() == *target))
+            plan: projection,
+            seed_rows,
+            ..
+        } => projection.blocks.iter().all(|block| {
+            block.y_indices.iter().all(|target| {
+                plan.selected_rows(seed_rows)
+                    .iter()
+                    .any(|row| row.target_index() == *target)
+            })
         }),
         _ => true,
     })

@@ -117,7 +117,7 @@ pub(super) fn root_condition_plan(
     let mut evaluated_rows = Vec::new();
     let mut search_rows = Vec::new();
     let static_y = root_refresh
-        .static_causal_seed_rows
+        .static_causal_rows()
         .iter()
         .map(|row| row.target_index())
         .collect::<BTreeSet<_>>();

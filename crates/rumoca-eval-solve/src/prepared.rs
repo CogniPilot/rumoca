@@ -875,15 +875,19 @@ impl PreparedScalarProgramBlock {
         .map_err(|error| error.with_source_span(self.block.program_span(row_idx)))
     }
 
-    pub fn apply_target_assignment_rows_unchecked_with_context(
+    pub fn apply_target_assignment_rows_unchecked_with_context<'a, I>(
         &self,
-        rows: &[AlgebraicRefreshRow],
+        rows: I,
         mut program_row: impl FnMut(&AlgebraicRefreshRow) -> Option<usize>,
         y: &mut [f64],
         p: &[f64],
         t: f64,
         context: RowEvalContext<'_>,
-    ) -> Result<(), EvalSolveError> {
+    ) -> Result<(), EvalSolveError>
+    where
+        I: IntoIterator<Item = &'a AlgebraicRefreshRow>,
+        I::IntoIter: ExactSizeIterator,
+    {
         let local_runtime_state;
         let context = match context.runtime_state {
             Some(_) => context,
@@ -892,6 +896,7 @@ impl PreparedScalarProgramBlock {
                 context.with_runtime_state(&local_runtime_state)
             }
         };
+        let rows = rows.into_iter();
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval("target_rows_batch", self.output_count, rows.len());
         for row in rows {

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::Index;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -48,6 +49,103 @@ pub struct RefreshRowOwnerId(u32);
 impl RefreshRowOwnerId {
     pub fn checked(index: usize) -> Option<Self> {
         u32::try_from(index).ok().map(Self)
+    }
+}
+
+/// Compact construction-issued selection into one [`RefreshPlan`] row catalog.
+///
+/// The selection stores only canonical catalog positions. It never clones row
+/// metadata and cannot name a row owned by another plan after checked replay.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct RefreshRowSelection(Box<[u32]>);
+
+impl RefreshRowSelection {
+    pub fn checked(
+        row_count: usize,
+        indices: impl IntoIterator<Item = usize>,
+    ) -> Result<Self, ContinuousRefreshConstructionError> {
+        let mut selected = Vec::new();
+        let mut seen = vec![false; row_count];
+        for index in indices {
+            let Some(slot) = seen.get_mut(index) else {
+                return refresh_error(
+                    "continuous refresh selection refers to an unowned canonical row".to_string(),
+                );
+            };
+            if std::mem::replace(slot, true) {
+                return refresh_error(
+                    "continuous refresh selection repeats a canonical row".to_string(),
+                );
+            }
+            selected.push(u32::try_from(index).map_err(|_| {
+                ContinuousRefreshConstructionError {
+                    reason: "continuous refresh row catalog exceeds u32".to_string(),
+                }
+            })?);
+        }
+        Ok(Self(selected.into_boxed_slice()))
+    }
+
+    pub fn all(row_count: usize) -> Result<Self, ContinuousRefreshConstructionError> {
+        Self::checked(row_count, 0..row_count)
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u32] {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RefreshRows<'a> {
+    catalog: &'a [AlgebraicRefreshRow],
+    indices: &'a [u32],
+}
+
+impl<'a> RefreshRows<'a> {
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.indices.len()
+    }
+
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.indices.is_empty()
+    }
+
+    #[must_use]
+    pub fn get(self, position: usize) -> Option<&'a AlgebraicRefreshRow> {
+        let index = usize::try_from(*self.indices.get(position)?).ok()?;
+        self.catalog.get(index)
+    }
+
+    pub fn iter(
+        self,
+    ) -> impl ExactSizeIterator<Item = &'a AlgebraicRefreshRow> + DoubleEndedIterator {
+        self.indices.iter().map(|index| {
+            &self.catalog
+                [usize::try_from(*index).expect("checked continuous refresh row index fits usize")]
+        })
+    }
+}
+
+impl Index<usize> for RefreshRows<'_> {
+    type Output = AlgebraicRefreshRow;
+
+    fn index(&self, position: usize) -> &Self::Output {
+        self.get(position)
+            .expect("checked continuous refresh selection index is in bounds")
     }
 }
 
@@ -189,23 +287,23 @@ pub enum RefreshStage {
         static_sequence: RefreshSequenceId,
         #[serde(skip)]
         dynamic_sequence: RefreshSequenceId,
-        static_rows: Box<[AlgebraicRefreshRow]>,
-        dynamic_rows: Box<[AlgebraicRefreshRow]>,
+        static_rows: RefreshRowSelection,
+        dynamic_rows: RefreshRowSelection,
     },
     ExactAssignments {
         #[serde(skip)]
         static_sequence: RefreshSequenceId,
         #[serde(skip)]
         dynamic_sequence: RefreshSequenceId,
-        static_rows: Box<[AlgebraicRefreshRow]>,
-        dynamic_rows: Box<[AlgebraicRefreshRow]>,
+        static_rows: RefreshRowSelection,
+        dynamic_rows: RefreshRowSelection,
     },
     ProjectionBlock {
         #[serde(skip)]
         seed_sequence: RefreshSequenceId,
         block_index: usize,
         plan: AlgebraicProjectionPlan,
-        seed_rows: Box<[AlgebraicRefreshRow]>,
+        seed_rows: RefreshRowSelection,
     },
 }
 
@@ -220,9 +318,9 @@ pub struct RefreshPlan {
     pub simultaneous_block_indices: Vec<usize>,
     pub value_projection_plan: AlgebraicProjectionPlan,
     pub rows: Vec<AlgebraicRefreshRow>,
-    pub causal_seed_rows: Vec<AlgebraicRefreshRow>,
-    pub static_causal_seed_rows: Vec<AlgebraicRefreshRow>,
-    pub dynamic_causal_seed_rows: Vec<AlgebraicRefreshRow>,
+    pub causal_seed_rows: RefreshRowSelection,
+    pub static_causal_seed_rows: RefreshRowSelection,
+    pub dynamic_causal_seed_rows: RefreshRowSelection,
     pub value_stages: Vec<RefreshStage>,
     pub causal_solution_certified: bool,
 }
@@ -740,7 +838,7 @@ fn scalar_source_output_index(
 fn construct_exact_assignment_program(
     block: &ComputeBlock,
     id: ExactRefreshAssignmentProgramId,
-    rows: &[AlgebraicRefreshRow],
+    rows: &[&AlgebraicRefreshRow],
 ) -> Result<ExactRefreshAssignmentProgram, ContinuousRefreshConstructionError> {
     let Some(first) = rows.first() else {
         return refresh_error("exact continuous refresh assignment group is empty".to_string());
@@ -873,7 +971,7 @@ fn scalar_source_program(
 
 fn exact_rows_can_commit_together(
     block: &ComputeBlock,
-    rows: &[AlgebraicRefreshRow],
+    rows: &[&AlgebraicRefreshRow],
 ) -> Result<bool, ContinuousRefreshConstructionError> {
     let Some(first) = rows.first() else {
         return Ok(false);
@@ -1408,7 +1506,7 @@ fn append_plan_assignment_schedules(
         schedules,
         inventory,
         plan.static_causal_sequence,
-        &plan.static_causal_seed_rows,
+        plan.static_causal_rows(),
     )?;
     append_exact_assignment_schedule(
         block,
@@ -1416,7 +1514,7 @@ fn append_plan_assignment_schedules(
         schedules,
         inventory,
         plan.dynamic_causal_sequence,
-        &plan.dynamic_causal_seed_rows,
+        plan.dynamic_causal_rows(),
     )?;
     for stage in &plan.value_stages {
         match stage {
@@ -1438,7 +1536,7 @@ fn append_plan_assignment_schedules(
                     schedules,
                     inventory,
                     *static_sequence,
-                    static_rows,
+                    plan.selected_rows(static_rows),
                 )?;
                 append_exact_assignment_schedule(
                     block,
@@ -1446,7 +1544,7 @@ fn append_plan_assignment_schedules(
                     schedules,
                     inventory,
                     *dynamic_sequence,
-                    dynamic_rows,
+                    plan.selected_rows(dynamic_rows),
                 )?;
             }
             RefreshStage::ProjectionBlock {
@@ -1459,7 +1557,7 @@ fn append_plan_assignment_schedules(
                 schedules,
                 inventory,
                 *seed_sequence,
-                seed_rows,
+                plan.selected_rows(seed_rows),
             )?,
         }
     }
@@ -1472,7 +1570,7 @@ fn append_exact_assignment_schedule(
     schedules: &mut Vec<ExactRefreshAssignmentSchedule>,
     inventory: &mut BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
     sequence_id: RefreshSequenceId,
-    rows: &[AlgebraicRefreshRow],
+    rows: RefreshRows<'_>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     if rows.is_empty() || rows.iter().any(|row| !row.exact_assignment_certified) {
         return Ok(());
@@ -1498,13 +1596,15 @@ fn append_exact_assignment_schedule(
         while end < rows.len() && rows[end].source == source {
             end += 1;
         }
-        let source_rows = &rows[position..end];
-        if source_rows.len() > 1 && exact_rows_can_commit_together(block, source_rows)? {
+        let source_rows = (position..end)
+            .map(|position| &rows[position])
+            .collect::<Vec<_>>();
+        if source_rows.len() > 1 && exact_rows_can_commit_together(block, &source_rows)? {
             append_exact_assignment_program(
                 block,
                 programs,
                 inventory,
-                source_rows,
+                &source_rows,
                 &mut program_ids,
             )?;
         } else {
@@ -1513,7 +1613,7 @@ fn append_exact_assignment_schedule(
                     block,
                     programs,
                     inventory,
-                    std::slice::from_ref(row),
+                    &[row],
                     &mut program_ids,
                 )?;
             }
@@ -1531,7 +1631,7 @@ fn append_exact_assignment_program(
     block: &ComputeBlock,
     programs: &mut Vec<ExactRefreshAssignmentProgram>,
     inventory: &mut BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
-    rows: &[AlgebraicRefreshRow],
+    rows: &[&AlgebraicRefreshRow],
     schedule: &mut Vec<ExactRefreshAssignmentProgramId>,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     let key = rows.iter().map(|row| row.owner_id).collect::<Vec<_>>();
@@ -1610,9 +1710,9 @@ fn validate_refresh_plan(
     for row in &plan.rows {
         validate_refresh_row(label, row)?;
     }
-    validate_refresh_row_selection(label, "causal", &plan.causal_seed_rows, &rows)?;
-    validate_refresh_row_selection(label, "static", &plan.static_causal_seed_rows, &rows)?;
-    validate_refresh_row_selection(label, "dynamic", &plan.dynamic_causal_seed_rows, &rows)?;
+    validate_refresh_row_selection(label, "causal", &plan.causal_seed_rows, &plan.rows)?;
+    validate_refresh_row_selection(label, "static", &plan.static_causal_seed_rows, &plan.rows)?;
+    validate_refresh_row_selection(label, "dynamic", &plan.dynamic_causal_seed_rows, &plan.rows)?;
     for stage in &plan.value_stages {
         match stage {
             RefreshStage::CausalSeedSweep {
@@ -1625,8 +1725,8 @@ fn validate_refresh_plan(
                 dynamic_rows,
                 ..
             } => {
-                validate_refresh_row_selection(label, "stage static", static_rows, &rows)?;
-                validate_refresh_row_selection(label, "stage dynamic", dynamic_rows, &rows)?;
+                validate_refresh_row_selection(label, "stage static", static_rows, &plan.rows)?;
+                validate_refresh_row_selection(label, "stage dynamic", dynamic_rows, &plan.rows)?;
             }
             RefreshStage::ProjectionBlock {
                 block_index,
@@ -1650,7 +1750,7 @@ fn validate_refresh_plan(
                         "{label} refresh stage does not replay canonical BLT block {block_index}"
                     ));
                 }
-                validate_refresh_row_selection(label, "projection seed", seed_rows, &rows)?;
+                validate_refresh_row_selection(label, "projection seed", seed_rows, &plan.rows)?;
             }
         }
     }
@@ -1675,18 +1775,24 @@ fn validate_refresh_row(
 fn validate_refresh_row_selection(
     label: &str,
     selection: &str,
-    selected: &[AlgebraicRefreshRow],
-    rows: &BTreeMap<RefreshRowOwnerId, &AlgebraicRefreshRow>,
+    selected: &RefreshRowSelection,
+    rows: &[AlgebraicRefreshRow],
 ) -> Result<(), ContinuousRefreshConstructionError> {
-    for row in selected {
-        let Some(owner) = rows.get(&row.owner_id) else {
+    let mut seen = vec![false; rows.len()];
+    for &index in selected.indices() {
+        let Ok(index) = usize::try_from(index) else {
             return refresh_error(format!(
                 "{label} {selection} row refers to an unowned canonical identity"
             ));
         };
-        if *owner != row {
+        let Some(seen) = seen.get_mut(index) else {
             return refresh_error(format!(
-                "{label} {selection} row does not replay its canonical owner"
+                "{label} {selection} row refers to an unowned canonical identity"
+            ));
+        };
+        if std::mem::replace(seen, true) {
+            return refresh_error(format!(
+                "{label} {selection} row repeats its canonical identity"
             ));
         }
     }
@@ -1705,27 +1811,50 @@ impl RefreshRemainderRelation {
 }
 
 impl RefreshPlan {
+    #[must_use]
+    pub fn selected_rows<'a>(&'a self, selection: &'a RefreshRowSelection) -> RefreshRows<'a> {
+        RefreshRows {
+            catalog: &self.rows,
+            indices: selection.indices(),
+        }
+    }
+
+    #[must_use]
+    pub fn causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.causal_seed_rows)
+    }
+
+    #[must_use]
+    pub fn static_causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.static_causal_seed_rows)
+    }
+
+    #[must_use]
+    pub fn dynamic_causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.dynamic_causal_seed_rows)
+    }
+
     fn issue_value_remainder_after(&self, settled: &Self) -> RefreshRemainderRelation {
-        let settled_stages = refresh_stage_coverage(&settled.value_stages);
+        let settled_stages = refresh_stage_coverage(settled);
         let value_stages = self
             .value_stages
             .iter()
-            .filter_map(|stage| uncovered_refresh_stage(stage, &settled_stages))
+            .filter_map(|stage| uncovered_refresh_stage(self, stage, &settled_stages))
             .collect();
         let mut remainder = self.clone();
         remainder.value_stages = value_stages;
         if self.causal_solution_certified && settled.causal_solution_certified {
             let settled_rows = settled
-                .causal_seed_rows
+                .causal_rows()
                 .iter()
                 .map(|row| RefreshStageIdentity::ExactAssignment(row.owner_id))
                 .collect::<Vec<_>>();
             remainder.causal_seed_rows =
-                uncovered_refresh_rows(&self.causal_seed_rows, &settled_rows);
+                uncovered_refresh_rows(self, &self.causal_seed_rows, &settled_rows);
             remainder.static_causal_seed_rows =
-                uncovered_refresh_rows(&self.static_causal_seed_rows, &settled_rows);
+                uncovered_refresh_rows(self, &self.static_causal_seed_rows, &settled_rows);
             remainder.dynamic_causal_seed_rows =
-                uncovered_refresh_rows(&self.dynamic_causal_seed_rows, &settled_rows);
+                uncovered_refresh_rows(self, &self.dynamic_causal_seed_rows, &settled_rows);
         } else {
             // A staged remainder cannot inherit the complete plan's causal
             // certificate. Doing so would select an unfiltered causal schedule
@@ -1742,9 +1871,9 @@ enum RefreshStageIdentity {
     ProjectionBlock(usize),
 }
 
-fn refresh_stage_coverage(stages: &[RefreshStage]) -> Vec<RefreshStageIdentity> {
+fn refresh_stage_coverage(plan: &RefreshPlan) -> Vec<RefreshStageIdentity> {
     let mut identities = Vec::new();
-    for stage in stages {
+    for stage in &plan.value_stages {
         match stage {
             RefreshStage::CausalSeedSweep {
                 static_rows,
@@ -1756,9 +1885,9 @@ fn refresh_stage_coverage(stages: &[RefreshStage]) -> Vec<RefreshStageIdentity> 
                 dynamic_rows,
                 ..
             } => identities.extend(
-                static_rows
+                plan.selected_rows(static_rows)
                     .iter()
-                    .chain(dynamic_rows.iter())
+                    .chain(plan.selected_rows(dynamic_rows).iter())
                     .map(|row| RefreshStageIdentity::ExactAssignment(row.owner_id)),
             ),
             RefreshStage::ProjectionBlock { block_index, .. } => {
@@ -1770,16 +1899,25 @@ fn refresh_stage_coverage(stages: &[RefreshStage]) -> Vec<RefreshStageIdentity> 
 }
 
 fn uncovered_refresh_rows(
-    rows: &[AlgebraicRefreshRow],
+    plan: &RefreshPlan,
+    rows: &RefreshRowSelection,
     settled: &[RefreshStageIdentity],
-) -> Vec<AlgebraicRefreshRow> {
-    rows.iter()
-        .filter(|row| !settled.contains(&RefreshStageIdentity::ExactAssignment(row.owner_id)))
-        .cloned()
-        .collect()
+) -> RefreshRowSelection {
+    RefreshRowSelection(
+        rows.indices()
+            .iter()
+            .copied()
+            .filter(|index| {
+                let row = &plan.rows[usize::try_from(*index)
+                    .expect("checked continuous refresh row index fits usize")];
+                !settled.contains(&RefreshStageIdentity::ExactAssignment(row.owner_id))
+            })
+            .collect(),
+    )
 }
 
 fn uncovered_refresh_stage(
+    plan: &RefreshPlan,
     stage: &RefreshStage,
     settled: &[RefreshStageIdentity],
 ) -> Option<RefreshStage> {
@@ -1788,12 +1926,12 @@ fn uncovered_refresh_stage(
             static_rows,
             dynamic_rows,
             ..
-        } => uncovered_row_stage(static_rows, dynamic_rows, settled, true),
+        } => uncovered_row_stage(plan, static_rows, dynamic_rows, settled, true),
         RefreshStage::ExactAssignments {
             static_rows,
             dynamic_rows,
             ..
-        } => uncovered_row_stage(static_rows, dynamic_rows, settled, false),
+        } => uncovered_row_stage(plan, static_rows, dynamic_rows, settled, false),
         RefreshStage::ProjectionBlock { block_index, .. } => (!settled
             .contains(&RefreshStageIdentity::ProjectionBlock(*block_index)))
         .then(|| stage.clone()),
@@ -1801,13 +1939,14 @@ fn uncovered_refresh_stage(
 }
 
 fn uncovered_row_stage(
-    static_rows: &[AlgebraicRefreshRow],
-    dynamic_rows: &[AlgebraicRefreshRow],
+    plan: &RefreshPlan,
+    static_rows: &RefreshRowSelection,
+    dynamic_rows: &RefreshRowSelection,
     settled: &[RefreshStageIdentity],
     causal: bool,
 ) -> Option<RefreshStage> {
-    let static_rows = uncovered_refresh_rows(static_rows, settled).into_boxed_slice();
-    let dynamic_rows = uncovered_refresh_rows(dynamic_rows, settled).into_boxed_slice();
+    let static_rows = uncovered_refresh_rows(plan, static_rows, settled);
+    let dynamic_rows = uncovered_refresh_rows(plan, dynamic_rows, settled);
     if static_rows.is_empty() && dynamic_rows.is_empty() {
         return None;
     }

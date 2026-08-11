@@ -1380,6 +1380,20 @@ fn singular_affine_seed_falls_back_to_preserved_projection() {
 
 #[test]
 fn staged_projection_requires_a_seed_for_every_block_coordinate() {
+    let rows = vec![
+        AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
+            owner_id: Default::default(),
+            source: solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
+            equation_index: 0,
+            output_offset: 0,
+            target_index: 0,
+            assignment_target: Some(0),
+            assignment_shape: None,
+            direct_assignment_certified: false,
+            exact_assignment_certified: false,
+        })
+        .unwrap(),
+    ];
     let stage = RefreshStage::ProjectionBlock {
         seed_sequence: Default::default(),
         block_index: 0,
@@ -1389,24 +1403,15 @@ fn staged_projection_requires_a_seed_for_every_block_coordinate() {
                 y_indices: vec![0, 1],
             }],
         },
-        seed_rows: vec![
-            AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
-                owner_id: Default::default(),
-                source: solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
-                equation_index: 0,
-                output_offset: 0,
-                target_index: 0,
-                assignment_target: Some(0),
-                assignment_shape: None,
-                direct_assignment_certified: false,
-                exact_assignment_certified: false,
-            })
-            .unwrap(),
-        ]
-        .into_boxed_slice(),
+        seed_rows: solve::RefreshRowSelection::checked(rows.len(), [0]).unwrap(),
+    };
+    let refresh = RefreshPlan {
+        rows,
+        value_stages: vec![stage],
+        ..RefreshPlan::default()
     };
 
-    assert!(!value_stage_seed_coverage_is_complete(&[stage]));
+    assert!(!value_stage_seed_coverage_is_complete(&refresh));
 }
 
 #[test]

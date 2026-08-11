@@ -2,12 +2,12 @@ use crate::RuntimeSolveError;
 
 use super::SolveRuntime;
 use rumoca_eval_solve::ComputeNodeOutputRangeRequest;
-use rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow;
+use rumoca_eval_solve::refresh_plan::{AlgebraicRefreshRow, RefreshRows};
 
 impl SolveRuntime {
     pub(super) fn try_refresh_tensor_output_segment(
         &self,
-        plan: &[AlgebraicRefreshRow],
+        plan: RefreshRows<'_>,
         start: usize,
         t: f64,
         solver_y: &mut [f64],
@@ -62,7 +62,8 @@ impl SolveRuntime {
             return Ok(None);
         }
 
-        for refresh_row in &plan[start..end] {
+        for position in start..end {
+            let refresh_row = &plan[position];
             let program = self.refresh_program_row(refresh_row)?;
             let Some(output_index) = self
                 .implicit_scalar_rhs
@@ -91,7 +92,7 @@ impl SolveRuntime {
 
     pub(super) fn try_refresh_shapeless_output_segment(
         &self,
-        plan: &[AlgebraicRefreshRow],
+        plan: RefreshRows<'_>,
         start: usize,
         t: f64,
         solver_y: &mut [f64],
@@ -123,7 +124,8 @@ impl SolveRuntime {
                 self.row_eval_context(),
                 row_outputs,
             )?;
-        for refresh_row in &plan[start..end] {
+        for position in start..end {
+            let refresh_row = &plan[position];
             let Some(value) = row_outputs.get(refresh_row.output_offset()).copied() else {
                 return Err(RuntimeSolveError::solve_ir(format!(
                     "refresh row {} requested output offset {} from {} outputs",
@@ -140,7 +142,7 @@ impl SolveRuntime {
         Ok(Some(end))
     }
 
-    pub(super) fn can_batch_assignment_refresh(&self, plan: &[AlgebraicRefreshRow]) -> bool {
+    pub(super) fn can_batch_assignment_refresh(&self, plan: RefreshRows<'_>) -> bool {
         plan.iter().all(|row| {
             row.assignment_target() == Some(row.target_index())
                 && row

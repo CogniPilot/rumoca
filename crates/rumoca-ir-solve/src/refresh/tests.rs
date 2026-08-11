@@ -37,6 +37,10 @@ fn row(target: usize) -> AlgebraicRefreshRow {
     }
 }
 
+fn selection(row_count: usize, indices: impl IntoIterator<Item = usize>) -> RefreshRowSelection {
+    RefreshRowSelection::checked(row_count, indices).unwrap()
+}
+
 fn two_output_source(second_reads_first_target: bool) -> ComputeBlock {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("refresh_group_test.mo"),
@@ -84,8 +88,8 @@ fn grouped_row(target: usize, output_offset: usize, expr_reg: u32) -> AlgebraicR
 fn two_row_dynamic_plan() -> RefreshPlan {
     let rows = vec![grouped_row(0, 0, 0), grouped_row(1, 1, 1)];
     RefreshPlan {
-        rows: rows.clone(),
-        dynamic_causal_seed_rows: rows,
+        dynamic_causal_seed_rows: selection(rows.len(), 0..rows.len()),
+        rows,
         ..RefreshPlan::default()
     }
 }
@@ -97,8 +101,8 @@ fn refresh_owner_rejects_a_stage_row_without_a_canonical_owner() {
         value_stages: vec![RefreshStage::ExactAssignments {
             static_sequence: Default::default(),
             dynamic_sequence: Default::default(),
-            static_rows: Box::new([]),
-            dynamic_rows: vec![row(1)].into_boxed_slice(),
+            static_rows: RefreshRowSelection::default(),
+            dynamic_rows: RefreshRowSelection(vec![1].into_boxed_slice()),
         }],
         ..RefreshPlan::default()
     };
@@ -186,8 +190,8 @@ fn refresh_owner_rejects_a_source_output_for_another_equation() {
 fn exact_assignment_program_is_constructed_once_and_not_serialized() {
     let refresh_row = row(0);
     let plan = RefreshPlan {
-        rows: vec![refresh_row.clone()],
-        dynamic_causal_seed_rows: vec![refresh_row],
+        rows: vec![refresh_row],
+        dynamic_causal_seed_rows: selection(1, [0]),
         ..RefreshPlan::default()
     };
     let owners = ContinuousRefreshOwners::checked_for_source(
@@ -222,6 +226,15 @@ fn exact_assignment_program_is_constructed_once_and_not_serialized() {
     let wire = serde_json::to_value(&owners).unwrap();
     assert!(wire.get("exact_assignment_programs").is_none());
     assert!(wire.get("exact_assignment_schedules").is_none());
+    assert_eq!(
+        wire["algebraic"]["dynamic_causal_seed_rows"],
+        serde_json::json!([0])
+    );
+    assert!(
+        wire["algebraic"]["dynamic_causal_seed_rows"][0]
+            .as_object()
+            .is_none()
+    );
 }
 
 #[test]
@@ -298,19 +311,17 @@ fn wire_reconstructs_the_root_remainder_relation() {
 
 #[test]
 fn wire_reconstructs_clock_remainders_after_event_coverage() {
-    let event_rows = vec![row(0)];
     let event = RefreshPlan {
-        rows: event_rows.clone(),
-        causal_seed_rows: event_rows.clone(),
-        dynamic_causal_seed_rows: event_rows,
+        rows: vec![row(0)],
+        causal_seed_rows: selection(1, [0]),
+        dynamic_causal_seed_rows: selection(1, [0]),
         causal_solution_certified: true,
         ..RefreshPlan::default()
     };
-    let clock_rows = vec![row(0), row(1)];
     let clock = RefreshPlan {
-        rows: clock_rows.clone(),
-        causal_seed_rows: clock_rows.clone(),
-        dynamic_causal_seed_rows: clock_rows,
+        rows: vec![row(0), row(1)],
+        causal_seed_rows: selection(2, [0, 1]),
+        dynamic_causal_seed_rows: selection(2, [0, 1]),
         causal_solution_certified: true,
         ..RefreshPlan::default()
     };
@@ -326,8 +337,24 @@ fn wire_reconstructs_clock_remainders_after_event_coverage() {
     let [relation] = owners.clock_events_after_event() else {
         panic!("one clock owner must issue one event-settled relation")
     };
-    assert_eq!(relation.remainder().causal_seed_rows, [row(1)]);
-    assert_eq!(relation.remainder().dynamic_causal_seed_rows, [row(1)]);
+    assert_eq!(
+        relation
+            .remainder()
+            .causal_rows()
+            .iter()
+            .map(AlgebraicRefreshRow::target_index)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert_eq!(
+        relation
+            .remainder()
+            .dynamic_causal_rows()
+            .iter()
+            .map(AlgebraicRefreshRow::target_index)
+            .collect::<Vec<_>>(),
+        [1]
+    );
     assert_ne!(
         relation.remainder().dynamic_causal_sequence,
         owners.clock_events()[0].dynamic_causal_sequence
@@ -339,7 +366,15 @@ fn wire_reconstructs_clock_remainders_after_event_coverage() {
     let [relation] = replayed.clock_events_after_event() else {
         panic!("wire replay must reissue one event-settled clock relation")
     };
-    assert_eq!(relation.remainder().dynamic_causal_seed_rows, [row(1)]);
+    assert_eq!(
+        relation
+            .remainder()
+            .dynamic_causal_rows()
+            .iter()
+            .map(AlgebraicRefreshRow::target_index)
+            .collect::<Vec<_>>(),
+        [1]
+    );
 }
 
 #[test]
@@ -377,19 +412,21 @@ fn derivative_settle_relation_keeps_only_uncovered_root_stages() {
                 y_indices: vec![1, 2],
             }],
         },
-        seed_rows: Box::new([]),
+        seed_rows: RefreshRowSelection::default(),
     };
     let root = RefreshPlan {
-        causal_seed_rows: vec![row(0), row(3)],
-        dynamic_causal_seed_rows: vec![row(0), row(3)],
-        value_stages: vec![exact_stage(0), projection.clone(), exact_stage(3)],
+        rows: vec![row(0), row(3)],
+        causal_seed_rows: selection(2, [0, 1]),
+        dynamic_causal_seed_rows: selection(2, [0, 1]),
+        value_stages: vec![exact_stage(2, 0), projection.clone(), exact_stage(2, 1)],
         causal_solution_certified: true,
         ..RefreshPlan::default()
     };
     let derivative = RefreshPlan {
-        causal_seed_rows: vec![row(0), row(9)],
-        dynamic_causal_seed_rows: vec![row(0), row(9)],
-        value_stages: vec![exact_stage(0), exact_stage(9), projection],
+        rows: vec![row(0), row(9)],
+        causal_seed_rows: selection(2, [0, 1]),
+        dynamic_causal_seed_rows: selection(2, [0, 1]),
+        value_stages: vec![exact_stage(2, 0), exact_stage(2, 1), projection],
         causal_solution_certified: true,
         ..RefreshPlan::default()
     };
@@ -398,18 +435,18 @@ fn derivative_settle_relation_keeps_only_uncovered_root_stages() {
     assert!(matches!(
         relation.remainder().value_stages.as_slice(),
         [RefreshStage::ExactAssignments { dynamic_rows, .. }]
-            if dynamic_rows.len() == 1 && dynamic_rows[0].target_index == 3
+            if dynamic_rows.indices() == [1]
     ));
     assert!(relation.remainder().causal_solution_certified);
-    assert_eq!(relation.remainder().causal_seed_rows, [row(3)]);
-    assert_eq!(relation.remainder().dynamic_causal_seed_rows, [row(3)]);
+    assert_eq!(relation.remainder().causal_seed_rows.indices(), [1]);
+    assert_eq!(relation.remainder().dynamic_causal_seed_rows.indices(), [1]);
 }
 
-fn exact_stage(index: usize) -> RefreshStage {
+fn exact_stage(row_count: usize, index: usize) -> RefreshStage {
     RefreshStage::ExactAssignments {
         static_sequence: Default::default(),
         dynamic_sequence: Default::default(),
-        static_rows: Box::new([]),
-        dynamic_rows: vec![row(index)].into_boxed_slice(),
+        static_rows: RefreshRowSelection::default(),
+        dynamic_rows: selection(row_count, [index]),
     }
 }

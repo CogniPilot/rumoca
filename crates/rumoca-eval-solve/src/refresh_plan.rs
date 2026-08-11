@@ -21,7 +21,10 @@ use crate::prepared::{assignment_shape_reads_y_index, row_y_input_ranges};
 use crate::sparsity::program_output_y_dependencies;
 use crate::{EvalSolveError, PreparedScalarProgramBlock};
 
-pub use rumoca_ir_solve::{AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshStage};
+pub use rumoca_ir_solve::{
+    AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
+    RefreshStage,
+};
 pub use schedule::build_refresh_stages;
 use source_catalog::CanonicalScalarProgramCatalog;
 
@@ -50,7 +53,7 @@ pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshP
         .collect::<Vec<_>>()
         .join(", ");
     let dynamic_preview = plan
-        .dynamic_causal_seed_rows
+        .dynamic_causal_rows()
         .iter()
         .map(|row| {
             let target = model
@@ -133,6 +136,17 @@ fn construct_refresh_row(
     span: Option<rumoca_core::Span>,
 ) -> Result<AlgebraicRefreshRow, EvalSolveError> {
     AlgebraicRefreshRow::checked(draft).map_err(|error| EvalSolveError::InvalidRow {
+        message: error.to_string(),
+        span,
+    })
+}
+
+fn construct_refresh_selection(
+    row_count: usize,
+    indices: impl IntoIterator<Item = usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<RefreshRowSelection, EvalSolveError> {
+    RefreshRowSelection::checked(row_count, indices).map_err(|error| EvalSolveError::InvalidRow {
         message: error.to_string(),
         span,
     })
@@ -1160,30 +1174,33 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
     state_count: usize,
 ) -> Result<(), EvalSolveError> {
     let span = block.first_span();
-    let mut rows = Vec::new();
-    reserve_refresh_vec_capacity(&mut rows, plan.rows.len(), "causal seed rows", span)?;
-    rows.extend(plan.rows.iter().cloned());
-    plan.causal_seed_rows = rows;
+    plan.causal_seed_rows = construct_refresh_selection(plan.rows.len(), 0..plan.rows.len(), span)?;
     let static_targets = parameter_static_refresh_targets(plan, block, state_count);
-    plan.static_causal_seed_rows = plan
-        .causal_seed_rows
-        .iter()
-        .filter(|row| static_targets.contains(&row.target_index()))
-        .cloned()
-        .collect();
-    plan.dynamic_causal_seed_rows = plan
-        .causal_seed_rows
-        .iter()
-        .filter(|row| !static_targets.contains(&row.target_index()))
-        .cloned()
-        .collect();
+    plan.static_causal_seed_rows = construct_refresh_selection(
+        plan.rows.len(),
+        plan.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| static_targets.contains(&row.target_index()))
+            .map(|(index, _)| index),
+        span,
+    )?;
+    plan.dynamic_causal_seed_rows = construct_refresh_selection(
+        plan.rows.len(),
+        plan.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !static_targets.contains(&row.target_index()))
+            .map(|(index, _)| index),
+        span,
+    )?;
     plan.value_projection_plan = if plan.causal_solution_certified {
         solve::AlgebraicProjectionPlan {
             blocks: plan
                 .simultaneous_plan
                 .blocks
                 .iter()
-                .filter(|block| !block_is_exactly_seeded(block, &plan.causal_seed_rows))
+                .filter(|block| !block_is_exactly_seeded(block, plan.causal_rows()))
                 .cloned()
                 .collect(),
         }
@@ -1198,9 +1215,13 @@ fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
     plan.value_stages = build_refresh_stages(
         &plan.simultaneous_plan,
         &plan.simultaneous_block_indices,
-        &plan.causal_seed_rows,
+        &plan.rows,
         &plan.static_causal_seed_rows,
-    );
+    )
+    .map_err(|error| EvalSolveError::InvalidRow {
+        message: error.to_string(),
+        span,
+    })?;
     Ok(())
 }
 
@@ -1212,7 +1233,7 @@ fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
     let mut static_targets = BTreeSet::new();
     loop {
         let mut changed = false;
-        for refresh_row in &plan.causal_seed_rows {
+        for refresh_row in plan.causal_rows().iter() {
             if static_targets.contains(&refresh_row.target_index()) {
                 continue;
             }
@@ -1371,7 +1392,7 @@ fn parameter_static_y_index(
 
 fn block_is_exactly_seeded(
     block: &solve::AlgebraicProjectionBlock,
-    seed_rows: &[AlgebraicRefreshRow],
+    seed_rows: RefreshRows<'_>,
 ) -> bool {
     block.rows.len() == 1
         && block.y_indices.len() == 1
@@ -1589,9 +1610,14 @@ fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
         simultaneous_plan: solve::AlgebraicProjectionPlan::default(),
         simultaneous_block_indices: Vec::new(),
         value_projection_plan: solve::AlgebraicProjectionPlan::default(),
-        causal_seed_rows: ordered.clone(),
-        static_causal_seed_rows: Vec::new(),
-        dynamic_causal_seed_rows: Vec::new(),
+        causal_seed_rows: RefreshRowSelection::all(ordered.len()).map_err(|error| {
+            EvalSolveError::InvalidRow {
+                message: error.to_string(),
+                span,
+            }
+        })?,
+        static_causal_seed_rows: RefreshRowSelection::default(),
+        dynamic_causal_seed_rows: RefreshRowSelection::default(),
         value_stages: Vec::new(),
         rows: ordered,
         causal_solution_certified,

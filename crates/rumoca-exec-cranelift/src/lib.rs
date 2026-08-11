@@ -817,8 +817,9 @@ mod tests {
         let first = row(1, 0, 0, 1, 1, 2);
         let second = row(0, 1, 1, 0, 3, 4);
         let plan = rumoca_ir_solve::RefreshPlan {
-            rows: vec![first.clone(), second.clone()],
-            dynamic_causal_seed_rows: vec![first, second],
+            rows: vec![first, second],
+            dynamic_causal_seed_rows: rumoca_ir_solve::RefreshRowSelection::checked(2, [0, 1])
+                .unwrap(),
             ..Default::default()
         };
         let source = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(source);

@@ -400,7 +400,7 @@ impl solve::visitor::SolveVisitor for ParameterReadScan {
 fn algebraic_refresh_equations(plan: &RefreshPlan) -> BTreeSet<usize> {
     plan.rows
         .iter()
-        .chain(plan.causal_seed_rows.iter())
+        .chain(plan.causal_rows().iter())
         .map(|row| row.equation_index())
         .chain(
             plan.simultaneous_plan
