@@ -48,11 +48,12 @@ pub struct ManifestVariables {
 
 /// Build the manifest `Variables` list from a classification, collecting all
 /// failures. Projection-internal variables are excluded (see
-/// [`crate::classify`] module docs).
+/// [`crate::classify`] module docs). The caller owns the [`ConstEnv`] so
+/// GAL-028 initialization overrides can be recorded before building.
 pub fn build_manifest_variables(
     classification: &Classification<'_>,
+    env: &ConstEnv<'_>,
 ) -> Result<ManifestVariables, Vec<GalecTargetError>> {
-    let env = ConstEnv::from_classification(classification);
     let mut result = ManifestVariables::default();
     let mut errors = Vec::new();
     for classified in classification
@@ -61,7 +62,7 @@ pub fn build_manifest_variables(
         .filter(|classified| !classified.projection_internal)
     {
         let id = format!("V{}", result.variables.len() + 1);
-        match build_one(classified, &id, &env) {
+        match build_one(classified, &id, env) {
             Ok(variable) => {
                 result
                     .ids_by_dae_name
@@ -252,10 +253,16 @@ fn evaluate_start<T>(
             })
             .ok()
     };
-    let Some(expr) = &variable.start else {
-        return coerce_reported(&mls_default, errors).map(StartValue::Scalar);
+    // GAL-028: a computed initialization overrides the declared `start`
+    // attribute — the manifest mirrors what `Startup` actually computes.
+    let evaluated = if let Some(shape) = env.start_override(variable.name.as_str()) {
+        Ok(shape.clone())
+    } else if let Some(expr) = &variable.start {
+        env.evaluate_start_shape(expr)
+    } else {
+        Ok(const_eval::StartShape::Scalar(mls_default))
     };
-    match env.evaluate_start_shape(expr) {
+    match evaluated {
         Ok(const_eval::StartShape::Scalar(value)) => {
             coerce_reported(&value, errors).map(StartValue::Scalar)
         }

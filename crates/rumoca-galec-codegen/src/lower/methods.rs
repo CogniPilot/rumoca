@@ -291,7 +291,7 @@ fn visit<'c, 'a>(
 }
 
 /// All variable names read by an expression (for dependency ordering only).
-fn referenced_names(expr: &rumoca_core::Expression) -> Vec<String> {
+pub(crate) fn referenced_names(expr: &rumoca_core::Expression) -> Vec<String> {
     struct Collector(Vec<String>);
     impl rumoca_core::ExpressionVisitor for Collector {
         fn visit_var_ref(

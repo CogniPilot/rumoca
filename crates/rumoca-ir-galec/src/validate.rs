@@ -42,6 +42,7 @@ mod types;
 
 pub use locate::span_of;
 pub use navigate::{SymbolInfo, symbol_at};
+pub use signals::{MethodEscapes, computed_method_escapes};
 
 /// Run all six analyses over `block`, collecting every finding.
 ///

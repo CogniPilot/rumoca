@@ -48,4 +48,6 @@ pub use builtins::{BUILTINS, Builtin, is_reserved_name};
 pub use diagnostic::{GalecError, Location, PathSegment};
 pub use lexical::{is_legal_plain_identifier, plain_identifier_shape_error};
 pub use print::{format_real_literal, is_conformant_real_literal, print_block, print_expression};
-pub use validate::{SymbolInfo, span_of, symbol_at, validate};
+pub use validate::{
+    MethodEscapes, SymbolInfo, computed_method_escapes, span_of, symbol_at, validate,
+};

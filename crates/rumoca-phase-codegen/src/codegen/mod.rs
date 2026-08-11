@@ -860,6 +860,25 @@ fn render_ast_context(
 }
 
 /// Render any supported IR using a template string.
+/// Render a template string against an arbitrary serialized JSON context
+/// under the standard codegen environment (strict-undefined, all custom
+/// filters/functions registered). The context object's top-level keys become
+/// template variables.
+///
+/// This is the render path for targets whose context is a projection-owned
+/// serialized tree rather than a canonical IR — e.g. the GALEC block
+/// context of `embedded-rust-galec` (SPEC_0034 D16): the template walks the
+/// tree with recursive macros exactly like the IR-keyed targets walk theirs.
+pub fn render_template_with_json_context(
+    context: &serde_json::Value,
+    template: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    Ok(tmpl.render(Value::from_serialize(context))?)
+}
+
 pub fn render_template_for_input(
     input: CodegenInput<'_>,
     template: &str,

@@ -351,6 +351,72 @@ fn build_container(work_dir: &Path, out_dir: &Path) -> BuiltContainer {
     }
 }
 
+/// D16/D17 lockstep pin: keyword escaping lives in the C walking template's
+/// keyword list, while `c_mangle` computes the same names for the Production
+/// Code manifest's LogicalData mapping. A fixture whose variables collide
+/// with C keywords must yield identical spellings on both sides — every
+/// `componentIdentifier` in the PC manifest must appear as a struct field in
+/// the generated header, and the C must still compile under
+/// `-Wall -Werror`.
+#[test]
+fn keyword_named_variables_stay_in_lockstep_between_template_and_manifest() {
+    const KEYWORD_FIXTURE: &str = "\
+model GalecKeywordSmoke
+  constant Real samplePeriod = 0.1;
+  parameter Real double = 2.0;
+  parameter Real union = 0.5;
+  discrete output Real register(start = 0.0);
+equation
+  when sample(0.0, samplePeriod) then
+    register = double * (pre(register) + union);
+  end when;
+end GalecKeywordSmoke;
+";
+    let dir = tempdir().expect("tempdir");
+    let file = write_fixture(dir.path(), "GalecKeywordSmoke", KEYWORD_FIXTURE);
+    let out_dir = dir.path().join("out");
+    let output = run_compile_galec_production(&file, &out_dir);
+    assert!(
+        output.status.success(),
+        "keyword fixture failed.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let root = out_dir.join("GalecKeywordSmoke").join("ProductionCode");
+    let header = fs::read_to_string(root.join("GalecKeywordSmoke.h")).expect("read header");
+    let identifiers = attribute_values(&root.join("manifest.xml"), "componentIdentifier");
+    assert!(!identifiers.is_empty(), "no componentIdentifier attributes");
+    for identifier in &identifiers {
+        assert!(
+            header.contains(&format!(" {identifier}")),
+            "manifest componentIdentifier `{identifier}` must be a header struct \
+             field (template/c_mangle keyword lockstep):\n{header}"
+        );
+    }
+    for escaped in ["double_", "union_", "register_"] {
+        assert!(
+            identifiers.iter().any(|identifier| identifier == escaped),
+            "expected keyword-escaped identifier `{escaped}` among {identifiers:?}"
+        );
+    }
+    let compile = cc()
+        .arg("-Wall")
+        .arg("-Werror")
+        .arg("-c")
+        .arg(root.join("GalecKeywordSmoke.c"))
+        .arg("-I")
+        .arg(&root)
+        .arg("-o")
+        .arg(out_dir.join("keyword_smoke.o"))
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "cc -Wall -Werror failed on keyword-escaped C.\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+}
+
 #[test]
 fn algebraic_component_output_read_by_sampled_parent_compiles() {
     let dir = tempdir().expect("tempdir");

@@ -1,9 +1,32 @@
+{#- ==================================================================
+    embedded-c-galec header: C rendering of the language-neutral GALEC
+    block context (SPEC_0034 GAL-024/D16/D17). This template OWNS the C
+    language: keyword escaping, type spellings, layout. The context owns
+    the semantics (rumoca-galec-codegen::template_ir). The keyword list
+    below stays in lockstep with c_mangle.rs, which computes the same
+    names for the Production Code manifest's LogicalData mapping (pinned
+    by test).
+    =================================================================== -#}
+{%- set c_keywords = [
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while",
+    "bool", "true", "false", "memcpy", "self",
+    "rumoca_status", "rumoca_solve_a", "rumoca_solve_b"
+] -%}
+{%- macro ident(name) -%}
+{%- if name is none -%}{{ fail("GALEC name cannot form a C identifier") }}
+{%- elif name in c_keywords -%}{{ name }}_{%- else -%}{{ name }}{%- endif -%}
+{%- endmacro -%}
+{%- set c_types = {"Real": "double", "Integer": "int32_t", "Boolean": "bool"} -%}
 /* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
 {%- for line in conformance_header.lines %}
  * {{ line }}
 {%- endfor %} */
-#ifndef {{ include_guard }}
-#define {{ include_guard }}
+#ifndef {{ ident(base_name) | upper }}_GALEC_C_H
+#define {{ ident(base_name) | upper }}_GALEC_C_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,9 +36,9 @@
  * the end of dostep (eFMI trap T2). */
 typedef struct {
 {%- for variable in variables %}
-    {{ variable.c_type }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
+    {{ c_types[variable.scalar] }} {{ ident(variable.base_name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
 {%- endfor %}
-} {{ struct_name }};
+} {{ ident(base_name) }}State;
 
 /* The three GALEC block-interface methods (eFMI §3.1.3): parameter-free,
  * all I/O through the block state.
@@ -23,9 +46,18 @@ typedef struct {
  * - recalibrate: recomputes dependent parameters after tunable-parameter
  *   changes (parameters stay tunable at runtime);
  * - dostep: one fixed-sample control-cycle tick. */
-void {{ function_prefix }}_startup({{ struct_name }} *self);
-void {{ function_prefix }}_recalibrate({{ struct_name }} *self);
-void {{ function_prefix }}_dostep({{ struct_name }} *self);
+{%- if status_abi %}
+/* Status ABI (SPEC_0034 GAL-029): each method returns the 32-bit eFMI
+ * ErrorSignalStatus word (bits 0-5 = the predefined signals in encoding
+ * order, e.g. bit 3 = SOLVE_LINEAR_EQUATIONS_FAILED); 0 = no signal. */
+uint32_t {{ ident(base_name) }}_startup({{ ident(base_name) }}State *self);
+uint32_t {{ ident(base_name) }}_recalibrate({{ ident(base_name) }}State *self);
+uint32_t {{ ident(base_name) }}_dostep({{ ident(base_name) }}State *self);
+{%- else %}
+void {{ ident(base_name) }}_startup({{ ident(base_name) }}State *self);
+void {{ ident(base_name) }}_recalibrate({{ ident(base_name) }}State *self);
+void {{ ident(base_name) }}_dostep({{ ident(base_name) }}State *self);
+{%- endif %}
 
 /* Project-neutral convenience wrappers for applications that want a stable
  * eFMI-shaped call surface independent of the generated model prefix. */
@@ -42,4 +74,4 @@ void {{ function_prefix }}_dostep({{ struct_name }} *self);
 #  define EFMI_STEP(model, state) model##_dostep(state)
 #endif
 
-#endif /* {{ include_guard }} */
+#endif /* {{ ident(base_name) | upper }}_GALEC_C_H */

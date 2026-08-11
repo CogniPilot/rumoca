@@ -1,0 +1,97 @@
+{#- ==================================================================
+    GALEC `.alg` walking template (SPEC_0034 D17): renders the
+    language-neutral GALEC template IR (template_ir.rs) as conformant
+    GALEC Algorithm Code, byte-identical to the rumoca-ir-galec typed
+    printer (pinned by the parity test) — GAL-019 minimal
+    parenthesization included: cross-precedence-class mixes always
+    parenthesize (trap T6), same-class chains print bare only on the
+    associative side, unary operations and negative literals
+    parenthesize as operands.
+    =================================================================== -#}
+{%- set classes = {
+    "pow": "power",
+    "mul": "multiplicative", "div": "multiplicative",
+    "add": "additive", "sub": "additive",
+    "lt": "relational", "gt": "relational", "le": "relational", "ge": "relational",
+    "eq": "equality", "ne": "equality",
+    "and": "logical_and", "or": "logical_or"
+} -%}
+{%- set tokens = {
+    "pow": "^", "mul": "*", "div": "/", "add": "+", "sub": "-",
+    "lt": "<", "gt": ">", "le": "<=", "ge": ">=", "eq": "==", "ne": "<>",
+    "and": "and", "or": "or"
+} -%}
+{#- `^` is right-associative; every other class is left-associative. -#}
+{%- macro assoc_side(class) -%}
+{%- if class == "power" -%}right{%- else -%}left{%- endif -%}
+{%- endmacro -%}
+{%- macro ref(r) -%}
+self.{{ r.galec_name }}{% if r.indices %}[{% for i in r.indices %}{{ i }}{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}
+{%- endmacro -%}
+{%- macro operand(child, parent_class, side) -%}
+{%- if child.kind == "binary" -%}
+{%- if classes[child.op] != parent_class or side != assoc_side(parent_class) -%}
+({{ expr(child) }})
+{%- else -%}
+{{ expr(child) }}
+{%- endif -%}
+{%- elif child.kind == "neg" or child.kind == "not" -%}
+({{ expr(child) }})
+{%- elif child.kind == "int" and child.value < 0 -%}
+({{ expr(child) }})
+{%- elif child.kind == "real" and child.negative -%}
+({{ expr(child) }})
+{%- else -%}
+{{ expr(child) }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro expr(e) -%}
+{%- if e.kind == "bool" -%}{{ e.value }}
+{%- elif e.kind == "int" -%}{{ e.value }}
+{%- elif e.kind == "real" -%}{{ e.text }}
+{%- elif e.kind == "ref" -%}{{ ref(e) }}
+{%- elif e.kind == "neg" -%}-{{ ref(e.value) }}
+{%- elif e.kind == "not" -%}
+{%- if e.value.kind == "if" or e.value.kind == "paren" -%}
+not {{ expr(e.value) }}
+{%- else -%}
+not ({{ expr(e.value) }})
+{%- endif -%}
+{%- elif e.kind == "paren" -%}({{ expr(e.value) }})
+{%- elif e.kind == "binary" -%}
+{{ operand(e.lhs, classes[e.op], "left") }} {{ tokens[e.op] }} {{ operand(e.rhs, classes[e.op], "right") }}
+{%- elif e.kind == "if" -%}
+({% for branch in e.branches %}{% if loop.first %}if{% else %} elseif{% endif %} {{ expr(branch.condition) }} then {{ expr(branch.value) }}{% endfor %} else {{ expr(e["else"]) }})
+{%- elif e.kind == "array" -%}
+{{ "{" }}{% for element in e.elements %}{{ expr(element) }}{% if not loop.last %}, {% endif %}{% endfor %}{{ "}" }}
+{%- elif e.kind == "call" -%}
+{{ e.builtin }}({% for a in e.args %}{{ expr(a) }}{% if not loop.last %}, {% endif %}{% endfor %})
+{%- else -%}
+{{ fail("alg template met unknown expression kind `" ~ e.kind ~ "`") }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro declaration(v) -%}
+{{ v.prefix }}{{ v.scalar }} {{ v.galec_name }}{% if v.dimensions %}[{% for d in v.dimensions %}{{ d }}{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %};
+{%- endmacro -%}
+{%- macro stmt(s) -%}
+{%- if s.kind == "assign" or s.kind == "assign_whole" -%}
+{{ ref(s.target) }} := {{ expr(s.value) }};
+{%- elif s.kind == "solve" -%}
+{{ ref(s.target) }} := solveLinearEquations({{ expr(s.a) }}, {{ expr(s.b) }});
+{%- else -%}
+{{ fail("alg template met unknown statement kind `" ~ s.kind ~ "`") }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro method(kind, m) -%}
+{{ "    " }}method {{ kind }}
+{% if m.signals %}        signals {{ m.signals | join(", ") }};
+{% endif %}    algorithm
+{% for s in m.statements %}        {{ stmt(s) }}
+{% endfor %}    end {{ kind }};
+{% endmacro -%}
+block {{ galec_name }}
+{% for v in variables %}{% if v.section == "interface" %}    {{ declaration(v) }}
+{% endif %}{% endfor %}protected
+{% for v in variables %}{% if v.section == "protected" %}    {{ declaration(v) }}
+{% endif %}{% endfor %}public
+{{ method("Startup", methods.startup) }}{{ method("Recalibrate", methods.recalibrate) }}{{ method("DoStep", methods.do_step) }}end {{ galec_name }};

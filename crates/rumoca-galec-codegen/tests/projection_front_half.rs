@@ -254,42 +254,15 @@ mod admissibility {
         assert!(codes.contains(&"ET005"), "{codes:?}");
     }
 
-    /// Startup is built from `start` values only; a model with initial
-    /// equations must be rejected up front (ET021, GAL-025 wording), never
-    /// projected with its initialization partition silently ignored.
+    /// GAL-028: the initialization partition lowers into `Startup`, so
+    /// admissibility admits it (ET021 retired); un-lowerable forms fail
+    /// during lowering with stable `unsupported-feature:` diagnostics
+    /// (covered by the spec_0034 battery), never silently ignored.
     #[test]
-    fn initial_equations_rejected_never_silently_ignored() {
+    fn initial_equations_are_admissible_for_startup_lowering() {
         let mut model = base_dae();
         model.initialization.equations.push(equation("n"));
-        let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET021"]);
-        assert!(
-            errors[0]
-                .to_string()
-                .contains("not yet supported by the Rumoca GALEC projection"),
-            "{errors:#?}"
-        );
-
-        // Structured families alone (a broken scalar-view invariant) still
-        // reject rather than slip through.
-        let mut structured_only = base_dae();
-        structured_only
-            .initialization
-            .structured_equations
-            .push(dae::StructuredEquationFamily {
-                domain: rumoca_core::StructuredIndexDomain {
-                    binders: Vec::new(),
-                },
-                first_equation_index: 0,
-                equations_per_point: 1,
-                span: Span::DUMMY,
-                origin: "test".to_owned(),
-                regular: None,
-                template: None,
-                interiors_materialized: true,
-            });
-        let errors = check_admissibility(&GalecInput::new(&structured_only, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET021"]);
+        check_admissibility(&GalecInput::new(&model, "M")).expect("admissible under GAL-028");
     }
 }
 
@@ -742,7 +715,11 @@ mod manifest_variables {
         let (model, types) = classified_model(|_| {});
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let manifest = build_manifest_variables(&classification).expect("builds");
+        let manifest = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .expect("builds");
 
         assert_eq!(manifest.variables.len(), 2);
         let MVar::Real(min) = &manifest.variables[1] else {
@@ -787,7 +764,11 @@ mod manifest_variables {
 
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let errors = build_manifest_variables(&classification).unwrap_err();
+        let errors = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .unwrap_err();
         assert!(codes(&errors).contains(&"ET015"), "{errors:?}");
     }
 
@@ -806,7 +787,11 @@ mod manifest_variables {
 
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let errors = build_manifest_variables(&classification).unwrap_err();
+        let errors = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .unwrap_err();
         assert_eq!(codes(&errors), vec!["ET014"]);
     }
 
@@ -829,7 +814,11 @@ mod manifest_variables {
 
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let manifest = build_manifest_variables(&classification).expect("builds");
+        let manifest = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .expect("builds");
 
         let find = |name: &str| {
             manifest
@@ -884,7 +873,11 @@ mod manifest_variables {
 
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let manifest = build_manifest_variables(&classification).expect("builds");
+        let manifest = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .expect("builds");
         let find = |name: &str| {
             manifest
                 .variables
@@ -917,7 +910,11 @@ mod manifest_variables {
 
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let manifest = build_manifest_variables(&classification).expect("builds");
+        let manifest = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .expect("builds");
         let MVar::Real(v_motor) = manifest
             .variables
             .iter()
@@ -948,7 +945,11 @@ mod manifest_variables {
 
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let errors = build_manifest_variables(&classification).unwrap_err();
+        let errors = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .unwrap_err();
         assert_eq!(codes(&errors), vec!["ET013"]);
     }
 
@@ -966,7 +967,11 @@ mod manifest_variables {
 
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
-        let manifest = build_manifest_variables(&classification).expect("builds");
+        let manifest = build_manifest_variables(
+            &classification,
+            &ConstEnv::from_classification(&classification),
+        )
+        .expect("builds");
         assert!(
             manifest
                 .variables

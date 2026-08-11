@@ -1,0 +1,290 @@
+{#- ==================================================================
+    embedded-rust-galec: Rust rendering of the language-neutral GALEC
+    block context (SPEC_0034 GAL-030/D16). This template OWNS the Rust
+    language: identifier keyword-escaping, operator/builtin spellings,
+    literals, statement forms. The context owns the semantics: validated
+    block, collision-checked base names, 0-based indices, T7-strict Real
+    literal text, kind-tagged expression trees, and pre-projected
+    whole-array element lists (see rumoca-galec-codegen::template_ir).
+    =================================================================== -#}
+{#- Rust keywords + names this file itself declares. Base names never end
+    in `_`, so appending one cannot re-collide (template_ir module docs). -#}
+{%- set rust_keywords = [
+    "as", "break", "const", "continue", "crate", "dyn", "else", "enum",
+    "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
+    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
+    "static", "struct", "trait", "true", "type", "unsafe", "use", "where",
+    "while", "async", "await", "abstract", "become", "box", "do", "final",
+    "macro", "override", "priv", "typeof", "unsized", "virtual", "yield",
+    "try", "gen", "union",
+    "Signals", "status", "galec_abs", "galec_sign", "galec_min",
+    "galec_max", "galec_imin", "galec_imax", "galec_solve_linear_equations",
+    "galec_solve_a", "galec_solve_b"
+] -%}
+{%- macro ident(name) -%}
+{%- if name in rust_keywords -%}{{ name }}_{%- else -%}{{ name }}{%- endif -%}
+{%- endmacro -%}
+{%- set scalar_types = {"Real": "f64", "Integer": "i32", "Boolean": "bool"} -%}
+{%- set scalar_zeros = {"Real": "0.0", "Integer": "0", "Boolean": "false"} -%}
+{%- macro rust_type(scalar, dims, i) -%}
+{%- if i >= dims | length -%}{{ scalar_types[scalar] }}
+{%- else -%}[{{ rust_type(scalar, dims, i + 1) }}; {{ dims[i] }}]{%- endif -%}
+{%- endmacro -%}
+{%- macro rust_zero(scalar, dims, i) -%}
+{%- if i >= dims | length -%}{{ scalar_zeros[scalar] }}
+{%- else -%}[{{ rust_zero(scalar, dims, i + 1) }}; {{ dims[i] }}]{%- endif -%}
+{%- endmacro -%}
+{#- Operator spellings; `pow` is special-cased to f64::powf (both operands
+    are Real by lowering, GALEC trap T5). -#}
+{%- set ops = {
+    "add": "+", "sub": "-", "mul": "*", "div": "/",
+    "lt": "<", "le": "<=", "gt": ">", "ge": ">=", "eq": "==", "ne": "!=",
+    "and": "&&", "or": "||"
+} -%}
+{#- GALEC §3.2.6 catalog -> Rust. min/max are the GALEC relational forms,
+    NOT f64::min/max (qNaN handling, traps T9/T14); transcendentals need
+    libm (`core` has no float math) — a model avoiding them has no deps. -#}
+{%- set builtins = {
+    "absolute": "galec_abs", "sign": "galec_sign",
+    "min": "galec_min", "max": "galec_max",
+    "imin": "galec_imin", "imax": "galec_imax",
+    "sqrt": "libm::sqrt", "exp": "libm::exp", "ln": "libm::log",
+    "lg": "libm::log10", "roundDown": "libm::floor", "roundUp": "libm::ceil",
+    "sin": "libm::sin", "cos": "libm::cos", "tan": "libm::tan",
+    "asin": "libm::asin", "acos": "libm::acos", "atan": "libm::atan",
+    "atan2": "libm::atan2", "sinh": "libm::sinh", "cosh": "libm::cosh",
+    "tanh": "libm::tanh"
+} -%}
+{#- Template IR indices are the GALEC truth (1-based); Rust is 0-based. -#}
+{%- macro ref(r) -%}
+self.{{ ident(r.base_name) }}{% for i in r.indices %}[{{ i - 1 }}]{% endfor %}
+{%- endmacro -%}
+{%- macro expr(e) -%}
+{%- if e.kind == "bool" -%}{{ e.value }}
+{%- elif e.kind == "int" -%}{% if e.value < 0 %}({{ e.value }}){% else %}{{ e.value }}{% endif %}
+{%- elif e.kind == "real" -%}{% if e.negative %}({{ e.text }}){% else %}{{ e.text }}{% endif %}
+{%- elif e.kind == "ref" -%}{{ ref(e) }}
+{%- elif e.kind == "neg" -%}(-{{ expr(e.value) }})
+{%- elif e.kind == "not" -%}(!({{ expr(e.value) }}))
+{%- elif e.kind == "paren" -%}({{ expr(e.value) }})
+{%- elif e.kind == "binary" -%}
+{%- if e.op == "pow" -%}f64::powf({{ expr(e.lhs) }}, {{ expr(e.rhs) }})
+{%- else -%}({{ expr(e.lhs) }} {{ ops[e.op] }} {{ expr(e.rhs) }}){%- endif -%}
+{%- elif e.kind == "if" -%}
+({% for branch in e.branches %}if {{ expr(branch.condition) }} { {{ expr(branch.value) }} } else {% endfor %}{ {{ expr(e["else"]) }} })
+{%- elif e.kind == "array" -%}
+[{% for element in e.elements %}{{ expr(element) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- elif e.kind == "call" -%}
+{%- if e.builtin == "real" -%}(({{ expr(e.args[0]) }}) as f64)
+{%- elif e.builtin == "divisionTowardsZero" -%}({{ expr(e.args[0]) }} / {{ expr(e.args[1]) }})
+{%- elif e.builtin in builtins -%}{{ builtins[e.builtin] }}({% for a in e.args %}{{ expr(a) }}{% if not loop.last %}, {% endif %}{% endfor %})
+{%- else -%}{{ fail("embedded-rust-galec has no mapping for GALEC builtin `" ~ e.builtin ~ "`") }}
+{%- endif -%}
+{%- else -%}{{ fail("embedded-rust-galec met unknown expression kind `" ~ e.kind ~ "`") }}
+{%- endif -%}
+{%- endmacro -%}
+{#- Scratch materialization for the solve statement: array/ref values are
+    Rust array values and copy wholesale; everything else zero-inits and
+    assigns the pre-projected elements. -#}
+{%- macro materialize(name, ty, zero, value, copy, elements) -%}
+{%- if value.kind == "array" or copy %}
+            let mut {{ name }}: {{ ty }} = {{ expr(value) }};
+{%- else %}
+            let mut {{ name }}: {{ ty }} = {{ zero }};
+{%- for element in elements %}
+            {{ name }}{% for i in element.indices %}[{{ i - 1 }}]{% endfor %} = {{ expr(element.value) }};
+{%- endfor %}
+{%- endif %}
+{%- endmacro -%}
+{%- macro stmt(s) -%}
+{%- if s.kind == "assign" %}
+        {{ ref(s.target) }} = {{ expr(s.value) }};
+{%- elif s.kind == "assign_whole" %}
+{%- if s.value.kind == "array" or s.copy %}
+        {{ ref(s.target) }} = {{ expr(s.value) }};
+{%- else %}
+{%- for element in s.elements %}
+        {{ ref(s.target) }}{% for i in element.indices %}[{{ i - 1 }}]{% endfor %} = {{ expr(element.value) }};
+{%- endfor %}
+{%- endif %}
+{%- elif s.kind == "solve" %}
+        {
+    {{- materialize("galec_solve_a", "[[f64; " ~ s.n ~ "]; " ~ s.n ~ "]", "[[0.0f64; " ~ s.n ~ "]; " ~ s.n ~ "]", s.a, s.a_copy, s.a_elements) }}
+    {{- materialize("galec_solve_b", "[f64; " ~ s.n ~ "]", "[0.0f64; " ~ s.n ~ "]", s.b, s.b_copy, s.b_elements) }}
+            status |= galec_solve_linear_equations(&mut galec_solve_a, &mut galec_solve_b, &mut {{ ref(s.target) }});
+        }
+{%- else -%}
+{{ fail("embedded-rust-galec met unknown statement kind `" ~ s.kind ~ "`") }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro method_body(m) -%}
+{%- for s in m.statements %}{{ stmt(s) }}{% endfor %}
+{%- endmacro -%}
+//! {{ block_name }} — GALEC-derived embedded Rust export (SPEC_0034 GAL-030).
+{%- for line in conformance_header.lines %}
+//! {{ line }}
+{%- endfor %}
+//!
+//! Generated by walking the language-neutral GALEC block context
+//! (SPEC_0034 D16); this template owns every Rust spelling. Transcendental
+//! builtins reference `libm`; a model that avoids them has no dependencies.
+#![no_std]
+#![allow(non_snake_case)]
+#![allow(unused_parens)]
+// `status` stays unmutated in methods whose escape set needs no
+// accumulation.
+#![allow(unused_mut)]
+#![allow(clippy::all)]
+{% if status_abi %}
+/// The 32-bit eFMI ErrorSignalStatus word (SPEC_0034 GAL-029): bits 0-5 are
+/// the predefined signals in encoding order (bit 3 =
+/// `SOLVE_LINEAR_EQUATIONS_FAILED`); non-zero means at least one signal
+/// escaped the method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Signals(pub u32);
+{% endif %}
+/// Block state: every manifest-listed variable of the projected GALEC
+/// block, including the 'previous(x)' discrete-state slots committed at
+/// the end of do_step (eFMI trap T2).
+#[derive(Clone, Copy, Debug)]
+pub struct {{ ident(base_name) }}State {
+{%- for variable in variables %}
+{%- if variable.base_name is none %}{{ fail("GALEC name `" ~ variable.name ~ "` cannot form a Rust identifier") }}{% endif %}
+    /// {{ variable.name }} ({{ variable.causality }}, manifest {{ variable.id }})
+    pub {{ ident(variable.base_name) }}: {{ rust_type(variable.scalar, variable.dimensions, 0) }},
+{%- endfor %}
+}
+
+impl Default for {{ ident(base_name) }}State {
+    fn default() -> Self {
+        Self {
+{%- for variable in variables %}
+            {{ ident(variable.base_name) }}: {{ rust_zero(variable.scalar, variable.dimensions, 0) }},
+{%- endfor %}
+        }
+    }
+}
+
+// GALEC §3.2.6 builtins without a `core` counterpart. min/max use the GALEC
+// relational definition (`u1 < u2` selects), NOT `f64::min`/`f64::max`
+// (which drop a qNaN operand instead of taking the `else` branch a false
+// comparison implies, eFMI traps T9/T14). `galec_abs` clears the sign bit
+// (`fabs` semantics) without needing `std`.
+#[allow(dead_code)]
+#[inline]
+fn galec_abs(x: f64) -> f64 {
+    f64::from_bits(x.to_bits() & !(1u64 << 63))
+}
+#[allow(dead_code)]
+#[inline]
+fn galec_sign(x: f64) -> f64 {
+    ((x > 0.0) as i32 - (x < 0.0) as i32) as f64
+}
+#[allow(dead_code)]
+#[inline]
+fn galec_min(u1: f64, u2: f64) -> f64 {
+    if u1 < u2 { u1 } else { u2 }
+}
+#[allow(dead_code)]
+#[inline]
+fn galec_max(u1: f64, u2: f64) -> f64 {
+    if u1 > u2 { u1 } else { u2 }
+}
+#[allow(dead_code)]
+#[inline]
+fn galec_imin(u1: i32, u2: i32) -> i32 {
+    if u1 < u2 { u1 } else { u2 }
+}
+#[allow(dead_code)]
+#[inline]
+fn galec_imax(u1: i32, u2: i32) -> i32 {
+    if u1 > u2 { u1 } else { u2 }
+}
+{%- if status_abi %}
+
+/// GALEC `solveLinearEquations` (§3.2.6): solve `a * x = b` by Gaussian
+/// elimination with partial pivoting. `a` and `b` are caller-owned scratch
+/// and are destroyed; returns 0 or the `SOLVE_LINEAR_EQUATIONS_FAILED`
+/// status bit (bit 3) on a singular matrix (SPEC_0034 GAL-029).
+#[allow(dead_code)]
+fn galec_solve_linear_equations<const N: usize>(
+    a: &mut [[f64; N]; N],
+    b: &mut [f64; N],
+    x: &mut [f64; N],
+) -> u32 {
+    for col in 0..N {
+        let mut pivot = col;
+        let mut best = galec_abs(a[col][col]);
+        for row in (col + 1)..N {
+            let magnitude = galec_abs(a[row][col]);
+            if magnitude > best {
+                best = magnitude;
+                pivot = row;
+            }
+        }
+        if !(best > 0.0) {
+            return 1u32 << 3; // SOLVE_LINEAR_EQUATIONS_FAILED
+        }
+        if pivot != col {
+            a.swap(col, pivot);
+            b.swap(col, pivot);
+        }
+        for row in (col + 1)..N {
+            let factor = a[row][col] / a[col][col];
+            a[row][col] = 0.0;
+            for k in (col + 1)..N {
+                a[row][k] -= factor * a[col][k];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+    for col in (0..N).rev() {
+        let mut sum = b[col];
+        for k in (col + 1)..N {
+            sum -= a[col][k] * x[k];
+        }
+        x[col] = sum / a[col][col];
+    }
+    0
+}
+{%- endif %}
+
+/// The three GALEC block-interface methods (eFMI §3.1.3): parameter-free,
+/// all I/O through the block state.
+/// - `startup`: initializes every writable variable (call once first);
+/// - `recalibrate`: recomputes dependent parameters after tunable-parameter
+///   changes (parameters stay tunable at runtime);
+/// - `do_step`: one fixed-sample control-cycle tick.
+impl {{ ident(base_name) }}State {
+{%- if status_abi %}
+    pub fn startup(&mut self) -> Result<(), Signals> {
+        let mut status: u32 = 0;
+{{- method_body(methods.startup) }}
+        if status == 0 { Ok(()) } else { Err(Signals(status)) }
+    }
+
+    pub fn recalibrate(&mut self) -> Result<(), Signals> {
+        let mut status: u32 = 0;
+{{- method_body(methods.recalibrate) }}
+        if status == 0 { Ok(()) } else { Err(Signals(status)) }
+    }
+
+    pub fn do_step(&mut self) -> Result<(), Signals> {
+        let mut status: u32 = 0;
+{{- method_body(methods.do_step) }}
+        if status == 0 { Ok(()) } else { Err(Signals(status)) }
+    }
+{%- else %}
+    pub fn startup(&mut self) {
+{{- method_body(methods.startup) }}
+    }
+
+    pub fn recalibrate(&mut self) {
+{{- method_body(methods.recalibrate) }}
+    }
+
+    pub fn do_step(&mut self) {
+{{- method_body(methods.do_step) }}
+    }
+{%- endif %}
+}

@@ -721,47 +721,49 @@ fn manifest_context_carries_the_clock_wiring() {
 }
 
 #[test]
-fn c_template_context_serializes_the_c_export_shape() {
+fn c_template_context_serializes_the_walkable_block_shape() {
+    // D16/D17: the C target consumes the language-neutral GALEC block
+    // context; the walking template owns every C spelling.
     let package = lower_pid();
     let context = c_template_context(&package, "EfmiDiscretePid").expect("context serializes");
     assert_eq!(context["model_name"], "EfmiDiscretePid");
     assert_eq!(context["block_name"], "EfmiDiscretePid");
-    assert_eq!(context["struct_name"], "EfmiDiscretePidState");
-    assert_eq!(context["function_prefix"], "EfmiDiscretePid");
-    assert_eq!(context["include_guard"], "EFMIDISCRETEPID_GALEC_C_H");
+    assert_eq!(context["galec_name"], "EfmiDiscretePid");
+    assert_eq!(context["base_name"], "EfmiDiscretePid");
     assert!(
         context["variables"]
             .as_array()
             .expect("variables array")
             .iter()
             .any(|variable| variable["name"] == "vMotor"
-                && variable["c_type"] == "double"
-                && variable["c_name"] == "vMotor")
+                && variable["scalar"] == "Real"
+                && variable["base_name"] == "vMotor")
     );
-    let do_step = context["methods"]["do_step"]
+    let do_step = context["methods"]["do_step"]["statements"]
         .as_array()
         .expect("do_step statements");
     assert!(!do_step.is_empty());
     for statement in do_step {
-        assert_eq!(statement["kind"], "assignment");
-        let lines = statement["c_lines"].as_array().expect("c_lines array");
         assert!(
-            lines
-                .iter()
-                .all(|line| line.as_str().is_some_and(|text| text.ends_with(';'))),
-            "every C line is a terminated statement: {statement}"
+            matches!(
+                statement["kind"].as_str(),
+                Some("assign" | "assign_whole" | "solve")
+            ),
+            "{statement}"
         );
     }
-    // The end-of-DoStep pre-commit surfaces with the mangled C field name.
+    // The end-of-DoStep pre-commit surfaces with both spellings: the GALEC
+    // quoted token and the identifier stem the C/Rust templates escape.
     assert!(
         do_step.iter().any(|statement| {
-            statement["c_lines"]
-                .as_array()
-                .expect("c_lines array")
-                .iter()
-                .any(|line| line.as_str().is_some_and(|text| text.contains("previous_")))
+            statement["target"]["galec_name"]
+                .as_str()
+                .is_some_and(|token| token.starts_with("'previous("))
+                && statement["target"]["base_name"]
+                    .as_str()
+                    .is_some_and(|base| base.starts_with("previous_"))
         }),
-        "expected a 'previous(x)' commit in C form: {do_step:#?}"
+        "expected a 'previous(x)' commit target: {do_step:#?}"
     );
 }
 

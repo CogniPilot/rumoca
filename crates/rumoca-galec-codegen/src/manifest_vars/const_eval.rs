@@ -136,10 +136,14 @@ impl EvalFailure {
 
 /// Evaluation environment: scalar parameter/constant defaults referencable
 /// by name (tunable parameters, dependent parameters, and constants — the
-/// classes whose `start` carries a default expression).
+/// classes whose `start` carries a default expression), plus an overlay of
+/// already-computed scalar values (GAL-028: initialized variables evaluated
+/// in dependency order feed later initialization expressions).
 #[derive(Debug, Default)]
 pub struct ConstEnv<'a> {
     definitions: HashMap<&'a str, &'a Variable>,
+    computed: HashMap<String, ConstValue>,
+    start_overrides: HashMap<String, StartShape>,
 }
 
 impl<'a> ConstEnv<'a> {
@@ -158,7 +162,30 @@ impl<'a> ConstEnv<'a> {
             })
             .map(|classified| (classified.variable.name.as_str(), classified.variable))
             .collect();
-        Self { definitions }
+        Self {
+            definitions,
+            computed: HashMap::new(),
+            start_overrides: HashMap::new(),
+        }
+    }
+
+    /// Record an already-computed scalar value; later evaluations resolve
+    /// the name through this overlay before the defaults (GAL-028).
+    pub fn insert_computed(&mut self, name: String, value: ConstValue) {
+        self.computed.insert(name, value);
+    }
+
+    /// Record the projection-time evaluation of a variable's `Startup`
+    /// computation; the manifest `start` for that variable mirrors this
+    /// shape instead of the declared `start` attribute (GAL-028).
+    pub fn insert_start_override(&mut self, name: String, shape: StartShape) {
+        self.start_overrides.insert(name, shape);
+    }
+
+    /// The manifest `start` override for a variable, if one was computed.
+    #[must_use]
+    pub fn start_override(&self, name: &str) -> Option<&StartShape> {
+        self.start_overrides.get(name)
     }
 
     /// Evaluate an expression that must fold to one scalar constant.
@@ -166,17 +193,108 @@ impl<'a> ConstEnv<'a> {
         self.eval(expr, &mut Vec::new())
     }
 
-    /// Evaluate a `start` expression preserving its scalar/array shape.
-    /// Array constructors are legal at the top level only and flatten
-    /// row-major (nested constructors are matrix rows).
+    /// Evaluate a `start` expression preserving its scalar/array shape,
+    /// row-major. Array values arise from constructors, `identity(n)`, and
+    /// elementwise arithmetic over them (scalar⊗array broadcast; equal-length
+    /// array `+`/`-`/`.*`/`./`; unary sign) — enough for computed
+    /// initializations like `p0*identity(n)` (GAL-028). A matrix *product*
+    /// in constant position stays not-evaluable (assign it via an initial
+    /// equation over intermediate variables instead).
     pub fn evaluate_start_shape(&self, expr: &Expression) -> Result<StartShape, EvalFailure> {
-        if let Expression::Array { .. } = expr {
-            let mut values = Vec::new();
-            self.flatten_array(expr, &mut values)?;
-            Ok(StartShape::Array(values))
-        } else {
-            self.evaluate_scalar(expr).map(StartShape::Scalar)
+        match self.try_array_values(expr)? {
+            Some(values) => Ok(StartShape::Array(values)),
+            None => self.evaluate_scalar(expr).map(StartShape::Scalar),
         }
+    }
+
+    /// The row-major element values of an array-shaped constant expression,
+    /// or `None` when the expression is scalar-shaped.
+    fn try_array_values(&self, expr: &Expression) -> Result<Option<Vec<ConstValue>>, EvalFailure> {
+        match expr {
+            Expression::Array { .. } => {
+                let mut values = Vec::new();
+                self.flatten_array(expr, &mut values)?;
+                Ok(Some(values))
+            }
+            Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Identity,
+                args,
+                span,
+            } => self.identity_values(args, *span).map(Some),
+            Expression::Unary { op, rhs, span } => {
+                let Some(values) = self.try_array_values(rhs)? else {
+                    return Ok(None);
+                };
+                values
+                    .into_iter()
+                    .map(|value| eval_unary(op.clone(), value, *span))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Some)
+            }
+            Expression::Binary { op, lhs, rhs, span } => {
+                let left = self.try_array_values(lhs)?;
+                let right = self.try_array_values(rhs)?;
+                match (left, right) {
+                    (None, None) => Ok(None),
+                    (Some(values), None) => {
+                        let scalar = self.evaluate_scalar(rhs)?;
+                        values
+                            .into_iter()
+                            .map(|value| eval_binary(op.clone(), value, scalar, *span))
+                            .collect::<Result<Vec<_>, _>>()
+                            .map(Some)
+                    }
+                    (None, Some(values)) => {
+                        let scalar = self.evaluate_scalar(lhs)?;
+                        values
+                            .into_iter()
+                            .map(|value| eval_binary(op.clone(), scalar, value, *span))
+                            .collect::<Result<Vec<_>, _>>()
+                            .map(Some)
+                    }
+                    (Some(left), Some(right)) => {
+                        elementwise_binary(op, left, right, *span).map(Some)
+                    }
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// `identity(n)` as row-major Integer element values.
+    fn identity_values(
+        &self,
+        args: &[Expression],
+        span: Span,
+    ) -> Result<Vec<ConstValue>, EvalFailure> {
+        let [order] = args else {
+            return Err(EvalFailure::not_evaluable(
+                "`identity` takes exactly one argument",
+                optional(span),
+            ));
+        };
+        let ConstValue::Integer(order) = self.evaluate_scalar(order)? else {
+            return Err(EvalFailure::not_evaluable(
+                "`identity` order must be an Integer constant",
+                optional(span),
+            ));
+        };
+        let order = usize::try_from(order)
+            .ok()
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| {
+                EvalFailure::not_evaluable(
+                    "`identity` order must be a positive Integer",
+                    optional(span),
+                )
+            })?;
+        let mut values = Vec::with_capacity(order * order);
+        for row in 0..order {
+            for col in 0..order {
+                values.push(ConstValue::Integer(i64::from(row == col)));
+            }
+        }
+        Ok(values)
     }
 
     fn flatten_array(
@@ -239,6 +357,9 @@ impl<'a> ConstEnv<'a> {
                 span,
             ));
         }
+        if let Some(value) = self.computed.get(name) {
+            return Ok(*value);
+        }
         let Some((key, definition)) = self.definitions.get_key_value(name) else {
             return Err(EvalFailure::not_evaluable(
                 format!("`{name}` is not a scalar parameter or constant with a default"),
@@ -271,6 +392,32 @@ impl<'a> ConstEnv<'a> {
 
 fn optional(span: Span) -> Option<Span> {
     (!span.is_dummy()).then_some(span)
+}
+
+/// Elementwise combination of two equal-length array values; a matrix
+/// *product* stays not-evaluable (GAL-028 module docs).
+fn elementwise_binary(
+    op: &rumoca_core::OpBinary,
+    left: Vec<ConstValue>,
+    right: Vec<ConstValue>,
+    span: Span,
+) -> Result<Vec<ConstValue>, EvalFailure> {
+    if matches!(op, rumoca_core::OpBinary::Mul) {
+        return Err(EvalFailure::not_evaluable(
+            "matrix product is not supported in constant evaluation",
+            optional(span),
+        ));
+    }
+    if left.len() != right.len() {
+        return Err(EvalFailure::not_evaluable(
+            "elementwise operands have different element counts",
+            optional(span),
+        ));
+    }
+    left.into_iter()
+        .zip(right)
+        .map(|(l, r)| eval_binary(op.clone(), l, r, span))
+        .collect()
 }
 
 fn eval_literal(value: &Literal, span: Span) -> Result<ConstValue, EvalFailure> {
