@@ -947,3 +947,36 @@ cdb8a0df -> ef42d406  Counterpositions and stricter gates for the SPEC_0045/0046
 1cb868c6 -> eaee351d  Resolve scheduled-event iteration strata	eaee351d
 7639c05b -> 9bc2b6b9  Resolve SPEC_0045/0046 counter-round to drafting constraints	9bc2b6b9
 ```
+
+### 13.2 Event-strata P0 constraints (Codex live audit, verified 01:15)
+
+Three verified current-runtime counterexamples bind the SPEC_0046 draft and
+the C57 vertical slice (anchors verified in-tree before acceptance):
+1. Boolean `sample(start,interval)` is conflated with synchronous Clock
+   ownership (phase-dae calls.rs owns it "as a periodic clock";
+   pre_params.rs excludes clock-owned runs from z/m fixed-point
+   advancement). Slice commit 1: split PeriodicEventActivationId from
+   ClockPartitionId (construction reclassification + wire schema bump),
+   red-proved by scheduled m=pre(m)+1 with unclocked n=pre(m) — Appendix-B
+   requires n=1, conflation leaves n=0. Both IDs reuse exact lattice
+   arithmetic.
+2. First-pass umbrella = orchestration plan referencing compact child
+   owners with total-next intermediates — never an evaluate-once
+   old-storage snapshot, never a monolithic re-lowered body (the
+   discrete_rows.rs same-snapshot 1s/2s case is the standing red).
+3. driver.rs replaces the ENTIRE `pre` snapshot with post-pass live
+   storage at the coincident boundary — an MLS 3.7 §8.5 citation applied
+   to every lane when it licenses only event-iterated ones. Requirement:
+   LANE-PARTITIONED pre advancement (only pre_iter advances between
+   passes; LeftLimit / SampledLeftLimit / clock Previous retain their
+   generation). Red fixture pins a NON-iterated lane observed across the
+   coincident boundary.
+Ownership gaps: (a) unclocked condition-triggered algorithm transactions
+must be constructible as iterative-relation members (stratum-3 membership;
+same slice as the ID split); (b) FMI post-settle assertion conversion must
+precede any history/canonical commit (EventTransactionProgram/C55
+commit-once; the red doubles as the observational-rollback fixture for the
+arena-vs-journal experiment).
+EventInstantExecutionPlan (opaque coverage root over typed subrelations,
+compact child owners by ID/range) accepted as the converged composition
+shape.
