@@ -9,7 +9,9 @@ use std::process::Command;
 use std::time::Instant;
 
 const MANIFEST_PATH: &str = "verification/kani-proofs.json";
-const MANIFEST_SCHEMA_VERSION: u32 = 2;
+/// Bumped 2 -> 3 when `assumptions` became a mandatory per-proof field: a
+/// version-2 manifest omits it and is no longer admissible.
+const MANIFEST_SCHEMA_VERSION: u32 = 3;
 const REQUIRED_KANI_VERSION: &str = "0.67.0";
 const SOLVER_PACKAGE: &str = "rumoca-solver";
 const SOLVER_SOURCE_ROOT: &str = "crates/rumoca-solver/src";
@@ -47,6 +49,8 @@ struct KaniProof {
     source: String,
     claims: Vec<String>,
     selection: ProofSelection,
+    /// Trusted premises the harness relies on, required by SPEC_0037:256.
+    assumptions: Vec<String>,
     bound: ProofBound,
     covers: u32,
 }
@@ -159,6 +163,7 @@ fn validate_manifest(root: &Path, manifest: &KaniProofManifest) -> Result<()> {
             );
         }
         validate_selection(proof)?;
+        validate_assumptions(proof)?;
         ensure!(
             selectors.insert((proof.package.as_str(), proof.harness.as_str())),
             "duplicate Kani proof selector {}::{}",
@@ -232,6 +237,26 @@ fn validate_selection(proof: &KaniProof) -> Result<()> {
             proof.harness
         );
     }
+    Ok(())
+}
+
+/// SPEC_0037:256 requires every manifest entry to identify the trusted
+/// premises under which its property holds, so an entry without at least one
+/// non-empty assumption is inadmissible.
+fn validate_assumptions(proof: &KaniProof) -> Result<()> {
+    ensure!(
+        !proof.assumptions.is_empty(),
+        "{} declares no assumptions",
+        proof.harness
+    );
+    ensure!(
+        proof
+            .assumptions
+            .iter()
+            .all(|assumption| !assumption.trim().is_empty()),
+        "{} has an empty assumption",
+        proof.harness
+    );
     Ok(())
 }
 
@@ -486,6 +511,7 @@ fn write_summary(root: &Path, manifest: &KaniProofManifest, run: KaniRunSummary<
                 "harness": proof.harness,
                 "claims": proof.claims,
                 "selection": proof.selection,
+                "assumptions": proof.assumptions,
                 "declared_bound": proof.bound,
                 "expected_cover_obligations": proof.covers,
                 "covers_satisfied": result.covers_satisfied,
@@ -554,8 +580,9 @@ fn verify_installed_version(root: &Path, expected: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ParsedHarnessResult, REQUIRED_KANI_VERSION, covers_match, discover_solver_proofs,
-        load_manifest, parse_kani_results, select_manifest_shard,
+        KaniProof, MANIFEST_SCHEMA_VERSION, ParsedHarnessResult, REQUIRED_KANI_VERSION,
+        covers_match, discover_solver_proofs, load_manifest, parse_kani_results,
+        select_manifest_shard, validate_assumptions, validate_manifest,
     };
     use std::collections::BTreeSet;
     use std::path::Path;
@@ -576,6 +603,90 @@ mod tests {
             .map(|harness| ("rumoca-solver".to_string(), harness))
             .collect::<BTreeSet<_>>();
         assert_eq!(listed, discovered, "manifest must list every solver proof");
+    }
+
+    #[test]
+    fn checked_in_manifest_states_assumptions_for_every_harness() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest = load_manifest(&root).expect("checked-in Kani manifest should be valid");
+        for proof in &manifest.proofs {
+            assert!(
+                !proof.assumptions.is_empty(),
+                "{} must state its assumptions",
+                proof.harness
+            );
+        }
+    }
+
+    /// A schema-3 manifest entry with every field except `assumptions`, which
+    /// each caller supplies to exercise one arm of the assumptions rule.
+    fn example_manifest_entry() -> serde_json::Value {
+        serde_json::json!({
+            "package": "rumoca-solver",
+            "harness": "example",
+            "source": "crates/rumoca-solver/src/verification.rs",
+            "claims": ["SIM-010"],
+            "selection": {
+                "production_kernel": "kernel",
+                "symbolic_inputs": "inputs",
+                "exhaustive_test_infeasible_because": "barrier",
+                "counterexample_means": "meaning"
+            },
+            "bound": { "kind": "finite_domain", "domain": "domain" },
+            "covers": 0
+        })
+    }
+
+    #[test]
+    fn manifest_entry_without_assumptions_is_rejected() {
+        let entry = example_manifest_entry();
+        let parsed = serde_json::from_value::<KaniProof>(entry.clone());
+        assert!(
+            parsed.is_err(),
+            "a manifest entry without assumptions must not parse"
+        );
+
+        let mut with_assumptions = entry;
+        with_assumptions["assumptions"] = serde_json::json!(["   "]);
+        let proof = serde_json::from_value::<KaniProof>(with_assumptions)
+            .expect("an entry with an assumptions list parses");
+        assert!(
+            validate_assumptions(&proof).is_err(),
+            "a blank assumption must not satisfy the assumptions requirement"
+        );
+    }
+
+    /// `assumptions` became mandatory at schema 3, so a manifest still
+    /// declaring the schema-2 shape must be rejected outright rather than
+    /// silently validated against the newer rules.
+    #[test]
+    fn superseded_schema_version_two_manifest_is_rejected() {
+        assert_eq!(MANIFEST_SCHEMA_VERSION, 3);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut manifest = load_manifest(&root).expect("checked-in Kani manifest should be valid");
+        manifest.schema_version = 2;
+        let error = validate_manifest(&root, &manifest)
+            .expect_err("a schema-2 manifest must not validate against schema 3");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported Kani proof manifest schema 2"),
+            "unexpected rejection reason: {error}"
+        );
+    }
+
+    #[test]
+    fn manifest_entry_with_empty_assumptions_list_is_rejected() {
+        let mut proof = example_manifest_entry();
+        proof["assumptions"] = serde_json::json!([]);
+        let proof = serde_json::from_value::<KaniProof>(proof)
+            .expect("an entry with an empty assumptions list parses");
+        let error = validate_assumptions(&proof)
+            .expect_err("an empty assumptions list must not satisfy the assumptions requirement");
+        assert!(
+            error.to_string().contains("declares no assumptions"),
+            "unexpected rejection reason: {error}"
+        );
     }
 
     #[test]

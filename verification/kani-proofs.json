@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "kani_version": "0.67.0",
   "proofs": [
     {
@@ -13,6 +13,13 @@
         "exhaustive_test_infeasible_because": "the product of typed values, ownership masks, and invalid-input positions is not practically enumerable",
         "counterexample_means": "event-history advancement can lose type fidelity or partially mutate pre values on rejection"
       },
+      "assumptions": [
+        "typed_value generates only lattice-valid values (Real from i16/4.0, Integer whole f64, Boolean 0/1, Enumeration >= 1), so the kernel's type-validity clauses are exercised only through the single injected invalid position",
+        "the invalid injection is a NaN placed in the last lane's current value, so rejection is proven for that representative invalid typed input rather than every invalid encoding",
+        "unwind bound 16 covers the three lanes at the harness's fixed iteration shape; a wider lane count or a different iteration shape is outside the proof",
+        "advance_event_iteration_lanes is the production kernel; callers that bypass it or mutate EventIterationLane fields directly are outside the proof",
+        "Kani models f64 bit patterns exactly, so to_bits comparisons stand in for unchanged-value equality including NaN payloads"
+      ],
       "bound": { "kind": "unwind", "value": 16, "domain": "three production event-history lanes with arbitrary value kinds, typed values, fixed-point ownership, and invalid-input injection" },
       "covers": 3
     }

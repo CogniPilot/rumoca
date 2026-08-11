@@ -87,7 +87,10 @@ nix develop .#kani --command cargo xtask verify kani
 
 The command rejects any other Kani version and drives the solver harnesses from
 the checked-in `verification/kani-proofs.json` manifest. Add a harness to that
-manifest in the same change that makes it required. GitHub CI runs this exact
+manifest in the same change that makes it required; every entry MUST declare its
+production kernel, symbolic inputs, enumeration barrier, counterexample meaning,
+bounds, and a non-empty `assumptions` list (SPEC_0037) — the gate rejects
+entries without one. GitHub CI runs this exact
 gate with a bounded Linux job and uploads the versioned, per-harness result at
 `target/verification/kani-summary.json`.
 
