@@ -135,6 +135,12 @@
 {%- endif -%}
 {%- endmacro %}
 
+{#- Materialize one checked output projection at the final MLIR boundary. -#}
+{%- macro emit_store_output(src, r, i, name_i) %}
+    %outi{{ name_i }} = arith.constant {{ i }} : index
+    memref.store %r{{ r }}_{{ src }}, %out[%outi{{ name_i }}] : memref<?xf64>
+{%- endmacro %}
+
 {#- ── Macro: emit MLIR SSA instructions for one LinearOp ─────────────────────
     r — row index (unique across all rows in the enclosing function)
     i — output index written by StoreOutput
@@ -249,8 +255,7 @@
     memref.dealloc %{{ pfx }}_b : memref<{{ nn }}xf64>
     memref.dealloc %{{ pfx }}_A : memref<{{ n2 }}xf64>
 {%- elif op.StoreOutput is defined %}
-    %outi{{ name_i }} = arith.constant {{ i }} : index
-    memref.store %r{{ r }}_{{ op.StoreOutput.src }}, %out[%outi{{ name_i }}] : memref<?xf64>
+{{ emit_store_output(op.StoreOutput.src, r, i, name_i) }}
 {%- endif %}
 {%- endmacro %}
 
@@ -295,13 +300,14 @@ module @{{ name }} {
 {% for fallback_row in drv_fallback if not fallback_row.native_dense %}{%- set r = loop.index0 %}{%- set row = drv_rows[fallback_row.row_index] %}{%- set rowns = namespace(out=0) %}
 {%- for op in row %}
 {%- if op.StoreOutput is defined %}{%- if rowns.out == fallback_row.output_ordinal %}{{ emit_op(op, r, fallback_row.output_index, r) }}{%- endif %}{%- set rowns.out = rowns.out + 1 %}
+{%- elif op.StoreOutputRange is defined %}{%- set range_end = rowns.out + op.StoreOutputRange.count %}{%- if rowns.out <= fallback_row.output_ordinal and fallback_row.output_ordinal < range_end %}{%- set local = fallback_row.output_ordinal - rowns.out %}{{ emit_store_output(op.StoreOutputRange.start + local * op.StoreOutputRange.stride, r, fallback_row.output_index, r) }}{%- endif %}{%- set rowns.out = range_end %}
 {%- else %}{{ emit_op(op, r, fallback_row.output_index, r) }}{%- endif %}
 {%- endfor %}
 {% endfor %}
 {% elif drv_native_families | length == 0 %}
 {%- set ns = namespace(out=0) %}
 {% for row in drv_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{%- set out_i = drv_output_indices[ns.out] if drv_output_indices | length > ns.out else ns.out %}{{ emit_op(op, r, out_i, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{%- if op.StoreOutputRange is defined %}{%- for offset in range(op.StoreOutputRange.count) %}{%- set out_i = drv_output_indices[ns.out] if drv_output_indices | length > ns.out else ns.out %}{{ emit_store_output(op.StoreOutputRange.start + offset * op.StoreOutputRange.stride, r, out_i, ns.out) }}{%- set ns.out = ns.out + 1 %}{%- endfor %}{%- else %}{%- set out_i = drv_output_indices[ns.out] if drv_output_indices | length > ns.out else ns.out %}{{ emit_op(op, r, out_i, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{%- endif %}{% endfor %}
 {% endfor %}
 {% endif %}
     func.return
@@ -328,13 +334,14 @@ module @{{ name }} {
 {% for fallback_row in impl_fallback if not fallback_row.native_dense %}{%- set r = loop.index0 %}{%- set row = impl_rows[fallback_row.row_index] %}{%- set rowns = namespace(out=0) %}
 {%- for op in row %}
 {%- if op.StoreOutput is defined %}{%- if rowns.out == fallback_row.output_ordinal %}{{ emit_op(op, r, fallback_row.output_index, r) }}{%- endif %}{%- set rowns.out = rowns.out + 1 %}
+{%- elif op.StoreOutputRange is defined %}{%- set range_end = rowns.out + op.StoreOutputRange.count %}{%- if rowns.out <= fallback_row.output_ordinal and fallback_row.output_ordinal < range_end %}{%- set local = fallback_row.output_ordinal - rowns.out %}{{ emit_store_output(op.StoreOutputRange.start + local * op.StoreOutputRange.stride, r, fallback_row.output_index, r) }}{%- endif %}{%- set rowns.out = range_end %}
 {%- else %}{{ emit_op(op, r, fallback_row.output_index, r) }}{%- endif %}
 {%- endfor %}
 {% endfor %}
 {% elif impl_native_families | length == 0 %}
 {%- set ns = namespace(out=0) %}
 {% for row in impl_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{%- if op.StoreOutputRange is defined %}{%- for offset in range(op.StoreOutputRange.count) %}{{ emit_store_output(op.StoreOutputRange.start + offset * op.StoreOutputRange.stride, r, ns.out, ns.out) }}{%- set ns.out = ns.out + 1 %}{%- endfor %}{%- else %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{%- endif %}{% endfor %}
 {% endfor %}
 {% endif %}
     func.return
@@ -352,7 +359,7 @@ module @{{ name }} {
       %out  : memref<?xf64>) {
 {%- set ns = namespace(out=0) %}
 {% for row in jac_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{%- if op.StoreOutputRange is defined %}{%- for offset in range(op.StoreOutputRange.count) %}{{ emit_store_output(op.StoreOutputRange.start + offset * op.StoreOutputRange.stride, r, ns.out, ns.out) }}{%- set ns.out = ns.out + 1 %}{%- endfor %}{%- else %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }
@@ -367,7 +374,7 @@ module @{{ name }} {
       %out  : memref<?xf64>) {
 {%- set ns = namespace(out=0) %}
 {% for row in root_rows %}{%- set r = loop.index0 %}
-{%- for op in row %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{% endfor %}
+{%- for op in row %}{%- if op.StoreOutputRange is defined %}{%- for offset in range(op.StoreOutputRange.count) %}{{ emit_store_output(op.StoreOutputRange.start + offset * op.StoreOutputRange.stride, r, ns.out, ns.out) }}{%- set ns.out = ns.out + 1 %}{%- endfor %}{%- else %}{{ emit_op(op, r, ns.out, ns.out) }}{%- if op.StoreOutput is defined %}{%- set ns.out = ns.out + 1 %}{%- endif %}{%- endif %}{% endfor %}
 {% endfor %}
     func.return
   }

@@ -270,6 +270,7 @@ where
                 function,
                 output,
                 arguments,
+                ..
             } => self.function_call(
                 function,
                 output,
@@ -641,6 +642,7 @@ where
                 function,
                 output,
                 arguments,
+                ..
             } => self.function_call_record_field(
                 function,
                 output,
@@ -1316,6 +1318,7 @@ where
                 function,
                 output,
                 arguments,
+                ..
             } => self.integer_call(function, output, arguments, scalar_index, span),
             dae::ExpressionOperation::Array(elements) => {
                 let first = elements.get(0).expect("checked array is nonempty");

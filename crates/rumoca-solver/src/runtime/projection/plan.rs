@@ -9,13 +9,13 @@ pub(super) fn validate_algebraic_projection_plan(
 ) -> Result<(), RuntimeSolveError> {
     let algebraic_count =
         algebraic_tail_len(solver_count, state_count, "algebraic projection plan")?;
-    let mut row_seen = vec![false; algebraic_count];
+    let mut row_seen = vec![false; solver_count];
     let mut y_seen = vec![false; algebraic_count];
     for block in &plan.blocks {
         require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
         mark_projection_indices(
             &block.rows,
-            state_count,
+            0,
             solver_count,
             &mut row_seen,
             "algebraic projection",

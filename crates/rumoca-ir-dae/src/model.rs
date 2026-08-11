@@ -54,9 +54,9 @@ use crate::{
     DaeConstructionError, DaeGeneration, DaeLiteral, DaeProvenance, DelayId, DiscreteRealId,
     DiscreteValueId, DiscreteValueOwnerId, DomainBinderId, DomainId, EventActionId, ExprId,
     FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
-    InitializationEquationId, InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId,
-    RootId, ScalarType, StateId, StructuredRootId, TerminalId, TimeEventId, ValueTypeId,
-    VariableId,
+    InitializationEquationId, InitializationFamilyId, InputId, ModelEventTransactionId,
+    ModelEventTransactions, ParameterId, PreviousId, RelationId, RootId, ScalarType, StateId,
+    StructuredRootId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 
 pub(crate) use construction_checks::{
@@ -124,7 +124,16 @@ pub(crate) use construction_checks::{
 /// conditional assignment group. The joined expressions remain the value
 /// view, while code-generating projections no longer have to recover common
 /// control flow from independently projected expressions.
-pub const DAE_SCHEMA_VERSION: u16 = 29;
+///
+/// 30 gives every exact pure function call occurrence one construction-issued
+/// owner shared by all result projections. The owner holds one packed argument
+/// range; checked replay rejects forward, foreign, or mismatched projections.
+///
+/// 31 adds checked model-event transactions. Each transaction preserves one
+/// ordered algorithm activation across its mixed discrete Real and discrete
+/// value projections, so wire replay cannot split one source execution into
+/// independently executable output programs.
+pub const DAE_SCHEMA_VERSION: u16 = 31;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -443,6 +452,9 @@ pub(crate) struct Storage {
     pub(crate) discrete_value_branches: Vec<DiscreteValueBranchEntry>,
     pub(crate) discrete_value_branch_values: Vec<u32>,
     pub(crate) discrete_value_branch_value_provenance: Vec<DaeProvenance>,
+    pub(crate) model_event_transactions:
+        Vec<crate::model_event_transactions::ModelEventTransactionEntry>,
+    pub(crate) model_event_transaction_by_variable: rustc_hash::FxHashMap<u32, u32>,
     pub(crate) continuous_families: Vec<StructuredFamilyEntry>,
     pub(crate) initialization_families: Vec<StructuredFamilyEntry>,
     pub(crate) continuous_equation_owners: Vec<EquationOwnerEntry>,
@@ -492,6 +504,7 @@ struct FrozenStorage {
     discrete_value_branches: Box<[DiscreteValueBranchEntry]>,
     discrete_value_branch_values: Box<[u32]>,
     discrete_value_branch_value_provenance: Box<[DaeProvenance]>,
+    model_event_transactions: Box<[crate::model_event_transactions::ModelEventTransactionEntry]>,
     continuous_families: Box<[StructuredFamilyEntry]>,
     initialization_families: Box<[StructuredFamilyEntry]>,
     continuous_equation_owners: Box<[EquationOwnerEntry]>,
@@ -621,6 +634,7 @@ impl<'dae> DaeConstruction<'dae> {
         continuous => ContinuousEquations,
         initialization => InitializationEquations,
         discrete => DiscreteEquations,
+        model_events => ModelEventTransactions,
         conditions => Conditions,
         events => Events,
         clocks => Clocks,
@@ -1034,6 +1048,16 @@ pub struct FunctionLoop<'dae> {
     body: FunctionBody<'dae>,
     parents: Vec<FunctionFoldId<'dae>>,
     states: Vec<FunctionLoopParent<'dae>>,
+}
+
+impl FunctionLoop<'_> {
+    /// Whether finishing the active fold returns to another lexical fold.
+    ///
+    /// Wire replay consumes this construction-owned fact instead of inferring
+    /// nesting from expression order or statement shape.
+    pub(crate) fn has_enclosing_loop(&self) -> bool {
+        !self.parents.is_empty()
+    }
 }
 
 impl<'dae> Functions<'_, 'dae> {

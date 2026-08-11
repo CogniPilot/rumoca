@@ -119,6 +119,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             clocks: SolveClockPartition::default(),
             solve_layout: decay_solve_layout(),
         },
+        pure_calls: rumoca_ir_solve::SolvePureCallTable::default(),
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
                 structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),

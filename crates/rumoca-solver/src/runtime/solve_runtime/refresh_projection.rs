@@ -316,10 +316,22 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        if let Some(compiled) = self.runtime.compiled_implicit_rhs.as_ref()
+            && compiled
+                .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
+                .is_ok()
+        {
+            self.runtime
+                .report_nonfinite_implicit_residual_inputs(t, y, out);
+            return Ok(());
+        }
         self.runtime
             .implicit_rhs
             .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
-            .map_err(Into::into)
+            .map_err(RuntimeSolveError::from)?;
+        self.runtime
+            .report_nonfinite_implicit_residual_inputs(t, y, out);
+        Ok(())
     }
 
     fn eval_jacobian_v(
@@ -330,6 +342,24 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        if self.jacobian_v.is_solver_y_only()
+            && let Some(compiled) = self
+                .runtime
+                .compiled_implicit_projection_jacobian_v
+                .as_ref()
+            && compiled
+                .call(
+                    y,
+                    p,
+                    t,
+                    v,
+                    self.runtime.model.external_tables.as_slice(),
+                    out,
+                )
+                .is_ok()
+        {
+            return Ok(());
+        }
         self.jacobian_v
             .eval(
                 y,
@@ -351,18 +381,28 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         p: &[f64],
         t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
-        let Some(program_idx) = self
+        let Some((program_idx, output_offset)) = self
             .runtime
             .implicit_scalar_rhs
-            .single_output_row_for_output_index(row_idx)
+            .row_output_position(row_idx)
         else {
             return Ok(None);
         };
-        self.runtime
+        let value = self
+            .runtime
             .implicit_scalar_rhs
-            .eval_row_unchecked_with_context(program_idx, y, p, t, self.runtime.row_eval_context())
-            .map(Some)
-            .map_err(Into::into)
+            .eval_row_output_unchecked_with_context(
+                program_idx,
+                output_offset,
+                y,
+                p,
+                t,
+                self.runtime.row_eval_context(),
+            )
+            .map_err(RuntimeSolveError::from)?;
+        self.runtime
+            .report_nonfinite_implicit_residual_row_inputs(t, y, row_idx, value);
+        Ok(Some(value))
     }
 
     fn eval_implicit_jacobian_v_row(
@@ -374,13 +414,14 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         v: &[f64],
     ) -> Result<Option<f64>, RuntimeSolveError> {
         let block = self.jacobian_v.scalar();
-        let Some(jvp_program_idx) = block.single_output_row_for_output_index(row_idx) else {
+        let Some((jvp_program_idx, output_offset)) = block.row_output_position(row_idx) else {
             return Ok(None);
         };
         let implicit_program_idx = self
             .runtime
             .implicit_scalar_rhs
-            .single_output_row_for_output_index(row_idx);
+            .row_output_position(row_idx)
+            .map(|(program_idx, _)| program_idx);
         if self.jacobian_v.is_solver_y_only()
             && let Some(implicit_program_idx) = implicit_program_idx
             && let Some(parameter_indices) = self
@@ -396,8 +437,9 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             return Ok(Some(value));
         }
         block
-            .eval_row_unchecked_with_context(
+            .eval_row_output_unchecked_with_context(
                 jvp_program_idx,
+                output_offset,
                 y,
                 p,
                 t,
@@ -418,10 +460,10 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         t: f64,
         gradient: &mut [f64],
     ) -> Result<bool, RuntimeSolveError> {
-        let Some(program_idx) = self
+        let Some((program_idx, _)) = self
             .runtime
             .implicit_scalar_rhs
-            .single_output_row_for_output_index(row_idx)
+            .row_output_position(row_idx)
         else {
             return Ok(false);
         };
@@ -584,17 +626,18 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         p: &[f64],
         t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
-        let Some(program_idx) = self
+        let Some((program_idx, output_offset)) = self
             .runtime
             .implicit_scalar_rhs
-            .single_output_row_for_output_index(row_idx)
+            .row_output_position(row_idx)
         else {
             return Ok(None);
         };
         self.runtime
             .implicit_scalar_rhs
-            .eval_target_assignment_row_unchecked_with_context(
+            .eval_target_assignment_output_unchecked_with_context(
                 program_idx,
+                output_offset,
                 target_y_index,
                 y,
                 p,
@@ -607,11 +650,15 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     fn implicit_target_assignment_is_exact(&self, row_idx: usize, target_y_index: usize) -> bool {
         self.runtime
             .implicit_scalar_rhs
-            .single_output_row_for_output_index(row_idx)
-            .is_some_and(|program_idx| {
+            .row_output_position(row_idx)
+            .is_some_and(|(program_idx, output_offset)| {
                 self.runtime
                     .implicit_scalar_rhs
-                    .certifies_exact_target_assignment(program_idx, target_y_index)
+                    .certifies_exact_target_assignment_output(
+                        program_idx,
+                        output_offset,
+                        target_y_index,
+                    )
             })
     }
 
@@ -638,10 +685,24 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         self.runtime
             .model
             .problem
-            .solve_layout
-            .solver_maps
-            .names
+            .continuous
+            .implicit_row_targets
             .get(row_idx)
+            .copied()
+            .flatten()
+            .and_then(|slot| match slot {
+                solve::ScalarSlot::Y { index, .. } => Some(index),
+                _ => None,
+            })
+            .and_then(|index| {
+                self.runtime
+                    .model
+                    .problem
+                    .solve_layout
+                    .solver_maps
+                    .names
+                    .get(index)
+            })
             .map(String::as_str)
     }
 
@@ -654,7 +715,8 @@ impl RefreshProjectionModel<'_> {
     fn implicit_row_is_affine(&self, row_idx: usize) -> bool {
         let block = &self.runtime.implicit_scalar_rhs;
         block
-            .single_output_row_for_output_index(row_idx)
+            .row_output_position(row_idx)
+            .map(|(program_idx, _)| program_idx)
             .is_some_and(|program_idx| block.certifies_parameter_static_y_gradient(program_idx))
     }
 }

@@ -220,6 +220,7 @@ fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::Solv
                 pre_param_bindings: Vec::new(),
             },
         },
+        pure_calls: rumoca_ir_solve::SolvePureCallTable::default(),
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
                 structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),

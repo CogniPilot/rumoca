@@ -404,6 +404,7 @@ fn strict_root_relation_memory() -> solve::SolveModel {
                 row_roles: vec![solve::DiscreteRowRole::ConditionMemory],
                 pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
                 observation_refresh: vec![false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
                 clock_owners: vec![None],
                 ..Default::default()
             },

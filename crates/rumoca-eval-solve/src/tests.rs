@@ -62,6 +62,72 @@ fn parameter_static_gradient_certificate_rejects_y_and_time_varying_coefficients
     assert!(!nonlinear.certifies_parameter_static_y_gradient(0));
 }
 
+#[test]
+fn prepared_parameter_dependencies_preserve_tensor_load_ranges() {
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::TensorLoad {
+                dst_start: 0,
+                input: rumoca_ir_solve::TensorInputKind::P,
+                input_start: 7,
+                count: 4,
+                seed_start: None,
+                lanes: 1,
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        vec![fixture_span()],
+    )
+    .expect("tensor parameter dependency fixture is source-backed");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("tensor program prepares");
+
+    assert_eq!(
+        prepared.row_parameter_indices(0),
+        Some([7, 8, 9, 10].as_slice())
+    );
+}
+
+#[test]
+fn prepared_parameter_dependencies_recurse_through_lazy_conditional_regions() {
+    let condition = vec![
+        LinearOp::LoadP { dst: 0, index: 1 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let result = vec![
+        LinearOp::LoadP { dst: 0, index: 2 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let fallback = vec![
+        LinearOp::LoadP { dst: 0, index: 3 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let conditional = rumoca_ir_solve::FunctionConditionalProgram::checked(
+        0,
+        [1],
+        [(condition, result)],
+        fallback,
+    )
+    .expect("lazy conditional fixture has a checked region ABI");
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::FunctionConditional {
+                dst_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(conditional),
+            },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        vec![fixture_span()],
+    )
+    .expect("lazy conditional parameter fixture is source-backed");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("conditional program prepares");
+
+    assert_eq!(
+        prepared.row_parameter_indices(0),
+        Some([1, 2, 3].as_slice())
+    );
+}
+
 fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
     let table_id = 1_u64;
     (
@@ -197,6 +263,7 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
             },
             span: fixture_span(),
             origin: "assert".to_string(),
+            clock_owner: None,
         }],
         ..Default::default()
     };
@@ -287,6 +354,7 @@ fn event_message_fixture(
             },
             span: fixture_span(),
             origin: "assert".to_string(),
+            clock_owner: None,
         }],
         ..Default::default()
     }
@@ -819,6 +887,132 @@ fn eval_row_uninitialized_source_register_is_error_not_zero() {
 }
 
 #[test]
+fn function_conditional_evaluates_only_the_selected_correlated_region() {
+    let condition = vec![
+        LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let selected = vec![
+        LinearOp::LoadP { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let fallback = vec![
+        LinearOp::Const { dst: 0, value: 7.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let program = std::sync::Arc::new(
+        rumoca_ir_solve::FunctionConditionalProgram::checked(
+            1,
+            [1],
+            [(condition, selected)],
+            fallback,
+        )
+        .expect("checked lazy conditional"),
+    );
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::FunctionConditional {
+                dst_start: 1,
+                capture_start: 0,
+                program: program.clone(),
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ]],
+        vec![fixture_span()],
+    )
+    .expect("inactive conditional row");
+    let mut output = [0.0];
+    eval_scalar_program_block(&block, &[], &[], 0.0, None, &mut output)
+        .expect("inactive region must not read its missing parameter");
+    assert_eq!(output, [7.0]);
+
+    let active = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::FunctionConditional {
+                dst_start: 1,
+                capture_start: 0,
+                program,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ]],
+        vec![fixture_span()],
+    )
+    .expect("active conditional row");
+    eval_scalar_program_block(&active, &[], &[11.0], 0.0, None, &mut output)
+        .expect("active region reads its parameter");
+    assert_eq!(output, [11.0]);
+}
+
+#[test]
+fn aggregate_conditional_trace_cannot_construct_a_scalar_native_replacement() {
+    let condition = vec![
+        LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let selected = vec![
+        LinearOp::Const { dst: 0, value: 2.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let fallback = vec![
+        LinearOp::Const { dst: 0, value: 3.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let conditional = std::sync::Arc::new(
+        rumoca_ir_solve::FunctionConditionalProgram::checked(
+            1,
+            [1],
+            [(condition, selected)],
+            fallback,
+        )
+        .expect("checked aggregate conditional"),
+    );
+    let mut row = vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::FunctionConditional {
+            dst_start: 1,
+            capture_start: 0,
+            program: conditional,
+        },
+        LinearOp::Const {
+            dst: 2,
+            value: 11.0,
+        },
+        LinearOp::Const {
+            dst: 3,
+            value: 13.0,
+        },
+        LinearOp::Select {
+            dst: 4,
+            cond: 1,
+            if_true: 2,
+            if_false: 3,
+        },
+    ];
+    row.extend((5..64).map(|dst| LinearOp::Const {
+        dst,
+        value: dst as f64,
+    }));
+    row.push(LinearOp::StoreOutput { src: 4 });
+    let block = ScalarProgramBlock::with_program_spans(vec![row], vec![fixture_span()])
+        .expect("aggregate lazy-row fixture is source-backed");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("aggregate lazy row prepares");
+
+    assert!(prepared.has_lazy_row_plan(0));
+    assert_eq!(
+        prepared
+            .eval_row_with_context(0, &[], &[], 0.0, RowEvalContext::default())
+            .expect("reference evaluator retains lazy execution"),
+        11.0
+    );
+    assert!(
+        prepared.specialized_row_program(0).is_none(),
+        "the compiler-owned conditional must reach the native backend intact"
+    );
+}
+
+#[test]
 fn eval_row_linsolve_missing_matrix_register_is_error_not_panic_or_zero() {
     let row = vec![
         LinearOp::LinearSolveComponent {
@@ -1095,6 +1289,37 @@ fn row_input_requirements_reject_index_overflow() {
         err.to_string().contains("y input requirement overflow"),
         "error should explain input requirement overflow: {err}"
     );
+}
+
+#[test]
+fn tensor_assignment_uses_selected_output_dependency_not_whole_program() {
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![vec![
+            LinearOp::TensorLoad {
+                dst_start: 0,
+                input: rumoca_ir_solve::TensorInputKind::Y,
+                input_start: 10,
+                count: 2,
+                seed_start: None,
+                lanes: 1,
+            },
+            LinearOp::Const { dst: 2, value: 7.0 },
+            LinearOp::Unary {
+                dst: 3,
+                op: UnaryOp::Sin,
+                arg: 0,
+            },
+            LinearOp::StoreOutput { src: 2 },
+            LinearOp::StoreOutput { src: 3 },
+        ]],
+        vec![fixture_span()],
+    )
+    .expect("tensor assignment fixture is source-backed");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("tensor fixture prepares");
+
+    assert!(prepared.row_reads_y(0, 10));
+    assert!(prepared.can_evaluate_target_assignment_output(0, 0, 10));
+    assert!(!prepared.can_evaluate_target_assignment_output(0, 1, 10));
 }
 
 #[test]

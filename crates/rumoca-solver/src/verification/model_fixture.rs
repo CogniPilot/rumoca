@@ -155,6 +155,10 @@ pub(super) fn condition_memory_model(starts: &[f64]) -> solve::SolveModel {
                 row_roles: vec![solve::DiscreteRowRole::ConditionMemory; row_count],
                 pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; row_count],
                 observation_refresh: vec![false; row_count],
+                integrator_history_effects: vec![
+                    solve::IntegratorHistoryEffect::Preserve;
+                    row_count
+                ],
                 clock_owners: vec![None; row_count],
                 ..Default::default()
             },
@@ -312,6 +316,7 @@ pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel
         row_roles: vec![solve::DiscreteRowRole::Equation],
         pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
         observation_refresh: vec![false],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
         clock_owners: vec![None],
         ..Default::default()
     };

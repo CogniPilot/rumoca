@@ -387,6 +387,7 @@ fn function_operation_fingerprint(operation: dae::ExpressionOperation<'_>) -> St
             function,
             output,
             arguments,
+            ..
         } => format!("call:{}:{output}:{}", function.index(), arguments.len()),
         dae::ExpressionOperation::StringConversion {
             declaration,

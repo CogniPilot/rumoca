@@ -15,6 +15,7 @@ mod model;
 #[cfg(test)]
 mod scalar_program_tests;
 mod shape_error;
+mod typed_program;
 mod variable_bounds;
 pub mod visitor;
 
@@ -24,7 +25,7 @@ use rumoca_core::{
     StructuredIndexDomainError,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 pub use certificate::{
     derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,
@@ -36,17 +37,21 @@ pub use layout::{
     VarLayout, VarLayoutShapeContractError, scalar_slot_p, scalar_slot_y,
 };
 pub use linear_op::{
-    BinaryOp, CompareOp, LinearOp, RandomGenerator, Reg, ScalarProgramRegisterError,
-    ScalarProgramRegisterFlow, UnaryOp, resolve_indexed_slot,
+    BinaryOp, CompareOp, FoldInitialSource, FoldTensorNode, FoldTensorUpdate,
+    FunctionConditionalArmProgram, FunctionConditionalOwnerId, FunctionConditionalProgram,
+    FunctionFoldProgram, LinearOp, RandomGenerator, Reg, ScalarProgramRegisterError,
+    ScalarProgramRegisterFlow, TensorConcatenateSource, TensorIndex, TensorInputKind,
+    TensorSubscript, TensorUpdateSubscript, UnaryOp, resolve_indexed_slot,
 };
 pub use model::*;
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
+pub use typed_program::*;
 pub use visitor::{
     LinearOpSliceKind, SolveVisitor, VisitScope, walk_compute_block, walk_compute_node,
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 31;
+pub const SOLVE_SCHEMA_VERSION: u16 = 55;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -107,6 +112,11 @@ pub struct ScalarProgramBlock {
     programs: Vec<Vec<LinearOp>>,
     program_spans: Vec<Span>,
     output_indices: Vec<usize>,
+    /// Construction-owned execution capacity for each stored program.
+    ///
+    /// This proof is rebuilt on wire replay and deliberately is not
+    /// serialized as a second source of truth.
+    program_register_counts: Box<[usize]>,
 }
 
 #[derive(Deserialize)]
@@ -186,11 +196,18 @@ impl ScalarProgramBlock {
         )?;
         validate_scalar_program_provenance("ScalarProgramBlock", 0, &program_spans)?;
         validate_scalar_program_outputs("ScalarProgramBlock", 0, &programs, &program_spans)?;
-        validate_scalar_program_register_flows("ScalarProgramBlock", 0, &programs, &program_spans)?;
+        validate_function_conditional_owners("ScalarProgramBlock", 0, &programs, &program_spans)?;
+        let program_register_counts = derive_scalar_program_register_counts(
+            "ScalarProgramBlock",
+            0,
+            &programs,
+            &program_spans,
+        )?;
         Ok(Self::from_valid_parts(
             programs,
             program_spans,
             output_indices,
+            program_register_counts,
         ))
     }
 
@@ -198,11 +215,13 @@ impl ScalarProgramBlock {
         programs: Vec<Vec<LinearOp>>,
         program_spans: Vec<Span>,
         output_indices: Vec<usize>,
+        program_register_counts: Box<[usize]>,
     ) -> Self {
         Self {
             programs,
             program_spans,
             output_indices,
+            program_register_counts,
         }
     }
 
@@ -263,6 +282,11 @@ impl ScalarProgramBlock {
         &self.program_spans
     }
 
+    /// Exact register capacity proved when this program entered the block.
+    pub fn program_register_count(&self, index: usize) -> Option<usize> {
+        self.program_register_counts.get(index).copied()
+    }
+
     pub fn output_indices(&self) -> &[usize] {
         &self.output_indices
     }
@@ -279,8 +303,12 @@ impl ScalarProgramBlock {
     pub fn program_output_count(program: &[LinearOp]) -> usize {
         program
             .iter()
-            .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
-            .count()
+            .map(|op| match op {
+                LinearOp::StoreOutput { .. } => 1,
+                LinearOp::StoreOutputRange { count, .. } => *count,
+                _ => 0,
+            })
+            .sum()
     }
 
     /// Total number of `StoreOutput` ops produced by this block.
@@ -489,25 +517,97 @@ fn validate_scalar_program_outputs(
     })
 }
 
-fn validate_scalar_program_register_flows(
+pub(crate) fn derive_scalar_program_register_counts(
+    context: &str,
+    node_index: usize,
+    programs: &[Vec<LinearOp>],
+    program_spans: &[Span],
+) -> Result<Box<[usize]>, SolveProblemShapeContractError> {
+    // The enclosing constructor has already proved that each issued owner id
+    // denotes one exact body, so replay that body once even when wire decoding
+    // reconstructed several equal `Arc` allocations for its references.
+    let mut validation = linear_op::ScalarProgramValidationCache::for_checked_owner_table();
+    let mut register_counts = Vec::with_capacity(programs.len());
+    for (program_index, program) in programs.iter().enumerate() {
+        let flow = match ScalarProgramRegisterFlow::derive_with_cache(program, &mut validation) {
+            Ok(flow) => flow,
+            Err(error) => {
+                let span = program_spans.get(program_index).copied();
+                return Err(SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+                    context: context.to_string(),
+                    node_index,
+                    program_index,
+                    error,
+                    span,
+                });
+            }
+        };
+        register_counts.push(flow.register_count());
+    }
+    Ok(register_counts.into_boxed_slice())
+}
+
+fn validate_function_conditional_owners(
     context: &str,
     node_index: usize,
     programs: &[Vec<LinearOp>],
     program_spans: &[Span],
 ) -> Result<(), SolveProblemShapeContractError> {
+    fn visit<'a>(
+        operations: &'a [LinearOp],
+        owners: &mut HashMap<FunctionConditionalOwnerId, &'a FunctionConditionalProgram>,
+    ) -> Option<u64> {
+        for operation in operations {
+            match operation {
+                LinearOp::FunctionConditional { program, .. } => {
+                    if let Some(owner) = program.owner {
+                        if let Some(previous) = owners.get(&owner) {
+                            if !std::ptr::eq(*previous, program.as_ref())
+                                && *previous != program.as_ref()
+                            {
+                                return Some(owner.get());
+                            }
+                        } else {
+                            owners.insert(owner, program);
+                        }
+                    }
+                    for arm in &program.arms {
+                        if let Some(owner) =
+                            visit(&arm.condition, owners).or_else(|| visit(&arm.result, owners))
+                        {
+                            return Some(owner);
+                        }
+                    }
+                    if let Some(owner) = visit(&program.fallback, owners) {
+                        return Some(owner);
+                    }
+                }
+                LinearOp::FunctionFold { program, .. }
+                | LinearOp::GuardedFunctionFold { program, .. }
+                | LinearOp::StoreOutputFunctionFold { program, .. } => {
+                    if let Some(owner) = visit(&program.update, owners) {
+                        return Some(owner);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    let mut owners = HashMap::new();
     for (program_index, program) in programs.iter().enumerate() {
-        let error = match ScalarProgramRegisterFlow::derive(program) {
-            Ok(_) => continue,
-            Err(error) => error,
-        };
-        let span = program_spans.get(program_index).copied();
-        return Err(SolveProblemShapeContractError::ScalarProgramRegisterFlow {
-            context: context.to_string(),
-            node_index,
-            program_index,
-            error,
-            span,
-        });
+        if let Some(owner) = visit(program, &mut owners) {
+            return Err(
+                SolveProblemShapeContractError::FunctionConditionalOwnerMismatch {
+                    context: context.to_string(),
+                    node_index,
+                    owner,
+                    program_index,
+                    span: program_spans.get(program_index).copied(),
+                },
+            );
+        }
     }
     Ok(())
 }
@@ -696,6 +796,95 @@ impl SolveProblem {
     }
 }
 
+impl SolveModel {
+    /// Validate the finalized model, including every issued pure-call
+    /// reference against this model's sole checked owner table.
+    pub fn validate(&self) -> Result<(), SolveProblemShapeContractError> {
+        self.problem.validate()?;
+        let mut validator = ModelPureCallSiteValidator {
+            table: &self.pure_calls,
+        };
+        validator.visit_solve_model(self)
+    }
+}
+
+/// Prove that every pure-call reference already present in a finalized Solve
+/// problem belongs to, and exactly matches, its sole model-level owner table.
+pub fn validate_problem_pure_call_sites(
+    problem: &SolveProblem,
+    table: &SolvePureCallTable,
+) -> Result<(), SolveProblemShapeContractError> {
+    problem.validate()?;
+    let mut validator = ModelPureCallSiteValidator { table };
+    validator.visit_solve_problem(problem)
+}
+
+struct ModelPureCallSiteValidator<'model> {
+    table: &'model SolvePureCallTable,
+}
+
+impl SolveVisitor for ModelPureCallSiteValidator<'_> {
+    type Error = SolveProblemShapeContractError;
+
+    fn visit_event_transaction_program(
+        &mut self,
+        _index: usize,
+        program: &EventTransactionProgram,
+    ) -> Result<(), Self::Error> {
+        self.require_site(
+            "discrete.event_transactions",
+            program.site(),
+            Some(program.span()),
+        )
+    }
+
+    fn visit_linear_op(
+        &mut self,
+        kind: LinearOpSliceKind,
+        _op_index: usize,
+        op: &LinearOp,
+    ) -> Result<(), Self::Error> {
+        if let LinearOp::PureCall { site, .. } = op {
+            self.require_site(
+                "SolveModel scalar program",
+                site,
+                linear_op_slice_span(kind),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl ModelPureCallSiteValidator<'_> {
+    fn require_site(
+        &self,
+        context: &'static str,
+        site: &SolvePureCallSite,
+        span: Option<Span>,
+    ) -> Result<(), SolveProblemShapeContractError> {
+        if self.table.matches_site(site) {
+            return Ok(());
+        }
+        Err(SolveProblemShapeContractError::PureCallSiteMismatch {
+            context,
+            owner: site.owner().index(),
+            span,
+        })
+    }
+}
+
+const fn linear_op_slice_span(kind: LinearOpSliceKind) -> Option<Span> {
+    match kind {
+        LinearOpSliceKind::ScalarProgram { span, .. } => span,
+        LinearOpSliceKind::GuardedAssignmentProgram { span, .. }
+        | LinearOpSliceKind::MatMulLhs { span, .. }
+        | LinearOpSliceKind::MatMulRhs { span, .. }
+        | LinearOpSliceKind::LinSolveSetup { span, .. }
+        | LinearOpSliceKind::MapBase { span, .. }
+        | LinearOpSliceKind::AffineStencilBase { span, .. } => Some(span),
+    }
+}
+
 fn validate_variable_storage_runs(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
@@ -768,6 +957,12 @@ fn validate_variable_storage_runs(
                 "value kind disagrees with its typed variable role",
             ));
         }
+        if !variable_time_domain_matches_role(declaration, storage.role) {
+            return Err(variable_storage_contract(
+                variable,
+                "effective time domain disagrees with its typed variable role",
+            ));
+        }
         let end = base.checked_add(storage.scalar_count).ok_or_else(|| {
             variable_storage_contract(variable, "storage scalar range overflowed")
         })?;
@@ -779,6 +974,27 @@ fn validate_variable_storage_runs(
         }
     }
     Ok(())
+}
+
+fn variable_time_domain_matches_role(
+    declaration: SolveVariableDeclaration,
+    role: SolveVariableStorageRole,
+) -> bool {
+    match role {
+        SolveVariableStorageRole::Parameter | SolveVariableStorageRole::Constant => {
+            declaration.time_domain() == SolveVariableTimeDomain::Static
+        }
+        SolveVariableStorageRole::DiscreteReal | SolveVariableStorageRole::DiscreteValue => {
+            declaration.time_domain() == SolveVariableTimeDomain::EventDiscrete
+        }
+        SolveVariableStorageRole::Algebraic | SolveVariableStorageRole::Output => matches!(
+            declaration.time_domain(),
+            SolveVariableTimeDomain::ContinuousTime | SolveVariableTimeDomain::EventDiscontinuous
+        ),
+        SolveVariableStorageRole::ExternalInput | SolveVariableStorageRole::State => {
+            declaration.time_domain() == SolveVariableTimeDomain::ContinuousTime
+        }
+    }
 }
 
 fn variable_storage_contract(
@@ -801,6 +1017,7 @@ struct EventIterationClaims {
     pre_indices: BTreeSet<usize>,
     scalar_rows: BTreeSet<usize>,
     structured_updates: BTreeSet<usize>,
+    guarded_ranges: BTreeSet<(usize, usize)>,
 }
 
 fn validate_event_iteration_plan(
@@ -833,7 +1050,8 @@ fn validate_event_iteration_plan(
         ));
     }
     validate_scalar_event_producers(problem, &claims.scalar_rows)?;
-    validate_structured_event_producers(problem, &claims.structured_updates)
+    validate_structured_event_producers(problem, &claims.structured_updates)?;
+    validate_guarded_event_producers(problem, &claims.guarded_ranges)
 }
 
 fn validate_event_iteration_run(
@@ -989,6 +1207,57 @@ fn validate_event_iteration_owner(
                 &mut claims.structured_updates,
             )?;
         }
+        EventIterationOwner::GuardedAssignment {
+            program_index,
+            target_range_index,
+        } => {
+            validate_guarded_event_owner(
+                problem,
+                row,
+                program_index,
+                target_range_index,
+                storage,
+                &mut claims.guarded_ranges,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_guarded_event_owner(
+    problem: &SolveProblem,
+    row: usize,
+    program_index: usize,
+    target_range_index: usize,
+    storage: SolveVariableStorageRun,
+    claimed_ranges: &mut BTreeSet<(usize, usize)>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let program = problem
+        .discrete
+        .guarded_assignments
+        .get(program_index)
+        .ok_or_else(|| event_iteration_contract(row, "guarded owner is out of bounds"))?;
+    let range = program
+        .target_ranges()
+        .get(target_range_index)
+        .ok_or_else(|| event_iteration_contract(row, "guarded target range is out of bounds"))?;
+    if range.base() != storage.base || range.count() != storage.scalar_count {
+        return Err(event_iteration_contract(
+            row,
+            "guarded target range does not define the run",
+        ));
+    }
+    if program.role() != DiscreteRowRole::Equation {
+        return Err(event_iteration_contract(
+            row,
+            "guarded event-plan owner is not an equation",
+        ));
+    }
+    if !claimed_ranges.insert((program_index, target_range_index)) {
+        return Err(event_iteration_contract(
+            row,
+            "guarded target range is claimed more than once",
+        ));
     }
     Ok(())
 }
@@ -1152,6 +1421,44 @@ fn validate_structured_event_producers(
                 update_index,
                 "an external input cannot have a structured producer",
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_guarded_event_producers(
+    problem: &SolveProblem,
+    claimed_ranges: &BTreeSet<(usize, usize)>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let layout = &problem.solve_layout;
+    for (program_index, program) in problem.discrete.guarded_assignments.iter().enumerate() {
+        for (target_range_index, range) in program.target_ranges().iter().enumerate() {
+            let storage_variable = storage_variable_for_slot(layout, range.base())
+                .map_err(|detail| event_iteration_contract(program_index, detail))?;
+            let is_discrete = storage_variable.is_some_and(|variable| {
+                layout.variable_storage_runs[variable]
+                    .event_iteration_kind()
+                    .is_some()
+            });
+            let claimed = claimed_ranges.contains(&(program_index, target_range_index));
+            if program.role() == DiscreteRowRole::Equation && (!is_discrete || !claimed) {
+                return Err(event_iteration_contract(
+                    program_index,
+                    "a guarded equation target is not owned by exactly one typed event-plan variable",
+                ));
+            }
+            if is_discrete && !claimed {
+                return Err(event_iteration_contract(
+                    program_index,
+                    "a guarded discrete target is not owned by its plan run",
+                ));
+            }
+            if external_input_storage_contains(layout, range.base()) {
+                return Err(event_iteration_contract(
+                    program_index,
+                    "an external input cannot have a guarded producer",
+                ));
+            }
         }
     }
     Ok(())
@@ -1333,6 +1640,8 @@ fn validate_discrete_system_shape(
         validate_indices("discrete.clock_owners", &[clock.index()], clock_count)?;
     }
     validate_structured_discrete_shape(problem, clock_count)?;
+    validate_guarded_assignment_shape(problem, clock_count)?;
+    validate_event_transaction_shape(problem, clock_count)?;
     validate_count(
         "clocks.activation_parameter_indices",
         clock_count,
@@ -1347,6 +1656,130 @@ fn validate_discrete_system_shape(
         "clocks.activation_parameter_indices",
         &problem.clocks.activation_parameter_indices,
     )?;
+    Ok(())
+}
+
+fn validate_event_transaction_shape(
+    problem: &SolveProblem,
+    clock_count: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    for (program_index, program) in problem.discrete.event_transactions.iter().enumerate() {
+        if let Some(clock) = program.clock_owner() {
+            validate_indices(
+                "discrete.event_transactions.clock_owner",
+                &[clock.index()],
+                clock_count,
+            )?;
+        }
+        for input in program.inputs() {
+            validate_event_transaction_storage_range(
+                "discrete.event_transactions.input",
+                input.source(),
+                input.value_type().scalar_count() as usize,
+                &problem.layout,
+                Some(program.span()),
+            )?;
+        }
+        for target in program.targets() {
+            validate_event_transaction_storage_range(
+                "discrete.event_transactions.target",
+                target.base(),
+                target.value_type().scalar_count() as usize,
+                &problem.layout,
+                Some(program.span()),
+            )?;
+        }
+        if program.assertions().iter().any(|action| {
+            action
+                .clock_owner
+                .is_some_and(|clock| clock.index() >= clock_count)
+        }) {
+            return Err(SolveProblemShapeContractError::EventTransactionProgram {
+                program_index,
+                detail: "assertion clock owner is out of bounds",
+                span: Some(program.span()),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_event_transaction_storage_range(
+    context: &'static str,
+    slot: ScalarSlot,
+    count: usize,
+    layout: &VarLayout,
+    span: Option<Span>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let (storage, start, extent) = match slot {
+        ScalarSlot::Y { index, .. } => ("Y", index, layout.y_scalars()),
+        ScalarSlot::P { index, .. } => ("P", index, layout.p_scalars()),
+        ScalarSlot::Time | ScalarSlot::Constant(_) => return Ok(()),
+    };
+    let end = start.checked_add(count).ok_or(
+        SolveProblemShapeContractError::VariableIndexOutOfBounds {
+            context,
+            storage,
+            index: usize::MAX,
+            extent,
+            span,
+        },
+    )?;
+    if end > extent {
+        return Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
+            context,
+            storage,
+            index: end - 1,
+            extent,
+            span,
+        });
+    }
+    Ok(())
+}
+
+fn validate_guarded_assignment_shape(
+    problem: &SolveProblem,
+    clock_count: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    for (program_index, program) in problem.discrete.guarded_assignments.iter().enumerate() {
+        variable_bounds::validate_guarded_assignment_variable_bounds(
+            program,
+            program_index,
+            &problem.layout,
+        )?;
+        if let Some(clock) = program.clock_owner() {
+            validate_indices(
+                "discrete.guarded_assignments.clock_owner",
+                &[clock.index()],
+                clock_count,
+            )?;
+        }
+        for range in program.target_ranges() {
+            let (storage, base, extent) = match range.base() {
+                ScalarSlot::Y { index, .. } => ("Y", index, problem.layout.y_scalars()),
+                ScalarSlot::P { index, .. } => ("P", index, problem.layout.p_scalars()),
+                ScalarSlot::Time | ScalarSlot::Constant(_) => {
+                    unreachable!("checked guarded target range uses only Y/P storage")
+                }
+            };
+            let end = base.checked_add(range.count()).ok_or(
+                SolveProblemShapeContractError::GuardedAssignmentProgram {
+                    program_index,
+                    detail: "target range overflows",
+                    span: Some(program.span()),
+                },
+            )?;
+            if end > extent {
+                return Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
+                    context: "discrete.guarded_assignments.target",
+                    storage,
+                    index: end - 1,
+                    extent,
+                    span: Some(program.span()),
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1449,6 +1882,14 @@ fn validate_event_partition_shape(
         events.actions.len(),
         events.action_conditions.len(),
     )?;
+    let clock_count = problem.clocks.periodic_event_schedules.len();
+    for owner in events
+        .actions
+        .iter()
+        .filter_map(|action| action.clock_owner)
+    {
+        validate_indices("events.actions.clock_owner", &[owner.index()], clock_count)?;
+    }
     validate_terminal_event_shape(problem)?;
     validate_delay_partition_shape(problem)
 }

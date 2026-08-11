@@ -140,6 +140,7 @@ or scalar-type-incompatible projection is rejected at this owner.
 |---|---|---|
 | `ComputeNode::Map` is elementwise | Solve IR | Pointwise tensor semantics |
 | `ComputeNode::AffineStencil` is neighborhood access | Solve IR | Affine offset semantics |
+| Runtime tensor access/update stays aggregate-native | Solve IR typed programs | Compact affine indexing instead of extent-sized scalar selection |
 | Solve grouping is semantic | `rumoca-phase-solve` | Backends do not redefine IR |
 | Scalar fallback uses shared scalarization | `rumoca-eval-solve` | One ordering implementation |
 | Structured B.1c uses compact map and target map | Solve IR | Preserve the authoritative discrete family |
@@ -156,6 +157,16 @@ node) together with a compact affine target map. Discrete row role, pre mode,
 observation policy, and clock owner derive from the structured owner. A runtime
 that needs scalar programs requests the shared scalar view from
 `rumoca-eval-solve`; `rumoca-phase-solve` does not scalarize the owner.
+
+A runtime tensor index, slice, or update is a first-class shape-checked
+aggregate operation. Its dimensions, index operands, one-based Modelica index
+conversion, row-major affine address, result shape, and out-of-range behavior
+are constructed once. Phase lowering and canonical Solve construction do not
+enumerate coordinates into scalar registers, repeated operations, or select
+chains. A scalar consumer receives a projection of this aggregate owner; it
+does not become the owner. Evaluators and native backends execute the compact
+operation directly. Text backends may materialize target-language coordinate
+operations only while rendering the final checked template view.
 
 ### 5. Ownership Boundaries
 

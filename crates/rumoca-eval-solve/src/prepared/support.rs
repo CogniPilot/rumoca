@@ -288,9 +288,12 @@ pub(super) fn prepare_row_output_metadata(
     let mut owners =
         prepared_vec_with_capacity(output_count, "prepared single-output ownership", span)?;
     owners.resize(output_count, PreparedOutputOwner::Unseen);
+    let mut positions =
+        prepared_vec_with_capacity(output_count, "prepared logical output positions", span)?;
+    positions.resize(output_count, None);
     for (row_idx, range) in offsets.windows(2).enumerate() {
         let row_output_count = range[1] - range[0];
-        for stored_ordinal in range[0]..range[1] {
+        for (output_offset, stored_ordinal) in (range[0]..range[1]).enumerate() {
             let output_index = *block.output_indices().get(stored_ordinal).ok_or_else(|| {
                 invalid_prepared_row_with_span(
                     format!(
@@ -309,6 +312,7 @@ pub(super) fn prepare_row_output_metadata(
                 (PreparedOutputOwner::Unseen, 1) => PreparedOutputOwner::Single(row_idx),
                 _ => PreparedOutputOwner::Ambiguous,
             };
+            positions[output_index].get_or_insert((row_idx, output_offset));
         }
     }
     let single_output_rows = owners
@@ -321,6 +325,7 @@ pub(super) fn prepare_row_output_metadata(
     Ok(PreparedRowOutputMetadata {
         offsets,
         single_rows: single_output_rows,
+        positions,
     })
 }
 
@@ -328,6 +333,7 @@ pub(super) fn prepare_row_output_metadata(
 pub(super) struct PreparedRowOutputMetadata {
     pub(super) offsets: Vec<usize>,
     pub(super) single_rows: Vec<Option<usize>>,
+    pub(super) positions: Vec<Option<(usize, usize)>>,
 }
 
 #[derive(Clone, Copy)]

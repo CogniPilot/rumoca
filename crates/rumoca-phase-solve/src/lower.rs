@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 
 use rumoca_core::{ComprehensionScalarView, Span};
@@ -16,12 +17,16 @@ mod initial_discrete;
 mod initial_parameters;
 mod initial_pins;
 mod initial_projection;
+mod profile;
 mod scalar;
-use scalar::{ScalarCompiler, ScalarSelector, ScaledDerivativeProgram};
+pub(crate) mod typed_functions;
+use scalar::{
+    FunctionConditionalOwnerRegistry, ScalarCompiler, ScalarSelector, ScaledDerivativeProgram,
+};
 
 pub(crate) fn lower_solve_problem(
     prepared: structural::PreparedSystem<'_, '_>,
-) -> Result<solve::SolveProblem, LowerError> {
+) -> Result<(solve::SolveProblem, solve::SolvePureCallTable), LowerError> {
     let structural::PreparedSystem {
         view,
         manifold,
@@ -45,8 +50,16 @@ pub(crate) fn lower_solve_problem(
     let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;
     let (discrete, mut events) =
         events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
-    call_scoped_actions::append_collected_actions(&lowered, &discrete, &mut events)?;
-    Ok(solve::SolveProblem {
+    call_scoped_actions::append_collected_actions(view, &lowered, &clocks, &discrete, &mut events)?;
+    let pure_calls = lowered.pure_calls.borrow_mut().finish();
+    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
+        eprintln!(
+            "rumoca-ir-profile kind=pure-call-table owners={}",
+            pure_calls.owners().len()
+        );
+        profile::typed_owner_calls(&pure_calls);
+    }
+    let problem = solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
         layout: lowered.layout,
         solve_layout: lowered.solve_layout,
@@ -55,12 +68,17 @@ pub(crate) fn lower_solve_problem(
         discrete,
         events,
         clocks: clocks.partition,
-    })
+    };
+    solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
+    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
+        profile::pure_call_sites(&problem);
+    }
+    Ok((problem, pure_calls))
 }
 
 struct StructuralMatching<'dae> {
     rows: HashMap<usize, UnknownId<'dae>>,
-    algebraic_blocks: Vec<Vec<UnknownId<'dae>>>,
+    algebraic_blocks: Vec<Vec<(usize, UnknownId<'dae>)>>,
 }
 
 fn structural_matching<'dae>(
@@ -103,18 +121,24 @@ fn structural_matching<'dae>(
 fn algebraic_projection_blocks<'dae>(
     blocks: &[BltBlock<'dae>],
     rows: &HashMap<usize, UnknownId<'dae>>,
-) -> Result<Vec<Vec<UnknownId<'dae>>>, LowerError> {
+) -> Result<Vec<Vec<(usize, UnknownId<'dae>)>>, LowerError> {
     let mut algebraic_blocks = Vec::new();
     for block in blocks {
         match block {
-            BltBlock::Scalar { unknown, .. } if matches!(unknown, UnknownId::Algebraic { .. }) => {
-                algebraic_blocks.push(vec![*unknown]);
+            BltBlock::Scalar { equation, unknown }
+                if matches!(unknown, UnknownId::Algebraic { .. }) =>
+            {
+                algebraic_blocks.push(vec![(equation.0, *unknown)]);
             }
-            BltBlock::AlgebraicLoop { unknowns, .. } => {
-                let algebraic = unknowns
+            BltBlock::AlgebraicLoop { equations, .. } => {
+                let algebraic = equations
                     .iter()
-                    .copied()
-                    .filter(|unknown| matches!(unknown, UnknownId::Algebraic { .. }))
+                    .filter_map(|equation| {
+                        rows.get(&equation.0)
+                            .copied()
+                            .filter(|unknown| matches!(unknown, UnknownId::Algebraic { .. }))
+                            .map(|unknown| (equation.0, unknown))
+                    })
                     .collect::<Vec<_>>();
                 if !algebraic.is_empty() {
                     algebraic_blocks.push(algebraic);
@@ -132,7 +156,7 @@ fn algebraic_projection_blocks<'dae>(
 fn append_structured_algebraic_blocks<'dae>(
     family: &rumoca_phase_structural::StructuredScalarBlock,
     rows: &HashMap<usize, UnknownId<'dae>>,
-    blocks: &mut Vec<Vec<UnknownId<'dae>>>,
+    blocks: &mut Vec<Vec<(usize, UnknownId<'dae>)>>,
 ) -> Result<(), LowerError> {
     for row in family.scalar_rows() {
         let (EquationRef(equation), _) = row.map_err(|error| LowerError::Structural {
@@ -142,7 +166,7 @@ fn append_structured_algebraic_blocks<'dae>(
         let Some(unknown @ UnknownId::Algebraic { .. }) = rows.get(&equation) else {
             continue;
         };
-        blocks.push(vec![*unknown]);
+        blocks.push(vec![(equation, *unknown)]);
     }
     Ok(())
 }
@@ -306,6 +330,7 @@ struct ContinuousContext<'borrow, 'dae> {
     layout: &'borrow LoweredLayout<'dae>,
     matching: &'borrow HashMap<usize, UnknownId<'dae>>,
     derivatives: &'borrow DerivativeRowIndex<'dae>,
+    function_conditional_owners: &'borrow RefCell<FunctionConditionalOwnerRegistry<'dae>>,
 }
 
 /// The two row streams a continuous lowering fills.
@@ -322,15 +347,45 @@ fn lower_continuous<'dae>(
     derivatives: &DerivativeRowIndex<'dae>,
     manifold: &[dae::ExprId<'dae>],
 ) -> Result<solve::ContinuousSolveSystem, LowerError> {
+    let function_conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());
     let context = ContinuousContext {
         view,
         layout,
         matching: &structural.rows,
         derivatives,
+        function_conditional_owners: &function_conditional_owners,
     };
     let mut output = ContinuousOutput::default();
     let mut row = 0usize;
-    for owner in view.continuous_owners() {
+    let owners = view.continuous_owners().collect::<Vec<_>>();
+    let mut owner_index = 0usize;
+    while owner_index < owners.len() {
+        if let Some(first) = continuous_aggregate_call_candidate(context, row, owners[owner_index])?
+        {
+            let mut group = vec![first];
+            let mut next_owner = owner_index + 1;
+            let mut next_row = first.end_row();
+            while let Some(&owner) = owners.get(next_owner) {
+                let Some(candidate) =
+                    continuous_aggregate_call_candidate(context, next_row, owner)?
+                else {
+                    break;
+                };
+                if candidate.call != first.call {
+                    break;
+                }
+                next_row = candidate.end_row();
+                group.push(candidate);
+                next_owner += 1;
+            }
+            if group.len() > 1 {
+                lower_continuous_aggregate_call_group(context, &mut output, &group)?;
+                row = next_row;
+                owner_index = next_owner;
+                continue;
+            }
+        }
+        let owner = owners[owner_index];
         match owner {
             dae::ContinuousOwnerView::Residual { equation, .. } => {
                 let count = scalar_count(view, equation.residual());
@@ -351,6 +406,24 @@ fn lower_continuous<'dae>(
                     output.derivative.push_tensor(group);
                     continue;
                 }
+                if count > 1
+                    && lower_algebraic_scalar_outputs(
+                        context,
+                        &mut output,
+                        row,
+                        equation.residual(),
+                        0..count,
+                        equation.provenance().span(),
+                    )?
+                {
+                    row = checked_ordinal_add(
+                        row,
+                        count,
+                        "continuous row ordinal overflow",
+                        equation.provenance().span(),
+                    )?;
+                    continue;
+                }
                 for scalar in 0..count {
                     lower_continuous_row(
                         context,
@@ -368,6 +441,7 @@ fn lower_continuous<'dae>(
                 row = lower_continuous_family(context, &mut output, row, family)?;
             }
         }
+        owner_index += 1;
     }
     let ContinuousOutput {
         residual,
@@ -391,6 +465,186 @@ fn lower_continuous<'dae>(
     })
 }
 
+#[derive(Clone, Copy)]
+struct ContinuousAggregateCallCandidate<'dae> {
+    expression: dae::ExprId<'dae>,
+    call: dae::ExprId<'dae>,
+    first_row: usize,
+    output_count: usize,
+}
+
+impl ContinuousAggregateCallCandidate<'_> {
+    fn end_row(self) -> usize {
+        self.first_row
+            .checked_add(self.output_count)
+            .expect("candidate construction proved its output ordinal")
+    }
+}
+
+fn continuous_aggregate_call_candidate<'dae>(
+    context: ContinuousContext<'_, 'dae>,
+    first_row: usize,
+    owner: dae::ContinuousOwnerView<'dae>,
+) -> Result<Option<ContinuousAggregateCallCandidate<'dae>>, LowerError> {
+    let (expression, output_count) = match owner {
+        dae::ContinuousOwnerView::Residual { equation, .. } => {
+            let expression = equation.residual();
+            (expression, scalar_count(context.view, expression))
+        }
+        dae::ContinuousOwnerView::Structured { family, .. }
+            if family.scalar_view() == ComprehensionScalarView::RowMajorProjection
+                && family.bodies().len() == 1 =>
+        {
+            let expression = family
+                .bodies()
+                .get(0)
+                .expect("one checked structured-family body resolves");
+            if context
+                .view
+                .expression(expression)
+                .expect("checked structured-family expression resolves")
+                .binder_domain()
+                .is_some()
+            {
+                return Ok(None);
+            }
+            (expression, family.scalar_rows() as usize)
+        }
+        _ => return Ok(None),
+    };
+    let Some(call) = pure_aggregate_call_projection(context.view, expression) else {
+        return Ok(None);
+    };
+    let end = first_row.checked_add(output_count).ok_or_else(|| {
+        LowerError::contract(
+            "continuous aggregate-call output ordinal overflow",
+            context
+                .view
+                .expression(expression)
+                .expect("checked candidate expression resolves")
+                .provenance()
+                .span(),
+        )
+    })?;
+    if !(first_row..end).all(|row| {
+        matches!(
+            context.matching.get(&row),
+            Some(UnknownId::Algebraic { .. })
+        )
+    }) {
+        return Ok(None);
+    }
+    Ok(Some(ContinuousAggregateCallCandidate {
+        expression,
+        call,
+        first_row,
+        output_count,
+    }))
+}
+
+fn pure_aggregate_call_projection<'dae>(
+    view: dae::DaeView<'dae>,
+    residual: dae::ExprId<'dae>,
+) -> Option<dae::ExprId<'dae>> {
+    let dae::ExpressionOperation::Binary {
+        operator: dae::BinaryOperator::Subtract,
+        lhs,
+        rhs,
+    } = view.expression(residual)?.operation()
+    else {
+        return None;
+    };
+    if !algebraic_projection_target(view, lhs) {
+        return None;
+    }
+    let mut projection = rhs;
+    let mut projected = false;
+    loop {
+        match view.expression(projection)?.operation() {
+            dae::ExpressionOperation::Field { base, .. }
+            | dae::ExpressionOperation::Index { base, .. } => {
+                projected = true;
+                projection = base;
+            }
+            dae::ExpressionOperation::Call { function, .. }
+                if projected
+                    && view
+                        .function(function)?
+                        .external()
+                        .is_none_or(|external| external.purity().is_pure()) =>
+            {
+                return Some(projection);
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn algebraic_projection_target<'dae>(
+    view: dae::DaeView<'dae>,
+    mut expression: dae::ExprId<'dae>,
+) -> bool {
+    loop {
+        match view.expression(expression).map(|node| node.operation()) {
+            Some(dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(_))) => {
+                return true;
+            }
+            Some(dae::ExpressionOperation::Index { base, .. }) => expression = base,
+            _ => return false,
+        }
+    }
+}
+
+fn lower_continuous_aggregate_call_group<'borrow, 'dae>(
+    context: ContinuousContext<'borrow, 'dae>,
+    output: &mut ContinuousOutput,
+    group: &[ContinuousAggregateCallCandidate<'dae>],
+) -> Result<(), LowerError> {
+    let first = group
+        .first()
+        .expect("caller forms only nonempty aggregate-call groups");
+    debug_assert!(group.iter().all(|candidate| candidate.call == first.call));
+    let program = ScalarCompiler::new(context.view, context.layout, None)
+        .with_function_conditional_owners(context.function_conditional_owners)
+        .with_derivative_definitions(context.derivatives)
+        .aggregate_program(group.iter().map(|candidate| candidate.expression))?;
+    let outputs = group
+        .iter()
+        .flat_map(|candidate| candidate.first_row..candidate.end_row());
+    let span = context
+        .view
+        .expression(first.call)
+        .expect("checked aggregate call resolves")
+        .provenance()
+        .span();
+    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
+        let function = match context
+            .view
+            .expression(first.call)
+            .expect("checked aggregate call resolves")
+            .operation()
+        {
+            dae::ExpressionOperation::Call { function, .. } => context
+                .view
+                .function(function)
+                .expect("checked aggregate call function resolves")
+                .name()
+                .to_string(),
+            _ => unreachable!("candidate construction proved an aggregate call"),
+        };
+        eprintln!(
+            "rumoca-continuous-call-group function={function} members={} outputs={}",
+            group.len(),
+            group
+                .iter()
+                .map(|candidate| candidate.output_count)
+                .sum::<usize>()
+        );
+    }
+    output.residual.push_outputs(program, span, outputs);
+    Ok(())
+}
+
 fn lower_algebraic_projection<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
@@ -404,13 +658,19 @@ fn lower_algebraic_projection<'dae>(
 > {
     let solver_count = layout.solve_layout.solver_scalar_count();
     let state_count = layout.solve_layout.state_scalar_count();
-    let implicit_output_count = if state_count == solver_count {
-        0
-    } else {
-        solver_count
-    };
+    let implicit_output_count = structural
+        .rows
+        .iter()
+        .filter_map(|(row, unknown)| matches!(unknown, UnknownId::Algebraic { .. }).then_some(*row))
+        .max()
+        .map_or(0, |row| row + 1);
     let mut targets = vec![None; implicit_output_count];
-    for unknown in structural.rows.values().copied() {
+    let mut targeted = vec![false; solver_count];
+    for (row, unknown) in structural
+        .rows
+        .iter()
+        .map(|(row, unknown)| (*row, *unknown))
+    {
         let UnknownId::Algebraic { variable, scalar } = unknown else {
             continue;
         };
@@ -419,20 +679,23 @@ fn lower_algebraic_projection<'dae>(
         let solve::ScalarSlot::Y { index, .. } = target else {
             unreachable!("algebraic declarations are Y slots")
         };
-        let entry = targets.get_mut(index).ok_or_else(|| {
-            LowerError::contract("matched algebraic target is outside Solve Y storage", span)
-        })?;
-        if entry.replace(target).is_some() {
+        if targeted[index] {
             return Err(LowerError::contract(
                 "two continuous rows matched the same algebraic target",
                 span,
             ));
         }
+        let entry = targets.get_mut(row).ok_or_else(|| {
+            LowerError::contract(
+                "matched algebraic row is outside the continuous residual",
+                span,
+            )
+        })?;
+        *entry = Some(target);
+        targeted[index] = true;
     }
     let algebraic_indices = state_count..solver_count;
-    let missing = algebraic_indices
-        .clone()
-        .find(|index| targets[*index].is_none());
+    let missing = algebraic_indices.clone().find(|index| !targeted[*index]);
     if let Some(index) = missing {
         return Err(LowerError::non_computable(
             format!("structural proof omitted algebraic Solve slot {index}"),
@@ -443,9 +706,10 @@ fn lower_algebraic_projection<'dae>(
     let blocks = structural
         .algebraic_blocks
         .iter()
-        .map(|unknowns| {
-            let mut indices = Vec::with_capacity(unknowns.len());
-            for unknown in unknowns {
+        .map(|matches| {
+            let mut rows = Vec::with_capacity(matches.len());
+            let mut indices = Vec::with_capacity(matches.len());
+            for (row, unknown) in matches {
                 let UnknownId::Algebraic { variable, scalar } = *unknown else {
                     unreachable!("structural algebraic block contains only algebraics")
                 };
@@ -459,10 +723,11 @@ fn lower_algebraic_projection<'dae>(
                     unreachable!("algebraic declarations are Y slots")
                 };
                 covered[index] = true;
+                rows.push(*row);
                 indices.push(index);
             }
             Ok(solve::AlgebraicProjectionBlock {
-                rows: indices.clone(),
+                rows,
                 y_indices: indices,
             })
         })
@@ -656,6 +921,43 @@ fn lower_continuous_family<'dae>(
             output.derivative.push_tensor(group);
             return Ok(row);
         }
+        if view
+            .expression(body)
+            .expect("checked family body resolves")
+            .binder_domain()
+            .is_none()
+        {
+            let scalars = (0..domain.scalar_count() as usize)
+                .map(|point| {
+                    family
+                        .scalar_view()
+                        .body_scalar(point, domain.extents())
+                        .expect("checked family view projects its domain point")
+                })
+                .collect::<Vec<_>>();
+            if lower_derivative_scalar_outputs(
+                context,
+                output,
+                row,
+                body,
+                &scalars,
+                family.provenance().span(),
+            )? || lower_algebraic_scalar_outputs(
+                context,
+                output,
+                row,
+                body,
+                scalars,
+                family.provenance().span(),
+            )? {
+                return checked_ordinal_add(
+                    row,
+                    domain.scalar_count() as usize,
+                    "continuous row ordinal overflow",
+                    family.provenance().span(),
+                );
+            }
+        }
     }
     for point in 0..domain.scalar_count() as usize {
         let values = domain
@@ -666,6 +968,119 @@ fn lower_continuous_family<'dae>(
         row = lower_continuous_family_point(context, output, row, family, point, &values)?;
     }
     Ok(row)
+}
+
+fn lower_derivative_scalar_outputs<'dae>(
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
+    first_row: usize,
+    expression: dae::ExprId<'dae>,
+    scalars: &[usize],
+    span: Span,
+) -> Result<bool, LowerError> {
+    let mut expressions = Vec::with_capacity(scalars.len());
+    let mut targets = Vec::with_capacity(scalars.len());
+    for (offset, &scalar) in scalars.iter().enumerate() {
+        let row = first_row
+            .checked_add(offset)
+            .ok_or_else(|| LowerError::contract("continuous row ordinal overflow", span))?;
+        let Some(UnknownId::Derivative {
+            state,
+            scalar: target,
+        }) = context.matching.get(&row).copied()
+        else {
+            return Ok(false);
+        };
+        let DerivativeRhs::Explicit { expression, scalar } = derivative_rhs(
+            context.view,
+            expression,
+            scalar,
+            None,
+            state,
+            target as usize,
+        )?
+        else {
+            return Ok(false);
+        };
+        expressions.push((expression, scalar));
+        let solve::ScalarSlot::Y { index, .. } =
+            variable_scalar_slot(context.layout, state.index(), target as usize, span)?
+        else {
+            unreachable!("state declarations are Y slots")
+        };
+        targets.push(index);
+    }
+    if targets
+        .windows(2)
+        .any(|pair| pair[0].checked_add(1) != Some(pair[1]))
+    {
+        return Ok(false);
+    }
+    let complete_expression = expressions
+        .first()
+        .map(|&(expression, _)| expression)
+        .filter(|&expression| {
+            expressions.len() == scalar_count(context.view, expression)
+                && expressions
+                    .iter()
+                    .enumerate()
+                    .all(|(scalar, &(candidate, candidate_scalar))| {
+                        candidate == expression && candidate_scalar == scalar
+                    })
+        });
+    let compiler = ScalarCompiler::new(context.view, context.layout, None)
+        .with_function_conditional_owners(context.function_conditional_owners);
+    let program = if let Some(expression) = complete_expression {
+        compiler.aggregate_program([expression])?
+    } else {
+        compiler.program_outputs(expressions)?
+    };
+    output.derivative.push_outputs(program, span, targets);
+    Ok(true)
+}
+
+fn lower_algebraic_scalar_outputs<'dae>(
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
+    first_row: usize,
+    expression: dae::ExprId<'dae>,
+    scalars: impl IntoIterator<Item = usize>,
+    span: Span,
+) -> Result<bool, LowerError> {
+    let scalars = scalars.into_iter().collect::<Vec<_>>();
+    let mut rows = Vec::with_capacity(scalars.len());
+    for offset in 0..scalars.len() {
+        let row = first_row
+            .checked_add(offset)
+            .ok_or_else(|| LowerError::contract("continuous row ordinal overflow", span))?;
+        let Some(UnknownId::Algebraic { .. }) = context.matching.get(&row).copied() else {
+            return Ok(false);
+        };
+        rows.push(row);
+    }
+    let compiler = ScalarCompiler::new(context.view, context.layout, None)
+        .with_function_conditional_owners(context.function_conditional_owners)
+        .with_derivative_definitions(context.derivatives);
+    let aggregate = scalars.len() == scalar_count(context.view, expression)
+        && scalars.iter().copied().eq(0..scalars.len());
+    if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && scalars.len() > 1 {
+        eprintln!(
+            "rumoca-continuous-aggregate rows={rows:?} scalars={scalars:?} count={} aggregate={aggregate} kind={:?}",
+            scalar_count(context.view, expression),
+            context
+                .view
+                .expression(expression)
+                .expect("checked continuous expression resolves")
+                .kind(),
+        );
+    }
+    let program = if aggregate {
+        compiler.aggregate_program([expression])?
+    } else {
+        compiler.program_outputs(scalars.into_iter().map(|scalar| (expression, scalar)))?
+    };
+    output.residual.push_outputs(program, span, rows);
+    Ok(true)
 }
 
 fn lower_continuous_family_point<'dae>(
@@ -713,6 +1128,7 @@ fn lower_continuous_row<'dae>(
         layout,
         matching,
         derivatives,
+        function_conditional_owners,
     } = context;
     let unknown = matching.get(&row).copied().ok_or_else(|| {
         LowerError::non_computable("structural proof omitted a continuous row", span)
@@ -732,7 +1148,9 @@ fn lower_continuous_row<'dae>(
             )?;
             let program = match rhs {
                 DerivativeRhs::Explicit { expression, scalar } => {
-                    ScalarCompiler::new(view, layout, domain_point).program(expression, scalar)?
+                    ScalarCompiler::new(view, layout, domain_point)
+                        .with_function_conditional_owners(function_conditional_owners)
+                        .program(expression, scalar)?
                 }
                 DerivativeRhs::Scaled {
                     numerator,
@@ -740,16 +1158,16 @@ fn lower_continuous_row<'dae>(
                     coefficient,
                     coefficient_scalar,
                     span,
-                } => ScalarCompiler::new(view, layout, domain_point).scaled_derivative_program(
-                    ScaledDerivativeProgram {
+                } => ScalarCompiler::new(view, layout, domain_point)
+                    .with_function_conditional_owners(function_conditional_owners)
+                    .scaled_derivative_program(ScaledDerivativeProgram {
                         numerator,
                         numerator_scalar,
                         coefficient,
                         coefficient_scalar,
                         negate: false,
                         span,
-                    },
-                )?,
+                    })?,
             };
             let target = variable_scalar_slot(layout, state.index(), target as usize, span)?;
             let solve::ScalarSlot::Y { index, .. } = target else {
@@ -757,20 +1175,14 @@ fn lower_continuous_row<'dae>(
             };
             output.derivative.push_scalar(program, span, index);
         }
-        UnknownId::Algebraic {
-            variable,
-            scalar: target,
-        } => {
+        UnknownId::Algebraic { .. } => {
             // An algebraic row may read a derivative another row defines; give
             // this compiler the index that resolves it to that definition.
             let program = ScalarCompiler::new(view, layout, domain_point)
+                .with_function_conditional_owners(function_conditional_owners)
                 .with_derivative_definitions(derivatives)
                 .program(expression, scalar)?;
-            let target = variable_scalar_slot(layout, variable.index(), target as usize, span)?;
-            let solve::ScalarSlot::Y { index, .. } = target else {
-                unreachable!("algebraic declarations are Y slots")
-            };
-            output.residual.push(program, span, index);
+            output.residual.push(program, span, row);
         }
         UnknownId::Solver(_) | UnknownId::Unmatched { .. } => {
             return Err(LowerError::non_computable(
@@ -1536,6 +1948,17 @@ impl ScalarRows {
         self.output_indices.push(output);
     }
 
+    pub(super) fn push_outputs(
+        &mut self,
+        program: Vec<solve::LinearOp>,
+        span: Span,
+        outputs: impl IntoIterator<Item = usize>,
+    ) {
+        self.programs.push(program);
+        self.spans.push(span);
+        self.output_indices.extend(outputs);
+    }
+
     /// Append `other`, re-basing its output ordinals onto this block.
     ///
     /// Each row writes the block output at its own position, so a row appended
@@ -1572,7 +1995,7 @@ enum DerivativePiece {
     Scalar {
         program: Vec<solve::LinearOp>,
         span: Span,
-        output: usize,
+        outputs: Vec<usize>,
     },
     Tensor(Box<ImplicitTensorDerivative>),
 }
@@ -1580,7 +2003,7 @@ enum DerivativePiece {
 impl DerivativePiece {
     fn output_start(&self) -> usize {
         match self {
-            Self::Scalar { output, .. } => *output,
+            Self::Scalar { outputs, .. } => outputs[0],
             Self::Tensor(group) => group.output_start,
         }
     }
@@ -1591,7 +2014,16 @@ impl DerivativeRows {
         self.pieces.push(DerivativePiece::Scalar {
             program,
             span,
-            output,
+            outputs: vec![output],
+        });
+    }
+
+    fn push_outputs(&mut self, program: Vec<solve::LinearOp>, span: Span, outputs: Vec<usize>) {
+        debug_assert!(!outputs.is_empty());
+        self.pieces.push(DerivativePiece::Scalar {
+            program,
+            span,
+            outputs,
         });
     }
 
@@ -1622,12 +2054,13 @@ impl DerivativeRows {
                 DerivativePiece::Scalar {
                     program,
                     span,
-                    output,
+                    outputs,
                 } => {
-                    scalars.push(program, span, output);
+                    let output_count = outputs.len();
+                    scalars.push_outputs(program, span, outputs);
                     next_output = checked_ordinal_add(
                         next_output,
-                        1,
+                        output_count,
                         "derivative output ordinal overflow",
                         span,
                     )?;

@@ -36,6 +36,8 @@ impl Rk45Backend {
         self.next_step = snapshot.next_step;
         self.termination = None;
         self.located_event_state = None;
+        self.accepted_roots = None;
+        self.accepted_derivative = None;
         if self.time.to_bits() == snapshot.time.to_bits() {
             self.kernel.reset_to_fmu_state(&snapshot.component)?;
         } else {

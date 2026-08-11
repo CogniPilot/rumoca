@@ -406,14 +406,37 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         }
         LinearOp::LoadSeed { .. } => "LoadSeed",
         LinearOp::LoadIndexedP { .. } => "LoadIndexedP",
+        LinearOp::LoadIndexedRegister { .. } => "LoadIndexedRegister",
+        LinearOp::LoadIndexedFoldCarried { .. } => "LoadIndexedFoldCarried",
+        LinearOp::LoadIndexedFoldCapture { .. } => "LoadIndexedFoldCapture",
         LinearOp::LoadIndexedSeed { .. } => "LoadIndexedSeed",
+        LinearOp::LoadFoldCarried { .. } => "LoadFoldCarried",
+        LinearOp::LoadFoldIndex { .. } => "LoadFoldIndex",
+        LinearOp::LoadFoldCapture { .. } => "LoadFoldCapture",
+        LinearOp::LoadFunctionConditionalCapture { .. } => "LoadFunctionConditionalCapture",
+        LinearOp::LoadFunctionConditionalCaptureRange { .. } => {
+            "LoadFunctionConditionalCaptureRange"
+        }
         LinearOp::Move { .. } => "Move",
         LinearOp::Unary { .. } => "Unary",
         LinearOp::Binary { .. } => "Binary",
         LinearOp::Compare { .. } => "Compare",
         LinearOp::Select { .. } => "Select",
+        LinearOp::StoreOutputFoldTensorUpdate { .. } => "StoreOutputFoldTensorUpdate",
+        LinearOp::StoreOutputFunctionFold { .. } => "StoreOutputFunctionFold",
+        LinearOp::StoreOutputRange { .. } => "StoreOutputRange",
         LinearOp::StoreOutput { .. } => "StoreOutput",
         LinearOp::LinearSolveComponent { .. } => "LinearSolveComponent",
+        LinearOp::DotProduct { .. } => "DotProduct",
+        LinearOp::MatrixMultiply { .. } => "MatrixMultiply",
+        LinearOp::TensorBinary { .. } => "TensorBinary",
+        LinearOp::TensorCross { .. } => "TensorCross",
+        LinearOp::TensorTranspose { .. } => "TensorTranspose",
+        LinearOp::TensorConcatenate { .. } => "TensorConcatenate",
+        LinearOp::TensorUpdate { .. } => "TensorUpdate",
+        LinearOp::TensorFill { .. } => "TensorFill",
+        LinearOp::TensorIdentity { .. } => "TensorIdentity",
+        LinearOp::TensorLoad { .. } => "TensorLoad",
         LinearOp::TableBounds { .. } => "TableBounds",
         LinearOp::TableLookup { .. } => "TableLookup",
         LinearOp::TableLookupSlope { .. } => "TableLookupSlope",
@@ -424,6 +447,10 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::ImpureRandomInit { .. } => "ImpureRandomInit",
         LinearOp::ImpureRandom { .. } => "ImpureRandom",
         LinearOp::ImpureRandomInteger { .. } => "ImpureRandomInteger",
+        LinearOp::FunctionFold { .. } => "FunctionFold",
+        LinearOp::GuardedFunctionFold { .. } => "GuardedFunctionFold",
+        LinearOp::FunctionConditional { .. } => "FunctionConditional",
+        LinearOp::PureCall { .. } => "PureCall",
     }
 }
 

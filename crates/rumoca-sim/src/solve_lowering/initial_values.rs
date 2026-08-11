@@ -144,7 +144,7 @@ where
                 let slot = visible_variable_slot(self.problem, id, variable, scalar, &name)?;
                 programs.push(slot_projection(slot, variable.declaration().span())?);
                 spans.push(variable.declaration().span());
-                metadata.push(self.variable_meta(variable, name.clone()));
+                metadata.push(self.variable_meta(id, variable, name.clone()));
                 names.push(name);
             }
         }
@@ -213,9 +213,17 @@ where
 
     fn variable_meta(
         &self,
+        id: dae::VariableId<'dae>,
         variable: dae::VariableView<'dae>,
         name: String,
     ) -> solve::SolveVariableMeta {
+        let time_domain = self
+            .problem
+            .solve_layout
+            .variable_declarations
+            .get(id.index() as usize)
+            .expect("checked Solve declaration catalog follows dense DAE identity")
+            .time_domain();
         solve::SolveVariableMeta {
             name,
             source_span: variable.declaration().span(),
@@ -223,7 +231,7 @@ where
             is_state: variable.role() == dae::VariableRole::State,
             value_type: Some(format!("{:?}", variable.value_type().scalar_type())),
             variability: Some(format!("{:?}", variable.variability())),
-            time_domain: Some(time_domain(variable.role()).to_string()),
+            time_domain: Some(time_domain.as_str().to_string()),
             unit: variable.unit().map(str::to_string),
             start: variable
                 .start()
@@ -368,17 +376,6 @@ const fn role_name(role: dae::VariableRole) -> &'static str {
         dae::VariableRole::Output => "output",
         dae::VariableRole::DiscreteReal => "discrete-real",
         dae::VariableRole::DiscreteValue => "discrete-valued",
-    }
-}
-
-const fn time_domain(role: dae::VariableRole) -> &'static str {
-    match role {
-        dae::VariableRole::Parameter | dae::VariableRole::Constant => "static",
-        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue => "event-discrete",
-        dae::VariableRole::Input
-        | dae::VariableRole::State
-        | dae::VariableRole::Algebraic
-        | dae::VariableRole::Output => "continuous-time",
     }
 }
 

@@ -101,6 +101,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 pre_param_bindings: Vec::new(),
             },
         },
+        pure_calls: rumoca_ir_solve::SolvePureCallTable::default(),
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
                 structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),

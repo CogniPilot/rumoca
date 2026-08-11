@@ -28,13 +28,29 @@ mod tests;
 
 /// Lower one immutable checked DAE into the canonical Solve problem.
 pub fn lower_solve_problem(dae: &dae::Dae) -> Result<solve::SolveProblem, LowerError> {
+    lower_solve_package(dae).map(|package| package.problem)
+}
+
+/// One canonical numerical root plus its model-level typed call inventory.
+pub struct LoweredSolvePackage {
+    pub problem: solve::SolveProblem,
+    pub pure_calls: solve::SolvePureCallTable,
+}
+
+/// Lower one immutable checked DAE and retain its model-level call owners.
+pub fn lower_solve_package(dae: &dae::Dae) -> Result<LoweredSolvePackage, LowerError> {
     let prepared = rumoca_phase_structural::prepare_for_solve(dae).map_err(|error| {
         LowerError::Structural {
             reason: error.to_string(),
             span: error.source_span(),
         }
     })?;
-    prepared.inspect(lower::lower_solve_problem)
+    prepared
+        .inspect(lower::lower_solve_problem)
+        .map(|(problem, pure_calls)| LoweredSolvePackage {
+            problem,
+            pure_calls,
+        })
 }
 
 /// Materialize optional solver artifacts from an already-lowered problem.

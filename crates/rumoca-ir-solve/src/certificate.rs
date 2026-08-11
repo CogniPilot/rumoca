@@ -166,7 +166,7 @@ pub(crate) fn validate_root_certificate_shape(
                 context: "events.root_relation_memory_targets",
                 row,
                 detail: "root relation-memory target is not a P slot",
-                span: events.root_conditions.program_span(row),
+                span: events.root_conditions.span_for_output(row),
             });
         };
         validate_target("events.root_relation_memory_targets", row, target, problem)?;
@@ -177,9 +177,9 @@ pub(crate) fn validate_root_certificate_shape(
         events.root_relation_refresh_roles.len(),
     )?;
     validate_count(
-        "events.root_conditions.single_output_rows",
+        "events.root_conditions.dense_outputs",
         events.root_conditions.len(),
-        events.root_conditions.row_count(),
+        events.root_conditions.stored_output_count(),
     )?;
     validate_root_relation_refresh_certificates(problem)
 }
@@ -201,26 +201,55 @@ fn dependency_slot(slot: ScalarSlot) -> Option<DependencySlot> {
 fn program_dependencies(program: &[LinearOp]) -> Option<BTreeSet<DependencySlot>> {
     let mut dependencies = BTreeSet::new();
     for op in program {
-        match *op {
+        match op {
             LinearOp::LoadY { index, .. } => {
-                dependencies.insert(DependencySlot::Y(index));
+                dependencies.insert(DependencySlot::Y(*index));
             }
             LinearOp::LoadP { index, .. } => {
-                dependencies.insert(DependencySlot::P(index));
+                dependencies.insert(DependencySlot::P(*index));
             }
             LinearOp::LoadIndexedP { base, count, .. } => {
-                let end = base.checked_add(count)?;
-                dependencies.extend((base..end).map(DependencySlot::P));
+                let end = base.checked_add(*count)?;
+                dependencies.extend((*base..end).map(DependencySlot::P));
             }
             LinearOp::LoadSeed { .. }
             | LinearOp::LoadIndexedSeed { .. }
             | LinearOp::ImpureRandomInit { .. }
             | LinearOp::ImpureRandom { .. }
             | LinearOp::ImpureRandomInteger { .. } => return None,
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. } => {
+                dependencies.extend(program_dependencies(&program.update)?);
+            }
+            LinearOp::FunctionConditional { program, .. } => {
+                for arm in &program.arms {
+                    dependencies.extend(program_dependencies(&arm.condition)?);
+                    dependencies.extend(program_dependencies(&arm.result)?);
+                }
+                dependencies.extend(program_dependencies(&program.fallback)?);
+            }
             LinearOp::Const { .. }
             | LinearOp::LoadTime { .. }
+            | LinearOp::LoadFoldCarried { .. }
+            | LinearOp::LoadFoldIndex { .. }
+            | LinearOp::LoadFoldCapture { .. }
+            | LinearOp::LoadFunctionConditionalCapture { .. }
+            | LinearOp::LoadFunctionConditionalCaptureRange { .. }
+            | LinearOp::LoadIndexedRegister { .. }
+            | LinearOp::LoadIndexedFoldCarried { .. }
+            | LinearOp::LoadIndexedFoldCapture { .. }
             | LinearOp::Move { .. }
             | LinearOp::LinearSolveComponent { .. }
+            | LinearOp::DotProduct { .. }
+            | LinearOp::MatrixMultiply { .. }
+            | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorCross { .. }
+            | LinearOp::TensorTranspose { .. }
+            | LinearOp::TensorConcatenate { .. }
+            | LinearOp::TensorUpdate { .. }
+            | LinearOp::TensorFill { .. }
+            | LinearOp::TensorIdentity { .. }
+            | LinearOp::TensorLoad { .. }
             | LinearOp::TableBounds { .. }
             | LinearOp::TableLookup { .. }
             | LinearOp::TableLookupSlope { .. }
@@ -232,6 +261,10 @@ fn program_dependencies(program: &[LinearOp]) -> Option<BTreeSet<DependencySlot>
             | LinearOp::Binary { .. }
             | LinearOp::Compare { .. }
             | LinearOp::Select { .. }
+            | LinearOp::PureCall { .. }
+            | LinearOp::StoreOutputFoldTensorUpdate { .. }
+            | LinearOp::StoreOutputFunctionFold { .. }
+            | LinearOp::StoreOutputRange { .. }
             | LinearOp::StoreOutput { .. } => {}
         }
     }
@@ -404,16 +437,20 @@ pub fn derive_root_relation_refresh_roles(
             break;
         }
     }
-    checked_dependencies(roots, "events.root_relation_refresh_roles")?
-        .into_iter()
-        .map(|dependencies| {
-            Ok(if dependencies.is_disjoint(&algebraic) {
-                RootRelationRefreshRole::Frozen
-            } else {
-                RootRelationRefreshRole::AlgebraicDependent
-            })
-        })
-        .collect()
+    let dependencies = checked_dependencies(roots, "events.root_relation_refresh_roles")?;
+    let mut roles = Vec::with_capacity(roots.stored_output_count());
+    for (program, dependencies) in roots.programs().iter().zip(dependencies) {
+        let role = if dependencies.is_disjoint(&algebraic) {
+            RootRelationRefreshRole::Frozen
+        } else {
+            RootRelationRefreshRole::AlgebraicDependent
+        };
+        roles.extend(std::iter::repeat_n(
+            role,
+            ScalarProgramBlock::program_output_count(program),
+        ));
+    }
+    Ok(roles)
 }
 
 pub(crate) fn validate_runtime_assignment_certificates(
@@ -534,7 +571,7 @@ pub(crate) fn validate_root_relation_refresh_certificates(
                 context: "events.root_relation_refresh_roles",
                 row,
                 detail: "role disagrees with independently derived algebraic dependency",
-                span: events.root_conditions.program_span(row),
+                span: events.root_conditions.span_for_output(row),
             });
         }
     }

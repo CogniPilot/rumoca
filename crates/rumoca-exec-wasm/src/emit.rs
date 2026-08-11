@@ -290,117 +290,11 @@ fn binary_import(op: &LinearOp) -> Option<MathImport> {
 }
 
 fn max_registers(rows: &[Vec<LinearOp>]) -> Result<usize, String> {
-    let mut max_reg = None;
-    for op in rows.iter().flat_map(|row| row.iter()) {
-        let op_max = max_register_for_op(op)?;
-        max_reg = Some(max_reg.map_or(op_max, |reg: usize| reg.max(op_max)));
-    }
-    max_reg
-        .map(|reg| {
-            reg.checked_add(1)
-                .ok_or_else(|| "WASM register count overflow".to_string())
-        })
-        .unwrap_or(Ok(0))
-}
-
-fn max_register_for_op(op: &LinearOp) -> Result<usize, String> {
-    match *op {
-        LinearOp::Const { dst, .. }
-        | LinearOp::LoadTime { dst }
-        | LinearOp::LoadY { dst, .. }
-        | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. }
-        | LinearOp::TableBounds { dst, .. } => Ok(dst as usize),
-        LinearOp::LoadIndexedP { dst, index, .. }
-        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(dst.max(index) as usize),
-        LinearOp::RandomInitialState {
-            dst,
-            local_seed,
-            global_seed,
-            ..
-        } => Ok(dst.max(local_seed).max(global_seed) as usize),
-        LinearOp::RandomResult {
-            dst,
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            dst,
-            state_start,
-            state_len,
-            ..
-        } => Ok(dst.max(checked_range_last_reg(
-            state_start,
-            state_len,
-            "random state",
-        )?) as usize),
-        LinearOp::ImpureRandomInit { dst, seed } => Ok(dst.max(seed) as usize),
-        LinearOp::ImpureRandom { dst, id, .. } => Ok(dst.max(id) as usize),
-        LinearOp::ImpureRandomInteger {
-            dst,
-            id,
-            imin,
-            imax,
-            ..
-        } => Ok(dst.max(id).max(imin).max(imax) as usize),
-        LinearOp::Move { dst, src } => Ok(dst.max(src) as usize),
-        LinearOp::LinearSolveComponent {
-            dst,
-            matrix_start,
-            rhs_start,
-            n,
-            ..
-        } => Ok(dst
-            .max(checked_range_last_reg(
-                matrix_start,
-                checked_square_len(n, "linear solve matrix")?,
-                "linear solve matrix",
-            )?)
-            .max(checked_range_last_reg(rhs_start, n, "linear solve rhs")?)
-            as usize),
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        } => Ok(dst.max(table_id).max(column).max(input) as usize),
-        LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => Ok(dst.max(table_id).max(column).max(input) as usize),
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => Ok(dst.max(table_id).max(time) as usize),
-        LinearOp::Unary { dst, arg, .. } => Ok((dst.max(arg)) as usize),
-        LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
-            Ok(dst.max(lhs).max(rhs) as usize)
-        }
-        LinearOp::Select {
-            dst,
-            cond,
-            if_true,
-            if_false,
-        } => Ok(dst.max(cond).max(if_true).max(if_false) as usize),
-        LinearOp::StoreOutput { src } => Ok(src as usize),
-    }
-}
-
-fn checked_square_len(n: usize, kind: &str) -> Result<usize, String> {
-    n.checked_mul(n)
-        .ok_or_else(|| format!("{kind} size overflow"))
-}
-
-fn checked_range_last_reg(start: Reg, count: usize, kind: &str) -> Result<Reg, String> {
-    let offset = if count == 0 { 0 } else { count - 1 };
-    let offset = Reg::try_from(offset).map_err(|_| format!("{kind} register range overflow"))?;
-    start
-        .checked_add(offset)
-        .ok_or_else(|| format!("{kind} register range overflow"))
+    rows.iter().try_fold(0usize, |count, row| {
+        rumoca_ir_solve::ScalarProgramRegisterFlow::derive(row)
+            .map(|flow| count.max(flow.register_count()))
+            .map_err(|error| error.to_string())
+    })
 }
 
 struct BodyEmitter<'a> {
@@ -421,7 +315,7 @@ impl<'a> BodyEmitter<'a> {
     fn emit_rows(&mut self, rows: &[Vec<LinearOp>]) -> Result<(), String> {
         for row in rows {
             for op in row {
-                self.emit_op(*op)?;
+                self.emit_op(op.clone())?;
             }
         }
         Ok(())
@@ -464,12 +358,44 @@ impl<'a> BodyEmitter<'a> {
                 count,
                 index,
             } => self.emit_indexed_load(dst, base, count, index, SEED_PTR_PARAM)?,
+            LinearOp::LoadIndexedRegister { .. }
+            | LinearOp::LoadIndexedFoldCarried { .. }
+            | LinearOp::LoadIndexedFoldCapture { .. }
+            | LinearOp::LoadFoldCarried { .. }
+            | LinearOp::LoadFoldIndex { .. }
+            | LinearOp::LoadFoldCapture { .. }
+            | LinearOp::LoadFunctionConditionalCapture { .. }
+            | LinearOp::LoadFunctionConditionalCaptureRange { .. }
+            | LinearOp::FunctionFold { .. }
+            | LinearOp::GuardedFunctionFold { .. }
+            | LinearOp::FunctionConditional { .. }
+            | LinearOp::StoreOutputFoldTensorUpdate { .. }
+            | LinearOp::StoreOutputFunctionFold { .. } => {
+                return Err(
+                    "WASM backend does not yet support compact function-fold/conditional/tensor ops"
+                        .to_string(),
+                );
+            }
             LinearOp::Move { dst, src } => {
                 self.push_reg(src)?;
                 self.set_reg(dst)?;
             }
             LinearOp::LinearSolveComponent { .. } => {
                 return Err("WASM backend does not yet support dense linear solve ops".to_string());
+            }
+            LinearOp::DotProduct { .. }
+            | LinearOp::MatrixMultiply { .. }
+            | LinearOp::TensorBinary { .. }
+            | LinearOp::TensorCross { .. }
+            | LinearOp::TensorTranspose { .. }
+            | LinearOp::TensorConcatenate { .. }
+            | LinearOp::TensorUpdate { .. }
+            | LinearOp::TensorFill { .. }
+            | LinearOp::TensorIdentity { .. }
+            | LinearOp::TensorLoad { .. } => {
+                return Err(
+                    "WASM backend does not yet support compact tensor-product ops".to_string(),
+                );
             }
             LinearOp::TableBounds { .. }
             | LinearOp::TableLookup { .. }
@@ -496,6 +422,11 @@ impl<'a> BodyEmitter<'a> {
                 if_true,
                 if_false,
             } => self.emit_select(dst, cond, if_true, if_false)?,
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } => self.emit_store_output_range(start, count, stride)?,
             LinearOp::StoreOutput { src } => self.emit_store_output(src)?,
         }
         Ok(())
@@ -678,6 +609,26 @@ impl<'a> BodyEmitter<'a> {
             .next_output_slot
             .checked_add(1)
             .ok_or_else(|| "output slot overflow".to_string())?;
+        Ok(())
+    }
+
+    fn emit_store_output_range(
+        &mut self,
+        start: Reg,
+        count: usize,
+        stride: usize,
+    ) -> Result<(), String> {
+        for ordinal in 0..count {
+            let offset = ordinal
+                .checked_mul(stride)
+                .ok_or_else(|| "output register range overflow".to_string())?;
+            let offset =
+                Reg::try_from(offset).map_err(|_| "output register range overflow".to_string())?;
+            let src = start
+                .checked_add(offset)
+                .ok_or_else(|| "output register range overflow".to_string())?;
+            self.emit_store_output(src)?;
+        }
         Ok(())
     }
 

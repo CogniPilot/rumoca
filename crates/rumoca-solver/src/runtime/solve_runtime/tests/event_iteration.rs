@@ -88,6 +88,103 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
 }
 
 #[test]
+fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
+    let span = test_span("guarded_assignment_runtime.mo");
+    let condition = vec![
+        solve::LinearOp::LoadP { dst: 0, index: 2 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+    let selected = vec![
+        solve::LinearOp::Const { dst: 0, value: 7.0 },
+        solve::LinearOp::Const { dst: 1, value: 8.0 },
+        solve::LinearOp::StoreOutputRange {
+            start: 0,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let fallback = vec![
+        solve::LinearOp::TensorLoad {
+            dst_start: 0,
+            input: solve::TensorInputKind::P,
+            input_start: 0,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        solve::LinearOp::StoreOutputRange {
+            start: 0,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let conditional =
+        solve::FunctionConditionalProgram::checked(0, [2], [(condition, selected)], fallback)
+            .expect("guarded fixture conditional is checked");
+    let owner = solve::GuardedAssignmentProgram::checked(
+        vec![
+            solve::LinearOp::FunctionConditional {
+                dst_start: 0,
+                capture_start: 0,
+                program: std::sync::Arc::new(conditional),
+            },
+            solve::LinearOp::StoreOutputRange {
+                start: 0,
+                count: 2,
+                stride: 1,
+            },
+        ],
+        span.require_provenance("guarded runtime fixture")
+            .expect("fixture provenance"),
+        [(solve::scalar_slot_p(0), 2)],
+        solve::DiscreteRowRole::EventAction,
+        solve::DiscreteEventPreMode::FollowCurrent,
+        false,
+        solve::IntegratorHistoryEffect::Preserve,
+        None,
+    )
+    .expect("guarded owner is checked");
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 3),
+            solve_layout: solve::SolveLayout {
+                parameter_count: 3,
+                compiled_parameter_len: 3,
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                guarded_assignments: vec![owner],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        parameters: vec![0.0; 3],
+        ..Default::default()
+    };
+    model
+        .problem
+        .validate_shape_contract()
+        .expect("guarded range satisfies the Solve contract");
+    let runtime = SolveRuntime::new(&model).expect("guarded runtime should prepare");
+    assert!(runtime.discrete_rhs.is_empty());
+    assert_eq!(runtime.guarded_assignment_programs.len(), 1);
+    assert_eq!(runtime.guarded_assignment_programs[0].output_count(), 2);
+    let mut y = Vec::new();
+    let mut p = vec![1.0, 2.0, 0.0];
+
+    runtime
+        .apply_unfiltered_discrete_rows_once(&mut y, &mut p, 0.0, 0.0)
+        .expect("inactive guarded update evaluates its hold arm");
+    assert_eq!(p, vec![1.0, 2.0, 0.0]);
+
+    p[2] = 1.0;
+    runtime
+        .apply_unfiltered_discrete_rows_once(&mut y, &mut p, 0.0, 0.0)
+        .expect("active guarded update evaluates its selected arm");
+    assert_eq!(p, vec![7.0, 8.0, 1.0]);
+}
+
+#[test]
 fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
     let roots = spanned_block(
         vec![
@@ -144,6 +241,7 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
                 row_roles: vec![solve::DiscreteRowRole::Equation],
                 pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
                 observation_refresh: vec![false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
                 clock_owners: vec![None],
                 ..Default::default()
             },
@@ -624,8 +722,15 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
                             solve::LinearOp::StoreOutput { src: 0 },
                         ],
                         vec![
-                            solve::LinearOp::LoadP { dst: 0, index: 2 },
-                            solve::LinearOp::StoreOutput { src: 0 },
+                            solve::LinearOp::LoadP { dst: 0, index: 1 },
+                            solve::LinearOp::Const { dst: 1, value: 1.0 },
+                            solve::LinearOp::Binary {
+                                dst: 2,
+                                op: solve::BinaryOp::Add,
+                                lhs: 0,
+                                rhs: 1,
+                            },
+                            solve::LinearOp::StoreOutput { src: 2 },
                         ],
                     ],
                     "clock_first_whole_pass.mo",
@@ -671,8 +776,8 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
     assert_eq!(p[0], 1.0, "the ordinary trigger must settle to true");
     assert_eq!(p[2], 1.0, "ordinary pre(trigger) advances between passes");
     assert_eq!(
-        p[1], 0.0,
-        "the clock-owned result must not re-evaluate after pre(trigger) advances"
+        p[1], 1.0,
+        "the clock-owned recurrence must execute exactly once at the tick"
     );
 }
 

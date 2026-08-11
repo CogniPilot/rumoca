@@ -72,8 +72,10 @@ import that path.
 |---|---|---|
 | Compilation/session orchestration | `rumoca-compile` | Pipeline coordination only; no runtime |
 | DAE structural analysis (Pantelides, BLT, tearing, demotion) | `rumoca-phase-structural` | SPEC_0007 §Structural Lowering Scope |
+| Checked DAE causal-discrete orientation and dependency plan | `rumoca-phase-structural` | One target/value authority shared by Solve and GALEC; ambiguous residuals remain unowned |
 | Typed executable programs plus distinct `SolveProblem` and `SolveAlgorithmBlock` roots | `rumoca-ir-solve` | Backend-neutral numerical and controller execution IR |
 | DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering | `rumoca-phase-solve` | Exhaustive semantic lowering only, not structural mutation or rendering |
+| Checked DAE pure-function graph → shared typed Solve program regions and pure-call owners | `rumoca-phase-solve` | One tensor-native semantic lowering feeds numerical Solve call ownership and GALEC admissibility/projection; GALEC may reject a subset but cannot implement a second function lowerer |
 | Checked FMI component aggregate | `rumoca-ir-fmi` | Private invariant-bearing binding of DAE metadata/shape/provenance to one executable checked kernel; no ABI text or runtime behavior |
 | DAE + Solve → checked FMI component lowering | `rumoca-phase-fmi` | One target-neutral semantic projection shared by FMI 2 and FMI 3; no templates, ABI declarations, or packaging |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |

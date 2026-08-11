@@ -288,6 +288,81 @@ fn primitive_relation_root_lowers_to_signed_event_program() {
 }
 
 #[test]
+fn roots_from_one_source_owner_lower_to_one_multi_output_program() {
+    let source = TestSource::new("Real x; Real y; when x > 0 or y > 0 then end when;");
+    let declaration = source.at(0, 14);
+    let first_relation = source.at(21, 26);
+    let second_relation = source.at(30, 35);
+    let owner = source.at(15, 50);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), declaration)
+        })?;
+        let (x, y) = model.variables(|variables| {
+            Ok((
+                variables.parameter(
+                    VarName::new("x"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.parameter(
+                    VarName::new("y"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let (x_relation, y_relation) = model.expressions(|expressions| {
+            let zero = expressions.at(owner).literal(dae::DaeLiteral::Real(0.0))?;
+            let x = expressions
+                .at(first_relation)
+                .coordinate(dae::CoordinateInput::Parameter(x))?;
+            let y = expressions
+                .at(second_relation)
+                .coordinate(dae::CoordinateInput::Parameter(y))?;
+            Ok((
+                expressions
+                    .at(first_relation)
+                    .binary(dae::BinaryOperator::Greater, x, zero)?,
+                expressions
+                    .at(second_relation)
+                    .binary(dae::BinaryOperator::Greater, y, zero)?,
+            ))
+        })?;
+        let (x_relation, y_relation, x_activation, y_activation) =
+            model.conditions(|conditions| {
+                let x_relation = conditions.relation(x_relation, first_relation)?;
+                let y_relation = conditions.relation(y_relation, second_relation)?;
+                let x_activation = conditions.reserve(owner)?;
+                let y_activation = conditions.reserve(owner)?;
+                conditions.define(
+                    x_activation,
+                    dae::ConditionInput::Relation(x_relation),
+                    owner,
+                )?;
+                conditions.define(
+                    y_activation,
+                    dae::ConditionInput::Relation(y_relation),
+                    owner,
+                )?;
+                Ok((x_relation, y_relation, x_activation, y_activation))
+            })?;
+        model.conditions(|conditions| {
+            conditions.root(x_relation, x_activation, owner)?;
+            conditions.root(y_relation, y_activation, owner)
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    assert_eq!(solve.events.root_conditions.row_count(), 1);
+    assert_eq!(solve.events.root_conditions.stored_output_count(), 2);
+}
+
+#[test]
 fn exact_unconditional_b1c_relation_owns_the_root_post_side() {
     let source = TestSource::new(
         "discrete Boolean active; equation active = time > 0.5; when time > 0.5 then end when;",

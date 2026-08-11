@@ -1513,6 +1513,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 function,
                 output,
                 arguments,
+                ..
             } => self.lower_call_at(
                 id,
                 function,

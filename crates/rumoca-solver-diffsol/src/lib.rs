@@ -71,6 +71,111 @@ type Scalar = <Matrix as MatrixCommon>::T;
 pub(crate) type LinearSolver = FaerSparseLU<f64>;
 pub(crate) type RuntimeParameters = Rc<RefCell<Vec<f64>>>;
 
+#[cfg(not(target_arch = "wasm32"))]
+struct CraneliftExpression(rumoca_exec_cranelift::CompiledExpressionRows);
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CraneliftAssignmentSchedule(rumoca_exec_cranelift::CompiledAssignmentSchedule);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String> {
+        self.0
+            .call_with_external_tables(y, p, t, external_tables, out)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &[f64],
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String> {
+        self.0
+            .call_with_external_tables(y, p, t, seed, external_tables, out)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl rumoca_solver::CompiledSolveAssignmentSchedule for CraneliftAssignmentSchedule {
+    fn call(
+        &self,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<(), String> {
+        self.0
+            .call_with_external_tables(y, p, t, external_tables)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CraneliftExecutionBackend;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
+    fn compile_expression(
+        &self,
+        block: &rumoca_ir_solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
+        rumoca_exec_cranelift::compile_expression_scalar_program_block(block)
+            .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
+            .map_err(|error| error.to_string())
+    }
+
+    fn compile_jacobian_expression(
+        &self,
+        block: &rumoca_ir_solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, String> {
+        rumoca_exec_cranelift::compile_jacobian_scalar_program_block(block)
+            .map(|compiled| Rc::new(CraneliftJacobianExpression(compiled)) as Rc<_>)
+            .map_err(|error| error.to_string())
+    }
+
+    fn compile_assignment_schedule(
+        &self,
+        programs: &[Vec<rumoca_ir_solve::LinearOp>],
+        target_y_indices: &[usize],
+    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
+        rumoca_exec_cranelift::compile_assignment_schedule(programs, target_y_indices)
+            .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn new_solve_runtime(
+    model: &rumoca_ir_solve::SolveModel,
+) -> Result<SolveRuntime, rumoca_eval_solve::EvalSolveError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return SolveRuntime::new_with_execution_backend(
+            model,
+            Some(Rc::new(CraneliftExecutionBackend)),
+        );
+    }
+    #[cfg(target_arch = "wasm32")]
+    SolveRuntime::new(model)
+}
+
 /// Records which [`SimFailureStage`] the backend was running when it produced a
 /// failure.
 ///
@@ -269,7 +374,7 @@ fn check_state_only_initialization(
     opts: &SimOptions,
 ) -> Result<(), SimError> {
     let equilibrium_model = Arc::new(OdeModel::new(model)?);
-    let runtime = Arc::new(SolveRuntime::new(model)?);
+    let runtime = Arc::new(new_solve_runtime(model)?);
     let mut current_y = model.initial_y.clone();
     let mut params = model.parameters.clone();
     let mut current_t = opts.t_start;

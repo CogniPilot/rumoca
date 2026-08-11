@@ -692,6 +692,8 @@ fn strict_algebraic_condition_memory_model(
     model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::ConditionMemory];
     model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent];
     model.problem.discrete.observation_refresh = vec![false];
+    model.problem.discrete.integrator_history_effects =
+        vec![solve::IntegratorHistoryEffect::Preserve];
     model.problem.discrete.clock_owners = vec![None];
 
     model.initial_y.push(1.0);

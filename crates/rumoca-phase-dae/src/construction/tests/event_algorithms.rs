@@ -63,6 +63,21 @@ fn model_event_algorithm_sequential_read_after_write_uses_new_value() {
     let dae = construct(&model, source.map)
         .expect("the event transition carries the first assignment into the second RHS");
     dae.inspect(|view| {
+        assert_eq!(view.model_event_transaction_count(), 1);
+        let transaction = view
+            .model_event_transaction(view.model_event_transaction_id(0).unwrap())
+            .unwrap();
+        assert_eq!(transaction.targets().len(), 2);
+        assert_eq!(transaction.steps().len(), 2);
+        let second_step = transaction.steps().nth(1).unwrap();
+        let second_definition = second_step.definitions().next().unwrap();
+        assert_eq!(second_definition.provenance().span(), second_span);
+        assert!(matches!(
+            view.expression(second_definition.value())
+                .unwrap()
+                .operation(),
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Boolean(true))
+        ));
         assert_eq!(view.discrete_value_owner_count(), 1);
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
@@ -934,4 +949,164 @@ fn event_tensor_loop_rejects_cross_element_dependency() {
             .to_string()
             .contains("reads a different tensor element")
     );
+}
+
+#[test]
+fn sampled_mixed_result_call_stays_one_ordered_model_event_transaction() {
+    let source = TestSource::new(
+        "function step input Real u; output Real x; output Boolean ok; algorithm \
+         x := u; ok := true; end step; model M discrete Real x; discrete Real y; \
+         discrete Boolean ok; algorithm when sample(0.0, 0.1) then \
+         (x, ok) := step(1.0); y := x; end when; end M;",
+    );
+    let mut model = test_model();
+    let mut step = rumoca_core::Function::new("step", source.span("function step", 0));
+    step.add_input(real_function_param(
+        "u",
+        Vec::new(),
+        source.span("input Real u", 0),
+    ));
+    step.add_output(real_function_param(
+        "x",
+        Vec::new(),
+        source.span("output Real x", 0),
+    ));
+    step.add_output(function_param(
+        "ok",
+        "Boolean",
+        model.predefined_types.boolean,
+        model.predefined_types.boolean,
+        Vec::new(),
+        source.span("output Boolean ok", 0),
+    ));
+    let function_x = source.span("x := u", 0);
+    let function_ok = source.span("ok := true", 0);
+    step.body = vec![
+        rumoca_core::Statement::Assignment {
+            comp: test_component_reference("x", function_x),
+            value: Expression::VarRef {
+                name: Reference::new("u"),
+                subscripts: Vec::new(),
+                span: source.span("u", 1),
+            },
+            span: function_x,
+        },
+        rumoca_core::Statement::Assignment {
+            comp: test_component_reference("ok", function_ok),
+            value: Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            },
+            span: function_ok,
+        },
+    ];
+    model.add_function(step);
+    for (name, declaration, type_id, discrete_type) in [
+        ("x", "discrete Real x", 71, false),
+        ("y", "discrete Real y", 72, false),
+        ("ok", "discrete Boolean ok", 73, true),
+    ] {
+        add_primitive_variable(
+            &mut model,
+            &source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            discrete_type,
+        );
+        model
+            .variables
+            .get_mut(&VarName::new(name))
+            .unwrap()
+            .variability = Variability::Discrete(Default::default());
+    }
+    let call_span = source.span("(x, ok) := step(1.0)", 0);
+    let step_instance = model.functions[&VarName::new("step")]
+        .instance_id
+        .expect("Flat gives the callee an exact instance");
+    let call = rumoca_core::Statement::FunctionCall {
+        comp: Reference::from_component_reference(test_component_reference("step", call_span))
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: step_instance,
+                base_part_count: 1,
+                transitively_non_replaceable: true,
+            }),
+        args: vec![Expression::Literal {
+            value: Literal::Real(1.0),
+            span: source.span("1.0", 0),
+        }],
+        outputs: vec![
+            Some(test_component_reference("x", call_span)),
+            Some(test_component_reference("ok", call_span)),
+        ],
+        span: call_span,
+    };
+    let y_span = source.span("y := x", 0);
+    let sample_span = source.span("sample(0.0, 0.1)", 0);
+    let when_span = source.span(
+        "when sample(0.0, 0.1) then (x, ok) := step(1.0); y := x; end when",
+        0,
+    );
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::BuiltinCall {
+                    function: BuiltinFunction::Sample,
+                    args: vec![
+                        Expression::Literal {
+                            value: Literal::Real(0.0),
+                            span: source.span("0.0", 0),
+                        },
+                        Expression::Literal {
+                            value: Literal::Real(0.1),
+                            span: source.span("0.1", 0),
+                        },
+                    ],
+                    span: sample_span,
+                },
+                stmts: vec![
+                    call,
+                    rumoca_core::Statement::Assignment {
+                        comp: test_component_reference("y", y_span),
+                        value: variable_reference(&source, "x", "y := x", 0, Vec::new()),
+                        span: y_span,
+                    },
+                ],
+            }],
+            span: when_span,
+        }],
+        source.span("algorithm when", 0),
+        "sampled mixed transaction",
+    ));
+    model.is_partial = true;
+
+    let dae = construct(&model, source.map)
+        .expect("the mixed sampled algorithm is one checked transaction");
+    dae.inspect(|view| {
+        assert_eq!(view.model_event_transaction_count(), 1);
+        let transaction = view
+            .model_event_transaction(view.model_event_transaction_id(0).unwrap())
+            .unwrap();
+        assert_eq!(transaction.targets().len(), 3);
+        assert_eq!(transaction.steps().len(), 2);
+        assert!(transaction.steps().all(|step| step.clock().is_some()));
+        let definitions = transaction
+            .steps()
+            .flat_map(|step| step.definitions())
+            .collect::<Vec<_>>();
+        assert_eq!(definitions.len(), 3);
+        let call_owners = definitions
+            .iter()
+            .filter_map(|definition| {
+                let expression = view.expression(definition.value()).unwrap();
+                match expression.operation() {
+                    dae::ExpressionOperation::Call { owner, .. } => Some(owner),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(call_owners.len(), 3);
+        assert!(call_owners.windows(2).all(|owners| owners[0] == owners[1]));
+    });
 }

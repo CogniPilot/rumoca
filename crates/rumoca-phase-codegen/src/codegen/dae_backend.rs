@@ -445,6 +445,7 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             function,
             output,
             arguments,
+            ..
         } => project_call_operation(function, output, arguments),
         dae::ExpressionOperation::StringConversion {
             declaration,

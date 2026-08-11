@@ -6,6 +6,7 @@
 
 mod blt;
 mod causal_definitions;
+mod causal_discrete;
 mod dae_transform;
 pub mod diagnostic_codes;
 mod diagnostics;
@@ -22,6 +23,7 @@ use std::collections::HashSet;
 use rumoca_ir_dae as dae;
 
 pub use causal_definitions::CausalDefinitions;
+pub use causal_discrete::{CausalDiscreteError, CausalDiscretePlan, DiscreteRealDefinition};
 pub use dae_transform::{
     InitialValuePin, InitialValueRole, PinTerm, PreparedDae, PreparedSystem, prepare_for_solve,
 };

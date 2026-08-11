@@ -34,6 +34,22 @@ pub(crate) fn validate_scalar_program_block_variable_bounds(
     VariableBoundsVisitor { context, layout }.visit_scalar_program_block(block)
 }
 
+pub(crate) fn validate_guarded_assignment_variable_bounds(
+    program: &crate::GuardedAssignmentProgram,
+    program_index: usize,
+    layout: &VarLayout,
+) -> Result<(), SolveProblemShapeContractError> {
+    let kind = LinearOpSliceKind::GuardedAssignmentProgram {
+        program_index,
+        span: program.span(),
+    };
+    VariableBoundsVisitor {
+        context: "discrete.guarded_assignments",
+        layout,
+    }
+    .visit_linear_op_slice(kind, program.program())
+}
+
 struct VariableBoundsVisitor<'layout> {
     context: &'static str,
     layout: &'layout VarLayout,
@@ -103,7 +119,8 @@ impl SolveVisitor for VariableBoundsVisitor<'_> {
 fn slice_span(kind: LinearOpSliceKind) -> Option<Span> {
     let span = match kind {
         LinearOpSliceKind::ScalarProgram { span, .. } => return span,
-        LinearOpSliceKind::MatMulLhs { span, .. }
+        LinearOpSliceKind::GuardedAssignmentProgram { span, .. }
+        | LinearOpSliceKind::MatMulLhs { span, .. }
         | LinearOpSliceKind::MatMulRhs { span, .. }
         | LinearOpSliceKind::LinSolveSetup { span, .. }
         | LinearOpSliceKind::MapBase { span, .. }

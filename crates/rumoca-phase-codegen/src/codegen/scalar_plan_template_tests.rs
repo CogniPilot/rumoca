@@ -112,6 +112,69 @@ fn multi_output_program_emits_every_store_and_computes_shared_register_once() {
 }
 
 #[test]
+fn compact_output_range_expands_only_in_final_textual_rendering() {
+    let problem = derivative_problem(vec![
+        solve::LinearOp::Const { dst: 0, value: 1.0 },
+        solve::LinearOp::Const { dst: 1, value: 2.0 },
+        solve::LinearOp::Const { dst: 2, value: 3.0 },
+        solve::LinearOp::StoreOutputRange {
+            start: 0,
+            count: 2,
+            stride: 2,
+        },
+    ]);
+    let artifacts = solve::SolveArtifacts::default();
+    let plan = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        r#"{% for program in solve_blocks.continuous.derivative_rhs.scalar_plan.programs %}{% for op in program.ops %}{% if op.kind == "StoreOutputRange" %}{{ op.start }}:{{ op.count }}:{{ op.stride }}:{% for output_index in op.output_indices %}{{ output_index }},{% endfor %}{% endif %}{% endfor %}{% endfor %}"#,
+        "CompactRange",
+    )
+    .expect("checked compact output range should reach the target-neutral plan");
+    assert!(plan.contains("0:2:2:0,1,"));
+
+    let c = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("c-ode", "model_ode.c.jinja"),
+        "CompactRange",
+    )
+    .expect("C should render the checked range at its final boundary");
+    assert!(c.contains("__out[0] = __r0;"));
+    assert!(c.contains("__out[1] = __r2;"));
+
+    let rust = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("rust-ode", "model_ode.rs.jinja"),
+        "CompactRange",
+    )
+    .expect("Rust should render the checked range at its final boundary");
+    assert!(rust.contains("__out[0] = __r0;"));
+    assert!(rust.contains("__out[1] = __r2;"));
+
+    let mlir = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("mlir", "mlir.mlir.jinja"),
+        "CompactRange",
+    )
+    .expect("MLIR should render the checked range at its final boundary");
+    assert!(mlir.contains("memref.store %r0_0, %out[%outi0]"));
+    assert!(mlir.contains("memref.store %r1_2, %out[%outi1]"));
+
+    let wgsl = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("wgsl-ode", "model_ode.wgsl.jinja"),
+        "CompactRange",
+    )
+    .expect("WGSL should render each checked range projection at its final boundary");
+    assert!(wgsl.contains("out[0] = 1.0;"));
+    assert!(wgsl.contains("out[1] = 3.0;"));
+}
+
+#[test]
 fn textual_targets_fail_closed_on_an_unsupported_semantic_op() {
     let problem = derivative_problem(vec![
         solve::LinearOp::Const { dst: 0, value: 0.0 },

@@ -8,6 +8,47 @@
 use super::*;
 
 #[test]
+fn causal_event_held_algebraic_owns_typed_solve_time_domain() {
+    let source = TestSource::new("Real x; equation x = 1;");
+    let declaration = source.at(0, 6);
+    let owner = source.at(8, 23);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let algebraic = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let target = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            let value = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, target, value)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    assert_eq!(
+        solve.solve_layout.variable_declarations[0].time_domain(),
+        rumoca_ir_solve::SolveVariableTimeDomain::EventDiscontinuous
+    );
+}
+
+#[test]
 fn explicit_state_equation_lowers_to_derivative_program() {
     let source = TestSource::new("Real x; der(x) = -x;");
     let declaration = source.at(0, 6);
@@ -75,6 +116,213 @@ fn explicit_state_equation_lowers_to_derivative_program() {
 }
 
 #[test]
+fn explicit_array_state_equation_lowers_to_one_multi_output_program() {
+    let source = TestSource::new("function f Real u[3]; Real y[3]; Real x[3]; der(x) = f(x);");
+    let function_at = source.at(0, 34);
+    let declaration = source.at(35, 45);
+    let owner = source.at(46, 58);
+    let model = dae::Dae::construct(source.map, |model| {
+        let vector = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [3]),
+                declaration,
+            )
+        })?;
+        let signature =
+            dae::FunctionSignature::new(VarName::new("f"), [vector], [vector], function_at);
+        let (function, ()) = model.function(signature, |model, reservation| {
+            let parameter = model.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, function_at)
+            })?;
+            let output = model.functions(|functions| {
+                functions.output(&reservation, VarName::new("y"), 0, function_at)
+            })?;
+            let result = model.expressions(|expressions| {
+                let parameter = expressions.at(function_at).function_parameter(parameter)?;
+                let sum = expressions
+                    .at(function_at)
+                    .builtin(dae::PureBuiltin::Sum, [parameter])?;
+                let product = expressions
+                    .at(function_at)
+                    .builtin(dae::PureBuiltin::Product, [parameter])?;
+                expressions.at(function_at).array([sum, product, sum])
+            })?;
+            let mut body =
+                model.functions(|functions| functions.begin(reservation, function_at))?;
+            model
+                .functions(|functions| functions.assign(&mut body, output, result, function_at))?;
+            model.functions(|functions| functions.define(body, function_at))
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                vector,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let state = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            let rhs = expressions.at(owner).call(function, 0, [state])?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, derivative, rhs)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    else {
+        panic!("one scalar derivative block expected");
+    };
+    assert_eq!(rows.row_count(), 1);
+    assert_eq!(rows.stored_output_count(), 3);
+    assert_eq!(rows.output_indices(), [0, 1, 2]);
+}
+
+#[test]
+fn exact_aggregate_call_projections_share_one_multi_output_program() {
+    let source = TestSource::new(
+        "function f input Real u; output Real y[3]; end f; Real a; Real b; Real c;",
+    );
+    let at = source.at(0, 73);
+    let model = dae::Dae::construct(source.map, |model| {
+        let (real, vector) = model.types(|types| {
+            Ok((
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at)?,
+                types.derived(dae::ValueType::array(dae::ScalarType::Real, [3]), at)?,
+            ))
+        })?;
+        let signature = dae::FunctionSignature::new(VarName::new("f"), [real], [vector], at);
+        let (function, ()) = model.function(signature, |model, reservation| {
+            let parameter = model.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, at)
+            })?;
+            let output = model
+                .functions(|functions| functions.output(&reservation, VarName::new("y"), 0, at))?;
+            let value = model.expressions(|expressions| {
+                let parameter = expressions.at(at).function_parameter(parameter)?;
+                let square = expressions.at(at).binary(
+                    dae::BinaryOperator::Multiply,
+                    parameter,
+                    parameter,
+                )?;
+                let one = expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?;
+                let shifted = expressions
+                    .at(at)
+                    .binary(dae::BinaryOperator::Add, square, one)?;
+                expressions.at(at).array([square, shifted, parameter])
+            })?;
+            let mut body = model.functions(|functions| functions.begin(reservation, at))?;
+            model.functions(|functions| functions.assign(&mut body, output, value, at))?;
+            model.functions(|functions| functions.define(body, at))
+        })?;
+        let (a, b, c) = model.variables(|variables| {
+            Ok((
+                variables.algebraic(
+                    VarName::new("a"),
+                    real,
+                    at,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.algebraic(
+                    VarName::new("b"),
+                    real,
+                    at,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.algebraic(
+                    VarName::new("c"),
+                    real,
+                    at,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let (first, second, independent) = model.expressions(|expressions| {
+            let input = expressions.at(at).literal(dae::DaeLiteral::Real(2.0))?;
+            let shared_call = expressions.at(at).call(function, 0, [input])?;
+            let independent_call = expressions.at(at).call(function, 0, [input])?;
+            let one = expressions.at(at).literal(dae::DaeLiteral::Integer(1))?;
+            let two = expressions.at(at).literal(dae::DaeLiteral::Integer(2))?;
+            let shared_first = expressions.at(at).index(
+                shared_call,
+                [dae::Subscript::Value {
+                    expression: one,
+                    provenance: at,
+                }],
+            )?;
+            let shared_second = expressions.at(at).index(
+                shared_call,
+                [dae::Subscript::Value {
+                    expression: two,
+                    provenance: at,
+                }],
+            )?;
+            let separate = expressions.at(at).index(
+                independent_call,
+                [dae::Subscript::Value {
+                    expression: one,
+                    provenance: at,
+                }],
+            )?;
+            let a = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Algebraic(a))?;
+            let b = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Algebraic(b))?;
+            let c = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Algebraic(c))?;
+            Ok((
+                expressions
+                    .at(at)
+                    .binary(dae::BinaryOperator::Subtract, a, shared_first)?,
+                expressions
+                    .at(at)
+                    .binary(dae::BinaryOperator::Subtract, b, shared_second)?,
+                expressions
+                    .at(at)
+                    .binary(dae::BinaryOperator::Subtract, c, separate)?,
+            ))
+        })?;
+        model.continuous(|continuous| {
+            continuous.value_equation(at, first)?;
+            continuous.value_equation(at, second)?;
+            continuous.value_equation(at, independent)
+        })
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected");
+    };
+    assert_eq!(rows.row_count(), 2);
+    assert_eq!(rows.stored_output_count(), 3);
+    assert_eq!(rows.output_indices(), [0, 1, 2]);
+    assert_eq!(
+        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&rows.programs()[0]),
+        2,
+        "two projections of one issued call occurrence share one program"
+    );
+    assert_eq!(
+        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&rows.programs()[1]),
+        1,
+        "a distinct call ExprId is never inferred equivalent from its arguments"
+    );
+}
+
+#[test]
 fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
     let source = TestSource::new("Real x[2,3]; equation x = {{i + j for j in 1:3} for i in 1:2};");
     let declaration = source.at(0, 11);
@@ -135,6 +383,11 @@ fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(solve.solve_layout.algebraic_scalar_count(), 6);
     assert_eq!(solve.continuous.residual.len().unwrap(), 6);
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one compact multi-output residual block expected");
+    };
+    assert_eq!(rows.row_count(), 1);
+    assert_eq!(rows.stored_output_count(), 6);
 }
 
 #[test]
@@ -222,14 +475,50 @@ fn square_matrix_state_equation_lowers_to_one_checked_linear_solve() {
     assert_eq!(*span, owner.span());
     assert!(matrix_start < rhs_start);
     assert!(rhs_start < next_reg);
-    assert_eq!(
+    assert_eq!(*matrix_start, 0);
+    assert_eq!(*rhs_start, 4);
+    assert_eq!(*next_reg, 6);
+    assert!(matches!(
+        setup_ops.as_slice(),
+        [
+            LinearOp::TensorLoad {
+                dst_start: 0,
+                input: rumoca_ir_solve::TensorInputKind::P,
+                input_start: 0,
+                count: 4,
+                seed_start: None,
+                lanes: 1,
+            },
+            LinearOp::TensorLoad {
+                dst_start: 4,
+                input: rumoca_ir_solve::TensorInputKind::P,
+                input_start: 4,
+                count: 2,
+                seed_start: None,
+                lanes: 1,
+            }
+        ]
+    ));
+    assert!(
         setup_ops
             .iter()
-            .filter(|op| matches!(op, LinearOp::Move { .. }))
-            .count(),
-        6,
-        "four matrix and two RHS values must be packed explicitly"
+            .all(|op| !matches!(op, LinearOp::Move { .. })),
+        "the checked linear solve consumes two compact tensor loads without scalar Move repacking"
     );
+
+    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous.derivative_rhs)
+        .expect("checked linear solve has a scalar execution view");
+    let mut derivative = [0.0; 2];
+    rumoca_eval_solve::eval_scalar_program_block(
+        &rows,
+        &[],
+        &[2.0, 0.0, 0.0, 4.0, 6.0, 8.0],
+        0.0,
+        None,
+        &mut derivative,
+    )
+    .expect("checked linear solve evaluates");
+    assert_eq!(derivative, [3.0, 2.0]);
 }
 
 #[test]
@@ -328,6 +617,93 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
         solve.continuous.algebraic_projection_plan.blocks[0].y_indices,
         [0]
     );
+}
+
+#[test]
+fn algebraic_projection_keeps_equation_rows_distinct_from_y_indices() {
+    let source = TestSource::new("Real x; Real y; y = 1; der(x) = 0;");
+    let declaration = source.at(0, 14);
+    let algebraic_owner = source.at(16, 21);
+    let derivative_owner = source.at(23, 33);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let (state, algebraic) = model.variables(|variables| {
+            Ok((
+                variables.state(
+                    VarName::new("x"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.algebraic(
+                    VarName::new("y"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let algebraic_residual = model.expressions(|expressions| {
+            let lhs = expressions
+                .at(algebraic_owner)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            let rhs = expressions
+                .at(algebraic_owner)
+                .literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(algebraic_owner)
+                .binary(dae::BinaryOperator::Subtract, lhs, rhs)
+        })?;
+        model.continuous(|continuous| {
+            continuous.value_equation(algebraic_owner, algebraic_residual)
+        })?;
+        let derivative_residual = model.expressions(|expressions| {
+            let lhs = expressions
+                .at(derivative_owner)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let rhs = expressions
+                .at(derivative_owner)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            expressions
+                .at(derivative_owner)
+                .binary(dae::BinaryOperator::Subtract, lhs, rhs)
+        })?;
+        model.continuous(|continuous| {
+            continuous.value_equation(derivative_owner, derivative_residual)
+        })
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(implicit)] = solve.continuous.implicit_rhs.nodes.as_slice()
+    else {
+        panic!("the algebraic equation must remain executable");
+    };
+    assert_eq!(implicit.output_indices(), [0]);
+    assert_eq!(
+        solve.continuous.implicit_row_targets,
+        [Some(ScalarSlot::Y {
+            index: 1,
+            byte_offset: 8,
+        })]
+    );
+    assert_eq!(
+        solve.continuous.algebraic_projection_plan.blocks[0].rows,
+        [0]
+    );
+    assert_eq!(
+        solve.continuous.algebraic_projection_plan.blocks[0].y_indices,
+        [1]
+    );
+    solve
+        .validate()
+        .expect("projection row ordinals need not equal their assigned Y indices");
 }
 
 #[test]

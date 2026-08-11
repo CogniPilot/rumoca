@@ -1350,15 +1350,10 @@ fn lower_function_call<'dae>(
 /// receiving variable, so every read result ordinal reads the same argument
 /// expressions; lowering them once shares exactly those argument nodes.
 ///
-/// LIMITATION: only the arguments are shared. The canonical DAE owns no
-/// multi-result call node, so each read ordinal is its own
-/// `call(function, ordinal, ..)` and the callee body is evaluated once per
-/// result read — a statement reading k results costs k evaluations of that
-/// body (measured: a 2-receiver statement doubles the callee's `sin`/`cos`
-/// node count). This is sound only because the accepted callees are pure
-/// (see the MLS §12.4.3 external-impurity refusal in
-/// `analysis::function_bodies::plan_function_multi_output_call`), but it is a
-/// real cost that a shared multi-result node would remove.
+/// [`dae::ExpressionAt::call_results`] also issues one DAE call owner shared by
+/// every requested result projection. Solve therefore consumes source-issued
+/// identity directly; it never compares already-expanded result graphs to
+/// recover one invocation.
 pub(super) struct LoweredCallOperands<'dae> {
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
@@ -1378,6 +1373,20 @@ impl<'dae> LoweredCallOperands<'dae> {
         ordinal: usize,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+        self.results(construction, [ordinal], provenance)
+            .map(|mut results| {
+                results
+                    .pop()
+                    .expect("one requested call result constructs one projection")
+            })
+    }
+
+    pub(super) fn results(
+        &self,
+        construction: &mut dae::DaeConstruction<'dae>,
+        ordinals: impl IntoIterator<Item = usize>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
         let arguments = self
             .arguments
             .iter()
@@ -1397,19 +1406,24 @@ impl<'dae> LoweredCallOperands<'dae> {
                 })
             })
             .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
-        let body = construction.expressions(|expressions| {
+        let bodies = construction.expressions(|expressions| {
             expressions
                 .at(provenance)
-                .call(self.function, ordinal, arguments)
+                .call_results(self.function, ordinals, arguments)
         })?;
         let Some(vectorization) = &self.vectorization else {
-            return Ok(body);
+            return Ok(bodies);
         };
-        construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .comprehension(vectorization.domain, body)
-        })
+        bodies
+            .into_iter()
+            .map(|body| {
+                construction.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .comprehension(vectorization.domain, body)
+                })
+            })
+            .collect()
     }
 }
 

@@ -683,12 +683,19 @@ fn lower_conditional_multi_output_call<'dae>(
         call.args,
         provenance,
     )?;
-    for (ordinal, output) in call.outputs.iter().enumerate() {
-        let Some(output) = output else {
-            continue;
-        };
+    let selected = call
+        .outputs
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, output)| output.as_ref().map(|output| (ordinal, output)))
+        .collect::<Vec<_>>();
+    let results = operands.results(
+        construction,
+        selected.iter().map(|(ordinal, _)| *ordinal),
+        provenance,
+    )?;
+    for ((_, output), mut value) in selected.into_iter().zip(results) {
         let target = function_value_coordinate(symbols.coordinates, output.target());
-        let mut value = operands.result(construction, ordinal, provenance)?;
         if !output.subscripts().is_empty() {
             let base = match values.get(output.target()).copied() {
                 Some(value) => Some(value),
@@ -1433,12 +1440,19 @@ fn lower_function_loop_multi_output_call<'dae>(
         call.args,
         provenance,
     )?;
-    for (ordinal, output) in call.outputs.iter().enumerate() {
-        let Some(output) = output else {
-            continue;
-        };
+    let selected = call
+        .outputs
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, output)| output.as_ref().map(|output| (ordinal, output)))
+        .collect::<Vec<_>>();
+    let results = operands.results(
+        construction,
+        selected.iter().map(|(ordinal, _)| *ordinal),
+        provenance,
+    )?;
+    for ((_, output), mut value) in selected.into_iter().zip(results) {
         let target = function_value_coordinate(symbols.coordinates, output.target());
-        let mut value = operands.result(construction, ordinal, provenance)?;
         if !output.subscripts().is_empty() {
             value = lower_function_array_update(
                 construction,

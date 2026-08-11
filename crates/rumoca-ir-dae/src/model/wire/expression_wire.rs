@@ -57,8 +57,10 @@ impl Serialize for ExpressionNodesOutput<'_> {
         S: serde::Serializer,
     {
         let mut sequence = serializer.serialize_seq(Some(self.0.nodes.len()))?;
-        for (node, value_type) in self.0.nodes.iter().zip(&self.0.value_types) {
+        for (index, (node, value_type)) in self.0.nodes.iter().zip(&self.0.value_types).enumerate()
+        {
             sequence.serialize_element(&ExpressionNodeOutput {
+                index,
                 node,
                 value_type: *value_type,
             })?;
@@ -77,6 +79,7 @@ impl Serialize for ExpressionNodesOutput<'_> {
 /// cover every projected variant, so drift fails loudly instead of silently.
 const ARRAY_VARIANT: u32 = 5;
 const RECORD_VARIANT: u32 = 6;
+const CALL_VARIANT: u32 = 13;
 const FUNCTION_FOLD_PARAMETER_VARIANT: u32 = 16;
 const FUNCTION_FOLD_OUTPUT_VARIANT: u32 = 17;
 
@@ -88,6 +91,7 @@ const FUNCTION_FOLD_OUTPUT_VARIANT: u32 = 17;
 /// other fact those nodes hold is re-issued by the fold transition that
 /// generates them, so replay recomputes it instead of reading it.
 struct ExpressionNodeOutput<'storage> {
+    index: usize,
     node: &'storage ExprNode,
     value_type: u32,
 }
@@ -111,6 +115,25 @@ impl Serialize for ExpressionNodeOutput<'_> {
                     serializer.serialize_struct_variant("ExprNode", RECORD_VARIANT, "record", 2)?;
                 state.serialize_field("operand_count", operands)?;
                 state.serialize_field("value_type", &self.value_type)?;
+                state.end()
+            }
+            ExprNode::Call {
+                owner,
+                function,
+                output,
+                operands,
+            } => {
+                let operand_count = if *owner as usize == self.index {
+                    operands.len
+                } else {
+                    0
+                };
+                let mut state =
+                    serializer.serialize_struct_variant("ExprNode", CALL_VARIANT, "call", 4)?;
+                state.serialize_field("owner", owner)?;
+                state.serialize_field("function", function)?;
+                state.serialize_field("output", output)?;
+                state.serialize_field("operand_count", &operand_count)?;
                 state.end()
             }
             ExprNode::FunctionFoldParameter { function, .. } => {
@@ -193,6 +216,7 @@ pub(super) enum ExprNodeWire {
         operand_count: u32,
     },
     Call {
+        owner: u32,
         function: u32,
         output: u32,
         operand_count: u32,

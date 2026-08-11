@@ -168,15 +168,16 @@ fn clock_domain_value_roots<'dae>(
 ) -> Result<Vec<dae::ExprId<'dae>>, GalecTargetError> {
     let mut roots = Vec::new();
     let real_clocks = discrete_real_clock_owners(view);
-    let causal_definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+    let causal_plan = causal_discrete_plan(view)?;
     for index in 0..view.discrete_real_equation_count() {
-        if causal_definitions.consumes_discrete_real_equation(index) {
+        let Some(definition) = causal_plan.discrete_real_definition(index) else {
             continue;
-        }
+        };
         let equation = view
             .discrete_real_equation(index)
             .expect("dense checked discrete Real equation resolves");
-        let (target, value) = explicit_discrete_real_definition(view, equation)?;
+        let target = dae::VariableId::from(definition.target());
+        let value = definition.value();
         if require_discrete_real_clock_owner(&real_clocks, target, equation.provenance().span())?
             == clock.index()
             && activation_allows_domain_preamble(view, equation.activation(), clock)
@@ -403,16 +404,17 @@ fn lower_discrete_real_equations<'dae>(
 ) -> Result<(), GalecTargetError> {
     let mut owners: HashMap<u32, (usize, bool)> = HashMap::new();
     let clock_owners = discrete_real_clock_owners(view);
-    let causal_definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+    let causal_plan = causal_discrete_plan(view)?;
     for index in 0..view.discrete_real_equation_count() {
-        if causal_definitions.consumes_discrete_real_equation(index) {
+        let Some(definition) = causal_plan.discrete_real_definition(index) else {
             continue;
-        }
+        };
         let equation = view
             .discrete_real_equation(index)
             .expect("dense checked discrete Real equation resolves");
         let span = equation.provenance().span();
-        let (target, value) = explicit_discrete_real_definition(view, equation)?;
+        let target = dae::VariableId::from(definition.target());
+        let value = definition.value();
         let owner_clock = require_discrete_real_clock_owner(&clock_owners, target, span)?;
         if owner_clock != clock.index() {
             continue;
@@ -499,94 +501,13 @@ fn lower_discrete_real_equations<'dae>(
     Ok(())
 }
 
-fn explicit_discrete_real_definition<'dae>(
+fn causal_discrete_plan<'dae>(
     view: dae::DaeView<'dae>,
-    equation: dae::DiscreteRealEquationView<'dae>,
-) -> Result<(dae::VariableId<'dae>, dae::ExprId<'dae>), GalecTargetError> {
-    let span = equation.provenance().span();
-    let dae::ExpressionOperation::Binary {
-        operator: dae::BinaryOperator::Subtract,
-        lhs,
-        rhs,
-    } = view
-        .expression(equation.residual())
-        .expect("checked discrete Real residual resolves")
-        .operation()
-    else {
-        return Err(coupled_discrete_real_equation(span));
-    };
-    match (
-        direct_discrete_real_coordinate(view, lhs),
-        direct_discrete_real_coordinate(view, rhs),
-    ) {
-        (Some(target), None) if !reads_current_target(view, rhs, target) => {
-            Ok((dae::VariableId::from(target), rhs))
-        }
-        (None, Some(target)) if !reads_current_target(view, lhs, target) => {
-            Ok((dae::VariableId::from(target), lhs))
-        }
-        (Some(lhs_target), Some(rhs_target)) => {
-            explicit_direct_alias(view, lhs_target, rhs_target, lhs, rhs, span)
-        }
-        _ => Err(coupled_discrete_real_equation(span)),
-    }
-}
-
-/// Solve an exact coordinate alias without pretending an arbitrary B.1b row is solved.
-///
-/// A top-level output causality is an exact semantic direction retained by DAE.
-/// When exactly one side has that causality, the residual defines that output
-/// from the other clocked coordinate. Otherwise `lhs - rhs = 0` is exactly
-/// solved for `lhs`; unique-target and acyclic current-tick checks below must
-/// still prove that all selected aliases form one executable assignment graph.
-fn explicit_direct_alias<'dae>(
-    view: dae::DaeView<'dae>,
-    lhs_target: dae::DiscreteRealId<'dae>,
-    rhs_target: dae::DiscreteRealId<'dae>,
-    lhs: dae::ExprId<'dae>,
-    rhs: dae::ExprId<'dae>,
-    span: Span,
-) -> Result<(dae::VariableId<'dae>, dae::ExprId<'dae>), GalecTargetError> {
-    let lhs_output = view
-        .variable(dae::VariableId::from(lhs_target))
-        .expect("checked B.1b lhs variable resolves")
-        .causality()
-        == dae::VariableCausality::Output;
-    let rhs_output = view
-        .variable(dae::VariableId::from(rhs_target))
-        .expect("checked B.1b rhs variable resolves")
-        .causality()
-        == dae::VariableCausality::Output;
-    match (lhs_output, rhs_output) {
-        (true, false) => Ok((dae::VariableId::from(lhs_target), rhs)),
-        (false, true) => Ok((dae::VariableId::from(rhs_target), lhs)),
-        _ if lhs_target != rhs_target => Ok((dae::VariableId::from(lhs_target), rhs)),
-        _ => Err(coupled_discrete_real_equation(span)),
-    }
-}
-
-fn direct_discrete_real_coordinate<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> Option<dae::DiscreteRealId<'dae>> {
-    match view
-        .expression(expression)
-        .expect("checked residual operand resolves")
-        .operation()
-    {
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteReal(id)) => Some(id),
-        _ => None,
-    }
-}
-
-fn reads_current_target<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-    target: dae::DiscreteRealId<'dae>,
-) -> bool {
-    let mut reads = HashSet::new();
-    collect_current_reads(view, expression, &mut reads);
-    reads.contains(&dae::VariableId::from(target).index())
+) -> Result<rumoca_phase_structural::CausalDiscretePlan<'dae>, GalecTargetError> {
+    rumoca_phase_structural::CausalDiscretePlan::derive(view).map_err(|error| {
+        let rumoca_phase_structural::CausalDiscreteError::NonComputable { span } = error;
+        coupled_discrete_real_equation(span)
+    })
 }
 
 fn coupled_discrete_real_equation(span: Span) -> GalecTargetError {

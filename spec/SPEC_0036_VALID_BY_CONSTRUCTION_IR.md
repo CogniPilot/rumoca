@@ -65,6 +65,14 @@ arithmetic profile; failure exposes no partial root. A template view may borrow
 the completed root but cannot select an operation, storage class, local scope,
 shape, alias rule, call ABI, or failure behavior.
 
+The shared causal-discrete structural result derives target identity,
+current-value dependencies, and deterministic orientation from one branded DAE
+view. Solve and GALEC may restrict it but cannot reinterpret an unresolved row.
+The same causal-definition owner derives whether a complete algebraic/output
+declaration is event-held. Solve stores that fact as one typed declaration
+domain; scalar trace metadata is only a final presentation projection of the
+declaration proof.
+
 ### Flat Aggregate Construction
 
 `flat::Model::construct` is the one Flat construction authority; its per-owner

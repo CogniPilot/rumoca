@@ -79,6 +79,10 @@
     const double __r{{ op.dst }} = (__r{{ op.cond }} != 0.0 ? __r{{ op.if_true }} : __r{{ op.if_false }});
 {%- elif op.kind == "StoreOutput" %}
     __out[{{ op.output_index }}] = __r{{ op.src }};
+{%- elif op.kind == "StoreOutputRange" %}
+{%- for output_index in op.output_indices %}
+    __out[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }};
+{%- endfor %}
 {%- else %}
 {{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
 {%- endif %}

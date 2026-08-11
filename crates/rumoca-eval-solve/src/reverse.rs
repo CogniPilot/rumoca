@@ -654,6 +654,7 @@ mod tests {
                 context: RowEvalContext {
                     seed: None,
                     external_tables: None,
+                    pure_calls: None,
                     runtime_state: None,
                 },
             },
@@ -786,6 +787,7 @@ mod tests {
                     context: RowEvalContext {
                         seed: None,
                         external_tables: None,
+                        pure_calls: None,
                         runtime_state: None,
                     },
                 },
@@ -808,6 +810,7 @@ mod tests {
                 context: RowEvalContext {
                     seed: None,
                     external_tables: None,
+                    pure_calls: None,
                     runtime_state: None,
                 },
             },

@@ -193,8 +193,23 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         variability: ExpressionVariability,
         binder_domain: Option<u32>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        self.insert_borrowed(node, ty, variability, binder_domain)
+    }
+
+    fn insert_borrowed(
+        &mut self,
+        node: ExprNode,
+        ty: ValueTypeId<'dae>,
+        variability: ExpressionVariability,
+        binder_domain: Option<u32>,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let (id, facts) = self.prepare_insertion(&node, ty, variability, binder_domain)?;
-        Ok(self.commit_insertion(id, node, facts))
+        Ok(ExprId::from_raw(self.storage.expressions.push(
+            id,
+            node,
+            facts,
+            self.provenance,
+        )))
     }
 
     fn prepare_insertion(

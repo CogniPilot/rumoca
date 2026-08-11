@@ -164,6 +164,7 @@ impl<'dae> DaeView<'dae> {
         initial_discrete_value_count => initial_discrete_values,
         discrete_real_equation_count => discrete_real_equations,
         discrete_value_owner_count => discrete_value_owners,
+        model_event_transaction_count => model_event_transactions,
         relation_count => relations,
         condition_count => conditions,
         root_count => roots,
@@ -184,6 +185,7 @@ impl<'dae> DaeView<'dae> {
         function_id => (FunctionId, functions),
         variable_id => (VariableId, variables),
         discrete_value_owner_id => (DiscreteValueOwnerId, discrete_value_owners),
+        model_event_transaction_id => (ModelEventTransactionId, model_event_transactions),
         relation_id => (RelationId, relations),
         condition_id => (ConditionId, conditions),
         root_id => (RootId, roots),
@@ -195,6 +197,19 @@ impl<'dae> DaeView<'dae> {
         previous_id => (PreviousId, previous_values),
         terminal_id => (TerminalId, terminals),
         delay_id => (DelayId, delays),
+    }
+
+    pub fn model_event_transaction(
+        self,
+        id: ModelEventTransactionId<'dae>,
+    ) -> Option<crate::ModelEventTransactionView<'dae>> {
+        Some(crate::ModelEventTransactionView {
+            entry: self
+                .dae
+                .storage
+                .model_event_transactions
+                .get(id.index() as usize)?,
+        })
     }
 
     pub fn domain(self, id: DomainId<'dae>) -> Option<DomainView<'dae>> {
@@ -1477,10 +1492,12 @@ impl<'dae> ExpressionView<'dae> {
                 arguments: self.expression_operands(*operands),
             },
             ExprNode::Call {
+                owner,
                 function,
                 output,
                 operands,
             } => ExpressionOperation::Call {
+                owner: ExprId::from_raw(*owner),
                 function: FunctionId::from_raw(*function),
                 output: *output,
                 arguments: self.expression_operands(*operands),
@@ -1789,6 +1806,7 @@ pub enum ExpressionOperation<'dae> {
         arguments: ExpressionOperands<'dae>,
     },
     Call {
+        owner: ExprId<'dae>,
         function: FunctionId<'dae>,
         output: u32,
         arguments: ExpressionOperands<'dae>,

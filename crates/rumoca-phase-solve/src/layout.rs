@@ -28,7 +28,10 @@ pub(crate) struct LoweredLayout<'dae> {
     pub(crate) delay_values: Vec<usize>,
     pub(crate) layout: solve::VarLayout,
     pub(crate) solve_layout: solve::SolveLayout,
-    pub(crate) call_scoped_actions: std::cell::RefCell<CallScopedActionCollector>,
+    pub(crate) call_scoped_actions: std::cell::RefCell<CallScopedActionCollector<'dae>>,
+    /// Exact pure-call owners issued atomically at the DAE expression boundary.
+    pub(crate) pure_calls:
+        std::cell::RefCell<crate::lower::typed_functions::PureCallRegistry<'dae>>,
     pub(crate) marker: std::marker::PhantomData<&'dae mut &'dae ()>,
 }
 
@@ -111,8 +114,9 @@ pub(crate) fn lower_layout<'dae>(
         base_to_indices: solver_base_indices(view, &variables),
         names: y.names,
     };
+    let causal_definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
     let (variable_storage_runs, variable_declarations) =
-        solve_variable_declarations(view, &variables);
+        solve_variable_declarations(view, &variables, &causal_definitions)?;
     let solve_layout = solve::SolveLayout {
         solver_maps,
         variable_storage_runs,
@@ -142,23 +146,35 @@ pub(crate) fn lower_layout<'dae>(
         layout,
         solve_layout,
         call_scoped_actions: std::cell::RefCell::default(),
+        pure_calls: std::cell::RefCell::new(crate::lower::typed_functions::PureCallRegistry::new()),
         marker: std::marker::PhantomData,
     })
 }
 
-fn solve_variable_declarations(
-    view: dae::DaeView<'_>,
+fn solve_variable_declarations<'dae>(
+    view: dae::DaeView<'dae>,
     variables: &[VariableSlot],
-) -> (
-    Vec<solve::SolveVariableStorageRun>,
-    Vec<solve::SolveVariableDeclaration>,
-) {
+    causal_definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+) -> Result<
+    (
+        Vec<solve::SolveVariableStorageRun>,
+        Vec<solve::SolveVariableDeclaration>,
+    ),
+    LowerError,
+> {
     view.variables()
         .map(|(id, variable)| {
             let slot = variables[id.index() as usize];
             let role = solve_variable_storage_role(variable);
             let value_kind = solve_variable_value_kind(variable.value_type().scalar_type());
-            (
+            let declaration = if causal_definitions.event_holds_variable(id) {
+                solve::SolveVariableDeclaration::event_discontinuous(role, value_kind).map_err(
+                    |error| LowerError::contract(error.to_string(), variable.declaration().span()),
+                )?
+            } else {
+                solve::SolveVariableDeclaration::new(role, value_kind)
+            };
+            Ok((
                 solve::SolveVariableStorageRun {
                     base: match slot.storage {
                         StorageClass::Y => solve::scalar_slot_y(slot.base),
@@ -168,10 +184,11 @@ fn solve_variable_declarations(
                     role,
                     value_kind,
                 },
-                solve::SolveVariableDeclaration::new(role, value_kind),
-            )
+                declaration,
+            ))
         })
-        .unzip()
+        .collect::<Result<Vec<_>, LowerError>>()
+        .map(|declarations| declarations.into_iter().unzip())
 }
 
 fn solve_variable_storage_role(variable: dae::VariableView<'_>) -> solve::SolveVariableStorageRole {

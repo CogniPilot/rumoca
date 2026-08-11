@@ -1,4 +1,4 @@
-use rumoca_ir_solve::{BinaryOp, LinearOp, ScalarProgramBlock, UnaryOp};
+use rumoca_ir_solve::{BinaryOp, LinearOp, UnaryOp};
 
 use super::dependency::{YDependencyAnalyzer, reg_depends_on_y_index};
 use super::{invalid_prepared_row, producer};
@@ -112,30 +112,61 @@ pub fn target_assignment_shape(
 pub fn target_assignment_shapes(
     row: &[LinearOp],
 ) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
-    if ScalarProgramBlock::program_output_count(row) > 1 {
-        return Ok(Vec::new());
-    }
-    let Some(output_reg) = store_output_reg(row) else {
-        return Ok(Vec::new());
-    };
     let mut shapes = Vec::new();
-    if let Some(shape) = direct_assignment_shape(row, output_reg)? {
-        shapes.push(shape);
-    }
-    for shape in affine_assignment_shapes(row, output_reg)? {
-        if shapes
-            .iter()
-            .all(|existing| existing.target_y_index() != shape.target_y_index())
-        {
+    for (_, shape) in target_assignment_shapes_with_output_offsets(row)? {
+        if shapes.iter().all(|existing: &TargetAssignmentShape| {
+            existing.target_y_index() != shape.target_y_index()
+        }) {
             shapes.push(shape);
         }
     }
-    for shape in affine_residual_shapes(row, output_reg)? {
-        if shapes
-            .iter()
-            .all(|existing| existing.target_y_index() != shape.target_y_index())
-        {
-            shapes.push(shape);
+    Ok(shapes)
+}
+
+pub(super) fn target_assignment_shapes_with_output_offsets(
+    row: &[LinearOp],
+) -> Result<Vec<(usize, TargetAssignmentShape)>, EvalSolveError> {
+    if store_output_regs(row).next().is_none() {
+        return Ok(Vec::new());
+    }
+    let mut shapes = Vec::new();
+    let mut dependencies = YDependencyAnalyzer::new(row, 0);
+    // Prefer the direct owner of every output before considering more general
+    // affine isolators. A shared program may read another output's target, but
+    // that does not transfer equation ownership to the dependent output.
+    for (output_offset, output_reg) in store_output_regs(row).enumerate() {
+        for shape in direct_assignment_shapes(row, output_reg, &mut dependencies)? {
+            if shapes.iter().all(
+                |(existing_output, existing): &(usize, TargetAssignmentShape)| {
+                    *existing_output != output_offset
+                        || existing.target_y_index() != shape.target_y_index()
+                },
+            ) {
+                shapes.push((output_offset, shape));
+            }
+        }
+    }
+    for (output_offset, output_reg) in store_output_regs(row).enumerate() {
+        for shape in affine_assignment_shapes(row, output_reg)? {
+            if shapes.iter().all(|(existing_output, existing)| {
+                *existing_output != output_offset
+                    || existing.target_y_index() != shape.target_y_index()
+            }) {
+                shapes.push((output_offset, shape));
+            }
+        }
+    }
+    // Discover target lanes by walking each scalar output's arithmetic DAG.
+    // A TensorLoad remains one compact range operation; only registers that
+    // actually reach this output become scalar target views.
+    for (output_offset, output_reg) in store_output_regs(row).enumerate() {
+        for shape in affine_residual_shapes(row, output_reg)? {
+            if shapes.iter().all(|(existing_output, existing)| {
+                *existing_output != output_offset
+                    || existing.target_y_index() != shape.target_y_index()
+            }) {
+                shapes.push((output_offset, shape));
+            }
         }
     }
     Ok(shapes)
@@ -151,14 +182,14 @@ fn affine_residual_shapes(
     let expr_eval_len = checked_expr_eval_len(residual_pos)?;
     let mut targets = Vec::new();
     let mut dependencies = YDependencyAnalyzer::new(row, 0);
-    for op in row {
-        let LinearOp::LoadY {
-            dst: target_reg,
-            index: target_y_index,
-        } = *op
-        else {
-            continue;
-        };
+    let mut target_loads = Vec::new();
+    collect_affine_y_loads(
+        row,
+        residual_reg,
+        &mut std::collections::BTreeSet::new(),
+        &mut target_loads,
+    );
+    for (target_y_index, target_reg) in target_loads {
         if targets
             .iter()
             .any(|shape: &TargetAssignmentShape| shape.target_y_index() == target_y_index)
@@ -195,7 +226,7 @@ fn additive_target_coefficient(
         return Some(0.0);
     }
     match producer(row, reg)? {
-        LinearOp::LoadY { index, .. } if *index == target_y_index => Some(1.0),
+        _ if target_load_index(row, reg) == Some(target_y_index) => Some(1.0),
         LinearOp::Move { src, .. } => {
             additive_target_coefficient(row, *src, target_y_index, dependencies)
         }
@@ -228,6 +259,41 @@ fn additive_target_coefficient(
     }
 }
 
+fn collect_affine_y_loads(
+    row: &[LinearOp],
+    reg: u32,
+    visited: &mut std::collections::BTreeSet<u32>,
+    targets: &mut Vec<(usize, u32)>,
+) {
+    if !visited.insert(reg) {
+        return;
+    }
+    if let Some(index) = target_load_index(row, reg) {
+        if targets.iter().all(|&(existing, _)| existing != index) {
+            targets.push((index, reg));
+        }
+        return;
+    }
+    match producer(row, reg) {
+        Some(LinearOp::Move { src, .. })
+        | Some(LinearOp::Unary {
+            op: UnaryOp::Neg,
+            arg: src,
+            ..
+        }) => collect_affine_y_loads(row, *src, visited, targets),
+        Some(LinearOp::Binary {
+            op: BinaryOp::Add | BinaryOp::Sub,
+            lhs,
+            rhs,
+            ..
+        }) => {
+            collect_affine_y_loads(row, *lhs, visited, targets);
+            collect_affine_y_loads(row, *rhs, visited, targets);
+        }
+        _ => {}
+    }
+}
+
 fn read_shape_reg(
     regs: &[f64],
     reg: u32,
@@ -243,29 +309,34 @@ fn read_shape_reg(
         })
 }
 
-fn direct_assignment_shape(
+fn direct_assignment_shapes(
     row: &[LinearOp],
     output_reg: u32,
-) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
-    let Some((target_reg, expr_reg, target_scale)) = assignment_expr_reg(row, output_reg) else {
-        return Ok(None);
-    };
-    let Some(target_y_index) = target_load_index(row, target_reg) else {
-        return Ok(None);
-    };
-    if reg_depends_on_y_index(row, expr_reg, target_y_index) {
-        return Ok(None);
+    dependencies: &mut YDependencyAnalyzer<'_>,
+) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
+    let mut shapes = Vec::with_capacity(2);
+    for (target_reg, expr_reg, target_scale) in
+        assignment_expr_regs(row, output_reg).into_iter().flatten()
+    {
+        let Some(target_y_index) = target_load_index(row, target_reg) else {
+            continue;
+        };
+        dependencies.set_target(target_y_index);
+        if dependencies.depends_on(expr_reg) {
+            continue;
+        }
+        let Some(expr_pos) = producer_pos(row, expr_reg) else {
+            continue;
+        };
+        let expr_eval_len = checked_expr_eval_len(expr_pos)?;
+        shapes.push(TargetAssignmentShape::Direct {
+            target_y_index,
+            expr_reg,
+            target_scale,
+            expr_eval_len,
+        });
     }
-    let Some(expr_pos) = producer_pos(row, expr_reg) else {
-        return Ok(None);
-    };
-    let expr_eval_len = checked_expr_eval_len(expr_pos)?;
-    Ok(Some(TargetAssignmentShape::Direct {
-        target_y_index,
-        expr_reg,
-        target_scale,
-        expr_eval_len,
-    }))
+    Ok(shapes)
 }
 
 fn affine_assignment_shapes(
@@ -446,69 +517,140 @@ fn affine_target_terms(row: &[LinearOp], reg: u32) -> [Option<(u32, Option<u32>)
     }
 }
 
-fn store_output_reg(row: &[LinearOp]) -> Option<u32> {
-    row.iter().rev().find_map(|op| match *op {
-        LinearOp::StoreOutput { src } => Some(src),
-        _ => None,
+fn store_output_regs(row: &[LinearOp]) -> impl Iterator<Item = u32> + '_ {
+    row.iter().flat_map(|op| {
+        let (start, count, stride) = match *op {
+            LinearOp::StoreOutput { src } => (src, 1, 0),
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } => (start, count, stride),
+            _ => (0, 0, 0),
+        };
+        (0..count).map(move |offset| {
+            let register_offset = offset
+                .checked_mul(stride)
+                .and_then(|value| u32::try_from(value).ok())
+                .expect("checked output range offset fits a register");
+            start
+                .checked_add(register_offset)
+                .expect("checked output range register fits u32")
+        })
     })
 }
 
 fn target_load_index(row: &[LinearOp], target_reg: u32) -> Option<usize> {
     row.iter().find_map(|op| match *op {
         LinearOp::LoadY { dst, index } if dst == target_reg => Some(index),
+        LinearOp::TensorLoad {
+            dst_start,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start,
+            count,
+            lanes,
+            ..
+        } => {
+            let offset = target_reg.checked_sub(dst_start)? as usize;
+            (lanes != 0 && offset < count.checked_mul(lanes)? && offset.is_multiple_of(lanes))
+                .then(|| input_start.checked_add(offset / lanes))?
+        }
         _ => None,
     })
 }
 
-fn assignment_expr_reg(row: &[LinearOp], output_reg: u32) -> Option<(u32, u32, f64)> {
-    let output_op = producer(row, output_reg)?;
+fn assignment_expr_regs(row: &[LinearOp], output_reg: u32) -> [Option<(u32, u32, f64)>; 2] {
+    let Some(output_op) = producer(row, output_reg) else {
+        return [None, None];
+    };
     match *output_op {
         LinearOp::Binary {
             op: BinaryOp::Sub,
             lhs,
             rhs,
             ..
-        } => sub_assignment_expr_reg(row, lhs, rhs, 1.0),
+        } => sub_assignment_expr_regs(row, lhs, rhs, 1.0),
         LinearOp::Unary {
             op: UnaryOp::Neg,
             arg,
             ..
         } => {
+            let Some(argument_op) = producer(row, arg) else {
+                return [None, None];
+            };
             let LinearOp::Binary {
                 op: BinaryOp::Sub,
                 lhs,
                 rhs,
                 ..
-            } = *producer(row, arg)?
+            } = *argument_op
             else {
-                return None;
+                return [None, None];
             };
-            sub_assignment_expr_reg(row, lhs, rhs, -1.0)
+            sub_assignment_expr_regs(row, lhs, rhs, -1.0)
         }
-        _ => None,
+        LinearOp::TensorBinary {
+            dst_start,
+            op: BinaryOp::Sub,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes,
+        } => {
+            let Some((lhs, rhs)) = tensor_binary_operands(
+                output_reg, dst_start, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
+            ) else {
+                return [None, None];
+            };
+            sub_assignment_expr_regs(row, lhs, rhs, 1.0)
+        }
+        _ => [None, None],
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tensor_binary_operands(
+    output_reg: u32,
+    dst_start: u32,
+    lhs_start: u32,
+    rhs_start: u32,
+    count: usize,
+    lhs_stride: usize,
+    rhs_stride: usize,
+    lanes: usize,
+) -> Option<(u32, u32)> {
+    let offset = output_reg.checked_sub(dst_start)? as usize;
+    if lanes == 0 || offset >= count.checked_mul(lanes)? || !offset.is_multiple_of(lanes) {
+        return None;
+    }
+    let element = offset / lanes;
+    let lhs_offset = element.checked_mul(lhs_stride)?.checked_mul(lanes)?;
+    let rhs_offset = element.checked_mul(rhs_stride)?.checked_mul(lanes)?;
+    Some((
+        lhs_start.checked_add(u32::try_from(lhs_offset).ok()?)?,
+        rhs_start.checked_add(u32::try_from(rhs_offset).ok()?)?,
+    ))
 }
 
 fn producer_pos(row: &[LinearOp], dst_reg: u32) -> Option<usize> {
     row.iter()
-        .rposition(|op| op.dst_register() == Some(dst_reg))
+        .rposition(|op| super::operation_writes_register(op, dst_reg))
 }
 
-fn sub_assignment_expr_reg(
+fn sub_assignment_expr_regs(
     row: &[LinearOp],
     lhs: u32,
     rhs: u32,
     output_scale: f64,
-) -> Option<(u32, u32, f64)> {
-    if is_y_load(row, lhs) {
-        Some((lhs, rhs, output_scale))
-    } else if is_y_load(row, rhs) {
-        Some((rhs, lhs, -output_scale))
-    } else {
-        None
-    }
+) -> [Option<(u32, u32, f64)>; 2] {
+    [
+        is_y_load(row, lhs).then_some((lhs, rhs, output_scale)),
+        is_y_load(row, rhs).then_some((rhs, lhs, -output_scale)),
+    ]
 }
 
 fn is_y_load(row: &[LinearOp], reg: u32) -> bool {
-    matches!(producer(row, reg), Some(LinearOp::LoadY { .. }))
+    target_load_index(row, reg).is_some()
 }

@@ -5,9 +5,9 @@
 
 use crate::{
     ComputeBlock, ComputeNode, ContinuousSolveArtifacts, ContinuousSolveSystem,
-    DiscreteSolveSystem, InitializationSolveArtifacts, InitializationSolveSystem, LinearOp,
-    ScalarProgramBlock, SolveArtifacts, SolveClockPartition, SolveEventPartition, SolveModel,
-    SolveProblem,
+    DiscreteSolveSystem, EventTransactionProgram, InitializationSolveArtifacts,
+    InitializationSolveSystem, LinearOp, ScalarProgramBlock, SolveArtifacts, SolveClockPartition,
+    SolveEventPartition, SolveModel, SolveProblem,
 };
 use rumoca_core::Span;
 
@@ -19,6 +19,8 @@ pub enum LinearOpSliceKind {
         program_index: usize,
         span: Option<Span>,
     },
+    /// One compact correlated guarded-assignment program.
+    GuardedAssignmentProgram { program_index: usize, span: Span },
     /// The left operand setup stream for `ComputeNode::MatMul`.
     MatMulLhs { node_index: usize, span: Span },
     /// The right operand setup stream for `ComputeNode::MatMul`.
@@ -38,6 +40,10 @@ pub enum VisitScope<'a> {
     ContinuousSystem(&'a ContinuousSolveSystem),
     InitializationSystem(&'a InitializationSolveSystem),
     DiscreteSystem(&'a DiscreteSolveSystem),
+    EventTransactionProgram {
+        index: usize,
+        program: &'a EventTransactionProgram,
+    },
     EventPartition(&'a SolveEventPartition),
     ClockPartition(&'a SolveClockPartition),
     ContinuousArtifacts(&'a ContinuousSolveArtifacts),
@@ -122,6 +128,15 @@ pub trait SolveVisitor {
         let exit_result = self.exit_scope(VisitScope::DiscreteSystem(system));
         result?;
         exit_result
+    }
+
+    fn visit_event_transaction_program(
+        &mut self,
+        index: usize,
+        program: &EventTransactionProgram,
+    ) -> Result<(), Self::Error> {
+        self.enter_scope(VisitScope::EventTransactionProgram { index, program })?;
+        self.exit_scope(VisitScope::EventTransactionProgram { index, program })
     }
 
     fn visit_event_partition(
@@ -294,7 +309,20 @@ pub fn walk_discrete_system<V: SolveVisitor + ?Sized>(
 ) -> Result<(), V::Error> {
     visitor.visit_scalar_program_block(&system.runtime_assignment_rhs)?;
     visitor.visit_scalar_program_block(&system.post_commit_assignment_rhs)?;
-    visitor.visit_scalar_program_block(&system.rhs)
+    visitor.visit_scalar_program_block(&system.rhs)?;
+    for (program_index, program) in system.guarded_assignments.iter().enumerate() {
+        visitor.visit_linear_op_slice(
+            LinearOpSliceKind::GuardedAssignmentProgram {
+                program_index,
+                span: program.span(),
+            },
+            program.program(),
+        )?;
+    }
+    for (program_index, program) in system.event_transactions.iter().enumerate() {
+        visitor.visit_event_transaction_program(program_index, program)?;
+    }
+    Ok(())
 }
 
 pub fn walk_event_partition<V: SolveVisitor + ?Sized>(

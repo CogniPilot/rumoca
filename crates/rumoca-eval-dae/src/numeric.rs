@@ -140,6 +140,7 @@ where
                 function,
                 output,
                 arguments,
+                ..
             } => self.function_call(function, output, arguments, span)?,
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
                 self.expression(definition.rhs())?
@@ -232,8 +233,9 @@ where
         if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
             let arguments = self
                 .function_arguments
-                .last()
-                .filter(|(function, _)| *function == parameter.function())
+                .iter()
+                .rev()
+                .find(|(function, _)| *function == parameter.function())
                 .map(|(_, arguments)| arguments)
                 .ok_or_else(|| function_parameter_error(span))?;
             return arguments

@@ -1,6 +1,5 @@
 use crate::{
-    CoupledEventNewtonModel, RuntimeSolveError, discrete_row_active_at, discrete_row_pre_mode,
-    runtime_values_changed, solve_coupled_event_newton,
+    CoupledEventNewtonModel, RuntimeSolveError, runtime_values_changed, solve_coupled_event_newton,
 };
 use rumoca_ir_solve as solve;
 
@@ -9,6 +8,7 @@ use super::discrete_rows::StructuredDiscreteRowEvalInput;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
 };
+use super::guarded_assignments::guarded_target_at;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoupledEventUnknown {
@@ -18,9 +18,20 @@ enum CoupledEventUnknown {
 
 #[derive(Clone, Copy, Debug)]
 enum CoupledEventResidual {
-    Implicit { row: usize },
-    Discrete { row: usize },
-    StructuredDiscrete { row: usize },
+    Implicit {
+        row: usize,
+    },
+    Discrete {
+        row: usize,
+    },
+    Guarded {
+        program: usize,
+        output: usize,
+        target: solve::ScalarSlot,
+    },
+    StructuredDiscrete {
+        row: usize,
+    },
 }
 
 struct CoupledEventInventory {
@@ -135,10 +146,10 @@ impl SolveRuntime {
             .copied()
             .enumerate()
         {
-            if !discrete_row_active_at(&self.model, row, t)? {
+            if !self.discrete_row_active_at(row, t)? {
                 continue;
             }
-            let mode = discrete_row_pre_mode(&self.model, row)?;
+            let mode = crate::EventPreMode::from(self.model.problem.discrete.pre_modes[row]);
             let clock_owned = self.model.problem.discrete.clock_owners[row].is_some();
             if !snapshot.row_filter.accepts(mode, clock_owned) {
                 continue;
@@ -151,6 +162,36 @@ impl SolveRuntime {
                 unknown,
                 CoupledEventResidual::Discrete { row },
             )?;
+        }
+        for (program_index, owner) in self
+            .model
+            .problem
+            .discrete
+            .guarded_assignments
+            .iter()
+            .enumerate()
+        {
+            if !self.guarded_assignment_accepts_snapshot(program_index, snapshot, t)? {
+                continue;
+            }
+            let mut output = 0usize;
+            for range in owner.target_ranges() {
+                for offset in 0..range.count() {
+                    let target = guarded_target_at(range.base(), offset)?;
+                    if let Some(unknown) = self.real_event_unknown(target) {
+                        push_coupled_inventory_entry(
+                            &mut inventory,
+                            unknown,
+                            CoupledEventResidual::Guarded {
+                                program: program_index,
+                                output,
+                                target,
+                            },
+                        )?;
+                    }
+                    output += 1;
+                }
+            }
         }
         for (row_index, row) in self
             .structured_discrete_rows
@@ -256,12 +297,19 @@ impl CoupledEventSystem<'_> {
             self.runtime.row_eval_context(),
             &mut implicit,
         )?;
-        let mut eval_p_cache = EventEvalParamCache;
+        let mut eval_p_cache = EventEvalParamCache::default();
         for (slot, row) in residual.iter_mut().zip(&self.inventory.residuals) {
             *slot = match *row {
                 CoupledEventResidual::Implicit { row } => implicit_row_value(&implicit, row)?,
                 CoupledEventResidual::Discrete { row } => {
                     self.eval_discrete_residual(row, y, p, &mut eval_p_cache)?
+                }
+                CoupledEventResidual::Guarded {
+                    program,
+                    output,
+                    target,
+                } => {
+                    self.eval_guarded_residual(program, output, target, y, p, &mut eval_p_cache)?
                 }
                 CoupledEventResidual::StructuredDiscrete { row } => {
                     self.eval_structured_discrete_residual(row, y, p, &mut eval_p_cache)?
@@ -291,7 +339,60 @@ impl CoupledEventSystem<'_> {
                 eval_p_cache,
             )?
             .ok_or_else(|| filtered_discrete_row_error(row))?;
-        let target = self.runtime.model.problem.discrete.update_targets[row];
+        let target = self
+            .runtime
+            .model
+            .problem
+            .discrete
+            .update_targets
+            .get(row)
+            .copied()
+            .ok_or_else(|| filtered_discrete_row_error(row))?;
+        Ok(scalar_slot_value(target, y, p)? - value)
+    }
+
+    fn eval_guarded_residual(
+        &self,
+        program: usize,
+        output: usize,
+        target: solve::ScalarSlot,
+        y: &[f64],
+        p: &[f64],
+        cache: &mut EventEvalParamCache,
+    ) -> Result<f64, RuntimeSolveError> {
+        if cache.guarded_program != Some(program) {
+            let row_p = cache.params(p);
+            let row_p_with_root_overrides;
+            let row_p = if self.snapshot.root_relation_overrides.is_empty() {
+                row_p
+            } else {
+                row_p_with_root_overrides =
+                    crate::runtime::solve_events::event_eval_params_with_relation_overrides(
+                        &self
+                            .runtime
+                            .model
+                            .problem
+                            .events
+                            .root_relation_memory_targets,
+                        self.snapshot.root_relation_overrides,
+                        row_p,
+                    )?;
+                &row_p_with_root_overrides
+            };
+            self.runtime.eval_guarded_assignment_outputs(
+                program,
+                y,
+                row_p,
+                self.t,
+                &mut cache.guarded_outputs,
+            )?;
+            cache.guarded_program = Some(program);
+        }
+        let value = cache.guarded_outputs.get(output).copied().ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "guarded assignment {program} omitted output {output}"
+            ))
+        })?;
         Ok(scalar_slot_value(target, y, p)? - value)
     }
 
@@ -543,6 +644,7 @@ mod tests {
                         solve::DiscreteEventPreMode::FollowCurrent,
                     ],
                     observation_refresh: vec![false, false],
+                    integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
                     clock_owners: vec![None, None],
                     ..Default::default()
                 },

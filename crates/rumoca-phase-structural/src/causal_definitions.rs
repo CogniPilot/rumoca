@@ -15,6 +15,7 @@ pub struct CausalDefinitions<'dae> {
     definitions: HashMap<u32, dae::ExprId<'dae>>,
     scalar_definitions: HashMap<(u32, u32), dae::ExprId<'dae>>,
     fully_scalar_defined: HashSet<u32>,
+    event_held: HashSet<u32>,
     consumed_equations: HashSet<u32>,
     consumed_discrete_real_equations: HashSet<u32>,
     consumed_families: HashSet<u32>,
@@ -25,7 +26,7 @@ pub struct CausalDefinitions<'dae> {
 impl<'dae> CausalDefinitions<'dae> {
     pub fn derive(view: dae::DaeView<'dae>) -> Self {
         let (candidates, total_owners) = collect_definition_candidates(view);
-        let (emitted, order) = acyclic_target_order(view, &candidates);
+        let (emitted, order, mut event_held) = acyclic_target_order(view, &candidates);
 
         let definitions: HashMap<_, _> = candidates
             .iter()
@@ -56,13 +57,15 @@ impl<'dae> CausalDefinitions<'dae> {
                 DefinitionOwner::Residual(_) | DefinitionOwner::DiscreteReal(_) => None,
             })
             .collect::<HashSet<_>>();
-        let (scalar_definitions, fully_scalar_defined, scalar_equations) =
+        let (scalar_definitions, fully_scalar_defined, scalar_equations, scalar_event_held) =
             derive_scalar_definitions(view, &definitions, &consumed_equations);
+        event_held.extend(scalar_event_held);
         consumed_equations.extend(scalar_equations);
         Self {
             definitions,
             scalar_definitions,
             fully_scalar_defined,
+            event_held,
             remaining_owners: total_owners - consumed_equations.len() - consumed_families.len(),
             consumed_equations,
             consumed_discrete_real_equations,
@@ -96,6 +99,12 @@ impl<'dae> CausalDefinitions<'dae> {
     /// Whether every scalar of this aggregate has one non-cyclic definition.
     pub fn fully_defines_variable(&self, variable: dae::VariableId<'dae>) -> bool {
         self.fully_scalar_defined.contains(&variable.index())
+    }
+
+    /// Whether this complete algebraic/output declaration is constant between
+    /// event instants under the same causal-definition proof.
+    pub fn event_holds_variable(&self, variable: dae::VariableId<'dae>) -> bool {
+        self.event_held.contains(&variable.index())
     }
 
     pub fn consumes(&self, equation: dae::ContinuousEquationId<'dae>) -> bool {
@@ -207,36 +216,102 @@ fn append_discrete_connection_candidates<'dae>(
 fn acyclic_target_order<'dae>(
     view: dae::DaeView<'dae>,
     candidates: &[DefinitionCandidate<'dae>],
-) -> (HashSet<u32>, Vec<dae::AlgebraicId<'dae>>) {
+) -> (HashSet<u32>, Vec<dae::AlgebraicId<'dae>>, HashSet<u32>) {
     let targets = candidates
         .iter()
         .map(|(_, target, _)| target.index())
         .collect::<HashSet<_>>();
     let dependencies = candidates
         .iter()
-        .map(|(_, target, value)| {
-            let retained = algebraic_dependencies(view, *value)
-                .into_iter()
-                .filter(|dependency| targets.contains(dependency))
-                .collect::<HashSet<_>>();
-            (target.index(), retained)
-        })
+        .map(|(_, target, value)| (target.index(), expression_dependencies(view, *value)))
         .collect::<HashMap<_, _>>();
     let mut emitted = HashSet::new();
+    let mut event_held = HashSet::new();
     let mut order = Vec::with_capacity(candidates.len());
     while order.len() < candidates.len() {
         let Some((_, target, _)) = candidates.iter().find(|(_, target, _)| {
             !emitted.contains(&target.index())
                 && dependencies[&target.index()]
+                    .algebraic
                     .iter()
+                    .filter(|dependency| targets.contains(dependency))
                     .all(|dependency| emitted.contains(dependency))
         }) else {
             break;
         };
+        let target_dependencies = &dependencies[&target.index()];
+        if !target_dependencies.has_continuous_source
+            && target_dependencies
+                .algebraic
+                .iter()
+                .all(|dependency| event_held.contains(dependency))
+        {
+            event_held.insert(target.index());
+        }
         emitted.insert(target.index());
         order.push(*target);
     }
-    (emitted, order)
+    (emitted, order, event_held)
+}
+
+#[derive(Default)]
+struct ExpressionDependencies {
+    algebraic: HashSet<u32>,
+    has_continuous_source: bool,
+}
+
+fn expression_dependencies<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> ExpressionDependencies {
+    let mut dependencies = ExpressionDependencies::default();
+    dae::for_each_expression(view, expression, |_, node| match node.operation() {
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable)) => {
+            dependencies.algebraic.insert(variable.index());
+        }
+        dae::ExpressionOperation::Coordinate(coordinate) => {
+            dependencies.has_continuous_source |= coordinate_has_continuous_time(view, coordinate);
+        }
+        dae::ExpressionOperation::Call { function, .. } => {
+            dependencies.has_continuous_source |=
+                !view.function(function).is_some_and(|function| {
+                    function
+                        .external()
+                        .is_none_or(|external| external.purity().is_pure())
+                });
+        }
+        _ => {}
+    });
+    dependencies
+}
+
+fn coordinate_has_continuous_time<'dae>(
+    view: dae::DaeView<'dae>,
+    coordinate: dae::CoordinateView<'dae>,
+) -> bool {
+    match coordinate {
+        dae::CoordinateView::Parameter(_)
+        | dae::CoordinateView::Algebraic(_)
+        | dae::CoordinateView::DiscreteReal(_)
+        | dae::CoordinateView::DiscreteValue(_)
+        | dae::CoordinateView::PreDiscreteReal(_)
+        | dae::CoordinateView::PreDiscreteValue(_)
+        | dae::CoordinateView::PreState(_)
+        | dae::CoordinateView::PreAlgebraic(_)
+        | dae::CoordinateView::ClockInterval(_)
+        | dae::CoordinateView::Condition(_)
+        | dae::CoordinateView::Previous(_)
+        | dae::CoordinateView::Terminal(_)
+        | dae::CoordinateView::Binder(_) => false,
+        dae::CoordinateView::Input(variable) => !view
+            .variable(dae::VariableId::from(variable))
+            .is_some_and(|variable| variable.variability() <= dae::ExpressionVariability::Discrete),
+        dae::CoordinateView::State(_)
+        | dae::CoordinateView::Derivative(_)
+        | dae::CoordinateView::Time
+        | dae::CoordinateView::Delay(_)
+        | dae::CoordinateView::FunctionParameter(_) => true,
+    }
 }
 
 fn exact_row_major_family_body<'dae>(
@@ -312,7 +387,12 @@ fn derive_scalar_definitions<'dae>(
     view: dae::DaeView<'dae>,
     whole: &HashMap<u32, dae::ExprId<'dae>>,
     already_consumed: &HashSet<u32>,
-) -> (ScalarDefinitionMap<'dae>, HashSet<u32>, HashSet<u32>) {
+) -> (
+    ScalarDefinitionMap<'dae>,
+    HashSet<u32>,
+    HashSet<u32>,
+    HashSet<u32>,
+) {
     let mut candidates = Vec::new();
     let mut counts = HashMap::<(u32, u32), usize>::new();
     for owner in view.continuous_owners() {
@@ -326,16 +406,27 @@ fn derive_scalar_definitions<'dae>(
         else {
             continue;
         };
-        if whole.contains_key(&variable.index()) || expression_references_algebraic(view, value) {
+        let dependencies = expression_dependencies(view, value);
+        if whole.contains_key(&variable.index()) || !dependencies.algebraic.is_empty() {
             continue;
         }
         *counts.entry((variable.index(), scalar)).or_default() += 1;
-        candidates.push((id, variable, scalar, value));
+        candidates.push((
+            id,
+            variable,
+            scalar,
+            value,
+            !dependencies.has_continuous_source,
+        ));
     }
-    candidates.retain(|(_, variable, scalar, _)| counts[&(variable.index(), *scalar)] == 1);
+    candidates.retain(|(_, variable, scalar, _, _)| counts[&(variable.index(), *scalar)] == 1);
     let candidate_definitions = candidates
         .iter()
-        .map(|(_, variable, scalar, value)| ((variable.index(), *scalar), *value))
+        .map(|(_, variable, scalar, value, _)| ((variable.index(), *scalar), *value))
+        .collect::<HashMap<_, _>>();
+    let candidate_event_held = candidates
+        .iter()
+        .map(|(_, variable, scalar, _, event_held)| ((variable.index(), *scalar), *event_held))
         .collect::<HashMap<_, _>>();
     let fully_defined = view
         .variables()
@@ -356,10 +447,31 @@ fn derive_scalar_definitions<'dae>(
         .collect();
     let consumed = candidates
         .iter()
-        .filter(|(_, variable, _, _)| fully_defined.contains(&variable.index()))
-        .map(|(equation, _, _, _)| equation.index())
+        .filter(|(_, variable, _, _, _)| fully_defined.contains(&variable.index()))
+        .map(|(equation, _, _, _, _)| equation.index())
         .collect::<HashSet<_>>();
-    (definitions, fully_defined, consumed)
+    let event_held = fully_defined
+        .iter()
+        .copied()
+        .filter(|variable| {
+            let declaration = view
+                .variable_id(
+                    usize::try_from(*variable)
+                        .expect("checked variable ordinal is representable as usize"),
+                )
+                .and_then(|id| view.variable(id))
+                .expect("complete scalar definition target resolves in its branded DAE");
+            u32::try_from(declaration.scalar_count()).is_ok_and(|scalar_count| {
+                (0..scalar_count).all(|scalar| {
+                    candidate_event_held
+                        .get(&(*variable, scalar))
+                        .copied()
+                        .unwrap_or(false)
+                })
+            })
+        })
+        .collect();
+    (definitions, fully_defined, consumed, event_held)
 }
 
 fn scalar_direct_definition<'dae>(
@@ -431,20 +543,6 @@ fn scalar_algebraic<'dae>(
         scalar = scalar.checked_mul(*extent)?.checked_add(coordinate)?;
     }
     Some((variable, scalar))
-}
-
-fn expression_references_algebraic<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> bool {
-    let mut found = false;
-    dae::for_each_expression(view, expression, |_, node| {
-        found |= matches!(
-            node.operation(),
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(_))
-        );
-    });
-    found
 }
 
 /// Recover the causal direction of one exact connection between a discrete
@@ -576,21 +674,6 @@ fn expression_references<'dae>(
         );
     });
     found
-}
-
-fn algebraic_dependencies<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-) -> HashSet<u32> {
-    let mut dependencies = HashSet::new();
-    dae::for_each_expression(view, expression, |_, node| {
-        if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(variable)) =
-            node.operation()
-        {
-            dependencies.insert(variable.index());
-        }
-    });
-    dependencies
 }
 
 #[cfg(test)]
@@ -1003,6 +1086,13 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(names, ["x", "y"]);
             assert_eq!(proof.remaining_owner_count(), 0);
+            assert!(
+                proof
+                    .order()
+                    .iter()
+                    .all(|target| proof.event_holds_variable((*target).into())),
+                "a literal definition and its alias chain are event-held"
+            );
         });
     }
 
@@ -1018,6 +1108,13 @@ mod tests {
             assert_eq!(names, ["connectorValue", "outputValue"]);
             assert!(proof.consumes_discrete_real_equation(0));
             assert_eq!(proof.remaining_owner_count(), 0);
+            assert!(
+                proof
+                    .order()
+                    .iter()
+                    .all(|target| proof.event_holds_variable((*target).into())),
+                "the discrete connection and every causal alias stay event-held"
+            );
         });
     }
 
@@ -1041,6 +1138,10 @@ mod tests {
             assert!(proof.fully_defines_variable(x));
             assert!(proof.scalar_definition_for_variable(x, 0).is_some());
             assert!(proof.scalar_definition_for_variable(x, 1).is_some());
+            assert!(
+                !proof.event_holds_variable(x),
+                "a complete scalar definition driven by a continuous input is continuous"
+            );
             assert_eq!(proof.remaining_owner_count(), 0);
         });
     }
@@ -1057,6 +1158,11 @@ mod tests {
                 panic!("fixture contains one structured owner");
             };
             assert!(proof.consumes_family(id));
+            let target = proof.order()[0];
+            assert!(
+                !proof.event_holds_variable(target.into()),
+                "a compact family driven by a continuous input is continuous"
+            );
         });
     }
 

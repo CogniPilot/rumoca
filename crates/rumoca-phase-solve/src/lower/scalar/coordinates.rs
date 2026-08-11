@@ -8,6 +8,111 @@
 use super::*;
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
+    pub(super) fn pack_coordinate(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        coordinate: dae::CoordinateView<'dae>,
+        span: Span,
+    ) -> Result<Option<solve::Reg>, LowerError> {
+        if matches!(coordinate, dae::CoordinateView::Derivative(_)) {
+            return Ok(None);
+        }
+        if let dae::CoordinateView::Parameter(parameter) = coordinate
+            && let Some(binding) = self
+                .parameter_substitutions
+                .and_then(|substitutions| substitutions.binding(parameter.index()))
+        {
+            if self.active_parameters.contains(&parameter.index()) {
+                return Err(LowerError::non_computable(
+                    "parameter bindings are mutually recursive",
+                    span,
+                ));
+            }
+            self.enter_context(ScalarContextFrame::Parameter {
+                parent: self.context_id,
+                parameter: parameter.index(),
+            });
+            self.active_parameters.push(parameter.index());
+            let value = self.pack_expression(binding);
+            self.active_parameters.pop();
+            self.leave_context();
+            return value.map(Some);
+        }
+        let (variable, pre_variable) = if let Some(variable) = coordinate_variable(coordinate) {
+            (variable, false)
+        } else if let Some(variable) = pre_coordinate_variable(coordinate) {
+            (variable, true)
+        } else {
+            return Ok(None);
+        };
+        let key = (self.context_id, expression);
+        if let Some(&(start, _)) = self.tensor_load_cache.get(&key) {
+            return Ok(Some(start));
+        }
+        let count = scalar_count(self.view, expression);
+        if count <= 1 {
+            return Ok(None);
+        }
+        let sampled_base = (!pre_variable && self.sampled_source).then(|| {
+            self.layout
+                .pre_variables
+                .get(variable as usize)
+                .copied()
+                .flatten()
+        });
+        let sampled_base = sampled_base.flatten();
+        let first = match (pre_variable, sampled_base) {
+            (true, _) => pre_variable_scalar_slot(self.layout, variable, 0, span)?,
+            (false, Some(index)) => solve::scalar_slot_p(index),
+            (false, None) => variable_scalar_slot(self.layout, variable, 0, span)?,
+        };
+        let (input, input_start) = match first {
+            solve::ScalarSlot::Y { index, .. } => (solve::TensorInputKind::Y, index),
+            solve::ScalarSlot::P { index, .. } => (solve::TensorInputKind::P, index),
+            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => return Ok(None),
+        };
+        for scalar in 1..count {
+            let expected = input_start.checked_add(scalar).ok_or_else(|| {
+                LowerError::contract("tensor coordinate storage extent overflow", span)
+            })?;
+            let slot = match (pre_variable, sampled_base) {
+                (true, _) => pre_variable_scalar_slot(self.layout, variable, scalar, span)?,
+                (false, Some(base)) => {
+                    solve::scalar_slot_p(base.checked_add(scalar).ok_or_else(|| {
+                        LowerError::contract("sampled tensor coordinate storage overflow", span)
+                    })?)
+                }
+                (false, None) => variable_scalar_slot(self.layout, variable, scalar, span)?,
+            };
+            let contiguous = match slot {
+                solve::ScalarSlot::Y { index, .. } => {
+                    input == solve::TensorInputKind::Y && index == expected
+                }
+                solve::ScalarSlot::P { index, .. } => {
+                    input == solve::TensorInputKind::P && index == expected
+                }
+                solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => false,
+            };
+            if !contiguous {
+                return Ok(None);
+            }
+        }
+        let dst_start = self.next_register;
+        for _ in 0..count {
+            self.register(span)?;
+        }
+        self.ops.push(solve::LinearOp::TensorLoad {
+            dst_start,
+            input,
+            input_start,
+            count,
+            seed_start: None,
+            lanes: 1,
+        });
+        self.tensor_load_cache.insert(key, (dst_start, count));
+        Ok(Some(dst_start))
+    }
+
     pub(super) fn range(
         &mut self,
         start: i64,
@@ -59,6 +164,34 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return self.condition(condition);
         }
         if let dae::CoordinateView::Binder(binder) = coordinate {
+            if let Some((_, values)) = self
+                .symbolic_domain_points
+                .iter()
+                .rev()
+                .find(|(domain, _)| *domain == binder.domain())
+            {
+                return values
+                    .get(binder.ordinal() as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        LowerError::contract("symbolic binder ordinal is out of range", span)
+                    });
+            }
+            if let Some(source) = self
+                .deferred_fold_captures
+                .as_ref()
+                .and_then(|deferred| {
+                    deferred
+                        .symbolic_domain_points
+                        .iter()
+                        .rev()
+                        .find(|(domain, _)| *domain == binder.domain())
+                })
+                .and_then(|(_, values)| values.get(binder.ordinal() as usize))
+                .copied()
+            {
+                return self.deferred_fold_capture(source, span);
+            }
             let Some((_, values)) = self
                 .domain_points
                 .iter()

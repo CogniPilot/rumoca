@@ -133,6 +133,57 @@ fn variable_declaration_replay_rejects_boolean_to_integer_relabel() {
 }
 
 #[test]
+fn variable_declaration_constructs_only_role_compatible_time_domains() {
+    assert_eq!(
+        SolveVariableDeclaration::new(
+            SolveVariableStorageRole::Parameter,
+            SolveVariableValueKind::Real,
+        )
+        .time_domain(),
+        SolveVariableTimeDomain::Static
+    );
+    assert_eq!(
+        SolveVariableDeclaration::new(
+            SolveVariableStorageRole::DiscreteReal,
+            SolveVariableValueKind::Real,
+        )
+        .time_domain(),
+        SolveVariableTimeDomain::EventDiscrete
+    );
+    assert_eq!(
+        SolveVariableDeclaration::event_discontinuous(
+            SolveVariableStorageRole::Output,
+            SolveVariableValueKind::Real,
+        )
+        .expect("a proved Real output may be event-held")
+        .time_domain(),
+        SolveVariableTimeDomain::EventDiscontinuous
+    );
+    assert!(
+        SolveVariableDeclaration::event_discontinuous(
+            SolveVariableStorageRole::State,
+            SolveVariableValueKind::Real,
+        )
+        .is_err(),
+        "state storage cannot forge an event-discontinuous declaration"
+    );
+}
+
+#[test]
+fn variable_declaration_wire_rejects_forged_time_domain() {
+    let problem = event_iteration_contract_fixture();
+    let mut wire = serde_json::to_value(problem).expect("fixture Solve problem serializes");
+    wire["solve_layout"]["variable_declarations"][0]["time_domain"] =
+        serde_json::json!("continuous_time");
+    let error = serde_json::from_value::<SolveProblem>(wire)
+        .expect_err("wire replay must reject a domain incompatible with discrete storage");
+    assert!(
+        error.to_string().contains("effective time domain"),
+        "{error}"
+    );
+}
+
+#[test]
 fn event_iteration_contract_rejects_deleted_run_and_pre_binding() {
     let mut problem = event_iteration_contract_fixture();
     problem.discrete.event_iteration_plan.runs.clear();
@@ -663,6 +714,8 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
         observation_refresh: vec![true],
         integrator_history_effects: vec![IntegratorHistoryEffect::Restart],
         clock_owners: vec![None],
+        guarded_assignments: Vec::new(),
+        event_transactions: Vec::new(),
         structured_rhs: ComputeBlock::default(),
         structured_updates: Vec::new(),
     }
@@ -695,6 +748,205 @@ fn structured_discrete_fixture(base: ScalarSlot) -> (ComputeBlock, StructuredDis
         clock_owner: None,
     };
     (ComputeBlock { nodes: vec![node] }, update)
+}
+
+fn guarded_range_program(output_count: usize) -> Vec<LinearOp> {
+    let mut program = (0..output_count)
+        .map(|index| LinearOp::Const {
+            dst: index as Reg,
+            value: index as f64,
+        })
+        .collect::<Vec<_>>();
+    program.push(LinearOp::StoreOutputRange {
+        start: 0,
+        count: output_count,
+        stride: 1,
+    });
+    program
+}
+
+#[test]
+fn guarded_assignment_program_owns_compact_target_ranges() {
+    let program = GuardedAssignmentProgram::checked(
+        guarded_range_program(3),
+        fixture_provenance(),
+        [(scalar_slot_p(2), 3)],
+        DiscreteRowRole::Equation,
+        DiscreteEventPreMode::Fixed,
+        false,
+        IntegratorHistoryEffect::Restart,
+        None,
+    )
+    .expect("one compact guarded range is valid");
+
+    assert_eq!(program.output_count(), 3);
+    assert_eq!(program.register_count(), 3);
+    assert_eq!(program.target_ranges().len(), 1);
+    assert_eq!(program.target_ranges()[0].base(), scalar_slot_p(2));
+    assert_eq!(program.target_ranges()[0].count(), 3);
+}
+
+#[test]
+fn guarded_assignment_program_rejects_overlapping_target_ranges() {
+    let error = GuardedAssignmentProgram::checked(
+        guarded_range_program(4),
+        fixture_provenance(),
+        [(scalar_slot_p(0), 2), (scalar_slot_p(1), 2)],
+        DiscreteRowRole::Equation,
+        DiscreteEventPreMode::Fixed,
+        false,
+        IntegratorHistoryEffect::Restart,
+        None,
+    )
+    .expect_err("overlapping target ranges cannot be constructed");
+
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::GuardedAssignmentProgram {
+            detail: "target ranges overlap",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn guarded_assignment_wire_replays_output_width_proof() {
+    let program = GuardedAssignmentProgram::checked(
+        guarded_range_program(2),
+        fixture_provenance(),
+        [(scalar_slot_p(0), 2)],
+        DiscreteRowRole::EventAction,
+        DiscreteEventPreMode::FollowCurrent,
+        false,
+        IntegratorHistoryEffect::Preserve,
+        None,
+    )
+    .expect("guarded fixture is valid");
+    let mut wire = serde_json::to_value(program).expect("serialize guarded fixture");
+    wire["target_ranges"][0]["count"] = serde_json::json!(3);
+
+    let error = serde_json::from_value::<GuardedAssignmentProgram>(wire)
+        .expect_err("wire cannot forge target/output coverage");
+    assert!(
+        error
+            .to_string()
+            .contains("program output width does not equal its compact target ranges")
+    );
+}
+
+fn event_transaction_fixture_with_table() -> (EventTransactionProgram, SolvePureCallTable) {
+    let arithmetic = SolveArithmeticProfile::construct(
+        SolveRealFormat::Binary64,
+        SolveRoundingMode::NearestTiesToEven,
+        SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
+    );
+    let tensor = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2]).unwrap();
+    let mut table = SolvePureCallTable::builder(arithmetic);
+    let owner = table
+        .add_owner(
+            SolvePureCallIdentity::issued(std::num::NonZeroU64::new(1).unwrap()),
+            vec![tensor.clone()],
+            vec![
+                SolvePureCallOutput::result(tensor.clone()),
+                SolvePureCallOutput::assertion_predicate(),
+            ],
+            fixture_span(),
+            |builder, inputs, outputs| {
+                let value = builder.load(inputs[0], fixture_span())?;
+                builder.store(outputs[0], value, fixture_span())?;
+                let predicate = builder.constant(SolveValue::boolean(true), fixture_span())?;
+                builder.store(outputs[1], predicate, fixture_span())
+            },
+        )
+        .unwrap();
+    let transaction = EventTransactionProgram::checked(
+        table.call_site(owner).unwrap(),
+        [(scalar_slot_p(2), tensor.clone())],
+        [(scalar_slot_p(8), tensor)],
+        [SolveEventAction {
+            kind: SolveEventActionKind::Assert,
+            message: SolveEventMessage {
+                parts: vec![SolveEventMessagePart::Text("checked".to_string())],
+            },
+            span: fixture_span(),
+            origin: "source".to_string(),
+            clock_owner: None,
+        }],
+        2,
+        None,
+        fixture_provenance(),
+    )
+    .expect("one aggregate input and atomic target form a transaction");
+    (transaction, table.finish())
+}
+
+fn event_transaction_fixture() -> EventTransactionProgram {
+    event_transaction_fixture_with_table().0
+}
+
+#[test]
+fn event_transaction_owns_compact_typed_storage_ranges() {
+    let transaction = event_transaction_fixture();
+    assert_eq!(transaction.inputs().len(), 1);
+    assert_eq!(transaction.inputs()[0].source(), scalar_slot_p(2));
+    assert_eq!(transaction.inputs()[0].value_type().scalar_count(), 2);
+    assert_eq!(transaction.targets().len(), 1);
+    assert_eq!(transaction.targets()[0].base(), scalar_slot_p(8));
+    assert_eq!(transaction.statement_count(), 2);
+    assert_eq!(transaction.assertion_count(), 1);
+}
+
+#[test]
+fn event_transaction_wire_rejects_a_forged_target_type() {
+    let mut wire = serde_json::to_value(event_transaction_fixture()).unwrap();
+    wire["targets"][0]["value_type"]["dimensions"] = serde_json::json!([3]);
+    wire["targets"][0]["value_type"]["scalar_count"] = serde_json::json!(3);
+    let error = serde_json::from_value::<EventTransactionProgram>(wire).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("typed call outputs do not match atomic targets"),
+        "wire replay derives the target interface from its issued site: {error}"
+    );
+}
+
+#[test]
+fn event_transaction_wire_rejects_a_result_in_its_assertion_suffix() {
+    let mut wire = serde_json::to_value(event_transaction_fixture()).unwrap();
+    wire["site"]["outputs"][1]["kind"] = serde_json::json!("result");
+    let error = serde_json::from_value::<EventTransactionProgram>(wire).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("transaction suffix is not a checked assertion-predicate tuple"),
+        "wire replay rejects a non-predicate suffix: {error}"
+    );
+}
+
+#[test]
+fn solve_model_wire_rejects_a_forged_event_transaction_call_owner() {
+    let (transaction, pure_calls) = event_transaction_fixture_with_table();
+    let mut problem = SolveProblem::default();
+    problem.layout = VarLayout::from_parts(IndexMap::new(), 0, 10);
+    problem.discrete.event_transactions.push(transaction);
+    let model = SolveModel {
+        problem,
+        pure_calls,
+        ..SolveModel::default()
+    };
+    model
+        .validate()
+        .expect("fixture has one exact issued owner");
+
+    let mut wire = serde_json::to_value(model).unwrap();
+    wire["problem"]["discrete"]["event_transactions"][0]["site"]["owner"] = serde_json::json!(1);
+    let error = serde_json::from_value::<SolveModel>(wire).unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "discrete.event_transactions references pure-call owner 1 with a missing or mismatched interface"
+        ),
+        "wire replay must prove the exact model-level owner link: {error}"
+    );
 }
 
 fn representative_event_partition() -> SolveEventPartition {
@@ -1072,6 +1324,28 @@ fn solve_problem_json_has_supported_schema_version() {
             .expect_err("unsupported SolveProblem schema version must fail");
         assert!(err.to_string().contains("unsupported Solve schema_version"));
     }
+}
+
+#[test]
+fn solve_model_json_requires_the_checked_pure_call_table() {
+    let model = SolveModel::default();
+    let mut wire = serde_json::to_value(&model).expect("SolveModel serializes");
+    let call_table = wire
+        .get("pure_calls")
+        .expect("SolveModel wire owns its pure-call table");
+    assert_eq!(
+        call_table
+            .get("owners")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+    wire.as_object_mut()
+        .expect("SolveModel wire is an object")
+        .remove("pure_calls");
+    let error = serde_json::from_value::<SolveModel>(wire)
+        .expect_err("wire cannot omit the model-level call owner table");
+    assert!(error.to_string().contains("pure_calls"), "{error}");
 }
 
 #[test]

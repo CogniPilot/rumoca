@@ -523,7 +523,7 @@ mod tests {
         };
 
         assert!(
-            matches!(err, super::WasmCompileError::Backend(message) if message.contains("linear solve matrix size overflow"))
+            matches!(err, super::WasmCompileError::Backend(message) if message.contains("LinearSolveComponent op 0 register range"))
         );
     }
 }

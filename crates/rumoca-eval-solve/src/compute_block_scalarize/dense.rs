@@ -220,14 +220,52 @@ fn max_reg_in_op(
     kind: &'static str,
     span: rumoca_core::Span,
 ) -> Result<Reg, ScalarizeError> {
-    Ok(match *op {
+    Ok(match op.clone() {
         LinearOp::Const { dst, .. }
         | LinearOp::LoadTime { dst }
         | LinearOp::LoadY { dst, .. }
         | LinearOp::LoadP { dst, .. }
         | LinearOp::LoadSeed { dst, .. }
         | LinearOp::LoadIndexedP { dst, .. }
-        | LinearOp::LoadIndexedSeed { dst, .. } => dst,
+        | LinearOp::LoadIndexedSeed { dst, .. }
+        | LinearOp::LoadFoldCarried { dst, .. }
+        | LinearOp::LoadFoldIndex { dst, .. }
+        | LinearOp::LoadFoldCapture { dst, .. }
+        | LinearOp::LoadFunctionConditionalCapture { dst, .. } => dst,
+        LinearOp::LoadFunctionConditionalCaptureRange {
+            dst_start, count, ..
+        } => checked_reg_range_last(dst_start, count, kind, span)?,
+        LinearOp::LoadIndexedRegister {
+            dst,
+            base,
+            stride,
+            dimensions,
+            indices,
+        } => {
+            let count = dimensions.iter().try_fold(1usize, |count, &extent| {
+                checked_product(count, extent as usize, kind, span)
+            })?;
+            let mut last = dst.max(checked_reg_add_usize(
+                base,
+                checked_product(count.saturating_sub(1), stride, kind, span)?,
+                kind,
+                span,
+            )?);
+            for index in indices {
+                if let rumoca_ir_solve::TensorIndex::Runtime(register) = index {
+                    last = last.max(register);
+                }
+            }
+            last
+        }
+        LinearOp::LoadIndexedFoldCarried { dst, indices, .. }
+        | LinearOp::LoadIndexedFoldCapture { dst, indices, .. } => indices
+            .iter()
+            .filter_map(|index| match index {
+                rumoca_ir_solve::TensorIndex::Constant(_) => None,
+                rumoca_ir_solve::TensorIndex::Runtime(register) => Some(*register),
+            })
+            .fold(dst, Reg::max),
         LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => dst.max(src),
         LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
             dst.max(lhs).max(rhs)
@@ -252,6 +290,210 @@ fn max_reg_in_op(
                 span,
             )?)
             .max(checked_reg_range_last(rhs_start, n, kind, span)?),
+        LinearOp::DotProduct {
+            dst,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+        } => {
+            let last = count.saturating_sub(1);
+            dst.max(checked_reg_add_usize(
+                lhs_start,
+                checked_product(last, lhs_stride, kind, span)?,
+                kind,
+                span,
+            )?)
+            .max(checked_reg_add_usize(
+                rhs_start,
+                checked_product(last, rhs_stride, kind, span)?,
+                kind,
+                span,
+            )?)
+        }
+        LinearOp::MatrixMultiply {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes,
+        } => {
+            let output_count = checked_product(
+                checked_product(rows, columns, kind, span)?,
+                lanes,
+                kind,
+                span,
+            )?;
+            let lhs_count =
+                checked_product(checked_product(rows, inner, kind, span)?, lanes, kind, span)?;
+            let rhs_count = checked_product(
+                checked_product(inner, columns, kind, span)?,
+                lanes,
+                kind,
+                span,
+            )?;
+            checked_reg_range_last(dst_start, output_count, kind, span)?
+                .max(checked_reg_range_last(lhs_start, lhs_count, kind, span)?)
+                .max(checked_reg_range_last(rhs_start, rhs_count, kind, span)?)
+        }
+        LinearOp::TensorBinary {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes,
+            ..
+        } => {
+            let output_count = checked_product(count, lanes, kind, span)?;
+            let source_last = |start, stride| {
+                checked_reg_add_usize(
+                    start,
+                    checked_product(
+                        count.saturating_sub(1),
+                        checked_product(stride, lanes, kind, span)?,
+                        kind,
+                        span,
+                    )? + lanes.saturating_sub(1),
+                    kind,
+                    span,
+                )
+            };
+            checked_reg_range_last(dst_start, output_count, kind, span)?
+                .max(source_last(lhs_start, lhs_stride)?)
+                .max(source_last(rhs_start, rhs_stride)?)
+        }
+        LinearOp::TensorCross {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            lanes,
+        } => {
+            let count = checked_product(3, lanes, kind, span)?;
+            checked_reg_range_last(dst_start, count, kind, span)?
+                .max(checked_reg_range_last(lhs_start, count, kind, span)?)
+                .max(checked_reg_range_last(rhs_start, count, kind, span)?)
+        }
+        LinearOp::TensorTranspose {
+            dst_start,
+            src_start,
+            rows,
+            columns,
+            element_width,
+            lanes,
+        } => {
+            let count = checked_product(
+                checked_product(
+                    checked_product(rows, columns, kind, span)?,
+                    element_width,
+                    kind,
+                    span,
+                )?,
+                lanes,
+                kind,
+                span,
+            )?;
+            checked_reg_range_last(dst_start, count, kind, span)?
+                .max(checked_reg_range_last(src_start, count, kind, span)?)
+        }
+        LinearOp::TensorConcatenate {
+            dst_start,
+            sources,
+            dimensions,
+            lanes,
+            ..
+        } => {
+            let output_count = dimensions.iter().try_fold(lanes, |count, extent| {
+                checked_product(count, *extent as usize, kind, span)
+            })?;
+            let mut last = checked_reg_range_last(dst_start, output_count, kind, span)?;
+            for source in sources {
+                let count = source.dimensions.iter().try_fold(lanes, |count, extent| {
+                    checked_product(count, *extent as usize, kind, span)
+                })?;
+                last = last.max(checked_reg_range_last(source.start, count, kind, span)?);
+            }
+            last
+        }
+        LinearOp::TensorUpdate {
+            dst_start,
+            base_start,
+            value_start,
+            dimensions,
+            subscripts,
+            lanes,
+        } => {
+            let output_count = dimensions.iter().try_fold(lanes, |count, extent| {
+                checked_product(count, *extent as usize, kind, span)
+            })?;
+            let mut last = checked_reg_range_last(dst_start, output_count, kind, span)?.max(
+                checked_reg_range_last(base_start, output_count, kind, span)?,
+            );
+            let mut value_count = lanes;
+            for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
+                match subscript {
+                    rumoca_ir_solve::TensorUpdateSubscript::Whole => {
+                        value_count = checked_product(value_count, extent as usize, kind, span)?;
+                    }
+                    rumoca_ir_solve::TensorUpdateSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Runtime(register),
+                    ) => last = last.max(*register),
+                    rumoca_ir_solve::TensorUpdateSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Constant(_),
+                    ) => {}
+                    rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
+                        let count = dimensions.iter().try_fold(1usize, |count, extent| {
+                            checked_product(count, *extent as usize, kind, span)
+                        })?;
+                        last = last.max(checked_reg_range_last(*start, count, kind, span)?);
+                        value_count = checked_product(value_count, count, kind, span)?;
+                    }
+                }
+            }
+            last.max(checked_reg_range_last(
+                value_start,
+                value_count,
+                kind,
+                span,
+            )?)
+        }
+        LinearOp::TensorFill {
+            dst_start,
+            value_start,
+            count,
+            lanes,
+        } => checked_reg_range_last(
+            dst_start,
+            checked_product(count, lanes, kind, span)?,
+            kind,
+            span,
+        )?
+        .max(checked_reg_range_last(value_start, lanes, kind, span)?),
+        LinearOp::TensorIdentity {
+            dst_start,
+            size,
+            lanes,
+        } => checked_reg_range_last(
+            dst_start,
+            checked_product(checked_product(size, size, kind, span)?, lanes, kind, span)?,
+            kind,
+            span,
+        )?,
+        LinearOp::TensorLoad {
+            dst_start,
+            count,
+            lanes,
+            ..
+        } => checked_reg_range_last(
+            dst_start,
+            checked_product(count, lanes, kind, span)?,
+            kind,
+            span,
+        )?,
         LinearOp::TableBounds { dst, table_id, .. } => dst.max(table_id),
         LinearOp::TableLookup {
             dst,
@@ -297,6 +539,185 @@ fn max_reg_in_op(
             imax,
             ..
         } => dst.max(id).max(imin).max(imax),
+        LinearOp::FunctionFold {
+            dst_start,
+            initial_start,
+            capture_start,
+            program,
+        } => {
+            let mut last =
+                checked_reg_range_last(dst_start, program.carried_count, kind, span)?.max(
+                    checked_reg_range_last(initial_start, program.carried_count, kind, span)?,
+                );
+            if program.capture_count != 0 {
+                last = last.max(checked_reg_range_last(
+                    capture_start,
+                    program.capture_count,
+                    kind,
+                    span,
+                )?);
+            }
+            last
+        }
+        LinearOp::GuardedFunctionFold {
+            dst_start,
+            initial_start,
+            capture_start,
+            activation,
+            program,
+        } => {
+            let mut last = checked_reg_range_last(dst_start, program.carried_count, kind, span)?
+                .max(checked_reg_range_last(
+                    initial_start,
+                    program.carried_count,
+                    kind,
+                    span,
+                )?)
+                .max(activation);
+            if program.capture_count != 0 {
+                last = last.max(checked_reg_range_last(
+                    capture_start,
+                    program.capture_count,
+                    kind,
+                    span,
+                )?);
+            }
+            last
+        }
+        LinearOp::FunctionConditional {
+            dst_start,
+            capture_start,
+            program,
+        } => {
+            let mut last = checked_reg_range_last(dst_start, program.result_count, kind, span)?;
+            if program.capture_count != 0 {
+                last = last.max(checked_reg_range_last(
+                    capture_start,
+                    program.capture_count,
+                    kind,
+                    span,
+                )?);
+            }
+            last
+        }
+        LinearOp::PureCall {
+            dst_start,
+            input_starts,
+            site,
+        } => {
+            let output_count =
+                site.output_scalar_count()
+                    .ok_or(ScalarizeError::RegisterIndexOverflow {
+                        kind,
+                        index: usize::MAX,
+                        span,
+                    })?;
+            let mut last = checked_reg_range_last(dst_start, output_count, kind, span)?;
+            for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+                last = last.max(checked_reg_range_last(
+                    *start,
+                    value_type.scalar_count() as usize,
+                    kind,
+                    span,
+                )?);
+            }
+            last
+        }
+        LinearOp::StoreOutputFoldTensorUpdate {
+            dimensions,
+            updates,
+            nodes,
+            lanes,
+            ..
+        } => {
+            let mut last = 0;
+            for update in updates {
+                let value_count = dimensions.iter().zip(update.subscripts.iter()).try_fold(
+                    1usize,
+                    |count, (&extent, subscript)| {
+                        if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
+                            checked_product(count, extent as usize, kind, span)
+                        } else {
+                            Ok(count)
+                        }
+                    },
+                )?;
+                let element_offset = checked_product(
+                    value_count.saturating_sub(1),
+                    update.value_stride,
+                    kind,
+                    span,
+                )?;
+                let offset =
+                    checked_index_sum(element_offset, lanes.saturating_sub(1), kind, span)?;
+                last = last.max(checked_reg_add_usize(
+                    update.value_start,
+                    offset,
+                    kind,
+                    span,
+                )?);
+                for subscript in &update.subscripts {
+                    if let rumoca_ir_solve::TensorSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Runtime(register),
+                    ) = subscript
+                    {
+                        last = last.max(*register);
+                    }
+                }
+                if let Some(condition) = update.condition {
+                    last = last.max(condition);
+                }
+            }
+            for node in nodes {
+                if let rumoca_ir_solve::FoldTensorNode::Select { condition, .. } = node {
+                    last = last.max(condition);
+                }
+            }
+            last
+        }
+        LinearOp::StoreOutputFunctionFold {
+            initial,
+            capture_start,
+            program,
+            condition,
+            ..
+        } => {
+            let mut last = 0;
+            for source in initial {
+                if let rumoca_ir_solve::FoldInitialSource::Registers { start, count } = source
+                    && count != 0
+                {
+                    last = last.max(checked_reg_range_last(start, count, kind, span)?);
+                }
+            }
+            if program.capture_count != 0 {
+                last = last.max(checked_reg_range_last(
+                    capture_start,
+                    program.capture_count,
+                    kind,
+                    span,
+                )?);
+            }
+            if let Some(condition) = condition {
+                last = last.max(condition);
+            }
+            last
+        }
+        LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        } => {
+            let offset = count
+                .checked_sub(1)
+                .and_then(|last| last.checked_mul(stride))
+                .ok_or(ScalarizeError::RegisterIndexOverflow {
+                    kind,
+                    index: count,
+                    span,
+                })?;
+            checked_reg_add_usize(start, offset, kind, span)?
+        }
         LinearOp::StoreOutput { src } => src,
     })
 }

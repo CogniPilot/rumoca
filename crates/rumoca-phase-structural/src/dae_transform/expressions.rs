@@ -90,13 +90,15 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expect("finalized expression identity resolves");
         let provenance = source.provenance();
         let value_type = self.types[source.value_type_id().index() as usize];
-        let rebuilt = self.rebuild_operation(source.operation(), provenance, value_type)?;
+        let rebuilt =
+            self.rebuild_operation(source_id, source.operation(), provenance, value_type)?;
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
     }
 
     fn rebuild_operation(
         &mut self,
+        source_id: dae::ExprId<'source>,
         operation: dae::ExpressionOperation<'source>,
         provenance: dae::DaeProvenance,
         value_type: dae::ValueTypeId<'target>,
@@ -170,16 +172,26 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 self.target.at(provenance).builtin(builtin, arguments)?
             }
             dae::ExpressionOperation::Call {
+                owner,
                 function,
                 output,
                 arguments,
             } => {
                 let arguments = self.rebuild_operands(arguments)?;
-                self.target.at(provenance).call(
-                    self.functions[function.index() as usize].id,
-                    output as usize,
-                    arguments,
-                )?
+                let function = self.functions[function.index() as usize].id;
+                if owner == source_id {
+                    self.target
+                        .at(provenance)
+                        .call(function, output as usize, arguments)?
+                } else {
+                    let owner = self.rebuild(owner)?;
+                    self.target.at(provenance).call_projection(
+                        owner,
+                        function,
+                        output as usize,
+                        arguments,
+                    )?
+                }
             }
             dae::ExpressionOperation::FunctionValue { .. }
             | dae::ExpressionOperation::FunctionFoldParameter { .. }

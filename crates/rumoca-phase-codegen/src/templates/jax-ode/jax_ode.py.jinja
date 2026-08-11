@@ -67,6 +67,10 @@
 	__r{{ op.dst }} = if_else(__r{{ op.cond }}, __r{{ op.if_true }}, __r{{ op.if_false }})
 {%- elif op.kind == "StoreOutput" %}
 	out[{{ op.output_index }}] = __r{{ op.src }}
+{%- elif op.kind == "StoreOutputRange" %}
+{%- for output_index in op.output_indices %}
+	out[{{ output_index }}] = __r{{ op.start + loop.index0 * op.stride }}
+{%- endfor %}
 {%- else %}
 {{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
 {%- endif %}

@@ -7,6 +7,87 @@
 use super::*;
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
+    pub(super) fn pack_array_update(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        base: dae::ExprId<'dae>,
+        value: dae::ExprId<'dae>,
+        subscripts: dae::SubscriptsView<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let key = (self.context_id, expression);
+        if let Some(&(start, _)) = self.tensor_update_cache.get(&key) {
+            return Ok(start);
+        }
+        let dimensions = self.node(base).value_type().dimensions().to_vec();
+        if dimensions.is_empty() || dimensions.len() != subscripts.len() {
+            return Err(LowerError::contract(
+                "tensor update projection does not match its base rank",
+                span,
+            ));
+        }
+        let base_start = self.pack_expression(base)?;
+        let mut compact = Vec::with_capacity(dimensions.len());
+        let mut value_count = 1usize;
+        for (axis, &extent) in dimensions.iter().enumerate() {
+            match subscripts.get(axis) {
+                Some(dae::SubscriptView::Whole { .. }) | None => {
+                    value_count = value_count.checked_mul(extent as usize).ok_or_else(|| {
+                        LowerError::contract("tensor update value extent overflow", span)
+                    })?;
+                    compact.push(solve::TensorUpdateSubscript::Whole);
+                }
+                Some(dae::SubscriptView::Index { expression, .. }) => {
+                    let register = self.expression(expression, 0)?;
+                    let index = match self.integer_register(register) {
+                        Some(index) => {
+                            solve::TensorIndex::Constant(checked_index(index, extent, span)?)
+                        }
+                        None => solve::TensorIndex::Runtime(register),
+                    };
+                    compact.push(solve::TensorUpdateSubscript::Index(index));
+                }
+                Some(dae::SubscriptView::Slice { expression, .. }) => {
+                    let slice_dimensions = self.node(expression).value_type().dimensions().to_vec();
+                    let slice_count = scalar_count(self.view, expression);
+                    value_count = value_count.checked_mul(slice_count).ok_or_else(|| {
+                        LowerError::contract("tensor update sliced value extent overflow", span)
+                    })?;
+                    compact.push(solve::TensorUpdateSubscript::Slice {
+                        start: self.pack_expression(expression)?,
+                        dimensions: slice_dimensions.into_boxed_slice(),
+                    });
+                }
+            }
+        }
+        if value_count != scalar_count(self.view, value) {
+            return Err(LowerError::contract(
+                "tensor update value shape does not match its projection",
+                span,
+            ));
+        }
+        let value_start = self.pack_expression(value)?;
+        let count = dimensions
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
+        let count =
+            count.ok_or_else(|| LowerError::contract("tensor update extent overflow", span))?;
+        let dst_start = self.next_register;
+        for _ in 0..count {
+            self.register(span)?;
+        }
+        self.ops.push(solve::LinearOp::TensorUpdate {
+            dst_start,
+            base_start,
+            value_start,
+            dimensions: dimensions.into_boxed_slice(),
+            subscripts: compact.into_boxed_slice(),
+            lanes: 1,
+        });
+        self.tensor_update_cache.insert(key, (dst_start, count));
+        Ok(dst_start)
+    }
+
     pub(super) fn comprehension(
         &mut self,
         domain: dae::DomainId<'dae>,
@@ -48,7 +129,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         match selector.indexed_base_scalar(base, subscripts, dimensions, scalar) {
             Ok(selected) => self.expression(base, selected),
             Err(LowerError::NonComputable { reason, .. })
-                if reason == "array subscript is not compile-time computable" =>
+                if reason == "array subscript is not compile-time computable"
+                    || reason == "binder-valued subscript has no active domain" =>
             {
                 self.dynamic_scalar_index(base, subscripts, dimensions, scalar)
             }
@@ -65,41 +147,151 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         let span = self.node(base).provenance().span();
         let base_dimensions = self.node(base).value_type().dimensions().to_vec();
-        if !result_dimensions.is_empty()
-            || result_scalar != 0
-            || subscripts.len() != base_dimensions.len()
-        {
-            return Err(LowerError::non_computable(
-                "runtime indexing requires one scalar index per base axis and one scalar result",
-                span,
-            ));
+        let result_coordinates = row_major_coordinates(result_dimensions, result_scalar)
+            .ok_or_else(|| {
+                LowerError::contract(
+                    "runtime indexed result scalar is outside its checked shape",
+                    span,
+                )
+            })?;
+        let mut result_axis = 0usize;
+        let mut indices = Vec::with_capacity(base_dimensions.len());
+        for (axis, &extent) in base_dimensions.iter().enumerate() {
+            match subscripts.get(axis) {
+                Some(dae::SubscriptView::Index { expression, .. }) => {
+                    let register = self.expression(expression, 0)?;
+                    if let Some(index) = self.integer_register(register) {
+                        indices.push(solve::TensorIndex::Constant(checked_index(
+                            index, extent, span,
+                        )?));
+                    } else {
+                        indices.push(solve::TensorIndex::Runtime(register));
+                    }
+                }
+                Some(dae::SubscriptView::Whole { .. }) | None => {
+                    let coordinate = *result_coordinates.get(result_axis).ok_or_else(|| {
+                        LowerError::contract(
+                            "runtime indexed result rank does not match its base projection",
+                            span,
+                        )
+                    })?;
+                    indices.push(solve::TensorIndex::Constant(coordinate));
+                    result_axis += 1;
+                }
+                Some(dae::SubscriptView::Slice { .. }) => {
+                    return Err(LowerError::non_computable(
+                        "runtime indexed slices do not yet have a compact Solve owner",
+                        span,
+                    ));
+                }
+            }
         }
-        let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
-        if let Some(selected) = self.constant_index_scalar(&runtime_indices, &base_dimensions) {
+        if indices
+            .iter()
+            .all(|index| matches!(index, solve::TensorIndex::Constant(_)))
+        {
+            let coordinates = indices
+                .iter()
+                .map(|index| match index {
+                    solve::TensorIndex::Constant(coordinate) => *coordinate,
+                    solve::TensorIndex::Runtime(_) => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            let selected = flatten_coordinates(&base_dimensions, &coordinates)
+                .expect("checked indexed coordinates belong to the base shape");
             return self.expression(base, selected);
         }
-        let zero = self.constant(0.0, span)?;
-        let mut selected = self.binary(dae::BinaryOperator::Divide, zero, zero, span)?;
-        let count = base_dimensions
-            .iter()
-            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
-        let Some(count) = count else {
-            return Err(LowerError::contract(
-                "runtime indexed base scalar count overflow",
-                span,
-            ));
-        };
-        for ordinal in 0..count {
-            let coordinates = row_major_coordinates(&base_dimensions, ordinal)
-                .expect("checked base scalar has one row-major coordinate");
-            let matches = self.dynamic_coordinate_match(&runtime_indices, &coordinates, span)?;
-            let candidate = self.expression(base, ordinal)?;
-            selected = self.select(matches, candidate, selected, span)?;
+        if let Some(carried_base) = self.fold_carried_tensor_base(base) {
+            let dst = self.register(span)?;
+            self.ops.push(solve::LinearOp::LoadIndexedFoldCarried {
+                dst,
+                base: carried_base,
+                stride: 1,
+                dimensions: base_dimensions.into_boxed_slice(),
+                indices: indices.into_boxed_slice(),
+            });
+            return Ok(dst);
         }
-        Ok(selected)
+        if let Some(capture_base) = self.fold_capture_tensor_base(base, span)? {
+            let dst = self.register(span)?;
+            self.ops.push(solve::LinearOp::LoadIndexedFoldCapture {
+                dst,
+                base: capture_base,
+                stride: 1,
+                dimensions: base_dimensions.into_boxed_slice(),
+                indices: indices.into_boxed_slice(),
+            });
+            return Ok(dst);
+        }
+        let base = self.pack_expression(base)?;
+        let dst = self.register(span)?;
+        self.ops.push(solve::LinearOp::LoadIndexedRegister {
+            dst,
+            base,
+            stride: 1,
+            dimensions: base_dimensions.into_boxed_slice(),
+            indices: indices.into_boxed_slice(),
+        });
+        Ok(dst)
     }
 
-    fn dynamic_scalar_indices(
+    fn fold_capture_tensor_base(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Option<usize>, LowerError> {
+        let Some(deferred) = self.deferred_fold_captures.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(&base) = deferred.packed_capture_ranges.get(&expression) {
+            return Ok(Some(base));
+        }
+        let Some(&(source, count)) = deferred.packed_expressions.get(&expression) else {
+            return Ok(None);
+        };
+        let capture_base = deferred.sources.len();
+        let mut sources = Vec::with_capacity(count);
+        for offset in 0..count {
+            let offset = u32::try_from(offset).map_err(|_| {
+                LowerError::contract("fold tensor capture offset exceeds u32", span)
+            })?;
+            sources.push(source.checked_add(offset).ok_or_else(|| {
+                LowerError::contract("fold tensor capture register overflows", span)
+            })?);
+        }
+        let deferred = self
+            .deferred_fold_captures
+            .as_mut()
+            .expect("checked deferred fold captures remain active");
+        deferred.sources.extend(sources);
+        deferred
+            .packed_capture_ranges
+            .insert(expression, capture_base);
+        Ok(Some(capture_base))
+    }
+
+    pub(super) fn fold_carried_tensor_base(&self, expression: dae::ExprId<'dae>) -> Option<usize> {
+        let dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } =
+            self.node(expression).operation()
+        else {
+            return None;
+        };
+        let first = self
+            .function_fold_values
+            .iter()
+            .rev()
+            .find_map(|(active, values)| {
+                (*active == fold)
+                    .then(|| values.get(carried as usize)?.first().copied())
+                    .flatten()
+            })?;
+        self.ops.iter().find_map(|operation| match operation {
+            solve::LinearOp::LoadFoldCarried { dst, index } if *dst == first => Some(*index),
+            _ => None,
+        })
+    }
+
+    pub(super) fn dynamic_scalar_indices(
         &mut self,
         subscripts: dae::SubscriptsView<'dae>,
         span: Span,
@@ -117,7 +309,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(indices)
     }
 
-    fn constant_index_scalar(&self, indices: &[solve::Reg], dimensions: &[u32]) -> Option<usize> {
+    pub(super) fn constant_index_scalar(
+        &self,
+        indices: &[solve::Reg],
+        dimensions: &[u32],
+    ) -> Option<usize> {
         let coordinates = indices
             .iter()
             .zip(dimensions)
@@ -130,7 +326,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         flatten_coordinates(dimensions, &coordinates)
     }
 
-    fn dynamic_coordinate_match(
+    pub(super) fn dynamic_coordinate_match(
         &mut self,
         runtime_indices: &[solve::Reg],
         coordinates: &[u32],
@@ -159,14 +355,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     ) -> Result<solve::Reg, LowerError> {
         let span = self.node(base).provenance().span();
         let base_dimensions = self.node(base).value_type().dimensions().to_vec();
-        if !self.node(value).value_type().dimensions().is_empty()
-            || subscripts.len() != base_dimensions.len()
-        {
-            return Err(LowerError::non_computable(
-                "runtime array update requires one scalar index per base axis and one scalar value",
-                span,
-            ));
-        }
         let coordinates =
             row_major_coordinates(&base_dimensions, base_scalar).ok_or_else(|| {
                 LowerError::contract(
@@ -174,16 +362,51 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span,
                 )
             })?;
-        let runtime_indices = self.dynamic_scalar_indices(subscripts, span)?;
-        if let Some(selected) = self.constant_index_scalar(&runtime_indices, &base_dimensions) {
-            return if selected == base_scalar {
-                self.expression(value, 0)
-            } else {
-                self.expression(base, base_scalar)
-            };
+        let mut matches = self.constant(1.0, span)?;
+        let mut value_coordinates = Vec::new();
+        for (axis, (&extent, &coordinate)) in base_dimensions.iter().zip(&coordinates).enumerate() {
+            match subscripts.get(axis) {
+                Some(dae::SubscriptView::Index { expression, .. }) => {
+                    let runtime_index = self.expression(expression, 0)?;
+                    if let Some(index) = self.integer_register(runtime_index) {
+                        let selected = checked_index(index, extent, span)?;
+                        if selected != coordinate {
+                            return self.expression(base, base_scalar);
+                        }
+                    } else {
+                        let modelica_index = self.constant(f64::from(coordinate + 1), span)?;
+                        let axis_matches = self.binary(
+                            dae::BinaryOperator::Equal,
+                            runtime_index,
+                            modelica_index,
+                            span,
+                        )?;
+                        matches =
+                            self.binary(dae::BinaryOperator::And, matches, axis_matches, span)?;
+                    }
+                }
+                Some(dae::SubscriptView::Whole { .. }) | None => {
+                    value_coordinates.push(coordinate);
+                }
+                Some(dae::SubscriptView::Slice { .. }) => {
+                    return Err(LowerError::non_computable(
+                        "runtime array-update slices do not yet have a compact Solve owner",
+                        span,
+                    ));
+                }
+            }
         }
-        let matches = self.dynamic_coordinate_match(&runtime_indices, &coordinates, span)?;
-        let updated = self.expression(value, 0)?;
+        let value_scalar = flatten_coordinates(
+            self.node(value).value_type().dimensions(),
+            &value_coordinates,
+        )
+        .ok_or_else(|| {
+            LowerError::contract(
+                "runtime array update selection does not match its checked value shape",
+                span,
+            )
+        })?;
+        let updated = self.expression(value, value_scalar)?;
         let unchanged = self.expression(base, base_scalar)?;
         self.select(matches, updated, unchanged, span)
     }

@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use crate::{
     LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
-    build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
-    settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
+    build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, new_solve_runtime,
+    reset_solver_state, settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
 };
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
@@ -302,7 +302,7 @@ impl BdfSession {
     fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
-        let runtime = SolveRuntime::new(model)?;
+        let runtime = new_solve_runtime(model)?;
         let root_runtime = Arc::new(runtime.clone());
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
@@ -762,7 +762,7 @@ where
     S: OdeSolverMethod<'static, Eqn> + 'static,
 {
     let step_model = OdeModel::new(model)?;
-    let step_runtime = SolveRuntime::new(model)?;
+    let step_runtime = new_solve_runtime(model)?;
     let step_opts = opts.clone();
     Ok(Box::new(move |dt: f64| {
         step_solver_by(
@@ -1452,6 +1452,8 @@ mod tests {
         model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation];
         model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent];
         model.problem.discrete.observation_refresh = vec![false];
+        model.problem.discrete.integrator_history_effects =
+            vec![solve::IntegratorHistoryEffect::Preserve];
         model.problem.discrete.clock_owners = vec![model.problem.clocks.periodic_clock_id(0)];
         model.parameters = vec![0.0];
         model.visible_names = vec!["m".to_string()];
@@ -1535,6 +1537,7 @@ mod tests {
                     pre_param_bindings: Vec::new(),
                 },
             },
+            pure_calls: solve::SolvePureCallTable::default(),
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
                     structural: solve::ContinuousStructuralArtifacts::default(),
@@ -1623,6 +1626,7 @@ mod tests {
                 clocks: solve::SolveClockPartition::default(),
                 solve_layout: falling_contact_layout(),
             },
+            pure_calls: solve::SolvePureCallTable::default(),
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
                     structural: solve::ContinuousStructuralArtifacts::default(),

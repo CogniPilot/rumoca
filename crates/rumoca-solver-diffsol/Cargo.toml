@@ -8,12 +8,16 @@ repository.workspace = true
 
 [dependencies]
 rumoca-solver = { workspace = true }
+rumoca-core = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 indexmap = { workspace = true }
 diffsol = { version = "0.13" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rumoca-exec-cranelift = { workspace = true }
 
 [lints]
 workspace = true

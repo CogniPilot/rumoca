@@ -109,6 +109,7 @@ impl SolveRuntime {
         {
             end += 1;
         }
+        row_outputs.resize(output_count, 0.0);
         self.implicit_scalar_rhs
             .eval_row_outputs_unchecked_with_context(
                 row_idx,
@@ -141,7 +142,6 @@ impl SolveRuntime {
                 && row
                     .assignment_shape
                     .is_some_and(|shape| shape.target_y_index() == row.target_index)
-                && row.output_offset == 0
         })
     }
 

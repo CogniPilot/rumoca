@@ -7,6 +7,7 @@ pub(super) struct AlgorithmEnvironment<'scope, 'shape, 'dae> {
     pub(super) sample_lattices: &'scope [(Span, PeriodicClockSchedule)],
     pub(super) tensor_loops: Option<&'scope HashMap<Span, ModelEventTensorLoopPlan>>,
     pub(super) function_calls: Option<&'scope HashMap<Span, ModelEventFunctionCallPlan>>,
+    pub(super) transaction_steps: Option<&'scope RefCell<Vec<dae::ModelEventStep<'dae>>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -98,15 +99,18 @@ pub(super) fn lower_algorithms<'dae>(
                 tensor_loops,
                 function_calls,
             } => {
+                let targets = model_algorithm_targets(request.flat, algorithm);
                 let mut values = seed_event_algorithm_values(
                     lowering.construction,
                     request.environment.coordinates,
-                    model_algorithm_targets(request.flat, algorithm),
+                    targets.iter().cloned(),
                     algorithm.span,
                 )?;
+                let transaction_steps = RefCell::new(Vec::new());
                 let environment = AlgorithmEnvironment {
                     tensor_loops: Some(tensor_loops),
                     function_calls: Some(function_calls),
+                    transaction_steps: Some(&transaction_steps),
                     ..request.environment
                 };
                 lower_algorithm_statements(
@@ -121,6 +125,16 @@ pub(super) fn lower_algorithms<'dae>(
                     &mut values,
                     &algorithm.statements,
                 )?;
+                let transaction_targets = targets
+                    .into_iter()
+                    .map(|target| model_event_target(request.environment.coordinates[&target]));
+                lowering.construction.model_events(|events| {
+                    events.transaction(
+                        transaction_targets,
+                        transaction_steps.into_inner(),
+                        owner_provenance,
+                    )
+                })?;
             }
         }
     }
@@ -246,6 +260,7 @@ fn lower_algorithm_statement<'dae>(
                 value,
                 *span,
             )?;
+            record_model_event_step(environment, owner, &updates, *span)?;
             values.extend(updates);
             Ok(())
         }
@@ -295,6 +310,7 @@ fn lower_algorithm_statement<'dae>(
                         .expect("event analysis supplies function-call receiver plans")[span],
                 },
             )?;
+            record_model_event_step(environment, owner, &updates, *span)?;
             values.extend(updates);
             Ok(())
         }
@@ -310,6 +326,7 @@ fn lower_algorithm_statement<'dae>(
                 equations,
                 *span,
             )?;
+            record_model_event_step(environment, owner, &updates, *span)?;
             values.extend(updates);
             Ok(())
         }
@@ -329,6 +346,47 @@ fn lower_algorithm_statement<'dae>(
         ),
         _ => unreachable!("algorithm analysis restricts the checked statement grammar"),
     }
+}
+
+fn model_event_target(coordinate: Coordinate<'_>) -> dae::ModelEventTarget<'_> {
+    match coordinate {
+        Coordinate::DiscreteReal(variable) => dae::ModelEventTarget::DiscreteReal(variable),
+        Coordinate::DiscreteValue(variable) => dae::ModelEventTarget::DiscreteValue(variable),
+        _ => unreachable!("event-algorithm analysis restricts transaction targets"),
+    }
+}
+
+fn record_model_event_step<'dae>(
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    updates: &[(VarName, dae::ExprId<'dae>)],
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    let Some(steps) = environment.transaction_steps else {
+        return Ok(());
+    };
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let guard = owner
+        .parent
+        .expect("event statements execute beneath an analyzed activation owner");
+    let provenance = dae::DaeProvenance::source(span)?;
+    let definitions = updates.iter().map(|(target, value)| {
+        dae::ModelEventDefinition::new(
+            model_event_target(environment.coordinates[target]),
+            *value,
+            provenance,
+        )
+    });
+    steps.borrow_mut().push(dae::ModelEventStep::new(
+        guard.trigger,
+        guard.condition,
+        guard.owner_clock.map(Into::into),
+        definitions,
+        provenance,
+    ));
+    Ok(())
 }
 
 fn algorithm_statement_context<'scope, 'shape, 'dae>(

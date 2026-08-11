@@ -734,7 +734,32 @@ fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
         solve::LinearOp::LoadTime { .. }
         | solve::LinearOp::LoadSeed { .. }
         | solve::LinearOp::LoadIndexedSeed { .. }
+        | solve::LinearOp::LoadIndexedRegister { .. }
+        | solve::LinearOp::LoadIndexedFoldCarried { .. }
+        | solve::LinearOp::LoadIndexedFoldCapture { .. }
+        | solve::LinearOp::LoadFoldCarried { .. }
+        | solve::LinearOp::LoadFoldIndex { .. }
+        | solve::LinearOp::LoadFoldCapture { .. }
+        | solve::LinearOp::LoadFunctionConditionalCapture { .. }
+        | solve::LinearOp::LoadFunctionConditionalCaptureRange { .. }
+        | solve::LinearOp::FunctionFold { .. }
+        | solve::LinearOp::GuardedFunctionFold { .. }
+        | solve::LinearOp::FunctionConditional { .. }
+        | solve::LinearOp::PureCall { .. }
+        | solve::LinearOp::StoreOutputFoldTensorUpdate { .. }
+        | solve::LinearOp::StoreOutputFunctionFold { .. }
+        | solve::LinearOp::StoreOutputRange { .. }
         | solve::LinearOp::LinearSolveComponent { .. }
+        | solve::LinearOp::DotProduct { .. }
+        | solve::LinearOp::MatrixMultiply { .. }
+        | solve::LinearOp::TensorBinary { .. }
+        | solve::LinearOp::TensorCross { .. }
+        | solve::LinearOp::TensorTranspose { .. }
+        | solve::LinearOp::TensorConcatenate { .. }
+        | solve::LinearOp::TensorUpdate { .. }
+        | solve::LinearOp::TensorFill { .. }
+        | solve::LinearOp::TensorIdentity { .. }
+        | solve::LinearOp::TensorLoad { .. }
         | solve::LinearOp::TableBounds { .. }
         | solve::LinearOp::TableLookup { .. }
         | solve::LinearOp::TableLookupSlope { .. }

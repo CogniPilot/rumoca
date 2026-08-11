@@ -853,6 +853,12 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let ([row], [y_index]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
         return Ok(None);
     };
+    if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some() && *row == 646 {
+        eprintln!(
+            "rumoca-projection-entry row={row} y={y_index} exact={}",
+            model.implicit_target_assignment_is_exact(*row, *y_index)
+        );
+    }
     if model.implicit_target_assignment_is_exact(*row, *y_index) {
         let value = model
             .eval_implicit_target_value(*row, *y_index, y, p, t)?
@@ -865,6 +871,12 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
         };
         let previous = y[*y_index];
         y[*y_index] = value;
+        if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some() && *row >= 400 {
+            let after = model.eval_implicit_residual_row(*row, y, p, t)?;
+            eprintln!(
+                "rumoca-projection-profile row={row} y={y_index} exact=true previous={previous:.6e} value={value:.6e} after={after:?}"
+            );
+        }
         return Ok(Some(ProjectionBlockUpdate {
             changed: previous != value,
             settled: true,
@@ -888,6 +900,11 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let previous = y[*y_index];
     y[*y_index] = value;
     let after = model.eval_implicit_residual_row(*row, y, p, t)?;
+    if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some() && *row >= 400 {
+        eprintln!(
+            "rumoca-projection-profile row={row} y={y_index} exact=false before={before:.6e} previous={previous:.6e} value={value:.6e} after={after:?}"
+        );
+    }
     if let Some(after) = after.filter(|after| after.is_finite()) {
         let (row_tol, variable_tol) =
             assignment_tolerances(model, *y_index, before, after, previous, value, tol);

@@ -38,6 +38,8 @@ mod simulation_session_api;
 
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
+#[cfg(all(not(target_arch = "wasm32"), feature = "solver-rk45"))]
+mod native_execution;
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
@@ -166,7 +168,7 @@ fn simulate_solve_model_rk45(
     model: &rumoca_ir_solve::SolveModel,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    rumoca_solver_rk45::simulate(model, opts)
+    rk45::simulate_solve_model(model, opts)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 
@@ -377,15 +379,22 @@ pub fn build_variable_meta(
     names: &[String],
 ) -> Result<Vec<SimVariableMeta>, SimulationDiagnosticError> {
     dae_model.inspect(|view| {
+        let causal_definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let mut by_name = std::collections::HashMap::new();
-        for (_, variable) in view.variables() {
+        for (id, variable) in view.variables() {
             for scalar in 0..variable.scalar_count() {
                 let name = variable
                     .scalar_name(scalar)
                     .expect("checked scalar variable has a name");
                 by_name.insert(
                     name.clone(),
-                    checked_variable_meta(dae_model, view, variable, name),
+                    checked_variable_meta(
+                        dae_model,
+                        view,
+                        variable,
+                        causal_definitions.event_holds_variable(id),
+                        name,
+                    ),
                 );
             }
         }
@@ -409,6 +418,7 @@ fn checked_variable_meta<'dae>(
     model: &dae::Dae,
     view: dae::DaeView<'dae>,
     variable: dae::VariableView<'dae>,
+    event_held: bool,
     name: String,
 ) -> SimVariableMeta {
     SimVariableMeta {
@@ -417,7 +427,7 @@ fn checked_variable_meta<'dae>(
         is_state: variable.role() == dae::VariableRole::State,
         value_type: Some(format!("{:?}", variable.value_type().scalar_type())),
         variability: Some(format!("{:?}", variable.variability())),
-        time_domain: Some(variable_time_domain(variable.role()).to_string()),
+        time_domain: Some(variable_time_domain(variable.role(), event_held).to_string()),
         unit: variable.unit().map(str::to_string),
         start: variable
             .start()
@@ -459,14 +469,18 @@ const fn variable_role_name(role: dae::VariableRole) -> &'static str {
     }
 }
 
-const fn variable_time_domain(role: dae::VariableRole) -> &'static str {
-    match role {
-        dae::VariableRole::Parameter | dae::VariableRole::Constant => "static",
-        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue => "event-discrete",
-        dae::VariableRole::Input
-        | dae::VariableRole::State
-        | dae::VariableRole::Algebraic
-        | dae::VariableRole::Output => "continuous-time",
+const fn variable_time_domain(role: dae::VariableRole, event_held: bool) -> &'static str {
+    match (role, event_held) {
+        (dae::VariableRole::Algebraic | dae::VariableRole::Output, true) => "event-discontinuous",
+        (dae::VariableRole::Parameter | dae::VariableRole::Constant, _) => "static",
+        (dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue, _) => "event-discrete",
+        (
+            dae::VariableRole::Input
+            | dae::VariableRole::State
+            | dae::VariableRole::Algebraic
+            | dae::VariableRole::Output,
+            _,
+        ) => "continuous-time",
     }
 }
 

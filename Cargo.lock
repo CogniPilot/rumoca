@@ -4525,6 +4525,7 @@ dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
  "rumoca-ir-solve",
+ "serde_json",
  "tracing",
 ]
 
@@ -4832,6 +4833,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-solve",
  "rumoca-phase-structural",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
@@ -4890,6 +4892,7 @@ dependencies = [
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-solve",
+ "rumoca-exec-cranelift",
  "rumoca-input",
  "rumoca-input-gamepad",
  "rumoca-input-keyboard",
@@ -4937,7 +4940,9 @@ version = "0.9.20"
 dependencies = [
  "diffsol",
  "indexmap 2.14.0",
+ "rumoca-core",
  "rumoca-eval-solve",
+ "rumoca-exec-cranelift",
  "rumoca-ir-solve",
  "rumoca-solver",
  "thiserror 2.0.18",

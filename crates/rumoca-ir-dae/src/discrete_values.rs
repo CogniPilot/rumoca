@@ -1172,7 +1172,7 @@ fn checked_plan<'dae>(
     Ok(plan)
 }
 
-fn expect_complete_condition(
+pub(crate) fn expect_complete_condition(
     storage: &Storage,
     condition: u32,
     provenance: DaeProvenance,

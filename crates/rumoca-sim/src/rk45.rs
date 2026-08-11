@@ -15,13 +15,30 @@ use crate::solve_lowering::{
 pub use rumoca_solver_rk45::SessionState;
 pub use rumoca_solver_rk45::SimError;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn native_execution_backend(
+    pure_calls: &solve::SolvePureCallTable,
+) -> Option<std::rc::Rc<dyn rumoca_solver::SolveExecutionBackend>> {
+    if std::env::var_os("RUMOCA_DISABLE_NATIVE_EXECUTION").is_some() {
+        return None;
+    }
+    Some(crate::native_execution::backend(pure_calls))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn native_execution_backend(
+    _pure_calls: &solve::SolvePureCallTable,
+) -> Option<std::rc::Rc<dyn rumoca_solver::SolveExecutionBackend>> {
+    None
+}
+
 pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
     let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
         .map_err(diagnostic_sim_error)?;
-    rumoca_solver_rk45::simulate(&solve_model, opts)
+    simulate_solve_model(&solve_model, opts)
 }
 
 pub use simulate as simulate_dae;
@@ -31,8 +48,19 @@ pub fn simulate_with_diagnostics(
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
     let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)?;
-    rumoca_solver_rk45::simulate(&solve_model, opts)
+    simulate_solve_model(&solve_model, opts)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
+}
+
+pub(crate) fn simulate_solve_model(
+    model: &solve::SolveModel,
+    opts: &rumoca_solver::SimOptions,
+) -> Result<rumoca_solver::SimResult, SimError> {
+    rumoca_solver_rk45::simulate_with_execution_backend(
+        model,
+        opts,
+        native_execution_backend(&model.pure_calls),
+    )
 }
 
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
@@ -76,7 +104,11 @@ impl SimulationSession {
         let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
         begin_stage("sim_build");
         let backend_build_start = Instant::now();
-        let inner = rumoca_solver_rk45::SimulationSession::new(&solve_model, opts)?;
+        let inner = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
+            &solve_model,
+            opts,
+            native_execution_backend(&solve_model.pure_calls),
+        )?;
         let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
         Ok((
             Self { inner },
@@ -106,8 +138,12 @@ impl SimulationSession {
         solve_model: solve::SolveModel,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
-        let inner = rumoca_solver_rk45::SimulationSession::new(&solve_model, opts)
-            .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+        let inner = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
+            &solve_model,
+            opts,
+            native_execution_backend(&solve_model.pure_calls),
+        )
+        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })
     }
 
@@ -121,6 +157,10 @@ impl SimulationSession {
 
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
         self.inner.advance_to(target_time)
+    }
+
+    pub fn trace_eval_snapshot(&self, label: &str) {
+        self.inner.trace_eval_snapshot(label);
     }
 
     pub fn ensure_end_time(&mut self, target_time: f64) {

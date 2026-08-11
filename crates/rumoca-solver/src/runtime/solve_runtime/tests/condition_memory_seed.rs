@@ -85,6 +85,7 @@ fn seed_fixture() -> solve::SolveModel {
                     solve::DiscreteEventPreMode::FollowCurrent,
                 ],
                 observation_refresh: vec![false, false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
                 clock_owners: vec![None, None],
                 ..Default::default()
             },

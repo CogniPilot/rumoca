@@ -23,12 +23,10 @@ pub fn eval_and_apply_update_rows(
     let mut values = update_row_value_buffer(application.block.len())?;
     let mut changed_any = false;
     for _ in 0..application.max_iters {
-        let eval_y = update_row_snapshot(application.y, "update row y snapshot")?;
-        let eval_p = update_row_snapshot(application.p, "update row p snapshot")?;
         eval_scalar_program_block_with_context(
             application.block,
-            eval_y.as_slice(),
-            eval_p.as_slice(),
+            application.y,
+            application.p,
             application.t,
             application.context,
             &mut values,
@@ -179,12 +177,6 @@ fn update_row_value_buffer(len: usize) -> Result<Vec<f64>, EvalSolveError> {
     let mut values = update_row_vec_with_capacity(len, "update row value count")?;
     values.resize(len, 0.0);
     Ok(values)
-}
-
-fn update_row_snapshot(values: &[f64], context: &'static str) -> Result<Vec<f64>, EvalSolveError> {
-    let mut snapshot = update_row_vec_with_capacity(values.len(), context)?;
-    snapshot.extend_from_slice(values);
-    Ok(snapshot)
 }
 
 fn update_row_vec_with_capacity<T>(

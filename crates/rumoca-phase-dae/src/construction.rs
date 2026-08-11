@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -458,6 +459,7 @@ fn lower_model_owners<'dae>(
                 sample_lattices: &analysis.sample_lattices,
                 tensor_loops: None,
                 function_calls: None,
+                transaction_steps: None,
             },
             plans: &analysis.model_algorithm_plans,
             topology: &analysis.discrete_value_topology,
@@ -850,13 +852,20 @@ fn lower_function_multi_output_call<'dae>(
         call.args,
         provenance,
     )?;
-    let mut assignments = Vec::new();
-    for (ordinal, plan) in call.outputs.iter().enumerate() {
-        let Some(plan) = plan else {
-            continue;
-        };
+    let selected = call
+        .outputs
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, plan)| plan.as_ref().map(|plan| (ordinal, plan)))
+        .collect::<Vec<_>>();
+    let results = operands.results(
+        construction,
+        selected.iter().map(|(ordinal, _)| *ordinal),
+        provenance,
+    )?;
+    let mut assignments = Vec::with_capacity(selected.len());
+    for ((_, plan), mut value) in selected.into_iter().zip(results) {
         let target = function_value_coordinate(symbols.coordinates, plan.target());
-        let mut value = operands.result(construction, ordinal, provenance)?;
         if !plan.subscripts().is_empty() {
             let base = plan
                 .seed()

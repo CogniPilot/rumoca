@@ -61,7 +61,7 @@ impl Serialize for FrozenStorage {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("DaeStorage", 24)?;
+        let mut state = serializer.serialize_struct("DaeStorage", 25)?;
         state.serialize_field(
             "predefined_string_declaration",
             &self.predefined_string_declaration,
@@ -97,6 +97,7 @@ impl Serialize for FrozenStorage {
         state.serialize_field("initial_discrete_values", &self.initial_discrete_values)?;
         state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
         state.serialize_field("discrete_value_owners", &discrete_value_owner_output(self))?;
+        state.serialize_field("model_event_transactions", &self.model_event_transactions)?;
         state.serialize_field("relations", &self.relations)?;
         state.serialize_field("conditions", &self.conditions)?;
         state.serialize_field("roots", &self.roots)?;
@@ -142,6 +143,7 @@ struct StorageWire {
     initial_discrete_values: Vec<InitialDiscreteValueWire>,
     discrete_real_equations: Vec<DiscreteRealEquationWire>,
     discrete_value_owners: Vec<DiscreteValueOwnerWire>,
+    model_event_transactions: Vec<ModelEventTransactionWire>,
     relations: Vec<RelationEntryWire>,
     conditions: Vec<ConditionEntryWire>,
     roots: Vec<RootEntryWire>,
@@ -320,6 +322,42 @@ struct DomainEntryWire {
 struct DiscreteRealEquationWire {
     residual: u32,
     activation: DiscreteRealActivationWire,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "variable")]
+enum ModelEventTargetWire {
+    DiscreteReal(u32),
+    DiscreteValue(u32),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelEventDefinitionWire {
+    target: ModelEventTargetWire,
+    value: u32,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelEventStepWire {
+    trigger: u32,
+    guard: u32,
+    clock: Option<u32>,
+    definitions: Vec<ModelEventDefinitionWire>,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelEventTransactionWire {
+    targets: Vec<ModelEventTargetWire>,
+    steps: Vec<ModelEventStepWire>,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -765,7 +803,78 @@ fn reconstruct<'dae>(
     reconstruct_events(wire, dae, &ids)?;
     reconstruct_equation_systems(wire, dae, &ids)?;
     reconstruct_initial_discrete_values(wire, dae, &ids)?;
-    reconstruct_discrete_value_owners(wire, dae, &ids)
+    reconstruct_discrete_value_owners(wire, dae, &ids)?;
+    reconstruct_model_event_transactions(wire, dae, &ids)
+}
+
+fn reconstruct_model_event_transactions<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    for (ordinal, transaction) in wire.model_event_transactions.iter().enumerate() {
+        let targets = transaction
+            .targets
+            .iter()
+            .copied()
+            .map(|target| map_model_event_target(target, ids, transaction.provenance))
+            .collect::<Result<Vec<_>, _>>()?;
+        let steps = transaction
+            .steps
+            .iter()
+            .map(|step| {
+                let definitions = step
+                    .definitions
+                    .iter()
+                    .map(|definition| {
+                        Ok(crate::ModelEventDefinition::new(
+                            map_model_event_target(definition.target, ids, definition.provenance)?,
+                            mapped_expression(ids, definition.value, definition.provenance)?,
+                            definition.provenance,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, DaeConstructionError>>()?;
+                Ok(crate::ModelEventStep::new(
+                    mapped(&ids.conditions, step.trigger, "condition", step.provenance)?,
+                    mapped(&ids.conditions, step.guard, "condition", step.provenance)?,
+                    step.clock
+                        .map(|clock| mapped(&ids.clocks, clock, "clock", step.provenance))
+                        .transpose()?
+                        .map(WireClockId::clock_id),
+                    definitions,
+                    step.provenance,
+                ))
+            })
+            .collect::<Result<Vec<_>, DaeConstructionError>>()?;
+        let rebuilt =
+            dae.model_events(|events| events.transaction(targets, steps, transaction.provenance))?;
+        expect_ordinal(
+            "model-event transaction",
+            ordinal,
+            rebuilt.index(),
+            transaction.provenance,
+        )?;
+    }
+    Ok(())
+}
+
+fn map_model_event_target<'dae>(
+    target: ModelEventTargetWire,
+    ids: &WireIds<'dae>,
+    provenance: DaeProvenance,
+) -> Result<crate::ModelEventTarget<'dae>, DaeConstructionError> {
+    let raw = match target {
+        ModelEventTargetWire::DiscreteReal(raw) | ModelEventTargetWire::DiscreteValue(raw) => raw,
+    };
+    let variable = mapped(&ids.variables, raw, "variable", provenance)?;
+    Ok(match target {
+        ModelEventTargetWire::DiscreteReal(_) => {
+            crate::ModelEventTarget::DiscreteReal(DiscreteRealId::from_raw(variable.index()))
+        }
+        ModelEventTargetWire::DiscreteValue(_) => {
+            crate::ModelEventTarget::DiscreteValue(DiscreteValueId::from_raw(variable.index()))
+        }
+    })
 }
 
 /// Replay every MLS §8.6 discrete initial-value definition through the same
@@ -1251,14 +1360,26 @@ fn rebuild_node<'dae>(
             map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::Call {
+            owner,
             function,
             output,
             operand_count,
-        } => at.call(
-            mapped(&ids.functions, *function, "function", provenance)?,
-            *output as usize,
-            map_expression_operands(wire, ids, *operand_count, provenance)?,
-        ),
+        } => {
+            let function = mapped(&ids.functions, *function, "function", provenance)?;
+            let arguments = map_expression_operands(wire, ids, *operand_count, provenance)?;
+            if *owner as usize == ids.expressions.len() {
+                at.call(function, *output as usize, arguments)
+            } else {
+                if *operand_count != 0 {
+                    return Err(malformed("expressions.nodes.call.operand_count"));
+                }
+                at.replay_call_projection(
+                    mapped(&ids.expressions, *owner, "function call owner", provenance)?,
+                    function,
+                    *output as usize,
+                )
+            }
+        }
         node @ ExprNodeWire::StringConversion { .. } => {
             rebuild_string_conversion(ids, at, WireStringConversion::from_node(node), provenance)
         }

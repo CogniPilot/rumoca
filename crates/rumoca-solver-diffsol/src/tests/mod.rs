@@ -91,6 +91,8 @@ fn set_equation_row_metadata(
     model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation; row_count];
     model.problem.discrete.pre_modes = pre_modes;
     model.problem.discrete.observation_refresh = observation_refresh;
+    model.problem.discrete.integrator_history_effects =
+        vec![solve::IntegratorHistoryEffect::Preserve; row_count];
     model.problem.discrete.clock_owners = vec![None; row_count];
 }
 
@@ -1608,8 +1610,6 @@ fn event_update_rechecks_change_guard_after_runtime_alias_refresh() {
 fn event_update_refreshes_runtime_aliases_before_parameter_only_projection() {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.compiled_parameter_len = 3;
-    model.problem.solve_layout.solver_maps.names = vec!["dummy".to_string()];
-    model.initial_y = vec![0.0];
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![vec![

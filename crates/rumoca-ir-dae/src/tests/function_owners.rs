@@ -152,6 +152,75 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
 }
 
 #[test]
+fn multi_result_call_issues_one_owner_and_replays_its_projections() {
+    let source = TestSource::new(
+        "function pair input Real u; output Real a; output Real b; end pair; pair(1.0);",
+    );
+    let declaration = source.source("function pair", 0);
+    let call_at = source.source("pair(1.0)", 0);
+    let literal_at = source.source("1.0", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), declaration))?;
+        let (function, ()) = dae.function(
+            FunctionSignature::new(VarName::new("pair"), [real], [real, real], declaration),
+            |dae, reservation| {
+                let parameter = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, declaration)
+                })?;
+                let first = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("a"), 0, declaration)
+                })?;
+                let second = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("b"), 1, declaration)
+                })?;
+                let value = dae.expressions(|expressions| {
+                    expressions.at(declaration).function_parameter(parameter)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, declaration))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, first, value, declaration)?;
+                    functions.assign(&mut body, second, value, declaration)?;
+                    functions.define(body, declaration)
+                })
+            },
+        )?;
+        let argument = dae
+            .expressions(|expressions| expressions.at(literal_at).literal(DaeLiteral::Real(1.0)))?;
+        dae.expressions(|expressions| {
+            expressions
+                .at(call_at)
+                .call_results(function, [0, 1], [argument])
+                .map(|_| ())
+        })
+    })
+    .expect("one multi-result call owner should construct");
+
+    let assert_owner = |view: DaeView<'_>| {
+        let calls = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| {
+                let operation = view.expression(id)?.operation();
+                match operation {
+                    ExpressionOperation::Call { owner, output, .. } => Some((id, owner, output)),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, calls[0].1);
+        assert_eq!(calls[1].1, calls[0].1);
+        assert_eq!([calls[0].2, calls[1].2], [0, 1]);
+    };
+    dae.inspect(assert_owner);
+
+    let encoded = serde_json::to_string(&dae).expect("call owner should serialize");
+    let decoded: Dae = serde_json::from_str(&encoded).expect("call owner should replay");
+    decoded.inspect(assert_owner);
+}
+
+#[test]
 fn acyclic_function_rejects_self_call_at_the_exact_occurrence() {
     let source = TestSource::new("function f output Real y; algorithm y := f(); end f;");
     let declaration = source.source("function f", 0);
@@ -928,7 +997,7 @@ fn vector_is_one_compact_constructor_derived_view_and_round_trips() {
         bincode::serialize(&PureBuiltin::Vector).unwrap(),
         38_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 29);
+    assert_eq!(DAE_SCHEMA_VERSION, 31);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"vector\""));
     let decoded: Dae = serde_json::from_str(&json).unwrap();
@@ -1106,7 +1175,7 @@ fn transpose_swaps_only_the_first_two_axes_and_round_trips() {
         bincode::serialize(&PureBuiltin::Transpose).unwrap(),
         39_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 29);
+    assert_eq!(DAE_SCHEMA_VERSION, 31);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"transpose\""));
     let decoded: Dae = serde_json::from_str(&json).unwrap();
@@ -1283,7 +1352,7 @@ fn diagonal_and_outer_product_are_checked_compact_matrix_operations() {
         bincode::serialize(&PureBuiltin::OuterProduct).unwrap(),
         41_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 29);
+    assert_eq!(DAE_SCHEMA_VERSION, 31);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"diagonal\""));
     assert!(json.contains("\"builtin\":\"outer_product\""));
@@ -1453,7 +1522,7 @@ fn skew_is_one_checked_compact_real_matrix_operation_and_round_trips() {
         bincode::serialize(&PureBuiltin::Skew).unwrap(),
         42_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 29);
+    assert_eq!(DAE_SCHEMA_VERSION, 31);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"skew\""));
     let decoded: Dae = serde_json::from_str(&json).unwrap();
@@ -1834,6 +1903,125 @@ fn assert_sum3_loop_roundtrip(dae: Dae) {
     assert_invalid_function_loop_wires(&encoded);
 }
 
+#[test]
+fn nested_function_loops_round_trip_as_nested_compact_folds() {
+    let source = TestSource::new(
+        "function nestedSum output Integer y; algorithm y := 0; for i in 1:2 loop for j in 1:2 loop y := y + i + j; end for; end for; end nestedSum;",
+    );
+    let function_at = source.source("function nestedSum", 0);
+    let output_at = source.source("output Integer y", 0);
+    let initial_at = source.source("y := 0", 0);
+    let zero_at = source.source("0", 0);
+    let outer_at = source.source("for i in 1:2 loop", 0);
+    let inner_at = source.source("for j in 1:2 loop", 0);
+    let update_at = source.source("y := y + i + j", 0);
+    let update_value_at = source.source("y + i + j", 0);
+    let y_at = update_value_at;
+    let i_at = update_value_at;
+    let j_at = update_value_at;
+    let dae = Dae::construct(source.map, |dae| {
+        let integer =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Integer), function_at))?;
+        dae.function(
+            FunctionSignature::new(VarName::new("nestedSum"), [], [integer], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Integer(0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, output, zero, initial_at))?;
+                let outer_domain = dae.domains(|domains| {
+                    domains.structured(
+                        StructuredIndexDomain {
+                            binders: vec![StructuredIndexBinder {
+                                id: 0,
+                                display_name: "i".to_string(),
+                                lower: 1,
+                                upper: 2,
+                                step: 1,
+                            }],
+                        },
+                        outer_at,
+                    )
+                })?;
+                let inner_domain = dae.domains(|domains| {
+                    domains.nested(
+                        outer_domain,
+                        StructuredIndexDomain {
+                            binders: vec![StructuredIndexBinder {
+                                id: 0,
+                                display_name: "j".to_string(),
+                                lower: 1,
+                                upper: 2,
+                                step: 1,
+                            }],
+                        },
+                        inner_at,
+                    )
+                })?;
+                let outer = dae.functions(|functions| {
+                    functions.begin_loop(body, outer_domain, [output], outer_at)
+                })?;
+                let mut inner = dae.functions(|functions| {
+                    functions.begin_nested_loop(outer, inner_domain, [output], inner_at)
+                })?;
+                let current =
+                    dae.functions(|functions| functions.read(inner.body(), output, y_at))?;
+                let (i, j) = dae.expressions(|expressions| {
+                    Ok((
+                        expressions
+                            .at(i_at)
+                            .binder(DomainBinderId::from_raw(outer_domain.index(), 0))?,
+                        expressions
+                            .at(j_at)
+                            .binder(DomainBinderId::from_raw(inner_domain.index(), 0))?,
+                    ))
+                })?;
+                let update = dae.expressions(|expressions| {
+                    let outer_sum =
+                        expressions
+                            .at(update_value_at)
+                            .binary(BinaryOperator::Add, current, i)?;
+                    expressions
+                        .at(update_value_at)
+                        .binary(BinaryOperator::Add, outer_sum, j)
+                })?;
+                dae.functions(|functions| {
+                    functions.assign_loop(&mut inner, output, update, update_at)
+                })?;
+                let outer =
+                    dae.functions(|functions| functions.finish_nested_loop(inner, inner_at))?;
+                let body = dae.functions(|functions| functions.finish_loop(outer, outer_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("nested function loops construct as a lexical fold stack");
+
+    let inspect = |view: DaeView<'_>| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(function.fold_count(), 2);
+        let statements = function.statements().collect::<Vec<_>>();
+        let FunctionStatementView::For { statements, .. } = statements[1].clone() else {
+            panic!("outer compact fold expected");
+        };
+        let nested = statements.collect::<Vec<_>>();
+        assert!(matches!(
+            nested.as_slice(),
+            [FunctionStatementView::For { .. }]
+        ));
+    };
+    dae.inspect(inspect);
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let replayed: Dae = serde_json::from_str(&encoded).unwrap();
+    replayed.inspect(inspect);
+}
+
 fn assert_invalid_function_loop_wires(encoded: &str) {
     let mut missing_parameter: serde_json::Value = serde_json::from_str(encoded).unwrap();
     missing_parameter["storage"]["functions"][0]["statements"][1]["for"]["targets"] =
@@ -1857,8 +2045,10 @@ fn assert_invalid_function_loop_wires(encoded: &str) {
         serde_json::json!([outer]);
     let error = serde_json::from_value::<Dae>(nested_fold).unwrap_err();
     assert!(
-        error.to_string().contains("functions.statements.nesting"),
-        "wire reconstruction rejects a nested fold that normal construction cannot express: {error}"
+        error
+            .to_string()
+            .contains("missing function fold end definition for identity 0"),
+        "wire reconstruction rejects recursive reuse of one fold's generated identities: {error}"
     );
 }
 

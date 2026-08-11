@@ -208,6 +208,15 @@ fn event_iteration_run_clock(
                     "event-iteration structured owner clock is out of bounds",
                 )
             }),
+        solve::EventIterationOwner::GuardedAssignment { program_index, .. } => model
+            .problem
+            .discrete
+            .guarded_assignments
+            .get(program_index)
+            .map(solve::GuardedAssignmentProgram::clock_owner)
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir("event-iteration guarded owner clock is out of bounds")
+            }),
     }
 }
 

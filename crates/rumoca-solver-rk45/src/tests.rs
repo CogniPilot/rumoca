@@ -359,6 +359,7 @@ fn rk45_terminate_returns_partial_success() {
         },
         span: solve::SolveVariableMeta::empty_with_span(fixture_span!()).source_span,
         origin: "terminate(\"finished\")".to_string(),
+        clock_owner: None,
     }];
 
     let result = simulate(
@@ -938,6 +939,20 @@ fn runtime_contract_step_until_advances_rk45_backend() {
     assert_eq!(outcome, StepUntilOutcome::StopReached);
     assert!((backend.read_state().t - 0.1).abs() <= 1.0e-12);
     assert!((backend.state[0] - 1.2).abs() <= 1.0e-6);
+    assert!(
+        backend.accepted_derivative.is_some(),
+        "an ordinary accepted Dormand-Prince step should retain its FSAL stage"
+    );
+}
+
+#[test]
+fn fsal_coordinate_match_is_bit_exact_and_boundary_owned() {
+    let cached = AcceptedDerivative::at(1.0, &[2.0, -0.0], Some(1.25), vec![3.0, 4.0]);
+
+    assert!(cached.matches(1.0, &[2.0, -0.0], Some(1.25)));
+    assert!(!cached.matches(1.0, &[2.0, 0.0], Some(1.25)));
+    assert!(!cached.matches(1.0, &[2.0, -0.0], None));
+    assert!(!cached.matches(1.0_f64.next_up(), &[2.0, -0.0], Some(1.25)));
 }
 
 #[test]
@@ -1365,6 +1380,7 @@ fn stiff_contact_model() -> solve::SolveModel {
                 row_roles: vec![solve::DiscreteRowRole::ConditionMemory],
                 pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
                 observation_refresh: vec![false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
                 clock_owners: vec![None],
                 ..Default::default()
             },
@@ -1407,6 +1423,7 @@ fn stiff_contact_model() -> solve::SolveModel {
                 pre_param_bindings: Vec::new(),
             },
         },
+        pure_calls: solve::SolvePureCallTable::default(),
         artifacts: solve::SolveArtifacts {
             continuous: solve::ContinuousSolveArtifacts::default(),
             ..Default::default()
@@ -1461,10 +1478,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                 update_rhs: solve::ScalarProgramBlock::default(),
                 update_targets: Vec::new(),
             },
-            discrete: solve::DiscreteSolveSystem {
-                rhs: zero.clone(),
-                ..Default::default()
-            },
+            discrete: solve::DiscreteSolveSystem::default(),
             events: solve::SolveEventPartition::default(),
             clocks: solve::SolveClockPartition::default(),
             solve_layout: SolveLayout {
@@ -1490,6 +1504,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                 pre_param_bindings: Vec::new(),
             },
         },
+        pure_calls: solve::SolvePureCallTable::default(),
         artifacts: solve::SolveArtifacts {
             continuous: solve::ContinuousSolveArtifacts {
                 structural: solve::ContinuousStructuralArtifacts::default(),
@@ -1670,6 +1685,7 @@ fn set_single_discrete_equation(
         row_roles: vec![solve::DiscreteRowRole::Equation],
         pre_modes: vec![pre_mode],
         observation_refresh: vec![false],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
         clock_owners: vec![None],
         rhs,
         ..solve::DiscreteSolveSystem::default()
@@ -1720,6 +1736,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
                 row_roles: vec![solve::DiscreteRowRole::Equation],
                 pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
                 observation_refresh: vec![false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
                 clock_owners: vec![None],
                 ..Default::default()
             },
@@ -1748,6 +1765,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
                 pre_param_bindings: Vec::new(),
             },
         },
+        pure_calls: solve::SolvePureCallTable::default(),
         artifacts: solve::SolveArtifacts {
             continuous: solve::ContinuousSolveArtifacts {
                 structural: solve::ContinuousStructuralArtifacts::default(),

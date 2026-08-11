@@ -137,6 +137,10 @@ when the phase needs compile-time evaluation of that representation. For example
 `rumoca-phase-flatten` may use `rumoca-eval-flat` for Flat-level constant and shape
 evaluation instead of duplicating that logic inside the phase.
 
+`rumoca-phase-structural` owns the checked causal-discrete plan derived from
+DAE identities. Solve and GALEC lowering consume that one orientation and
+dependency authority; neither may independently choose a discrete target.
+
 ### 6. Rules for Adding Dependencies
 
 Before adding a dependency from crate A to crate B:

@@ -595,8 +595,7 @@ fn reverse_implicit_residual_vjp_transposes_forward_jvp() {
             0.0,
             RowEvalContext {
                 seed: Some(&v),
-                external_tables: None,
-                runtime_state: None,
+                ..runtime.row_eval_context()
             },
             &mut jg_v,
         )

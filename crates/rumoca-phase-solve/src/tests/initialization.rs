@@ -158,30 +158,36 @@ fn assert_grouped_initial_b1b(solve: &rumoca_ir_solve::SolveProblem) {
         .solve_layout
         .initial_event_parameter_index
         .expect("initial() owns one checked runtime flag");
-    let guarded_rows = solve
+    let guarded = solve
         .discrete
-        .row_roles
+        .guarded_assignments
         .iter()
-        .enumerate()
-        .filter(|(_, role)| **role == rumoca_ir_solve::DiscreteRowRole::Equation)
+        .filter(|program| program.role() == rumoca_ir_solve::DiscreteRowRole::Equation)
         .collect::<Vec<_>>();
-    let [(guarded_row, _)] = guarded_rows.as_slice() else {
-        panic!("one conditional B.1b equation row expected");
+    let [guarded] = guarded.as_slice() else {
+        panic!("one conditional B.1b equation owner expected");
     };
-    assert_eq!(
-        solve.discrete.rhs.programs()[*guarded_row]
+    let conditional = guarded
+        .program()
+        .iter()
+        .find_map(|operation| match operation {
+            LinearOp::FunctionConditional { program, .. } => Some(program),
+            _ => None,
+        })
+        .expect("the initial B.1b branches retain one compact owner");
+    assert_eq!(conditional.arms.len(), 2);
+    assert!(
+        guarded
+            .program()
             .iter()
-            .filter(|operation| matches!(operation, LinearOp::Select { .. }))
-            .count(),
-        2
+            .all(|operation| !matches!(operation, LinearOp::Select { .. })),
+        "the guarded assignment is not represented by scalar selections"
     );
     assert!(
-        solve
-            .discrete
-            .rhs
-            .programs()
+        conditional
+            .arms
             .iter()
-            .flatten()
+            .flat_map(|arm| arm.condition.iter())
             .any(|operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == flag))
     );
 }

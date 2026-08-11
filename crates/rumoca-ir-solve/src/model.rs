@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ContinuousSolveSystem {
@@ -292,8 +293,16 @@ pub enum EventIterationValueKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum EventIterationOwner {
     Hold,
-    ScalarRows { start_row: usize },
-    StructuredUpdate { update_index: usize },
+    ScalarRows {
+        start_row: usize,
+    },
+    StructuredUpdate {
+        update_index: usize,
+    },
+    GuardedAssignment {
+        program_index: usize,
+        target_range_index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
@@ -342,6 +351,13 @@ pub struct DiscreteSolveSystem {
     /// `None` denotes an ordinary event-iteration row. A clock-owned row is
     /// evaluated only when the referenced exact lattice ticks.
     pub clock_owners: Vec<Option<PeriodicClockId>>,
+    /// Correlated guarded updates retain one compact result program and one
+    /// ordered target-range catalog. Scalar coordinate rows are derived only
+    /// by evaluator/backend adapters.
+    pub guarded_assignments: Vec<GuardedAssignmentProgram>,
+    /// Model-level event algorithms remain one ordered typed transaction
+    /// across mixed discrete Real and discrete-valued storage.
+    pub event_transactions: Vec<EventTransactionProgram>,
     /// Compact B.1c maps. Scalar owners remain in `rhs`; a structured owner is
     /// represented exactly once here and is scalarized only by evaluation or
     /// backend adapter APIs.
@@ -349,6 +365,560 @@ pub struct DiscreteSolveSystem {
     pub structured_rhs: ComputeBlock,
     #[serde(default)]
     pub structured_updates: Vec<StructuredDiscreteUpdate>,
+}
+
+/// One aggregate model-storage input to an event transaction.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EventTransactionInput {
+    source: ScalarSlot,
+    value_type: SolveValueType,
+}
+
+impl EventTransactionInput {
+    #[must_use]
+    pub const fn source(&self) -> ScalarSlot {
+        self.source
+    }
+
+    #[must_use]
+    pub const fn value_type(&self) -> &SolveValueType {
+        &self.value_type
+    }
+}
+
+/// One aggregate atomic-commit destination of an event transaction.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EventTransactionTarget {
+    base: ScalarSlot,
+    value_type: SolveValueType,
+}
+
+impl EventTransactionTarget {
+    #[must_use]
+    pub const fn base(&self) -> ScalarSlot {
+        self.base
+    }
+
+    #[must_use]
+    pub const fn value_type(&self) -> &SolveValueType {
+        &self.value_type
+    }
+}
+
+/// One checked tensor-native executable model-event transaction.
+///
+/// The typed body is owned once by `site` in the model pure-call table. Inputs
+/// and targets retain aggregate types and compact storage bases; coordinates
+/// are materialized only by the final execution or emission adapter.
+#[derive(Clone, Debug, Serialize)]
+pub struct EventTransactionProgram {
+    site: SolvePureCallSite,
+    inputs: Box<[EventTransactionInput]>,
+    targets: Box<[EventTransactionTarget]>,
+    assertions: Box<[SolveEventAction]>,
+    statement_count: usize,
+    clock_owner: Option<PeriodicClockId>,
+    span: Span,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventTransactionProgramWire {
+    site: SolvePureCallSite,
+    inputs: Vec<EventTransactionInputWire>,
+    targets: Vec<EventTransactionTargetWire>,
+    assertions: Vec<SolveEventAction>,
+    statement_count: usize,
+    clock_owner: Option<PeriodicClockId>,
+    span: Span,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventTransactionInputWire {
+    source: ScalarSlot,
+    value_type: SolveValueType,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventTransactionTargetWire {
+    base: ScalarSlot,
+    value_type: SolveValueType,
+}
+
+impl<'de> Deserialize<'de> for EventTransactionProgram {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = EventTransactionProgramWire::deserialize(deserializer)?;
+        let provenance = wire
+            .span
+            .require_provenance("EventTransactionProgram")
+            .map_err(serde::de::Error::custom)?;
+        Self::checked(
+            wire.site,
+            wire.inputs
+                .into_iter()
+                .map(|input| (input.source, input.value_type)),
+            wire.targets
+                .into_iter()
+                .map(|target| (target.base, target.value_type)),
+            wire.assertions,
+            wire.statement_count,
+            wire.clock_owner,
+            provenance,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl EventTransactionProgram {
+    pub fn checked(
+        site: SolvePureCallSite,
+        inputs: impl IntoIterator<Item = (ScalarSlot, SolveValueType)>,
+        targets: impl IntoIterator<Item = (ScalarSlot, SolveValueType)>,
+        assertions: impl IntoIterator<Item = SolveEventAction>,
+        statement_count: usize,
+        clock_owner: Option<PeriodicClockId>,
+        provenance: ProvenanceSpan,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let span = provenance.span();
+        let inputs = inputs
+            .into_iter()
+            .map(|(source, value_type)| EventTransactionInput { source, value_type })
+            .collect::<Box<[_]>>();
+        let targets = targets
+            .into_iter()
+            .map(|(base, value_type)| EventTransactionTarget { base, value_type })
+            .collect::<Box<[_]>>();
+        let assertions = assertions.into_iter().collect::<Box<[_]>>();
+        validate_event_transaction_interface(
+            &site,
+            &inputs,
+            &targets,
+            &assertions,
+            statement_count,
+            clock_owner,
+            span,
+        )?;
+        Ok(Self {
+            site,
+            inputs,
+            targets,
+            assertions,
+            statement_count,
+            clock_owner,
+            span,
+        })
+    }
+
+    #[must_use]
+    pub const fn site(&self) -> &SolvePureCallSite {
+        &self.site
+    }
+
+    #[must_use]
+    pub const fn inputs(&self) -> &[EventTransactionInput] {
+        &self.inputs
+    }
+
+    #[must_use]
+    pub const fn targets(&self) -> &[EventTransactionTarget] {
+        &self.targets
+    }
+
+    /// Ordered actions aligned with the assertion-predicate result suffix.
+    #[must_use]
+    pub const fn assertions(&self) -> &[SolveEventAction] {
+        &self.assertions
+    }
+
+    /// Number of call-scoped assertion predicates returned atomically after
+    /// the target tuple.
+    #[must_use]
+    pub fn assertion_count(&self) -> usize {
+        self.assertions.len()
+    }
+
+    #[must_use]
+    pub const fn statement_count(&self) -> usize {
+        self.statement_count
+    }
+
+    #[must_use]
+    pub const fn clock_owner(&self) -> Option<PeriodicClockId> {
+        self.clock_owner
+    }
+
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+}
+
+fn validate_event_transaction_interface(
+    site: &SolvePureCallSite,
+    inputs: &[EventTransactionInput],
+    targets: &[EventTransactionTarget],
+    assertions: &[SolveEventAction],
+    statement_count: usize,
+    clock_owner: Option<PeriodicClockId>,
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    let invalid = |detail| SolveProblemShapeContractError::EventTransactionProgram {
+        program_index: 0,
+        detail,
+        span: Some(span),
+    };
+    if statement_count == 0 || targets.is_empty() {
+        return Err(invalid("statement or target catalog is empty"));
+    }
+    if site.inputs().len() != inputs.len()
+        || site
+            .inputs()
+            .iter()
+            .zip(inputs)
+            .any(|(expected, input)| expected != &input.value_type)
+    {
+        return Err(invalid("typed call inputs do not match storage inputs"));
+    }
+    if site.outputs().len() < targets.len()
+        || site.outputs()[..targets.len()]
+            .iter()
+            .zip(targets)
+            .any(|(output, target)| {
+                output.kind() != SolvePureCallOutputKind::Result
+                    || output.value_type() != &target.value_type
+            })
+    {
+        return Err(invalid("typed call outputs do not match atomic targets"));
+    }
+    if site.outputs()[targets.len()..].iter().any(|output| {
+        output.kind() != SolvePureCallOutputKind::AssertionPredicate
+            || output.value_type() != &SolveValueType::scalar(SolveScalarType::Boolean)
+    }) {
+        return Err(invalid(
+            "transaction suffix is not a checked assertion-predicate tuple",
+        ));
+    }
+    if site.outputs().len() - targets.len() != assertions.len() {
+        return Err(invalid(
+            "assertion actions do not cover the checked predicate suffix",
+        ));
+    }
+    if assertions.iter().any(|action| {
+        !matches!(action.kind, SolveEventActionKind::Assert)
+            || action.clock_owner != clock_owner
+            || action.span.is_dummy()
+    }) {
+        return Err(invalid(
+            "assertion action kind, clock owner, or provenance is invalid",
+        ));
+    }
+    for input in inputs {
+        validate_event_transaction_source(input, &invalid)?;
+    }
+    validate_event_transaction_targets(targets, &invalid)
+}
+
+fn validate_event_transaction_source(
+    input: &EventTransactionInput,
+    invalid: &impl Fn(&'static str) -> SolveProblemShapeContractError,
+) -> Result<(), SolveProblemShapeContractError> {
+    match input.source {
+        ScalarSlot::Y { index, .. } | ScalarSlot::P { index, .. } => {
+            index
+                .checked_add(input.value_type.scalar_count() as usize)
+                .ok_or_else(|| invalid("input storage range overflows"))?;
+        }
+        ScalarSlot::Time | ScalarSlot::Constant(_) => {
+            if input.value_type.scalar_count() != 1 {
+                return Err(invalid("time or constant input is not scalar"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_event_transaction_targets(
+    targets: &[EventTransactionTarget],
+    invalid: &impl Fn(&'static str) -> SolveProblemShapeContractError,
+) -> Result<(), SolveProblemShapeContractError> {
+    let mut ranges = Vec::with_capacity(targets.len());
+    for target in targets {
+        let (storage, start) = match target.base {
+            ScalarSlot::Y { index, .. } => (0_u8, index),
+            ScalarSlot::P { index, .. } => (1_u8, index),
+            ScalarSlot::Time | ScalarSlot::Constant(_) => {
+                return Err(invalid("target is not mutable Y/P storage"));
+            }
+        };
+        let end = start
+            .checked_add(target.value_type.scalar_count() as usize)
+            .ok_or_else(|| invalid("target storage range overflows"))?;
+        if ranges
+            .iter()
+            .any(|&(other_storage, other_start, other_end)| {
+                storage == other_storage && start < other_end && other_start < end
+            })
+        {
+            return Err(invalid("target storage ranges overlap"));
+        }
+        ranges.push((storage, start, end));
+    }
+    Ok(())
+}
+
+/// One compact mutable-storage destination for a guarded assignment result.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct GuardedAssignmentTargetRange {
+    base: ScalarSlot,
+    count: usize,
+}
+
+impl GuardedAssignmentTargetRange {
+    pub const fn base(self) -> ScalarSlot {
+        self.base
+    }
+
+    pub const fn count(self) -> usize {
+        self.count
+    }
+}
+
+/// One checked correlated guarded update.
+///
+/// `program` produces the concatenation of `target_ranges` in source order.
+/// The compact ranges, rather than a per-coordinate target vector, are the
+/// authoritative simultaneous-assignment relation.
+#[derive(Clone, Debug, Serialize)]
+pub struct GuardedAssignmentProgram {
+    program: Arc<[LinearOp]>,
+    span: Span,
+    target_ranges: Box<[GuardedAssignmentTargetRange]>,
+    #[serde(skip)]
+    output_count: usize,
+    #[serde(skip)]
+    register_count: usize,
+    role: DiscreteRowRole,
+    pre_mode: DiscreteEventPreMode,
+    observation_refresh: bool,
+    integrator_history_effect: IntegratorHistoryEffect,
+    clock_owner: Option<PeriodicClockId>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuardedAssignmentProgramWire {
+    program: Vec<LinearOp>,
+    span: Span,
+    target_ranges: Box<[GuardedAssignmentTargetRangeWire]>,
+    role: DiscreteRowRole,
+    pre_mode: DiscreteEventPreMode,
+    observation_refresh: bool,
+    integrator_history_effect: IntegratorHistoryEffect,
+    clock_owner: Option<PeriodicClockId>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuardedAssignmentTargetRangeWire {
+    base: ScalarSlot,
+    count: usize,
+}
+
+impl<'de> Deserialize<'de> for GuardedAssignmentProgram {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = GuardedAssignmentProgramWire::deserialize(deserializer)?;
+        let provenance = wire
+            .span
+            .require_provenance("GuardedAssignmentProgram")
+            .map_err(serde::de::Error::custom)?;
+        Self::checked(
+            wire.program,
+            provenance,
+            wire.target_ranges
+                .iter()
+                .map(|range| (range.base, range.count)),
+            wire.role,
+            wire.pre_mode,
+            wire.observation_refresh,
+            wire.integrator_history_effect,
+            wire.clock_owner,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl GuardedAssignmentProgram {
+    #[allow(clippy::too_many_arguments)]
+    pub fn checked(
+        program: Vec<LinearOp>,
+        provenance: ProvenanceSpan,
+        target_ranges: impl IntoIterator<Item = (ScalarSlot, usize)>,
+        role: DiscreteRowRole,
+        pre_mode: DiscreteEventPreMode,
+        observation_refresh: bool,
+        integrator_history_effect: IntegratorHistoryEffect,
+        clock_owner: Option<PeriodicClockId>,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let span = provenance.span();
+        let target_ranges = target_ranges
+            .into_iter()
+            .map(|(base, count)| GuardedAssignmentTargetRange { base, count })
+            .collect::<Box<[_]>>();
+        validate_guarded_assignment_targets(&target_ranges, span)?;
+        let expected_outputs = target_ranges.iter().try_fold(0usize, |total, range| {
+            total.checked_add(range.count).ok_or(
+                SolveProblemShapeContractError::GuardedAssignmentProgram {
+                    program_index: 0,
+                    detail: "target result width overflows",
+                    span: Some(span),
+                },
+            )
+        })?;
+        let actual_outputs = ScalarProgramBlock::program_output_count(&program);
+        if actual_outputs != expected_outputs {
+            return Err(SolveProblemShapeContractError::GuardedAssignmentProgram {
+                program_index: 0,
+                detail: "program output width does not equal its compact target ranges",
+                span: Some(span),
+            });
+        }
+        crate::validate_function_conditional_owners(
+            "GuardedAssignmentProgram",
+            0,
+            std::slice::from_ref(&program),
+            &[span],
+        )?;
+        let register_count = crate::derive_scalar_program_register_counts(
+            "GuardedAssignmentProgram",
+            0,
+            std::slice::from_ref(&program),
+            &[span],
+        )?[0];
+        Ok(Self {
+            program: program.into(),
+            span,
+            target_ranges,
+            output_count: expected_outputs,
+            register_count,
+            role,
+            pre_mode,
+            observation_refresh,
+            integrator_history_effect,
+            clock_owner,
+        })
+    }
+
+    pub fn program(&self) -> &[LinearOp] {
+        &self.program
+    }
+
+    pub fn shared_program(&self) -> Arc<[LinearOp]> {
+        Arc::clone(&self.program)
+    }
+
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+
+    pub fn target_ranges(&self) -> &[GuardedAssignmentTargetRange] {
+        &self.target_ranges
+    }
+
+    pub const fn role(&self) -> DiscreteRowRole {
+        self.role
+    }
+
+    pub const fn pre_mode(&self) -> DiscreteEventPreMode {
+        self.pre_mode
+    }
+
+    pub const fn observation_refresh(&self) -> bool {
+        self.observation_refresh
+    }
+
+    pub const fn integrator_history_effect(&self) -> IntegratorHistoryEffect {
+        self.integrator_history_effect
+    }
+
+    pub fn set_integrator_history_effect(&mut self, effect: IntegratorHistoryEffect) {
+        self.integrator_history_effect = effect;
+    }
+
+    pub const fn clock_owner(&self) -> Option<PeriodicClockId> {
+        self.clock_owner
+    }
+
+    pub const fn output_count(&self) -> usize {
+        self.output_count
+    }
+
+    /// Exact register capacity proved with this compact owner.
+    pub const fn register_count(&self) -> usize {
+        self.register_count
+    }
+}
+
+fn validate_guarded_assignment_targets(
+    target_ranges: &[GuardedAssignmentTargetRange],
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    if target_ranges.is_empty() {
+        return Err(SolveProblemShapeContractError::GuardedAssignmentProgram {
+            program_index: 0,
+            detail: "target-range catalog is empty",
+            span: Some(span),
+        });
+    }
+    let mut covered = Vec::<(u8, usize, usize)>::new();
+    for range in target_ranges {
+        if range.count == 0 {
+            return Err(SolveProblemShapeContractError::GuardedAssignmentProgram {
+                program_index: 0,
+                detail: "target range is empty",
+                span: Some(span),
+            });
+        }
+        let (storage, start) = match range.base {
+            ScalarSlot::Y { index, .. } => (0_u8, index),
+            ScalarSlot::P { index, .. } => (1_u8, index),
+            ScalarSlot::Time | ScalarSlot::Constant(_) => {
+                return Err(SolveProblemShapeContractError::GuardedAssignmentProgram {
+                    program_index: 0,
+                    detail: "target range is not mutable Y/P storage or overflows",
+                    span: Some(span),
+                });
+            }
+        };
+        let end = start.checked_add(range.count).ok_or(
+            SolveProblemShapeContractError::GuardedAssignmentProgram {
+                program_index: 0,
+                detail: "target range is not mutable Y/P storage or overflows",
+                span: Some(span),
+            },
+        )?;
+        if covered
+            .iter()
+            .any(|&(other_storage, other_start, other_end)| {
+                storage == other_storage && start < other_end && other_start < end
+            })
+        {
+            return Err(SolveProblemShapeContractError::GuardedAssignmentProgram {
+                program_index: 0,
+                detail: "target ranges overlap",
+                span: Some(span),
+            });
+        }
+        covered.push((storage, start, end));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -535,6 +1105,13 @@ pub struct SolveEventAction {
     pub message: SolveEventMessage,
     pub span: rumoca_core::Span,
     pub origin: String,
+    /// Exact periodic owner for a clock-scoped action.
+    ///
+    /// `None` denotes an ordinary state/event action. A clock-owned action is
+    /// eligible only when this schedule ticks; the condition program retains
+    /// its activation lane as a local semantic guard.
+    #[serde(default)]
+    pub clock_owner: Option<PeriodicClockId>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -817,6 +1394,26 @@ pub enum SolveVariableValueKind {
     String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolveVariableTimeDomain {
+    Static,
+    EventDiscrete,
+    EventDiscontinuous,
+    ContinuousTime,
+}
+
+impl SolveVariableTimeDomain {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Static => "static",
+            Self::EventDiscrete => "event-discrete",
+            Self::EventDiscontinuous => "event-discontinuous",
+            Self::ContinuousTime => "continuous-time",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub struct SolveVariableStorageRun {
     pub base: ScalarSlot,
@@ -827,14 +1424,38 @@ pub struct SolveVariableStorageRun {
 
 /// Immutable typed declaration replayed independently of storage projection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SolveVariableDeclaration {
     role: SolveVariableStorageRole,
     value_kind: SolveVariableValueKind,
+    time_domain: SolveVariableTimeDomain,
 }
 
 impl SolveVariableDeclaration {
     pub const fn new(role: SolveVariableStorageRole, value_kind: SolveVariableValueKind) -> Self {
-        Self { role, value_kind }
+        Self {
+            role,
+            value_kind,
+            time_domain: default_time_domain(role),
+        }
+    }
+
+    pub fn event_discontinuous(
+        role: SolveVariableStorageRole,
+        value_kind: SolveVariableValueKind,
+    ) -> Result<Self, SolveVariableDeclarationError> {
+        if !matches!(
+            role,
+            SolveVariableStorageRole::Algebraic | SolveVariableStorageRole::Output
+        ) || value_kind != SolveVariableValueKind::Real
+        {
+            return Err(SolveVariableDeclarationError { role, value_kind });
+        }
+        Ok(Self {
+            role,
+            value_kind,
+            time_domain: SolveVariableTimeDomain::EventDiscontinuous,
+        })
     }
 
     pub const fn role(self) -> SolveVariableStorageRole {
@@ -843,6 +1464,43 @@ impl SolveVariableDeclaration {
 
     pub const fn value_kind(self) -> SolveVariableValueKind {
         self.value_kind
+    }
+
+    pub const fn time_domain(self) -> SolveVariableTimeDomain {
+        self.time_domain
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SolveVariableDeclarationError {
+    role: SolveVariableStorageRole,
+    value_kind: SolveVariableValueKind,
+}
+
+impl std::fmt::Display for SolveVariableDeclarationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{:?} {:?} storage cannot be event-discontinuous",
+            self.role, self.value_kind
+        )
+    }
+}
+
+impl std::error::Error for SolveVariableDeclarationError {}
+
+const fn default_time_domain(role: SolveVariableStorageRole) -> SolveVariableTimeDomain {
+    match role {
+        SolveVariableStorageRole::Parameter | SolveVariableStorageRole::Constant => {
+            SolveVariableTimeDomain::Static
+        }
+        SolveVariableStorageRole::DiscreteReal | SolveVariableStorageRole::DiscreteValue => {
+            SolveVariableTimeDomain::EventDiscrete
+        }
+        SolveVariableStorageRole::ExternalInput
+        | SolveVariableStorageRole::State
+        | SolveVariableStorageRole::Algebraic
+        | SolveVariableStorageRole::Output => SolveVariableTimeDomain::ContinuousTime,
     }
 }
 
@@ -1018,9 +1676,13 @@ impl SolveVariableMeta {
 ///
 /// This is pure data. DAE inspection, scalarization, start evaluation, and
 /// mass-matrix extraction happen before this value is constructed.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct SolveModel {
     pub problem: SolveProblem,
+    /// Exact pure DAE call frames shared by value, root, action, and visible
+    /// projections. Empty legacy fixtures still carry the canonical binary64
+    /// arithmetic profile; lowering never reconstructs this table from rows.
+    pub pure_calls: SolvePureCallTable,
     pub artifacts: SolveArtifacts,
     pub initial_y: Vec<f64>,
     /// Positive nominal values aligned with solver `y` slots.
@@ -1030,6 +1692,44 @@ pub struct SolveModel {
     pub visible_names: Vec<String>,
     pub visible_value_rows: ScalarProgramBlock,
     pub variable_meta: Vec<SolveVariableMeta>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SolveModelWire {
+    problem: SolveProblem,
+    pure_calls: SolvePureCallTable,
+    artifacts: SolveArtifacts,
+    initial_y: Vec<f64>,
+    solver_nominals: Vec<f64>,
+    parameters: Vec<f64>,
+    external_tables: ExternalTables,
+    visible_names: Vec<String>,
+    visible_value_rows: ScalarProgramBlock,
+    variable_meta: Vec<SolveVariableMeta>,
+}
+
+impl<'de> Deserialize<'de> for SolveModel {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SolveModelWire::deserialize(deserializer)?;
+        let model = Self {
+            problem: wire.problem,
+            pure_calls: wire.pure_calls,
+            artifacts: wire.artifacts,
+            initial_y: wire.initial_y,
+            solver_nominals: wire.solver_nominals,
+            parameters: wire.parameters,
+            external_tables: wire.external_tables,
+            visible_names: wire.visible_names,
+            visible_value_rows: wire.visible_value_rows,
+            variable_meta: wire.variable_meta,
+        };
+        model.validate().map_err(serde::de::Error::custom)?;
+        Ok(model)
+    }
 }
 
 impl SolveModel {

@@ -11,7 +11,7 @@
 //! `rumoca-ir-solve` or `rumoca-eval-solve` at all, so naming a Solve row,
 //! layout, opcode, event, or runtime object here does not compile.
 
-use std::time::Instant;
+use std::{rc::Rc, time::Instant};
 
 use indexmap::IndexMap;
 use rumoca_solver::{
@@ -34,8 +34,8 @@ use dense_output::Dopri5DenseOutput;
 use no_state::NoStateSession;
 use reset::Rk45ResetSnapshot;
 use trace::{
-    record_derivative_eval_trace, record_root_eval_trace, reset_rk_eval_trace,
-    rk_eval_trace_enabled, trace_rk_eval_snapshot,
+    elapsed_trace_nanos, record_derivative_eval_trace, record_event_parts, record_event_trace,
+    record_root_eval_trace, reset_rk_eval_trace, rk_eval_trace_enabled, trace_rk_eval_snapshot,
 };
 
 /// FMI `instanceName` for this host's component.
@@ -156,12 +156,24 @@ impl SimulationSession {
         model: impl Into<MeModelSource<'a>>,
         opts: SimOptions,
     ) -> Result<Self, SimError> {
+        Self::new_with_execution_backend(model, opts, None)
+    }
+
+    pub fn new_with_execution_backend<'a>(
+        model: impl Into<MeModelSource<'a>>,
+        opts: SimOptions,
+        execution_backend: Option<Rc<dyn rumoca_solver::SolveExecutionBackend>>,
+    ) -> Result<Self, SimError> {
         match opts.solver_mode {
             SimSolverMode::Auto | SimSolverMode::RkLike => {}
             requested => return Err(SimError::UnsupportedSolverMode { requested }),
         }
         let source = model.into();
-        match SolveMeKernel::instantiate(source, &instance_config(&opts)) {
+        match SolveMeKernel::instantiate_with_execution_backend(
+            source,
+            &instance_config(&opts),
+            execution_backend,
+        ) {
             // A model with no continuous states has no integrator to host;
             // the component's zero-state path owns it instead.
             Err(MeError::NoContinuousStates) => {
@@ -216,10 +228,16 @@ impl SimulationSession {
     }
 
     pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
+        reset_rk_eval_trace();
         match &mut self.inner {
             SimulationSessionInner::NoState(session) => session.reset(t_start),
             SimulationSessionInner::State(session) => session.reset(t_start),
         }
+    }
+
+    /// Emit the opt-in RK callback counters for a reusable simulation run.
+    pub fn trace_eval_snapshot(&self, label: &str) {
+        trace_rk_eval_snapshot(label);
     }
 
     pub fn time(&self) -> f64 {
@@ -472,6 +490,43 @@ pub(crate) struct Rk45Backend {
     budget: TimeoutBudget,
     pub(crate) termination: Option<SimTermination>,
     located_event_state: Option<Vec<f64>>,
+    accepted_roots: Option<Vec<f64>>,
+    accepted_derivative: Option<AcceptedDerivative>,
+}
+
+/// Dormand-Prince's final stage is the first stage of the next step (FSAL).
+/// Keep the value only while the complete FMI coordinate that produced it is
+/// still current; event iteration and reset paths invalidate the cache.
+struct AcceptedDerivative {
+    time_bits: u64,
+    state_bits: Box<[u64]>,
+    event_boundary_bits: Option<u64>,
+    values: Vec<f64>,
+}
+
+impl AcceptedDerivative {
+    fn at(time: f64, state: &[f64], event_boundary: Option<f64>, values: Vec<f64>) -> Self {
+        Self {
+            time_bits: time.to_bits(),
+            state_bits: state
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            event_boundary_bits: event_boundary.map(f64::to_bits),
+            values,
+        }
+    }
+
+    fn matches(&self, time: f64, state: &[f64], event_boundary: Option<f64>) -> bool {
+        self.time_bits == time.to_bits()
+            && self.event_boundary_bits == event_boundary.map(f64::to_bits)
+            && self
+                .state_bits
+                .iter()
+                .copied()
+                .eq(state.iter().map(|value| value.to_bits()))
+    }
 }
 
 struct TrialStep {
@@ -505,13 +560,25 @@ pub fn simulate<'a>(
     model: impl Into<MeModelSource<'a>>,
     opts: &SimOptions,
 ) -> Result<SimResult, SimError> {
+    simulate_with_execution_backend(model, opts, None)
+}
+
+pub fn simulate_with_execution_backend<'a>(
+    model: impl Into<MeModelSource<'a>>,
+    opts: &SimOptions,
+    execution_backend: Option<Rc<dyn rumoca_solver::SolveExecutionBackend>>,
+) -> Result<SimResult, SimError> {
     reset_rk_eval_trace();
     match opts.solver_mode {
         SimSolverMode::Auto | SimSolverMode::RkLike => {}
         requested => return Err(SimError::UnsupportedSolverMode { requested }),
     }
 
-    let kernel = SolveMeKernel::instantiate(model.into(), &instance_config(opts))?;
+    let kernel = SolveMeKernel::instantiate_with_execution_backend(
+        model.into(),
+        &instance_config(opts),
+        execution_backend,
+    )?;
     let sample_dt = default_output_dt(opts);
     let sample_times = timeline::try_build_output_times(opts.t_start, opts.t_end, sample_dt)
         .map_err(|error| SimError::RuntimeContract {
@@ -685,6 +752,8 @@ impl Rk45Backend {
             budget: TimeoutBudget::new(opts.max_wall_seconds),
             termination: None,
             located_event_state: None,
+            accepted_roots: None,
+            accepted_derivative: None,
         })
     }
 
@@ -756,7 +825,10 @@ impl Rk45Backend {
         h: f64,
         event_boundary: Option<f64>,
     ) -> Result<TrialStep, SimError> {
-        let k1 = self.derivatives_at(time, state, event_boundary)?;
+        let k1 = match self.accepted_derivative.as_ref() {
+            Some(cached) if cached.matches(time, state, event_boundary) => cached.values.clone(),
+            _ => self.derivatives_at(time, state, event_boundary)?,
+        };
         let y2 = combine_stage(state, h, &[(&k1, 1.0 / 5.0)])?;
         let k2 = self.derivatives_at(time + h * (1.0 / 5.0), &y2, event_boundary)?;
 
@@ -874,7 +946,10 @@ impl Rk45Backend {
             self.budget.check()?;
             let old_t = self.time;
             let old_state = self.state.clone();
-            let old_roots = self.event_indicators_at(old_t, &old_state, event_boundary)?;
+            let old_roots = match self.accepted_roots.take() {
+                Some(roots) => roots,
+                None => self.event_indicators_at(old_t, &old_state, event_boundary)?,
+            };
             let h = trial_step_size(
                 self.time,
                 target_t,
@@ -887,9 +962,11 @@ impl Rk45Backend {
                 target_t,
                 event_boundary,
             };
-            if let Some(outcome) =
-                self.accept_trial_step(old_t, old_state, h, &trial, step_context)?
-            {
+            let accepted = self.accept_trial_step(old_t, old_state, h, &trial, step_context)?;
+            if self.time.to_bits() == old_t.to_bits() && self.accepted_roots.is_none() {
+                self.accepted_roots = Some(old_roots);
+            }
+            if let Some(outcome) = accepted {
                 return Ok(outcome);
             }
             self.next_step = if self.time > old_t {
@@ -914,7 +991,7 @@ impl Rk45Backend {
         }
         let new_t = (self.time + h).min(context.target_t);
         let mut projected_next = trial.y_next.clone();
-        self.project_accepted_state(new_t, &mut projected_next)?;
+        let projected = self.project_accepted_state(new_t, &mut projected_next)?;
         let new_roots = self.event_indicators_at(new_t, &projected_next, context.event_boundary)?;
         let mut crossings = Vec::new();
         self.kernel
@@ -970,6 +1047,8 @@ impl Rk45Backend {
             advance_states_to_event_probe(&mut root.state, &derivatives, root.time, right_time);
             self.time = root.time;
             self.state = root.state;
+            self.accepted_roots = None;
+            self.accepted_derivative = None;
             self.kernel.set_time(MeTime::at(self.time))?;
             self.kernel.set_continuous_states(&self.state)?;
             self.complete_integrator_step()?;
@@ -977,9 +1056,18 @@ impl Rk45Backend {
         }
         self.time = new_t;
         self.state = projected_next;
+        self.accepted_roots = Some(new_roots);
         self.kernel.set_time(MeTime::at(self.time))?;
         self.kernel.set_continuous_states(&self.state)?;
         self.complete_integrator_step()?;
+        self.accepted_derivative = (!projected).then(|| {
+            AcceptedDerivative::at(
+                self.time,
+                &self.state,
+                context.event_boundary,
+                trial.stages[6].clone(),
+            )
+        });
         Ok(None)
     }
 
@@ -1099,14 +1187,27 @@ impl Rk45Backend {
         event_time: f64,
         target_t: f64,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
+        let tracing = rk_eval_trace_enabled();
+        let start = tracing.then(Instant::now);
         self.time = event_time.max(self.time);
+        let part_start = tracing.then(Instant::now);
         self.sync_kernel_to_current_point()?;
+        let sync_nanos = part_start.map_or(0, elapsed_trace_nanos);
+        let part_start = tracing.then(Instant::now);
         self.kernel.enter_event_mode(MeEventEntry {
             cause: MeEventCause::TimeEvent,
             event_time,
             horizon: target_t,
         })?;
-        self.apply_event_mode_and_continue_or_finish()
+        let enter_nanos = part_start.map_or(0, elapsed_trace_nanos);
+        let part_start = tracing.then(Instant::now);
+        let result = self.apply_event_mode_and_continue_or_finish();
+        let update_nanos = part_start.map_or(0, elapsed_trace_nanos);
+        if let Some(start) = start {
+            record_event_parts(sync_nanos, enter_nanos, update_nanos);
+            record_event_trace(start);
+        }
+        result
     }
 
     /// The FMI 3 discrete-state iteration: call `fmi3UpdateDiscreteStates`
@@ -1115,6 +1216,8 @@ impl Rk45Backend {
     fn apply_event_mode_and_continue_or_finish(
         &mut self,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
+        self.accepted_roots = None;
+        self.accepted_derivative = None;
         let mut continuous_states_changed = false;
         loop {
             let discrete = self.kernel.update_discrete_states()?;
@@ -1156,6 +1259,7 @@ impl SimulationBackend for Rk45Backend {
     type Error = SimError;
 
     fn init(&mut self) -> Result<(), Self::Error> {
+        self.accepted_derivative = None;
         self.sync_kernel_to_current_point()?;
         self.kernel.enter_initialization_mode()?;
         self.kernel.exit_initialization_mode()?;

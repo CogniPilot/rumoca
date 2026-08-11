@@ -225,6 +225,21 @@ fn multi_result_call_defines_every_receiving_variable() {
             dae::FunctionStatementView::AssignmentGroup { definitions, .. }
                 if definitions.len() == 2
         ));
+        let dae::FunctionStatementView::AssignmentGroup { definitions, .. } = &statements[0] else {
+            unreachable!("the first statement is the checked call-result group")
+        };
+        let owners = definitions
+            .clone()
+            .rhs_iter()
+            .map(
+                |result| match view.expression(result).unwrap().operation() {
+                    dae::ExpressionOperation::Call { owner, .. } => owner,
+                    _ => panic!("each receiver reads one projection of the source call"),
+                },
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 2);
+        assert_eq!(owners[0], owners[1]);
     });
 }
 

@@ -137,8 +137,9 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing_and_param_overrides(
 
     begin_stage("ir_solve");
     let solve_start = rumoca_core::maybe_start_timer();
-    let problem = rumoca_phase_solve::lower_solve_problem(model)
+    let package = rumoca_phase_solve::lower_solve_package(model)
         .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let problem = package.problem;
     let artifacts = rumoca_phase_solve::lower_solve_artifacts(&problem)
         .map_err(SimulationDiagnosticError::SolveLowering)?;
     timings.ir_solve_lower_seconds = rumoca_core::maybe_elapsed_seconds(solve_start);
@@ -150,18 +151,20 @@ pub(crate) fn lower_dae_for_simulation_with_stage_timing_and_param_overrides(
     timings.ir_solve_seconds =
         timings.ir_solve_lower_seconds + timings.ir_solve_structural_dae_seconds;
 
-    Ok((
-        solve::SolveModel {
-            problem,
-            artifacts,
-            initial_y: vectors.initial_y,
-            solver_nominals: vectors.solver_nominals,
-            parameters: vectors.parameters,
-            external_tables: solve::ExternalTables::default(),
-            visible_names: vectors.visible_names,
-            visible_value_rows: vectors.visible_value_rows,
-            variable_meta: vectors.variable_meta,
-        },
-        timings,
-    ))
+    let solve_model = solve::SolveModel {
+        problem,
+        pure_calls: package.pure_calls,
+        artifacts,
+        initial_y: vectors.initial_y,
+        solver_nominals: vectors.solver_nominals,
+        parameters: vectors.parameters,
+        external_tables: solve::ExternalTables::default(),
+        visible_names: vectors.visible_names,
+        visible_value_rows: vectors.visible_value_rows,
+        variable_meta: vectors.variable_meta,
+    };
+    solve_model.validate().map_err(|error| {
+        SimulationDiagnosticError::SolveLowering(rumoca_phase_solve::LowerError::from(error))
+    })?;
+    Ok((solve_model, timings))
 }

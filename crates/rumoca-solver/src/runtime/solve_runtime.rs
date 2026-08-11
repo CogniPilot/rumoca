@@ -5,7 +5,8 @@ use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    rc::Rc,
 };
 
 use crate::runtime::delay::{DelayRuntime, DelayRuntimeSnapshot};
@@ -13,7 +14,7 @@ use crate::runtime::pre_params::{
     advance_event_iteration_pre_params, event_iteration_plan_settled, seed_event_entry_pre_params,
 };
 use crate::runtime::solve_events::{
-    apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
+    apply_discrete_slot_values, current_dynamic_time_event_stop, event_action_params,
     next_runtime_event_stop, visible_values_with_context,
 };
 use crate::runtime::solve_ops::write_clock_activation_params;
@@ -26,16 +27,19 @@ use crate::{
 };
 use rumoca_eval_solve::refresh_plan::{
     AlgebraicRefreshRow, RefreshPlan, RefreshStage, build_algebraic_refresh_plan,
-    build_derivative_refresh_plan, build_root_refresh_plan, trace_refresh_plan,
+    build_derivative_refresh_plan, build_root_refresh_plan,
+    build_scalar_dependency_refresh_plan_with_outputs_and_programs, merge_dependency_refresh_plans,
+    trace_refresh_plan,
 };
 use rumoca_eval_solve::{
-    EvalSolveError, PreparedComputeBlock, PreparedScalarProgramBlock, RowEvalContext,
-    to_scalar_program_block,
+    EvalSolveError, PreparedComputeBlock, PreparedGuardedAssignmentProgram,
+    PreparedScalarProgramBlock, RowEvalContext, to_scalar_program_block,
 };
 
 mod coupled_event;
 mod discrete_rows;
 mod event_update;
+mod guarded_assignments;
 mod initial_continuation;
 mod initial_event;
 mod initial_projection;
@@ -69,6 +73,91 @@ use support::{
     copy_runtime_values, copy_runtime_values_into, reserve_runtime_index_map_capacity,
     reserve_runtime_vec_capacity, resize_runtime_values, zero_runtime_values,
 };
+
+/// Backend-neutral callable produced from one checked Solve-IR expression
+/// block. Native execution adapters implement this contract; the runtime
+/// retains the prepared evaluator as the correctness fallback.
+pub trait CompiledSolveExpression {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String>;
+}
+
+/// Backend-neutral callable for a checked forward-mode Solve-IR expression.
+pub trait CompiledSolveJacobianExpression {
+    fn call(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        seed: &[f64],
+        external_tables: &[rumoca_core::ExternalTableData],
+        out: &mut [f64],
+    ) -> Result<(), String>;
+}
+
+/// Backend-neutral callable for a causally ordered set of exact assignments.
+/// Program outputs write directly to the flattened solver-Y target list, so
+/// subsequent programs observe earlier assignments while multiple outputs of
+/// one source program commit together.
+pub trait CompiledSolveAssignmentSchedule {
+    fn call(
+        &self,
+        y: &mut [f64],
+        p: &[f64],
+        t: f64,
+        external_tables: &[rumoca_core::ExternalTableData],
+    ) -> Result<(), String>;
+}
+
+/// Optional execution adapter injected by a concrete simulation backend.
+pub trait SolveExecutionBackend {
+    fn compile_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveExpression>, String>;
+
+    fn compile_jacobian_expression(
+        &self,
+        block: &solve::ScalarProgramBlock,
+    ) -> Result<Rc<dyn CompiledSolveJacobianExpression>, String>;
+
+    fn compile_assignment_schedule(
+        &self,
+        programs: &[Vec<solve::LinearOp>],
+        target_y_indices: &[usize],
+    ) -> Result<Rc<dyn CompiledSolveAssignmentSchedule>, String>;
+}
+
+#[derive(Clone)]
+struct CompiledDiscreteSpecialization {
+    expression: Rc<dyn CompiledSolveExpression>,
+    output_count: usize,
+    guard_expectations: Box<[bool]>,
+}
+
+#[derive(Clone, Default)]
+struct ClockActivationCache {
+    time_bits: Option<u64>,
+    active: Vec<bool>,
+}
+
+fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Option<T> {
+    match result {
+        Ok(compiled) => Some(compiled),
+        Err(error) => {
+            if std::env::var_os("RUMOCA_PROFILE_COMPILED").is_some() {
+                eprintln!("rumoca-compiled-profile label={label} error={error}");
+            }
+            None
+        }
+    }
+}
 
 impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
     fn from(value: solve_eval::EvalSolveError) -> Self {
@@ -104,11 +193,13 @@ fn validate_discrete_event_rows(model: &solve::SolveModel) -> Result<(), Runtime
     let roles = model.problem.discrete.row_roles.len();
     let pre_modes = model.problem.discrete.pre_modes.len();
     let observation = model.problem.discrete.observation_refresh.len();
+    let history_effects = model.problem.discrete.integrator_history_effects.len();
     let clock_owners = model.problem.discrete.clock_owners.len();
     if rows == targets
         && rows == roles
         && rows == pre_modes
         && rows == observation
+        && rows == history_effects
         && rows == clock_owners
     {
         return Ok(());
@@ -116,7 +207,7 @@ fn validate_discrete_event_rows(model: &solve::SolveModel) -> Result<(), Runtime
     Err(RuntimeSolveError::solve_ir(format!(
         "discrete row columns differ: rhs={rows}, targets={targets}, roles={roles}, \
          pre_modes={pre_modes}, observation_refresh={observation}, \
-         clock_owners={clock_owners}"
+         integrator_history_effects={history_effects}, clock_owners={clock_owners}"
     )))
 }
 
@@ -134,7 +225,12 @@ pub struct SolveRuntime {
     initial_residual: PreparedComputeBlock,
     initial_residual_jacobian_v: PreparedComputeBlock,
     initial_scalar_residual: PreparedScalarProgramBlock,
+    compiled_implicit_rhs: Option<Rc<dyn CompiledSolveExpression>>,
+    compiled_implicit_projection_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
+    compiled_initial_residual: Option<Rc<dyn CompiledSolveExpression>>,
+    compiled_initial_residual_jacobian_v: Option<Rc<dyn CompiledSolveJacobianExpression>>,
     derivative_rhs: PreparedComputeBlock,
+    compiled_derivative_rhs: Option<Rc<dyn CompiledSolveExpression>>,
     /// Forward-mode AD Jacobian-vector product of `derivative_rhs`
     /// (`d(der)/d(y)·v`), lowered to `LinearOp`s with `LoadSeed`. Applied — with a
     /// seed completed by `seed_refresh_derivative_dependencies` — to form
@@ -154,22 +250,34 @@ pub struct SolveRuntime {
     algebraic_refresh: RefreshPlan,
     derivative_refresh: RefreshPlan,
     root_refresh: RefreshPlan,
+    event_refresh: RefreshPlan,
+    clock_event_refresh: Vec<RefreshPlan>,
+    combined_event_refresh: RefCell<HashMap<u64, Rc<RefreshPlan>>>,
     root_refresh_after_derivative: Option<RefreshPlan>,
     /// Certified coverage for the initialization homotopy continuation; the
     /// single source of truth shared by the sweep driver and the acceptance
     /// check in [`InitialContinuationCoverage::certify`].
     initial_continuation: Option<InitialContinuationCoverage>,
     root_condition_rows: PreparedScalarProgramBlock,
+    compiled_root_conditions: Option<Rc<dyn CompiledSolveExpression>>,
+    event_action_conditions: PreparedScalarProgramBlock,
+    event_action_active_row_indices: RefCell<Vec<usize>>,
     root_condition_plan: Option<RootConditionPlan>,
     discrete_rhs: PreparedScalarProgramBlock,
+    guarded_assignment_programs: Vec<PreparedGuardedAssignmentProgram>,
+    runtime_assignment_rhs: PreparedScalarProgramBlock,
+    post_commit_assignment_rhs: PreparedScalarProgramBlock,
+    update_values_scratch: RefCell<Vec<f64>>,
     structured_discrete_rows: PreparedStructuredDiscreteRows,
     visible_name_index: HashMap<String, usize>,
     visible_value_rows: PreparedScalarProgramBlock,
     visible_value_plan: Option<VisibleValuePlan>,
     visible_scratch: RefCell<Vec<f64>>,
+    refresh_snapshot_scratch: RefCell<Vec<f64>>,
     refresh_probe_scratch: RefCell<Vec<f64>>,
     refresh_tensor_scratch: RefCell<Vec<f64>>,
     static_refresh_cache: RefCell<StaticRefreshCache>,
+    static_refresh_parameter_indices: Box<[usize]>,
     parameter_static_gradient_cache: RefCell<ParameterStaticGradientCache>,
     runtime_state: solve_eval::SimulationRuntimeState,
     delay_runtime: DelayRuntime,
@@ -179,6 +287,24 @@ pub struct SolveRuntime {
     /// Reusable register tape / adjoint buffers for the reverse-mode VJP sweep,
     /// kept across calls so a hot reverse loop stays allocation-free.
     reverse_scratch: RefCell<solve_eval::reverse::ReverseScratch>,
+    execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
+    compiled_discrete_rows: RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+    failed_discrete_rows: RefCell<BTreeSet<usize>>,
+    compiled_guarded_assignments: RefCell<HashMap<usize, Rc<dyn CompiledSolveExpression>>>,
+    failed_guarded_assignments: RefCell<BTreeSet<usize>>,
+    compiled_root_rows: RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+    failed_root_rows: RefCell<BTreeSet<usize>>,
+    compiled_visible_rows: RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+    failed_visible_rows: RefCell<BTreeSet<usize>>,
+    compiled_event_action_rows: RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+    failed_event_action_rows: RefCell<BTreeSet<usize>>,
+    compiled_refresh_specializations:
+        RefCell<HashMap<(usize, usize), Vec<CompiledDiscreteSpecialization>>>,
+    mixed_refresh_segments: RefCell<HashMap<(usize, usize), Option<Rc<[(usize, usize, bool)]>>>>,
+    compiled_assignment_schedules:
+        RefCell<HashMap<(usize, usize), Option<Rc<dyn CompiledSolveAssignmentSchedule>>>>,
+    compiled_output_scratch: RefCell<Vec<f64>>,
+    clock_activation_cache: RefCell<ClockActivationCache>,
 }
 
 /// Opaque mutable state shared by the evaluators behind one ME component.
@@ -189,8 +315,44 @@ pub(crate) struct SolveRuntimeSnapshot {
     delay: DelayRuntimeSnapshot,
 }
 
+fn static_refresh_parameter_indices<'a>(
+    implicit: &PreparedScalarProgramBlock,
+    plans: impl IntoIterator<Item = &'a RefreshPlan>,
+) -> Box<[usize]> {
+    let mut row_indices = BTreeSet::new();
+    for plan in plans {
+        row_indices.extend(plan.static_causal_seed_rows.iter().map(|row| row.row_idx));
+        for stage in &plan.value_stages {
+            match stage {
+                RefreshStage::CausalSeedSweep { static_rows, .. }
+                | RefreshStage::ExactAssignments { static_rows, .. } => {
+                    row_indices.extend(static_rows.iter().map(|row| row.row_idx));
+                }
+                RefreshStage::ProjectionBlock { .. } => {}
+            }
+        }
+    }
+    let mut parameters = BTreeSet::new();
+    for row in row_indices {
+        if let Some(indices) = implicit.row_parameter_indices(row) {
+            parameters.extend(indices.iter().copied());
+        }
+    }
+    parameters
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
 impl SolveRuntime {
     pub fn new(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
+        Self::new_with_execution_backend(model, None)
+    }
+
+    pub fn new_with_execution_backend(
+        model: &solve::SolveModel,
+        execution_backend: Option<Rc<dyn SolveExecutionBackend>>,
+    ) -> Result<Self, EvalSolveError> {
         let continuous_structural = model.artifacts.continuous.structural.clone();
         let initialization_structural = model.artifacts.initialization.structural.clone();
         let algebraic_newton_caches = (0..continuous_structural.algebraic_projection().len())
@@ -198,23 +360,95 @@ impl SolveRuntime {
             .collect();
         let implicit_scalar_programs =
             to_scalar_program_block(&model.problem.continuous.implicit_rhs)?;
+        let compiled_implicit_rhs = execution_backend.as_ref().and_then(|backend| {
+            optional_compiled(
+                "implicit_rhs",
+                backend.compile_expression(&implicit_scalar_programs),
+            )
+        });
+        let implicit_projection_scalar_jacobian =
+            to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)?;
+        let compiled_implicit_projection_jacobian_v =
+            execution_backend.as_ref().and_then(|backend| {
+                optional_compiled(
+                    "implicit_projection_jacobian_v",
+                    backend.compile_jacobian_expression(&implicit_projection_scalar_jacobian),
+                )
+            });
         let implicit_scalar_rhs = PreparedScalarProgramBlock::new(implicit_scalar_programs)?;
         let (manifold_residual, manifold_jacobian_v) = prepare_manifold_projection_programs(model)?;
         let derivative_scalar_rhs =
             to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
-        let (algebraic_refresh, derivative_refresh, root_refresh) =
-            build_runtime_refresh_plans(model, &implicit_scalar_rhs, &derivative_scalar_rhs)?;
+        // Scalarization is an evaluator-boundary view of the compact
+        // structured map.  Build it once and share it between dependency
+        // planning and the prepared runtime adapter.
+        let structured_discrete_scalar_rhs =
+            to_scalar_program_block(&model.problem.discrete.structured_rhs)?;
+        let guarded_assignment_programs = model
+            .problem
+            .discrete
+            .guarded_assignments
+            .iter()
+            .map(PreparedGuardedAssignmentProgram::new)
+            .collect::<Result<Vec<_>, _>>()?;
+        let compiled_derivative_rhs = execution_backend.as_ref().and_then(|backend| {
+            optional_compiled(
+                "derivative_rhs",
+                backend.compile_expression(&derivative_scalar_rhs),
+            )
+        });
+        let (
+            algebraic_refresh,
+            derivative_refresh,
+            root_refresh,
+            event_refresh,
+            clock_event_refresh,
+        ) = build_runtime_refresh_plans(
+            model,
+            &implicit_scalar_rhs,
+            &derivative_scalar_rhs,
+            &structured_discrete_scalar_rhs,
+        )?;
+        let mut refresh_plans = vec![
+            &algebraic_refresh,
+            &derivative_refresh,
+            &root_refresh,
+            &event_refresh,
+        ];
+        refresh_plans.extend(clock_event_refresh.iter());
+        let static_refresh_parameter_indices =
+            static_refresh_parameter_indices(&implicit_scalar_rhs, refresh_plans);
         let root_refresh_after_derivative =
             root_refresh.certified_value_remainder_after(&derivative_refresh);
         trace_reverse_projection_coverage(model, &implicit_scalar_rhs);
         let visible_value_plan = visible_value_plan(model);
         let root_condition_plan = root_condition_plan(model, &root_refresh);
+        let compiled_root_conditions = execution_backend.as_ref().and_then(|backend| {
+            optional_compiled(
+                "root_conditions",
+                backend.compile_expression(&model.problem.events.root_conditions),
+            )
+        });
         let (initial_scalar_residual, initial_continuation) =
             InitialContinuationCoverage::certify_runtime_blocks(
                 model,
                 &implicit_scalar_rhs,
                 &algebraic_refresh,
             )?;
+        let compiled_initial_residual = execution_backend.as_ref().and_then(|backend| {
+            optional_compiled(
+                "initial_residual",
+                backend.compile_expression(&initial_scalar_residual),
+            )
+        });
+        let initial_scalar_jacobian =
+            to_scalar_program_block(&model.artifacts.initialization.residual_jacobian_v)?;
+        let compiled_initial_residual_jacobian_v = execution_backend.as_ref().and_then(|backend| {
+            optional_compiled(
+                "initial_residual_jacobian_v",
+                backend.compile_jacobian_expression(&initial_scalar_jacobian),
+            )
+        });
         let delay_runtime = DelayRuntime::new(&model.problem.events.delays)?;
         let root_condition_count =
             total_root_condition_count(model, delay_runtime.event_root_count())?;
@@ -231,7 +465,7 @@ impl SolveRuntime {
                 "runtime_implicit_projection_jacobian_v",
             )?,
             implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock::new(
-                to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)?,
+                implicit_projection_scalar_jacobian,
             )?,
             implicit_scalar_rhs,
             manifold_residual,
@@ -245,10 +479,15 @@ impl SolveRuntime {
                 "runtime_initial_residual_jacobian_v",
             )?,
             initial_scalar_residual: PreparedScalarProgramBlock::new(initial_scalar_residual)?,
+            compiled_implicit_rhs,
+            compiled_implicit_projection_jacobian_v,
+            compiled_initial_residual,
+            compiled_initial_residual_jacobian_v,
             derivative_rhs: PreparedComputeBlock::new_with_label(
                 &model.problem.continuous.derivative_rhs,
                 "runtime_derivative_rhs",
             )?,
+            compiled_derivative_rhs,
             derivative_jacobian_v: PreparedScalarProgramBlock::new(
                 model.artifacts.continuous.full_jacobian_v.clone(),
             )?,
@@ -266,21 +505,45 @@ impl SolveRuntime {
             algebraic_refresh,
             derivative_refresh,
             root_refresh,
+            combined_event_refresh: RefCell::new(HashMap::from([(
+                0,
+                Rc::new(event_refresh.clone()),
+            )])),
+            event_refresh,
+            clock_event_refresh,
             root_refresh_after_derivative,
             initial_continuation,
             root_condition_rows: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
             )?,
+            compiled_root_conditions,
+            event_action_conditions: PreparedScalarProgramBlock::new(
+                model.problem.events.action_conditions.clone(),
+            )?,
+            event_action_active_row_indices: RefCell::new(Vec::new()),
             root_condition_plan,
             discrete_rhs: PreparedScalarProgramBlock::new(model.problem.discrete.rhs.clone())?,
-            structured_discrete_rows: PreparedStructuredDiscreteRows::new(model)?,
+            guarded_assignment_programs,
+            runtime_assignment_rhs: PreparedScalarProgramBlock::new(
+                model.problem.discrete.runtime_assignment_rhs.clone(),
+            )?,
+            post_commit_assignment_rhs: PreparedScalarProgramBlock::new(
+                model.problem.discrete.post_commit_assignment_rhs.clone(),
+            )?,
+            update_values_scratch: RefCell::new(Vec::new()),
+            structured_discrete_rows: PreparedStructuredDiscreteRows::new(
+                model,
+                structured_discrete_scalar_rhs,
+            )?,
             visible_name_index: build_visible_name_index(model),
             visible_value_rows: PreparedScalarProgramBlock::new(model.visible_value_rows.clone())?,
             visible_value_plan,
             visible_scratch: RefCell::new(Vec::new()),
+            refresh_snapshot_scratch: RefCell::new(Vec::new()),
             refresh_probe_scratch: RefCell::new(Vec::new()),
             refresh_tensor_scratch: RefCell::new(Vec::new()),
             static_refresh_cache: RefCell::new(StaticRefreshCache::default()),
+            static_refresh_parameter_indices,
             parameter_static_gradient_cache: RefCell::new(ParameterStaticGradientCache::default()),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
             delay_runtime,
@@ -288,12 +551,604 @@ impl SolveRuntime {
             derivative_scratch: RefCell::new(StateDerivativeScratch::default()),
             root_scratch: RefCell::new(Vec::new()),
             reverse_scratch: RefCell::new(solve_eval::reverse::ReverseScratch::default()),
+            execution_backend,
+            compiled_discrete_rows: RefCell::new(HashMap::new()),
+            failed_discrete_rows: RefCell::new(BTreeSet::new()),
+            compiled_guarded_assignments: RefCell::new(HashMap::new()),
+            failed_guarded_assignments: RefCell::new(BTreeSet::new()),
+            compiled_root_rows: RefCell::new(HashMap::new()),
+            failed_root_rows: RefCell::new(BTreeSet::new()),
+            compiled_visible_rows: RefCell::new(HashMap::new()),
+            failed_visible_rows: RefCell::new(BTreeSet::new()),
+            compiled_event_action_rows: RefCell::new(HashMap::new()),
+            failed_event_action_rows: RefCell::new(BTreeSet::new()),
+            compiled_refresh_specializations: RefCell::new(HashMap::new()),
+            mixed_refresh_segments: RefCell::new(HashMap::new()),
+            compiled_assignment_schedules: RefCell::new(HashMap::new()),
+            compiled_output_scratch: RefCell::new(Vec::new()),
+            clock_activation_cache: RefCell::new(ClockActivationCache::default()),
         })
+    }
+
+    /// Classify each periodic clock once per exact event instant.
+    ///
+    /// A grouped discrete program can have hundreds of scalar outputs sharing
+    /// one clock. Repeating exact-lattice conversion and division for every
+    /// output was measurable in the event hot path even though the answer is
+    /// owned by the clock, not by the row.
+    pub(super) fn discrete_row_active_at(
+        &self,
+        row_idx: usize,
+        t: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        let owner = self
+            .model
+            .problem
+            .discrete
+            .clock_owners
+            .get(row_idx)
+            .copied()
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "discrete clock-owner row index {row_idx} is out of bounds"
+                ))
+            })?;
+        let Some(owner) = owner else {
+            return Ok(true);
+        };
+        self.periodic_clock_active(owner, t, "discrete row")
+    }
+
+    fn periodic_clock_active(
+        &self,
+        owner: solve::PeriodicClockId,
+        t: f64,
+        context: &str,
+    ) -> Result<bool, RuntimeSolveError> {
+        let schedules = &self.model.problem.clocks.periodic_event_schedules;
+        if owner.index() >= schedules.len() {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "{context} refers to periodic clock {} outside the clock partition",
+                owner.index()
+            )));
+        }
+        let mut cache = self.clock_activation_cache.borrow_mut();
+        if cache.time_bits != Some(t.to_bits()) {
+            cache.active.clear();
+            cache.active.extend(
+                schedules
+                    .iter()
+                    .map(|schedule| crate::timeline::periodic_schedule_matches_time(schedule, t)),
+            );
+            cache.time_bits = Some(t.to_bits());
+        }
+        Ok(cache.active[owner.index()])
+    }
+
+    fn eval_discrete_program_outputs(
+        &self,
+        program: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut Vec<f64>,
+    ) -> Result<(), RuntimeSolveError> {
+        let mut compiled_rows = self.compiled_discrete_rows.borrow_mut();
+        let had_compiled = compiled_rows.contains_key(&program);
+        if let Some(compiled_variants) = compiled_rows.get_mut(&program) {
+            for variant_index in (0..compiled_variants.len()).rev() {
+                let compiled = &compiled_variants[variant_index];
+                let total_outputs = compiled
+                    .output_count
+                    .checked_add(compiled.guard_expectations.len())
+                    .ok_or_else(|| RuntimeSolveError::solve_ir("compiled output count overflow"))?;
+                let mut scratch = self.compiled_output_scratch.borrow_mut();
+                scratch.resize(total_outputs, 0.0);
+                if compiled
+                    .expression
+                    .call(y, p, t, self.model.external_tables.as_slice(), &mut scratch)
+                    .is_ok()
+                    && scratch[compiled.output_count..]
+                        .iter()
+                        .zip(&compiled.guard_expectations)
+                        .all(|(actual, expected)| (*actual != 0.0) == *expected)
+                {
+                    out.clear();
+                    out.extend_from_slice(&scratch[..compiled.output_count]);
+                    drop(scratch);
+                    if variant_index + 1 != compiled_variants.len() {
+                        let compiled = compiled_variants.remove(variant_index);
+                        compiled_variants.push(compiled);
+                    }
+                    self.report_nonfinite_discrete_program_outputs(program, t, out);
+                    return Ok(());
+                }
+            }
+            tracing::debug!(
+                target: "rumoca_solver::native_execution",
+                program,
+                "discarding invalid discrete specialization"
+            );
+        }
+        drop(compiled_rows);
+
+        if !had_compiled && !self.discrete_rhs.has_lazy_row_plan(program) {
+            self.failed_discrete_rows.borrow_mut().remove(&program);
+            self.compile_discrete_specialization(program);
+            if self.compiled_discrete_rows.borrow().contains_key(&program) {
+                return self.eval_discrete_program_outputs(program, y, p, t, out);
+            }
+        }
+
+        self.discrete_rhs.eval_row_outputs_unchecked_with_context(
+            program,
+            y,
+            p,
+            t,
+            self.row_eval_context(),
+            out,
+        )?;
+        self.report_nonfinite_discrete_program_outputs(program, t, out);
+        self.compile_discrete_specialization(program);
+        Ok(())
+    }
+
+    fn report_nonfinite_discrete_program_outputs(&self, program: usize, t: f64, values: &[f64]) {
+        if !solve_eval::nan_trace::nan_trace_enabled() {
+            return;
+        }
+        for (offset, value) in values.iter().copied().enumerate() {
+            if value.is_finite() {
+                continue;
+            }
+            let row = (0..self.model.problem.discrete.update_targets.len())
+                .find(|&row| self.discrete_rhs.row_output_position(row) == Some((program, offset)));
+            let target =
+                row.and_then(|row| self.model.problem.discrete.update_targets.get(row).copied());
+            let name = target.and_then(|target| {
+                self.model
+                    .problem
+                    .layout
+                    .bindings()
+                    .iter()
+                    .rev()
+                    .find_map(|(name, slot)| (*slot == target).then(|| name.to_string()))
+            });
+            eprintln!(
+                "[nan-trace] discrete program {program} output {offset} (row {}, target {}, slot {target:?}) @ t={t} = {}",
+                row.map_or_else(|| "?".to_string(), |row| row.to_string()),
+                name.as_deref().unwrap_or("<unnamed>"),
+                if value.is_nan() { "NaN" } else { "inf" },
+            );
+        }
+    }
+
+    fn report_nonfinite_implicit_residual_inputs(&self, t: f64, y: &[f64], residual: &[f64]) {
+        if !solve_eval::nan_trace::nan_trace_enabled() {
+            return;
+        }
+        for (row, value) in residual.iter().copied().enumerate() {
+            self.report_nonfinite_implicit_residual_row_inputs(t, y, row, value);
+        }
+    }
+
+    fn report_nonfinite_implicit_residual_row_inputs(
+        &self,
+        t: f64,
+        y: &[f64],
+        row: usize,
+        value: f64,
+    ) {
+        if value.is_finite() || !solve_eval::nan_trace::nan_trace_enabled() {
+            return;
+        }
+        let Some((program, _)) = self.implicit_scalar_rhs.row_output_position(row) else {
+            return;
+        };
+        let Some(ops) = self.implicit_scalar_rhs.block().programs().get(program) else {
+            return;
+        };
+        let mut inputs = BTreeSet::new();
+        for op in ops {
+            match op {
+                solve::LinearOp::LoadY { index, .. } => {
+                    inputs.insert(*index);
+                }
+                solve::LinearOp::TensorLoad {
+                    input: solve::TensorInputKind::Y,
+                    input_start,
+                    count,
+                    ..
+                } => {
+                    inputs.extend(*input_start..input_start.saturating_add(*count));
+                }
+                _ => {}
+            }
+        }
+        eprintln!(
+            "[nan-trace] implicit residual row {row} ({}) @ t={t} = {}",
+            self.solver_name(row),
+            if value.is_nan() { "NaN" } else { "inf" },
+        );
+        for index in inputs {
+            eprintln!(
+                "[nan-trace]   input y[{index}] ({}) = {}",
+                self.solver_name(index),
+                y.get(index)
+                    .map_or_else(|| "<missing>".to_string(), ToString::to_string),
+            );
+        }
+    }
+
+    fn compile_discrete_specialization(&self, program: usize) {
+        let Some(backend) = &self.execution_backend else {
+            return;
+        };
+        if self.failed_discrete_rows.borrow().contains(&program) {
+            return;
+        }
+        let (program_ops, output_count, guard_expectations) =
+            if let Some(specialization) = self.discrete_rhs.specialized_row_program(program) {
+                (
+                    specialization.program,
+                    specialization.output_count,
+                    specialization.guard_expectations,
+                )
+            } else {
+                let Some(program_ops) = self.discrete_rhs.block().programs().get(program).cloned()
+                else {
+                    return;
+                };
+                let Some(output_count) = self.discrete_rhs.row_output_count(program) else {
+                    return;
+                };
+                (program_ops, output_count, Vec::new().into_boxed_slice())
+            };
+        let Some(total_outputs) = output_count.checked_add(guard_expectations.len()) else {
+            return;
+        };
+        let Some(span) = self.discrete_rhs.block().program_span(program) else {
+            return;
+        };
+        let block = match solve::ScalarProgramBlock::with_output_indices(
+            vec![program_ops],
+            vec![span],
+            (0..total_outputs).collect(),
+        ) {
+            Ok(block) => block,
+            Err(error) => {
+                trace_native_execution_failure(program, &error.to_string());
+                self.failed_discrete_rows.borrow_mut().insert(program);
+                return;
+            }
+        };
+        let expression = match backend.compile_expression(&block) {
+            Ok(expression) => expression,
+            Err(error) => {
+                trace_native_execution_failure(program, &error);
+                self.failed_discrete_rows.borrow_mut().insert(program);
+                return;
+            }
+        };
+        tracing::debug!(
+            target: "rumoca_solver::native_execution",
+            program,
+            ops = block.programs()[0].len(),
+            outputs = output_count,
+            guards = guard_expectations.len(),
+            "compiled discrete specialization"
+        );
+        self.compiled_discrete_rows
+            .borrow_mut()
+            .entry(program)
+            .or_default()
+            .push(CompiledDiscreteSpecialization {
+                expression,
+                output_count,
+                guard_expectations,
+            });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_single_output_rows_with_native(
+        &self,
+        block: &PreparedScalarProgramBlock,
+        cache: &RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+        failed: &RefCell<BTreeSet<usize>>,
+        row_indices: &[usize],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        for &row in row_indices {
+            if self.try_compiled_single_output(cache, row, y, p, t, out)? {
+                continue;
+            }
+            // Retained tensor/fold programs can be dramatically more expensive
+            // in the reference interpreter than in the native loop backend.
+            // Try the complete checked program before paying for a profiling /
+            // specialization pass. If that eager form is unsupported, clear
+            // only this provisional failure so the interpreter can learn a
+            // guarded specialization and compile it below.
+            failed.borrow_mut().remove(&row);
+            self.compile_cached_row(block, cache, failed, row);
+            if self.try_compiled_single_output(cache, row, y, p, t, out)? {
+                continue;
+            }
+            let value =
+                block.eval_row_unchecked_with_context(row, y, p, t, self.row_eval_context())?;
+            let out_len = out.len();
+            let slot = out.get_mut(row).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "selected expression row {row} is outside output length {out_len}"
+                ))
+            })?;
+            *slot = value;
+            self.compile_cached_row(block, cache, failed, row);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_selected_outputs_with_native(
+        &self,
+        block: &PreparedScalarProgramBlock,
+        cache: &RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+        failed: &RefCell<BTreeSet<usize>>,
+        output_indices: &[usize],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let mut programs = BTreeMap::<usize, Vec<(usize, usize)>>::new();
+        for &output in output_indices {
+            let (program, offset) = block.row_output_position(output).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "selected expression output {output} has no owning program"
+                ))
+            })?;
+            programs.entry(program).or_default().push((output, offset));
+        }
+        for (program, selected) in programs {
+            if self.try_compiled_program_outputs(cache, program, &selected, y, p, t, out)? {
+                continue;
+            }
+            failed.borrow_mut().remove(&program);
+            self.compile_cached_row(block, cache, failed, program);
+            if self.try_compiled_program_outputs(cache, program, &selected, y, p, t, out)? {
+                continue;
+            }
+            let mut values = Vec::new();
+            block.eval_row_outputs_unchecked_with_context(
+                program,
+                y,
+                p,
+                t,
+                self.row_eval_context(),
+                &mut values,
+            )?;
+            for &(output, offset) in &selected {
+                let value = values.get(offset).copied().ok_or_else(|| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "selected expression output {output} offset {offset} is outside program {program}"
+                    ))
+                })?;
+                let out_len = out.len();
+                *out.get_mut(output).ok_or_else(|| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "selected expression output {output} is outside output length {out_len}"
+                    ))
+                })? = value;
+            }
+            self.compile_cached_row(block, cache, failed, program);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_compiled_program_outputs(
+        &self,
+        cache: &RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+        program: usize,
+        selected: &[(usize, usize)],
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let mut cache = cache.borrow_mut();
+        let Some(compiled_variants) = cache.get_mut(&program) else {
+            return Ok(false);
+        };
+        for variant_index in (0..compiled_variants.len()).rev() {
+            let compiled = &compiled_variants[variant_index];
+            let total_outputs = compiled
+                .output_count
+                .checked_add(compiled.guard_expectations.len())
+                .ok_or_else(|| RuntimeSolveError::solve_ir("compiled output count overflow"))?;
+            let mut scratch = self.compiled_output_scratch.borrow_mut();
+            scratch.resize(total_outputs, 0.0);
+            let called = compiled.expression.call(
+                y,
+                p,
+                t,
+                self.model.external_tables.as_slice(),
+                &mut scratch,
+            );
+            if let Err(error) = &called
+                && std::env::var_os("RUMOCA_PROFILE_NATIVE").is_some()
+            {
+                eprintln!("[native-profile] program={program} call failed: {error}");
+            }
+            let valid = called.is_ok()
+                && scratch[compiled.output_count..]
+                    .iter()
+                    .zip(&compiled.guard_expectations)
+                    .all(|(actual, expected)| (*actual != 0.0) == *expected);
+            if !valid {
+                continue;
+            }
+            for &(output, offset) in selected {
+                let value = scratch.get(offset).copied().ok_or_else(|| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "compiled expression output {offset} is outside program {program}"
+                    ))
+                })?;
+                let out_len = out.len();
+                *out.get_mut(output).ok_or_else(|| {
+                    RuntimeSolveError::solve_ir(format!(
+                        "selected expression output {output} is outside output length {out_len}"
+                    ))
+                })? = value;
+            }
+            drop(scratch);
+            if variant_index + 1 != compiled_variants.len() {
+                let compiled = compiled_variants.remove(variant_index);
+                compiled_variants.push(compiled);
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_compiled_single_output(
+        &self,
+        cache: &RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+        row: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let mut cache = cache.borrow_mut();
+        let Some(compiled_variants) = cache.get_mut(&row) else {
+            return Ok(false);
+        };
+        for variant_index in (0..compiled_variants.len()).rev() {
+            let compiled = &compiled_variants[variant_index];
+            let total_outputs = compiled
+                .output_count
+                .checked_add(compiled.guard_expectations.len())
+                .ok_or_else(|| RuntimeSolveError::solve_ir("compiled output count overflow"))?;
+            let mut scratch = self.compiled_output_scratch.borrow_mut();
+            scratch.resize(total_outputs, 0.0);
+            let valid = compiled
+                .expression
+                .call(y, p, t, self.model.external_tables.as_slice(), &mut scratch)
+                .is_ok()
+                && scratch[compiled.output_count..]
+                    .iter()
+                    .zip(&compiled.guard_expectations)
+                    .all(|(actual, expected)| (*actual != 0.0) == *expected);
+            if !valid {
+                continue;
+            }
+            let out_len = out.len();
+            let slot = out.get_mut(row).ok_or_else(|| {
+                RuntimeSolveError::solve_ir(format!(
+                    "selected expression row {row} is outside output length {out_len}"
+                ))
+            })?;
+            *slot = scratch[0];
+            drop(scratch);
+            if variant_index + 1 != compiled_variants.len() {
+                let compiled = compiled_variants.remove(variant_index);
+                compiled_variants.push(compiled);
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn compile_cached_row(
+        &self,
+        prepared: &PreparedScalarProgramBlock,
+        cache: &RefCell<HashMap<usize, Vec<CompiledDiscreteSpecialization>>>,
+        failed: &RefCell<BTreeSet<usize>>,
+        row: usize,
+    ) {
+        let Some(backend) = &self.execution_backend else {
+            return;
+        };
+        if failed.borrow().contains(&row) {
+            return;
+        }
+        let Some((program, output_count, guard_expectations)) = cached_row_program(prepared, row)
+        else {
+            failed.borrow_mut().insert(row);
+            return;
+        };
+        let Some(total_outputs) = output_count.checked_add(guard_expectations.len()) else {
+            failed.borrow_mut().insert(row);
+            return;
+        };
+        let Some(span) = prepared.block().program_span(row) else {
+            failed.borrow_mut().insert(row);
+            return;
+        };
+        if std::env::var_os("RUMOCA_PROFILE_RESIDUAL_KERNELS").is_some() {
+            let owner = if std::ptr::eq(prepared, &self.discrete_rhs) {
+                "discrete_rhs"
+            } else if std::ptr::eq(prepared, &self.root_condition_rows) {
+                "root_conditions"
+            } else if std::ptr::eq(prepared, &self.visible_value_rows) {
+                "visible_values"
+            } else if std::ptr::eq(prepared, &self.event_action_conditions) {
+                "event_action_conditions"
+            } else if std::ptr::eq(prepared, &self.runtime_assignment_rhs) {
+                "runtime_assignments"
+            } else if std::ptr::eq(prepared, &self.post_commit_assignment_rhs) {
+                "post_commit_assignments"
+            } else {
+                "other"
+            };
+            eprintln!(
+                "rumoca-native-specialization owner={owner} row={row} source={} start={} end={} direct_ops={} outputs={output_count} guards={}",
+                span.source.0,
+                span.start.0,
+                span.end.0,
+                program.len(),
+                guard_expectations.len(),
+            );
+        }
+        let block = match solve::ScalarProgramBlock::with_output_indices(
+            vec![program],
+            vec![span],
+            (0..total_outputs).collect(),
+        ) {
+            Ok(block) => block,
+            Err(error) => {
+                trace_native_execution_failure(row, &error.to_string());
+                failed.borrow_mut().insert(row);
+                return;
+            }
+        };
+        let expression = match backend.compile_expression(&block) {
+            Ok(expression) => expression,
+            Err(error) => {
+                trace_native_execution_failure(row, &error);
+                failed.borrow_mut().insert(row);
+                return;
+            }
+        };
+        cache
+            .borrow_mut()
+            .entry(row)
+            .or_default()
+            .push(CompiledDiscreteSpecialization {
+                expression,
+                output_count,
+                guard_expectations,
+            });
     }
 
     pub fn row_eval_context(&self) -> RowEvalContext<'_> {
         RowEvalContext {
             external_tables: Some(self.model.external_tables.as_slice()),
+            pure_calls: Some(&self.model.pure_calls),
             runtime_state: Some(&self.runtime_state),
             ..Default::default()
         }
@@ -502,6 +1357,111 @@ impl SolveRuntime {
         )
     }
 
+    /// Refresh exactly the algebraic closure consumed by event iteration.
+    ///
+    /// The returned coordinate is certified for discrete assignments,
+    /// conditions, relation memory, and event actions.  Unrelated visible
+    /// outputs remain lazy until the caller requests the canonical full view.
+    pub fn refresh_event_dependency_slots_certified(
+        &self,
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+        tol: f64,
+        max_iters: usize,
+    ) -> Result<(), RuntimeSolveError> {
+        if self.clock_event_refresh.len() <= u64::BITS as usize {
+            let mut active_mask = 0u64;
+            for clock_index in 0..self.clock_event_refresh.len() {
+                let owner = self
+                    .model
+                    .problem
+                    .clocks
+                    .periodic_clock_id(clock_index)
+                    .ok_or_else(|| RuntimeSolveError::solve_ir("invalid event refresh clock"))?;
+                if self.periodic_clock_active(owner, t, "event refresh")? {
+                    active_mask |= 1u64 << clock_index;
+                }
+            }
+            let plan = if let Some(plan) = self
+                .combined_event_refresh
+                .borrow()
+                .get(&active_mask)
+                .cloned()
+            {
+                plan
+            } else {
+                let mut parts = Vec::with_capacity(active_mask.count_ones() as usize + 1);
+                parts.push(&self.event_refresh);
+                parts.extend(
+                    self.clock_event_refresh
+                        .iter()
+                        .enumerate()
+                        .filter(|(clock, _)| active_mask & (1u64 << clock) != 0)
+                        .map(|(_, plan)| plan),
+                );
+                let plan = Rc::new(merge_dependency_refresh_plans(
+                    &self.model,
+                    &self.implicit_scalar_rhs,
+                    &self.algebraic_refresh,
+                    &parts,
+                )?);
+                self.combined_event_refresh
+                    .borrow_mut()
+                    .insert(active_mask, Rc::clone(&plan));
+                plan
+            };
+            return self.refresh_slots_with_plan(
+                &plan,
+                RefreshSlotArgs {
+                    t,
+                    solver_y,
+                    params,
+                    tol,
+                    max_iters,
+                    certify_coordinates: true,
+                },
+            );
+        }
+
+        // More than 64 independent typed clocks cannot use the allocation-free
+        // mask cache. Preserve correctness with one base closure plus each
+        // active clock closure; practical generated models use far fewer.
+        self.refresh_slots_with_plan(
+            &self.event_refresh,
+            RefreshSlotArgs {
+                t,
+                solver_y: &mut *solver_y,
+                params,
+                tol,
+                max_iters,
+                certify_coordinates: true,
+            },
+        )?;
+        for (clock_index, plan) in self.clock_event_refresh.iter().enumerate() {
+            let owner = self
+                .model
+                .problem
+                .clocks
+                .periodic_clock_id(clock_index)
+                .ok_or_else(|| RuntimeSolveError::solve_ir("invalid event refresh clock"))?;
+            if self.periodic_clock_active(owner, t, "event refresh")? {
+                self.refresh_slots_with_plan(
+                    plan,
+                    RefreshSlotArgs {
+                        t,
+                        solver_y: &mut *solver_y,
+                        params,
+                        tol,
+                        max_iters,
+                        certify_coordinates: true,
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn refresh_algebraic_and_output_slots(
         &self,
         t: f64,
@@ -532,7 +1492,24 @@ impl SolveRuntime {
             return Ok(());
         }
         self.validate_refresh_inputs(args.solver_y, args.params)?;
-        let incoming = copy_runtime_values(args.solver_y, "algebraic projection snapshot")?;
+        let mut incoming = self.refresh_snapshot_scratch.borrow_mut();
+        copy_runtime_values_into(
+            &mut incoming,
+            args.solver_y,
+            "algebraic projection snapshot",
+        )?;
+        // A dependency-complete causal schedule already proves the value
+        // solution.  Executing the staged projection schedule as well would
+        // replay every exact singleton after the complete causal seed sweep.
+        // Apart from being redundant, that doubles the dominant continuous
+        // callback work for fully explicit models.
+        if plan.causal_solution_certified {
+            let result = self.refresh_causal_seed_rows(plan, &mut args);
+            if result.is_err() {
+                args.solver_y.copy_from_slice(&incoming);
+            }
+            return result;
+        }
         if self.value_stage_schedule_is_certified(plan) {
             let result = self.refresh_slots_with_stages(plan, &mut args, &incoming);
             if result.is_err() {
@@ -540,19 +1517,15 @@ impl SolveRuntime {
             }
             return result;
         }
-        let mut causal_refresh_succeeded = plan.rows.is_empty();
         let mut causal_seed_failed = false;
         if !plan.causal_seed_rows.is_empty() {
             match self.refresh_causal_seed_rows(plan, &mut args) {
-                Ok(()) => causal_refresh_succeeded = true,
+                Ok(()) => {}
                 Err(error) => {
                     restore_after_causal_seed_error(error, args.solver_y, &incoming)?;
                     causal_seed_failed = true;
                 }
             }
-        }
-        if causal_refresh_succeeded && plan.causal_solution_certified {
-            return Ok(());
         }
         let result = self.project_refresh_slots(plan, &mut args, causal_seed_failed);
         if result.is_err() {
@@ -597,16 +1570,24 @@ impl SolveRuntime {
     fn prepare_static_refresh_cache(&self, params: &[f64], solver_len: usize) {
         let mut cache = self.static_refresh_cache.borrow_mut();
         let params_match = cache.valid
-            && cache.params.len() == params.len()
+            && cache.params.len() == self.static_refresh_parameter_indices.len()
             && cache
                 .params
                 .iter()
-                .zip(params)
-                .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits());
+                .zip(self.static_refresh_parameter_indices.iter().copied())
+                .all(|(lhs, index)| {
+                    params
+                        .get(index)
+                        .is_some_and(|rhs| lhs.to_bits() == rhs.to_bits())
+                });
         if !params_match {
             cache.valid = true;
             cache.params.clear();
-            cache.params.extend_from_slice(params);
+            cache.params.extend(
+                self.static_refresh_parameter_indices
+                    .iter()
+                    .filter_map(|&index| params.get(index).copied()),
+            );
             cache.values.clear();
             cache.values.resize(solver_len, None);
         }
@@ -817,11 +1798,11 @@ impl SolveRuntime {
         // block solved a residual row for one of its other unknowns) the
         // assignment value belongs to a different variable.
         if row.assignment_target == Some(index)
-            && row.output_offset == 0
             && let Some(value) = self
                 .implicit_scalar_rhs
-                .eval_target_assignment_row_unchecked_with_context(
+                .eval_target_assignment_output_unchecked_with_context(
                     row.row_idx,
+                    row.output_offset,
                     index,
                     solver_y,
                     params,
@@ -893,6 +1874,14 @@ impl SolveRuntime {
         solver_y: &mut [f64],
         params: &[f64],
     ) -> Result<(), RuntimeSolveError> {
+        if self.try_mixed_native_assignment_refresh(plan, t, solver_y, params)? {
+            self.validate_refresh_values(plan, solver_y)?;
+            return Ok(());
+        }
+        if self.try_native_assignment_refresh(plan, t, solver_y, params)? {
+            self.validate_refresh_values(plan, solver_y)?;
+            return Ok(());
+        }
         if self.can_batch_assignment_refresh(plan) {
             self.implicit_scalar_rhs
                 .apply_target_assignment_rows_unchecked_with_context(
@@ -933,6 +1922,391 @@ impl SolveRuntime {
             row_pos += 1;
         }
         Ok(())
+    }
+
+    /// Execute a causal assignment plan without eagerly evaluating inactive
+    /// branches. Straight-line runs retain the low-overhead native assignment
+    /// schedule, while a lazy row is compiled from the active trace learned by
+    /// the reference evaluator and protected by its appended branch guards.
+    fn try_mixed_native_assignment_refresh(
+        &self,
+        plan: &[AlgebraicRefreshRow],
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let key = (plan.as_ptr() as usize, plan.len());
+        let cached = self.mixed_refresh_segments.borrow().get(&key).cloned();
+        let segments = match cached {
+            Some(Some(segments)) => segments,
+            Some(None) => return Ok(false),
+            None => {
+                if self.execution_backend.is_none() || !self.can_batch_assignment_refresh(plan) {
+                    self.mixed_refresh_segments.borrow_mut().insert(key, None);
+                    return Ok(false);
+                }
+                let mut segments = Vec::new();
+                let mut position = 0usize;
+                let mut has_lazy = false;
+                while position < plan.len() {
+                    let start = position;
+                    let row_idx = plan[position].row_idx;
+                    let lazy = self.implicit_scalar_rhs.has_lazy_row_plan(row_idx);
+                    position += 1;
+                    if lazy {
+                        has_lazy = true;
+                        while position < plan.len() && plan[position].row_idx == row_idx {
+                            position += 1;
+                        }
+                    } else {
+                        while position < plan.len()
+                            && !self
+                                .implicit_scalar_rhs
+                                .has_lazy_row_plan(plan[position].row_idx)
+                        {
+                            position += 1;
+                        }
+                    }
+                    segments.push((start, position, lazy));
+                }
+                if !has_lazy {
+                    self.mixed_refresh_segments.borrow_mut().insert(key, None);
+                    return Ok(false);
+                }
+                let segments: Rc<[(usize, usize, bool)]> = segments.into();
+                self.mixed_refresh_segments
+                    .borrow_mut()
+                    .insert(key, Some(segments.clone()));
+                segments
+            }
+        };
+
+        for &(start, end, lazy) in segments.iter() {
+            let segment = &plan[start..end];
+            if lazy {
+                self.apply_guarded_native_refresh_group(segment, t, solver_y, params)?;
+            } else if !self.try_native_assignment_refresh(segment, t, solver_y, params)? {
+                self.implicit_scalar_rhs
+                    .apply_target_assignment_rows_unchecked_with_context(
+                        segment,
+                        solver_y,
+                        params,
+                        t,
+                        self.row_eval_context(),
+                    )
+                    .map_err(RuntimeSolveError::from)?;
+            }
+        }
+        Ok(true)
+    }
+
+    fn apply_guarded_native_refresh_group(
+        &self,
+        group: &[AlgebraicRefreshRow],
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let Some(first) = group.first() else {
+            return Ok(());
+        };
+        let row_idx = first.row_idx;
+        let key = (group.as_ptr() as usize, group.len());
+
+        {
+            let mut variants = self.compiled_refresh_specializations.borrow_mut();
+            if let Some(variants) = variants.get_mut(&key) {
+                for variant_index in (0..variants.len()).rev() {
+                    let variant = &variants[variant_index];
+                    let total_outputs = variant
+                        .output_count
+                        .checked_add(variant.guard_expectations.len())
+                        .ok_or_else(|| {
+                            RuntimeSolveError::solve_ir(
+                                "compiled refresh specialization output count overflow",
+                            )
+                        })?;
+                    let mut scratch = self.compiled_output_scratch.borrow_mut();
+                    scratch.resize(total_outputs, 0.0);
+                    let valid = variant
+                        .expression
+                        .call(
+                            solver_y,
+                            params,
+                            t,
+                            self.model.external_tables.as_slice(),
+                            &mut scratch,
+                        )
+                        .is_ok()
+                        && scratch[variant.output_count..]
+                            .iter()
+                            .zip(&variant.guard_expectations)
+                            .all(|(actual, expected)| (*actual != 0.0) == *expected);
+                    if !valid {
+                        continue;
+                    }
+                    validate_runtime_output_len(
+                        "compiled guarded refresh group",
+                        group.len(),
+                        variant.output_count,
+                    )?;
+                    for (row, value) in group.iter().zip(&scratch[..variant.output_count]) {
+                        solver_y[row.target_index] = *value;
+                    }
+                    drop(scratch);
+                    if variant_index + 1 != variants.len() {
+                        let variant = variants.remove(variant_index);
+                        variants.push(variant);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        let output_targets = group
+            .iter()
+            .map(|row| (row.output_offset, row.target_index))
+            .collect::<Vec<_>>();
+        let Some(program) = self
+            .implicit_scalar_rhs
+            .exact_target_assignment_group_program(row_idx, &output_targets)
+        else {
+            self.implicit_scalar_rhs
+                .apply_target_assignment_rows_unchecked_with_context(
+                    group,
+                    solver_y,
+                    params,
+                    t,
+                    self.row_eval_context(),
+                )
+                .map_err(RuntimeSolveError::from)?;
+            return Ok(());
+        };
+        let Some(span) = self.implicit_scalar_rhs.block().program_span(row_idx) else {
+            return Err(RuntimeSolveError::solve_ir(
+                "guarded refresh group is missing its source span",
+            ));
+        };
+        let block = solve::ScalarProgramBlock::with_output_indices(
+            vec![program],
+            vec![span],
+            (0..group.len()).collect(),
+        )
+        .map_err(|error| RuntimeSolveError::solve_ir(error.to_string()))?;
+        let prepared = PreparedScalarProgramBlock::new(block).map_err(RuntimeSolveError::from)?;
+        let mut values = Vec::new();
+        prepared.eval_row_outputs_unchecked_with_context(
+            0,
+            solver_y,
+            params,
+            t,
+            self.row_eval_context(),
+            &mut values,
+        )?;
+        validate_runtime_output_len("guarded refresh group", group.len(), values.len())?;
+
+        self.compile_guarded_refresh_specialization(key, &prepared);
+        for (row, value) in group.iter().zip(values) {
+            solver_y[row.target_index] = value;
+        }
+        Ok(())
+    }
+
+    fn compile_guarded_refresh_specialization(
+        &self,
+        key: (usize, usize),
+        prepared: &PreparedScalarProgramBlock,
+    ) {
+        let Some(backend) = self.execution_backend.as_ref() else {
+            return;
+        };
+        let Some((program, output_count, guard_expectations)) = cached_row_program(prepared, 0)
+        else {
+            return;
+        };
+        let Some(total_outputs) = output_count.checked_add(guard_expectations.len()) else {
+            return;
+        };
+        let Some(span) = prepared.block().program_span(0) else {
+            return;
+        };
+        let Ok(block) = solve::ScalarProgramBlock::with_output_indices(
+            vec![program],
+            vec![span],
+            (0..total_outputs).collect(),
+        ) else {
+            return;
+        };
+        let Ok(expression) = backend.compile_expression(&block) else {
+            return;
+        };
+        tracing::debug!(
+            target: "rumoca_solver::native_execution",
+            ops = block.programs()[0].len(),
+            outputs = output_count,
+            guards = guard_expectations.len(),
+            "compiled guarded refresh specialization"
+        );
+        self.compiled_refresh_specializations
+            .borrow_mut()
+            .entry(key)
+            .or_default()
+            .push(CompiledDiscreteSpecialization {
+                expression,
+                output_count,
+                guard_expectations,
+            });
+    }
+
+    fn try_native_assignment_refresh(
+        &self,
+        plan: &[AlgebraicRefreshRow],
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        let Some(backend) = self.execution_backend.as_ref() else {
+            return Ok(false);
+        };
+        let key = (plan.as_ptr() as usize, plan.len());
+        let cached = self
+            .compiled_assignment_schedules
+            .borrow()
+            .get(&key)
+            .cloned();
+        let compiled = match cached {
+            Some(Some(compiled)) => compiled,
+            Some(None) => return Ok(false),
+            None => {
+                let mut programs = Vec::new();
+                let mut targets = Vec::with_capacity(plan.len());
+                let mut debug_groups = Vec::new();
+                let mut position = 0usize;
+                let mut complete = true;
+                while position < plan.len() {
+                    let row_idx = plan[position].row_idx;
+                    let mut end = position + 1;
+                    while end < plan.len() && plan[end].row_idx == row_idx {
+                        end += 1;
+                    }
+                    let group_output_targets = plan[position..end]
+                        .iter()
+                        .map(|row| (row.output_offset, row.target_index))
+                        .collect::<Vec<_>>();
+                    if let Some(program) = self
+                        .implicit_scalar_rhs
+                        .exact_target_assignment_group_program(row_idx, &group_output_targets)
+                    {
+                        programs.push(program);
+                        targets.extend(group_output_targets.iter().map(|&(_, target)| target));
+                        debug_groups.push((
+                            row_idx,
+                            group_output_targets
+                                .iter()
+                                .map(|&(_, target)| target)
+                                .collect::<Vec<_>>(),
+                        ));
+                        position = end;
+                        continue;
+                    }
+                    let row = &plan[position];
+                    let Some(program) = self
+                        .implicit_scalar_rhs
+                        .exact_target_assignment_output_program(
+                            row.row_idx,
+                            row.output_offset,
+                            row.target_index,
+                        )
+                    else {
+                        complete = false;
+                        break;
+                    };
+                    programs.push(program);
+                    targets.push(row.target_index);
+                    debug_groups.push((row.row_idx, vec![row.target_index]));
+                    position += 1;
+                }
+                if !complete {
+                    self.compiled_assignment_schedules
+                        .borrow_mut()
+                        .insert(key, None);
+                    return Ok(false);
+                }
+                if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
+                    let target_names = targets
+                        .iter()
+                        .take(32)
+                        .map(|&target| self.solver_name(target))
+                        .collect::<Vec<_>>();
+                    eprintln!(
+                        "rumoca-assignment-schedule rows={} targets={} names={target_names:?}",
+                        programs.len(),
+                        targets.len(),
+                    );
+                    for (program, (row, group_targets)) in programs.iter().zip(debug_groups.iter())
+                    {
+                        if program.len() < 100
+                            && !program.iter().any(|operation| {
+                                matches!(
+                                    operation,
+                                    rumoca_ir_solve::LinearOp::FunctionFold { .. }
+                                        | rumoca_ir_solve::LinearOp::StoreOutputFunctionFold { .. }
+                                )
+                            })
+                        {
+                            continue;
+                        }
+                        let names = group_targets
+                            .iter()
+                            .map(|&target| self.solver_name(target))
+                            .collect::<Vec<_>>();
+                        let mut kinds = std::collections::BTreeMap::new();
+                        for operation in program {
+                            *kinds.entry(operation.kind_name()).or_insert(0usize) += 1;
+                        }
+                        eprintln!(
+                            "rumoca-assignment-program row={row} ops={} outputs={} names={names:?} kinds={kinds:?}",
+                            program.len(),
+                            group_targets.len(),
+                        );
+                    }
+                }
+                let compiled = match backend.compile_assignment_schedule(&programs, &targets) {
+                    Ok(compiled) => Some(compiled),
+                    Err(error) => {
+                        tracing::debug!(
+                            target: "rumoca_solver::native_execution",
+                            programs = programs.len(),
+                            targets = targets.len(),
+                            %error,
+                            "failed to compile assignment schedule"
+                        );
+                        None
+                    }
+                };
+                self.compiled_assignment_schedules
+                    .borrow_mut()
+                    .insert(key, compiled.clone());
+                if let Some(compiled) = compiled {
+                    compiled
+                } else {
+                    self.compiled_assignment_schedules
+                        .borrow_mut()
+                        .insert(key, None);
+                    return Ok(false);
+                }
+            }
+        };
+        if compiled
+            .call(solver_y, params, t, self.model.external_tables.as_slice())
+            .is_ok()
+        {
+            return Ok(true);
+        }
+        self.compiled_assignment_schedules
+            .borrow_mut()
+            .insert(key, None);
+        Ok(false)
     }
 
     fn validate_refresh_values(
@@ -1254,6 +2628,61 @@ impl SolveRuntime {
         validate_finite_runtime_output("root search output", out)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn eval_root_conditions_after_derivative_settle_into(
+        &self,
+        t: f64,
+        params: &[f64],
+        solver_y: &mut [f64],
+        tol: f64,
+        max_iters: usize,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        if !self.derivative_settled_coordinate_can_refresh_roots() {
+            return Err(RuntimeSolveError::solve_ir(
+                "root refresh has no certified derivative-settled remainder".to_string(),
+            ));
+        }
+        if solver_y.len() != self.solver_count {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "derivative-settled solver-y length mismatch: expected {}, got {}",
+                self.solver_count,
+                solver_y.len()
+            )));
+        }
+        let remainder = self.root_refresh_after_derivative.as_ref().ok_or_else(|| {
+            RuntimeSolveError::solve_ir(
+                "root refresh derivative-settled remainder disappeared".to_string(),
+            )
+        })?;
+        if !remainder.value_stages.is_empty() {
+            self.refresh_slots_with_plan(
+                remainder,
+                RefreshSlotArgs {
+                    t,
+                    solver_y,
+                    params,
+                    tol,
+                    max_iters,
+                    certify_coordinates: false,
+                },
+            )?;
+        }
+        let root_count = self.root_condition_count();
+        if root_count == 0 {
+            return fill_inactive_root_output(out);
+        }
+        validate_runtime_output_len("root condition output", root_count, out.len())?;
+        let model_root_count = self.model.problem.events.root_conditions.len();
+        self.eval_root_conditions_from_refreshed_solver_y(
+            t,
+            solver_y,
+            params,
+            &mut out[..model_root_count],
+        )?;
+        validate_finite_runtime_output("root condition output", out)
+    }
+
     pub fn next_planned_time_root(
         &self,
         params: &[f64],
@@ -1291,6 +2720,12 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         if let Some(plan) = &self.root_condition_plan {
             return self.write_planned_root_conditions(plan, y, p, t, out);
+        }
+        if let Some(compiled) = &self.compiled_root_conditions {
+            compiled
+                .call(y, p, t, self.model.external_tables.as_slice(), out)
+                .map_err(RuntimeSolveError::solve_ir)?;
+            return validate_finite_runtime_output("root condition output", out);
         }
         self.root_condition_rows
             .eval_with_context(y, p, t, self.row_eval_context(), out)
@@ -1363,16 +2798,16 @@ impl SolveRuntime {
         if row_indices.is_empty() {
             return Ok(());
         }
-        self.root_condition_rows
-            .eval_single_output_rows_unchecked_with_context(
-                row_indices,
-                y,
-                params,
-                t,
-                self.row_eval_context(),
-                out,
-            )
-            .map_err(Into::into)
+        self.eval_single_output_rows_with_native(
+            &self.root_condition_rows,
+            &self.compiled_root_rows,
+            &self.failed_root_rows,
+            row_indices,
+            y,
+            params,
+            t,
+            out,
+        )
     }
 
     fn validate_root_plan_output_len(
@@ -1391,6 +2826,18 @@ impl SolveRuntime {
     }
 }
 
+fn trace_native_execution_failure(program: usize, reason: &str) {
+    if std::env::var_os("RUMOCA_PROFILE_NATIVE").is_some() {
+        eprintln!("[native-profile] program={program}: {reason}");
+    }
+    tracing::debug!(
+        target: "rumoca_solver::native_execution",
+        program,
+        reason,
+        "could not compile discrete specialization"
+    );
+}
+
 fn build_visible_name_index(model: &solve::SolveModel) -> HashMap<String, usize> {
     model
         .visible_names
@@ -1404,14 +2851,109 @@ fn build_runtime_refresh_plans(
     model: &solve::SolveModel,
     implicit: &PreparedScalarProgramBlock,
     derivative: &solve::ScalarProgramBlock,
-) -> Result<(RefreshPlan, RefreshPlan, RefreshPlan), EvalSolveError> {
+    structured_discrete: &solve::ScalarProgramBlock,
+) -> Result<
+    (
+        RefreshPlan,
+        RefreshPlan,
+        RefreshPlan,
+        RefreshPlan,
+        Vec<RefreshPlan>,
+    ),
+    EvalSolveError,
+> {
     let algebraic = build_algebraic_refresh_plan(model, implicit)?;
     let derivative = build_derivative_refresh_plan(model, derivative, implicit, &algebraic)?;
     let root = build_root_refresh_plan(model, implicit, &algebraic)?;
+    let clock_count = model.problem.clocks.periodic_event_schedules.len();
+    let mut unowned_discrete = Vec::new();
+    let mut clock_discrete = vec![Vec::new(); clock_count];
+    for (output, clock_owner) in model
+        .problem
+        .discrete
+        .clock_owners
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        match clock_owner {
+            Some(owner) => clock_discrete[owner.index()].push(output),
+            None => unowned_discrete.push(output),
+        }
+    }
+    let mut unowned_guarded = Vec::new();
+    let mut clock_guarded = vec![Vec::new(); clock_count];
+    for program in &model.problem.discrete.guarded_assignments {
+        let consumer = (program.program(), program.span());
+        match program.clock_owner() {
+            Some(owner) => clock_guarded[owner.index()].push(consumer),
+            None => unowned_guarded.push(consumer),
+        }
+    }
+    let mut unowned_structured = Vec::new();
+    let mut clock_structured = vec![Vec::new(); clock_count];
+    for (update_index, update) in model.problem.discrete.structured_updates.iter().enumerate() {
+        let outputs = model
+            .problem
+            .discrete
+            .structured_assignments(update_index)?;
+        let destination = update.clock_owner.map_or(&mut unowned_structured, |owner| {
+            &mut clock_structured[owner.index()]
+        });
+        destination.extend(outputs.into_iter().map(|(_, source)| source));
+    }
+    let mut unowned_actions = Vec::new();
+    let mut clock_actions = vec![Vec::new(); clock_count];
+    for (output, action) in model.problem.events.actions.iter().enumerate() {
+        match action.clock_owner {
+            Some(owner) => clock_actions[owner.index()].push(output),
+            None => unowned_actions.push(output),
+        }
+    }
+    let event = build_scalar_dependency_refresh_plan_with_outputs_and_programs(
+        model,
+        implicit,
+        &algebraic,
+        &[
+            &model.problem.discrete.runtime_assignment_rhs,
+            &model.problem.discrete.post_commit_assignment_rhs,
+            &model.problem.events.root_conditions,
+        ],
+        &[
+            (&model.problem.discrete.rhs, &unowned_discrete),
+            (structured_discrete, &unowned_structured),
+            (&model.problem.events.action_conditions, &unowned_actions),
+        ],
+        &unowned_guarded,
+    )?;
+    let mut clock_events = Vec::with_capacity(clock_count);
+    for clock in 0..clock_count {
+        clock_events.push(
+            build_scalar_dependency_refresh_plan_with_outputs_and_programs(
+                model,
+                implicit,
+                &algebraic,
+                &[],
+                &[
+                    (&model.problem.discrete.rhs, &clock_discrete[clock]),
+                    (structured_discrete, &clock_structured[clock]),
+                    (
+                        &model.problem.events.action_conditions,
+                        &clock_actions[clock],
+                    ),
+                ],
+                &clock_guarded[clock],
+            )?,
+        );
+    }
     trace_refresh_plan(model, "algebraic", &algebraic);
     trace_refresh_plan(model, "derivative", &derivative);
     trace_refresh_plan(model, "root", &root);
-    Ok((algebraic, derivative, root))
+    trace_refresh_plan(model, "event", &event);
+    for (clock, plan) in clock_events.iter().enumerate() {
+        trace_refresh_plan(model, &format!("clock-event-{clock}"), plan);
+    }
+    Ok((algebraic, derivative, root, event, clock_events))
 }
 
 fn fill_inactive_root_output(out: &mut [f64]) -> Result<(), RuntimeSolveError> {
@@ -1446,6 +2988,24 @@ fn validate_finite_runtime_output(context: &str, values: &[f64]) -> Result<(), R
         )));
     }
     Ok(())
+}
+
+fn cached_row_program(
+    prepared: &PreparedScalarProgramBlock,
+    row: usize,
+) -> Option<(Vec<solve::LinearOp>, usize, Box<[bool]>)> {
+    if let Some(specialization) = prepared.specialized_row_program(row) {
+        return Some((
+            specialization.program,
+            specialization.output_count,
+            specialization.guard_expectations,
+        ));
+    }
+    Some((
+        prepared.block().programs().get(row)?.clone(),
+        prepared.row_output_count(row)?,
+        Vec::new().into_boxed_slice(),
+    ))
 }
 
 fn restore_after_causal_seed_error(

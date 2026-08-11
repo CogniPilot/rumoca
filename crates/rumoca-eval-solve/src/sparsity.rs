@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use rumoca_core::Span;
 use rumoca_ir_solve::{
-    ComputeBlock, LinearOp, PatternDerivation, PatternProvenance, Reg, ScalarProgramBlock,
-    StructuralPattern,
+    BinaryOp, ComputeBlock, LinearOp, PatternDerivation, PatternProvenance, Reg,
+    ScalarProgramBlock, StructuralPattern,
 };
 
 use crate::{EvalSolveError, to_scalar_program_block};
@@ -12,6 +12,12 @@ use crate::{EvalSolveError, to_scalar_program_block};
 enum DependencyState {
     Known(BTreeSet<usize>),
     Unknown,
+}
+
+#[derive(Clone, Copy)]
+enum DependencySource {
+    Seed,
+    SolverY,
 }
 
 impl DependencyState {
@@ -460,17 +466,187 @@ fn program_output_dependencies(
     program: &[LinearOp],
     span: Option<Span>,
 ) -> Result<Vec<DependencyState>, EvalSolveError> {
+    program_output_dependencies_with_fold(program, span, None, None, None, DependencySource::Seed)
+}
+
+pub(crate) fn program_output_y_dependencies(
+    program: &[LinearOp],
+    span: Option<Span>,
+) -> Result<Vec<BTreeSet<usize>>, EvalSolveError> {
+    program_output_dependencies_with_fold(
+        program,
+        span,
+        None,
+        None,
+        None,
+        DependencySource::SolverY,
+    )?
+    .into_iter()
+    .map(|dependencies| match dependencies {
+        DependencyState::Known(indices) => Ok(indices),
+        DependencyState::Unknown => Err(sparsity_error(
+            "scalar output has an opaque solver-Y dependency",
+            span,
+        )),
+    })
+    .collect()
+}
+
+fn program_output_dependencies_with_fold(
+    program: &[LinearOp],
+    span: Option<Span>,
+    fold_carried: Option<&[DependencyState]>,
+    fold_captures: Option<&[DependencyState]>,
+    conditional_captures: Option<&[DependencyState]>,
+    source: DependencySource,
+) -> Result<Vec<DependencyState>, EvalSolveError> {
     let mut registers: Vec<Option<DependencyState>> = Vec::new();
     let mut outputs = Vec::new();
-    for &op in program {
+    for op in program.iter().cloned() {
         match op {
             LinearOp::Const { dst, .. }
             | LinearOp::LoadTime { dst }
-            | LinearOp::LoadY { dst, .. }
             | LinearOp::LoadP { dst, .. } => set_empty_dependency(&mut registers, dst),
-            LinearOp::LoadSeed { dst, index } => set_seed_dependency(&mut registers, dst, index),
+            LinearOp::LoadY { dst, index } => match source {
+                DependencySource::Seed => set_empty_dependency(&mut registers, dst),
+                DependencySource::SolverY => set_seed_dependency(&mut registers, dst, index),
+            },
+            LinearOp::LoadSeed { dst, index } => match source {
+                DependencySource::Seed => set_seed_dependency(&mut registers, dst, index),
+                DependencySource::SolverY => set_empty_dependency(&mut registers, dst),
+            },
+            LinearOp::LoadFoldCarried { dst, index } => {
+                let dependency = fold_carried
+                    .and_then(|values| values.get(index))
+                    .cloned()
+                    .ok_or_else(|| sparsity_error("invalid function-fold carried load", span))?;
+                set_register(&mut registers, dst, dependency);
+            }
+            LinearOp::LoadFoldIndex { dst, .. } => {
+                set_empty_dependency(&mut registers, dst);
+            }
+            LinearOp::LoadFoldCapture { dst, index } => {
+                let dependency = fold_captures
+                    .and_then(|values| values.get(index))
+                    .cloned()
+                    .ok_or_else(|| sparsity_error("invalid function-fold capture load", span))?;
+                set_register(&mut registers, dst, dependency);
+            }
+            LinearOp::LoadFunctionConditionalCapture { dst, index } => {
+                let dependency = conditional_captures
+                    .and_then(|values| values.get(index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        sparsity_error("invalid function-conditional capture load", span)
+                    })?;
+                set_register(&mut registers, dst, dependency);
+            }
+            LinearOp::LoadFunctionConditionalCaptureRange {
+                dst_start,
+                index_start,
+                count,
+            } => {
+                let captures = conditional_captures.ok_or_else(|| {
+                    sparsity_error("invalid function-conditional capture range load", span)
+                })?;
+                for offset in 0..count {
+                    let dependency =
+                        captures.get(index_start + offset).cloned().ok_or_else(|| {
+                            sparsity_error("invalid function-conditional capture range load", span)
+                        })?;
+                    set_register(&mut registers, dst_start + offset as Reg, dependency);
+                }
+            }
             LinearOp::LoadIndexedP { dst, index, .. } => {
                 copy_dependency(&mut registers, dst, index, span)?;
+            }
+            LinearOp::LoadIndexedRegister {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| {
+                        sparsity_error("runtime tensor projection extent overflow", span)
+                    })?;
+                let mut dependencies = DependencyState::empty();
+                for offset in 0..count {
+                    dependencies = dependencies.union(register(
+                        &registers,
+                        base + (offset * stride) as Reg,
+                        span,
+                    )?);
+                }
+                for index in indices {
+                    if let rumoca_ir_solve::TensorIndex::Runtime(register_id) = index {
+                        dependencies = dependencies.union(register(&registers, register_id, span)?);
+                    }
+                }
+                set_register(&mut registers, dst, dependencies);
+            }
+            LinearOp::LoadIndexedFoldCarried {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let carried = fold_carried.ok_or_else(|| {
+                    sparsity_error("invalid indexed function-fold carried load", span)
+                })?;
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| {
+                        sparsity_error("indexed function-fold carried extent overflow", span)
+                    })?;
+                let mut dependencies = DependencyState::empty();
+                for offset in 0..count {
+                    let dependency = carried.get(base + offset * stride).ok_or_else(|| {
+                        sparsity_error("indexed function-fold carried range is invalid", span)
+                    })?;
+                    dependencies = dependencies.union(dependency.clone());
+                }
+                for index in indices {
+                    if let rumoca_ir_solve::TensorIndex::Runtime(register_id) = index {
+                        dependencies = dependencies.union(register(&registers, register_id, span)?);
+                    }
+                }
+                set_register(&mut registers, dst, dependencies);
+            }
+            LinearOp::LoadIndexedFoldCapture {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let captures = fold_captures.ok_or_else(|| {
+                    sparsity_error("invalid indexed function-fold capture load", span)
+                })?;
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| {
+                        sparsity_error("indexed function-fold capture extent overflow", span)
+                    })?;
+                let mut dependencies = DependencyState::empty();
+                for offset in 0..count {
+                    let dependency = captures.get(base + offset * stride).ok_or_else(|| {
+                        sparsity_error("indexed function-fold capture range is invalid", span)
+                    })?;
+                    dependencies = dependencies.union(dependency.clone());
+                }
+                for index in indices {
+                    if let rumoca_ir_solve::TensorIndex::Runtime(register_id) = index {
+                        dependencies = dependencies.union(register(&registers, register_id, span)?);
+                    }
+                }
+                set_register(&mut registers, dst, dependencies);
             }
             LinearOp::LoadIndexedSeed {
                 dst,
@@ -517,6 +693,271 @@ fn program_output_dependencies(
                 },
                 span,
             )?,
+            LinearOp::DotProduct {
+                dst,
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+            } => {
+                let mut sources = Vec::with_capacity(count.saturating_mul(2));
+                for term in 0..count {
+                    sources.push(lhs_start + (term * lhs_stride) as Reg);
+                    sources.push(rhs_start + (term * rhs_stride) as Reg);
+                }
+                let mut dependencies = DependencyState::empty();
+                for source in sources {
+                    dependencies = dependencies.union(register(&registers, source, span)?);
+                }
+                set_register(&mut registers, dst, dependencies);
+            }
+            LinearOp::MatrixMultiply {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                rows,
+                inner,
+                columns,
+                lanes,
+            } => {
+                for row in 0..rows {
+                    for column in 0..columns {
+                        let output = (row * columns + column) * lanes;
+                        for lane in 0..lanes {
+                            let mut dependencies = DependencyState::empty();
+                            for term in 0..inner {
+                                let lhs = (row * inner + term) * lanes;
+                                let rhs = (term * columns + column) * lanes;
+                                dependencies = dependencies.union(register(
+                                    &registers,
+                                    lhs_start + (lhs + lane) as Reg,
+                                    span,
+                                )?);
+                                dependencies = dependencies.union(register(
+                                    &registers,
+                                    rhs_start + (rhs + lane) as Reg,
+                                    span,
+                                )?);
+                                if lanes == 2 && lane == 1 {
+                                    dependencies = dependencies.union(register(
+                                        &registers,
+                                        lhs_start + lhs as Reg,
+                                        span,
+                                    )?);
+                                    dependencies = dependencies.union(register(
+                                        &registers,
+                                        rhs_start + rhs as Reg,
+                                        span,
+                                    )?);
+                                }
+                            }
+                            set_register(
+                                &mut registers,
+                                dst_start + (output + lane) as Reg,
+                                dependencies,
+                            );
+                        }
+                    }
+                }
+            }
+            LinearOp::TensorBinary {
+                dst_start,
+                op,
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+                lanes,
+            } => {
+                for element in 0..count {
+                    let lhs = lhs_start + (element * lhs_stride * lanes) as Reg;
+                    let rhs = rhs_start + (element * rhs_stride * lanes) as Reg;
+                    let output = dst_start + (element * lanes) as Reg;
+                    let primal =
+                        register(&registers, lhs, span)?.union(register(&registers, rhs, span)?);
+                    set_register(&mut registers, output, primal.clone());
+                    if lanes == 2 {
+                        let mut tangent = register(&registers, lhs + 1, span)?.union(register(
+                            &registers,
+                            rhs + 1,
+                            span,
+                        )?);
+                        if matches!(op, BinaryOp::Mul | BinaryOp::Div) {
+                            tangent = tangent.union(primal);
+                        }
+                        set_register(&mut registers, output + 1, tangent);
+                    }
+                }
+            }
+            LinearOp::TensorCross {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                lanes,
+            } => {
+                for (component, (first, second)) in
+                    [(1usize, 2usize), (2, 0), (0, 1)].into_iter().enumerate()
+                {
+                    let lhs_first = lhs_start + (first * lanes) as Reg;
+                    let lhs_second = lhs_start + (second * lanes) as Reg;
+                    let rhs_first = rhs_start + (first * lanes) as Reg;
+                    let rhs_second = rhs_start + (second * lanes) as Reg;
+                    let primal = register(&registers, lhs_first, span)?
+                        .union(register(&registers, lhs_second, span)?)
+                        .union(register(&registers, rhs_first, span)?)
+                        .union(register(&registers, rhs_second, span)?);
+                    let output = dst_start + (component * lanes) as Reg;
+                    set_register(&mut registers, output, primal.clone());
+                    if lanes == 2 {
+                        let tangent = primal
+                            .union(register(&registers, lhs_first + 1, span)?)
+                            .union(register(&registers, lhs_second + 1, span)?)
+                            .union(register(&registers, rhs_first + 1, span)?)
+                            .union(register(&registers, rhs_second + 1, span)?);
+                        set_register(&mut registers, output + 1, tangent);
+                    }
+                }
+            }
+            LinearOp::TensorTranspose {
+                dst_start,
+                src_start,
+                rows,
+                columns,
+                element_width,
+                lanes,
+            } => {
+                let value_width = element_width * lanes;
+                for row in 0..rows {
+                    for column in 0..columns {
+                        for value in 0..value_width {
+                            let dst = (row * columns + column) * value_width + value;
+                            let src = (column * rows + row) * value_width + value;
+                            let dependencies = register(&registers, src_start + src as Reg, span)?;
+                            set_register(&mut registers, dst_start + dst as Reg, dependencies);
+                        }
+                    }
+                }
+            }
+            LinearOp::TensorConcatenate {
+                dst_start,
+                sources,
+                dimensions,
+                axis,
+                lanes,
+            } => {
+                super::visit_tensor_concatenate(
+                    &sources,
+                    &dimensions,
+                    axis,
+                    lanes,
+                    |source, destination| {
+                        let dependencies = register(&registers, source, span)?;
+                        set_register(&mut registers, dst_start + destination as Reg, dependencies);
+                        Ok::<(), EvalSolveError>(())
+                    },
+                )?;
+            }
+            LinearOp::TensorUpdate {
+                dst_start,
+                base_start,
+                value_start,
+                dimensions,
+                subscripts,
+                lanes,
+            } => {
+                let count = dimensions.iter().fold(1usize, |count, extent| {
+                    count.saturating_mul(*extent as usize)
+                });
+                let mut value_count = lanes;
+                let mut selector = DependencyState::empty();
+                for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
+                    match subscript {
+                        rumoca_ir_solve::TensorUpdateSubscript::Whole => {
+                            value_count = value_count.saturating_mul(extent as usize);
+                        }
+                        rumoca_ir_solve::TensorUpdateSubscript::Index(
+                            rumoca_ir_solve::TensorIndex::Runtime(register_id),
+                        ) => {
+                            selector = selector.union(register(&registers, *register_id, span)?);
+                        }
+                        rumoca_ir_solve::TensorUpdateSubscript::Index(
+                            rumoca_ir_solve::TensorIndex::Constant(_),
+                        ) => {}
+                        rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
+                            let slice_count = dimensions.iter().fold(1usize, |count, extent| {
+                                count.saturating_mul(*extent as usize)
+                            });
+                            selector = selector.union(register_range(
+                                &registers,
+                                *start,
+                                slice_count,
+                                span,
+                            )?);
+                            value_count = value_count.saturating_mul(slice_count);
+                        }
+                    }
+                }
+                let patch =
+                    register_range(&registers, value_start, value_count, span)?.union(selector);
+                for element in 0..count {
+                    for lane in 0..lanes {
+                        let offset = element * lanes + lane;
+                        let dependencies = register(&registers, base_start + offset as Reg, span)?
+                            .union(patch.clone());
+                        set_register(&mut registers, dst_start + offset as Reg, dependencies);
+                    }
+                }
+            }
+            LinearOp::TensorFill {
+                dst_start,
+                value_start,
+                count,
+                lanes,
+            } => {
+                for element in 0..count {
+                    for lane in 0..lanes {
+                        let dependencies = register(&registers, value_start + lane as Reg, span)?;
+                        set_register(
+                            &mut registers,
+                            dst_start + (element * lanes + lane) as Reg,
+                            dependencies,
+                        );
+                    }
+                }
+            }
+            LinearOp::TensorIdentity {
+                dst_start,
+                size,
+                lanes,
+            } => {
+                for offset in 0..size * size * lanes {
+                    set_empty_dependency(&mut registers, dst_start + offset as Reg);
+                }
+            }
+            LinearOp::TensorLoad {
+                dst_start,
+                count,
+                seed_start,
+                lanes,
+                ..
+            } => {
+                for element in 0..count {
+                    set_empty_dependency(&mut registers, dst_start + (element * lanes) as Reg);
+                    if lanes == 2 {
+                        let dependency = seed_start
+                            .map_or_else(DependencyState::empty, |seed_start| {
+                                DependencyState::singleton(seed_start + element)
+                            });
+                        set_register(
+                            &mut registers,
+                            dst_start + (element * lanes + 1) as Reg,
+                            dependency,
+                        );
+                    }
+                }
+            }
             op @ (LinearOp::TableBounds { .. }
             | LinearOp::TableLookup { .. }
             | LinearOp::TableLookupSlope { .. }
@@ -529,10 +970,343 @@ fn program_output_dependencies(
             | LinearOp::ImpureRandomInteger { .. }) => {
                 apply_runtime_dependency(&mut registers, op, span)?;
             }
+            LinearOp::FunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                program,
+            } => {
+                let carried = (0..program.carried_count)
+                    .map(|offset| register(&registers, initial_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let carried =
+                    function_fold_dependencies(&program, carried, &captures, span, source)?;
+                for (offset, dependency) in carried.into_iter().enumerate() {
+                    set_register(&mut registers, dst_start + offset as Reg, dependency);
+                }
+            }
+            LinearOp::GuardedFunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                activation,
+                program,
+            } => {
+                let activation = register(&registers, activation, span)?;
+                let carried = (0..program.carried_count)
+                    .map(|offset| register(&registers, initial_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let carried =
+                    function_fold_dependencies(&program, carried, &captures, span, source)?;
+                for (offset, dependency) in carried.into_iter().enumerate() {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.union(activation.clone()),
+                    );
+                }
+            }
+            LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => {
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut condition_dependency = DependencyState::empty();
+                let mut result = vec![DependencyState::empty(); program.result_count];
+                for arm in &program.arms {
+                    let condition = program_output_dependencies_with_fold(
+                        &arm.condition,
+                        span,
+                        fold_carried,
+                        fold_captures,
+                        Some(&captures),
+                        source,
+                    )?;
+                    condition_dependency =
+                        condition_dependency.union(condition.first().cloned().ok_or_else(
+                            || sparsity_error("missing conditional condition", span),
+                        )?);
+                    let branch = program_output_dependencies_with_fold(
+                        &arm.result,
+                        span,
+                        fold_carried,
+                        fold_captures,
+                        Some(&captures),
+                        source,
+                    )?;
+                    union_conditional_results(&mut result, branch, span)?;
+                }
+                let fallback = program_output_dependencies_with_fold(
+                    &program.fallback,
+                    span,
+                    fold_carried,
+                    fold_captures,
+                    Some(&captures),
+                    source,
+                )?;
+                union_conditional_results(&mut result, fallback, span)?;
+                for (offset, dependency) in result.into_iter().enumerate() {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.union(condition_dependency.clone()),
+                    );
+                }
+            }
+            LinearOp::PureCall {
+                dst_start,
+                input_starts,
+                site,
+            } => {
+                let mut dependency = DependencyState::empty();
+                for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+                    for offset in 0..value_type.scalar_count() as usize {
+                        dependency =
+                            dependency.union(register(&registers, start + offset as Reg, span)?);
+                    }
+                }
+                let output_count = site
+                    .output_scalar_count()
+                    .ok_or_else(|| sparsity_error("pure-call output width overflows", span))?;
+                for offset in 0..output_count {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.clone(),
+                    );
+                }
+            }
+            LinearOp::StoreOutputFoldTensorUpdate {
+                source_base,
+                source_stride,
+                dimensions,
+                updates,
+                nodes,
+                lanes,
+                ..
+            } => {
+                let carried = fold_carried.ok_or_else(|| {
+                    sparsity_error(
+                        "aggregate output escaped its function-fold update body",
+                        span,
+                    )
+                })?;
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| sparsity_error("tensor update extent overflow", span))?;
+                let mut update_dependency = DependencyState::empty();
+                for update in &updates {
+                    let value_count = dimensions
+                        .iter()
+                        .zip(update.subscripts.iter())
+                        .try_fold(1usize, |count, (&extent, subscript)| {
+                            if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
+                                count.checked_mul(extent as usize)
+                            } else {
+                                Some(count)
+                            }
+                        })
+                        .ok_or_else(|| {
+                            sparsity_error("tensor update value extent overflow", span)
+                        })?;
+                    if let Some(condition) = update.condition {
+                        update_dependency =
+                            update_dependency.union(register(&registers, condition, span)?);
+                    }
+                    for element in 0..value_count {
+                        for lane in 0..lanes {
+                            update_dependency = update_dependency.union(register(
+                                &registers,
+                                update.value_start + (element * update.value_stride + lane) as Reg,
+                                span,
+                            )?);
+                        }
+                    }
+                    for subscript in &update.subscripts {
+                        if let rumoca_ir_solve::TensorSubscript::Index(
+                            rumoca_ir_solve::TensorIndex::Runtime(register_id),
+                        ) = subscript
+                        {
+                            update_dependency =
+                                update_dependency.union(register(&registers, *register_id, span)?);
+                        }
+                    }
+                }
+                for node in &nodes {
+                    if let rumoca_ir_solve::FoldTensorNode::Select { condition, .. } = *node {
+                        update_dependency =
+                            update_dependency.union(register(&registers, condition, span)?);
+                    }
+                }
+                for element in 0..count {
+                    for lane in 0..lanes {
+                        let unchanged = carried
+                            .get(source_base + element * source_stride + lane)
+                            .cloned()
+                            .ok_or_else(|| {
+                                sparsity_error("tensor update carried source is invalid", span)
+                            })?;
+                        outputs.push(unchanged.union(update_dependency.clone()));
+                    }
+                }
+            }
+            LinearOp::StoreOutputFunctionFold {
+                initial,
+                capture_start,
+                program,
+                result_base,
+                count,
+                condition,
+                ..
+            } => {
+                let parent = fold_carried.ok_or_else(|| {
+                    sparsity_error("nested aggregate fold escaped its parent update body", span)
+                })?;
+                let mut carried = Vec::with_capacity(program.carried_count);
+                for source in initial.iter() {
+                    match *source {
+                        rumoca_ir_solve::FoldInitialSource::Registers { start, count } => {
+                            for offset in 0..count {
+                                carried.push(register(&registers, start + offset as Reg, span)?);
+                            }
+                        }
+                        rumoca_ir_solve::FoldInitialSource::ParentCarried { base, count } => {
+                            let end = base.checked_add(count).ok_or_else(|| {
+                                sparsity_error("nested fold carried range overflow", span)
+                            })?;
+                            let values = parent.get(base..end).ok_or_else(|| {
+                                sparsity_error("nested fold carried range is invalid", span)
+                            })?;
+                            carried.extend_from_slice(values);
+                        }
+                    }
+                }
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let carried =
+                    function_fold_dependencies(&program, carried, &captures, span, source)?;
+                let end = result_base
+                    .checked_add(count)
+                    .ok_or_else(|| sparsity_error("nested fold result range overflow", span))?;
+                let result = carried
+                    .get(result_base..end)
+                    .ok_or_else(|| sparsity_error("nested fold result range is invalid", span))?;
+                if let Some(condition) = condition {
+                    let condition = register(&registers, condition, span)?;
+                    let output_base = outputs.len();
+                    for (offset, nested) in result.iter().cloned().enumerate() {
+                        let unchanged =
+                            parent.get(output_base + offset).cloned().ok_or_else(|| {
+                                sparsity_error(
+                                    "conditional nested fold parent range is invalid",
+                                    span,
+                                )
+                            })?;
+                        outputs.push(nested.union(unchanged).union(condition.clone()));
+                    }
+                } else {
+                    outputs.extend_from_slice(result);
+                }
+            }
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } => {
+                for ordinal in 0..count {
+                    let offset = ordinal.checked_mul(stride).ok_or_else(|| {
+                        sparsity_error("conditional output range offset overflows", span)
+                    })?;
+                    let offset = Reg::try_from(offset).map_err(|_| {
+                        sparsity_error("conditional output range exceeds registers", span)
+                    })?;
+                    let source = start.checked_add(offset).ok_or_else(|| {
+                        sparsity_error("conditional output register overflows", span)
+                    })?;
+                    outputs.push(register(&registers, source, span)?);
+                }
+            }
             LinearOp::StoreOutput { src } => outputs.push(register(&registers, src, span)?),
         }
     }
     Ok(outputs)
+}
+
+fn union_conditional_results(
+    accumulated: &mut [DependencyState],
+    branch: Vec<DependencyState>,
+    span: Option<Span>,
+) -> Result<(), EvalSolveError> {
+    if accumulated.len() != branch.len() {
+        return Err(sparsity_error(
+            "function-conditional result dependency count mismatch",
+            span,
+        ));
+    }
+    for (accumulated, branch) in accumulated.iter_mut().zip(branch) {
+        *accumulated = accumulated.clone().union(branch);
+    }
+    Ok(())
+}
+
+fn function_fold_dependencies(
+    program: &rumoca_ir_solve::FunctionFoldProgram,
+    mut carried: Vec<DependencyState>,
+    captures: &[DependencyState],
+    span: Option<Span>,
+    source: DependencySource,
+) -> Result<Vec<DependencyState>, EvalSolveError> {
+    if carried.len() != program.carried_count {
+        return Err(sparsity_error(
+            "function-fold initial dependency count mismatch",
+            span,
+        ));
+    }
+    if program
+        .domain
+        .scalar_count()
+        .map_err(|error| sparsity_error(format!("invalid function-fold domain: {error}"), span))?
+        == 0
+    {
+        return Ok(carried);
+    }
+    loop {
+        let updates = program_output_dependencies_with_fold(
+            &program.update,
+            span,
+            Some(&carried),
+            Some(captures),
+            None,
+            source,
+        )?;
+        if updates.len() != carried.len() {
+            return Err(sparsity_error(
+                "function-fold update output count mismatch",
+                span,
+            ));
+        }
+        let next = carried
+            .iter()
+            .cloned()
+            .zip(updates)
+            .map(|(old, new)| old.union(new))
+            .collect::<Vec<_>>();
+        if next == carried {
+            return Ok(carried);
+        }
+        carried = next;
+    }
 }
 
 struct IndexedSeedDependency {

@@ -143,6 +143,14 @@ pub(super) fn root_condition_plan(
         evaluated_rows.push(row_idx);
         search_rows.push(row_idx);
     }
+    tracing::debug!(
+        target: "rumoca_solver::root_plan",
+        roots = entries.len(),
+        evaluated = evaluated_rows.len(),
+        search = search_rows.len(),
+        scheduled = model.problem.events.scheduled_root_conditions.len(),
+        "root condition execution plan"
+    );
     Some(RootConditionPlan {
         entries,
         evaluated_rows,

@@ -285,6 +285,9 @@ pub(crate) enum ExprNode {
         operands: OperandRange,
     },
     Call {
+        /// First projection node issued for this exact source call occurrence.
+        /// Every result projection shares this identity and operand range.
+        owner: u32,
         function: u32,
         output: u32,
         #[serde(rename = "operand_count")]

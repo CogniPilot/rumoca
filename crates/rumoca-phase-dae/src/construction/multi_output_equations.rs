@@ -46,10 +46,18 @@ pub(super) fn lower_multi_output_equation<'dae>(
         args,
         provenance,
     )?;
-    for (ordinal, target) in plan.outputs.iter().enumerate() {
-        if target.is_none() {
-            continue;
-        }
+    let selected = plan
+        .outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, target)| target.is_some())
+        .collect::<Vec<_>>();
+    let results = call.results(
+        construction,
+        selected.iter().map(|(ordinal, _)| *ordinal),
+        provenance,
+    )?;
+    for ((ordinal, _), rhs) in selected.into_iter().zip(results) {
         let lhs = lower_expression(
             construction,
             coordinates,
@@ -57,7 +65,6 @@ pub(super) fn lower_multi_output_equation<'dae>(
             &elements[ordinal],
             None,
         )?;
-        let rhs = call.result(construction, ordinal, provenance)?;
         let residual = generated_residual(construction, owner, lhs, rhs)?;
         construction.continuous(|system| system.value_equation(owner, residual))?;
     }

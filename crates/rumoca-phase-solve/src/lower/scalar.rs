@@ -8,7 +8,9 @@ mod functions;
 mod operators;
 mod selector;
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::*;
 
@@ -37,11 +39,12 @@ pub(super) struct ParameterBindingSubstitutions<'dae> {
 enum ScalarContextFrame<'dae> {
     Activation {
         parent: u64,
-        condition: dae::ExprId<'dae>,
+        condition: ActivationCondition<'dae>,
         expected: bool,
     },
     Function {
         parent: u64,
+        call: dae::ExprId<'dae>,
         function: dae::FunctionId<'dae>,
         arguments: Vec<dae::ExprId<'dae>>,
     },
@@ -49,11 +52,6 @@ enum ScalarContextFrame<'dae> {
         parent: u64,
         domain: dae::DomainId<'dae>,
         values: Vec<i64>,
-    },
-    Fold {
-        parent: u64,
-        fold: dae::FunctionFoldId<'dae>,
-        values: Vec<Vec<solve::Reg>>,
     },
     Parameter {
         parent: u64,
@@ -66,9 +64,21 @@ enum ScalarContextFrame<'dae> {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ActivationCondition<'dae> {
+    Expression(dae::ExprId<'dae>),
+    GuardedAssignment {
+        clock: Option<dae::ClockId<'dae>>,
+        trigger: dae::ConditionId<'dae>,
+        guard: dae::ConditionId<'dae>,
+        trigger_memory: usize,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct ActivationGuard<'dae> {
-    condition: dae::ExprId<'dae>,
+    condition: ActivationCondition<'dae>,
+    register: Option<solve::Reg>,
     expected: bool,
 }
 
@@ -77,28 +87,178 @@ struct FunctionFoldCacheDependency<'dae> {
     fold: dae::FunctionFoldId<'dae>,
     values: Vec<Vec<solve::Reg>>,
     domain_point: Vec<i64>,
+    domain_registers: Vec<solve::Reg>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FunctionFoldOutputCacheKey<'dae> {
     function_context: u64,
     fold: dae::FunctionFoldId<'dae>,
-    carried: u32,
-    scalar: usize,
     dependencies: Vec<FunctionFoldCacheDependency<'dae>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ActiveCallAssertion<'dae> {
+    call: dae::ExprId<'dae>,
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct FunctionArgumentsFrame<'dae> {
+    call: dae::ExprId<'dae>,
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
     activation_base: usize,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(in crate::lower) struct DeferredCallAssertion<'dae> {
+    condition: dae::ExprId<'dae>,
+    fold: Option<dae::FunctionFoldId<'dae>>,
+    domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
+    symbolic_domain_points: Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>,
+    function_arguments: Vec<FunctionArgumentsFrame<'dae>>,
+    activation_path: Vec<ActivationGuard<'dae>>,
+    active_clock: dae::ClockId<'dae>,
+    sampled_source: bool,
+    active_parameters: Vec<u32>,
+    active_call_assertions: HashSet<ActiveCallAssertion<'dae>>,
+}
+
+impl<'dae> DeferredCallAssertion<'dae> {
+    pub(in crate::lower) const fn active_clock(&self) -> dae::ClockId<'dae> {
+        self.active_clock
+    }
+
+    pub(in crate::lower) fn same_specialization(&self, other: &Self) -> bool {
+        self.condition == other.condition
+            && self.fold == other.fold
+            && self.domain_points == other.domain_points
+            && self
+                .symbolic_domain_points
+                .iter()
+                .map(|(domain, registers)| (*domain, registers.len()))
+                .eq(other
+                    .symbolic_domain_points
+                    .iter()
+                    .map(|(domain, registers)| (*domain, registers.len())))
+            && self.function_arguments == other.function_arguments
+            && self
+                .activation_path
+                .iter()
+                .map(|guard| (guard.condition, guard.expected))
+                .eq(other
+                    .activation_path
+                    .iter()
+                    .map(|guard| (guard.condition, guard.expected)))
+            && self.active_clock == other.active_clock
+            && self.sampled_source == other.sampled_source
+    }
+}
+
+struct DeferredFoldCaptures<'dae> {
+    fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
+    symbolic_domain_points: Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>,
+    packed_expressions: HashMap<dae::ExprId<'dae>, (solve::Reg, usize)>,
+    packed_capture_ranges: HashMap<dae::ExprId<'dae>, usize>,
+    sources: Vec<solve::Reg>,
+    locals: HashMap<solve::Reg, solve::Reg>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FunctionConditionalCaptureSource<'dae> {
+    DefinitionRange {
+        context: u64,
+        definition: dae::FunctionDefinitionId<'dae>,
+        count: usize,
+    },
+    DefinitionRecordFieldRange {
+        context: u64,
+        definition: dae::FunctionDefinitionId<'dae>,
+        field: usize,
+        count: usize,
+    },
+}
+
+impl<'dae> FunctionConditionalCaptureSource<'dae> {
+    const fn width(self) -> usize {
+        match self {
+            Self::DefinitionRange { count, .. }
+            | Self::DefinitionRecordFieldRange { count, .. } => count,
+        }
+    }
+
+    const fn with_context(self, context: u64) -> Self {
+        match self {
+            Self::DefinitionRange {
+                definition, count, ..
+            } => Self::DefinitionRange {
+                context,
+                definition,
+                count,
+            },
+            Self::DefinitionRecordFieldRange {
+                definition,
+                field,
+                count,
+                ..
+            } => Self::DefinitionRecordFieldRange {
+                context,
+                definition,
+                field,
+                count,
+            },
+        }
+    }
+}
+
+struct DeferredFunctionConditionalCaptures<'dae> {
+    owner_function: dae::FunctionId<'dae>,
+    owner_context: u64,
+    sources: Vec<FunctionConditionalCaptureSource<'dae>>,
+    locals: Vec<(FunctionConditionalCaptureSource<'dae>, solve::Reg)>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FunctionConditionalOwnerValue<'dae> {
+    Definitions(Vec<dae::FunctionDefinitionId<'dae>>),
+    Expression(dae::ExprId<'dae>),
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FunctionConditionalOwnerKey<'dae> {
+    value: FunctionConditionalOwnerValue<'dae>,
+    function_arguments: Vec<FunctionArgumentsFrame<'dae>>,
+    activation_path: Vec<(ActivationCondition<'dae>, bool)>,
+    domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
+    active_clock: Option<dae::ClockId<'dae>>,
+    sampled_source: bool,
+    active_parameters: Vec<u32>,
+}
+
+#[derive(Clone)]
+struct CachedFunctionConditionalProgram<'dae> {
+    program: Arc<solve::FunctionConditionalProgram>,
+    capture_sources: Vec<FunctionConditionalCaptureSource<'dae>>,
+}
+
+#[derive(Default)]
+pub(super) struct FunctionConditionalOwnerRegistry<'dae> {
+    owners: HashMap<FunctionConditionalOwnerKey<'dae>, CachedFunctionConditionalProgram<'dae>>,
+    next_owner: u64,
+}
+
+impl FunctionConditionalOwnerRegistry<'_> {
+    fn issue(&mut self) -> Option<solve::FunctionConditionalOwnerId> {
+        self.next_owner = self.next_owner.checked_add(1)?;
+        solve::FunctionConditionalOwnerId::checked(self.next_owner)
+    }
+}
+
+struct CachedFunctionFoldProgram {
+    program: Arc<solve::FunctionFoldProgram>,
+    capture_sources: Vec<solve::Reg>,
 }
 
 impl<'dae> ParameterBindingSubstitutions<'dae> {
@@ -117,9 +277,16 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
     domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
+    symbolic_domain_points: Vec<(dae::DomainId<'dae>, Vec<solve::Reg>)>,
     function_arguments: Vec<FunctionArgumentsFrame<'dae>>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
+    deferred_fold_captures: Option<DeferredFoldCaptures<'dae>>,
+    deferred_function_conditional_captures: Option<DeferredFunctionConditionalCaptures<'dae>>,
+    function_conditional_owners: Option<&'layout RefCell<FunctionConditionalOwnerRegistry<'dae>>>,
     activation_path: Vec<ActivationGuard<'dae>>,
+    /// Prefix of `activation_path` already enforced by the owning compact
+    /// fold. Nested folds materialize only guards introduced after this point.
+    fold_guard_base: usize,
     active_clock: Option<dae::ClockId<'dae>>,
     sampled_source: bool,
     derivative_definitions: Option<&'layout DerivativeRowIndex<'dae>>,
@@ -129,10 +296,42 @@ pub(super) struct ScalarCompiler<'layout, 'dae> {
     ops: Vec<solve::LinearOp>,
     next_register: solve::Reg,
     integer_registers: Vec<Option<i64>>,
-    expression_cache: HashMap<(u64, dae::ExprId<'dae>, usize), solve::Reg>,
-    function_fold_output_cache: HashMap<FunctionFoldOutputCacheKey<'dae>, solve::Reg>,
+    expression_cache: rustc_hash::FxHashMap<(u64, dae::ExprId<'dae>, usize), solve::Reg>,
+    packed_expression_cache: rustc_hash::FxHashMap<(u64, dae::ExprId<'dae>), solve::Reg>,
+    typed_pure_call_cache: rustc_hash::FxHashMap<
+        (u64, dae::ExprId<'dae>),
+        (
+            solve::Reg,
+            crate::lower::typed_functions::RegisteredCall<'dae>,
+        ),
+    >,
+    matrix_multiply_cache:
+        HashMap<(u64, dae::ExprId<'dae>, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    tensor_binary_cache:
+        HashMap<(u64, solve::BinaryOp, dae::ExprId<'dae>, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    tensor_transpose_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    tensor_concatenate_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    tensor_update_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    tensor_generate_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    tensor_load_cache: HashMap<(u64, dae::ExprId<'dae>), (solve::Reg, usize)>,
+    fold_register_pack_cache: HashMap<Vec<solve::Reg>, solve::Reg>,
+    record_field_cache: HashMap<(u64, dae::ExprId<'dae>, usize), solve::Reg>,
+    function_definition_scalar_cache:
+        HashMap<(u64, dae::FunctionDefinitionId<'dae>, usize), solve::Reg>,
+    function_definition_aggregate_cache:
+        HashMap<(u64, dae::FunctionDefinitionId<'dae>), solve::Reg>,
+    function_fold_output_cache: HashMap<FunctionFoldOutputCacheKey<'dae>, Vec<Vec<solve::Reg>>>,
+    function_fold_program_cache: HashMap<
+        (
+            dae::FunctionFoldId<'dae>,
+            Option<dae::FunctionFoldId<'dae>>,
+            Vec<usize>,
+        ),
+        CachedFunctionFoldProgram,
+    >,
     active_call_assertions: HashSet<ActiveCallAssertion<'dae>>,
     call_action_compilation: bool,
+    suppress_function_assertions: bool,
     context_ids: HashMap<ScalarContextFrame<'dae>, u64>,
     context_frames: HashMap<u64, ScalarContextFrame<'dae>>,
     context_stack: Vec<u64>,
@@ -152,9 +351,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             domain_points: domain_point
                 .map(|(domain, values)| vec![(domain, values.to_vec())])
                 .unwrap_or_default(),
+            symbolic_domain_points: Vec::new(),
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
+            deferred_fold_captures: None,
+            deferred_function_conditional_captures: None,
+            function_conditional_owners: None,
             activation_path: Vec::new(),
+            fold_guard_base: 0,
             active_clock: None,
             sampled_source: false,
             derivative_definitions: None,
@@ -164,10 +368,25 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             ops: Vec::new(),
             next_register: 0,
             integer_registers: Vec::new(),
-            expression_cache: HashMap::new(),
+            expression_cache: rustc_hash::FxHashMap::default(),
+            packed_expression_cache: rustc_hash::FxHashMap::default(),
+            typed_pure_call_cache: rustc_hash::FxHashMap::default(),
+            matrix_multiply_cache: HashMap::new(),
+            tensor_binary_cache: HashMap::new(),
+            tensor_transpose_cache: HashMap::new(),
+            tensor_concatenate_cache: HashMap::new(),
+            tensor_update_cache: HashMap::new(),
+            tensor_generate_cache: HashMap::new(),
+            tensor_load_cache: HashMap::new(),
+            fold_register_pack_cache: HashMap::new(),
+            record_field_cache: HashMap::new(),
+            function_definition_scalar_cache: HashMap::new(),
+            function_definition_aggregate_cache: HashMap::new(),
             function_fold_output_cache: HashMap::new(),
+            function_fold_program_cache: HashMap::new(),
             active_call_assertions: HashSet::new(),
             call_action_compilation: false,
+            suppress_function_assertions: false,
             context_ids: HashMap::new(),
             context_frames: HashMap::new(),
             context_stack: Vec::new(),
@@ -198,7 +417,25 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .expect("semantic scalar context has a parent");
     }
 
-    fn push_activation(&mut self, condition: dae::ExprId<'dae>, expected: bool) {
+    fn push_activation(
+        &mut self,
+        condition: dae::ExprId<'dae>,
+        register: solve::Reg,
+        expected: bool,
+    ) {
+        self.push_activation_owner(
+            ActivationCondition::Expression(condition),
+            register,
+            expected,
+        );
+    }
+
+    fn push_activation_owner(
+        &mut self,
+        condition: ActivationCondition<'dae>,
+        register: solve::Reg,
+        expected: bool,
+    ) {
         self.enter_context(ScalarContextFrame::Activation {
             parent: self.context_id,
             condition,
@@ -206,6 +443,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         });
         self.activation_path.push(ActivationGuard {
             condition,
+            register: Some(register),
             expected,
         });
     }
@@ -231,8 +469,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn function_fold_cache_key(
         &self,
         fold: dae::FunctionFoldId<'dae>,
-        carried: u32,
-        scalar: usize,
     ) -> FunctionFoldOutputCacheKey<'dae> {
         let dependencies = self
             .function_fold_values
@@ -249,19 +485,24 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     .iter()
                     .rev()
                     .find_map(|(candidate, point)| (*candidate == domain).then(|| point.clone()))
-                    .expect("active function fold owns a domain point");
+                    .unwrap_or_default();
+                let domain_registers = self
+                    .symbolic_domain_points
+                    .iter()
+                    .rev()
+                    .find_map(|(candidate, point)| (*candidate == domain).then(|| point.clone()))
+                    .unwrap_or_default();
                 FunctionFoldCacheDependency {
                     fold: *active,
                     values: values.clone(),
                     domain_point,
+                    domain_registers,
                 }
             })
             .collect();
         FunctionFoldOutputCacheKey {
             function_context: self.owning_function_context(fold.function()),
             fold,
-            carried,
-            scalar,
             dependencies,
         }
     }
@@ -308,7 +549,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ScalarContextFrame::Activation { parent, .. }
                 | ScalarContextFrame::Function { parent, .. }
                 | ScalarContextFrame::Domain { parent, .. }
-                | ScalarContextFrame::Fold { parent, .. }
                 | ScalarContextFrame::Parameter { parent, .. }
                 | ScalarContextFrame::Derivative { parent, .. } => context = *parent,
             }
@@ -323,6 +563,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         definitions: &'layout DerivativeRowIndex<'dae>,
     ) -> Self {
         self.derivative_definitions = Some(definitions);
+        self
+    }
+
+    pub(super) const fn with_function_conditional_owners(
+        mut self,
+        owners: &'layout RefCell<FunctionConditionalOwnerRegistry<'dae>>,
+    ) -> Self {
+        self.function_conditional_owners = Some(owners);
         self
     }
 
@@ -344,6 +592,104 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let output = self.expression(expression, scalar)?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
         Ok(self.ops)
+    }
+
+    /// Compile several scalar projections into one source-owned program.
+    ///
+    /// Array and record equations are one semantic owner even when structural
+    /// matching pairs each scalar residual independently. Keeping their
+    /// projections in one compiler preserves shared function-call and
+    /// expression ownership before Solve IR is emitted.
+    pub(super) fn program_outputs(
+        mut self,
+        outputs: impl IntoIterator<Item = (dae::ExprId<'dae>, usize)>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let profile = std::env::var_os("RUMOCA_PROFILE_IR").is_some();
+        for (expression, scalar) in outputs {
+            let before = self.ops.len();
+            let output = self.expression(expression, scalar)?;
+            self.ops.push(solve::LinearOp::StoreOutput { src: output });
+            if profile && self.ops.len() - before >= 100 {
+                eprintln!(
+                    "rumoca-program-output expr={expression:?} scalar={scalar} count={} kind={:?} emitted={}",
+                    scalar_count(self.view, expression),
+                    self.node(expression).kind(),
+                    self.ops.len() - before,
+                );
+            }
+        }
+        Ok(self.ops)
+    }
+
+    /// Compile complete aggregate expressions before projecting their scalar
+    /// outputs. This is the continuous-equation counterpart of the clocked
+    /// aggregate entry points below.
+    pub(super) fn aggregate_program(
+        mut self,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.aggregate_program_outputs(expressions)
+    }
+
+    /// Compile one aggregate expression as one source-owned multi-output
+    /// program. Aggregate lowering runs before final scalar output projection,
+    /// so calls, folds, and tensor kernels are constructed exactly once.
+    pub(super) fn clocked_aggregate_program(
+        mut self,
+        clock: dae::ClockId<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        self.aggregate_program_outputs([expression])
+    }
+
+    pub(super) fn sampled_aggregate_program(
+        mut self,
+        clock: dae::ClockId<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        self.sampled_source = true;
+        self.aggregate_program_outputs([expression])
+    }
+
+    pub(super) fn clocked_aggregate_programs(
+        mut self,
+        clock: dae::ClockId<'dae>,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
+        sampled: bool,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        self.sampled_source = sampled;
+        self.aggregate_program_outputs(expressions)
+    }
+
+    fn aggregate_program_outputs(
+        &mut self,
+        expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        for expression in expressions {
+            let before = self.ops.len();
+            let start = self.pack_expression(expression)?;
+            let count = scalar_count(self.view, expression);
+            if count == 1 {
+                self.ops.push(solve::LinearOp::StoreOutput { src: start });
+            } else {
+                self.ops.push(solve::LinearOp::StoreOutputRange {
+                    start,
+                    count,
+                    stride: 1,
+                });
+            }
+            if std::env::var_os("RUMOCA_PROFILE_IR").is_some() && self.ops.len() - before >= 100 {
+                eprintln!(
+                    "rumoca-aggregate-output expr={expression:?} count={count} kind={:?} emitted={}",
+                    self.node(expression).kind(),
+                    self.ops.len() - before,
+                );
+            }
+        }
+        Ok(std::mem::take(&mut self.ops))
     }
 
     pub(super) fn clocked_program(
@@ -479,15 +825,170 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok((lhs_start, rhs_start, self.next_register, self.ops))
     }
 
-    fn pack_expression(&mut self, expression: dae::ExprId<'dae>) -> Result<solve::Reg, LowerError> {
+    pub(super) fn pack_expression(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<solve::Reg, LowerError> {
+        let key = (self.context_id, expression);
+        if let Some(&start) = self.packed_expression_cache.get(&key) {
+            return Ok(start);
+        }
+        if let Some((source, count)) = self
+            .deferred_fold_captures
+            .as_ref()
+            .and_then(|captures| captures.packed_expressions.get(&expression))
+            .copied()
+        {
+            let span = self.node(expression).provenance().span();
+            let mut values = Vec::with_capacity(count);
+            for offset in 0..count {
+                let offset = u32::try_from(offset).map_err(|_| {
+                    LowerError::contract("fold tensor capture offset exceeds u32", span)
+                })?;
+                let source = source.checked_add(offset).ok_or_else(|| {
+                    LowerError::contract("fold tensor capture register overflows", span)
+                })?;
+                values.push(self.deferred_fold_capture(source, span)?);
+            }
+            let start = self.pack_registers(&values, span)?;
+            self.packed_expression_cache.insert(key, start);
+            return Ok(start);
+        }
+        let start = self.pack_expression_uncached(expression)?;
+        self.packed_expression_cache.insert(key, start);
+        Ok(start)
+    }
+
+    fn pack_expression_uncached(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+    ) -> Result<solve::Reg, LowerError> {
+        let span = self.node(expression).provenance().span();
+        match self.node(expression).operation() {
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::FunctionParameter(
+                parameter,
+            )) => return self.pack_function_parameter(parameter, span),
+            dae::ExpressionOperation::Coordinate(coordinate) => {
+                if let Some(start) = self.pack_coordinate(expression, coordinate, span)? {
+                    return Ok(start);
+                }
+            }
+            dae::ExpressionOperation::FunctionValue { definition, .. } => {
+                return self.pack_function_definition(definition, span);
+            }
+            dae::ExpressionOperation::Call {
+                function,
+                output,
+                arguments,
+                ..
+            } => return self.pack_function_call(expression, function, output, arguments, span),
+            dae::ExpressionOperation::Conditional(operands)
+                if !self.node(expression).value_type().is_record()
+                    && self.node(expression).function_scope().is_some() =>
+            {
+                return self.pack_lazy_conditional_value(expression, operands, span);
+            }
+            dae::ExpressionOperation::Field { base, field } => {
+                return self.pack_record_field(base, field as usize, span);
+            }
+            dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } if !self.node(expression).value_type().is_record() => {
+                return self.pack_array_update(expression, base, value, subscripts, span);
+            }
+            dae::ExpressionOperation::Builtin { builtin, arguments } => {
+                if matches!(
+                    builtin,
+                    dae::PureBuiltin::Zeros
+                        | dae::PureBuiltin::Ones
+                        | dae::PureBuiltin::Fill
+                        | dae::PureBuiltin::Identity
+                ) {
+                    return self.pack_tensor_generator(expression, builtin, arguments, span);
+                }
+                if builtin == dae::PureBuiltin::Transpose {
+                    return self.pack_transpose(expression, arguments, span);
+                }
+                if builtin == dae::PureBuiltin::Cross {
+                    return self.pack_cross(arguments, span);
+                }
+                if matches!(
+                    builtin,
+                    dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2
+                ) {
+                    return self.pack_promoted_concatenation(expression, builtin, arguments, span);
+                }
+                let alias = match builtin {
+                    dae::PureBuiltin::Smooth => arguments.get(1),
+                    dae::PureBuiltin::NoEvent | dae::PureBuiltin::Vector => arguments.get(0),
+                    _ => None,
+                };
+                if let Some(alias) = alias {
+                    return self.pack_expression(alias);
+                }
+            }
+            _ => {}
+        }
         let count = scalar_count(self.view, expression);
+        let before = self.ops.len();
         let mut values = Vec::with_capacity(count);
         for scalar in 0..count {
             values.push(self.expression(expression, scalar)?);
         }
-        let span = self.node(expression).provenance().span();
+        if std::env::var_os("RUMOCA_PROFILE_FOLD").is_some()
+            && count >= 10
+            && values
+                .iter()
+                .copied()
+                .enumerate()
+                .any(|(offset, register)| {
+                    values.first().copied().and_then(|start| {
+                        u32::try_from(offset)
+                            .ok()
+                            .and_then(|offset| start.checked_add(offset))
+                    }) != Some(register)
+                })
+        {
+            let detail = match self.node(expression).operation() {
+                dae::ExpressionOperation::Call { function, .. } => self
+                    .view
+                    .function(function)
+                    .map(|function| function.name().to_string())
+                    .unwrap_or_else(|| "<missing function>".to_string()),
+                dae::ExpressionOperation::Builtin { builtin, .. } => format!("{builtin:?}"),
+                _ => format!("{:?}", self.node(expression).kind()),
+            };
+            eprintln!(
+                "rumoca-pack-profile count={count} emitted={} owner={detail}",
+                self.ops.len() - before,
+            );
+        }
+        self.pack_registers(&values, span)
+    }
+
+    fn pack_registers(
+        &mut self,
+        values: &[solve::Reg],
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        if let Some(&start) = values.first()
+            && values
+                .iter()
+                .copied()
+                .enumerate()
+                .all(|(offset, register)| {
+                    u32::try_from(offset)
+                        .ok()
+                        .and_then(|offset| start.checked_add(offset))
+                        == Some(register)
+                })
+        {
+            return Ok(start);
+        }
         let start = self.next_register;
-        for value in values {
+        for &value in values {
             let dst = self.register(span)?;
             self.ops.push(solve::LinearOp::Move { dst, src: value });
         }
@@ -502,6 +1003,30 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let key = (self.context_id, expression, scalar);
         if let Some(register) = self.cached_dominating_expression(expression, scalar) {
             return Ok(register);
+        }
+        if let Some((source, count)) = self
+            .deferred_fold_captures
+            .as_ref()
+            .and_then(|captures| captures.packed_expressions.get(&expression))
+            .copied()
+            && scalar < count
+        {
+            let offset = u32::try_from(scalar).map_err(|_| {
+                LowerError::contract(
+                    "fold expression capture offset exceeds u32",
+                    self.node(expression).provenance().span(),
+                )
+            })?;
+            let source = source.checked_add(offset).ok_or_else(|| {
+                LowerError::contract(
+                    "fold expression capture register overflows",
+                    self.node(expression).provenance().span(),
+                )
+            })?;
+            let result =
+                self.deferred_fold_capture(source, self.node(expression).provenance().span())?;
+            self.expression_cache.insert(key, result);
+            return Ok(result);
         }
         let node = self.node(expression);
         self.expect_scalar(node, scalar)?;
@@ -561,7 +1086,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 function,
                 output,
                 arguments,
+                ..
             } => self.function_call(
+                expression,
                 function,
                 output,
                 arguments,
@@ -569,7 +1096,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 node.provenance().span(),
             ),
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.expression(definition.rhs(), scalar)
+                self.function_definition_value(definition, scalar, node.provenance().span())
             }
             dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
                 self.function_fold_parameter(fold, carried, scalar, node.provenance().span())
@@ -630,7 +1157,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 ScalarContextFrame::Function { .. } => return None,
                 ScalarContextFrame::Activation { parent, .. }
                 | ScalarContextFrame::Domain { parent, .. }
-                | ScalarContextFrame::Fold { parent, .. }
                 | ScalarContextFrame::Parameter { parent, .. }
                 | ScalarContextFrame::Derivative { parent, .. } => context = *parent,
             }
@@ -639,7 +1165,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 
     fn current_function_frame_matches(&self, call: &ActiveCallAssertion<'dae>) -> bool {
         self.function_arguments.last().is_some_and(|frame| {
-            frame.function == call.function && frame.arguments == call.arguments
+            frame.call == call.call
+                && frame.function == call.function
+                && frame.arguments == call.arguments
         })
     }
 
@@ -660,7 +1188,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let selected = match selected {
             Ok(selected) => selected,
             Err(LowerError::NonComputable { reason, .. })
-                if reason == "array subscript is not compile-time computable" =>
+                if reason == "array subscript is not compile-time computable"
+                    || reason == "binder-valued subscript has no active domain" =>
             {
                 return self.dynamic_scalar_array_update(base, value, subscripts, scalar);
             }

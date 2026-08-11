@@ -80,11 +80,34 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 }
             }
             dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower => {
-                solve::LinearOp::Binary {
-                    dst,
-                    op: solve::BinaryOp::Pow,
-                    lhs,
-                    rhs,
+                match self.integer_register(rhs) {
+                    Some(2) => solve::LinearOp::Binary {
+                        dst,
+                        op: solve::BinaryOp::Mul,
+                        lhs,
+                        rhs: lhs,
+                    },
+                    Some(3) => {
+                        let square = self.register(span)?;
+                        self.ops.push(solve::LinearOp::Binary {
+                            dst: square,
+                            op: solve::BinaryOp::Mul,
+                            lhs,
+                            rhs: lhs,
+                        });
+                        solve::LinearOp::Binary {
+                            dst,
+                            op: solve::BinaryOp::Mul,
+                            lhs: square,
+                            rhs: lhs,
+                        }
+                    }
+                    _ => solve::LinearOp::Binary {
+                        dst,
+                        op: solve::BinaryOp::Pow,
+                        lhs,
+                        rhs,
+                    },
                 }
             }
             dae::BinaryOperator::And => solve::LinearOp::Binary {
@@ -151,6 +174,11 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
+        if let Some(output) =
+            self.compact_tensor_binary_expression(operator, lhs, rhs, scalar, span)?
+        {
+            return Ok(output);
+        }
         if operator == dae::BinaryOperator::Multiply {
             return self.multiply_expression(lhs, rhs, scalar, span);
         }
@@ -175,6 +203,62 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.binary(operator, lhs, rhs, span)
     }
 
+    fn compact_tensor_binary_expression(
+        &mut self,
+        operator: dae::BinaryOperator,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<Option<solve::Reg>, LowerError> {
+        let lhs_count = scalar_count(self.view, lhs);
+        let rhs_count = scalar_count(self.view, rhs);
+        let count = lhs_count.max(rhs_count);
+        if count <= 1 {
+            return Ok(None);
+        }
+        let op = match operator {
+            dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => solve::BinaryOp::Add,
+            dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => {
+                solve::BinaryOp::Sub
+            }
+            dae::BinaryOperator::ElementwiseMultiply => solve::BinaryOp::Mul,
+            dae::BinaryOperator::Multiply if lhs_count == 1 || rhs_count == 1 => {
+                solve::BinaryOp::Mul
+            }
+            dae::BinaryOperator::ElementwiseDivide => solve::BinaryOp::Div,
+            dae::BinaryOperator::Divide if lhs_count == 1 || rhs_count == 1 => solve::BinaryOp::Div,
+            _ => return Ok(None),
+        };
+        let key = (self.context_id, op, lhs, rhs);
+        if let Some(&(start, cached_count)) = self.tensor_binary_cache.get(&key) {
+            return (scalar < cached_count)
+                .then(|| start + scalar as solve::Reg)
+                .map(Some)
+                .ok_or_else(|| LowerError::contract("tensor binary scalar is out of range", span));
+        }
+        let lhs_start = self.pack_expression(lhs)?;
+        let rhs_start = self.pack_expression(rhs)?;
+        let dst_start = self.next_register;
+        for _ in 0..count {
+            self.register(span)?;
+        }
+        self.ops.push(solve::LinearOp::TensorBinary {
+            dst_start,
+            op,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride: usize::from(lhs_count != 1),
+            rhs_stride: usize::from(rhs_count != 1),
+            lanes: 1,
+        });
+        self.tensor_binary_cache.insert(key, (dst_start, count));
+        (scalar < count)
+            .then(|| Some(dst_start + scalar as solve::Reg))
+            .ok_or_else(|| LowerError::contract("tensor binary scalar is out of range", span))
+    }
+
     fn multiply_expression(
         &mut self,
         lhs: dae::ExprId<'dae>,
@@ -196,42 +280,36 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)
             }
             ([inner], [rhs_inner]) if inner == rhs_inner => {
-                self.dot_product(lhs, rhs, *inner as usize, 0, 1, 0, 1, span)
+                self.packed_multiply_outputs(lhs, rhs, *inner as usize, 1, 1, scalar, span)
             }
-            ([_, inner], [rhs_inner]) if inner == rhs_inner => {
-                let row_start = scalar
-                    .checked_mul(*inner as usize)
-                    .ok_or_else(|| LowerError::contract("matrix row offset overflow", span))?;
-                self.dot_product(lhs, rhs, *inner as usize, row_start, 1, 0, 1, span)
-            }
-            ([inner], [rhs_inner, columns]) if inner == rhs_inner => self.dot_product(
+            ([rows, inner], [rhs_inner]) if inner == rhs_inner => self.packed_multiply_outputs(
                 lhs,
                 rhs,
                 *inner as usize,
-                0,
+                *rows as usize,
                 1,
                 scalar,
-                *columns as usize,
                 span,
             ),
-            ([_, inner], [rhs_inner, columns]) if inner == rhs_inner => {
-                let columns = *columns as usize;
-                let row = scalar / columns;
-                let column = scalar % columns;
-                let row_start = row
-                    .checked_mul(*inner as usize)
-                    .ok_or_else(|| LowerError::contract("matrix row offset overflow", span))?;
-                self.dot_product(
+            ([inner], [rhs_inner, columns]) if inner == rhs_inner => self.packed_multiply_outputs(
+                lhs,
+                rhs,
+                *inner as usize,
+                1,
+                *columns as usize,
+                scalar,
+                span,
+            ),
+            ([rows, inner], [rhs_inner, columns]) if inner == rhs_inner => self
+                .packed_multiply_outputs(
                     lhs,
                     rhs,
                     *inner as usize,
-                    row_start,
-                    1,
-                    column,
-                    columns,
+                    *rows as usize,
+                    *columns as usize,
+                    scalar,
                     span,
-                )
-            }
+                ),
             _ => Err(LowerError::contract(
                 "checked multiplication shape has no scalar projection",
                 span,
@@ -240,43 +318,46 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn dot_product(
+    fn packed_multiply_outputs(
         &mut self,
         lhs: dae::ExprId<'dae>,
         rhs: dae::ExprId<'dae>,
-        count: usize,
-        lhs_start: usize,
-        lhs_stride: usize,
-        rhs_start: usize,
-        rhs_stride: usize,
+        inner: usize,
+        rows: usize,
+        columns: usize,
+        scalar: usize,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let mut sum = None;
-        for term in 0..count {
-            let lhs_index =
-                lhs_start
-                    .checked_add(term.checked_mul(lhs_stride).ok_or_else(|| {
-                        LowerError::contract("dot-product lhs offset overflow", span)
-                    })?)
-                    .ok_or_else(|| LowerError::contract("dot-product lhs offset overflow", span))?;
-            let rhs_index =
-                rhs_start
-                    .checked_add(term.checked_mul(rhs_stride).ok_or_else(|| {
-                        LowerError::contract("dot-product rhs offset overflow", span)
-                    })?)
-                    .ok_or_else(|| LowerError::contract("dot-product rhs offset overflow", span))?;
-            let lhs_term = self.expression(lhs, lhs_index)?;
-            let rhs_term = self.expression(rhs, rhs_index)?;
-            let product = self.binary(dae::BinaryOperator::Multiply, lhs_term, rhs_term, span)?;
-            sum = Some(match sum {
-                Some(previous) => self.binary(dae::BinaryOperator::Add, previous, product, span)?,
-                None => product,
-            });
+        let key = (self.context_id, lhs, rhs);
+        if let Some(&(start, count)) = self.matrix_multiply_cache.get(&key) {
+            return (scalar < count)
+                .then(|| start + scalar as solve::Reg)
+                .ok_or_else(|| {
+                    LowerError::contract("matrix product scalar is out of range", span)
+                });
         }
-        match sum {
-            Some(sum) => Ok(sum),
-            None => self.constant(0.0, span),
+        let lhs_start = self.pack_expression(lhs)?;
+        let rhs_start = self.pack_expression(rhs)?;
+        let count = rows
+            .checked_mul(columns)
+            .ok_or_else(|| LowerError::contract("matrix product output extent overflow", span))?;
+        let dst_start = self.next_register;
+        for _ in 0..count {
+            self.register(span)?;
         }
+        self.ops.push(solve::LinearOp::MatrixMultiply {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes: 1,
+        });
+        self.matrix_multiply_cache.insert(key, (dst_start, count));
+        (scalar < count)
+            .then(|| dst_start + scalar as solve::Reg)
+            .ok_or_else(|| LowerError::contract("matrix product scalar is out of range", span))
     }
 
     pub(super) fn conditional(
@@ -310,8 +391,8 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 )),
             }
         }
-        for (condition, _, _) in &conditions {
-            self.push_activation(*condition, false);
+        for (condition, condition_value, _) in &conditions {
+            self.push_activation(*condition, *condition_value, false);
         }
         let mut selected = self.expression(fallback, scalar)?;
         for _ in 0..conditions.len() {
@@ -320,10 +401,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         for (branch, (condition, condition_value, value)) in
             conditions.iter().copied().enumerate().rev()
         {
-            for (previous, _, _) in conditions.iter().copied().take(branch) {
-                self.push_activation(previous, false);
+            for (previous, previous_value, _) in conditions.iter().copied().take(branch) {
+                self.push_activation(previous, previous_value, false);
             }
-            self.push_activation(condition, true);
+            self.push_activation(condition, condition_value, true);
             let value = self.expression(value, scalar)?;
             self.pop_activation();
             for _ in 0..branch {

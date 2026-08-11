@@ -145,7 +145,8 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
         lattice
     );
     assert!(
-        solve.discrete.rhs.programs()[0]
+        solve.discrete.guarded_assignments[0]
+            .program()
             .iter()
             .any(|operation| matches!(operation, LinearOp::LoadP { index: 2, .. }))
     );

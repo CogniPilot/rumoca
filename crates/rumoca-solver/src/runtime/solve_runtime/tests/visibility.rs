@@ -331,6 +331,7 @@ fn phase_zero_clock_tick_executes_once_after_initialization() {
                 row_roles: vec![solve::DiscreteRowRole::Equation],
                 pre_modes: vec![solve::DiscreteEventPreMode::EventEntry],
                 observation_refresh: vec![false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
                 clock_owners: vec![Some(owner)],
                 ..Default::default()
             },

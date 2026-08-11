@@ -35,6 +35,66 @@ impl ReductionKind {
 }
 
 impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
+    pub(super) fn pack_tensor_generator(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let key = (self.context_id, expression);
+        if let Some(&(start, _)) = self.tensor_generate_cache.get(&key) {
+            return Ok(start);
+        }
+        let dimensions = self.node(expression).value_type().dimensions();
+        let count = dimensions
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
+        let count =
+            count.ok_or_else(|| LowerError::contract("tensor generator extent overflow", span))?;
+        let dst_start = self.next_register;
+        for _ in 0..count {
+            self.register(span)?;
+        }
+        match builtin {
+            dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones | dae::PureBuiltin::Fill => {
+                let value_start = match builtin {
+                    dae::PureBuiltin::Zeros => self.constant(0.0, span)?,
+                    dae::PureBuiltin::Ones => self.constant(1.0, span)?,
+                    dae::PureBuiltin::Fill => {
+                        self.expression(arguments.get(0).expect("checked fill value argument"), 0)?
+                    }
+                    _ => unreachable!(),
+                };
+                self.ops.push(solve::LinearOp::TensorFill {
+                    dst_start,
+                    value_start,
+                    count,
+                    lanes: 1,
+                });
+            }
+            dae::PureBuiltin::Identity => {
+                let [rows, columns] = dimensions else {
+                    return Err(LowerError::contract(
+                        "identity result must be rank two",
+                        span,
+                    ));
+                };
+                if rows != columns {
+                    return Err(LowerError::contract("identity result must be square", span));
+                }
+                self.ops.push(solve::LinearOp::TensorIdentity {
+                    dst_start,
+                    size: *rows as usize,
+                    lanes: 1,
+                });
+            }
+            _ => unreachable!("only tensor generators use compact generator lowering"),
+        }
+        self.tensor_generate_cache.insert(key, (dst_start, count));
+        Ok(dst_start)
+    }
+
     pub(super) fn builtin(
         &mut self,
         builtin: dae::PureBuiltin,
@@ -151,6 +211,52 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.expression(operand, selector.transpose_scalar(operand, scalar))
     }
 
+    pub(super) fn pack_transpose(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        arguments: dae::ExpressionOperands<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let key = (self.context_id, expression);
+        if let Some(&(start, _)) = self.tensor_transpose_cache.get(&key) {
+            return Ok(start);
+        }
+        let operand = arguments.get(0).expect("checked transpose operand");
+        let dimensions = self.node(expression).value_type().dimensions();
+        let [rows, columns, trailing @ ..] = dimensions else {
+            return Err(LowerError::contract(
+                "transpose result must have rank two or greater",
+                span,
+            ));
+        };
+        let rows = *rows as usize;
+        let columns = *columns as usize;
+        let element_width = trailing.iter().try_fold(1usize, |width, extent| {
+            width
+                .checked_mul(*extent as usize)
+                .ok_or_else(|| LowerError::contract("transpose trailing extent overflow", span))
+        })?;
+        let count = rows
+            .checked_mul(columns)
+            .and_then(|count| count.checked_mul(element_width))
+            .ok_or_else(|| LowerError::contract("transpose extent overflow", span))?;
+        let src_start = self.pack_expression(operand)?;
+        let dst_start = self.next_register;
+        for _ in 0..count {
+            self.register(span)?;
+        }
+        self.ops.push(solve::LinearOp::TensorTranspose {
+            dst_start,
+            src_start,
+            rows,
+            columns,
+            element_width,
+            lanes: 1,
+        });
+        self.tensor_transpose_cache.insert(key, (dst_start, count));
+        Ok(dst_start)
+    }
+
     fn identity(
         &mut self,
         dimensions: &[u32],
@@ -255,6 +361,57 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let (argument, argument_scalar) =
             selector.promoted_concatenation_scalar(arguments, axis, &result_dimensions, scalar)?;
         self.expression(argument, argument_scalar)
+    }
+
+    pub(super) fn pack_promoted_concatenation(
+        &mut self,
+        expression: dae::ExprId<'dae>,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let key = (self.context_id, expression);
+        if let Some(&(start, _)) = self.tensor_concatenate_cache.get(&key) {
+            return Ok(start);
+        }
+        let axis = usize::from(builtin == dae::PureBuiltin::PromotedCat2);
+        let dimensions = self.node(expression).value_type().dimensions().to_vec();
+        if axis >= dimensions.len() {
+            return Err(LowerError::contract(
+                "promoted concatenation axis exceeds its result rank",
+                span,
+            ));
+        }
+        let mut sources = Vec::with_capacity(arguments.len());
+        for argument in arguments.iter() {
+            let start = self.pack_expression(argument)?;
+            let argument_dimensions = self.node(argument).value_type().dimensions();
+            let mut promoted = vec![1_u32; dimensions.len()];
+            promoted[..argument_dimensions.len()].copy_from_slice(argument_dimensions);
+            sources.push(solve::TensorConcatenateSource {
+                start,
+                dimensions: promoted.into_boxed_slice(),
+            });
+        }
+        let count = dimensions
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize));
+        let count =
+            count.ok_or_else(|| LowerError::contract("concatenation extent overflow", span))?;
+        let dst_start = self.next_register;
+        for _ in 0..count {
+            self.register(span)?;
+        }
+        self.ops.push(solve::LinearOp::TensorConcatenate {
+            dst_start,
+            sources: sources.into_boxed_slice(),
+            dimensions: dimensions.into_boxed_slice(),
+            axis,
+            lanes: 1,
+        });
+        self.tensor_concatenate_cache
+            .insert(key, (dst_start, count));
+        Ok(dst_start)
     }
 
     fn atan2(
@@ -390,6 +547,34 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let rhs = self.expression(arguments.get(1).expect("checked cross rhs"), first)?;
         let negative = self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)?;
         self.binary(dae::BinaryOperator::Subtract, positive, negative, span)
+    }
+
+    pub(super) fn pack_cross(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let lhs = arguments.get(0).expect("checked cross lhs");
+        let rhs = arguments.get(1).expect("checked cross rhs");
+        if scalar_count(self.view, lhs) != 3 || scalar_count(self.view, rhs) != 3 {
+            return Err(LowerError::contract(
+                "cross product operands must both contain three scalars",
+                span,
+            ));
+        }
+        let lhs_start = self.pack_expression(lhs)?;
+        let rhs_start = self.pack_expression(rhs)?;
+        let dst_start = self.next_register;
+        for _ in 0..3 {
+            self.register(span)?;
+        }
+        self.ops.push(solve::LinearOp::TensorCross {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            lanes: 1,
+        });
+        Ok(dst_start)
     }
 
     fn skew(

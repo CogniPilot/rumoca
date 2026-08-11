@@ -1,6 +1,105 @@
 use super::*;
 
 #[test]
+fn assertion_only_function_loop_round_trips_without_generated_fold_values() {
+    let source = TestSource::new(
+        "function f output Real y; algorithm y := 0; for k in 1:2 loop assert(k > 0, \"positive\"); end for; end f;",
+    );
+    let function_at = source.source("function f", 0);
+    let output_at = source.source("output Real y", 0);
+    let assignment_at = source.source("y := 0", 0);
+    let zero_at = source.source("0", 0);
+    let loop_at = source.source("for k in 1:2 loop", 0);
+    let assertion_at = source.source("assert(k > 0, \"positive\")", 0);
+    let condition_at = source.source("k > 0", 0);
+    let condition_zero_at = source.source("0", 1);
+    let message_at = source.source("\"positive\"", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, zero, assignment_at)
+                })?;
+                let domain = dae.domains(|domains| {
+                    domains.structured(
+                        StructuredIndexDomain {
+                            binders: vec![StructuredIndexBinder {
+                                id: 0,
+                                display_name: "k".to_string(),
+                                lower: 1,
+                                upper: 2,
+                                step: 1,
+                            }],
+                        },
+                        loop_at,
+                    )
+                })?;
+                let mut loop_body =
+                    dae.functions(|functions| functions.begin_loop(body, domain, [], loop_at))?;
+                let k = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_at)
+                        .binder(DomainBinderId::from_raw(domain.index(), 0))
+                })?;
+                let condition_zero = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_zero_at)
+                        .literal(DaeLiteral::Integer(0))
+                })?;
+                let condition = dae.expressions(|expressions| {
+                    expressions
+                        .at(condition_at)
+                        .binary(BinaryOperator::Greater, k, condition_zero)
+                })?;
+                let message = dae.expressions(|expressions| {
+                    expressions
+                        .at(message_at)
+                        .literal(DaeLiteral::String("positive".to_owned()))
+                })?;
+                dae.functions(|functions| {
+                    functions.assertion_loop(&mut loop_body, condition, message, assertion_at)
+                })?;
+                let body = dae.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("an assertion-only compact fold constructs without carried values");
+
+    let inspect = |view: DaeView<'_>| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let statements = function.statements().collect::<Vec<_>>();
+        let FunctionStatementView::For {
+            fold, statements, ..
+        } = statements[1].clone()
+        else {
+            panic!("the assertion-only loop stays a compact fold");
+        };
+        assert_eq!(view.function_fold(fold).unwrap().targets().count(), 0);
+        assert!(matches!(
+            statements.collect::<Vec<_>>().as_slice(),
+            [FunctionStatementView::Assertion { .. }]
+        ));
+    };
+    dae.inspect(inspect);
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let replayed: Dae = serde_json::from_str(&encoded).unwrap();
+    replayed.inspect(inspect);
+}
+
+#[test]
 fn wire_rejects_a_noncanonical_source_map_before_dae_construction() {
     let dae = function_read_fixture(false);
     let mut wire = serde_json::to_value(dae).expect("checked DAE serializes");

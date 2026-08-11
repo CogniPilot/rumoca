@@ -23,10 +23,22 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         t: f64,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        if let Some(compiled) = self.runtime.compiled_implicit_rhs.as_ref()
+            && compiled
+                .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
+                .is_ok()
+        {
+            self.runtime
+                .report_nonfinite_implicit_residual_inputs(t, y, out);
+            return Ok(());
+        }
         self.runtime
             .implicit_rhs
             .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
-            .map_err(Into::into)
+            .map_err(RuntimeSolveError::from)?;
+        self.runtime
+            .report_nonfinite_implicit_residual_inputs(t, y, out);
+        Ok(())
     }
 
     fn eval_jacobian_v(
@@ -37,6 +49,23 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        if let Some(compiled) = self
+            .runtime
+            .compiled_implicit_projection_jacobian_v
+            .as_ref()
+            && compiled
+                .call(
+                    y,
+                    p,
+                    t,
+                    v,
+                    self.runtime.model.external_tables.as_slice(),
+                    out,
+                )
+                .is_ok()
+        {
+            return Ok(());
+        }
         self.runtime
             .implicit_projection_jacobian_v
             .eval_with_context(
@@ -159,11 +188,15 @@ impl ImplicitProjectionModel for InitialProjectionModel<'_> {
     fn implicit_target_assignment_is_exact(&self, row_idx: usize, target_y_index: usize) -> bool {
         self.runtime
             .implicit_scalar_rhs
-            .single_output_row_for_output_index(row_idx)
-            .is_some_and(|program_idx| {
+            .row_output_position(row_idx)
+            .is_some_and(|(program_idx, output_offset)| {
                 self.runtime
                     .implicit_scalar_rhs
-                    .certifies_exact_target_assignment(program_idx, target_y_index)
+                    .certifies_exact_target_assignment_output(
+                        program_idx,
+                        output_offset,
+                        target_y_index,
+                    )
             })
     }
 
@@ -211,6 +244,19 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         } else {
             y
         };
+        if let Some(compiled) = self.runtime.compiled_initial_residual.as_ref()
+            && compiled
+                .call(
+                    residual_y,
+                    p,
+                    t,
+                    self.runtime.model.external_tables.as_slice(),
+                    out,
+                )
+                .is_ok()
+        {
+            return Ok(());
+        }
         self.runtime
             .initial_residual
             .eval_with_context(residual_y, p, t, self.runtime.row_eval_context(), out)
@@ -260,6 +306,20 @@ impl AlgebraicProjectionModel for InitialProjectionModel<'_> {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
+        if let Some(compiled) = self.runtime.compiled_initial_residual_jacobian_v.as_ref()
+            && compiled
+                .call(
+                    y,
+                    p,
+                    t,
+                    v,
+                    self.runtime.model.external_tables.as_slice(),
+                    out,
+                )
+                .is_ok()
+        {
+            return Ok(());
+        }
         self.runtime
             .initial_residual_jacobian_v
             .eval_with_context(

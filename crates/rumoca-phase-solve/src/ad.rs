@@ -10,13 +10,20 @@ use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, CompareOp, ComputeBlock,
     ComputeNode, LinearOp, RandomGenerator, Reg, ScalarProgramBlock, UnaryOp, VarLayout,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 struct DualReg {
     re: Reg,
     du: Reg,
 }
+
+type FoldAdCache = Rc<RefCell<HashMap<usize, Arc<rumoca_ir_solve::FunctionFoldProgram>>>>;
+type ConditionalAdCache =
+    Rc<RefCell<HashMap<usize, Arc<rumoca_ir_solve::FunctionConditionalProgram>>>>;
 
 /// Compute the forward-mode JVP of a `ComputeBlock`, preserving tensor structure.
 ///
@@ -157,7 +164,7 @@ fn lower_affine_jvp_ops(
     let mut lowered_load_strides = Vec::new();
     let mut lowered_const_strides = Vec::new();
 
-    for (op_position, op) in base_ops.iter().copied().enumerate() {
+    for (op_position, op) in base_ops.iter().cloned().enumerate() {
         let generated_start = builder.ops.len();
         builder.lower_op(op)?;
         let generated_end = builder.ops.len();
@@ -364,7 +371,7 @@ fn lower_tensor_operand(
     let mut builder = AdBuilder::new_with_span(seed_mode, span);
     builder.next_reg = next_reg;
     for op in ops {
-        builder.lower_op(*op)?;
+        builder.lower_op(op.clone())?;
     }
     let values = collect_dual_range(
         &builder,
@@ -476,6 +483,9 @@ fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode) -> bool {
         matches!(op, LinearOp::LoadY { .. })
             || matches!(seed_mode, SeedMode::SolverYAndP { .. })
                 && matches!(op, LinearOp::LoadP { .. } | LinearOp::LoadIndexedP { .. })
+            || matches!(op, LinearOp::FunctionFold { program, .. }
+                | LinearOp::GuardedFunctionFold { program, .. }
+                if ops_reference_seeded_inputs(&program.update, seed_mode))
     })
 }
 
@@ -507,7 +517,7 @@ fn lower_linsolve_jvp_node(input: LinSolveJvpInput<'_>) -> Result<ComputeNode, L
 
     let mut builder = AdBuilder::new_with_span(seed_mode, span);
     for op in setup_ops {
-        builder.lower_op(*op)?;
+        builder.lower_op(op.clone())?;
     }
 
     let matrix_len = checked_ad_product(n, n, span, "LinSolve JVP matrix range")?;
@@ -623,9 +633,19 @@ fn lower_scalar_program_rows_ad(
     }
 
     let mut rows = ad_vec_with_capacity(primal_rows.len(), context, span)?;
+    // A fold body is an aggregate program owner. Preserve that ownership in
+    // the derived JVP: every reference to the same primal body must reference
+    // the same derived body instead of recursively rebuilding an expression
+    // tree at each call site.
+    let fold_program_cache = Rc::new(RefCell::new(HashMap::new()));
     for (row_index, row) in primal_rows.iter().enumerate() {
         let row_span = row_span(row_spans, row_index)?;
-        rows.push(lower_row_ad_with_span(row, seed_mode, row_span)?);
+        rows.push(lower_row_ad_with_span(
+            row,
+            seed_mode,
+            row_span,
+            fold_program_cache.clone(),
+        )?);
     }
     Ok(rows)
 }
@@ -662,10 +682,12 @@ fn lower_row_ad_with_span(
     primal_ops: &[LinearOp],
     seed_mode: SeedMode,
     span: Option<rumoca_core::Span>,
+    fold_program_cache: FoldAdCache,
 ) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = AdBuilder::new_with_optional_span(seed_mode, span);
+    let mut builder =
+        AdBuilder::new_with_optional_span_and_fold_cache(seed_mode, span, fold_program_cache);
     for op in primal_ops {
-        builder.lower_op(*op)?;
+        builder.lower_op(op.clone())?;
     }
     Ok(builder.ops)
 }
@@ -679,7 +701,14 @@ enum SeedMode {
     },
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default)]
+enum StoreOutputMode {
+    #[default]
+    Derivative,
+    Primal,
+    Dual,
+}
+
 struct AdBuilder {
     ops: Vec<LinearOp>,
     next_reg: Reg,
@@ -690,6 +719,28 @@ struct AdBuilder {
     cached_two: Option<Reg>,
     seed_mode: SeedMode,
     span: Option<rumoca_core::Span>,
+    store_output_mode: StoreOutputMode,
+    fold_program_cache: FoldAdCache,
+    conditional_program_cache: ConditionalAdCache,
+}
+
+impl Default for AdBuilder {
+    fn default() -> Self {
+        Self {
+            ops: Vec::new(),
+            next_reg: 0,
+            map: HashMap::new(),
+            cached_zero: None,
+            cached_one: None,
+            cached_ln10: None,
+            cached_two: None,
+            seed_mode: SeedMode::default(),
+            span: None,
+            store_output_mode: StoreOutputMode::Derivative,
+            fold_program_cache: Rc::new(RefCell::new(HashMap::new())),
+            conditional_program_cache: Rc::new(RefCell::new(HashMap::new())),
+        }
+    }
 }
 
 impl AdBuilder {
@@ -701,6 +752,19 @@ impl AdBuilder {
         Self {
             seed_mode,
             span,
+            ..Self::default()
+        }
+    }
+
+    fn new_with_optional_span_and_fold_cache(
+        seed_mode: SeedMode,
+        span: Option<rumoca_core::Span>,
+        fold_program_cache: FoldAdCache,
+    ) -> Self {
+        Self {
+            seed_mode,
+            span,
+            fold_program_cache,
             ..Self::default()
         }
     }
@@ -717,10 +781,44 @@ impl AdBuilder {
                 count,
                 index,
             } => self.lower_load_indexed_p(dst, base, count, index),
+            LinearOp::LoadIndexedRegister {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => self.lower_load_indexed_register(dst, base, stride, dimensions, indices),
+            LinearOp::LoadIndexedFoldCarried {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => self.lower_load_indexed_fold_carried(dst, base, stride, dimensions, indices),
+            LinearOp::LoadIndexedFoldCapture {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => self.lower_load_indexed_fold_capture(dst, base, stride, dimensions, indices),
             LinearOp::LoadSeed { .. } => Err(unsupported("unexpected LoadSeed in primal row")),
             LinearOp::LoadIndexedSeed { .. } => {
                 Err(unsupported("unexpected LoadIndexedSeed in primal row"))
             }
+            LinearOp::LoadFoldCarried { dst, index } => self.lower_load_fold_carried(dst, index),
+            LinearOp::LoadFoldIndex { dst, dimension } => {
+                self.lower_load_fold_index(dst, dimension)
+            }
+            LinearOp::LoadFoldCapture { dst, index } => self.lower_load_fold_capture(dst, index),
+            LinearOp::LoadFunctionConditionalCapture { dst, index } => {
+                self.lower_load_function_conditional_capture(dst, index)
+            }
+            LinearOp::LoadFunctionConditionalCaptureRange {
+                dst_start,
+                index_start,
+                count,
+            } => self.lower_load_function_conditional_capture_range(dst_start, index_start, count),
             LinearOp::Move { dst, src } => self.lower_move(dst, src),
             LinearOp::LinearSolveComponent {
                 dst,
@@ -729,6 +827,43 @@ impl AdBuilder {
                 n,
                 component,
             } => self.lower_linear_solve_component(dst, matrix_start, rhs_start, n, component),
+            LinearOp::DotProduct {
+                dst,
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+            } => self.lower_dot_product(dst, lhs_start, rhs_start, count, lhs_stride, rhs_stride),
+            LinearOp::MatrixMultiply {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                rows,
+                inner,
+                columns,
+                lanes,
+            } => self.lower_matrix_multiply(
+                dst_start, lhs_start, rhs_start, rows, inner, columns, lanes,
+            ),
+            LinearOp::TensorBinary {
+                dst_start,
+                op,
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+                lanes,
+            } => self.lower_tensor_binary(
+                dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
+            ),
+            LinearOp::TensorCross {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                lanes,
+            } => self.lower_tensor_cross(dst_start, lhs_start, rhs_start, lanes),
             LinearOp::TableBounds { dst, table_id, max } => {
                 self.lower_table_bounds(dst, table_id, max)
             }
@@ -788,8 +923,490 @@ impl AdBuilder {
                 if_true,
                 if_false,
             } => self.lower_select(dst, cond, if_true, if_false),
+            LinearOp::FunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                program,
+            } => self.lower_function_fold(dst_start, initial_start, capture_start, program),
+            LinearOp::GuardedFunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                activation,
+                program,
+            } => self.lower_guarded_function_fold(
+                dst_start,
+                initial_start,
+                capture_start,
+                activation,
+                program,
+            ),
+            LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => self.lower_function_conditional(dst_start, capture_start, program),
+            LinearOp::PureCall { .. } => Err(unsupported(
+                "typed pure-call JVP owner has not been constructed",
+            )),
+            LinearOp::StoreOutputFoldTensorUpdate {
+                source_base,
+                source_stride,
+                dimensions,
+                updates,
+                nodes,
+                result,
+                lanes,
+            } => self.lower_store_fold_tensor_update(
+                source_base,
+                source_stride,
+                dimensions,
+                updates,
+                nodes,
+                result,
+                lanes,
+            ),
+            LinearOp::TensorTranspose {
+                dst_start,
+                src_start,
+                rows,
+                columns,
+                element_width,
+                lanes,
+            } => self.lower_tensor_transpose(
+                dst_start,
+                src_start,
+                rows,
+                columns,
+                element_width,
+                lanes,
+            ),
+            LinearOp::TensorConcatenate {
+                dst_start,
+                sources,
+                dimensions,
+                axis,
+                lanes,
+            } => self.lower_tensor_concatenate(dst_start, sources, dimensions, axis, lanes),
+            LinearOp::TensorUpdate {
+                dst_start,
+                base_start,
+                value_start,
+                dimensions,
+                subscripts,
+                lanes,
+            } => self.lower_tensor_update(
+                dst_start,
+                base_start,
+                value_start,
+                dimensions,
+                subscripts,
+                lanes,
+            ),
+            LinearOp::TensorFill {
+                dst_start,
+                value_start,
+                count,
+                lanes,
+            } => self.lower_tensor_fill(dst_start, value_start, count, lanes),
+            LinearOp::TensorIdentity {
+                dst_start,
+                size,
+                lanes,
+            } => self.lower_tensor_identity(dst_start, size, lanes),
+            LinearOp::TensorLoad {
+                dst_start,
+                input,
+                input_start,
+                count,
+                seed_start,
+                lanes,
+            } => self.lower_tensor_load(dst_start, input, input_start, count, seed_start, lanes),
+            LinearOp::StoreOutputFunctionFold {
+                initial,
+                capture_start,
+                program,
+                result_base,
+                count,
+                condition,
+                nested_when_true,
+            } => self.lower_store_output_function_fold(
+                initial,
+                capture_start,
+                program,
+                result_base,
+                count,
+                condition,
+                nested_when_true,
+            ),
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } => self.lower_store_range(start, count, stride),
             LinearOp::StoreOutput { src } => self.lower_store(src),
         }
+    }
+
+    fn lower_load_fold_carried(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {
+        let primal_index = index
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("function-fold AD carried index overflow"))?;
+        let re = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadFoldCarried {
+            dst: re,
+            index: primal_index,
+        });
+        let du = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadFoldCarried {
+            dst: du,
+            index: primal_index + 1,
+        });
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_load_fold_index(&mut self, dst: Reg, dimension: usize) -> Result<(), LowerError> {
+        let re = self.alloc_reg()?;
+        self.ops
+            .push(LinearOp::LoadFoldIndex { dst: re, dimension });
+        let du = self.zero_reg()?;
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_load_fold_capture(&mut self, dst: Reg, index: usize) -> Result<(), LowerError> {
+        let primal_index = index
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("function-fold AD capture index overflow"))?;
+        let re = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadFoldCapture {
+            dst: re,
+            index: primal_index,
+        });
+        let du = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadFoldCapture {
+            dst: du,
+            index: primal_index + 1,
+        });
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_load_function_conditional_capture(
+        &mut self,
+        dst: Reg,
+        index: usize,
+    ) -> Result<(), LowerError> {
+        let primal_index = index
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("function-conditional AD capture index overflow"))?;
+        let re = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadFunctionConditionalCapture {
+            dst: re,
+            index: primal_index,
+        });
+        let du = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadFunctionConditionalCapture {
+            dst: du,
+            index: primal_index + 1,
+        });
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_load_function_conditional_capture_range(
+        &mut self,
+        dst_start: Reg,
+        index_start: usize,
+        count: usize,
+    ) -> Result<(), LowerError> {
+        let dual_index_start = index_start
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("function-conditional AD capture range index overflow"))?;
+        let dual_count = count
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("function-conditional AD capture range count overflow"))?;
+        let dual_start = self.next_reg;
+        for _ in 0..dual_count {
+            self.alloc_reg()?;
+        }
+        self.ops
+            .push(LinearOp::LoadFunctionConditionalCaptureRange {
+                dst_start: dual_start,
+                index_start: dual_index_start,
+                count: dual_count,
+            });
+        for offset in 0..count {
+            let primal = checked_ad_reg_offset(
+                dst_start,
+                offset,
+                self.span,
+                "function conditional capture range primal",
+            )?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(
+                    offset,
+                    2,
+                    self.span,
+                    "function conditional capture range dual lane",
+                )?,
+                self.span,
+                "function conditional capture range dual",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn derived_fold_program(
+        &mut self,
+        primal: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
+    ) -> Result<Arc<rumoca_ir_solve::FunctionFoldProgram>, LowerError> {
+        let key = Arc::as_ptr(primal) as usize;
+        if let Some(program) = self.fold_program_cache.borrow().get(&key).cloned() {
+            return Ok(program);
+        }
+
+        let mut update = Self::new_with_optional_span_and_fold_cache(
+            self.seed_mode,
+            self.span,
+            self.fold_program_cache.clone(),
+        );
+        update.conditional_program_cache = self.conditional_program_cache.clone();
+        update.store_output_mode = StoreOutputMode::Dual;
+        for operation in &primal.update {
+            update.lower_op(operation.clone())?;
+        }
+        let carried_count = primal
+            .carried_count
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("function-fold AD carried count overflow"))?;
+        let capture_count = primal
+            .capture_count
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("function-fold AD capture count overflow"))?;
+        let program = Arc::new(
+            rumoca_ir_solve::FunctionFoldProgram::checked(
+                primal.domain.clone(),
+                carried_count,
+                capture_count,
+                update.ops,
+            )
+            .map_err(|error| {
+                unsupported(&format!("function-fold AD register proof failed: {error}"))
+            })?,
+        );
+        self.fold_program_cache
+            .borrow_mut()
+            .insert(key, program.clone());
+        Ok(program)
+    }
+
+    fn derive_conditional_region(
+        &self,
+        primal: &[LinearOp],
+        store_output_mode: StoreOutputMode,
+    ) -> Result<Vec<LinearOp>, LowerError> {
+        let mut region = Self::new_with_optional_span_and_fold_cache(
+            self.seed_mode,
+            self.span,
+            self.fold_program_cache.clone(),
+        );
+        region.conditional_program_cache = self.conditional_program_cache.clone();
+        region.store_output_mode = store_output_mode;
+        for operation in primal {
+            if let Err(error) = region.lower_op(operation.clone()) {
+                if std::env::var_os("RUMOCA_PROFILE_AD").is_some() {
+                    eprintln!(
+                        "rumoca-ad conditional_region_failure mode={store_output_mode:?} operation={operation:#?} primal={primal:#?} derived={:#?}",
+                        region.ops,
+                    );
+                }
+                return Err(error);
+            }
+        }
+        Ok(region.ops)
+    }
+
+    fn derived_conditional_program(
+        &mut self,
+        primal: &Arc<rumoca_ir_solve::FunctionConditionalProgram>,
+    ) -> Result<Arc<rumoca_ir_solve::FunctionConditionalProgram>, LowerError> {
+        let key = Arc::as_ptr(primal) as usize;
+        if let Some(program) = self.conditional_program_cache.borrow().get(&key).cloned() {
+            return Ok(program);
+        }
+
+        let capture_count = checked_ad_product(
+            primal.capture_count,
+            2,
+            self.span,
+            "function-conditional AD captures",
+        )?;
+        let target_widths = primal
+            .target_widths
+            .iter()
+            .map(|width| checked_ad_product(*width, 2, self.span, "function-conditional AD target"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut arms =
+            ad_vec_with_capacity(primal.arms.len(), "function-conditional AD arms", self.span)?;
+        for arm in &primal.arms {
+            arms.push((
+                self.derive_conditional_region(&arm.condition, StoreOutputMode::Primal)?,
+                self.derive_conditional_region(&arm.result, StoreOutputMode::Dual)?,
+            ));
+        }
+        let fallback = self.derive_conditional_region(&primal.fallback, StoreOutputMode::Dual)?;
+        let checked = match primal.owner {
+            Some(owner) => rumoca_ir_solve::FunctionConditionalProgram::checked_owned(
+                owner,
+                capture_count,
+                target_widths,
+                arms,
+                fallback,
+            ),
+            None => rumoca_ir_solve::FunctionConditionalProgram::checked(
+                capture_count,
+                target_widths,
+                arms,
+                fallback,
+            ),
+        }
+        .map_err(|error| {
+            unsupported(&format!(
+                "function-conditional AD register proof failed: {error}"
+            ))
+        })?;
+        let program = Arc::new(checked);
+        self.conditional_program_cache
+            .borrow_mut()
+            .insert(key, program.clone());
+        Ok(program)
+    }
+
+    fn lower_function_fold(
+        &mut self,
+        dst_start: Reg,
+        initial_start: Reg,
+        capture_start: Reg,
+        program: Arc<rumoca_ir_solve::FunctionFoldProgram>,
+    ) -> Result<(), LowerError> {
+        self.lower_function_fold_with_activation(
+            dst_start,
+            initial_start,
+            capture_start,
+            None,
+            program,
+        )
+    }
+
+    fn lower_function_conditional(
+        &mut self,
+        dst_start: Reg,
+        capture_start: Reg,
+        program: Arc<rumoca_ir_solve::FunctionConditionalProgram>,
+    ) -> Result<(), LowerError> {
+        let packed_captures =
+            self.pack_dual_register_range(capture_start, program.capture_count)?;
+        let derived_program = self.derived_conditional_program(&program)?;
+        let result_start = self.next_reg;
+        for _ in 0..derived_program.result_count {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::FunctionConditional {
+            dst_start: result_start,
+            capture_start: packed_captures,
+            program: derived_program,
+        });
+        for offset in 0..program.result_count {
+            let primal_dst =
+                checked_ad_reg_offset(dst_start, offset, self.span, "function conditional output")?;
+            let lane =
+                checked_ad_product(offset, 2, self.span, "function conditional AD result lane")?;
+            let re = checked_ad_reg_offset(
+                result_start,
+                lane,
+                self.span,
+                "function conditional AD primal result",
+            )?;
+            self.bind(primal_dst, DualReg { re, du: re + 1 })?;
+        }
+        Ok(())
+    }
+
+    fn lower_guarded_function_fold(
+        &mut self,
+        dst_start: Reg,
+        initial_start: Reg,
+        capture_start: Reg,
+        activation: Reg,
+        program: Arc<rumoca_ir_solve::FunctionFoldProgram>,
+    ) -> Result<(), LowerError> {
+        let activation = self.lookup(activation)?.re;
+        self.lower_function_fold_with_activation(
+            dst_start,
+            initial_start,
+            capture_start,
+            Some(activation),
+            program,
+        )
+    }
+
+    fn lower_function_fold_with_activation(
+        &mut self,
+        dst_start: Reg,
+        initial_start: Reg,
+        capture_start: Reg,
+        activation: Option<Reg>,
+        program: Arc<rumoca_ir_solve::FunctionFoldProgram>,
+    ) -> Result<(), LowerError> {
+        let packed_initial = self.pack_dual_register_range(initial_start, program.carried_count)?;
+        let packed_captures =
+            self.pack_dual_register_range(capture_start, program.capture_count)?;
+        let derived_program = self.derived_fold_program(&program)?;
+        let carried_count = derived_program.carried_count;
+        let folded_start = self.next_reg;
+        for _ in 0..carried_count {
+            self.alloc_reg()?;
+        }
+        self.ops.push(match activation {
+            Some(activation) => LinearOp::GuardedFunctionFold {
+                dst_start: folded_start,
+                initial_start: packed_initial,
+                capture_start: packed_captures,
+                activation,
+                program: derived_program,
+            },
+            None => LinearOp::FunctionFold {
+                dst_start: folded_start,
+                initial_start: packed_initial,
+                capture_start: packed_captures,
+                program: derived_program,
+            },
+        });
+        for offset in 0..program.carried_count {
+            let offset_reg = Reg::try_from(offset)
+                .map_err(|_| unsupported("function-fold AD destination offset overflow"))?;
+            let primal_dst = dst_start
+                .checked_add(offset_reg)
+                .ok_or_else(|| unsupported("function-fold AD destination overflow"))?;
+            let lane = offset_reg
+                .checked_mul(2)
+                .ok_or_else(|| unsupported("function-fold AD lane overflow"))?;
+            self.bind(
+                primal_dst,
+                DualReg {
+                    re: folded_start + lane,
+                    du: folded_start + lane + 1,
+                },
+            )?;
+        }
+        Ok(())
     }
 
     fn lower_const(&mut self, dst: Reg, value: f64) -> Result<(), LowerError> {
@@ -1014,6 +1631,342 @@ impl AdBuilder {
         self.bind(dst, DualReg { re, du })
     }
 
+    fn lower_load_indexed_register(
+        &mut self,
+        dst: Reg,
+        base: Reg,
+        stride: usize,
+        dimensions: Box<[u32]>,
+        indices: Box<[rumoca_ir_solve::TensorIndex]>,
+    ) -> Result<(), LowerError> {
+        let count = dimensions
+            .iter()
+            .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+            .ok_or_else(|| unsupported("runtime tensor projection AD extent overflow"))?;
+        let mut real =
+            ad_vec_with_capacity(count, "runtime tensor projection AD real count", self.span)?;
+        let mut tangent = ad_vec_with_capacity(
+            count,
+            "runtime tensor projection AD tangent count",
+            self.span,
+        )?;
+        for offset in 0..count {
+            let source = base
+                .checked_add(
+                    Reg::try_from(offset.checked_mul(stride).ok_or_else(|| {
+                        unsupported("runtime tensor projection AD stride overflow")
+                    })?)
+                    .map_err(|_| unsupported("runtime tensor projection AD stride overflow"))?,
+                )
+                .ok_or_else(|| unsupported("runtime tensor projection AD source overflow"))?;
+            let dual = self.lookup(source)?;
+            real.push(dual.re);
+            tangent.push(dual.du);
+        }
+        let indices = indices
+            .iter()
+            .map(|index| match *index {
+                rumoca_ir_solve::TensorIndex::Constant(coordinate) => {
+                    Ok(rumoca_ir_solve::TensorIndex::Constant(coordinate))
+                }
+                rumoca_ir_solve::TensorIndex::Runtime(register) => Ok(
+                    rumoca_ir_solve::TensorIndex::Runtime(self.lookup(register)?.re),
+                ),
+            })
+            .collect::<Result<Vec<_>, LowerError>>()?
+            .into_boxed_slice();
+        let real_base = self.pack_registers(&real)?;
+        let re = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadIndexedRegister {
+            dst: re,
+            base: real_base,
+            stride: 1,
+            dimensions: dimensions.clone(),
+            indices: indices.clone(),
+        });
+        let tangent_base = self.pack_registers(&tangent)?;
+        let du = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadIndexedRegister {
+            dst: du,
+            base: tangent_base,
+            stride: 1,
+            dimensions,
+            indices,
+        });
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_load_indexed_fold_carried(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        stride: usize,
+        dimensions: Box<[u32]>,
+        indices: Box<[rumoca_ir_solve::TensorIndex]>,
+    ) -> Result<(), LowerError> {
+        let indices = indices
+            .iter()
+            .map(|index| match *index {
+                rumoca_ir_solve::TensorIndex::Constant(coordinate) => {
+                    Ok(rumoca_ir_solve::TensorIndex::Constant(coordinate))
+                }
+                rumoca_ir_solve::TensorIndex::Runtime(register) => Ok(
+                    rumoca_ir_solve::TensorIndex::Runtime(self.lookup(register)?.re),
+                ),
+            })
+            .collect::<Result<Vec<_>, LowerError>>()?
+            .into_boxed_slice();
+        let dual_base = base
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("indexed function-fold AD base overflow"))?;
+        let dual_stride = stride
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("indexed function-fold AD stride overflow"))?;
+        let re = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadIndexedFoldCarried {
+            dst: re,
+            base: dual_base,
+            stride: dual_stride,
+            dimensions: dimensions.clone(),
+            indices: indices.clone(),
+        });
+        let du = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadIndexedFoldCarried {
+            dst: du,
+            base: dual_base + 1,
+            stride: dual_stride,
+            dimensions,
+            indices,
+        });
+        self.bind(dst, DualReg { re, du })
+    }
+
+    fn lower_load_indexed_fold_capture(
+        &mut self,
+        dst: Reg,
+        base: usize,
+        stride: usize,
+        dimensions: Box<[u32]>,
+        indices: Box<[rumoca_ir_solve::TensorIndex]>,
+    ) -> Result<(), LowerError> {
+        let indices = indices
+            .iter()
+            .map(|index| match *index {
+                rumoca_ir_solve::TensorIndex::Constant(coordinate) => {
+                    Ok(rumoca_ir_solve::TensorIndex::Constant(coordinate))
+                }
+                rumoca_ir_solve::TensorIndex::Runtime(register) => Ok(
+                    rumoca_ir_solve::TensorIndex::Runtime(self.lookup(register)?.re),
+                ),
+            })
+            .collect::<Result<Vec<_>, LowerError>>()?
+            .into_boxed_slice();
+        let dual_base = base
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("indexed function-fold AD capture base overflow"))?;
+        let dual_stride = stride
+            .checked_mul(2)
+            .ok_or_else(|| unsupported("indexed function-fold AD capture stride overflow"))?;
+        let re = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadIndexedFoldCapture {
+            dst: re,
+            base: dual_base,
+            stride: dual_stride,
+            dimensions: dimensions.clone(),
+            indices: indices.clone(),
+        });
+        let du = self.alloc_reg()?;
+        self.ops.push(LinearOp::LoadIndexedFoldCapture {
+            dst: du,
+            base: dual_base + 1,
+            stride: dual_stride,
+            dimensions,
+            indices,
+        });
+        self.bind(dst, DualReg { re, du })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_store_fold_tensor_update(
+        &mut self,
+        source_base: usize,
+        source_stride: usize,
+        dimensions: Box<[u32]>,
+        updates: Box<[rumoca_ir_solve::FoldTensorUpdate]>,
+        nodes: Box<[rumoca_ir_solve::FoldTensorNode]>,
+        result: u32,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if source_stride != 1 || lanes != 1 {
+            return Err(unsupported("nested dual-lane function-fold tensor update"));
+        }
+        let mut dual_updates = Vec::with_capacity(updates.len());
+        for update in updates {
+            if update.value_stride != 1 {
+                return Err(unsupported("nested dual-lane function-fold tensor patch"));
+            }
+            let subscripts = update
+                .subscripts
+                .iter()
+                .map(|subscript| match *subscript {
+                    rumoca_ir_solve::TensorSubscript::Whole => {
+                        Ok(rumoca_ir_solve::TensorSubscript::Whole)
+                    }
+                    rumoca_ir_solve::TensorSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Constant(coordinate),
+                    ) => Ok(rumoca_ir_solve::TensorSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Constant(coordinate),
+                    )),
+                    rumoca_ir_solve::TensorSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Runtime(register),
+                    ) => Ok(rumoca_ir_solve::TensorSubscript::Index(
+                        rumoca_ir_solve::TensorIndex::Runtime(self.lookup(register)?.re),
+                    )),
+                })
+                .collect::<Result<Vec<_>, LowerError>>()?
+                .into_boxed_slice();
+            let condition = update
+                .condition
+                .map(|condition| self.lookup(condition).map(|dual| dual.re))
+                .transpose()?;
+            let value_count = dimensions
+                .iter()
+                .zip(subscripts.iter())
+                .try_fold(1usize, |count, (&extent, subscript)| {
+                    if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
+                        count.checked_mul(extent as usize)
+                    } else {
+                        Some(count)
+                    }
+                })
+                .ok_or_else(|| unsupported("function-fold tensor update AD extent overflow"))?;
+            let mut values = Vec::with_capacity(value_count.saturating_mul(2));
+            for element in 0..value_count {
+                let element = Reg::try_from(element)
+                    .map_err(|_| unsupported("function-fold tensor update AD register overflow"))?;
+                let source = update
+                    .value_start
+                    .checked_add(element)
+                    .ok_or_else(|| unsupported("function-fold tensor update AD value overflow"))?;
+                let dual = self.lookup(source)?;
+                values.extend([dual.re, dual.du]);
+            }
+            let value_start = self.pack_registers(&values)?;
+            dual_updates.push(rumoca_ir_solve::FoldTensorUpdate {
+                subscripts,
+                condition,
+                value_start,
+                value_stride: 2,
+            });
+        }
+        let nodes = nodes
+            .iter()
+            .map(|node| match *node {
+                rumoca_ir_solve::FoldTensorNode::Update { base, update } => {
+                    Ok(rumoca_ir_solve::FoldTensorNode::Update { base, update })
+                }
+                rumoca_ir_solve::FoldTensorNode::Select {
+                    condition,
+                    if_true,
+                    if_false,
+                } => Ok(rumoca_ir_solve::FoldTensorNode::Select {
+                    condition: self.lookup(condition)?.re,
+                    if_true,
+                    if_false,
+                }),
+            })
+            .collect::<Result<Vec<_>, LowerError>>()?;
+        self.ops.push(LinearOp::StoreOutputFoldTensorUpdate {
+            source_base: source_base
+                .checked_mul(2)
+                .ok_or_else(|| unsupported("function-fold tensor update AD base overflow"))?,
+            source_stride: 2,
+            dimensions,
+            updates: dual_updates.into_boxed_slice(),
+            nodes: nodes.into_boxed_slice(),
+            result,
+            lanes: 2,
+        });
+        Ok(())
+    }
+
+    fn lower_store_output_function_fold(
+        &mut self,
+        initial: Box<[rumoca_ir_solve::FoldInitialSource]>,
+        capture_start: Reg,
+        program: Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        result_base: usize,
+        count: usize,
+        condition: Option<Reg>,
+        nested_when_true: bool,
+    ) -> Result<(), LowerError> {
+        let mut dual_initial = Vec::with_capacity(initial.len());
+        for source in initial {
+            match source {
+                rumoca_ir_solve::FoldInitialSource::ParentCarried { base, count } => {
+                    dual_initial.push(rumoca_ir_solve::FoldInitialSource::ParentCarried {
+                        base: base.checked_mul(2).ok_or_else(|| {
+                            unsupported("nested fold AD parent initial base overflow")
+                        })?,
+                        count: count.checked_mul(2).ok_or_else(|| {
+                            unsupported("nested fold AD parent initial count overflow")
+                        })?,
+                    });
+                }
+                rumoca_ir_solve::FoldInitialSource::Registers { start, count } => {
+                    let mut values = Vec::with_capacity(count.saturating_mul(2));
+                    for offset in 0..count {
+                        let source = start
+                            .checked_add(Reg::try_from(offset).map_err(|_| {
+                                unsupported("nested fold AD initial offset overflow")
+                            })?)
+                            .ok_or_else(|| {
+                                unsupported("nested fold AD initial register overflow")
+                            })?;
+                        let dual = self.lookup(source)?;
+                        values.extend([dual.re, dual.du]);
+                    }
+                    dual_initial.push(rumoca_ir_solve::FoldInitialSource::Registers {
+                        start: self.pack_registers(&values)?,
+                        count: count
+                            .checked_mul(2)
+                            .ok_or_else(|| unsupported("nested fold AD initial count overflow"))?,
+                    });
+                }
+            }
+        }
+        let mut captures = Vec::with_capacity(program.capture_count.saturating_mul(2));
+        for offset in 0..program.capture_count {
+            let source = capture_start
+                .checked_add(
+                    Reg::try_from(offset)
+                        .map_err(|_| unsupported("nested fold AD capture offset overflow"))?,
+                )
+                .ok_or_else(|| unsupported("nested fold AD capture register overflow"))?;
+            let dual = self.lookup(source)?;
+            captures.extend([dual.re, dual.du]);
+        }
+        let capture_start = self.pack_registers(&captures)?;
+        let program = self.derived_fold_program(&program)?;
+        let condition = condition
+            .map(|condition| self.lookup(condition).map(|value| value.re))
+            .transpose()?;
+        self.ops.push(LinearOp::StoreOutputFunctionFold {
+            initial: dual_initial.into_boxed_slice(),
+            capture_start,
+            program,
+            result_base: result_base
+                .checked_mul(2)
+                .ok_or_else(|| unsupported("nested fold AD result base overflow"))?,
+            count: count
+                .checked_mul(2)
+                .ok_or_else(|| unsupported("nested fold AD result count overflow"))?,
+            condition,
+            nested_when_true,
+        });
+        Ok(())
+    }
+
     fn lower_table_bounds(&mut self, dst: Reg, table_id: Reg, max: bool) -> Result<(), LowerError> {
         let table = self.lookup(table_id)?;
         let re = self.emit_table_bounds(table.re, max)?;
@@ -1069,6 +2022,559 @@ impl AdBuilder {
         self.bind(dst, out)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn lower_dot_product(
+        &mut self,
+        dst: Reg,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        count: usize,
+        lhs_stride: usize,
+        rhs_stride: usize,
+    ) -> Result<(), LowerError> {
+        let mut sum: Option<DualReg> = None;
+        for term in 0..count {
+            let lhs = self.lookup(lhs_start + (term * lhs_stride) as Reg)?;
+            let rhs = self.lookup(rhs_start + (term * rhs_stride) as Reg)?;
+            let re = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.re)?;
+            let lhs_du = self.emit_binary(BinaryOp::Mul, lhs.du, rhs.re)?;
+            let rhs_du = self.emit_binary(BinaryOp::Mul, lhs.re, rhs.du)?;
+            let du = self.emit_binary(BinaryOp::Add, lhs_du, rhs_du)?;
+            sum = Some(match sum {
+                Some(sum) => DualReg {
+                    re: self.emit_binary(BinaryOp::Add, sum.re, re)?,
+                    du: self.emit_binary(BinaryOp::Add, sum.du, du)?,
+                },
+                None => DualReg { re, du },
+            });
+        }
+        let sum = match sum {
+            Some(sum) => sum,
+            None => {
+                let zero = self.zero_reg()?;
+                DualReg { re: zero, du: zero }
+            }
+        };
+        self.bind(dst, sum)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_matrix_multiply(
+        &mut self,
+        dst_start: Reg,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        rows: usize,
+        inner: usize,
+        columns: usize,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal matrix multiply with one lane",
+            ));
+        }
+        let lhs_count = checked_ad_product(rows, inner, self.span, "matrix multiply lhs")?;
+        let rhs_count = checked_ad_product(inner, columns, self.span, "matrix multiply rhs")?;
+        let output_count = checked_ad_product(rows, columns, self.span, "matrix multiply output")?;
+        let lhs_start = self.pack_dual_register_range(lhs_start, lhs_count)?;
+        let rhs_start = self.pack_dual_register_range(rhs_start, rhs_count)?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(output_count, 2, self.span, "matrix multiply dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::MatrixMultiply {
+            dst_start: dual_start,
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes: 2,
+        });
+        for offset in 0..output_count {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "matrix multiply output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "matrix multiply dual lane")?,
+                self.span,
+                "matrix multiply dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_tensor_binary(
+        &mut self,
+        dst_start: Reg,
+        op: BinaryOp,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        count: usize,
+        lhs_stride: usize,
+        rhs_stride: usize,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 || lhs_stride > 1 || rhs_stride > 1 {
+            return Err(unsupported(
+                "forward AD expects a primal compact tensor binary with zero-or-one strides",
+            ));
+        }
+        let lhs_count = if lhs_stride == 0 { 1 } else { count };
+        let rhs_count = if rhs_stride == 0 { 1 } else { count };
+        let lhs_start = self.pack_dual_register_range(lhs_start, lhs_count)?;
+        let rhs_start = self.pack_dual_register_range(rhs_start, rhs_count)?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor binary dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorBinary {
+            dst_start: dual_start,
+            op,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "tensor binary output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor binary dual lane")?,
+                self.span,
+                "tensor binary dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lower_tensor_cross(
+        &mut self,
+        dst_start: Reg,
+        lhs_start: Reg,
+        rhs_start: Reg,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal tensor cross product with one lane",
+            ));
+        }
+        let lhs_start = self.pack_dual_register_range(lhs_start, 3)?;
+        let rhs_start = self.pack_dual_register_range(rhs_start, 3)?;
+        let dual_start = self.next_reg;
+        for _ in 0..6 {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorCross {
+            dst_start: dual_start,
+            lhs_start,
+            rhs_start,
+            lanes: 2,
+        });
+        for offset in 0..3 {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "tensor cross product output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor cross product dual lane")?,
+                self.span,
+                "tensor cross product dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lower_tensor_transpose(
+        &mut self,
+        dst_start: Reg,
+        src_start: Reg,
+        rows: usize,
+        columns: usize,
+        element_width: usize,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal tensor transpose with one lane",
+            ));
+        }
+        let count = checked_ad_product(rows, columns, self.span, "tensor transpose")?;
+        let count = checked_ad_product(
+            count,
+            element_width,
+            self.span,
+            "tensor transpose element width",
+        )?;
+        let src_start = self.pack_dual_register_range(src_start, count)?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor transpose dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorTranspose {
+            dst_start: dual_start,
+            src_start,
+            rows,
+            columns,
+            element_width,
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "tensor transpose output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor transpose dual lane")?,
+                self.span,
+                "tensor transpose dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lower_tensor_concatenate(
+        &mut self,
+        dst_start: Reg,
+        sources: Box<[rumoca_ir_solve::TensorConcatenateSource]>,
+        dimensions: Box<[u32]>,
+        axis: usize,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal tensor concatenate with one lane",
+            ));
+        }
+        let mut dual_sources = Vec::with_capacity(sources.len());
+        for source in sources.iter() {
+            let count = source.dimensions.iter().try_fold(1usize, |count, extent| {
+                checked_ad_product(
+                    count,
+                    *extent as usize,
+                    self.span,
+                    "tensor concatenate source",
+                )
+            })?;
+            dual_sources.push(rumoca_ir_solve::TensorConcatenateSource {
+                start: self.pack_dual_register_range(source.start, count)?,
+                dimensions: source.dimensions.clone(),
+            });
+        }
+        let count = dimensions.iter().try_fold(1usize, |count, extent| {
+            checked_ad_product(
+                count,
+                *extent as usize,
+                self.span,
+                "tensor concatenate output",
+            )
+        })?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor concatenate dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorConcatenate {
+            dst_start: dual_start,
+            sources: dual_sources.into_boxed_slice(),
+            dimensions,
+            axis,
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "tensor concatenate output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor concatenate dual lane")?,
+                self.span,
+                "tensor concatenate dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lower_tensor_update(
+        &mut self,
+        dst_start: Reg,
+        base_start: Reg,
+        value_start: Reg,
+        dimensions: Box<[u32]>,
+        subscripts: Box<[rumoca_ir_solve::TensorUpdateSubscript]>,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal tensor update with one lane",
+            ));
+        }
+        let count = dimensions.iter().try_fold(1usize, |count, extent| {
+            checked_ad_product(count, *extent as usize, self.span, "tensor update output")
+        })?;
+        let base_start = self.pack_dual_register_range(base_start, count)?;
+        let mut value_count = 1usize;
+        let mut dual_subscripts = Vec::with_capacity(subscripts.len());
+        for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
+            match subscript {
+                rumoca_ir_solve::TensorUpdateSubscript::Whole => {
+                    value_count = checked_ad_product(
+                        value_count,
+                        extent as usize,
+                        self.span,
+                        "tensor update value",
+                    )?;
+                    dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Whole);
+                }
+                rumoca_ir_solve::TensorUpdateSubscript::Index(
+                    rumoca_ir_solve::TensorIndex::Constant(coordinate),
+                ) => dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Index(
+                    rumoca_ir_solve::TensorIndex::Constant(*coordinate),
+                )),
+                rumoca_ir_solve::TensorUpdateSubscript::Index(
+                    rumoca_ir_solve::TensorIndex::Runtime(register),
+                ) => dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Index(
+                    rumoca_ir_solve::TensorIndex::Runtime(self.lookup(*register)?.re),
+                )),
+                rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
+                    let slice_count = dimensions.iter().try_fold(1usize, |count, extent| {
+                        checked_ad_product(
+                            count,
+                            *extent as usize,
+                            self.span,
+                            "tensor update slice",
+                        )
+                    })?;
+                    value_count = checked_ad_product(
+                        value_count,
+                        slice_count,
+                        self.span,
+                        "tensor update sliced value",
+                    )?;
+                    let mut primal = Vec::with_capacity(slice_count);
+                    for offset in 0..slice_count {
+                        let register = checked_ad_reg_offset(
+                            *start,
+                            offset,
+                            self.span,
+                            "tensor update slice",
+                        )?;
+                        primal.push(self.lookup(register)?.re);
+                    }
+                    dual_subscripts.push(rumoca_ir_solve::TensorUpdateSubscript::Slice {
+                        start: self.pack_registers(&primal)?,
+                        dimensions: dimensions.clone(),
+                    });
+                }
+            }
+        }
+        let value_start = self.pack_dual_register_range(value_start, value_count)?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor update dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorUpdate {
+            dst_start: dual_start,
+            base_start,
+            value_start,
+            dimensions,
+            subscripts: dual_subscripts.into_boxed_slice(),
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "tensor update output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor update dual lane")?,
+                self.span,
+                "tensor update dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lower_tensor_fill(
+        &mut self,
+        dst_start: Reg,
+        value_start: Reg,
+        count: usize,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal tensor fill with one lane",
+            ));
+        }
+        let value = self.lookup(value_start)?;
+        let value_start = self.pack_registers(&[value.re, value.du])?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor fill dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorFill {
+            dst_start: dual_start,
+            value_start,
+            count,
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal = checked_ad_reg_offset(dst_start, offset, self.span, "tensor fill output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor fill dual lane")?,
+                self.span,
+                "tensor fill dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lower_tensor_identity(
+        &mut self,
+        dst_start: Reg,
+        size: usize,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 {
+            return Err(unsupported(
+                "forward AD expects a primal tensor identity with one lane",
+            ));
+        }
+        let count = checked_ad_product(size, size, self.span, "tensor identity")?;
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor identity dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorIdentity {
+            dst_start: dual_start,
+            size,
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal =
+                checked_ad_reg_offset(dst_start, offset, self.span, "tensor identity output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor identity dual lane")?,
+                self.span,
+                "tensor identity dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_tensor_load(
+        &mut self,
+        dst_start: Reg,
+        input: rumoca_ir_solve::TensorInputKind,
+        input_start: usize,
+        count: usize,
+        seed_start: Option<usize>,
+        lanes: usize,
+    ) -> Result<(), LowerError> {
+        if lanes != 1 || seed_start.is_some() {
+            return Err(unsupported(
+                "forward AD expects a primal tensor load with one lane and no seed",
+            ));
+        }
+        let seed_start = match (input, self.seed_mode) {
+            (rumoca_ir_solve::TensorInputKind::Y, _) => Some(input_start),
+            (rumoca_ir_solve::TensorInputKind::P, SeedMode::SolverYOnly) => None,
+            (rumoca_ir_solve::TensorInputKind::P, SeedMode::SolverYAndP { .. }) => {
+                Some(self.p_seed_index(input_start)?)
+            }
+        };
+        let dual_start = self.next_reg;
+        for _ in 0..checked_ad_product(count, 2, self.span, "tensor load dual output")? {
+            self.alloc_reg()?;
+        }
+        self.ops.push(LinearOp::TensorLoad {
+            dst_start: dual_start,
+            input,
+            input_start,
+            count,
+            seed_start,
+            lanes: 2,
+        });
+        for offset in 0..count {
+            let primal = checked_ad_reg_offset(dst_start, offset, self.span, "tensor load output")?;
+            let dual = checked_ad_reg_offset(
+                dual_start,
+                checked_ad_product(offset, 2, self.span, "tensor load dual lane")?,
+                self.span,
+                "tensor load dual output",
+            )?;
+            self.bind(
+                primal,
+                DualReg {
+                    re: dual,
+                    du: dual + 1,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn lower_compare(
         &mut self,
         dst: Reg,
@@ -1100,7 +2606,88 @@ impl AdBuilder {
 
     fn lower_store(&mut self, src: Reg) -> Result<(), LowerError> {
         let d = self.lookup(src)?;
-        self.ops.push(LinearOp::StoreOutput { src: d.du });
+        match self.store_output_mode {
+            StoreOutputMode::Derivative => {
+                self.ops.push(LinearOp::StoreOutput { src: d.du });
+            }
+            StoreOutputMode::Primal => {
+                self.ops.push(LinearOp::StoreOutput { src: d.re });
+            }
+            StoreOutputMode::Dual => {
+                self.ops.push(LinearOp::StoreOutput { src: d.re });
+                self.ops.push(LinearOp::StoreOutput { src: d.du });
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_store_range(
+        &mut self,
+        start: Reg,
+        count: usize,
+        stride: usize,
+    ) -> Result<(), LowerError> {
+        let mut sources = Vec::with_capacity(match self.store_output_mode {
+            StoreOutputMode::Dual => count.saturating_mul(2),
+            StoreOutputMode::Derivative | StoreOutputMode::Primal => count,
+        });
+        for ordinal in 0..count {
+            let offset = ordinal
+                .checked_mul(stride)
+                .and_then(|offset| Reg::try_from(offset).ok())
+                .ok_or_else(|| unsupported("function-conditional AD output range overflow"))?;
+            let dual = self.lookup(start.checked_add(offset).ok_or_else(|| {
+                unsupported("function-conditional AD output register overflow")
+            })?)?;
+            match self.store_output_mode {
+                StoreOutputMode::Derivative => sources.push(dual.du),
+                StoreOutputMode::Primal => sources.push(dual.re),
+                StoreOutputMode::Dual => sources.extend([dual.re, dual.du]),
+            }
+        }
+        let (&first, rest) = sources
+            .split_first()
+            .ok_or_else(|| unsupported("function-conditional AD output range is empty"))?;
+        let derived_stride = rest
+            .first()
+            .map_or(1, |second| second.checked_sub(first).unwrap_or(0) as usize);
+        if derived_stride == 0
+            || sources
+                .iter()
+                .copied()
+                .enumerate()
+                .any(|(ordinal, register)| {
+                    usize::try_from(first)
+                        .ok()
+                        .and_then(|base| base.checked_add(ordinal.saturating_mul(derived_stride)))
+                        != usize::try_from(register).ok()
+                })
+        {
+            if std::env::var_os("RUMOCA_PROFILE_AD").is_some() {
+                eprintln!(
+                    "rumoca-ad non_affine_store_range mode={:?} start={start} count={count} stride={stride} sources={sources:?}",
+                    self.store_output_mode,
+                );
+            }
+            if count == 1 {
+                for source in sources {
+                    self.ops.push(LinearOp::StoreOutputRange {
+                        start: source,
+                        count: 1,
+                        stride: 1,
+                    });
+                }
+                return Ok(());
+            }
+            return Err(unsupported(
+                "function-conditional AD output projection is not one compact affine range",
+            ));
+        }
+        self.ops.push(LinearOp::StoreOutputRange {
+            start: first,
+            count: sources.len(),
+            stride: derived_stride,
+        });
         Ok(())
     }
 
@@ -1400,12 +2987,61 @@ impl AdBuilder {
     }
 
     fn pack_registers(&mut self, regs: &[Reg]) -> Result<Reg, LowerError> {
+        if let Some(&start) = regs.first()
+            && regs.iter().copied().enumerate().all(|(offset, register)| {
+                u32::try_from(offset)
+                    .ok()
+                    .and_then(|offset| start.checked_add(offset))
+                    == Some(register)
+            })
+        {
+            return Ok(start);
+        }
         let start = self.next_reg;
         for &src in regs {
             let dst = self.alloc_reg()?;
             self.ops.push(LinearOp::Move { dst, src });
         }
         Ok(start)
+    }
+
+    fn pack_dual_register_range(
+        &mut self,
+        primal_start: Reg,
+        count: usize,
+    ) -> Result<Reg, LowerError> {
+        if count == 0 {
+            return Ok(self.next_reg);
+        }
+        let first = self.lookup(primal_start)?;
+        let already_interleaved = first.du == first.re.saturating_add(1)
+            && (0..count).all(|offset| {
+                let Ok(primal) =
+                    checked_ad_reg_offset(primal_start, offset, self.span, "dual register range")
+                else {
+                    return false;
+                };
+                let Ok(value) = self.lookup(primal) else {
+                    return false;
+                };
+                let Ok(lane) = u32::try_from(offset.saturating_mul(2)) else {
+                    return false;
+                };
+                value.re == first.re.saturating_add(lane)
+                    && value.du == first.re.saturating_add(lane).saturating_add(1)
+            });
+        if already_interleaved {
+            return Ok(first.re);
+        }
+        let capacity = checked_ad_product(count, 2, self.span, "dual register range")?;
+        let mut registers = ad_vec_with_capacity(capacity, "dual register range", self.span)?;
+        for offset in 0..count {
+            let primal =
+                checked_ad_reg_offset(primal_start, offset, self.span, "dual register range")?;
+            let value = self.lookup(primal)?;
+            registers.extend([value.re, value.du]);
+        }
+        self.pack_registers(&registers)
     }
 
     fn emit_load_time(&mut self) -> Result<Reg, LowerError> {

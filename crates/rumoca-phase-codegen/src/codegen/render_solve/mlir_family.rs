@@ -51,7 +51,7 @@ impl<'a> MlirFamilyRenderer<'a> {
     fn render(mut self) -> RenderResult {
         self.emit_loop_header()?;
         for (position, op) in self.family.base_ops.iter().enumerate() {
-            self.emit_op(position, *op)?;
+            self.emit_op(position, op.clone())?;
         }
         self.line("    }");
         Ok(self.lines.join("\n"))

@@ -73,11 +73,7 @@ pub(crate) fn function_definition_rhs<'dae>(
     Ok(ExprId::from_raw(entry.rhs))
 }
 
-pub(crate) fn unknown(
-    kind: &'static str,
-    index: u32,
-    at: DaeProvenance,
-) -> DaeConstructionError {
+pub(crate) fn unknown(kind: &'static str, index: u32, at: DaeProvenance) -> DaeConstructionError {
     DaeConstructionError::UnknownId {
         kind,
         index,
@@ -97,11 +93,7 @@ pub(crate) fn invalid_arity(
     }
 }
 
-pub(crate) fn duplicate(
-    kind: &'static str,
-    index: u32,
-    at: DaeProvenance,
-) -> DaeConstructionError {
+pub(crate) fn duplicate(kind: &'static str, index: u32, at: DaeProvenance) -> DaeConstructionError {
     DaeConstructionError::DuplicateDefinition {
         kind,
         index,

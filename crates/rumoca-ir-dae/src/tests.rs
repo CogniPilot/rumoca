@@ -4,6 +4,7 @@ mod external_functions;
 mod function_conditionals;
 mod function_owners;
 mod function_wire;
+mod model_event_transactions;
 mod provenance;
 mod range_wire;
 mod runtime_owners;

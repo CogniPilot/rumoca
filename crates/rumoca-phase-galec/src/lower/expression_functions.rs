@@ -568,6 +568,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             function,
             output,
             arguments,
+            ..
         } = node.operation()
         else {
             return Ok(None);
@@ -626,6 +627,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             function,
             output,
             arguments,
+            ..
         } = node.operation()
         else {
             return Ok(None);
@@ -1605,6 +1607,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 function,
                 output,
                 arguments,
+                ..
             } => self.lower_record_call_field(
                 base,
                 function,

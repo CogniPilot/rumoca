@@ -119,6 +119,26 @@ fn render_solve_row_output_for(
         .try_iter()
         .map_err(|_| render_err("solve row must be an array of LinearOp values"))?;
     for op in iter {
+        if let Ok(range) = get_field(&op, "StoreOutputRange") {
+            let count = solve_field_usize(&range, "count")?;
+            let range_end = seen_outputs
+                .checked_add(count)
+                .ok_or_else(|| render_err("solve output range ordinal overflows host range"))?;
+            if (seen_outputs..range_end).contains(&output_ordinal) {
+                let local = output_ordinal - seen_outputs;
+                let start = solve_field_usize(&range, "start")?;
+                let stride = solve_field_usize(&range, "stride")?;
+                let source = local
+                    .checked_mul(stride)
+                    .and_then(|offset| start.checked_add(offset))
+                    .ok_or_else(|| {
+                        render_err("solve output range register overflows host range")
+                    })?;
+                return solve_reg(&regs, source);
+            }
+            seen_outputs = range_end;
+            continue;
+        }
         let output = render_solve_op_for(&op, cfg, dialect, &mut regs, None)?;
         if get_field(&op, "StoreOutput").is_ok() {
             if seen_outputs == output_ordinal {
@@ -611,6 +631,31 @@ fn render_solve_row_typed_output(
     let mut regs = Vec::<String>::new();
     let mut seen_outputs = 0usize;
     for op in ops {
+        if let solve::LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        } = *op
+        {
+            let range_end = seen_outputs
+                .checked_add(count)
+                .ok_or_else(|| render_err("solve output range ordinal overflows host range"))?;
+            if (seen_outputs..range_end).contains(&output_ordinal) {
+                let local = output_ordinal - seen_outputs;
+                let offset = local
+                    .checked_mul(stride)
+                    .ok_or_else(|| render_err("solve output range register offset overflows"))?;
+                let source = usize::try_from(start)
+                    .ok()
+                    .and_then(|start| start.checked_add(offset))
+                    .ok_or_else(|| {
+                        render_err("solve output range register overflows host range")
+                    })?;
+                return solve_reg(&regs, source);
+            }
+            seen_outputs = range_end;
+            continue;
+        }
         let output = render_solve_op_typed(op, cfg, dialect, &mut regs, None)?;
         if matches!(op, solve::LinearOp::StoreOutput { .. }) {
             if seen_outputs == output_ordinal {
@@ -762,6 +807,549 @@ fn render_solve_op_typed(
                 solve_reg_index(*dst, "linear-solve destination register")?,
                 expr,
             )?;
+        }
+        LinearOp::DotProduct {
+            dst,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+        } => {
+            let mut terms = Vec::with_capacity(*count);
+            for term in 0..*count {
+                let lhs = solve_reg(
+                    regs,
+                    solve_reg_index(
+                        *lhs_start + (term * *lhs_stride) as solve::Reg,
+                        "dot-product lhs register",
+                    )?,
+                )?;
+                let rhs = solve_reg(
+                    regs,
+                    solve_reg_index(
+                        *rhs_start + (term * *rhs_stride) as solve::Reg,
+                        "dot-product rhs register",
+                    )?,
+                )?;
+                terms.push(dialect.render_binary("Mul", lhs, rhs)?);
+            }
+            let mut terms = terms.into_iter();
+            let mut value = terms
+                .next()
+                .unwrap_or_else(|| dialect.format_const("0.0".to_string()));
+            for term in terms {
+                value = dialect.render_binary("Add", value, term)?;
+            }
+            store_solve_reg(
+                regs,
+                solve_reg_index(*dst, "dot-product destination register")?,
+                value,
+            )?;
+        }
+        LinearOp::MatrixMultiply {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes,
+        } => {
+            for row in 0..*rows {
+                for column in 0..*columns {
+                    let output = (row * *columns + column) * *lanes;
+                    let mut primal = dialect.format_const("0.0".to_string());
+                    let mut tangent = dialect.format_const("0.0".to_string());
+                    for term in 0..*inner {
+                        let lhs = (row * *inner + term) * *lanes;
+                        let rhs = (term * *columns + column) * *lanes;
+                        let lhs_re = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *lhs_start + lhs as solve::Reg,
+                                "matrix-multiply lhs register",
+                            )?,
+                        )?;
+                        let rhs_re = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *rhs_start + rhs as solve::Reg,
+                                "matrix-multiply rhs register",
+                            )?,
+                        )?;
+                        primal = dialect.render_binary(
+                            "Add",
+                            primal,
+                            dialect.render_binary("Mul", lhs_re.clone(), rhs_re.clone())?,
+                        )?;
+                        if *lanes == 2 {
+                            let lhs_du = solve_reg(
+                                regs,
+                                solve_reg_index(
+                                    *lhs_start + lhs as solve::Reg + 1,
+                                    "matrix-multiply lhs tangent register",
+                                )?,
+                            )?;
+                            let rhs_du = solve_reg(
+                                regs,
+                                solve_reg_index(
+                                    *rhs_start + rhs as solve::Reg + 1,
+                                    "matrix-multiply rhs tangent register",
+                                )?,
+                            )?;
+                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
+                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+                            let term = dialect.render_binary("Add", lhs_term, rhs_term)?;
+                            tangent = dialect.render_binary("Add", tangent, term)?;
+                        }
+                    }
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + output as solve::Reg,
+                            "matrix-multiply destination register",
+                        )?,
+                        primal,
+                    )?;
+                    if *lanes == 2 {
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *dst_start + output as solve::Reg + 1,
+                                "matrix-multiply tangent destination register",
+                            )?,
+                            tangent,
+                        )?;
+                    }
+                }
+            }
+        }
+        LinearOp::TensorBinary {
+            dst_start,
+            op,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes,
+        } => {
+            for element in 0..*count {
+                let lhs = *lhs_start + (element * *lhs_stride * *lanes) as solve::Reg;
+                let rhs = *rhs_start + (element * *rhs_stride * *lanes) as solve::Reg;
+                let dst = *dst_start + (element * *lanes) as solve::Reg;
+                let lhs_re = solve_reg(regs, solve_reg_index(lhs, "tensor-binary lhs register")?)?;
+                let rhs_re = solve_reg(regs, solve_reg_index(rhs, "tensor-binary rhs register")?)?;
+                let raw_primal =
+                    dialect.render_binary(op.kind_name(), lhs_re.clone(), rhs_re.clone())?;
+                let primal = if *lanes == 2 && *op == solve::BinaryOp::Div {
+                    let zero = "0.0".to_owned();
+                    let denominator_zero =
+                        dialect.render_compare("Eq", rhs_re.clone(), zero.clone())?;
+                    let numerator_zero =
+                        dialect.render_compare("Eq", lhs_re.clone(), zero.clone())?;
+                    let zero_over_zero =
+                        dialect.render_select(numerator_zero, zero.clone(), raw_primal.clone());
+                    dialect.render_select(denominator_zero, zero_over_zero, raw_primal)
+                } else {
+                    raw_primal
+                };
+                store_solve_reg(
+                    regs,
+                    solve_reg_index(dst, "tensor-binary destination register")?,
+                    primal,
+                )?;
+                if *lanes == 2 {
+                    let lhs_du = solve_reg(
+                        regs,
+                        solve_reg_index(lhs + 1, "tensor-binary lhs tangent register")?,
+                    )?;
+                    let rhs_du = solve_reg(
+                        regs,
+                        solve_reg_index(rhs + 1, "tensor-binary rhs tangent register")?,
+                    )?;
+                    let tangent = match op {
+                        solve::BinaryOp::Add | solve::BinaryOp::Sub => {
+                            dialect.render_binary(op.kind_name(), lhs_du, rhs_du)?
+                        }
+                        solve::BinaryOp::Mul => {
+                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re)?;
+                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+                            dialect.render_binary("Add", lhs_term, rhs_term)?
+                        }
+                        solve::BinaryOp::Div => {
+                            let lhs_term = dialect.render_binary("Mul", lhs_du, rhs_re.clone())?;
+                            let rhs_term = dialect.render_binary("Mul", lhs_re, rhs_du)?;
+                            let numerator = dialect.render_binary("Sub", lhs_term, rhs_term)?;
+                            let denominator =
+                                dialect.render_binary("Mul", rhs_re.clone(), rhs_re.clone())?;
+                            let quotient = dialect.render_binary("Div", numerator, denominator)?;
+                            let zero = "0.0".to_owned();
+                            let denominator_zero =
+                                dialect.render_compare("Eq", rhs_re, zero.clone())?;
+                            dialect.render_select(denominator_zero, zero, quotient)
+                        }
+                        _ => {
+                            return Err(render_err("invalid compact tensor binary operator"));
+                        }
+                    };
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(dst + 1, "tensor-binary tangent destination register")?,
+                        tangent,
+                    )?;
+                }
+            }
+        }
+        LinearOp::TensorCross {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            lanes,
+        } => {
+            let count = 3usize
+                .checked_mul(*lanes)
+                .ok_or_else(|| render_err("tensor-cross width overflow"))?;
+            let mut lhs = Vec::with_capacity(count);
+            let mut rhs = Vec::with_capacity(count);
+            for offset in 0..count {
+                lhs.push(solve_reg(
+                    regs,
+                    solve_reg_index(*lhs_start, "tensor-cross lhs start")? + offset,
+                )?);
+                rhs.push(solve_reg(
+                    regs,
+                    solve_reg_index(*rhs_start, "tensor-cross rhs start")? + offset,
+                )?);
+            }
+            for (component, (first, second)) in
+                [(1usize, 2usize), (2, 0), (0, 1)].into_iter().enumerate()
+            {
+                let first = first * *lanes;
+                let second = second * *lanes;
+                let positive =
+                    dialect.render_binary("Mul", lhs[first].clone(), rhs[second].clone())?;
+                let negative =
+                    dialect.render_binary("Mul", lhs[second].clone(), rhs[first].clone())?;
+                let primal = dialect.render_binary("Sub", positive, negative)?;
+                let dst = solve_reg_index(*dst_start, "tensor-cross destination start")?
+                    + component * *lanes;
+                store_solve_reg(regs, dst, primal)?;
+                if *lanes == 2 {
+                    let first_lhs = dialect.render_binary(
+                        "Mul",
+                        lhs[first + 1].clone(),
+                        rhs[second].clone(),
+                    )?;
+                    let first_rhs = dialect.render_binary(
+                        "Mul",
+                        lhs[first].clone(),
+                        rhs[second + 1].clone(),
+                    )?;
+                    let second_lhs = dialect.render_binary(
+                        "Mul",
+                        lhs[second + 1].clone(),
+                        rhs[first].clone(),
+                    )?;
+                    let second_rhs = dialect.render_binary(
+                        "Mul",
+                        lhs[second].clone(),
+                        rhs[first + 1].clone(),
+                    )?;
+                    let positive = dialect.render_binary("Add", first_lhs, first_rhs)?;
+                    let negative = dialect.render_binary("Add", second_lhs, second_rhs)?;
+                    let tangent = dialect.render_binary("Sub", positive, negative)?;
+                    store_solve_reg(regs, dst + 1, tangent)?;
+                }
+            }
+        }
+        LinearOp::TensorTranspose {
+            dst_start,
+            src_start,
+            rows,
+            columns,
+            element_width,
+            lanes,
+        } => {
+            let value_width = element_width
+                .checked_mul(*lanes)
+                .ok_or_else(|| render_err("tensor-transpose value width overflows"))?;
+            for row in 0..*rows {
+                for column in 0..*columns {
+                    for value_offset in 0..value_width {
+                        let dst = *dst_start
+                            + ((row * *columns + column) * value_width + value_offset)
+                                as solve::Reg;
+                        let src = *src_start
+                            + ((column * *rows + row) * value_width + value_offset) as solve::Reg;
+                        let value = solve_reg(
+                            regs,
+                            solve_reg_index(src, "tensor-transpose source register")?,
+                        )?;
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(dst, "tensor-transpose destination register")?,
+                            value,
+                        )?;
+                    }
+                }
+            }
+        }
+        LinearOp::TensorConcatenate {
+            dst_start,
+            sources,
+            dimensions,
+            axis,
+            lanes,
+        } => {
+            let inner = dimensions[*axis + 1..]
+                .iter()
+                .fold(1usize, |count, extent| count * *extent as usize);
+            let result_axis = dimensions[*axis] as usize;
+            let mut axis_offset = 0usize;
+            for source in sources.iter() {
+                let source_axis = source.dimensions[*axis] as usize;
+                let source_count = source
+                    .dimensions
+                    .iter()
+                    .fold(1usize, |count, extent| count * *extent as usize);
+                let source_block = source_axis * inner;
+                for element in 0..source_count {
+                    let outer = element / source_block;
+                    let within = element % source_block;
+                    let destination = outer * result_axis * inner + axis_offset * inner + within;
+                    for lane in 0..*lanes {
+                        let value = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                source.start + (element * *lanes + lane) as solve::Reg,
+                                "tensor-concatenate source register",
+                            )?,
+                        )?;
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *dst_start + (destination * *lanes + lane) as solve::Reg,
+                                "tensor-concatenate destination register",
+                            )?,
+                            value,
+                        )?;
+                    }
+                }
+                axis_offset += source_axis;
+            }
+        }
+        LinearOp::TensorUpdate {
+            dst_start,
+            base_start,
+            value_start,
+            dimensions,
+            subscripts,
+            lanes,
+        } => {
+            let count = dimensions
+                .iter()
+                .fold(1usize, |count, extent| count * *extent as usize);
+            for element in 0..count {
+                let mut states = vec![(0usize, None::<String>)];
+                let mut axis_stride = count;
+                for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
+                    axis_stride /= extent as usize;
+                    let coordinate = (element / axis_stride) % extent as usize;
+                    match subscript {
+                        solve::TensorUpdateSubscript::Whole => {
+                            for (value_element, _) in &mut states {
+                                *value_element = *value_element * extent as usize + coordinate;
+                            }
+                        }
+                        solve::TensorUpdateSubscript::Index(solve::TensorIndex::Constant(
+                            selected,
+                        )) => {
+                            if *selected as usize != coordinate {
+                                states.clear();
+                                break;
+                            }
+                        }
+                        solve::TensorUpdateSubscript::Index(solve::TensorIndex::Runtime(
+                            register,
+                        )) => {
+                            let lhs = solve_reg(
+                                regs,
+                                solve_reg_index(*register, "tensor-update index register")?,
+                            )?;
+                            let rhs = dialect.format_const((coordinate + 1).to_string());
+                            let next = dialect.render_compare("Eq", lhs, rhs)?;
+                            for (_, condition) in &mut states {
+                                *condition = Some(match condition.take() {
+                                    Some(previous) => {
+                                        dialect.render_binary("And", previous, next.clone())?
+                                    }
+                                    None => next.clone(),
+                                });
+                            }
+                        }
+                        solve::TensorUpdateSubscript::Slice { start, dimensions } => {
+                            let slice_count = dimensions
+                                .iter()
+                                .fold(1usize, |count, extent| count * *extent as usize);
+                            let previous = std::mem::take(&mut states);
+                            for (value_element, condition) in previous {
+                                for slice_offset in 0..slice_count {
+                                    let lhs = solve_reg(
+                                        regs,
+                                        solve_reg_index(
+                                            *start + slice_offset as solve::Reg,
+                                            "tensor-update slice register",
+                                        )?,
+                                    )?;
+                                    let rhs = dialect.format_const((coordinate + 1).to_string());
+                                    let next = dialect.render_compare("Eq", lhs, rhs)?;
+                                    let condition = Some(match condition.clone() {
+                                        Some(previous) => {
+                                            dialect.render_binary("And", previous, next)?
+                                        }
+                                        None => next,
+                                    });
+                                    states.push((
+                                        value_element * slice_count + slice_offset,
+                                        condition,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                for lane in 0..*lanes {
+                    let base = solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *base_start + (element * *lanes + lane) as solve::Reg,
+                            "tensor-update base register",
+                        )?,
+                    )?;
+                    let mut selected = base;
+                    for (value_element, condition) in states.iter().rev() {
+                        let value = solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *value_start + (*value_element * *lanes + lane) as solve::Reg,
+                                "tensor-update value register",
+                            )?,
+                        )?;
+                        selected = match condition {
+                            Some(condition) => {
+                                dialect.render_select(condition.clone(), value, selected)
+                            }
+                            None => value,
+                        };
+                    }
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + (element * *lanes + lane) as solve::Reg,
+                            "tensor-update destination register",
+                        )?,
+                        selected,
+                    )?;
+                }
+            }
+        }
+        LinearOp::TensorFill {
+            dst_start,
+            value_start,
+            count,
+            lanes,
+        } => {
+            for element in 0..*count {
+                for lane in 0..*lanes {
+                    let value = solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *value_start + lane as solve::Reg,
+                            "tensor-fill value register",
+                        )?,
+                    )?;
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + (element * *lanes + lane) as solve::Reg,
+                            "tensor-fill destination register",
+                        )?,
+                        value,
+                    )?;
+                }
+            }
+        }
+        LinearOp::TensorIdentity {
+            dst_start,
+            size,
+            lanes,
+        } => {
+            for row in 0..*size {
+                for column in 0..*size {
+                    for lane in 0..*lanes {
+                        let value =
+                            dialect.format_const(u8::from(lane == 0 && row == column).to_string());
+                        store_solve_reg(
+                            regs,
+                            solve_reg_index(
+                                *dst_start + ((row * *size + column) * *lanes + lane) as solve::Reg,
+                                "tensor-identity destination register",
+                            )?,
+                            value,
+                        )?;
+                    }
+                }
+            }
+        }
+        LinearOp::TensorLoad {
+            dst_start,
+            input,
+            input_start,
+            count,
+            seed_start,
+            lanes,
+        } => {
+            for element in 0..*count {
+                let input_index = input_start.checked_add(element).ok_or_else(|| {
+                    render_err("tensor-load input index overflow in solve-row output")
+                })?;
+                let primal = match input {
+                    solve::TensorInputKind::Y => cfg.y_access(input_index),
+                    solve::TensorInputKind::P => cfg.p_access(input_index),
+                };
+                store_solve_reg(
+                    regs,
+                    solve_reg_index(
+                        *dst_start + (element * *lanes) as solve::Reg,
+                        "tensor-load primal destination register",
+                    )?,
+                    primal,
+                )?;
+                if *lanes == 2 {
+                    let tangent = if let Some(seed_start) = seed_start {
+                        let seed_index = seed_start.checked_add(element).ok_or_else(|| {
+                            render_err("tensor-load seed index overflow in solve-row output")
+                        })?;
+                        cfg.seed_access(seed_index).ok_or_else(|| {
+                            render_err(
+                                "seeded TensorLoad requires a `seed` access pattern in solve-row output",
+                            )
+                        })?
+                    } else {
+                        dialect.format_const("0".to_string())
+                    };
+                    store_solve_reg(
+                        regs,
+                        solve_reg_index(
+                            *dst_start + (element * *lanes + 1) as solve::Reg,
+                            "tensor-load tangent destination register",
+                        )?,
+                        tangent,
+                    )?;
+                }
+            }
         }
         LinearOp::Unary { dst, op, arg } => {
             let arg = solve_reg(regs, solve_reg_index(*arg, "unary argument register")?)?;

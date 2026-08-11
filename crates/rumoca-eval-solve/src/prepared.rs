@@ -17,13 +17,13 @@ use crate::tensor_policy::{
     LinearSolveKernel, MatMulKernel, select_linear_solve_kernel, select_matmul_kernel,
 };
 use crate::{
-    EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
-    RowInputRequirements, SimulationRuntimeState,
+    EvalSolveError, OutputCursor, PreparedLazyRowPlan, PreparedRowEval, RowEvalContext,
+    RowEvalScratch, RowInputRequirements, SimulationRuntimeState, SpecializedRowProgram,
     compute_block_scalarize::{
         checked_contiguous_output_count, scalar_program_output_count,
         scalar_program_output_indices, tensor_output_count, validate_affine_stride_metadata,
     },
-    eval_prevalidated_no_output_program, eval_prevalidated_single_output_program,
+    eval_prevalidated_discard_output_program, eval_prevalidated_single_output_program,
     eval_program_no_output, eval_row_prepared_maybe_fast,
     linear_solve::solve_all_unchecked,
     record_solve_block_eval, required_registers, row_input_requirements,
@@ -32,10 +32,12 @@ use crate::{
 use affine_eval::*;
 #[cfg(test)]
 use assignment_shape::checked_expr_eval_len;
+use assignment_shape::target_assignment_shapes_with_output_offsets;
 pub use assignment_shape::{
     TargetAssignmentShape, target_assignment_shape, target_assignment_shapes,
 };
 use dependency::{parameter_static_y_gradient, row_parameter_indices};
+pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, ComputeBlock, ComputeNode,
@@ -49,9 +51,11 @@ pub struct PreparedScalarProgramBlock {
     output_count: usize,
     row_outputs: Box<PreparedRowOutputMetadata>,
     row_registers: Vec<usize>,
+    row_lazy_plans: Vec<Option<PreparedLazyRowPlan>>,
     row_requirements: Vec<RowInputRequirements>,
     row_seed_loads: Vec<Box<[PreparedSeedLoad]>>,
-    row_assignment_shapes: Vec<Box<[TargetAssignmentShape]>>,
+    row_assignment_shapes: Vec<Box<[(usize, TargetAssignmentShape)]>>,
+    row_parameter_indices: Vec<Box<[usize]>>,
     row_parameter_static_y_gradient_params: Vec<Option<Box<[usize]>>>,
     requirements: RowInputRequirements,
     scratch: RefCell<RowEvalScratch>,
@@ -106,6 +110,11 @@ impl PreparedScalarProgramBlock {
         self.row_parameter_static_y_gradient_params
             .get(row_idx)?
             .as_deref()
+    }
+
+    /// Exact parameter slots read by one retained scalar/tensor program.
+    pub fn row_parameter_indices(&self, row_idx: usize) -> Option<&[usize]> {
+        self.row_parameter_indices.get(row_idx).map(Box::as_ref)
     }
 
     pub fn reverse_row_unsupported_op_kinds(
@@ -234,7 +243,7 @@ impl PreparedScalarProgramBlock {
             })?;
         let output_count = prefix_output_indices
             .iter()
-            .copied()
+            .cloned()
             .max()
             .map_or(0, |index| index + 1);
         validate_output_len(out, output_count)?;
@@ -242,7 +251,7 @@ impl PreparedScalarProgramBlock {
             .row_requirements
             .iter()
             .take(rows)
-            .copied()
+            .cloned()
             .fold(RowInputRequirements::default(), RowInputRequirements::merge);
         validate_input_requirements(requirements, y, p, context.seed)?;
         out[..output_count].fill(0.0);
@@ -252,6 +261,7 @@ impl PreparedScalarProgramBlock {
         for (row_idx, row) in prefix.iter().enumerate() {
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                    .with_lazy_plan(self.row_lazy_plans[row_idx].as_ref())
                     .with_source_span(self.block.program_span(row_idx)),
                 true,
                 &mut scratch,
@@ -355,6 +365,7 @@ impl PreparedScalarProgramBlock {
             let mut sink = OutputCursor::new(std::slice::from_mut(slot));
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                    .with_lazy_plan(self.row_lazy_plans[row_idx].as_ref())
                     .with_source_span(self.block.program_span(row_idx)),
                 true,
                 &mut scratch,
@@ -397,6 +408,7 @@ impl PreparedScalarProgramBlock {
                 request.t,
                 request.context,
             )
+            .with_lazy_plan(self.row_lazy_plans[request.row_idx].as_ref())
             .with_source_span(span),
             true,
             &mut scratch,
@@ -456,6 +468,7 @@ impl PreparedScalarProgramBlock {
                 request.t,
                 request.context,
             )
+            .with_lazy_plan(self.row_lazy_plans[request.row_idx].as_ref())
             .with_source_span(self.block.program_span(request.row_idx)),
             true,
             &mut scratch,
@@ -476,6 +489,7 @@ impl PreparedScalarProgramBlock {
     ) -> Result<Option<f64>, EvalSolveError> {
         self.eval_target_assignment_row_inner(TargetAssignmentRowRequest {
             row_idx,
+            output_offset: None,
             target_y_index,
             y,
             p,
@@ -491,7 +505,7 @@ impl PreparedScalarProgramBlock {
         self.block
             .programs()
             .get(row_idx)
-            .is_some_and(|row| row_loads_y_index(row, y_index))
+            .is_some_and(|row| row_reads_y_index(row, y_index))
     }
 
     pub fn row_seed_depends_on(&self, row_idx: usize, seed_index: usize) -> bool {
@@ -535,26 +549,43 @@ impl PreparedScalarProgramBlock {
         self.row_outputs
             .single_rows
             .get(output_index)
-            .copied()
+            .cloned()
             .flatten()
     }
 
-    pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
+    /// Resolve one logical block output to its producing program and the
+    /// output's offset inside that program.
+    pub fn row_output_position(&self, output_index: usize) -> Option<(usize, usize)> {
+        self.row_outputs
+            .positions
+            .get(output_index)
+            .cloned()
+            .flatten()
+    }
+
+    pub fn can_evaluate_target_assignment_output(
+        &self,
+        row_idx: usize,
+        output_offset: usize,
+        target_y_index: usize,
+    ) -> bool {
         let Some(row) = self.block.programs().get(row_idx) else {
             return false;
         };
-        self.assignment_shape(row_idx, target_y_index).is_some()
-            || !row_loads_y_index(row, target_y_index)
+        self.assignment_shape_for_output(row_idx, output_offset, target_y_index)
+            .is_some()
+            || !row_output_depends_on_y_index(row, output_offset, target_y_index)
     }
 
     pub(crate) fn can_evaluate_declared_target_assignment(
         &self,
         row_idx: usize,
+        output_offset: usize,
         target_y_index: usize,
     ) -> bool {
-        self.can_evaluate_target_assignment(row_idx, target_y_index)
+        self.can_evaluate_target_assignment_output(row_idx, output_offset, target_y_index)
             && !matches!(
-                self.assignment_shape(row_idx, target_y_index),
+                self.assignment_shape_for_output(row_idx, output_offset, target_y_index),
                 Some(TargetAssignmentShape::AffineResidual { .. })
             )
     }
@@ -562,6 +593,7 @@ impl PreparedScalarProgramBlock {
     pub(crate) fn certifies_direct_target_assignment(
         &self,
         row_idx: usize,
+        output_offset: usize,
         target_y_index: usize,
     ) -> bool {
         let Some(row) = self.block.programs().get(row_idx) else {
@@ -571,17 +603,28 @@ impl PreparedScalarProgramBlock {
             return false;
         }
         matches!(
-            self.assignment_shape(row_idx, target_y_index),
+            self.assignment_shape_for_output(row_idx, output_offset, target_y_index),
             Some(TargetAssignmentShape::Direct { .. })
         )
     }
 
-    pub fn certifies_exact_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
+    pub fn certifies_exact_target_assignment_output(
+        &self,
+        row_idx: usize,
+        output_offset: usize,
+        target_y_index: usize,
+    ) -> bool {
         let Some(row) = self.block.programs().get(row_idx) else {
             return false;
         };
         !row.iter().any(non_causal_linear_op)
-            && self.assignment_shape(row_idx, target_y_index).is_some()
+            && self
+                .assignment_shape_for_output(row_idx, output_offset, target_y_index)
+                .is_some()
+    }
+
+    pub fn certifies_exact_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
+        self.certifies_exact_target_assignment_output(row_idx, 0, target_y_index)
     }
 
     /// Materialize the compiler-proven target isolator as an ordinary Solve-IR
@@ -593,15 +636,105 @@ impl PreparedScalarProgramBlock {
         row_idx: usize,
         target_y_index: usize,
     ) -> Option<Vec<LinearOp>> {
+        self.exact_target_assignment_output_program(row_idx, 0, target_y_index)
+    }
+
+    pub fn exact_target_assignment_output_program(
+        &self,
+        row_idx: usize,
+        output_offset: usize,
+        target_y_index: usize,
+    ) -> Option<Vec<LinearOp>> {
         let row = self.block.programs().get(row_idx)?;
         if row.iter().any(non_causal_linear_op) {
             return None;
         }
-        let shape = self.assignment_shape(row_idx, target_y_index)?;
-        let mut program = row.get(..shape.expr_eval_len())?.to_vec();
+        let shape = self.assignment_shape_for_output(row_idx, output_offset, target_y_index)?;
+        let mut program = row
+            .get(..shape.expr_eval_len())?
+            .iter()
+            .cloned()
+            .filter(|op| {
+                !matches!(
+                    op,
+                    LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. }
+                )
+            })
+            .collect::<Vec<_>>();
         let result = AssignmentProgramBuilder::new(&mut program)?.materialize(shape)?;
         program.push(LinearOp::StoreOutput { src: result });
         Some(program)
+    }
+
+    /// Materialize independent outputs of one shared source program together.
+    ///
+    /// This is valid only when no isolated value reads another target in the
+    /// group. The backend then evaluates the common prefix once and commits all
+    /// outputs together, preserving the array-equation's simultaneous value
+    /// semantics without reconstructing expanded scalar programs.
+    pub fn exact_target_assignment_group_program(
+        &self,
+        row_idx: usize,
+        output_targets: &[(usize, usize)],
+    ) -> Option<Vec<LinearOp>> {
+        if let [(output_offset, target)] = output_targets {
+            return self.exact_target_assignment_output_program(row_idx, *output_offset, *target);
+        }
+        let row = self.block.programs().get(row_idx)?;
+        if row.iter().any(non_causal_linear_op) {
+            return None;
+        }
+        let shapes = output_targets
+            .iter()
+            .copied()
+            .map(|(output, target)| self.assignment_shape_for_output(row_idx, output, target))
+            .collect::<Option<Vec<_>>>()?;
+        for (&(_, owner), shape) in output_targets.iter().zip(&shapes) {
+            if output_targets.iter().copied().any(|(_, candidate)| {
+                candidate != owner && assignment_shape_reads_y_index(row, *shape, candidate)
+            }) {
+                return None;
+            }
+        }
+        let prefix_len = shapes.iter().map(|shape| shape.expr_eval_len()).max()?;
+        let mut program = row
+            .get(..prefix_len)?
+            .iter()
+            .cloned()
+            .filter(|op| {
+                !matches!(
+                    op,
+                    LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut builder = AssignmentProgramBuilder::new(&mut program)?;
+        for shape in shapes {
+            let result = builder.materialize(shape)?;
+            builder.program.push(LinearOp::StoreOutput { src: result });
+        }
+        Some(program)
+    }
+
+    /// Return the active branch specialization learned by the reference
+    /// evaluator for `row_idx`, if that row has already been evaluated.
+    /// Execution adapters must validate the appended guards on every call and
+    /// fall back to this prepared evaluator when any guard changes.
+    pub fn specialized_row_program(&self, row_idx: usize) -> Option<SpecializedRowProgram> {
+        let row = self.block.programs().get(row_idx)?;
+        self.row_lazy_plans
+            .get(row_idx)?
+            .as_ref()?
+            .specialization(row)
+    }
+
+    /// Whether this row retains a dependency-driven execution plan capable of
+    /// learning one active conditional specialization without evaluating the
+    /// inactive tensor branches first.
+    pub fn has_lazy_row_plan(&self, row_idx: usize) -> bool {
+        self.row_lazy_plans
+            .get(row_idx)
+            .is_some_and(Option::is_some)
     }
 
     pub fn eval_target_assignment_row_unchecked_with_context(
@@ -615,6 +748,7 @@ impl PreparedScalarProgramBlock {
     ) -> Result<Option<f64>, EvalSolveError> {
         self.eval_target_assignment_row_inner(TargetAssignmentRowRequest {
             row_idx,
+            output_offset: None,
             target_y_index,
             y,
             p,
@@ -622,6 +756,29 @@ impl PreparedScalarProgramBlock {
             context,
             validate_inputs: false,
             label: "target_row_unchecked",
+        })
+    }
+
+    pub fn eval_target_assignment_output_unchecked_with_context(
+        &self,
+        row_idx: usize,
+        output_offset: usize,
+        target_y_index: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        context: RowEvalContext<'_>,
+    ) -> Result<Option<f64>, EvalSolveError> {
+        self.eval_target_assignment_row_inner(TargetAssignmentRowRequest {
+            row_idx,
+            output_offset: Some(output_offset),
+            target_y_index,
+            y,
+            p,
+            t,
+            context,
+            validate_inputs: false,
+            label: "target_output_unchecked",
         })
     }
 
@@ -657,6 +814,7 @@ impl PreparedScalarProgramBlock {
         let mut sink = OutputCursor::new(out.as_mut_slice());
         eval_row_prepared_maybe_fast(
             PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                .with_lazy_plan(self.row_lazy_plans[row_idx].as_ref())
                 .with_source_span(self.block.program_span(row_idx)),
             true,
             &mut scratch,
@@ -734,16 +892,53 @@ impl PreparedScalarProgramBlock {
                 span,
             )?;
         }
-        let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval(request.label, self.output_count, 1);
-        let Some(shape) = self.assignment_shape(request.row_idx, request.target_y_index) else {
+        let selected_output = request.output_offset.unwrap_or(0);
+        let Some(shape) = self.assignment_shape_for_output(
+            request.row_idx,
+            selected_output,
+            request.target_y_index,
+        ) else {
+            if std::env::var_os("RUMOCA_PROFILE_PROJECTION").is_some()
+                && request.target_y_index >= 400
+            {
+                eprintln!(
+                    "rumoca-projection-shapes program={} output={} target={} shapes={:?}",
+                    request.row_idx,
+                    selected_output,
+                    request.target_y_index,
+                    self.row_assignment_shapes[request.row_idx],
+                );
+            }
             // No assignment shape means the row is an ordinary residual. It is
             // only reusable for a target update when it does not read that same
             // target slot; otherwise the parent receives None and tries another row.
-            if !self.row_assignment_shapes[request.row_idx].is_empty() {
+            if self.row_assignment_shapes[request.row_idx]
+                .iter()
+                .any(|(output, _)| *output == selected_output)
+            {
                 return Ok(None);
             }
+            if let Some(output_offset) = request.output_offset {
+                let output = self.eval_row_output_inner(RowOutputRequest {
+                    row_idx: request.row_idx,
+                    output_offset,
+                    y: request.y,
+                    p: request.p,
+                    t: request.t,
+                    context: request.context,
+                    validate_inputs: false,
+                    label: request.label,
+                })?;
+                return Ok((!row_output_depends_on_y_index(
+                    row,
+                    output_offset,
+                    request.target_y_index,
+                ))
+                .then_some(output));
+            }
             self.require_row_output_count(request.row_idx, 1, span)?;
+            let mut scratch = self.scratch.borrow_mut();
             let output = eval_prevalidated_single_output_program(
                 PreparedRowEval::new(
                     row,
@@ -753,14 +948,18 @@ impl PreparedScalarProgramBlock {
                     request.t,
                     request.context,
                 )
+                .with_lazy_plan(self.row_lazy_plans[request.row_idx].as_ref())
                 .with_source_span(span),
                 true,
                 &mut scratch,
             )
             .map_err(|error| error.with_source_span(span))?;
-            return Ok((!row_loads_y_index(row, request.target_y_index)).then_some(output));
+            return Ok(
+                (!row_output_depends_on_y_index(row, 0, request.target_y_index)).then_some(output),
+            );
         };
-        eval_prevalidated_no_output_program(
+        let mut scratch = self.scratch.borrow_mut();
+        eval_prevalidated_discard_output_program(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -814,7 +1013,7 @@ impl PreparedScalarProgramBlock {
                     span: self.block.program_span(request.row_idx),
                 })?;
         let shape = request.shape;
-        eval_prevalidated_no_output_program(
+        eval_prevalidated_discard_output_program(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -837,16 +1036,20 @@ impl PreparedScalarProgramBlock {
             .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
     }
 
-    pub(crate) fn assignment_shape(
+    pub(crate) fn assignment_shape_for_output(
         &self,
         row_idx: usize,
+        output_offset: usize,
         target_y_index: usize,
     ) -> Option<TargetAssignmentShape> {
         self.row_assignment_shapes
             .get(row_idx)?
             .iter()
             .copied()
-            .find(|shape| shape.target_y_index() == target_y_index)
+            .find_map(|(output, shape)| {
+                (output == output_offset && shape.target_y_index() == target_y_index)
+                    .then_some(shape)
+            })
     }
 
     fn eval_rows_unchecked(
@@ -867,6 +1070,7 @@ impl PreparedScalarProgramBlock {
         for (row_idx, row) in self.block.programs().iter().enumerate() {
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
+                    .with_lazy_plan(self.row_lazy_plans[row_idx].as_ref())
                     .with_source_span(self.block.program_span(row_idx)),
                 true,
                 scratch,
@@ -901,6 +1105,7 @@ struct RowOutputRequest<'a> {
 
 struct TargetAssignmentRowRequest<'a> {
     row_idx: usize,
+    output_offset: Option<usize>,
     target_y_index: usize,
     y: &'a [f64],
     p: &'a [f64],
@@ -923,6 +1128,30 @@ struct TargetAssignmentScratchRequest<'a> {
 struct AssignmentProgramBuilder<'a> {
     program: &'a mut Vec<LinearOp>,
     next_register: u32,
+}
+
+pub(crate) fn assignment_shape_reads_y_index(
+    row: &[LinearOp],
+    shape: TargetAssignmentShape,
+    y_index: usize,
+) -> bool {
+    match shape {
+        TargetAssignmentShape::Direct { expr_reg, .. } => {
+            dependency::reg_depends_on_y_index(row, expr_reg, y_index)
+        }
+        TargetAssignmentShape::Affine {
+            offset_reg,
+            coefficient_reg,
+            ..
+        } => {
+            dependency::reg_depends_on_y_index(row, offset_reg, y_index)
+                || coefficient_reg
+                    .is_some_and(|reg| dependency::reg_depends_on_y_index(row, reg, y_index))
+        }
+        TargetAssignmentShape::AffineResidual { residual_reg, .. } => {
+            dependency::reg_depends_on_y_index(row, residual_reg, y_index)
+        }
+    }
 }
 
 impl<'a> AssignmentProgramBuilder<'a> {
@@ -1045,19 +1274,33 @@ impl<'a> AssignmentProgramBuilder<'a> {
     }
 }
 
-fn row_loads_y_index(row: &[LinearOp], target_y_index: usize) -> bool {
-    row.iter().any(|op| {
-        matches!(
-            *op,
-            LinearOp::LoadY { index, .. } if index == target_y_index
-        )
-    })
+fn row_output_depends_on_y_index(
+    row: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> bool {
+    row.iter()
+        .filter_map(|op| match *op {
+            LinearOp::StoreOutput { src } => Some(src),
+            _ => None,
+        })
+        .nth(output_offset)
+        .is_none_or(|source| dependency::reg_depends_on_y_index(row, source, target_y_index))
 }
 
 fn producer(row: &[LinearOp], dst_reg: u32) -> Option<&LinearOp> {
     row.iter()
         .rev()
-        .find(|op| op.dst_register() == Some(dst_reg))
+        .find(|op| operation_writes_register(op, dst_reg))
+}
+
+fn operation_writes_register(op: &LinearOp, register: u32) -> bool {
+    op.dst_register().is_some_and(|start| {
+        u32::try_from(op.dst_register_count())
+            .ok()
+            .and_then(|count| start.checked_add(count))
+            .is_some_and(|end| register >= start && register < end)
+    })
 }
 
 /// Reusable evaluator for a full tensor-aware Solve-IR compute block.

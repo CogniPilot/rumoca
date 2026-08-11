@@ -39,6 +39,25 @@ pub(super) fn derive_integrator_history_effects(
         };
         discrete.structured_updates[update_index].integrator_history_effect = effect;
     }
+
+    for program in &mut discrete.guarded_assignments {
+        let effect = program
+            .target_ranges()
+            .iter()
+            .map(|range| {
+                integrator_history_effect_for_range(
+                    range.base(),
+                    range.count(),
+                    &sensitive,
+                    state_scalar_count,
+                )
+            })
+            .fold(
+                solve::IntegratorHistoryEffect::Preserve,
+                join_integrator_history_effect,
+            );
+        program.set_integrator_history_effect(effect);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -62,6 +81,45 @@ fn integrator_history_effect_for_target(
     if matches!(dependency, HistoryDependencySlot::Y(index) if index < state_scalar_count)
         || sensitive.contains(&dependency)
     {
+        solve::IntegratorHistoryEffect::Restart
+    } else {
+        solve::IntegratorHistoryEffect::Preserve
+    }
+}
+
+fn integrator_history_effect_for_range(
+    base: solve::ScalarSlot,
+    count: usize,
+    sensitive: &BTreeSet<HistoryDependencySlot>,
+    state_scalar_count: usize,
+) -> solve::IntegratorHistoryEffect {
+    let (start, end) = match base {
+        solve::ScalarSlot::Y { index, .. } => {
+            let Some(end) = index.checked_add(count) else {
+                return solve::IntegratorHistoryEffect::Restart;
+            };
+            if index < state_scalar_count {
+                return solve::IntegratorHistoryEffect::Restart;
+            }
+            (
+                HistoryDependencySlot::Y(index),
+                HistoryDependencySlot::Y(end),
+            )
+        }
+        solve::ScalarSlot::P { index, .. } => {
+            let Some(end) = index.checked_add(count) else {
+                return solve::IntegratorHistoryEffect::Restart;
+            };
+            (
+                HistoryDependencySlot::P(index),
+                HistoryDependencySlot::P(end),
+            )
+        }
+        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
+            return solve::IntegratorHistoryEffect::Restart;
+        }
+    };
+    if sensitive.range(start..end).next().is_some() {
         solve::IntegratorHistoryEffect::Restart
     } else {
         solve::IntegratorHistoryEffect::Preserve

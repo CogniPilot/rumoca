@@ -98,6 +98,8 @@ pub enum DaeConstructionError {
     ShapeMismatch { span: Span },
     #[error("function call `{function}` has no checked call-shape certificate")]
     MissingFunctionCallCertificate { function: VarName, span: Span },
+    #[error("function result projection does not match its issued call owner")]
+    InvalidCallProjectionOwner { span: Span },
     #[error("expected a scalar expression")]
     ExpectedScalar { span: Span },
     #[error("expected a numeric expression, found {found:?}")]
@@ -223,6 +225,12 @@ pub enum DaeConstructionError {
     },
     #[error("B.1c owner must contain at least one target and one branch")]
     EmptyDiscreteValueOwner { span: Span },
+    #[error("a model-event transaction must contain at least one target and one step")]
+    EmptyModelEventTransaction { span: Span },
+    #[error("model-event transaction target identity {target} was not declared by its owner")]
+    UndeclaredModelEventTarget { target: u32, span: Span },
+    #[error("model-event transaction does not define every declared target")]
+    IncompleteModelEventTransaction { span: Span },
     #[error("an unconditional B.1c owner must contain exactly one `always` branch")]
     InvalidDiscreteBranchSet { span: Span },
     #[error(
@@ -320,6 +328,7 @@ impl DaeConstructionError {
             | Self::InvalidStringFormatSource { span, .. }
             | Self::ShapeMismatch { span }
             | Self::MissingFunctionCallCertificate { span, .. }
+            | Self::InvalidCallProjectionOwner { span }
             | Self::ExpectedScalar { span }
             | Self::ExpectedNumeric { span, .. }
             | Self::ExpectedPrimitiveRelation { span }
@@ -349,6 +358,9 @@ impl DaeConstructionError {
             | Self::InvalidDiscreteTopologyPlan { span, .. }
             | Self::InvalidDiscreteTargetOrder { span, .. }
             | Self::EmptyDiscreteValueOwner { span }
+            | Self::EmptyModelEventTransaction { span }
+            | Self::UndeclaredModelEventTarget { span, .. }
+            | Self::IncompleteModelEventTransaction { span }
             | Self::InvalidDiscreteBranchSet { span }
             | Self::UnissuedDiscreteDependency { span, .. }
             | Self::InvalidExternalSymbol { span, .. }

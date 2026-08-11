@@ -123,6 +123,7 @@ mod expr_query;
 mod expression;
 mod ids;
 mod model;
+mod model_event_transactions;
 mod provenance;
 mod temporal;
 
@@ -159,9 +160,9 @@ pub use ids::{
     DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
     DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
     FunctionId, FunctionParameterId, FunctionValueId, InitialDiscreteValueId,
-    InitializationEquationId, InitializationFamilyId, InputId, ParameterId, PeriodicClockId,
-    PreviousId, RelationId, RootId, StateId, StructuredRootId, TerminalId, TimeEventId,
-    ValueTypeId, VariableId,
+    InitializationEquationId, InitializationFamilyId, InputId, ModelEventTransactionId,
+    ParameterId, PeriodicClockId, PreviousId, RelationId, RootId, StateId, StructuredRootId,
+    TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
@@ -176,6 +177,10 @@ pub use model::{
     SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes,
     VariableCausality, VariableIdentity, VariableOrigin, VariableReservation, VariableRole,
     VariableView, Variables,
+};
+pub use model_event_transactions::{
+    ModelEventDefinition, ModelEventDefinitionView, ModelEventStep, ModelEventStepView,
+    ModelEventTarget, ModelEventTransactionView, ModelEventTransactions,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

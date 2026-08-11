@@ -141,6 +141,19 @@ fn solver_y_warm_start_preserves_algebraic_guess() {
 }
 
 #[test]
+fn row_eval_context_carries_the_model_pure_call_table() {
+    let model = warm_start_test_model();
+    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+
+    let context = runtime.row_eval_context();
+    let table = context
+        .pure_calls
+        .expect("every runtime row must inherit its model-owned pure-call table");
+
+    assert!(std::ptr::eq(table, &runtime.model.pure_calls));
+}
+
+#[test]
 fn solver_y_warm_start_rejects_layout_mismatch() {
     let model = warm_start_test_model();
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
@@ -394,6 +407,50 @@ fn refresh_plan_accepts_scaled_affine_residual_target() {
     assert_eq!(plan.rows[0].row_idx, 1);
     assert_eq!(plan.rows[0].target_index, 1);
     assert_eq!(value, Some(3.0));
+}
+
+#[test]
+fn causal_certificate_keeps_equation_rows_distinct_from_solver_y_indices() {
+    let model = solve::SolveModel {
+        problem: solve::SolveProblem {
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["state".to_string(), "algebraic".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                algebraic_scalar_count: 1,
+                ..Default::default()
+            },
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+                    vec![shifted_variable_residual_row(1, 3.0)],
+                    "distinct_equation_and_y_namespaces.mo",
+                )),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(1))],
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![0],
+                        y_indices: vec![1],
+                    }],
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0; 2],
+        ..Default::default()
+    };
+    let implicit =
+        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+            .expect("implicit block should prepare");
+
+    let plan = valid_algebraic_refresh_plan(&model, &implicit);
+
+    assert!(plan.causal_solution_certified);
+    assert_eq!(plan.rows.len(), 1);
+    assert_eq!(plan.rows[0].equation_index, 0);
+    assert_eq!(plan.rows[0].target_index, 1);
 }
 
 #[test]
@@ -1402,11 +1459,6 @@ fn runtime_rejects_missing_algebraic_implicit_row() {
                 ..Default::default()
             },
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![derivative_placeholder_row(0)],
-                    "missing_producer_implicit.mo",
-                )),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                 derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
                     vec![derivative_placeholder_row(1)],
                     "missing_producer_derivative.mo",
@@ -1425,7 +1477,7 @@ fn runtime_rejects_missing_algebraic_implicit_row() {
 
     assert!(
         err.to_string()
-            .contains("implicit algebraic system is missing output row 1"),
+            .contains("implicit algebraic system is missing a producer for Y index 1"),
         "error should identify the missing implicit row: {err}"
     );
 }

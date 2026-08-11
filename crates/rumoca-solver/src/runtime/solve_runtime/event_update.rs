@@ -74,7 +74,12 @@ pub(super) struct DiscreteRowEvalInput<'a, 'snapshot> {
 }
 
 #[derive(Default)]
-pub(super) struct EventEvalParamCache;
+pub(super) struct EventEvalParamCache {
+    pub(super) program: Option<usize>,
+    pub(super) outputs: Vec<f64>,
+    pub(super) guarded_program: Option<usize>,
+    pub(super) guarded_outputs: Vec<f64>,
+}
 
 impl EventEvalParamCache {
     pub(super) fn params<'a>(&mut self, base_p: &'a [f64]) -> &'a [f64] {

@@ -83,6 +83,10 @@ impl SolveRuntime {
         )
     }
 
+    pub fn dynamic_time_event_stop_reads_solver_y(&self) -> bool {
+        !self.model.problem.events.dynamic_time_event_rhs.is_empty()
+    }
+
     pub fn eval_scalar_program_block(
         &self,
         block: &solve::ScalarProgramBlock,
@@ -157,16 +161,14 @@ impl SolveRuntime {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-            block: &self.model.problem.discrete.runtime_assignment_rhs,
-            targets: &self.model.problem.discrete.runtime_assignment_targets,
+        self.apply_prepared_update_rows_until_stable(
+            &self.runtime_assignment_rhs,
+            &self.model.problem.discrete.runtime_assignment_targets,
             y,
             p,
             t,
-            context: self.row_eval_context(),
             max_iters,
-        })
-        .map_err(Into::into)
+        )
     }
 
     pub fn apply_post_commit_assignments_until_stable(
@@ -177,16 +179,49 @@ impl SolveRuntime {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-            block: &self.model.problem.discrete.post_commit_assignment_rhs,
-            targets: &self.model.problem.discrete.post_commit_assignment_targets,
+        self.apply_prepared_update_rows_until_stable(
+            &self.post_commit_assignment_rhs,
+            &self.model.problem.discrete.post_commit_assignment_targets,
             y,
             p,
             t,
-            context: self.row_eval_context(),
             max_iters,
-        })
-        .map_err(Into::into)
+        )
+    }
+
+    fn apply_prepared_update_rows_until_stable(
+        &self,
+        block: &solve_eval::PreparedScalarProgramBlock,
+        targets: &[solve::ScalarSlot],
+        y: &mut [f64],
+        p: &mut [f64],
+        t: f64,
+        max_iters: usize,
+    ) -> Result<bool, RuntimeSolveError> {
+        if block.is_empty() {
+            return Ok(false);
+        }
+        if block.len() != targets.len() {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "prepared update row count {} does not match target count {}",
+                block.len(),
+                targets.len()
+            )));
+        }
+        let mut values = self.update_values_scratch.borrow_mut();
+        values.resize(targets.len(), 0.0);
+        let mut changed_any = false;
+        for _ in 0..max_iters {
+            block.eval_with_context(y, p, t, self.row_eval_context(), &mut values)?;
+            let changed = solve_eval::apply_scalar_slot_values_exact(targets, &values, y, p)?;
+            if !changed {
+                return Ok(changed_any);
+            }
+            changed_any = true;
+        }
+        Err(RuntimeSolveError::solve_ir(format!(
+            "prepared update rows did not converge at t={t} after {max_iters} iterations"
+        )))
     }
 
     pub fn settle_runtime_assignments_and_relation_memory(
@@ -336,23 +371,32 @@ impl SolveRuntime {
                     tol,
                     max_iters,
                 };
-                changed |= self.settle_discrete_rows_for_pre_snapshot(
+                let discrete_changed = self.settle_discrete_rows_for_pre_snapshot(
                     &snapshot,
                     &mut settle_input,
                     &mut project_algebraics,
                 )?;
+                changed |= discrete_changed;
             }
-            changed |= self.update_relation_memory_from_solver_y_except_overrides(
+            let relation_changed = self.update_relation_memory_from_solver_y_except_overrides(
                 t,
                 y,
                 p,
                 tol,
                 root_relation_overrides,
             )?;
-            changed |=
+            changed |= relation_changed;
+            let overrides_changed =
                 self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
-            changed |= project_algebraics(y, p)?;
-            changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            changed |= overrides_changed;
+            // The discrete settle returns from a projected coordinate with
+            // runtime assignments stable. Reproject only if relation-memory
+            // writes changed an input after that certificate; an unconditional
+            // second full projection doubled unchanged clock ticks.
+            if relation_changed || overrides_changed {
+                changed |= project_algebraics(y, p)?;
+                changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
+            }
             if !changed && event_iteration_plan_settled(&self.model, y, p)? {
                 return self.eval_event_actions(y, p, event_pre_p, t);
             }
@@ -592,7 +636,47 @@ impl SolveRuntime {
         event_pre_p: &[f64],
         t: f64,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
-        eval_event_actions_with_context(&self.model, y, p, event_pre_p, t, self.row_eval_context())
+        let events = &self.model.problem.events;
+        let mut action_p = event_action_params(events, p, event_pre_p)?;
+        write_clock_activation_params(&self.model, &mut action_p, t);
+        let mut values = vec![0.0; events.actions.len()];
+        let mut active_rows = self.event_action_active_row_indices.borrow_mut();
+        active_rows.clear();
+        for (row, action) in events.actions.iter().enumerate() {
+            let active = match action.clock_owner {
+                Some(owner) => self.periodic_clock_active(owner, t, "event action")?,
+                None => true,
+            };
+            if active {
+                active_rows.push(row);
+            }
+        }
+        self.eval_selected_outputs_with_native(
+            &self.event_action_conditions,
+            &self.compiled_event_action_rows,
+            &self.failed_event_action_rows,
+            &active_rows,
+            y,
+            &action_p,
+            t,
+            &mut values,
+        )?;
+        match solve_eval::event_action_request_from_values(
+            events,
+            y,
+            &action_p,
+            t,
+            self.row_eval_context(),
+            values,
+        )? {
+            solve_eval::EventActionRequest::Continue => Ok(EventActionOutcome::Continue),
+            solve_eval::EventActionRequest::AssertionFailed { message } => {
+                Ok(EventActionOutcome::AssertionFailed { time: t, message })
+            }
+            solve_eval::EventActionRequest::Terminate { message } => {
+                Ok(EventActionOutcome::Terminated { time: t, message })
+            }
+        }
     }
 
     pub fn record_visible_sample(
@@ -685,15 +769,16 @@ impl SolveRuntime {
             }
         }
         if !plan.expression_rows.is_empty() {
-            self.visible_value_rows
-                .eval_single_output_rows_unchecked_with_context(
-                    &plan.expression_rows,
-                    y,
-                    params,
-                    t,
-                    self.row_eval_context(),
-                    values,
-                )?;
+            self.eval_single_output_rows_with_native(
+                &self.visible_value_rows,
+                &self.compiled_visible_rows,
+                &self.failed_visible_rows,
+                &plan.expression_rows,
+                y,
+                params,
+                t,
+                values,
+            )?;
             copy_grouped_expression_values(plan, values)?;
         }
         Ok(())
@@ -826,6 +911,19 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         validate_derivative_output_len(out, self.state_count)?;
+        if let Some(compiled) = self.compiled_derivative_rhs.as_ref()
+            && compiled
+                .call(
+                    solver_y,
+                    params,
+                    t,
+                    self.model.external_tables.as_slice(),
+                    out,
+                )
+                .is_ok()
+        {
+            return self.validate_finite_derivatives(out);
+        }
         self.derivative_rhs
             .eval_with_context(solver_y, params, t, self.row_eval_context(), out)?;
         self.validate_finite_derivatives(out)

@@ -58,6 +58,7 @@ impl Storage {
             discrete_value_branch_value_provenance: self
                 .discrete_value_branch_value_provenance
                 .into_boxed_slice(),
+            model_event_transactions: self.model_event_transactions.into_boxed_slice(),
             continuous_families: self.continuous_families.into_boxed_slice(),
             initialization_families: self.initialization_families.into_boxed_slice(),
             continuous_equation_owners: self.continuous_equation_owners.into_boxed_slice(),

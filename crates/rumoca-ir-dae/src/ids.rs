@@ -124,6 +124,8 @@ branded_ids! {
     DiscreteRealEquationId;
     /// Identity of one atomic source-priority B.1c definition owner.
     DiscreteValueOwnerId;
+    /// Identity of one ordered model-level event algorithm transaction.
+    ModelEventTransactionId;
     /// Identity of one condition reserved for a forward body definition.
     ConditionId;
     /// Identity of one primitive relation.

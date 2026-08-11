@@ -1053,7 +1053,7 @@ fn push_native_affine_family(
     let mut base_ops_out =
         partition_vec_with_capacity(base_ops.len(), "native family base op count", Some(span))?;
     for op in base_ops {
-        base_ops_out.push(*op);
+        base_ops_out.push(op.clone());
     }
     let mut load_strides_out = partition_vec_with_capacity(
         load_strides.len(),

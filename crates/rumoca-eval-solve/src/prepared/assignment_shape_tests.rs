@@ -193,7 +193,7 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
     .expect("scalar fixture is computable");
     let prepared = PreparedScalarProgramBlock::new(block).expect("affine row should prepare");
     let selected = prepared
-        .assignment_shape(0, 1)
+        .assignment_shape_for_output(0, 0, 1)
         .expect("the first factor has an isolator");
     let refresh = crate::refresh_plan::AlgebraicRefreshRow {
         equation_index: 0,
@@ -315,11 +315,161 @@ fn affine_residual_shape_isolates_nested_connection_difference() {
     y[4] = 99.0;
     y[6] = 2.0;
 
-    assert!(!prepared.certifies_direct_target_assignment(0, 4));
+    assert!(!prepared.certifies_direct_target_assignment(0, 0, 4));
     assert!(prepared.certifies_exact_target_assignment(0, 4));
     let value = prepared
         .eval_target_assignment_row_with_context(0, 4, &y, &[], 0.0, RowEvalContext::default())
         .expect("nested connection difference is exactly isolatable");
 
     assert_eq!(value, Some(3.0));
+}
+
+#[test]
+fn tensor_load_lanes_are_isolated_without_scalar_load_reconstruction() {
+    let row = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 10,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::Const { dst: 2, value: 5.0 },
+        LinearOp::Const { dst: 3, value: 6.0 },
+        LinearOp::TensorBinary {
+            dst_start: 4,
+            op: BinaryOp::Sub,
+            lhs_start: 0,
+            rhs_start: 2,
+            count: 2,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutputRange {
+            start: 4,
+            count: 2,
+            stride: 1,
+        },
+    ];
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(
+        vec![row],
+        fixture_span()
+            .require_provenance("tensor-load isolator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("tensor fixture is computable");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("tensor row should prepare");
+    let y = [0.0; 12];
+
+    assert!(prepared.certifies_exact_target_assignment_output(0, 0, 10));
+    assert!(prepared.certifies_exact_target_assignment_output(0, 1, 11));
+    let grouped = prepared
+        .exact_target_assignment_group_program(0, &[(0, 10), (1, 11)])
+        .expect("one compact result range materializes two exact assignments");
+    assert_eq!(
+        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&grouped),
+        2
+    );
+    assert!(
+        grouped
+            .iter()
+            .all(|op| !matches!(op, LinearOp::StoreOutputRange { .. })),
+        "the source result range is consumed before final assignment outputs are appended"
+    );
+    assert_eq!(
+        prepared
+            .eval_target_assignment_output_unchecked_with_context(
+                0,
+                0,
+                10,
+                &y,
+                &[],
+                0.0,
+                RowEvalContext::default(),
+            )
+            .expect("first tensor lane is isolatable"),
+        Some(5.0),
+    );
+    assert_eq!(
+        prepared
+            .eval_target_assignment_output_unchecked_with_context(
+                0,
+                1,
+                11,
+                &y,
+                &[],
+                0.0,
+                RowEvalContext::default(),
+            )
+            .expect("second tensor lane is isolatable"),
+        Some(6.0),
+    );
+}
+
+#[test]
+fn tensor_difference_keeps_both_compact_y_ranges_as_isolators() {
+    let row = vec![
+        LinearOp::TensorLoad {
+            dst_start: 0,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 10,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::TensorLoad {
+            dst_start: 2,
+            input: rumoca_ir_solve::TensorInputKind::Y,
+            input_start: 20,
+            count: 2,
+            seed_start: None,
+            lanes: 1,
+        },
+        LinearOp::TensorBinary {
+            dst_start: 4,
+            op: BinaryOp::Sub,
+            lhs_start: 0,
+            rhs_start: 2,
+            count: 2,
+            lhs_stride: 1,
+            rhs_stride: 1,
+            lanes: 1,
+        },
+        LinearOp::StoreOutput { src: 4 },
+        LinearOp::StoreOutput { src: 5 },
+    ];
+    let block = rumoca_ir_solve::ScalarProgramBlock::with_source_span(
+        vec![row],
+        fixture_span()
+            .require_provenance("bidirectional tensor isolator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("tensor fixture is computable");
+    let prepared = PreparedScalarProgramBlock::new(block).expect("tensor row should prepare");
+    let mut y = [0.0; 22];
+    y[10] = 3.0;
+    y[11] = 4.0;
+    y[20] = 30.0;
+    y[21] = 40.0;
+
+    for (output, lhs, rhs) in [(0, 10, 20), (1, 11, 21)] {
+        assert!(prepared.certifies_exact_target_assignment_output(0, output, lhs));
+        assert!(prepared.certifies_exact_target_assignment_output(0, output, rhs));
+        assert_eq!(
+            prepared
+                .eval_target_assignment_output_unchecked_with_context(
+                    0,
+                    output,
+                    rhs,
+                    &y,
+                    &[],
+                    0.0,
+                    RowEvalContext::default(),
+                )
+                .expect("the right-hand tensor lane is directly isolatable"),
+            Some(y[lhs]),
+        );
+    }
 }

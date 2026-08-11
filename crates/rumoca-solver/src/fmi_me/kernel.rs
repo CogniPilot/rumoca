@@ -64,7 +64,6 @@ impl CachedContinuousLinearization {
 
 #[derive(Clone, Copy)]
 struct MeAlgebraicProjectionPolicy {
-    state_count: usize,
     tolerance: f64,
     profile: MeNumericsProfile,
     settle: AlgebraicSettle,
@@ -1140,7 +1139,6 @@ fn project_algebraics(
     policy: MeAlgebraicProjectionPolicy,
 ) -> Result<bool, crate::runtime::solve_ops::RuntimeSolveError> {
     let MeAlgebraicProjectionPolicy {
-        state_count,
         tolerance: tol,
         profile,
         settle,
@@ -1149,10 +1147,13 @@ fn project_algebraics(
         MeNumericsProfile::Component => {
             let before = y.to_vec();
             runtime.project_state_manifold(y, p, t, tol)?;
-            let state = y[..state_count.min(y.len())].to_vec();
-            let refreshed =
-                runtime.full_solver_y(t, &state, p, ALGEBRAIC_REFRESH_TOL, UPDATE_MAX_ITERS)?;
-            y.copy_from_slice(&refreshed);
+            runtime.refresh_algebraic_and_output_slots_certified(
+                t,
+                y,
+                p,
+                ALGEBRAIC_REFRESH_TOL,
+                UPDATE_MAX_ITERS,
+            )?;
             Ok(runtime_values_changed(&before, y, tol))
         }
         MeNumericsProfile::DiffsolFrozen => {
@@ -1179,6 +1180,28 @@ fn project_algebraics(
             ))
         }
     }
+}
+
+fn project_event_algebraics(
+    runtime: &SolveRuntime,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+    policy: MeAlgebraicProjectionPolicy,
+) -> Result<bool, crate::runtime::solve_ops::RuntimeSolveError> {
+    if !matches!(policy.profile, MeNumericsProfile::Component) {
+        return project_algebraics(runtime, y, p, t, policy);
+    }
+    let before = y.to_vec();
+    runtime.project_state_manifold(y, p, t, policy.tolerance)?;
+    runtime.refresh_event_dependency_slots_certified(
+        t,
+        y,
+        p,
+        policy.settle.tol,
+        policy.settle.max_iters,
+    )?;
+    Ok(runtime_values_changed(&before, y, policy.tolerance))
 }
 
 pub(super) fn frozen_projection_changed(

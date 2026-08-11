@@ -19,6 +19,7 @@ mod checked_dae_tests;
 mod codegen_test_support;
 mod dae_backend;
 mod dae_diagnostics;
+mod discrete_render_view;
 mod expr_config;
 #[cfg(test)]
 mod galec_golden_tests;

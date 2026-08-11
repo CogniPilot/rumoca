@@ -134,7 +134,7 @@ pub fn eval_event_actions_with_context(
     }
 }
 
-fn event_action_params(
+pub(crate) fn event_action_params(
     events: &solve::SolveEventPartition,
     p: &[f64],
     event_pre_p: &[f64],

@@ -229,6 +229,100 @@ fn clocked_unconditional_discrete_value_owner_reads_its_previous_history() {
             .lattice(),
         lattice
     );
+    let equation = solve
+        .discrete
+        .row_roles
+        .iter()
+        .position(|role| *role == rumoca_ir_solve::DiscreteRowRole::Equation)
+        .expect("the clocked owner has one equation row");
+    assert!(
+        solve.discrete.rhs.programs()[equation]
+            .iter()
+            .all(|operation| !matches!(operation, LinearOp::Select { .. })),
+        "typed clock activation makes the Always branch direct before scalar lowering"
+    );
+}
+
+/// A B.1c branch activated by the same clock that owns its target is
+/// unconditional within that clocked partition. Guarded-owner construction
+/// must prove that fact before scalar lowering; otherwise the default empty
+/// branch plan degenerates into a self-hold and silently drops function
+/// Boolean outputs such as the RDD2 estimator status flags.
+#[test]
+fn clock_owned_b1c_branch_lowers_its_value_instead_of_a_self_hold() {
+    let source = TestSource::new(
+        "discrete Boolean initialized; Clock c=Clock(0.1); when c then initialized=true; end when;",
+    );
+    let declaration = source.at(0, 28);
+    let clock_at = source.at(38, 48);
+    let assignment = source.at(62, 78);
+    let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap();
+    let model = dae::Dae::construct(source.map, |model| {
+        let boolean = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Boolean),
+                declaration,
+            )
+        })?;
+        let initialized = model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("initialized"),
+                boolean,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
+        model.clocks(|clocks| clocks.own_discrete_value(clock.into(), initialized, assignment))?;
+        let activation = model.conditions(|conditions| conditions.reserve(clock_at))?;
+        model.conditions(|conditions| {
+            conditions.define(
+                activation,
+                dae::ConditionInput::Clock(clock.into()),
+                clock_at,
+            )
+        })?;
+        let value = model.expressions(|expressions| {
+            expressions
+                .at(assignment)
+                .literal(dae::DaeLiteral::Boolean(true))
+        })?;
+        model.b1c([initialized], |topology| {
+            topology.owner(assignment, [initialized], |owner| {
+                owner.when(activation, activation, assignment, [(value, assignment)])
+            })?;
+            Ok(())
+        })
+    })
+    .expect("clock-owned conditional B.1c owner is valid checked DAE");
+
+    let solve = lower_solve_problem(&model).expect("clock-owned B.1c owner lowers");
+    let target = solve
+        .layout
+        .binding("initialized")
+        .expect("the Boolean target has parameter storage");
+    let [guarded] = solve.discrete.guarded_assignments.as_slice() else {
+        panic!("one compact guarded owner expected");
+    };
+    assert_eq!(guarded.target_ranges()[0].base(), target);
+    assert!(guarded.clock_owner().is_some());
+    assert!(
+        guarded
+            .program()
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::Const { value, .. } if *value == 1.0)),
+        "the clock-unconditional branch writes its true value"
+    );
+    let ScalarSlot::P { index: target, .. } = target else {
+        panic!("a discrete Boolean target occupies parameter storage");
+    };
+    assert!(
+        guarded.program().iter().all(
+            |operation| !matches!(operation, LinearOp::LoadP { index, .. } if *index == target)
+        ),
+        "the branch must not degenerate into a current-value self-hold"
+    );
 }
 
 /// MLS §16.8.1 raises no state event for a relation of a clocked partition — the clock's
@@ -333,16 +427,33 @@ fn mixed_initial_and_clock_activation_needs_no_target_clock_owner() {
     solve.validate().expect("the activation lane is in bounds");
     let equation = solve
         .discrete
-        .row_roles
+        .guarded_assignments
         .iter()
-        .position(|role| *role == rumoca_ir_solve::DiscreteRowRole::Equation)
-        .expect("one event equation row");
-    assert_eq!(solve.discrete.clock_owners[equation], None);
+        .find(|program| program.role() == rumoca_ir_solve::DiscreteRowRole::Equation)
+        .expect("one guarded event equation owner");
+    assert_eq!(equation.clock_owner(), None);
     let activation = solve.clocks.activation_parameter_indices[0];
+    let conditional = equation
+        .program()
+        .iter()
+        .find_map(|operation| match operation {
+            LinearOp::FunctionConditional { program, .. } => Some(program),
+            _ => None,
+        })
+        .expect("the mixed activation retains one compact conditional owner");
     assert!(
-        solve.discrete.rhs.programs()[equation]
+        conditional
+            .arms
             .iter()
+            .flat_map(|arm| arm.condition.iter())
             .any(|op| matches!(op, LinearOp::LoadP { index, .. } if *index == activation)),
         "the clock leaf reads its schedule-derived lane"
+    );
+    assert!(
+        equation
+            .program()
+            .iter()
+            .all(|operation| !matches!(operation, LinearOp::Select { .. })),
+        "the correlated activation is not expanded into scalar selections"
     );
 }

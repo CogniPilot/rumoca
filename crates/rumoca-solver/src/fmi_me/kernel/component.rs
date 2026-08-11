@@ -47,17 +47,35 @@ impl SolveMeKernel {
         }
         let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, &self.params);
         self.with_delay_evaluation_params(time, &self.states, |params| match self.root_profile {
-            MeRootProfile::Component => self
-                .runtime
-                .eval_root_conditions_into(
-                    time,
-                    &self.states,
-                    params,
-                    ALGEBRAIC_REFRESH_TOL,
-                    UPDATE_MAX_ITERS,
-                    indicators,
-                )
-                .map_err(MeError::from),
+            MeRootProfile::Component => match &mut settled_guess {
+                Some(guess)
+                    if self
+                        .runtime
+                        .derivative_settled_coordinate_can_refresh_roots() =>
+                {
+                    self.runtime
+                        .eval_root_conditions_after_derivative_settle_into(
+                            time,
+                            params,
+                            guess,
+                            ALGEBRAIC_REFRESH_TOL,
+                            UPDATE_MAX_ITERS,
+                            indicators,
+                        )
+                        .map_err(MeError::from)
+                }
+                _ => self
+                    .runtime
+                    .eval_root_conditions_into(
+                        time,
+                        &self.states,
+                        params,
+                        ALGEBRAIC_REFRESH_TOL,
+                        UPDATE_MAX_ITERS,
+                        indicators,
+                    )
+                    .map_err(MeError::from),
+            },
             MeRootProfile::DiffsolFrozen => match &mut settled_guess {
                 Some(guess)
                     if self
@@ -263,9 +281,17 @@ impl SolveMeKernel {
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
     ) -> Result<Self, MeError> {
+        Self::instantiate_with_execution_backend(source, config, None)
+    }
+
+    pub fn instantiate_with_execution_backend(
+        source: MeModelSource<'_>,
+        config: &MeInstanceConfig,
+        execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
+    ) -> Result<Self, MeError> {
         // `NoContinuousStates` is a routing answer, not a failure: a host reads
         // it to pick its zero-state path, so it stays unannotated.
-        Self::instantiate_inner(source, config).map_err(|error| match error {
+        Self::instantiate_inner(source, config, execution_backend).map_err(|error| match error {
             routing @ MeError::NoContinuousStates => routing,
             failure => failure.at_stage(MeStage::Instantiate),
         })
@@ -358,6 +384,7 @@ impl SolveMeKernel {
     pub(super) fn instantiate_inner(
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
+        execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
     ) -> Result<Self, MeError> {
         validate_instance_config(config)?;
         let model = source.model();
@@ -370,7 +397,10 @@ impl SolveMeKernel {
                     "periodic schedule cannot be anchored at FMI startTime: {error}"
                 ))
             })?;
-        let runtime = Rc::new(SolveRuntime::new(&model)?);
+        let runtime = Rc::new(SolveRuntime::new_with_execution_backend(
+            &model,
+            execution_backend,
+        )?);
         let state_count = runtime.state_count;
         let states = runtime.model.initial_y[..state_count].to_vec();
         let params = runtime.model.parameters.clone();
@@ -467,7 +497,6 @@ impl SolveMeKernel {
 
     pub(super) fn algebraic_projection_policy(&self) -> MeAlgebraicProjectionPolicy {
         MeAlgebraicProjectionPolicy {
-            state_count: self.state_count,
             tolerance: self.tolerance,
             profile: self.numerics_profile,
             settle: self.numerics_settle(),
@@ -855,31 +884,15 @@ impl SolveMeKernel {
         }
         let time = self.time;
         let settle = self.numerics_settle();
-        let (mut solver_y, accepted_guess) = match self.numerics_profile {
-            MeNumericsProfile::Component => (
-                self.runtime.full_solver_y(
-                    time,
-                    states,
-                    &self.params,
-                    settle.tol,
-                    settle.max_iters,
-                )?,
-                None,
-            ),
-            MeNumericsProfile::DiffsolFrozen => {
-                let accepted_guess = self.solver_y_guess.borrow().clone();
-                let mut projection_guess = accepted_guess.clone();
-                self.runtime.full_solver_y_with_guess(
-                    time,
-                    states,
-                    &self.params,
-                    &mut projection_guess,
-                    settle.tol,
-                    settle.max_iters,
-                )?;
-                (projection_guess, Some(accepted_guess))
-            }
-        };
+        let mut solver_y = self.solver_y_guess.borrow().clone();
+        self.runtime.full_solver_y_with_guess(
+            time,
+            states,
+            &self.params,
+            &mut solver_y,
+            settle.tol,
+            settle.max_iters,
+        )?;
         let changed = self.runtime.project_state_manifold(
             &mut solver_y,
             &self.params,
@@ -887,16 +900,8 @@ impl SolveMeKernel {
             self.tolerance,
         )?;
         states.copy_from_slice(&solver_y[..self.state_count]);
-        let mut committed_guess = accepted_guess.unwrap_or(solver_y);
-        self.runtime.full_solver_y_with_guess(
-            time,
-            states,
-            &self.params,
-            &mut committed_guess,
-            settle.tol,
-            settle.max_iters,
-        )?;
-        *self.solver_y_guess.borrow_mut() = committed_guess;
+        solver_y[..self.state_count].copy_from_slice(states);
+        *self.solver_y_guess.borrow_mut() = solver_y;
         self.last_projection_changed = changed;
         Ok(changed)
     }
@@ -904,9 +909,13 @@ impl SolveMeKernel {
     /// [`ModelExchangeKernel::next_event_stop`], unannotated; the trait method
     /// attaches [`MeStage::Integration`].
     pub(super) fn next_event_stop_inner(&mut self, horizon: f64) -> Result<MeEventStop, MeError> {
-        let solver_y = self.current_solver_y()?;
+        let solver_y = self
+            .runtime
+            .dynamic_time_event_stop_reads_solver_y()
+            .then(|| self.current_solver_y())
+            .transpose()?;
         let (time, event) = self.runtime.next_runtime_event_stop(
-            &solver_y,
+            solver_y.as_deref().unwrap_or(&[]),
             &self.params,
             &mut self.stop_schedule,
             self.time,
@@ -1078,7 +1087,9 @@ impl SolveMeKernel {
                 row_filter,
                 root_relation_overrides: root_overrides,
             },
-            move |y, p| project_algebraics(&projection_runtime, y, p, projection_time, policy),
+            move |y, p| {
+                project_event_algebraics(&projection_runtime, y, p, projection_time, policy)
+            },
         )?;
         if matches!(self.numerics_profile, MeNumericsProfile::DiffsolFrozen)
             && !has_located_root_crossing
@@ -1094,10 +1105,19 @@ impl SolveMeKernel {
                 tol,
                 settle.max_iters,
                 move |y, p| {
-                    project_algebraics(&settle_projection_runtime, y, p, projection_time, policy)
+                    project_event_algebraics(
+                        &settle_projection_runtime,
+                        y,
+                        p,
+                        projection_time,
+                        policy,
+                    )
                 },
             )?;
         }
+        // Unrelated algebraic/output lanes remain lazy in the retained solver
+        // seed. Their owning callback refresh plan materializes them if and
+        // when a derivative, root, or visible-value consumer asks for them.
         self.commit_event_runtime_state(event_time, solver_y, root_overrides)?;
         self.record_event_action_outcome(outcome, event_time)?;
         self.clear_runtime_caches();
@@ -1150,7 +1170,7 @@ impl SolveMeKernel {
         event_entry_y: &[f64],
     ) -> Result<Vec<f64>, MeError> {
         match self.numerics_profile {
-            MeNumericsProfile::Component => self.current_solver_y(),
+            MeNumericsProfile::Component => Ok(event_entry_y.to_vec()),
             // The frozen driver starts a located event from its dense-output
             // full vector, then replaces only the continuous-state prefix when
             // bracketing the right limit. Preserve that ownership here: a
@@ -1384,9 +1404,28 @@ impl SolveMeKernel {
                 .unwrap_or_else(|| self.params.clone());
             return Ok((event_pre_y, event_pre_p));
         }
+        if self.advance_state_to_event_right_limit
+            && matches!(
+                event.pre_mode,
+                EventPreMode::EventEntry | EventPreMode::Fixed
+            )
+        {
+            // A time event has no discontinuity before its event update: its
+            // continuous left limit is the state supplied at the event time,
+            // while discrete `pre` lanes are the previously committed values.
+            // Derived algebraic lanes are only a seed and are canonicalized by
+            // the projected event iteration after clock activation.
+            let mut event_pre_y = self.solver_y_guess.borrow().clone();
+            event_pre_y[..self.state_count].copy_from_slice(&self.states);
+            return Ok((event_pre_y, self.params.clone()));
+        }
         let pre_time = match event.pre_mode {
             EventPreMode::EventEntry | EventPreMode::Fixed => {
-                timeline::event_left_probe_time(event_time, self.tolerance)
+                if self.advance_state_to_event_right_limit {
+                    event_time
+                } else {
+                    timeline::event_left_probe_time(event_time, self.tolerance)
+                }
             }
             EventPreMode::FollowCurrent => self.public_time_eval_time(self.time),
         };

@@ -184,6 +184,7 @@ pub(crate) struct OdeModel {
     solver_names: Vec<String>,
     solver_scales: Vec<f64>,
     pub(crate) external_tables: solve::ExternalTables,
+    pub(crate) pure_calls: solve::SolvePureCallTable,
     pub(crate) runtime_state: solve_eval::SimulationRuntimeState,
 }
 
@@ -234,6 +235,7 @@ impl OdeModel {
                 .map(|index| model.solver_variable_scale(index))
                 .collect(),
             external_tables: model.external_tables.clone(),
+            pure_calls: model.pure_calls.clone(),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
         })
     }
@@ -336,6 +338,7 @@ impl OdeModel {
         RowEvalContext {
             seed,
             external_tables: Some(self.external_tables.as_slice()),
+            pure_calls: Some(&self.pure_calls),
             runtime_state: Some(&self.runtime_state),
         }
     }

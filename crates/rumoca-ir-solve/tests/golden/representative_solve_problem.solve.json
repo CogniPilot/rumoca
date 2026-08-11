@@ -1,5 +1,5 @@
 {
-  "schema_version": 31,
+  "schema_version": 55,
   "layout": {
     "bindings": {
       "x": {
@@ -476,6 +476,8 @@
     "clock_owners": [
       null
     ],
+    "guarded_assignments": [],
+    "event_transactions": [],
     "structured_rhs": {
       "nodes": []
     },

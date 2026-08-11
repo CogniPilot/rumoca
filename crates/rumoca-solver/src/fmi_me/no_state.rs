@@ -1049,6 +1049,7 @@ mod tests {
                     row_roles: vec![solve::DiscreteRowRole::Equation],
                     pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
                     observation_refresh: vec![false],
+                    integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
                     clock_owners: vec![None],
                     ..Default::default()
                 },

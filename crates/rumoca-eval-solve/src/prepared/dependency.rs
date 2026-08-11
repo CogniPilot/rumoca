@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, ops::Range};
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, UnaryOp};
 
@@ -6,7 +6,7 @@ use crate::required_registers;
 
 pub(super) struct YDependencyAnalyzer<'a> {
     row: &'a [LinearOp],
-    producers: Vec<Option<usize>>,
+    producers: Vec<(u32, u32, usize)>,
     memo_generation: Vec<u32>,
     memo_value: Vec<bool>,
     generation: u32,
@@ -17,17 +17,15 @@ impl<'a> YDependencyAnalyzer<'a> {
     pub(super) fn new(row: &'a [LinearOp], target_y_index: usize) -> Self {
         // Register programs form a DAG: a register computed once can feed many
         // downstream ops, so memoize dependence on a fixed `y` index by register.
-        let register_count = row
-            .iter()
-            .filter_map(LinearOp::dst_register)
-            .max()
-            .map_or(0, |register| register as usize + 1);
-        let mut producers = vec![None; register_count];
+        let register_count = required_registers(row).unwrap_or(0);
+        let mut producers = Vec::with_capacity(row.len());
         for (index, operation) in row.iter().enumerate() {
             if let Some(dst) = operation.dst_register() {
-                producers[dst as usize] = Some(index);
+                let count = u32::try_from(operation.dst_register_count()).unwrap_or(u32::MAX);
+                producers.push((dst, dst.saturating_add(count), index));
             }
         }
+        producers.sort_unstable_by_key(|&(start, _, _)| start);
         Self {
             row,
             producers,
@@ -61,26 +59,99 @@ impl<'a> YDependencyAnalyzer<'a> {
         self.memo_value[reg_index] = false;
         let result = self
             .producer(reg)
-            .is_some_and(|operation| self.operation_depends_on_target(operation));
+            .is_some_and(|operation| self.operation_depends_on_target(reg, operation));
         self.memo_value[reg_index] = result;
         result
     }
 
     fn producer(&self, register: u32) -> Option<LinearOp> {
         self.producers
-            .get(register as usize)
-            .and_then(|producer| *producer)
-            .and_then(|index| self.row.get(index))
-            .copied()
+            .partition_point(|&(start, _, _)| start <= register)
+            .checked_sub(1)
+            .and_then(|position| self.producers.get(position))
+            .filter(|&&(_, end, _)| register < end)
+            .and_then(|&(_, _, index)| self.row.get(index))
+            .cloned()
     }
 
-    fn operation_depends_on_target(&mut self, operation: LinearOp) -> bool {
+    fn operation_depends_on_target(&mut self, output: u32, operation: LinearOp) -> bool {
         match operation {
             LinearOp::LoadY { index, .. } => index == self.target_y_index,
             LinearOp::Move { src, .. }
             | LinearOp::Unary { arg: src, .. }
             | LinearOp::LoadIndexedP { index: src, .. }
             | LinearOp::LoadIndexedSeed { index: src, .. } => self.depends_on(src),
+            LinearOp::LoadIndexedRegister {
+                base,
+                stride,
+                dimensions,
+                indices,
+                ..
+            } => {
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize));
+                count.is_none_or(|count| {
+                    (0..count).any(|offset| self.depends_on(base + (offset * stride) as u32))
+                })
+                    || indices.iter().any(|index| match index {
+                        rumoca_ir_solve::TensorIndex::Constant(_) => false,
+                        rumoca_ir_solve::TensorIndex::Runtime(register) => {
+                            self.depends_on(*register)
+                        }
+                    })
+            }
+            LinearOp::LoadIndexedFoldCarried { indices, .. }
+            | LinearOp::LoadIndexedFoldCapture { indices, .. } => {
+                indices.iter().any(|index| {
+                    matches!(index, rumoca_ir_solve::TensorIndex::Runtime(register) if self.depends_on(*register))
+                })
+            }
+            LinearOp::StoreOutputFoldTensorUpdate {
+                dimensions,
+                updates,
+                nodes,
+                lanes,
+                ..
+            } => nodes.iter().any(|node| {
+                matches!(
+                    node,
+                    rumoca_ir_solve::FoldTensorNode::Select { condition, .. }
+                        if self.depends_on(*condition)
+                )
+            }) || updates.iter().any(|update| {
+                let value_count = dimensions.iter().zip(update.subscripts.iter()).try_fold(
+                    1usize,
+                    |count, (&extent, subscript)| {
+                        if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
+                            count.checked_mul(extent as usize)
+                        } else {
+                            Some(count)
+                        }
+                    },
+                );
+                update
+                    .condition
+                    .is_some_and(|condition| self.depends_on(condition))
+                    || value_count.is_none_or(|count| {
+                        (0..count).any(|element| {
+                            (0..lanes).any(|lane| {
+                                self.depends_on(
+                                    update.value_start
+                                        + (element * update.value_stride + lane) as u32,
+                                )
+                            })
+                        })
+                    })
+                    || update.subscripts.iter().any(|subscript| {
+                        matches!(
+                            subscript,
+                            rumoca_ir_solve::TensorSubscript::Index(
+                                rumoca_ir_solve::TensorIndex::Runtime(register)
+                            ) if self.depends_on(*register)
+                        )
+                    })
+                }),
             LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
                 self.any_register_depends([lhs, rhs])
             }
@@ -96,6 +167,149 @@ impl<'a> YDependencyAnalyzer<'a> {
                 n,
                 ..
             } => self.linear_solve_depends(matrix_start, rhs_start, n),
+            LinearOp::DotProduct {
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+                ..
+            } => (0..count).any(|term| {
+                let lhs = lhs_start as usize + term * lhs_stride;
+                let rhs = rhs_start as usize + term * rhs_stride;
+                self.depends_on(lhs as u32) || self.depends_on(rhs as u32)
+            }),
+            LinearOp::MatrixMultiply {
+                lhs_start,
+                rhs_start,
+                rows,
+                inner,
+                columns,
+                lanes,
+                ..
+            } => rows
+                .checked_mul(inner)
+                .and_then(|count| count.checked_mul(lanes))
+                .is_none_or(|count| self.register_range_depends(lhs_start, count))
+                || inner
+                    .checked_mul(columns)
+                    .and_then(|count| count.checked_mul(lanes))
+                    .is_none_or(|count| self.register_range_depends(rhs_start, count)),
+            LinearOp::TensorBinary {
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+                lanes,
+                ..
+            } => {
+                (0..count).any(|element| {
+                    self.register_range_depends(
+                        lhs_start + (element * lhs_stride * lanes) as u32,
+                        lanes,
+                    )
+                }) || (0..count).any(|element| {
+                    self.register_range_depends(
+                        rhs_start + (element * rhs_stride * lanes) as u32,
+                        lanes,
+                    )
+                })
+            }
+            LinearOp::TensorCross {
+                lhs_start,
+                rhs_start,
+                lanes,
+                ..
+            } => lanes
+                .checked_mul(3)
+                .is_none_or(|count| self.register_range_depends(lhs_start, count))
+                || lanes
+                    .checked_mul(3)
+                    .is_none_or(|count| self.register_range_depends(rhs_start, count)),
+            LinearOp::TensorTranspose {
+                src_start,
+                rows,
+                columns,
+                element_width,
+                lanes,
+                ..
+            } => rows
+                .checked_mul(columns)
+                .and_then(|count| count.checked_mul(element_width))
+                .and_then(|count| count.checked_mul(lanes))
+                .is_none_or(|count| self.register_range_depends(src_start, count)),
+            LinearOp::TensorConcatenate { sources, lanes, .. } => sources.iter().any(|source| {
+                source
+                    .dimensions
+                    .iter()
+                    .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
+                    .is_none_or(|count| self.register_range_depends(source.start, count))
+            }),
+            LinearOp::TensorUpdate {
+                base_start,
+                value_start,
+                dimensions,
+                subscripts,
+                lanes,
+                ..
+            } => {
+                let base_count = dimensions
+                    .iter()
+                    .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize));
+                let mut value_count = Some(lanes);
+                let mut subscript_depends = false;
+                for (subscript, extent) in subscripts.iter().zip(dimensions.iter()) {
+                    match subscript {
+                        rumoca_ir_solve::TensorUpdateSubscript::Whole => {
+                            value_count = value_count.and_then(|count| {
+                                count.checked_mul(*extent as usize)
+                            });
+                        }
+                        rumoca_ir_solve::TensorUpdateSubscript::Index(
+                            rumoca_ir_solve::TensorIndex::Runtime(register),
+                        ) => subscript_depends |= self.depends_on(*register),
+                        rumoca_ir_solve::TensorUpdateSubscript::Index(
+                            rumoca_ir_solve::TensorIndex::Constant(_),
+                        ) => {}
+                        rumoca_ir_solve::TensorUpdateSubscript::Slice {
+                            start,
+                            dimensions,
+                        } => {
+                            let count = dimensions.iter().try_fold(1usize, |count, extent| {
+                                count.checked_mul(*extent as usize)
+                            });
+                            value_count = value_count
+                                .and_then(|value| count.and_then(|count| value.checked_mul(count)));
+                            subscript_depends |= count
+                                .is_none_or(|count| self.register_range_depends(*start, count));
+                        }
+                    }
+                }
+                base_count.is_none_or(|count| self.register_range_depends(base_start, count))
+                    || value_count
+                        .is_none_or(|count| self.register_range_depends(value_start, count))
+                    || subscript_depends
+            }
+            LinearOp::TensorFill {
+                value_start, lanes, ..
+            } => self.register_range_depends(value_start, lanes),
+            LinearOp::TensorIdentity { .. } => false,
+            LinearOp::TensorLoad {
+                dst_start,
+                input,
+                input_start,
+                count,
+                lanes,
+                ..
+            } => {
+                let offset = output.saturating_sub(dst_start) as usize;
+                input == rumoca_ir_solve::TensorInputKind::Y
+                    && lanes != 0
+                    && offset < count.saturating_mul(lanes)
+                    && offset.is_multiple_of(lanes)
+                    && input_start.saturating_add(offset / lanes) == self.target_y_index
+            }
             LinearOp::TableBounds { table_id, .. } => self.depends_on(table_id),
             LinearOp::TableLookup {
                 table_id,
@@ -132,10 +346,78 @@ impl<'a> YDependencyAnalyzer<'a> {
             LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
                 self.any_register_depends([id, imin, imax])
             }
+            LinearOp::FunctionFold {
+                initial_start,
+                capture_start,
+                program,
+                ..
+            } => {
+                self.register_range_depends(initial_start, program.carried_count)
+                    || self.register_range_depends(capture_start, program.capture_count)
+                    || row_reads_y_index(&program.update, self.target_y_index)
+            }
+            LinearOp::GuardedFunctionFold {
+                initial_start,
+                capture_start,
+                activation,
+                program,
+                ..
+            } => {
+                self.depends_on(activation)
+                    || self.register_range_depends(initial_start, program.carried_count)
+                    || self.register_range_depends(capture_start, program.capture_count)
+                    || row_reads_y_index(&program.update, self.target_y_index)
+            }
+            LinearOp::StoreOutputFunctionFold {
+                initial,
+                capture_start,
+                program,
+                condition,
+                ..
+            } => {
+                initial.iter().any(|source| match *source {
+                    rumoca_ir_solve::FoldInitialSource::Registers { start, count } => {
+                        self.register_range_depends(start, count)
+                    }
+                    // This query has no fold-carried dependency context. Keep
+                    // the answer conservative instead of dropping an edge.
+                    rumoca_ir_solve::FoldInitialSource::ParentCarried { .. } => true,
+                }) || self.register_range_depends(capture_start, program.capture_count)
+                    || condition.is_some_and(|condition| self.depends_on(condition))
+                    || row_reads_y_index(&program.update, self.target_y_index)
+            }
+            LinearOp::FunctionConditional {
+                capture_start,
+                program,
+                ..
+            } => {
+                self.register_range_depends(capture_start, program.capture_count)
+                    || program.arms.iter().any(|arm| {
+                        row_reads_y_index(&arm.condition, self.target_y_index)
+                            || row_reads_y_index(&arm.result, self.target_y_index)
+                    })
+                    || row_reads_y_index(&program.fallback, self.target_y_index)
+            }
+            LinearOp::PureCall {
+                input_starts,
+                site,
+                ..
+            } => input_starts
+                .iter()
+                .zip(site.inputs())
+                .any(|(start, value_type)| {
+                    self.register_range_depends(*start, value_type.scalar_count() as usize)
+                }),
             LinearOp::Const { .. }
             | LinearOp::LoadTime { .. }
             | LinearOp::LoadP { .. }
             | LinearOp::LoadSeed { .. }
+            | LinearOp::LoadFoldCarried { .. }
+            | LinearOp::LoadFoldIndex { .. }
+            | LinearOp::LoadFoldCapture { .. }
+            | LinearOp::LoadFunctionConditionalCapture { .. }
+            | LinearOp::LoadFunctionConditionalCaptureRange { .. }
+            | LinearOp::StoreOutputRange { .. }
             | LinearOp::StoreOutput { .. } => false,
         }
     }
@@ -158,6 +440,61 @@ impl<'a> YDependencyAnalyzer<'a> {
         (0..len).any(|offset| {
             checked_reg_offset(start, offset).is_none_or(|register| self.depends_on(register))
         })
+    }
+}
+
+pub(crate) fn row_reads_y_index(program: &[LinearOp], target: usize) -> bool {
+    row_y_input_ranges(program)
+        .iter()
+        .any(|range| range.contains(&target))
+}
+
+/// Compact runtime-Y intervals read by one retained scalar/tensor program.
+///
+/// Tensor loads remain ranges here. A consumer that genuinely needs scalar
+/// dependency views can enumerate only producer coordinates intersecting the
+/// ranges without rebuilding one load operation per lane.
+pub(crate) fn row_y_input_ranges(program: &[LinearOp]) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    collect_y_input_ranges(program, &mut ranges);
+    ranges.sort_unstable_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.is_empty() {
+            continue;
+        }
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
+fn collect_y_input_ranges(program: &[LinearOp], ranges: &mut Vec<Range<usize>>) {
+    for op in program {
+        match op {
+            LinearOp::LoadY { index, .. } => {
+                ranges.push(*index..index.saturating_add(1));
+            }
+            LinearOp::TensorLoad {
+                input: rumoca_ir_solve::TensorInputKind::Y,
+                input_start,
+                count,
+                ..
+            } => {
+                ranges.push(*input_start..input_start.saturating_add(*count));
+            }
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. }
+            | LinearOp::StoreOutputFunctionFold { program, .. } => {
+                collect_y_input_ranges(&program.update, ranges);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -201,12 +538,42 @@ pub(super) fn parameter_static_y_gradient(row: &[LinearOp]) -> bool {
 
 pub(super) fn row_parameter_indices(row: &[LinearOp]) -> Vec<usize> {
     let mut indices = BTreeSet::new();
+    collect_parameter_indices(row, &mut indices);
+    indices.into_iter().collect()
+}
+
+fn collect_parameter_indices(row: &[LinearOp], indices: &mut BTreeSet<usize>) {
     for op in row {
-        if let LinearOp::LoadP { index, .. } = *op {
-            indices.insert(index);
+        match op {
+            LinearOp::LoadP { index, .. } => {
+                indices.insert(*index);
+            }
+            LinearOp::LoadIndexedP { base, count, .. } => {
+                indices.extend(*base..base.saturating_add(*count));
+            }
+            LinearOp::TensorLoad {
+                input: rumoca_ir_solve::TensorInputKind::P,
+                input_start,
+                count,
+                ..
+            } => {
+                indices.extend(*input_start..input_start.saturating_add(*count));
+            }
+            LinearOp::FunctionFold { program, .. }
+            | LinearOp::GuardedFunctionFold { program, .. }
+            | LinearOp::StoreOutputFunctionFold { program, .. } => {
+                collect_parameter_indices(&program.update, indices);
+            }
+            LinearOp::FunctionConditional { program, .. } => {
+                for arm in &program.arms {
+                    collect_parameter_indices(&arm.condition, indices);
+                    collect_parameter_indices(&arm.result, indices);
+                }
+                collect_parameter_indices(&program.fallback, indices);
+            }
+            _ => {}
         }
     }
-    indices.into_iter().collect()
 }
 
 fn parameter_static_y_gradient_inner(row: &[LinearOp]) -> Option<bool> {

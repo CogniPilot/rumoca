@@ -208,7 +208,7 @@ Only private current-version wire records derive `Deserialize`. Decoding
 constructs checked children and then the checked root; derived counts and
 indexes are recomputed rather than accepted as wire inputs.
 
-**Contract:** rows `DAE-C01`–`DAE-C19` in
+**Contract:** rows `DAE-C01`–`DAE-C21` in
 [SPEC_0040 §1](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#1-dae-stage-contract-catalog-spec_0007-stage-3).
 
 **Do here:** DAE lowering, structural transformation, and separately returned
@@ -223,7 +223,7 @@ operators in solver equation partitions.
 
 ### Stage 4 — Solve (`rumoca-ir-solve`)
 
-**What it is:** Typed programs with checked DAE and Algorithm Code roots over
+**What it is:** Typed programs with DAE and Algorithm Code roots over
 shared scalar/tensor vocabulary.
 
 Canonical terminology:
@@ -233,6 +233,7 @@ Canonical terminology:
 | `ScalarProgram` | `Vec<LinearOp>` | A flat register program that produces one scalar output |
 | `ScalarProgramBlock` | `ScalarProgramBlock` | A group of scalar programs with one output per program |
 | `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
+| `FunctionFoldProgram` | `FunctionFoldProgram` | A finite-domain loop with an explicit loop-carried tuple and compact typed body |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
 | `SolveAlgorithmBlock` | `SolveAlgorithmBlock` | Checked Algorithm Code execution root |
 
@@ -270,7 +271,7 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 explicit arithmetic profile. It is not a mode of `SolveProblem`; rows
 SOLVE-C32–C38 define its complete obligations.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C38` in
+**Contract:** rows `SOLVE-C01`–`SOLVE-C55` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
 Objectives, adjoints, sensitivities, and optimizer projections are derived

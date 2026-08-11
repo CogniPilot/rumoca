@@ -19,6 +19,7 @@ rumoca-ir-solve = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 indexmap = { workspace = true }
+rustc-hash = { workspace = true }
 
 [lints]
 workspace = true

@@ -422,8 +422,13 @@ fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bo
     Ok((plan, complete))
 }
 
-fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
-    lazy_map(
+fn discrete_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
+    let scalar = super::discrete_render_view::DiscreteRenderView::checked(&problem.discrete)?;
+    let rhs = scalar_program_block_value(Arc::new(scalar.rhs));
+    let targets = scalar.targets;
+    let pre_modes = scalar.pre_modes;
+    let observation_refresh = scalar.observation_refresh;
+    Ok(lazy_map(
         &[
             "runtime_assignment_rhs",
             "runtime_assignment_targets",
@@ -439,7 +444,7 @@ fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
         move |k| {
             let d = &problem.discrete;
             match k {
-                "rhs" => Some(scalar_program_block_value(Arc::new(d.rhs.clone()))),
+                "rhs" => Some(rhs.clone()),
                 "runtime_assignment_rhs" => Some(scalar_program_block_value(Arc::new(
                     d.runtime_assignment_rhs.clone(),
                 ))),
@@ -458,13 +463,13 @@ fn discrete_value(problem: Arc<solve::SolveProblem>) -> Value {
                 "post_commit_assignment_runtime_rows" => Some(Value::from_serialize(
                     &d.post_commit_assignment_runtime_rows,
                 )),
-                "update_targets" => Some(Value::from_serialize(&d.update_targets)),
-                "pre_modes" => Some(Value::from_serialize(&d.pre_modes)),
-                "observation_refresh" => Some(Value::from_serialize(&d.observation_refresh)),
+                "update_targets" => Some(Value::from_serialize(&targets)),
+                "pre_modes" => Some(Value::from_serialize(&pre_modes)),
+                "observation_refresh" => Some(Value::from_serialize(&observation_refresh)),
                 _ => None,
             }
         },
-    )
+    ))
 }
 
 fn events_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
@@ -566,6 +571,7 @@ pub(super) fn solve_value(
     artifacts: Arc<solve::SolveArtifacts>,
 ) -> Result<Value, CodegenError> {
     let continuous = continuous_value(problem.clone())?;
+    let discrete = discrete_value(problem.clone())?;
     let events = events_value(problem.clone())?;
     let artifacts_value = artifacts_value(artifacts.clone())?;
     Ok(lazy_map(
@@ -585,7 +591,7 @@ pub(super) fn solve_value(
             "layout" => Some(Value::from_serialize(&problem.layout)),
             "solve_layout" => Some(Value::from_serialize(&problem.solve_layout)),
             "continuous" => Some(continuous.clone()),
-            "discrete" => Some(discrete_value(problem.clone())),
+            "discrete" => Some(discrete.clone()),
             "events" => Some(events.clone()),
             "initialization" => Some(Value::from_serialize(&problem.initialization)),
             "clocks" => Some(Value::from_serialize(&problem.clocks)),

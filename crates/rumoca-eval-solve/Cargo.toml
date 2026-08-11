@@ -13,5 +13,8 @@ rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

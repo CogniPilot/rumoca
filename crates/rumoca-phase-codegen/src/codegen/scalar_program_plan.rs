@@ -14,7 +14,7 @@ use crate::errors::CodegenError;
 
 #[derive(Debug)]
 struct ProgramMetadata {
-    output_targets: Vec<Option<usize>>,
+    output_targets: Vec<Option<Box<[usize]>>>,
     output_count: usize,
     temporary_count: usize,
 }
@@ -175,7 +175,7 @@ impl Object for PlanOpValue {
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         op_field(
             self.op(),
-            self.metadata[self.program_index].output_targets[self.op_index],
+            self.metadata[self.program_index].output_targets[self.op_index].as_deref(),
             key.as_str()?,
         )
     }
@@ -242,9 +242,14 @@ fn temporary_count_after(op: &solve::LinearOp) -> Result<usize, CodegenError> {
     let Some(dst) = op.dst_register() else {
         return Ok(0);
     };
+    let width = match op {
+        solve::LinearOp::FunctionFold { program, .. }
+        | solve::LinearOp::GuardedFunctionFold { program, .. } => program.carried_count,
+        _ => 1,
+    };
     usize::try_from(dst)
         .ok()
-        .and_then(|dst| dst.checked_add(1))
+        .and_then(|dst| dst.checked_add(width))
         .ok_or_else(|| {
             CodegenError::template("scalar program plan temporary index exceeds host range")
         })
@@ -255,29 +260,36 @@ fn take_output_target(
     output_indices: &[usize],
     output_ordinal: &mut usize,
     output_count: &mut usize,
-) -> Result<Option<usize>, CodegenError> {
-    if !matches!(op, solve::LinearOp::StoreOutput { .. }) {
+) -> Result<Option<Box<[usize]>>, CodegenError> {
+    let count = match op {
+        solve::LinearOp::StoreOutput { .. } => 1,
+        solve::LinearOp::StoreOutputRange { count, .. } => *count,
+        _ => 0,
+    };
+    if count == 0 {
         return no_output_target();
     }
-    let target = output_indices
-        .get(*output_ordinal)
-        .copied()
+    let end = output_ordinal
+        .checked_add(count)
+        .ok_or_else(|| CodegenError::template("scalar program plan output ordinal overflow"))?;
+    let targets = output_indices
+        .get(*output_ordinal..end)
         .ok_or_else(|| {
             CodegenError::template(format!(
-                "scalar program plan is missing output mapping #{}",
-                *output_ordinal
+                "scalar program plan is missing output mappings #{}..{}",
+                *output_ordinal, end
             ))
-        })?;
-    *output_ordinal = output_ordinal
-        .checked_add(1)
-        .ok_or_else(|| CodegenError::template("scalar program plan output ordinal overflow"))?;
+        })?
+        .to_vec()
+        .into_boxed_slice();
+    *output_ordinal = end;
     *output_count = output_count
-        .checked_add(1)
+        .checked_add(count)
         .ok_or_else(|| CodegenError::template("scalar program output count exceeds host range"))?;
-    Ok(Some(target))
+    Ok(Some(targets))
 }
 
-fn no_output_target() -> Result<Option<usize>, CodegenError> {
+fn no_output_target() -> Result<Option<Box<[usize]>>, CodegenError> {
     Ok(Option::None)
 }
 
@@ -291,7 +303,7 @@ fn validate_output_count(store_count: usize, mapping_count: usize) -> Result<(),
     }
 }
 
-fn op_field(op: &solve::LinearOp, output_target: Option<usize>, key: &str) -> Option<Value> {
+fn op_field(op: &solve::LinearOp, output_targets: Option<&[usize]>, key: &str) -> Option<Value> {
     match key {
         "kind" => return Some(Value::from(op.kind_name())),
         "dst" => return op.dst_register().map(|value| Value::from(value as usize)),
@@ -299,7 +311,37 @@ fn op_field(op: &solve::LinearOp, output_target: Option<usize>, key: &str) -> Op
     }
     load_field(op, key)
         .or_else(|| stateful_field(op, key))
-        .or_else(|| arithmetic_field(op, output_target, key))
+        .or_else(|| {
+            if let solve::LinearOp::LoadFunctionConditionalCaptureRange {
+                index_start, count, ..
+            } = op
+            {
+                return match key {
+                    "index_start" => Some(Value::from(*index_start)),
+                    "count" => Some(Value::from(*count)),
+                    _ => None,
+                };
+            }
+            if let solve::LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } = op
+            {
+                return match key {
+                    "start" => Some(Value::from(*start as usize)),
+                    "count" => Some(Value::from(*count)),
+                    "stride" => Some(Value::from(*stride)),
+                    "output_indices" => output_targets.map(Value::from_serialize),
+                    _ => None,
+                };
+            }
+            arithmetic_field(
+                op,
+                output_targets.and_then(|targets| targets.first().copied()),
+                key,
+            )
+        })
 }
 
 fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
@@ -313,6 +355,9 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
         LinearOp::LoadY { index, .. }
         | LinearOp::LoadP { index, .. }
         | LinearOp::LoadSeed { index, .. }
+        | LinearOp::LoadFoldCarried { index, .. }
+        | LinearOp::LoadFoldCapture { index, .. }
+        | LinearOp::LoadFunctionConditionalCapture { index, .. }
             if key == "index" =>
         {
             Some(Value::from(index))
@@ -328,7 +373,129 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "index_ref" => Some(Value::from(index as usize)),
             _ => None,
         },
+        LinearOp::LoadIndexedRegister {
+            base,
+            stride,
+            ref dimensions,
+            ref indices,
+            ..
+        } => match key {
+            "base" => Some(Value::from(base as usize)),
+            "stride" => Some(Value::from(stride)),
+            "dimensions" => Some(Value::from_serialize(dimensions)),
+            "indices" => Some(Value::from_serialize(indices)),
+            _ => None,
+        },
+        LinearOp::LoadIndexedFoldCarried {
+            base,
+            stride,
+            ref dimensions,
+            ref indices,
+            ..
+        }
+        | LinearOp::LoadIndexedFoldCapture {
+            base,
+            stride,
+            ref dimensions,
+            ref indices,
+            ..
+        } => match key {
+            "base" => Some(Value::from(base as usize)),
+            "stride" => Some(Value::from(stride)),
+            "dimensions" => Some(Value::from_serialize(dimensions)),
+            "indices" => Some(Value::from_serialize(indices)),
+            _ => None,
+        },
         LinearOp::Move { src, .. } if key == "src" => Some(Value::from(src as usize)),
+        LinearOp::LoadFoldIndex { dimension, .. } if key == "dimension" => {
+            Some(Value::from(dimension))
+        }
+        LinearOp::FunctionFold {
+            initial_start,
+            capture_start,
+            ref program,
+            ..
+        } => match key {
+            "initial_start" => Some(Value::from(initial_start as usize)),
+            "capture_start" => Some(Value::from(capture_start as usize)),
+            "carried_count" => Some(Value::from(program.carried_count)),
+            "capture_count" => Some(Value::from(program.capture_count)),
+            "register_count" => Some(Value::from(program.register_count)),
+            "domain" => Some(Value::from_serialize(&program.domain)),
+            "update" => Some(Value::from_serialize(&program.update)),
+            _ => None,
+        },
+        LinearOp::GuardedFunctionFold {
+            initial_start,
+            capture_start,
+            activation,
+            ref program,
+            ..
+        } => match key {
+            "initial_start" => Some(Value::from(initial_start as usize)),
+            "capture_start" => Some(Value::from(capture_start as usize)),
+            "activation" => Some(Value::from(activation as usize)),
+            "carried_count" => Some(Value::from(program.carried_count)),
+            "capture_count" => Some(Value::from(program.capture_count)),
+            "register_count" => Some(Value::from(program.register_count)),
+            "domain" => Some(Value::from_serialize(&program.domain)),
+            "update" => Some(Value::from_serialize(&program.update)),
+            _ => None,
+        },
+        LinearOp::FunctionConditional {
+            capture_start,
+            ref program,
+            ..
+        } => match key {
+            "capture_start" => Some(Value::from(capture_start as usize)),
+            "capture_count" => Some(Value::from(program.capture_count)),
+            "target_widths" => Some(Value::from_serialize(&program.target_widths)),
+            "result_count" => Some(Value::from(program.result_count)),
+            "arms" => Some(Value::from_serialize(&program.arms)),
+            "fallback_register_count" => Some(Value::from(program.fallback_register_count)),
+            "fallback" => Some(Value::from_serialize(&program.fallback)),
+            _ => None,
+        },
+        LinearOp::StoreOutputFoldTensorUpdate {
+            source_base,
+            source_stride,
+            ref dimensions,
+            ref updates,
+            ref nodes,
+            result,
+            lanes,
+        } => match key {
+            "source_base" => Some(Value::from(source_base)),
+            "source_stride" => Some(Value::from(source_stride)),
+            "dimensions" => Some(Value::from_serialize(dimensions)),
+            "updates" => Some(Value::from_serialize(updates)),
+            "nodes" => Some(Value::from_serialize(nodes)),
+            "result" => Some(Value::from(result as usize)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::StoreOutputFunctionFold {
+            ref initial,
+            capture_start,
+            ref program,
+            result_base,
+            count,
+            condition,
+            nested_when_true,
+        } => match key {
+            "initial" => Some(Value::from_serialize(initial)),
+            "capture_start" => Some(Value::from(capture_start as usize)),
+            "carried_count" => Some(Value::from(program.carried_count)),
+            "capture_count" => Some(Value::from(program.capture_count)),
+            "register_count" => Some(Value::from(program.register_count)),
+            "domain" => Some(Value::from_serialize(&program.domain)),
+            "update" => Some(Value::from_serialize(&program.update)),
+            "result_base" => Some(Value::from(result_base)),
+            "count" => Some(Value::from(count)),
+            "condition" => condition.map(|condition| Value::from(condition as usize)),
+            "nested_when_true" => Some(Value::from(nested_when_true)),
+            _ => None,
+        },
         LinearOp::LinearSolveComponent {
             matrix_start,
             rhs_start,
@@ -340,6 +507,142 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "rhs_start" => Some(Value::from(rhs_start as usize)),
             "n" => Some(Value::from(n)),
             "component" => Some(Value::from(component)),
+            _ => None,
+        },
+        LinearOp::DotProduct {
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            ..
+        } => match key {
+            "lhs_start" => Some(Value::from(lhs_start as usize)),
+            "rhs_start" => Some(Value::from(rhs_start as usize)),
+            "count" => Some(Value::from(count)),
+            "lhs_stride" => Some(Value::from(lhs_stride)),
+            "rhs_stride" => Some(Value::from(rhs_stride)),
+            _ => None,
+        },
+        LinearOp::MatrixMultiply {
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes,
+            ..
+        } => match key {
+            "lhs_start" => Some(Value::from(lhs_start as usize)),
+            "rhs_start" => Some(Value::from(rhs_start as usize)),
+            "rows" => Some(Value::from(rows)),
+            "inner" => Some(Value::from(inner)),
+            "columns" => Some(Value::from(columns)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorBinary {
+            op,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes,
+            ..
+        } => match key {
+            "operator" => Some(Value::from(op.kind_name())),
+            "lhs_start" => Some(Value::from(lhs_start as usize)),
+            "rhs_start" => Some(Value::from(rhs_start as usize)),
+            "count" => Some(Value::from(count)),
+            "lhs_stride" => Some(Value::from(lhs_stride)),
+            "rhs_stride" => Some(Value::from(rhs_stride)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorCross {
+            lhs_start,
+            rhs_start,
+            lanes,
+            ..
+        } => match key {
+            "lhs_start" => Some(Value::from(lhs_start as usize)),
+            "rhs_start" => Some(Value::from(rhs_start as usize)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorTranspose {
+            src_start,
+            rows,
+            columns,
+            element_width,
+            lanes,
+            ..
+        } => match key {
+            "src_start" => Some(Value::from(src_start as usize)),
+            "rows" => Some(Value::from(rows)),
+            "columns" => Some(Value::from(columns)),
+            "element_width" => Some(Value::from(element_width)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorConcatenate {
+            ref sources,
+            ref dimensions,
+            axis,
+            lanes,
+            ..
+        } => match key {
+            "sources" => Some(Value::from_serialize(sources)),
+            "dimensions" => Some(Value::from_serialize(dimensions)),
+            "axis" => Some(Value::from(axis)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorUpdate {
+            base_start,
+            value_start,
+            ref dimensions,
+            ref subscripts,
+            lanes,
+            ..
+        } => match key {
+            "base_start" => Some(Value::from(base_start as usize)),
+            "value_start" => Some(Value::from(value_start as usize)),
+            "dimensions" => Some(Value::from_serialize(dimensions)),
+            "subscripts" => Some(Value::from_serialize(subscripts)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorFill {
+            value_start,
+            count,
+            lanes,
+            ..
+        } => match key {
+            "value_start" => Some(Value::from(value_start as usize)),
+            "count" => Some(Value::from(count)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorIdentity { size, lanes, .. } => match key {
+            "size" => Some(Value::from(size)),
+            "lanes" => Some(Value::from(lanes)),
+            _ => None,
+        },
+        LinearOp::TensorLoad {
+            input,
+            input_start,
+            count,
+            seed_start,
+            lanes,
+            ..
+        } => match key {
+            "input" => Some(Value::from_serialize(input)),
+            "input_start" => Some(Value::from(input_start)),
+            "count" => Some(Value::from(count)),
+            "seed_start" => seed_start.map(Value::from),
+            "lanes" => Some(Value::from(lanes)),
             _ => None,
         },
         _ => None,
@@ -505,19 +808,97 @@ fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         LinearOp::LoadY { .. } | LinearOp::LoadP { .. } | LinearOp::LoadSeed { .. } => {
             &["kind", "dst", "index"]
         }
+        LinearOp::LoadFoldCarried { .. } => &["kind", "dst", "index"],
+        LinearOp::LoadFoldIndex { .. } => &["kind", "dst", "dimension"],
+        LinearOp::LoadFoldCapture { .. } => &["kind", "dst", "index"],
+        LinearOp::LoadFunctionConditionalCapture { .. } => &["kind", "dst", "index"],
+        LinearOp::LoadFunctionConditionalCaptureRange { .. } => {
+            &["kind", "dst", "index_start", "count"]
+        }
         LinearOp::LoadIndexedP { .. } | LinearOp::LoadIndexedSeed { .. } => {
             &["kind", "dst", "base", "count", "index_ref"]
+        }
+        LinearOp::LoadIndexedRegister { .. }
+        | LinearOp::LoadIndexedFoldCarried { .. }
+        | LinearOp::LoadIndexedFoldCapture { .. } => {
+            &["kind", "dst", "base", "stride", "dimensions", "indices"]
         }
         LinearOp::Move { .. } => &["kind", "dst", "src"],
         LinearOp::LinearSolveComponent { .. } => {
             &["kind", "dst", "matrix_start", "rhs_start", "n", "component"]
         }
+        LinearOp::DotProduct { .. } => &[
+            "kind",
+            "dst",
+            "lhs_start",
+            "rhs_start",
+            "count",
+            "lhs_stride",
+            "rhs_stride",
+        ],
+        LinearOp::MatrixMultiply { .. } => &[
+            "kind",
+            "dst",
+            "lhs_start",
+            "rhs_start",
+            "rows",
+            "inner",
+            "columns",
+            "lanes",
+        ],
+        LinearOp::TensorBinary { .. } => &[
+            "kind",
+            "dst",
+            "operator",
+            "lhs_start",
+            "rhs_start",
+            "count",
+            "lhs_stride",
+            "rhs_stride",
+            "lanes",
+        ],
+        LinearOp::TensorCross { .. } => &["kind", "dst", "lhs_start", "rhs_start", "lanes"],
+        LinearOp::TensorTranspose { .. } => &[
+            "kind",
+            "dst",
+            "src_start",
+            "rows",
+            "columns",
+            "element_width",
+            "lanes",
+        ],
+        LinearOp::TensorConcatenate { .. } => {
+            &["kind", "dst", "sources", "dimensions", "axis", "lanes"]
+        }
+        LinearOp::TensorUpdate { .. } => &[
+            "kind",
+            "dst",
+            "base_start",
+            "value_start",
+            "dimensions",
+            "subscripts",
+            "lanes",
+        ],
+        LinearOp::TensorFill { .. } => &["kind", "dst", "value_start", "count", "lanes"],
+        LinearOp::TensorIdentity { .. } => &["kind", "dst", "size", "lanes"],
+        LinearOp::TensorLoad { .. } => &[
+            "kind",
+            "dst",
+            "input",
+            "input_start",
+            "count",
+            "seed_start",
+            "lanes",
+        ],
         LinearOp::Unary { .. } => &["kind", "dst", "operator", "arg"],
         LinearOp::Binary { .. } | LinearOp::Compare { .. } => {
             &["kind", "dst", "operator", "lhs", "rhs"]
         }
         LinearOp::Select { .. } => &["kind", "dst", "cond", "if_true", "if_false"],
         LinearOp::StoreOutput { .. } => &["kind", "src", "output_index"],
+        LinearOp::StoreOutputRange { .. } => {
+            &["kind", "start", "count", "stride", "output_indices"]
+        }
         LinearOp::TableBounds { .. } => &["kind", "dst", "table_id", "max"],
         LinearOp::TableLookup { .. } | LinearOp::TableLookupSlope { .. } => {
             &["kind", "dst", "table_id", "column", "input"]
@@ -544,6 +925,65 @@ fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         LinearOp::ImpureRandomInit { .. } => &["kind", "dst", "seed"],
         LinearOp::ImpureRandom { .. } => &["kind", "dst", "id", "call_site"],
         LinearOp::ImpureRandomInteger { .. } => &["kind", "dst", "id", "imin", "imax", "call_site"],
+        LinearOp::FunctionFold { .. } => &[
+            "kind",
+            "dst",
+            "initial_start",
+            "capture_start",
+            "carried_count",
+            "capture_count",
+            "register_count",
+            "domain",
+            "update",
+        ],
+        LinearOp::GuardedFunctionFold { .. } => &[
+            "kind",
+            "dst",
+            "initial_start",
+            "capture_start",
+            "activation",
+            "carried_count",
+            "capture_count",
+            "register_count",
+            "domain",
+            "update",
+        ],
+        LinearOp::FunctionConditional { .. } => &[
+            "kind",
+            "dst",
+            "capture_start",
+            "capture_count",
+            "target_widths",
+            "result_count",
+            "arms",
+            "fallback_register_count",
+            "fallback",
+        ],
+        LinearOp::PureCall { .. } => &["kind", "dst", "input_starts", "owner"],
+        LinearOp::StoreOutputFoldTensorUpdate { .. } => &[
+            "kind",
+            "source_base",
+            "source_stride",
+            "dimensions",
+            "updates",
+            "nodes",
+            "result",
+            "lanes",
+        ],
+        LinearOp::StoreOutputFunctionFold { .. } => &[
+            "kind",
+            "initial",
+            "capture_start",
+            "carried_count",
+            "capture_count",
+            "register_count",
+            "domain",
+            "update",
+            "result_base",
+            "count",
+            "condition",
+            "nested_when_true",
+        ],
     }
 }
 

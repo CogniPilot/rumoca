@@ -180,15 +180,26 @@ pub(super) fn lower_algorithm_function_call<'dae>(
         .collect::<Result<Vec<_>, _>>()?;
     let provenance = dae::DaeProvenance::source(call.span)?;
     let mut updates = Vec::new();
-    for (ordinal, (output, plan)) in call.outputs.iter().zip(&call.plan.outputs).enumerate() {
-        let (Some(_), Some(plan)) = (output, plan) else {
-            continue;
-        };
-        let value = construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .call(function, ordinal, arguments.iter().copied())
-        })?;
+    let selected = call
+        .outputs
+        .iter()
+        .zip(&call.plan.outputs)
+        .enumerate()
+        .filter_map(|(ordinal, (output, plan))| {
+            output
+                .as_ref()
+                .zip(plan.as_ref())
+                .map(|pair| (ordinal, pair.1))
+        })
+        .collect::<Vec<_>>();
+    let values = construction.expressions(|expressions| {
+        expressions.at(provenance).call_results(
+            function,
+            selected.iter().map(|(ordinal, _)| *ordinal),
+            arguments.iter().copied(),
+        )
+    })?;
+    for ((_, plan), value) in selected.into_iter().zip(values) {
         match plan {
             ModelEventFunctionOutputPlan::Coordinate(target) => {
                 lower_algorithm_call_target(

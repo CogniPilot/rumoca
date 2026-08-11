@@ -55,6 +55,13 @@ pub enum SolveProblemShapeContractError {
         error: ScalarProgramRegisterError,
         span: Option<Span>,
     },
+    FunctionConditionalOwnerMismatch {
+        context: String,
+        node_index: usize,
+        owner: u64,
+        program_index: usize,
+        span: Option<Span>,
+    },
     ScalarProgramCountMismatch {
         context: &'static str,
         expected: usize,
@@ -71,6 +78,21 @@ pub enum SolveProblemShapeContractError {
         update_index: usize,
         node_index: usize,
         detail: &'static str,
+        span: Option<Span>,
+    },
+    GuardedAssignmentProgram {
+        program_index: usize,
+        detail: &'static str,
+        span: Option<Span>,
+    },
+    EventTransactionProgram {
+        program_index: usize,
+        detail: &'static str,
+        span: Option<Span>,
+    },
+    PureCallSiteMismatch {
+        context: &'static str,
+        owner: u32,
         span: Option<Span>,
     },
     ZeroTensorDimension {
@@ -204,9 +226,13 @@ impl SolveProblemShapeContractError {
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
             | Self::ScalarProgramMissingOutput { span, .. }
             | Self::ScalarProgramRegisterFlow { span, .. }
+            | Self::FunctionConditionalOwnerMismatch { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
             | Self::DiscreteCertificate { span, .. }
             | Self::StructuredDiscreteUpdate { span, .. }
+            | Self::GuardedAssignmentProgram { span, .. }
+            | Self::EventTransactionProgram { span, .. }
+            | Self::PureCallSiteMismatch { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
             | Self::VariableIndexOutOfBounds { span, .. }
@@ -286,6 +312,17 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 "{context} node {node_index} scalar program {program_index} has invalid register \
                  flow: {error}"
             ),
+            Self::FunctionConditionalOwnerMismatch {
+                context,
+                node_index,
+                owner,
+                program_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} assigns conditional \
+                 owner {owner} to a different checked body"
+            ),
             Self::ScalarProgramCountMismatch {
                 context,
                 expected,
@@ -310,6 +347,26 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 f,
                 "structured discrete update {update_index} for compute node {node_index} is \
                  invalid: {detail}"
+            ),
+            Self::GuardedAssignmentProgram {
+                program_index,
+                detail,
+                ..
+            } => write!(
+                f,
+                "guarded assignment program {program_index} is invalid: {detail}"
+            ),
+            Self::EventTransactionProgram {
+                program_index,
+                detail,
+                ..
+            } => write!(
+                f,
+                "event transaction program {program_index} is invalid: {detail}"
+            ),
+            Self::PureCallSiteMismatch { context, owner, .. } => write!(
+                f,
+                "{context} references pure-call owner {owner} with a missing or mismatched interface"
             ),
             error @ (Self::ZeroTensorDimension { .. }
             | Self::StructuredIndexDomain { .. }

@@ -30,6 +30,14 @@ impl<'dae> LoweredClocks<'dae> {
             })
     }
 
+    pub(super) fn clock_index(&self, index: usize) -> Result<solve::PeriodicClockId, LowerError> {
+        self.dae_clocks.get(index).copied().ok_or_else(|| {
+            LowerError::unspanned_non_computable(
+                "clock ownership refers outside the checked DAE clock arena",
+            )
+        })
+    }
+
     pub(super) fn variable_owner(
         &self,
         variable: dae::VariableId<'dae>,
@@ -153,7 +161,10 @@ pub(super) fn reject_clocked_continuous_feedback<'dae>(
     }
     let real_definitions = super::events::resolve_discrete_real_definitions(view)?;
     let mut rows = Vec::new();
-    for (index, (target, value)) in real_definitions.into_iter().enumerate() {
+    for (index, definition) in real_definitions.into_iter().enumerate() {
+        let Some((target, value)) = definition else {
+            continue;
+        };
         let equation = view
             .discrete_real_equation(index)
             .expect("dense checked discrete Real equation resolves");

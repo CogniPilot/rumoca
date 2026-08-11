@@ -57,6 +57,8 @@
 {%- elif op.kind == "Compare" %}    r[{{ op.dst }}] = {{ compare(op.operator, op.lhs, op.rhs) }};
 {%- elif op.kind == "Select" %}    r[{{ op.dst }}] = r[{{ op.cond }}] != 0.0 ? r[{{ op.if_true }}] : r[{{ op.if_false }}];
 {%- elif op.kind == "StoreOutput" %}    m->derivative[{{ op.output_index }}] = r[{{ op.src }}];
+{%- elif op.kind == "StoreOutputRange" %}{%- for output_index in op.output_indices %}    m->derivative[{{ output_index }}] = r[{{ op.start + loop.index0 * op.stride }}];
+{%- endfor %}
 {%- else %}{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
 {%- endif %}
 {%- endmacro %}
