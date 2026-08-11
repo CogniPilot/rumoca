@@ -22,6 +22,14 @@ Compile preflight: cc -std=c99 -pedantic -Wall -Wextra -Wconversion
   -Wsign-conversion -Wshadow -Wundef -Wcast-qual -Wstrict-prototypes
   -Wmissing-prototypes -Werror -c {{ out_dir }}/{{ model_name }}.c"""
 
+# GAL-028: the target's Integer execution domain. The generated C computes
+# Integer arithmetic on int32_t, so declare that domain here like the galec
+# and galec-production targets do; range-proof enforcement over this domain
+# is tracked pre-cutover work (see SPEC_0034 GAL-028/GAL-030).
+[integer]
+minimum = -2147483648
+maximum = 2147483647
+
 # Generic DAE capability gates (SPEC_0034 GAL-006), copied verbatim from
 # the galec target: both consume the same DAE → GALEC projection, so
 # admissibility is identical. The gates run before any rendering; the
@@ -44,14 +52,32 @@ reverse_ad = false
 dynamic_control_flow = false
 host_callbacks = false
 
+# Support partial (renders no product file): the single declaration site of
+# the GALEC-derived C symbol policy and of the two symbol tables every C
+# artifact prints from. `name` publishes it to the shared render environment,
+# so this target's own artifacts AND the galec-production ProductionCode
+# artifacts read one allocation instead of copied reserved lists. A
+# `[[partials]]` entry is mutually exclusive with a `[[files]]` entry: this
+# file has no product path because rendering it yields no artifact.
+[[partials]]
+template = "symbols.jinja"
+name = "galec-c-symbols.jinja"
+
 # D2/GAL-008 split: Rust lowers to a closed typed semantic context
 # (collision-checked names, typed variables, recursive expressions/statements,
 # and normalized array operations). These templates own every C token,
 # declaration, expression, statement, comment escape, and file-layout choice.
+#
+# `shared_as` publishes each artifact template to the shared render
+# environment as well: the GALEC-derived C body is target-agnostic, and
+# galec-production's ProductionCode artifacts `{% extends %}` these exact
+# files to override only their conformance banner.
 [[files]]
 path = "{{ model_name }}.h"
 template = "model.h.jinja"
+shared_as = "galec-model.h.jinja"
 
 [[files]]
 path = "{{ model_name }}.c"
 template = "model.c.jinja"
+shared_as = "galec-model.c.jinja"

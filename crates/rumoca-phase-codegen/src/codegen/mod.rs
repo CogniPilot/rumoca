@@ -44,6 +44,7 @@ mod symbol_alloc;
 #[cfg(test)]
 mod wgsl_ode_tests;
 
+use crate::templates;
 pub(crate) use expr_config::{ExprConfig, IfStyle, get_str_attr};
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
@@ -55,7 +56,6 @@ use render_solve::{
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
     allocate_symbols_function, emitted_symbol, lookup_symbol_value, symbol_function,
-    target_symbols_function,
 };
 
 /// Result type for internal render functions.
@@ -637,26 +637,28 @@ fn create_environment() -> Environment<'static> {
     env.set_debug(true);
     // Fail fast on missing fields/variables in templates.
     env.set_undefined_behavior(UndefinedBehavior::Strict);
-    env.add_template(
-        "algorithm-code-source.jinja",
-        include_str!("../templates/galec/model.alg.jinja"),
-    )
-    .expect("built-in Algorithm Code source template must parse");
-    env.add_template(
-        "algorithm-code-manifest.jinja",
-        include_str!("../templates/galec/manifest.xml.jinja"),
-    )
-    .expect("built-in Algorithm Code manifest template must parse");
-    env.add_template(
-        "galec-model.c.jinja",
-        include_str!("../templates/embedded-c-galec/model.c.jinja"),
-    )
-    .expect("built-in GALEC-derived C source template must parse");
-    env.add_template(
-        "galec-model.h.jinja",
-        include_str!("../templates/embedded-c-galec/model.h.jinja"),
-    )
-    .expect("built-in GALEC-derived C header template must parse");
+    // The shared render environment: every template a target manifest
+    // publishes under a shared name, and nothing else. Support partials
+    // (`[[partials]]`, e.g. the GALEC-derived C symbol policy, which every C
+    // artifact imports so they all read one allocation instead of copied
+    // reserved lists) and shared artifact bases (`[[files]].shared_as`, e.g.
+    // the target-agnostic GALEC-derived C body that galec-production extends)
+    // both arrive through this one registry.
+    //
+    // Registering from the generated registry rather than from `include_str!`
+    // paths keeps the declaration in the owning target bundle: a target
+    // publishes a template by declaring it in `target.toml`, and `build.rs`
+    // rejects an undeclared bundled template or a duplicated shared name
+    // before this code ever runs. No target-specific name appears here.
+    for shared in templates::shared_templates() {
+        env.add_template(shared.name, shared.source)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "built-in shared template {} ({}/{}) must parse: {error}",
+                    shared.name, shared.target, shared.path
+                )
+            });
+    }
 
     // Custom filters
     env.add_filter("sanitize", sanitize_filter);
@@ -667,11 +669,16 @@ fn create_environment() -> Environment<'static> {
     // valid xs:double lexical.
     env.add_filter("xml_escape", xml_escape_filter);
     env.add_filter("xs_double", xs_double_filter);
+    // Declared-range decisions in a target's own numeric domain: a template
+    // picks the domain its type denotes, Rust owns whether that bound is
+    // unbounded (`none`), representable (literal text), or unrepresentable
+    // (fail closed). See `binary32_bound_str` / `int32_bound_str`.
+    env.add_filter("binary32_bound", binary32_bound_filter);
+    env.add_filter("int32_bound", int32_bound_filter);
 
     // Helpers for target-local emitted symbols. Flattening supplies globally
     // unique Modelica names; templates provide target keyword/generated-alias policy.
     env.add_function("allocate_symbols", allocate_symbols_function);
-    env.add_function("target_symbols", target_symbols_function);
     env.add_function("symbol", symbol_function);
     env.add_function("source_ref", source_ref_function);
 
@@ -843,6 +850,137 @@ fn xs_double_filter(value: f64) -> Result<String, minijinja::Error> {
     xs_double_str(value)
 }
 
+/// Which side of a declared range a bound is, so the domain decision below can
+/// tell "no bound in that direction" from "a bound nothing can represent".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundSide {
+    Min,
+    Max,
+}
+
+impl BoundSide {
+    fn parse(side: &str) -> Result<Self, minijinja::Error> {
+        match side {
+            "min" => Ok(Self::Min),
+            "max" => Ok(Self::Max),
+            other => Err(render_err(format!(
+                "declared range side must be `min` or `max`, not `{other}`"
+            ))),
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// Decide one declared Real saturation bound **in a binary32 execution
+/// domain** and return the literal text for it, or `none` when the target must
+/// emit no clamp on that side at all.
+///
+/// A template owns the syntax of a target's Real type; the domain that type
+/// denotes is a semantic fact, and deciding it here is what keeps a template
+/// from open-coding a range test against a magic constant (SPEC_0034 D2).
+/// There are exactly three answers:
+///
+/// * **Unbounded** — the bound rounds to the infinity that lies *away* from
+///   the admissible values (`-inf` for a `min`, `+inf` for a `max`). No
+///   binary32 value can violate it, so the saturation is provably dead and the
+///   clamp is elided. This is the case a Modelica `min = -Modelica.Constants.
+///   inf` / `max = Modelica.Constants.inf` declaration reaches: MSL spells
+///   "unbounded" as `1e60`, which is not a number a binary32 target can hold,
+///   and emitting it as a literal is what a strict compile preflight rejects
+///   (`floating constant exceeds range of 'float'`).
+/// * **Unrepresentable** — the bound rounds to the infinity on the *admissible*
+///   side (a `min` at `+inf`, a `max` at `-inf`). Every finite value would
+///   saturate to an infinity the target cannot spell as a literal, so this
+///   fails closed rather than emitting an out-of-range constant.
+/// * **Representable** — rendered from the binary32 value the target will
+///   actually compare against, so the emitted literal is exact in the target's
+///   domain and no further rounding happens at compile time.
+pub(crate) fn binary32_bound_str(
+    value: f64,
+    side: BoundSide,
+) -> Result<Option<String>, minijinja::Error> {
+    let narrowed = value as f32;
+    if narrowed.is_nan() {
+        return Err(render_err(format!(
+            "unsupported-feature:target-real-range:{}:NaN is not a saturation bound",
+            side.label()
+        )));
+    }
+    if narrowed.is_infinite() {
+        return if narrowed.is_sign_negative() == (side == BoundSide::Min) {
+            Ok(None)
+        } else {
+            Err(render_err(format!(
+                "unsupported-feature:target-real-range:{}:{value:e} is outside the binary32 \
+                 saturation domain",
+                side.label()
+            )))
+        };
+    }
+    xs_double_str(f64::from(narrowed)).map(Some)
+}
+
+/// Decide one declared Integer saturation bound in an int32 execution domain
+/// (SPEC_0034 GAL-028) and return its literal digits, or `none` when the clamp
+/// is provably dead.
+///
+/// Unlike a Real domain, an integer domain has no value that stands for
+/// "beyond the finite range", so a bound outside it is not a weaker bound —
+/// it declares a variable domain the target cannot execute, and fails closed.
+/// A bound *at* the edge of the domain is instead unviolable and elided: the
+/// comparison a clamp would emit is always false, which is both dead code and
+/// a diagnostic under a strict compile preflight (`-Wtype-limits`).
+pub(crate) fn int32_bound_str(
+    value: i64,
+    side: BoundSide,
+) -> Result<Option<String>, minijinja::Error> {
+    let Ok(narrowed) = i32::try_from(value) else {
+        return Err(render_err(format!(
+            "unsupported-feature:target-integer-range:{}:{value} is outside the target Integer \
+             domain",
+            side.label()
+        )));
+    };
+    let unviolable = match side {
+        BoundSide::Min => narrowed == i32::MIN,
+        BoundSide::Max => narrowed == i32::MAX,
+    };
+    Ok((!unviolable).then(|| narrowed.to_string()))
+}
+
+/// `none` in, `none` out: an undeclared bound is simply no bound. A declared
+/// one is decided in the target domain, and an undecidable one propagates its
+/// typed failure to the render rather than degrading into "unbounded".
+fn binary32_bound_filter(value: Option<f64>, side: &str) -> Result<Value, minijinja::Error> {
+    let Some(value) = value else {
+        return Ok(Value::from(()));
+    };
+    Ok(bound_value(binary32_bound_str(
+        value,
+        BoundSide::parse(side)?,
+    )?))
+}
+
+fn int32_bound_filter(value: Option<i64>, side: &str) -> Result<Value, minijinja::Error> {
+    let Some(value) = value else {
+        return Ok(Value::from(()));
+    };
+    Ok(bound_value(int32_bound_str(
+        value,
+        BoundSide::parse(side)?,
+    )?))
+}
+
+fn bound_value(literal: Option<String>) -> Value {
+    literal.map_or_else(|| Value::from(()), Value::from)
+}
+
 /// Filter to compute the product of all elements in a sequence.
 ///
 /// Used by MX template: `{{ var.dims | product }}` -> total scalar size.
@@ -897,31 +1035,6 @@ fn value_list_strings(value: &Value) -> Result<Vec<String>, minijinja::Error> {
         if let Ok(item) = value.get_item(&Value::from(i)) {
             out.push(value_to_string(&item));
         }
-    }
-    Ok(out)
-}
-
-fn value_symbol_aliases(value: &Value) -> Result<Vec<(String, String)>, minijinja::Error> {
-    let Some(len) = value.len() else {
-        return Ok(Vec::new());
-    };
-    let mut out = render_vec_with_capacity(len, "symbol alias count")?;
-    for i in 0..len {
-        let item = value
-            .get_item(&Value::from(i))
-            .map_err(|err| render_err(format!("symbol alias entry {i} is not readable: {err}")))?;
-        let alias = get_field(&item, "alias")
-            .map(|value| value_to_string(&value))
-            .map_err(|err| render_err(format!("symbol alias entry {i} missing alias: {err}")))?;
-        let target = get_field(&item, "target")
-            .map(|value| value_to_string(&value))
-            .map_err(|err| render_err(format!("symbol alias entry {i} missing target: {err}")))?;
-        if alias.is_empty() || target.is_empty() {
-            return Err(render_err(format!(
-                "symbol alias entry {i} must have non-empty alias and target"
-            )));
-        }
-        out.push((alias, target));
     }
     Ok(out)
 }

@@ -47,9 +47,45 @@ pub struct TargetManifest {
     pub capabilities: Option<TargetCapabilities>,
     #[serde(default)]
     pub files: Vec<TargetFile>,
+    /// Support partials this target contributes to the shared render
+    /// environment. A partial renders no product file, so it never has a
+    /// `[[files]]` entry; see [`TargetPartial`].
+    #[serde(default)]
+    pub partials: Vec<TargetPartial>,
     /// Declared target-relative asset trees copied verbatim into the product.
     #[serde(default)]
     pub assets: Vec<AssetBundle>,
+}
+
+/// One declared **support partial**: a template that renders no product file
+/// and exists only to be `import`ed, `include`d, or `extends`ed by artifact
+/// templates.
+///
+/// This is the first-class alternative to leaving a bundled template
+/// undeclared. A partial cannot be a `[[files]]` entry (it produces no
+/// artifact), and every bundled `.jinja` file must be one or the other, so
+/// "declared but not rendered" is a state the manifest can express exactly
+/// once, rather than a hole that render-coverage CI has to carve out.
+///
+/// # Name resolution
+///
+/// `name` is the identifier templates spell in `{% import %}`. Shared names
+/// form ONE global namespace owned by the built-in target manifests: the
+/// render environment is built from
+/// `rumoca_phase_codegen::templates::shared_templates()`, whose entries the
+/// code-gen crate's `build.rs` generates from these declarations and rejects
+/// on collision. An external (directory) target therefore cannot register or
+/// override a shared name — a copied target directory whose partial was
+/// edited would otherwise silently render against the built-in text — so
+/// [`TargetBundle::parse_manifest`] rejects a directory manifest whose
+/// declared partials do not match the built-in registry byte for byte.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetPartial {
+    /// Target-relative path of the partial's template file.
+    pub template: String,
+    /// Shared render-environment name templates import it under.
+    pub name: String,
 }
 
 /// Target-declared product layout. All paths are target templates rendered
@@ -149,6 +185,13 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
+    /// Shared render-environment name this artifact template is additionally
+    /// published under, so another target's template can `{% extends %}` it
+    /// (the target-agnostic GALEC-derived C body, for example). Unlike a
+    /// `[[partials]]` entry this template still renders its own product file;
+    /// the shared-name namespace and its uniqueness rule are the same one
+    /// documented on [`TargetPartial`].
+    pub shared_as: Option<String>,
     pub mode: Option<String>,
     /// Stable logical identity of this rendered file within the target
     /// (contract §4a). Only files a checksum edge points at (`of = <id>`)
@@ -283,7 +326,14 @@ impl TargetBundle {
     pub fn parse_manifest(&self) -> Result<TargetManifest> {
         match self {
             Self::Builtin { target } => parse_target_manifest(target.manifest),
-            Self::Directory { manifest, .. } => parse_target_manifest(manifest),
+            Self::Directory { dir, manifest } => {
+                let manifest = parse_target_manifest(manifest)?;
+                // The render environment registers shared names from the
+                // built-in registry only, so a directory target's shared
+                // declarations must be honorable before anything renders.
+                validate_directory_shared_templates(dir, &manifest)?;
+                Ok(manifest)
+            }
         }
     }
 
@@ -928,6 +978,7 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
         }
     }
     validate_checksum_web(&manifest.files)?;
+    validate_shared_templates(manifest)?;
     validate_asset_bundles(&manifest.assets)?;
     validate_package(manifest.package.as_ref())?;
     if let Some(integer) = manifest.integer
@@ -938,6 +989,125 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
             integer.minimum,
             integer.maximum
         );
+    }
+    Ok(())
+}
+
+/// Structural checks on a manifest's shared render-environment declarations
+/// (`[[partials]]` and `[[files]].shared_as`).
+///
+/// The two declarations are disjoint by construction: a support partial
+/// renders no product file, so declaring the same template both ways is a
+/// contradiction rather than a merge. Shared names are global, so a manifest
+/// that spells one twice is rejected here before the built-in registry's own
+/// cross-target uniqueness check (in the code-gen crate's `build.rs`) can even
+/// see it.
+fn validate_shared_templates(manifest: &TargetManifest) -> Result<()> {
+    let mut shared_names = BTreeMap::<&str, &str>::new();
+    for file in &manifest.files {
+        let Some(shared_as) = file.shared_as.as_deref() else {
+            continue;
+        };
+        if shared_as.trim().is_empty() {
+            bail!(
+                "[[files]] entry for template '{}' declares an empty shared_as name",
+                file.template
+            );
+        }
+        if let Some(previous) = shared_names.insert(shared_as, &file.template) {
+            bail!(
+                "shared render-environment name '{shared_as}' is declared twice in one \
+                 target, by '{previous}' and '{}'",
+                file.template
+            );
+        }
+    }
+    for partial in &manifest.partials {
+        if partial.template.trim().is_empty() {
+            bail!("[[partials]] entry must name a template file");
+        }
+        if partial.name.trim().is_empty() {
+            bail!(
+                "[[partials]] entry for template '{}' must declare the shared \
+                 render-environment name templates import it under",
+                partial.template
+            );
+        }
+        if let Some(file) = manifest
+            .files
+            .iter()
+            .find(|file| file.template == partial.template)
+        {
+            bail!(
+                "template '{}' is declared both as a [[files]] artifact (path '{}') and as \
+                 a [[partials]] support partial; a support partial renders no product file, \
+                 so the two declarations are mutually exclusive",
+                partial.template,
+                file.path
+            );
+        }
+        if let Some(previous) = shared_names.insert(&partial.name, &partial.template) {
+            bail!(
+                "shared render-environment name '{}' is declared twice in one target, by \
+                 '{previous}' and '{}'",
+                partial.name,
+                partial.template
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reject a directory target whose shared render-environment declarations
+/// cannot be honored.
+///
+/// The render environment is built once from the built-in registry
+/// (`templates::shared_templates()`), so a directory target's own partial file
+/// is never registered. Without this check a user who copies a built-in target
+/// directory and edits its partial gets output rendered from the built-in
+/// text: a silent no-op, and precisely the trap a "first-class" partial
+/// concept must not ship with. Both failure modes are named exactly:
+///
+/// * an unknown shared name would fail later, deep inside a render, as a
+///   missing template; and
+/// * a known name whose bytes differ would not fail at all.
+fn validate_directory_shared_templates(dir: &Path, manifest: &TargetManifest) -> Result<()> {
+    let declarations = manifest
+        .partials
+        .iter()
+        .map(|partial| (partial.name.as_str(), partial.template.as_str()))
+        .chain(manifest.files.iter().filter_map(|file| {
+            file.shared_as
+                .as_deref()
+                .map(|shared_as| (shared_as, file.template.as_str()))
+        }));
+    for (name, template) in declarations {
+        let Some(shared) = templates::shared_template(name) else {
+            bail!(
+                "Target directory '{}' declares shared render-environment name '{name}' for \
+                 template '{template}', but shared names are registered only from built-in \
+                 targets. A directory target cannot add one: render '{template}' from a \
+                 [[files]] entry, or use the built-in name a built-in target already \
+                 publishes.",
+                dir.display()
+            );
+        };
+        let path = safe_target_join(dir, template)?;
+        let source = std::fs::read_to_string(&path)
+            .with_context(|| format!("Read target template {}", path.display()))?;
+        if source != shared.source {
+            bail!(
+                "Target directory '{}' declares shared render-environment name '{name}' for \
+                 template '{template}', but that name resolves to the built-in \
+                 '{}/{}' and this copy differs from it. Every template importing '{name}' \
+                 would render the built-in text, so the local edit would silently do \
+                 nothing. Rename the template and render it from a [[files]] entry, or \
+                 revert it to the built-in source.",
+                dir.display(),
+                shared.target,
+                shared.path
+            );
+        }
     }
     Ok(())
 }

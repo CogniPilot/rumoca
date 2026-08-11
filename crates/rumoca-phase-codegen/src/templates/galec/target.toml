@@ -87,15 +87,22 @@ dest = "schemas/"
 # rendered `manifest.xml` bytes (`ac_manifest_sha1`). The build step renders
 # each producer first, hashes its exact bytes, and threads the digest into the
 # consumer's context (no placeholder ever, contract §4c).
+#
+# `shared_as` additionally publishes the two Algorithm Code templates to the
+# shared render environment: the galec-production target's AlgorithmCode/
+# representation is the same representation, so its templates `{% include %}`
+# these exact files instead of copying them.
 [[files]]
 id = "alg"
 path = "AlgorithmCode/{{ model_name }}.alg"
 template = "model.alg.jinja"
+shared_as = "algorithm-code-source.jinja"
 
 [[files]]
 id = "ac_manifest"
 path = "AlgorithmCode/manifest.xml"
 template = "manifest.xml.jinja"
+shared_as = "algorithm-code-manifest.jinja"
   # File/@checksum edge: the manifest embeds the SHA-1 of the `.alg` bytes.
   [[files.checksums]]
   of = "alg"

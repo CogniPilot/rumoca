@@ -70,6 +70,34 @@ pub use errors::CodegenError;
 /// copy these templates to files and modify as needed.
 ///
 /// The template source files are in `crates/rumoca-phase-codegen/src/templates/`.
+///
+/// # Support partials and shared templates
+///
+/// A target directory holds two kinds of template, distinguished by the
+/// manifest declaration that owns them:
+///
+/// * an **artifact template** is declared by a `[[files]]` entry and renders
+///   exactly one product file; and
+/// * a **support partial** is declared by a `[[partials]]` entry, renders no
+///   product file at all, and exists only to be `import`ed, `include`d, or
+///   `extends`ed by artifact templates. `embedded-c-galec/symbols.jinja` — the
+///   single declaration site of the GALEC-derived C symbol policy — is one.
+///
+/// Either kind may be published to the shared render environment under a
+/// globally unique name: `[[partials]].name` for a support partial,
+/// `[[files]].shared_as` for an artifact template another target extends.
+/// [`shared_templates`] is that registry, generated from the manifests by
+/// `build.rs`, and it is the *only* thing
+/// [`create_environment`](crate::codegen) registers — a template becomes
+/// importable by declaring it, never by adding Rust.
+///
+/// Resolution order is deliberately flat and total: shared names live in one
+/// global namespace owned by the built-in target manifests, `build.rs` rejects
+/// a duplicated name, and it rejects any bundled `.jinja` file that no
+/// declaration claims. An external (directory) target therefore cannot
+/// introduce or override a shared name by copying a target directory; the
+/// loader in `rumoca-compile` rejects such a manifest instead of letting the
+/// copy's partial silently no-op.
 pub mod templates {
     /// Built-in target directory bundled into the binary.
     #[derive(Clone, Copy, Debug)]
@@ -81,11 +109,37 @@ pub mod templates {
         pub assets: &'static [BuiltinTargetAsset],
     }
 
+    /// Which manifest declaration owns a bundled template.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum BuiltinTemplateRole {
+        /// Declared by a `[[files]]` entry: renders one product file.
+        Artifact,
+        /// Declared by a `[[partials]]` entry: renders no product file, and is
+        /// reachable only through the shared render environment.
+        SupportPartial,
+    }
+
     /// Built-in template source addressed by a target manifest-local path.
     #[derive(Clone, Copy, Debug)]
     pub struct BuiltinTargetTemplate {
         pub path: &'static str,
         pub source: &'static str,
+        /// Shared render-environment name this template is published under,
+        /// when its manifest declares one.
+        pub shared_name: Option<&'static str>,
+        pub role: BuiltinTemplateRole,
+    }
+
+    /// One entry of the shared render-environment registry: the template a
+    /// `{% import %}`/`{% include %}`/`{% extends %}` of `name` resolves to,
+    /// and the target manifest that published it.
+    #[derive(Clone, Copy, Debug)]
+    pub struct BuiltinSharedTemplate {
+        pub name: &'static str,
+        pub target: &'static str,
+        pub path: &'static str,
+        pub source: &'static str,
+        pub role: BuiltinTemplateRole,
     }
 
     /// Non-template file embedded from a built-in target directory.
@@ -96,6 +150,14 @@ pub mod templates {
     }
 
     impl BuiltinTarget {
+        /// The target's support partials: bundled templates that render no
+        /// product file and therefore have no `[[files]]` entry.
+        pub fn support_partials(&self) -> impl Iterator<Item = &'static BuiltinTargetTemplate> {
+            self.templates
+                .iter()
+                .filter(|template| template.role == BuiltinTemplateRole::SupportPartial)
+        }
+
         pub fn template_source(&self, path: &str) -> Option<&'static str> {
             self.templates
                 .iter()
@@ -130,6 +192,18 @@ pub mod templates {
 
     pub fn builtin_template_source(target: &str, template: &str) -> Option<&'static str> {
         builtin_target(target).and_then(|target| target.template_source(template))
+    }
+
+    /// Every template published to the shared render environment, sorted by
+    /// shared name. Generated from the target manifests; see the module docs
+    /// for the declaration rules `build.rs` enforces.
+    pub fn shared_templates() -> &'static [BuiltinSharedTemplate] {
+        SHARED_TEMPLATES
+    }
+
+    /// The shared-registry entry a `{% import "name" %}` resolves to.
+    pub fn shared_template(name: &str) -> Option<&'static BuiltinSharedTemplate> {
+        SHARED_TEMPLATES.iter().find(|shared| shared.name == name)
     }
 
     include!(concat!(env!("OUT_DIR"), "/templates_generated.rs"));

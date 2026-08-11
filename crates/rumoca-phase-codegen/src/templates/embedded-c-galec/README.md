@@ -22,6 +22,23 @@ application needs plain C rather than an eFMU container.
   signals set their assigned bits, and Real comparisons set `NAN` and return
   false when either operand is NaN.
 - It is deliberately a non-eFMI deployment track.
+- `symbols.jinja` is a **support partial**, declared by this target's
+  `[[partials]]` entry and published to the shared render environment as
+  `galec-c-symbols.jinja`. A support partial renders no product file — it has
+  no `[[files]]` entry by construction — and exists only to be imported by the
+  templates that print C identifiers. It is the single declaration site of the
+  C symbol policy (reserved spellings, generated namespace) and of the two
+  allocated symbol tables, so this target's header/source and the
+  `galec-production` Production Code manifest all read one allocation.
+- The two artifact templates are additionally published under
+  `[[files]].shared_as` names (`galec-model.{c,h}.jinja`): the GALEC-derived C
+  body is target-agnostic, and `galec-production` `{% extends %}` these files
+  to override only its conformance banner.
+- Shared names live in ONE global namespace owned by the built-in target
+  manifests. `build.rs` rejects a duplicate name and rejects any bundled
+  `.jinja` that no `[[files]]`/`[[partials]]` entry declares. A copied target
+  *directory* cannot register or shadow a shared name; the loader rejects such
+  a manifest rather than letting the copy's edited partial silently no-op.
 
 ## Safety-assurance status
 

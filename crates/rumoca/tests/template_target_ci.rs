@@ -9,18 +9,31 @@
 //! `continuous_states = false` (the GALEC-derived targets) render against a
 //! dedicated fixed-sample discrete fixture; every other target keeps the
 //! continuous fixture. No target is skipped.
+//!
+//! # Support partials
+//!
+//! Not every bundled template renders a product file. A **support partial**
+//! (`[[partials]]` in `target.toml`) renders none by definition: it exists to
+//! be `import`ed, `include`d, or `extends`ed, and rendering it standalone
+//! yields nothing. "Every bundled template must be a `[[files]]` entry" is
+//! therefore the wrong invariant; the right one, checked here, is that every
+//! bundled template is declared exactly once — as a `[[files]]` artifact or as
+//! a `[[partials]]` support partial — and that the two sets are disjoint. That
+//! keeps render coverage total (no template goes unclassified) without a
+//! per-file carve-out.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use rumoca::{CompilationResult, Compiler, TemplateIr, render_target_files};
+use rumoca::{CompilationResult, Compiler, render_target_files};
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetManifest, TargetTemplateIr, parse_target_manifest,
 };
 use rumoca_phase_codegen::templates;
+use rumoca_phase_codegen::templates::BuiltinTemplateRole;
 
 const SMOKE_MODEL: &str = "Smoke";
 const SMOKE_SOURCE: &str = r#"
@@ -46,17 +59,6 @@ equation
   end when;
 end DiscreteSmoke;
 "#;
-
-fn template_ir(ir: TargetTemplateIr) -> Option<TemplateIr> {
-    match ir {
-        TargetTemplateIr::Dae => Some(TemplateIr::Dae),
-        TargetTemplateIr::Solve => Some(TemplateIr::Solve),
-        TargetTemplateIr::Fmi => None,
-        TargetTemplateIr::Flat => Some(TemplateIr::Flat),
-        TargetTemplateIr::Ast => Some(TemplateIr::Ast),
-        TargetTemplateIr::AlgorithmCode => None,
-    }
-}
 
 /// A compiled smoke model plus the name the CLI would render it under.
 struct Fixture {
@@ -156,6 +158,14 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
         coverage.manifest_only_targets.is_empty(),
         "built-in targets must emit artifacts, found manifest-only targets: {:?}",
         coverage.manifest_only_targets
+    );
+    // Support partials are the only bundled templates the sweep does not
+    // render as a product file, and they are exempt because a manifest
+    // declares them so — not because CI skips them.
+    assert_eq!(
+        coverage.support_partials,
+        vec!["embedded-c-galec:symbols.jinja".to_string()],
+        "the declared support partials changed"
     );
 }
 
@@ -295,14 +305,15 @@ fn assert_well_formed_xml(xml: &str) -> String {
 struct TemplateTargetCoverage {
     rendered_targets: Vec<&'static str>,
     manifest_only_targets: Vec<&'static str>,
-    support_templates: Vec<String>,
+    /// `target:path` of every declared support partial seen in the sweep.
+    support_partials: Vec<String>,
 }
 
 fn render_builtin_template_targets(fixtures: &Fixtures) -> TemplateTargetCoverage {
     let mut coverage = TemplateTargetCoverage {
         rendered_targets: Vec::new(),
         manifest_only_targets: Vec::new(),
-        support_templates: Vec::new(),
+        support_partials: Vec::new(),
     };
     for target in templates::builtin_targets() {
         render_builtin_template_target(fixtures, target, &mut coverage);
@@ -324,8 +335,8 @@ fn render_builtin_template_target(
         return;
     }
     let fixture = fixtures.for_manifest(&manifest);
+    assert_template_declarations(target, &manifest, &mut coverage.support_partials);
     render_manifest_target_files(fixture, target, &manifest);
-    render_support_templates(fixture, target, &manifest, &mut coverage.support_templates);
     coverage.rendered_targets.push(target.name);
 }
 
@@ -386,55 +397,254 @@ fn render_manifest_target_files(
     }
 }
 
-fn render_support_templates(
-    fixture: &Fixture,
+/// Every bundled template is declared exactly once, and the two declarations
+/// are disjoint: a `[[files]]` artifact renders one product file, a
+/// `[[partials]]` support partial renders none.
+///
+/// A support partial must NOT appear in `[[files]]` — that is what makes it a
+/// partial — so this is the check that replaces "every bundled template is a
+/// `[[files]]` entry". It is total: an undeclared template fails, a
+/// double-declared template fails, and a declared-but-unbundled template
+/// fails, for every target and every IR alike.
+fn assert_template_declarations(
     target: &'static templates::BuiltinTarget,
     manifest: &TargetManifest,
-    support_templates: &mut Vec<String>,
+    support_partials: &mut Vec<String>,
 ) {
-    let manifest_templates = manifest
+    let artifacts = manifest
         .files
         .iter()
         .map(|file| file.template.as_str())
         .collect::<BTreeSet<_>>();
-    let Some(ir) = template_ir(manifest.ir) else {
+    let partials = manifest
+        .partials
+        .iter()
+        .map(|partial| (partial.template.as_str(), partial.name.as_str()))
+        .collect::<BTreeMap<_, _>>();
+
+    for template in target.templates {
+        match template.role {
+            BuiltinTemplateRole::Artifact => assert!(
+                artifacts.contains(template.path),
+                "target {} bundles {} as an artifact, but no [[files]] entry renders it",
+                target.name,
+                template.path
+            ),
+            BuiltinTemplateRole::SupportPartial => {
+                let shared_name = partials.get(template.path).unwrap_or_else(|| {
+                    panic!(
+                        "target {} bundles support partial {} without a [[partials]] \
+                         declaration",
+                        target.name, template.path
+                    )
+                });
+                assert!(
+                    !artifacts.contains(template.path),
+                    "support partial {}/{} must not also be a [[files]] entry: it renders \
+                     no product file",
+                    target.name,
+                    template.path
+                );
+                assert_eq!(
+                    template.shared_name,
+                    Some(*shared_name),
+                    "support partial {}/{} must be published under its declared name",
+                    target.name,
+                    template.path
+                );
+                support_partials.push(format!("{}:{}", target.name, template.path));
+            }
+        }
+    }
+
+    for template in artifacts.iter().chain(partials.keys()) {
         assert!(
             target
                 .templates
                 .iter()
-                .all(|template| manifest_templates.contains(template.path)),
-            "Algorithm Code support templates require the checked package and must be declared in target.toml"
+                .any(|bundled| &bundled.path == template),
+            "target {} declares {template} but does not bundle it",
+            target.name
         );
-        return;
-    };
-    for template in target.templates {
-        if manifest_templates.contains(template.path) {
+    }
+    for file in &manifest.files {
+        let Some(shared_as) = file.shared_as.as_deref() else {
             continue;
-        }
-        assert_rendered_support_template(fixture, target.name, template, ir);
-        support_templates.push(format!("{}:{}", target.name, template.path));
+        };
+        let bundled = target
+            .templates
+            .iter()
+            .find(|bundled| bundled.path == file.template)
+            .expect("declared artifact template must be bundled");
+        assert_eq!(
+            bundled.shared_name,
+            Some(shared_as),
+            "target {} must publish {} under its declared shared_as name",
+            target.name,
+            file.template
+        );
     }
 }
 
-fn assert_rendered_support_template(
-    fixture: &Fixture,
-    target_name: &str,
-    template: &templates::BuiltinTargetTemplate,
-    ir: TemplateIr,
-) {
-    let content = fixture
-        .compiled
-        .render_template_str_with_name_and_ir(template.source, fixture.model_name, ir)
-        .unwrap_or_else(|err| {
-            panic!(
-                "render support template {}:{}: {err}",
-                target_name, template.path
-            )
-        });
+/// Copy a built-in target directory into a scratch directory so the external
+/// (directory) target path can be exercised against a real bundle.
+fn copy_builtin_target_dir(target: &str, into: &std::path::Path) -> PathBuf {
+    let source = codegen_template_root().join(target);
+    let dest = into.join(target);
+    fs::create_dir_all(&dest).expect("create scratch target directory");
+    for entry in fs::read_dir(&source).expect("read built-in target directory") {
+        let entry = entry.expect("read built-in target entry");
+        if entry.file_type().expect("stat entry").is_file() {
+            fs::copy(entry.path(), dest.join(entry.file_name())).expect("copy target file");
+        }
+    }
+    dest
+}
+
+/// A verbatim copy of a target directory keeps rendering: the copy's declared
+/// partial resolves to the identical built-in text, so the resolution order
+/// (shared names come from the built-in registry) changes nothing observable.
+#[test]
+fn copied_target_directory_with_an_unmodified_partial_still_renders() {
+    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
+
+    let files = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        dir.to_str().expect("utf-8 scratch path"),
+        None,
+    )
+    .expect("verbatim copy of a built-in target must render");
+    let builtin = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        "embedded-c-galec",
+        None,
+    )
+    .expect("built-in target must render");
+    assert_eq!(
+        files
+            .iter()
+            .map(|file| (file.path.clone(), file.content.clone()))
+            .collect::<Vec<_>>(),
+        builtin
+            .iter()
+            .map(|file| (file.path.clone(), file.content.clone()))
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// The honest half of the shared-name resolution order: an external directory
+/// cannot register or override a shared name, so a copied target whose partial
+/// was edited must be REJECTED rather than silently rendered from the built-in
+/// text. This is the trap the loader closes.
+#[test]
+fn copied_target_directory_with_an_edited_partial_is_rejected() {
+    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
+
+    let partial = dir.join("symbols.jinja");
+    let edited = fs::read_to_string(&partial)
+        .expect("read copied partial")
+        .replace(
+            "\"self\", \"rumoca_galec_sign\"",
+            "\"self\", \"gain\", \"rumoca_galec_sign\"",
+        );
+    fs::write(&partial, &edited).expect("write edited partial");
+
+    let error = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        dir.to_str().expect("utf-8 scratch path"),
+        None,
+    )
+    .expect_err("an edited external partial must not silently no-op");
+    let message = format!("{error:#}");
     assert!(
-        !content.trim().is_empty(),
-        "target {} rendered empty support template {}",
-        target_name,
-        template.path
+        message.contains("galec-c-symbols.jinja") && message.contains("silently"),
+        "the rejection must name the shared partial and the silent no-op: {message}"
+    );
+}
+
+/// An external directory that invents a shared name is rejected at load, not
+/// deep inside a render as a missing template.
+#[test]
+fn external_target_directory_cannot_add_a_shared_name() {
+    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
+
+    let manifest_path = dir.join("target.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .expect("read copied manifest")
+        .replace(
+            "name = \"galec-c-symbols.jinja\"",
+            "name = \"my-own-symbols.jinja\"",
+        );
+    fs::write(&manifest_path, &manifest).expect("write copied manifest");
+
+    let error = render_target_files(
+        &fixture.compiled,
+        fixture.model_name,
+        dir.to_str().expect("utf-8 scratch path"),
+        None,
+    )
+    .expect_err("an invented shared name must be rejected at load");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("my-own-symbols.jinja") && message.contains("built-in"),
+        "the rejection must name the unknown shared name: {message}"
+    );
+}
+
+/// The shared render-environment namespace is global and flat: one name, one
+/// owning target manifest, resolved the same way for every target that
+/// imports it. Pinning the inventory here keeps a new shared name a reviewed
+/// decision rather than a side effect.
+#[test]
+fn shared_template_names_are_globally_unique_and_target_owned() {
+    let mut owners = BTreeMap::<&str, String>::new();
+    for shared in templates::shared_templates() {
+        let owner = format!("{}/{}", shared.target, shared.path);
+        assert!(
+            owners.insert(shared.name, owner.clone()).is_none(),
+            "shared render-environment name {} is declared more than once",
+            shared.name
+        );
+        let manifest = parse_target_manifest(
+            templates::builtin_target(shared.target)
+                .expect("shared template must name a built-in target")
+                .manifest,
+        )
+        .expect("owning target manifest should parse");
+        let declared = manifest
+            .partials
+            .iter()
+            .any(|partial| partial.template == shared.path && partial.name == shared.name)
+            || manifest.files.iter().any(|file| {
+                file.template == shared.path && file.shared_as.as_deref() == Some(shared.name)
+            });
+        assert!(
+            declared,
+            "{} must be declared by {owner}'s target.toml",
+            shared.name
+        );
+    }
+    assert_eq!(
+        owners
+            .iter()
+            .map(|(name, owner)| format!("{name} <- {owner}"))
+            .collect::<Vec<_>>(),
+        vec![
+            "algorithm-code-manifest.jinja <- galec/manifest.xml.jinja".to_string(),
+            "algorithm-code-source.jinja <- galec/model.alg.jinja".to_string(),
+            "galec-c-symbols.jinja <- embedded-c-galec/symbols.jinja".to_string(),
+            "galec-model.c.jinja <- embedded-c-galec/model.c.jinja".to_string(),
+            "galec-model.h.jinja <- embedded-c-galec/model.h.jinja".to_string(),
+        ],
+        "the shared render-environment inventory changed"
     );
 }

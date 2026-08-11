@@ -206,6 +206,15 @@ struct CheckedBlockRoot<'a> {
     block: algorithm_code_typed::TypedBlockView<'a>,
 }
 
+/// A checked-block variable as the standalone (package-free) render path sees
+/// it.
+///
+/// The declared range fields are NOT decoration: SPEC_0042 T3 makes a declared
+/// `min`/`max` a saturation the target must apply at every method boundary, so
+/// a view that dropped them would let this path emit silently unclamped code
+/// while [`VariableView`] (the packaged path) clamps. The two views therefore
+/// carry the same range facts under the same names, and `range_values` rejects
+/// a non-literal bound on both.
 #[derive(Debug, Clone, Serialize)]
 struct CheckedBlockVariable<'a> {
     kind: &'static str,
@@ -213,6 +222,10 @@ struct CheckedBlockVariable<'a> {
     name: &'a str,
     causality: &'static str,
     dimensions: Vec<u64>,
+    real_min: Option<f64>,
+    real_max: Option<f64>,
+    integer_min: Option<i64>,
+    integer_max: Option<i64>,
 }
 
 impl<'a> CheckedAlgorithmBlockView<'a> {
@@ -250,12 +263,18 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
                         declaration.name.lexeme()
                     ));
                 };
+                let (real_min, real_max, integer_min, integer_max) =
+                    range_values(scalar, &declaration.range)?;
                 Ok(CheckedBlockVariable {
                     kind: scalar_kind(scalar),
                     ordinal: index + 1,
                     name: declaration.name.lexeme(),
                     causality,
                     dimensions: literal_dimensions(declaration)?,
+                    real_min,
+                    real_max,
+                    integer_min,
+                    integer_max,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;

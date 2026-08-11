@@ -1,7 +1,7 @@
 //! Target-neutral expression shape evidence for checked Algorithm Code.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rumoca_ir_galec::ast;
 use serde::Serialize;
@@ -85,7 +85,85 @@ struct TypedMethodView<'a> {
     signals: &'a [ast::PredefinedSignal],
     locals: &'a [ast::VariableDeclaration],
     c_locals: Vec<&'a ast::VariableDeclaration>,
+    /// Block state variables this method writes **whole**, on **every** path
+    /// through it (definite assignment), sorted by declaration spelling.
+    ///
+    /// This is the determinacy evidence a target needs at a method boundary
+    /// that runs before anything else has written the block state — the
+    /// `Startup` return boundary. `rumoca-eval-galec` skips an uninitialized
+    /// slot in `execution.rs::limit_all`; a target whose block state is caller
+    /// -allocated memory has no `is_initialized` flag to consult, so the only
+    /// slots it may touch there are the ones the method is proven to have
+    /// written. A *may*-write set would not do: a variable assigned in one
+    /// arm of an `if` is not written on the other, and reading it back would
+    /// be an indeterminate read rather than a saturation.
+    ///
+    /// Hence: sequence unions, `if` intersects every branch *and* the `else`
+    /// body (a missing `else` contributes nothing), and `for` contributes
+    /// nothing at all (a checked GALEC loop may still be a zero-trip domain).
+    /// Element writes (`self.x[i] := …`) never enter the set either — they
+    /// leave the rest of the array indeterminate, and the saturation a target
+    /// applies is whole-variable.
+    definite_state_writes: Vec<&'a str>,
     statements: Vec<TypedSpannedStatement<'a>>,
+}
+
+/// Block state variables definitely written by a statement sequence
+/// (see [`TypedMethodView::definite_state_writes`]).
+fn definite_state_writes(statements: &[ast::Spanned<ast::Statement>]) -> BTreeSet<&str> {
+    let mut written = BTreeSet::new();
+    for statement in statements {
+        match &statement.node {
+            ast::Statement::Assignment { target, .. } => {
+                written.extend(whole_state_target(target));
+            }
+            ast::Statement::MultiAssignment { targets, .. } => {
+                for target in targets {
+                    written.extend(whole_state_target(target));
+                }
+            }
+            ast::Statement::If(conditional) => {
+                written.extend(definite_conditional_writes(conditional));
+            }
+            // A checked `for` loop carries statically evaluated bounds, but a
+            // zero-trip domain is legal, so its body writes nothing that holds
+            // on every path. `Call`/`Limit`/`Signal` initialize no state.
+            ast::Statement::For(_)
+            | ast::Statement::Call(_)
+            | ast::Statement::Limit(_)
+            | ast::Statement::Signal(_) => {}
+        }
+    }
+    written
+}
+
+/// The intersection an `if` contributes: only what *every* reachable exit
+/// wrote. Without an `else` body one exit writes nothing, so the whole
+/// statement contributes nothing.
+fn definite_conditional_writes(conditional: &ast::IfStatement) -> BTreeSet<&str> {
+    let Some(else_body) = conditional.else_body.as_deref() else {
+        return BTreeSet::new();
+    };
+    let mut common = definite_state_writes(else_body);
+    for branch in &conditional.branches {
+        let branch_writes = definite_state_writes(&branch.body);
+        common.retain(|name| branch_writes.contains(name));
+    }
+    common
+}
+
+/// The block state variable a reference writes in full, if it writes one:
+/// a single unsubscripted `self.x`. A subscripted or compartment-qualified
+/// target writes a part, which is not evidence that the declaration is
+/// determinate.
+fn whole_state_target(reference: &ast::Reference) -> Option<&str> {
+    let ast::Reference::State(parts) = reference else {
+        return None;
+    };
+    match parts.as_slice() {
+        [part] if part.subscripts.is_empty() => Some(part.name.lexeme()),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -308,6 +386,9 @@ impl<'a> BlockShapes<'a> {
             signals: &method.signals,
             locals: &method.locals,
             c_locals: placements.at(&[]),
+            definite_state_writes: definite_state_writes(&method.statements)
+                .into_iter()
+                .collect(),
             statements: scope.statements(&method.statements, &placements, &mut Vec::new())?,
         })
     }
