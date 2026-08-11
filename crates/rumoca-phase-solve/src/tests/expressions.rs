@@ -1382,8 +1382,8 @@ fn function_conditional_captures_preceding_definition_once_per_call_frame() {
 
     assert_eq!(
         captures.len(),
-        3,
-        "the checked region captures the condition, input, and preceding definition as typed values"
+        1,
+        "the checked region captures only the preceding definition used by its arms"
     );
     assert_eq!(
         owner
@@ -1548,8 +1548,8 @@ fn function_conditional_captures_tensor_definition_as_one_semantic_range() {
 
     assert_eq!(
         captures.len(),
-        3,
-        "condition, input, and definition remain three typed captures rather than seven scalar lanes"
+        1,
+        "only the used tensor definition remains one typed capture"
     );
     assert_eq!(destinations.len(), 1, "the vector is one typed result");
     assert_eq!(
@@ -1564,8 +1564,8 @@ fn function_conditional_captures_tensor_definition_as_one_semantic_range() {
                 rumoca_ir_solve::SolveOperation::Load { .. }
             ))
             .count(),
-        6,
-        "both result regions load each of their three typed captures exactly once"
+        2,
+        "both result regions load their sole typed capture exactly once"
     );
     assert!(region_operations.iter().all(|operation| !matches!(
         operation.operation(),

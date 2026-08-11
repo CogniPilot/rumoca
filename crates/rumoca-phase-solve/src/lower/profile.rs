@@ -69,7 +69,7 @@ pub(super) fn typed_owner_calls(table: &solve::SolvePureCallTable) {
             .collect::<Vec<_>>()
             .join(",");
         eprintln!(
-            "rumoca-ir-profile kind=typed-owner-calls owner={} direct_ops={} recursive_ops={} scalar_ops={} tensor_ops={} conditionals={} maps={} folds={} calls=[{calls}] scopes=[{scopes}]",
+            "rumoca-ir-profile kind=typed-owner-calls owner={} direct_ops={} recursive_ops={} scalar_ops={} tensor_ops={} conditionals={} maps={} folds={} conditional_capture_cells={} map_capture_cells={} fold_capture_cells={} fold_carried_cells={} max_capture_cells={} calls=[{calls}] scopes=[{scopes}]",
             owner.id().index(),
             owner.body().operations().len(),
             operations.total,
@@ -78,6 +78,11 @@ pub(super) fn typed_owner_calls(table: &solve::SolvePureCallTable) {
             operations.conditionals,
             operations.maps,
             operations.folds,
+            operations.conditional_capture_cells,
+            operations.map_capture_cells,
+            operations.fold_capture_cells,
+            operations.fold_carried_cells,
+            operations.max_capture_cells,
         );
     }
 }
@@ -97,6 +102,11 @@ struct TypedOperationCounts {
     conditionals: usize,
     maps: usize,
     folds: usize,
+    conditional_capture_cells: usize,
+    map_capture_cells: usize,
+    fold_capture_cells: usize,
+    fold_carried_cells: usize,
+    max_capture_cells: usize,
 }
 
 fn collect_typed_calls(
@@ -123,9 +133,15 @@ fn collect_typed_calls(
                 }
             }
             solve::SolveOperation::Conditional {
-                if_true, if_false, ..
+                captures,
+                if_true,
+                if_false,
+                ..
             } => {
                 operations.conditionals += 1;
+                let capture_cells = register_cells(program, captures);
+                operations.conditional_capture_cells += capture_cells;
+                operations.max_capture_cells = operations.max_capture_cells.max(capture_cells);
                 collect_typed_calls(
                     if_true.body(),
                     calls,
@@ -143,8 +159,11 @@ fn collect_typed_calls(
                     iterative_depth,
                 );
             }
-            solve::SolveOperation::Map { body, .. } => {
+            solve::SolveOperation::Map { captures, body, .. } => {
                 operations.maps += 1;
+                let capture_cells = register_cells(program, captures);
+                operations.map_capture_cells += capture_cells;
+                operations.max_capture_cells = operations.max_capture_cells.max(capture_cells);
                 collect_typed_calls(
                     body.body(),
                     calls,
@@ -154,8 +173,17 @@ fn collect_typed_calls(
                     iterative_depth + 1,
                 );
             }
-            solve::SolveOperation::Fold { transition, .. } => {
+            solve::SolveOperation::Fold {
+                initial,
+                captures,
+                transition,
+                ..
+            } => {
                 operations.folds += 1;
+                let capture_cells = register_cells(program, captures);
+                operations.fold_capture_cells += capture_cells;
+                operations.fold_carried_cells += register_cells(program, initial);
+                operations.max_capture_cells = operations.max_capture_cells.max(capture_cells);
                 collect_typed_calls(
                     transition.body(),
                     calls,
@@ -187,6 +215,14 @@ fn collect_typed_calls(
             _ => operations.scalar += 1,
         }
     }
+}
+
+fn register_cells(program: &solve::TypedProgram, registers: &[solve::SolveRegisterId]) -> usize {
+    registers
+        .iter()
+        .filter_map(|register| program.register_types().get(register.index()))
+        .map(|value_type| value_type.scalar_count() as usize)
+        .sum()
 }
 
 fn collect_operation(

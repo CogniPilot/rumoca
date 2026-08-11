@@ -149,7 +149,7 @@ pub use events::{
 };
 pub use expr_query::{
     expr_contains_der_of, expr_contains_der_of_any, expr_contains_var, expr_refers_to_var,
-    for_each_expression,
+    for_each_expression, for_each_expression_pruned,
 };
 pub use expression::{
     BinaryOperator, CoordinateInput, DaeLiteral, ExpressionAt, ExpressionVariability, Expressions,

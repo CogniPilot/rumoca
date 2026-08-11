@@ -6,6 +6,7 @@
 
 mod control;
 mod profiling;
+mod storage;
 mod tensor;
 
 use super::host_runtime::register_math_symbols;
@@ -22,6 +23,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 use rumoca_ir_solve as solve;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use storage::compact_register_tape;
 
 const CELL_BYTES: usize = std::mem::size_of::<u64>();
 static NEXT_TABLE_ID: AtomicUsize = AtomicUsize::new(0);
@@ -635,6 +637,7 @@ impl ProgramLayout {
                 value_type: slot.value_type().clone(),
             });
         }
+        let register_base = tape_cell;
         let mut registers = Vec::with_capacity(program.register_types().len());
         for value_type in program.register_types() {
             let cell = tape_cell;
@@ -653,6 +656,7 @@ impl ProgramLayout {
         alias_read_only_loads(program, &slots, &mut registers)?;
         alias_final_output_stores(program, &slots, &last_uses, &definitions, &mut registers)?;
         alias_consumed_functional_updates(program, &last_uses, &mut registers)?;
+        tape_cell = compact_register_tape(register_base, &last_uses, &definitions, &mut registers)?;
         Ok(Self {
             slots: slots.into_boxed_slice(),
             registers: registers.into_boxed_slice(),
@@ -1871,5 +1875,46 @@ mod storage_tests {
         assert_eq!(slot.base, StorageBase::Tape);
         assert_eq!(aggregate.base, StorageBase::Tape);
         assert_ne!(aggregate.cell, slot.cell);
+    }
+
+    #[test]
+    fn checked_storage_reuses_tape_only_after_the_last_use() {
+        let arithmetic = arithmetic();
+        let program = solve::TypedProgram::construct(arithmetic, |builder| {
+            let first = builder.constant(solve::SolveValue::real(arithmetic, 2.0), span(20))?;
+            let live = builder.unary(solve::SolveUnaryOperator::Negate, first, span(21))?;
+            let reused = builder.constant(solve::SolveValue::real(arithmetic, 3.0), span(22))?;
+            let _result =
+                builder.binary(solve::SolveBinaryOperator::Add, live, reused, span(23))?;
+            Ok(())
+        })
+        .unwrap();
+
+        let layout = ProgramLayout::new(&program, 0, 0).unwrap();
+        let first = &layout.registers[0];
+        let live = &layout.registers[1];
+        let reused = &layout.registers[2];
+        assert_eq!(first.cell, reused.cell);
+        assert_ne!(first.cell, live.cell);
+    }
+
+    #[test]
+    fn checked_storage_keeps_same_operation_inputs_and_output_disjoint() {
+        let arithmetic = arithmetic();
+        let program = solve::TypedProgram::construct(arithmetic, |builder| {
+            let lhs = builder.constant(solve::SolveValue::real(arithmetic, 2.0), span(30))?;
+            let rhs = builder.constant(solve::SolveValue::real(arithmetic, 3.0), span(31))?;
+            let _result = builder.binary(solve::SolveBinaryOperator::Add, lhs, rhs, span(32))?;
+            Ok(())
+        })
+        .unwrap();
+
+        let layout = ProgramLayout::new(&program, 0, 0).unwrap();
+        let cells = layout
+            .registers
+            .iter()
+            .map(|location| location.cell)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(cells.len(), 3);
     }
 }

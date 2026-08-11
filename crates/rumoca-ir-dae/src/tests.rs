@@ -27,6 +27,38 @@ struct TestSource {
     text: &'static str,
 }
 
+#[test]
+fn pruned_expression_walk_keeps_an_owned_subexpression_as_a_leaf() {
+    let source = TestSource::new("(1 * 2) + 3");
+    let at = source.source("(1 * 2) + 3", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let one = expressions.at(at).literal(DaeLiteral::Integer(1))?;
+            let two = expressions.at(at).literal(DaeLiteral::Integer(2))?;
+            let product = expressions
+                .at(at)
+                .binary(BinaryOperator::Multiply, one, two)?;
+            let three = expressions.at(at).literal(DaeLiteral::Integer(3))?;
+            expressions
+                .at(at)
+                .binary(BinaryOperator::Add, product, three)?;
+            Ok(())
+        })
+    })
+    .expect("expression construction succeeds");
+
+    dae.inspect(|view| {
+        let root = view.expression_id(4).expect("sum expression exists");
+        let mut visited = Vec::new();
+        for_each_expression_pruned(view, root, |expression, _| {
+            visited.push(expression.index());
+            expression.index() != 2
+        });
+        visited.sort_unstable();
+        assert_eq!(visited, [2, 3, 4]);
+    });
+}
+
 impl TestSource {
     fn new(text: &'static str) -> Self {
         let mut map = SourceMap::new();

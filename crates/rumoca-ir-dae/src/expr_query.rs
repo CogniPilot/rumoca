@@ -17,6 +17,23 @@ pub fn for_each_expression<'dae>(
     root: ExprId<'dae>,
     mut visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>),
 ) {
+    for_each_expression_pruned(dae, root, |expression, node| {
+        visit(expression, node);
+        true
+    });
+}
+
+/// Visit one expression DAG while allowing a semantic owner to stop descent.
+///
+/// The visitor returns `true` to visit an expression's operands and `false`
+/// when the expression is already an owned leaf for the query. Shared nodes
+/// are visited once. This keeps dependency selection at the checked DAE
+/// boundary without requiring consumers to reproduce the expression grammar.
+pub fn for_each_expression_pruned<'dae>(
+    dae: DaeView<'dae>,
+    root: ExprId<'dae>,
+    mut visit: impl FnMut(ExprId<'dae>, ExpressionView<'dae>) -> bool,
+) {
     let mut pending = vec![root];
     let mut visited = vec![false; dae.expression_count()];
     while let Some(expression) = pending.pop() {
@@ -28,8 +45,9 @@ pub fn for_each_expression<'dae>(
         let node = dae
             .expression(expression)
             .expect("a branded expression identity resolves in its owning DAE");
-        visit(expression, node);
-        push_children(dae, node.operation(), &mut pending);
+        if visit(expression, node) {
+            push_children(dae, node.operation(), &mut pending);
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Single-source DAE pure-function lowering into the checked typed vocabulary.
 
 mod assertions;
+mod captures;
 pub(in crate::lower) mod model_events;
 mod regions;
 mod tensor;
@@ -727,7 +728,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .structured()
             .clone();
         let body_type = boolean_map_type(self.view, remaining, arithmetic_profile(), provenance)?;
-        let (captures, environment) = self.capture_environment();
+        let (captures, environment) = self.capture_environment_for([condition]);
         let context = RegionContext {
             view: self.view,
             callees: self.callees.clone(),
@@ -814,7 +815,11 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             .ok_or(solve::SolveProgramConstructionError::WireMismatch)?
             .structured()
             .clone();
-        let (captures, environment) = self.capture_environment();
+        let (captures, environment) = self.capture_environment_for_fold(
+            update_expressions.iter().copied(),
+            fold,
+            &carried_targets,
+        );
         let context = RegionContext {
             view: self.view,
             callees: self.callees.clone(),
@@ -991,7 +996,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
             pending.len(),
         ));
-        let (captures, environment) = self.capture_environment();
+        let (captures, environment) = self.capture_environment_for(operands[1..].iter().copied());
         let context = RegionContext {
             view: self.view,
             callees: self.callees.clone(),
@@ -1093,77 +1098,6 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
         Err(solve::SolveProgramConstructionError::TypeMismatch { provenance })
     }
 
-    fn capture_environment(
-        &self,
-    ) -> (
-        Vec<solve::ProgramRegister<'program>>,
-        EnvironmentLayout<'dae>,
-    ) {
-        let mut captures = Vec::new();
-        let mut model_coordinates = self.model_coordinates.iter().collect::<Vec<_>>();
-        model_coordinates.sort_by_key(|(key, _)| key.stable_key());
-        let model_coordinates = model_coordinates
-            .into_iter()
-            .map(|(key, value)| {
-                let start = captures.len();
-                captures.extend(value.leaves.iter().copied());
-                (*key, value.value_type, start..captures.len())
-            })
-            .collect();
-        let mut parameters = self.parameters.iter().collect::<Vec<_>>();
-        parameters.sort_by_key(|(id, _)| **id);
-        let parameters = parameters
-            .into_iter()
-            .map(|(id, value)| {
-                let start = captures.len();
-                captures.extend(value.leaves.iter().copied());
-                (*id, value.value_type, start..captures.len())
-            })
-            .collect();
-        let mut values = self.function_values.iter().collect::<Vec<_>>();
-        values.sort_by_key(|(id, _)| **id);
-        let values = values
-            .into_iter()
-            .map(|(id, value)| {
-                let start = captures.len();
-                captures.extend(value.leaves.iter().copied());
-                (*id, value.value_type, start..captures.len())
-            })
-            .collect();
-        let mut fold_parameters = self.fold_parameters.iter().collect::<Vec<_>>();
-        fold_parameters.sort_by_key(|((fold, carried), _)| {
-            (fold.function().index(), fold.ordinal(), *carried)
-        });
-        let fold_parameters = fold_parameters
-            .into_iter()
-            .map(|((fold, carried), value)| {
-                let start = captures.len();
-                captures.extend(value.leaves.iter().copied());
-                (*fold, *carried, value.value_type, start..captures.len())
-            })
-            .collect();
-        let mut binders = self.binders.iter().collect::<Vec<_>>();
-        binders.sort_by_key(|(id, _)| **id);
-        let binders = binders
-            .into_iter()
-            .map(|(id, register)| {
-                let start = captures.len();
-                captures.push(*register);
-                (*id, start..captures.len())
-            })
-            .collect();
-        (
-            captures,
-            EnvironmentLayout {
-                model_coordinates,
-                parameters,
-                values,
-                fold_parameters,
-                binders,
-            },
-        )
-    }
-
     fn pending_predicates(
         &self,
         expressions: impl IntoIterator<Item = dae::ExprId<'dae>>,
@@ -1219,7 +1153,12 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             solve::SolveValueType::scalar(solve::SolveScalarType::Boolean),
             pending.len(),
         ));
-        let (captures, environment) = self.capture_environment();
+        let capture_roots = conditions[1..]
+            .iter()
+            .copied()
+            .chain(branches.iter().flatten().copied())
+            .chain(fallback.iter().copied());
+        let (captures, environment) = self.capture_environment_for(capture_roots);
         let context = RegionContext {
             view: self.view,
             callees: self.callees.clone(),
@@ -1583,7 +1522,7 @@ impl<'program, 'dae> ExpressionLowerer<'_, 'program, 'dae> {
             let [body_type] = body_types.as_slice() else {
                 return Err(solve::SolveProgramConstructionError::InvalidMap { provenance: at });
             };
-            let (captures, environment) = self.capture_environment();
+            let (captures, environment) = self.capture_environment_for([body]);
             let context = RegionContext {
                 view: self.view,
                 callees: self.callees.clone(),
