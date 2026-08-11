@@ -4292,6 +4292,7 @@ dependencies = [
  "rayon",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-eval-galec",
  "rumoca-eval-solve",
  "rumoca-ir-ast",
  "rumoca-ir-dae",

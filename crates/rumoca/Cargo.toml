@@ -205,6 +205,13 @@ rumoca-phase-parse = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
+# SPEC_0034 GAL-027/GAL-038 independence oracle. `tests/galec_equivalence.rs`
+# is its consumer: it interprets the same checked AlgorithmCodePackage the
+# `embedded-c-galec` template renders, so the generated C is differentially
+# checked against explicit GALEC semantics instead of only against the
+# Modelica reference. Test-only on purpose — the oracle must stay free of
+# lowering/codegen dependencies, so no shipped crate may depend on it.
+rumoca-eval-galec = { workspace = true }
 # Runtime state machine + backend-neutral simulation driver (SPEC_0029 §3b);
 # the AD/sensitivity integration tests drive `SolveRuntime` directly.
 rumoca-solver = { workspace = true }
