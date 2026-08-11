@@ -867,3 +867,38 @@ Codex counter-round:
    invariant that cannot be stated root-locally; arena-vs-journal reverses
    on >2% prepare-time regression on the RDD2 canary or any escaped-handle
    red.
+
+### 13.1 Counter-round resolution (00:50)
+
+Codex's 21:27/21:36 counter-round resolved against §13, item by item:
+1. Wire gate stands as byte-form determinism; mechanism is canonical
+   first-use term records, NOT mandatory in-memory interning. Added machine
+   red: decode -> re-encode -> byte-identical (verifier-recomputable
+   canonical order).
+2. Root digest CONCEDED as in-memory authority; replaced by the strictly
+   stronger unrepresentability design (generative brands, root-local
+   namespace-typed ordinals, one outer replay closure with no syntax for
+   foreign roots). Digests retain authority only at the outer cross-root
+   projection and external sidecars. Codex's three machine reds adopted.
+3. SPEC_0046 composition = MLS-derived strata: lane capture -> once-only
+   first-pass scheduled/clock subplans -> unclocked z/m/when fixed point
+   (pre_iter advances between rounds; condition-triggered algorithm
+   transactions live INSIDE the relation) -> post-settle actions, single
+   commit. Edge legality: once->iterative legal; iterative->post-settle
+   legal; iterative->once OPEN on one ruling — MLS-legal clocked
+   `sample(u)` of an unclocked discrete variable at a coincident tick:
+   entry/first-iteration capture vs settled fixed point (Codex to rule
+   with cite; both encode as explicit lane capture, never silent storage
+   read). Four distinct history capabilities (LeftLimit, iterative Pre,
+   clock Previous, sampled lanes); no unified buffer.
+4. Identity reds tightened: duplicate DEFINITION rejects; multiple uses of
+   one definition converge to one handle. Member-kind vocabulary removed
+   from test prose; guarded-total-next coincident-schedule fixture.
+5. Reversal gates final: roots reversal requires two production consumers;
+   journal invalidation requires ID aliasing (observational-rollback
+   invariant is the comparator); >2% prepare regression is a preregistered
+   statistical discriminator, not an automatic correctness reversal.
+Governance final: 19/20 spec count; two-commit voted PR (PROPOSED ->
+DRAFT + atomic accepted-surface extraction); SPEC_0000 has no
+DRAFT->ACCEPTED path today — whether to add one is scoped into the same
+voted series.
