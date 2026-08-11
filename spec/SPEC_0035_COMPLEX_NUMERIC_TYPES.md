@@ -167,15 +167,23 @@ behaviour.
 indefinitely — the name matches are what make the fix look optional.
 
 **This spec is a capability, not a bug fix.** An earlier draft claimed phase 2
-would unblock the Magnetic cohort. That claim was measured and is FALSE.
-Complex arithmetic already resolves today (`phase-structural/src/scalarize/
-projection.rs` `project_complex_mul_or_div`), and a hand-scalarized rewrite of
-`Magnetic.FundamentalWave.Examples.Components.SinglePhaseInductance` with no
-Complex rows at all produces the byte-identical structural failure. That cohort
+would unblock the Magnetic cohort. That claim was measured and is FALSE. The
+measurement was taken against the pre-cutover component-projection path
+(`project_complex_mul_or_div` in `phase-structural/src/scalarize/projection.rs`,
+deleted with the whole `scalarize/` subsystem in commit `36fb6609`): with
+complex arithmetic projecting, a hand-scalarized rewrite of
+`Magnetic.FundamentalWave.Examples.Components.SinglePhaseInductance` carrying no
+Complex rows at all produced the byte-identical structural failure. That cohort
 is blocked by index reduction and by constant folding of parameter bindings,
-not by operator records. Record-level rows do surface later, as an `EL002`
-missing-binding error in Solve lowering, which is what phases 1-2 address —
-but only after the earlier blockers are cleared.
+not by operator records. The recognized record shapes today are record equality
+and record construction
+(`rumoca-phase-dae/src/construction/analysis/record_equations.rs`); a
+record-level row that reaches Solve lowering is reported with one of the two
+live codes in `rumoca-phase-solve/src/diagnostic_codes.rs` — `EL001`
+(unsupported expression) or `EL005` (invalid Solve contract, the successor of
+the removed `EL002` missing-binding code, raised by `variable_scalar_slot` in
+`phase-solve/src/lower.rs` when a variable has no Solve layout entry). Phases
+1-2 address those rows, but only after the earlier blockers are cleared.
 
 ## References
 

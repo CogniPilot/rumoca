@@ -71,19 +71,36 @@ too-many-arguments-threshold = 7  # Miller's Law (7±2)
 
 ### Cargo.toml (workspace)
 
+The root `Cargo.toml` sets these at `deny`, not `warn`. They are clippy lints,
+so they are evaluated only when clippy runs: a threshold breach is an error
+under `cargo clippy`, and `cargo check`/`cargo build` still succeed. The `deny`
+level means the breach fails clippy on its own, without CI's `-D warnings`:
+
 ```toml
 [workspace.lints.clippy]
-excessive_nesting = "warn"
-too_many_lines = "warn"
-too_many_arguments = "warn"
+all = { level = "deny", priority = -1 }
+excessive_nesting = "deny"
+too_many_lines = "deny"
+too_many_arguments = "deny"
 ```
 
 ### CI Integration
 
+There is no separate complexity job. The `lint` job in
+`.github/workflows/ci.yml` runs several steps (checkout, dependency/toolchain
+setup, cache, the lint gate, the pull-request architecture review scan, a
+generated-parser drift check, and the crate-DAG artifact). Complexity is gated
+by exactly one of them:
+
 ```yaml
-- name: Check complexity
-  run: cargo clippy -- -D clippy::excessive_nesting -D clippy::too_many_lines -D clippy::too_many_arguments
+- name: Run lint gate
+  run: cargo xtask verify lint
 ```
+
+`cargo xtask verify lint` runs the workspace rustfmt check and the
+traversal-policy checks, then clippy over the whole workspace with all targets
+and all features under `-D warnings`
+(`xtask::test_cmd::run_workspace_clippy`).
 
 ## Exceptions
 
@@ -120,9 +137,15 @@ fn check_expr(&mut self, expr: &ResolvedExpr) -> TypedExpr {
 | Warning | 1000-2000 | Consider splitting |
 | Action Required | >2000 | Split by concern |
 
-**Note:** Clippy has no file-level lint. Use the script below.
+**Note:** Clippy has no file-level lint, so the >2000 row is enforced by the
+workspace test `crates/rumoca/tests/code_size_budget_test.rs`, which fails
+`cargo test --workspace` for any production Rust file over 2000 lines unless
+that file's text contains all three of `SPEC_0021`, `file-size`, and
+`split plan`. Use the script below for the earlier warning bands.
 
-**Exceptions:** Generated code (parser files) and cohesive modules are exempt.
+**Exceptions:** Generated code (any `generated/` path) and test sources are
+skipped outright; every other file needs the three-phrase marker above, written
+as a comment that states the split plan.
 
 ### Module Decomposition (No Source-Path Complexity Bypass)
 

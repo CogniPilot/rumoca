@@ -104,14 +104,18 @@ cargo test --release --package rumoca-test-msl --features msl-full-test \
 ModelicaTest semantic gate (compiler / simulator semantic changes):
 
 ```bash
-RUMOCA_MSL_INCLUDE_MODELICATEST=1 \
-RUMOCA_MSL_REQUIRE_SELECTED_TARGETS_SUCCESS=1 \
-RUMOCA_MSL_SIM_TARGETS_FILE=crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json \
-RUMOCA_MSL_SIM_SET=full \
-cargo test --release --package rumoca-test-msl --features msl-full-test \
-  --test msl_tests balance_pipeline::balance_pipeline_core::test_msl_all \
-  -- --nocapture
+cargo xtask verify msl-parity \
+  --results-dir target/msl/modelicatest-results \
+  --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/modelica_test_targets_ci.json \
+  --include-modelica-test \
+  --require-selected-targets-success \
+  --sim-set full
 ```
+
+These flags are the only supported channel: no `RUMOCA_*` environment variable
+configures the harness (SPEC_0018). `verify msl-parity` writes them to the
+inspectable per-invocation config `target/msl/parity-config.json`, then runs the
+same `test_msl_all` libtest as the gate above — Cargo-native underneath, per §4a.
 
 Pinned `modelica_models` compatibility gate (compiler / simulator semantic changes):
 
@@ -197,7 +201,7 @@ net_added_lines:
 | Signed-off-by on every commit (`git commit -s`) | DCO compliance |
 | No `Co-Authored-By` for AI assistants | The human author owns the code; AI assistance is human-authored work |
 | External material attributed and Apache-2.0 compatible | Provenance and license compliance |
-| No `#[allow(clippy::...)]` outside generated code | Allow signals an unfixed maintainability issue (SPEC_0021) |
+| No new `#[allow(clippy::...)]` without the SPEC_0021 exception comment directly above it | SPEC_0021 "Exceptions" sanctions documented allows; an undocumented one hides an unfixed maintainability issue |
 | No new trait without ≥ 2 concrete impls | Single-impl traits are noise |
 | No old/new code paths left side-by-side without explicit migration plan | Dead-but-alive code accretes |
 

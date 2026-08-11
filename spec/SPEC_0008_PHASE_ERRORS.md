@@ -276,8 +276,12 @@ and `to_miette_with_source_map` render a diagnostic for terminal display.
 
 **CodegenError** does not implement `PhaseError` because:
 - Code generation errors occur during template rendering, not source analysis
-- They carry at most a rendered-template `SourceSpan`, never a `rumoca_core::Span`
-  identifying user Modelica source
+- Most variants carry at most a rendered-template `SourceSpan`; the four
+  Solve/DAE projection variants (`EC005` `SolveScalarizationFailed`, `EC006`
+  `DaePreparationFailed`, `EC007` `NonMaterializedStructuredFamily`, `EC008`
+  `InvalidStructuredFamilyOwnership`) each carry an optional
+  `rumoca_core::Span` that no renderer currently consumes, without adopting the
+  `PhaseError` label contract
 - They need to implement `std::error::Error` for Result-based error handling
 - They wrap external errors (e.g., minijinja template errors)
 

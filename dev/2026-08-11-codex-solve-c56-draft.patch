@@ -1,0 +1,960 @@
+Author: Codex (read-only reviewer; stood down from implementation 2026-08-11)
+Date: 2026-08-11 -- archived against rumoca HEAD 7a24727c (branch msl-trace-parity-50)
+What: abandoned SOLVE-C56 "coordinate certificate" draft, ~755 added lines across
+  ir-solve/src/refresh.rs + refresh/tests.rs, ir-solve/src/lib.rs, eval-solve/src/refresh_plan.rs,
+  exec-cranelift/src/lib.rs. Kept for reference only; NOT the accepted implementation.
+Why rejected (four review reasons): (1) duplicated LinearOp dependency interpretation;
+  (2) over-broadened projection owners; (3) weakened standalone valid-by-construction
+  deserialization; (4) missing runtime coordinate/remainder verification.
+Accepted direction: ONE canonical, output-projection-aware dependency summary in Solve IR,
+  consumed by grouping, certificates, wire replay, runtime invalidation, and remainder relations; tensor ranges stay compact.
+diff --git a/crates/rumoca-eval-solve/src/refresh_plan.rs b/crates/rumoca-eval-solve/src/refresh_plan.rs
+index 60bd01eb..179508fc 100644
+--- a/crates/rumoca-eval-solve/src/refresh_plan.rs
++++ b/crates/rumoca-eval-solve/src/refresh_plan.rs
+@@ -563,6 +563,7 @@ pub fn build_continuous_refresh_owners(
+     let clock_events = vec![RefreshPlan::default(); problem.clocks.periodic_event_schedules.len()];
+     solve::ContinuousRefreshOwners::checked_for_source(
+         &problem.continuous.implicit_rhs,
++        &problem.solve_layout,
+         algebraic,
+         derivative,
+         root,
+diff --git a/crates/rumoca-exec-cranelift/src/lib.rs b/crates/rumoca-exec-cranelift/src/lib.rs
+index 98c76bc1..3dbba4e7 100644
+--- a/crates/rumoca-exec-cranelift/src/lib.rs
++++ b/crates/rumoca-exec-cranelift/src/lib.rs
+@@ -825,6 +825,7 @@ mod tests {
+         let source = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(source);
+         let owners = rumoca_ir_solve::ContinuousRefreshOwners::checked_for_source(
+             &source,
++            &rumoca_ir_solve::SolveLayout::default(),
+             plan,
+             Default::default(),
+             Default::default(),
+diff --git a/crates/rumoca-ir-solve/src/lib.rs b/crates/rumoca-ir-solve/src/lib.rs
+index 19853dc0..fe64e2e3 100644
+--- a/crates/rumoca-ir-solve/src/lib.rs
++++ b/crates/rumoca-ir-solve/src/lib.rs
+@@ -724,6 +724,14 @@ impl<'de> Deserialize<'de> for SolveProblem {
+             .refresh_owners
+             .rebuild_exact_assignment_programs(&problem.continuous.implicit_rhs)
+             .map_err(serde::de::Error::custom)?;
++        problem
++            .continuous
++            .refresh_owners
++            .rebuild_coordinate_dependencies(
++                &problem.continuous.implicit_rhs,
++                &problem.solve_layout,
++            )
++            .map_err(serde::de::Error::custom)?;
+         problem.validate().map_err(serde::de::Error::custom)?;
+         Ok(problem)
+     }
+@@ -1889,7 +1897,7 @@ fn validate_continuous_system_shape(
+         .validate_shape_contract("continuous.derivative_rhs")?;
+     system
+         .refresh_owners
+-        .validate_against(&system.implicit_rhs)
++        .validate_against(&system.implicit_rhs, &problem.solve_layout)
+         .map_err(
+             |error| SolveProblemShapeContractError::ContinuousRefreshOwner {
+                 detail: error.to_string(),
+diff --git a/crates/rumoca-ir-solve/src/refresh.rs b/crates/rumoca-ir-solve/src/refresh.rs
+index 93b9aae6..6fda5f59 100644
+--- a/crates/rumoca-ir-solve/src/refresh.rs
++++ b/crates/rumoca-ir-solve/src/refresh.rs
+@@ -1,4 +1,4 @@
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, BTreeSet};
+ use std::fmt;
+ use std::ops::Index;
+ 
+@@ -168,6 +168,122 @@ impl RefreshSequenceId {
+     }
+ }
+ 
++/// Semantic role of one compiler-issued continuous refresh owner.
++///
++/// The role is part of the owner proof. Consumers must not infer it from a
++/// field name, a row set, or the operation graph selected by the owner.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum ContinuousRefreshPurpose {
++    AlgebraicValue,
++    Derivative,
++    Root,
++    Event,
++    ClockEvent { clock: u32 },
++}
++
++/// One compact half-open scalar-storage range read by a refresh owner.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct RefreshCoordinateRange {
++    start: usize,
++    count: usize,
++}
++
++impl RefreshCoordinateRange {
++    #[must_use]
++    pub const fn start(self) -> usize {
++        self.start
++    }
++
++    #[must_use]
++    pub const fn count(self) -> usize {
++        self.count
++    }
++}
++
++/// Complete coordinate-invalidation inventory for one refresh owner.
++///
++/// Y/P dependencies remain compact coalesced ranges. The generation lanes
++/// distinguish values that can change without changing ordinary continuous
++/// coordinates, so a later execution cache or settled-owner relation can be
++/// checked without rediscovering dependencies from executable operations.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct RefreshCoordinateDependencyCertificate {
++    purpose: ContinuousRefreshPurpose,
++    y_ranges: Box<[RefreshCoordinateRange]>,
++    p_ranges: Box<[RefreshCoordinateRange]>,
++    reads_time: bool,
++    reads_event_generation: bool,
++    reads_pre_generation: bool,
++    reads_previous_generation: bool,
++    reads_history_generation: bool,
++    reads_external_table_state: bool,
++    reads_impure_state: bool,
++    reads_arithmetic_profile: bool,
++    reads_ad_mode: bool,
++}
++
++impl RefreshCoordinateDependencyCertificate {
++    #[must_use]
++    pub const fn purpose(&self) -> ContinuousRefreshPurpose {
++        self.purpose
++    }
++
++    #[must_use]
++    pub fn y_ranges(&self) -> &[RefreshCoordinateRange] {
++        &self.y_ranges
++    }
++
++    #[must_use]
++    pub fn p_ranges(&self) -> &[RefreshCoordinateRange] {
++        &self.p_ranges
++    }
++
++    #[must_use]
++    pub const fn reads_time(&self) -> bool {
++        self.reads_time
++    }
++
++    #[must_use]
++    pub const fn reads_event_generation(&self) -> bool {
++        self.reads_event_generation
++    }
++
++    #[must_use]
++    pub const fn reads_pre_generation(&self) -> bool {
++        self.reads_pre_generation
++    }
++
++    #[must_use]
++    pub const fn reads_previous_generation(&self) -> bool {
++        self.reads_previous_generation
++    }
++
++    #[must_use]
++    pub const fn reads_history_generation(&self) -> bool {
++        self.reads_history_generation
++    }
++
++    #[must_use]
++    pub const fn reads_external_table_state(&self) -> bool {
++        self.reads_external_table_state
++    }
++
++    #[must_use]
++    pub const fn reads_impure_state(&self) -> bool {
++        self.reads_impure_state
++    }
++
++    #[must_use]
++    pub const fn reads_arithmetic_profile(&self) -> bool {
++        self.reads_arithmetic_profile
++    }
++
++    #[must_use]
++    pub const fn reads_ad_mode(&self) -> bool {
++        self.reads_ad_mode
++    }
++}
++
+ /// One exact scalar projection of a canonical continuous output owner.
+ #[derive(Clone, Debug, PartialEq, Serialize)]
+ pub struct AlgebraicRefreshRow {
+@@ -340,6 +456,11 @@ pub struct ContinuousRefreshOwners {
+     root: RefreshPlan,
+     event: RefreshPlan,
+     clock_events: Vec<RefreshPlan>,
++    /// Source-derived proof inventory. It is deliberately absent from the
++    /// wire format: checked Solve replay derives it again from the canonical
++    /// compact programs and layout instead of trusting serialized metadata.
++    #[serde(skip)]
++    coordinate_dependencies: Vec<RefreshCoordinateDependencyCertificate>,
+     #[serde(skip)]
+     exact_assignment_programs: Vec<ExactRefreshAssignmentProgram>,
+     #[serde(skip)]
+@@ -512,7 +633,8 @@ impl<'de> Deserialize<'de> for ContinuousRefreshOwners {
+ impl ContinuousRefreshOwners {
+     #[must_use]
+     pub const fn is_issued(&self) -> bool {
+-        self.root_after_derivative.is_some()
++        self.coordinate_dependencies.len() == self.clock_events.len() + 4
++            && self.root_after_derivative.is_some()
+             && self.clock_events_after_event.len() == self.clock_events.len()
+     }
+ 
+@@ -561,6 +683,7 @@ impl ContinuousRefreshOwners {
+             root,
+             event,
+             clock_events,
++            coordinate_dependencies: Vec::new(),
+             exact_assignment_programs: Vec::new(),
+             exact_assignment_schedules: Vec::new(),
+             root_after_derivative: Some(root_after_derivative),
+@@ -570,6 +693,7 @@ impl ContinuousRefreshOwners {
+ 
+     pub fn checked_for_source(
+         implicit_rhs: &ComputeBlock,
++        solve_layout: &crate::SolveLayout,
+         algebraic: RefreshPlan,
+         derivative: RefreshPlan,
+         root: RefreshPlan,
+@@ -578,8 +702,9 @@ impl ContinuousRefreshOwners {
+     ) -> Result<Self, ContinuousRefreshConstructionError> {
+         let mut owners = Self::checked(algebraic, derivative, root, event, clock_events)?;
+         owners.validate_sources_against(implicit_rhs)?;
++        owners.rebuild_coordinate_dependencies(implicit_rhs, solve_layout)?;
+         owners.rebuild_exact_assignment_programs(implicit_rhs)?;
+-        owners.validate_against(implicit_rhs)?;
++        owners.validate_against(implicit_rhs, solve_layout)?;
+         Ok(owners)
+     }
+ 
+@@ -604,11 +729,35 @@ impl ContinuousRefreshOwners {
+     pub(crate) fn validate_against(
+         &self,
+         implicit_rhs: &ComputeBlock,
++        solve_layout: &crate::SolveLayout,
+     ) -> Result<(), ContinuousRefreshConstructionError> {
+-        if !self.is_issued() {
++        let relations_are_issued = self.root_after_derivative.is_some()
++            && self.clock_events_after_event.len() == self.clock_events.len();
++        if !relations_are_issued {
+             return Ok(());
+         }
++        if !self.is_issued() {
++            return refresh_error(
++                "continuous refresh owner has no complete coordinate dependency certificate"
++                    .to_string(),
++            );
++        }
+         self.validate_sources_against(implicit_rhs)?;
++        let expected = derive_coordinate_dependencies(
++            implicit_rhs,
++            solve_layout,
++            &self.algebraic,
++            &self.derivative,
++            &self.root,
++            &self.event,
++            &self.clock_events,
++        )?;
++        if expected != self.coordinate_dependencies {
++            return refresh_error(
++                "continuous refresh coordinate dependency certificate does not replay its canonical source"
++                    .to_string(),
++            );
++        }
+         for plan in [&self.algebraic, &self.derivative, &self.root, &self.event]
+             .into_iter()
+             .chain(self.clock_events.iter())
+@@ -696,6 +845,7 @@ impl ContinuousRefreshOwners {
+             root,
+             event,
+             clock_events,
++            coordinate_dependencies: _,
+             exact_assignment_programs,
+             exact_assignment_schedules,
+             root_after_derivative,
+@@ -729,6 +879,23 @@ impl ContinuousRefreshOwners {
+         Ok(())
+     }
+ 
++    pub(crate) fn rebuild_coordinate_dependencies(
++        &mut self,
++        implicit_rhs: &ComputeBlock,
++        solve_layout: &crate::SolveLayout,
++    ) -> Result<(), ContinuousRefreshConstructionError> {
++        self.coordinate_dependencies = derive_coordinate_dependencies(
++            implicit_rhs,
++            solve_layout,
++            &self.algebraic,
++            &self.derivative,
++            &self.root,
++            &self.event,
++            &self.clock_events,
++        )?;
++        Ok(())
++    }
++
+     #[must_use]
+     pub const fn algebraic(&self) -> &RefreshPlan {
+         &self.algebraic
+@@ -754,6 +921,11 @@ impl ContinuousRefreshOwners {
+         &self.clock_events
+     }
+ 
++    #[must_use]
++    pub fn coordinate_dependencies(&self) -> &[RefreshCoordinateDependencyCertificate] {
++        &self.coordinate_dependencies
++    }
++
+     #[must_use]
+     pub const fn root_after_derivative(&self) -> Option<&RefreshRemainderRelation> {
+         self.root_after_derivative.as_ref()
+@@ -765,6 +937,474 @@ impl ContinuousRefreshOwners {
+     }
+ }
+ 
++fn derive_coordinate_dependencies(
++    implicit_rhs: &ComputeBlock,
++    solve_layout: &crate::SolveLayout,
++    algebraic: &RefreshPlan,
++    derivative: &RefreshPlan,
++    root: &RefreshPlan,
++    event: &RefreshPlan,
++    clock_events: &[RefreshPlan],
++) -> Result<Vec<RefreshCoordinateDependencyCertificate>, ContinuousRefreshConstructionError> {
++    let mut certificates = Vec::with_capacity(clock_events.len().saturating_add(4));
++    for (purpose, plan) in [
++        (ContinuousRefreshPurpose::AlgebraicValue, algebraic),
++        (ContinuousRefreshPurpose::Derivative, derivative),
++        (ContinuousRefreshPurpose::Root, root),
++        (ContinuousRefreshPurpose::Event, event),
++    ] {
++        certificates.push(derive_owner_coordinate_dependencies(
++            implicit_rhs,
++            solve_layout,
++            purpose,
++            plan,
++        )?);
++    }
++    for (clock, plan) in clock_events.iter().enumerate() {
++        let clock = u32::try_from(clock).map_err(|_| ContinuousRefreshConstructionError {
++            reason: "continuous refresh clock count exceeds u32".to_string(),
++        })?;
++        certificates.push(derive_owner_coordinate_dependencies(
++            implicit_rhs,
++            solve_layout,
++            ContinuousRefreshPurpose::ClockEvent { clock },
++            plan,
++        )?);
++    }
++    Ok(certificates)
++}
++
++fn derive_owner_coordinate_dependencies(
++    implicit_rhs: &ComputeBlock,
++    solve_layout: &crate::SolveLayout,
++    purpose: ContinuousRefreshPurpose,
++    plan: &RefreshPlan,
++) -> Result<RefreshCoordinateDependencyCertificate, ContinuousRefreshConstructionError> {
++    let mut builder = RefreshCoordinateDependencyBuilder::new(purpose, solve_layout);
++    let sources = plan
++        .rows
++        .iter()
++        .map(AlgebraicRefreshRow::source)
++        .collect::<BTreeSet<_>>();
++    for source in sources {
++        let (program, _) = scalar_source_program(implicit_rhs, source)?.ok_or_else(|| {
++            ContinuousRefreshConstructionError {
++                reason: "continuous refresh coordinate certificate source is missing".to_string(),
++            }
++        })?;
++        builder.visit_program(program)?;
++    }
++    if !plan.simultaneous_plan.blocks.is_empty() {
++        // Projection blocks may retain compact tensor nodes that have no
++        // scalar-row source identity. Scan their canonical ComputeBlock
++        // owners directly; no tensor coordinate or expression is expanded.
++        builder.visit_compute_block(implicit_rhs)?;
++    }
++    builder.finish()
++}
++
++struct RefreshCoordinateDependencyBuilder<'layout> {
++    purpose: ContinuousRefreshPurpose,
++    solve_layout: &'layout crate::SolveLayout,
++    y_ranges: Vec<RefreshCoordinateRange>,
++    p_ranges: Vec<RefreshCoordinateRange>,
++    reads_time: bool,
++    reads_event_generation: bool,
++    reads_pre_generation: bool,
++    reads_previous_generation: bool,
++    reads_history_generation: bool,
++    reads_external_table_state: bool,
++    reads_impure_state: bool,
++    reads_ad_mode: bool,
++}
++
++impl<'layout> RefreshCoordinateDependencyBuilder<'layout> {
++    fn new(purpose: ContinuousRefreshPurpose, solve_layout: &'layout crate::SolveLayout) -> Self {
++        Self {
++            purpose,
++            solve_layout,
++            y_ranges: Vec::new(),
++            p_ranges: Vec::new(),
++            reads_time: false,
++            reads_event_generation: matches!(
++                purpose,
++                ContinuousRefreshPurpose::Event | ContinuousRefreshPurpose::ClockEvent { .. }
++            ),
++            reads_pre_generation: false,
++            reads_previous_generation: false,
++            reads_history_generation: false,
++            reads_external_table_state: false,
++            reads_impure_state: false,
++            reads_ad_mode: false,
++        }
++    }
++
++    fn finish(
++        self,
++    ) -> Result<RefreshCoordinateDependencyCertificate, ContinuousRefreshConstructionError> {
++        Ok(RefreshCoordinateDependencyCertificate {
++            purpose: self.purpose,
++            y_ranges: coalesce_coordinate_ranges(self.y_ranges)?,
++            p_ranges: coalesce_coordinate_ranges(self.p_ranges)?,
++            reads_time: self.reads_time,
++            reads_event_generation: self.reads_event_generation,
++            reads_pre_generation: self.reads_pre_generation,
++            reads_previous_generation: self.reads_previous_generation,
++            reads_history_generation: self.reads_history_generation,
++            reads_external_table_state: self.reads_external_table_state,
++            reads_impure_state: self.reads_impure_state,
++            reads_arithmetic_profile: true,
++            reads_ad_mode: self.reads_ad_mode,
++        })
++    }
++
++    fn visit_compute_block(
++        &mut self,
++        block: &ComputeBlock,
++    ) -> Result<(), ContinuousRefreshConstructionError> {
++        for node in &block.nodes {
++            match node {
++                ComputeNode::ScalarPrograms(programs) => {
++                    for program in programs.programs() {
++                        self.visit_program(program)?;
++                    }
++                }
++                ComputeNode::MatMul {
++                    lhs_ops, rhs_ops, ..
++                } => {
++                    self.visit_program(lhs_ops)?;
++                    self.visit_program(rhs_ops)?;
++                }
++                ComputeNode::LinSolve { setup_ops, .. } => self.visit_program(setup_ops)?,
++                ComputeNode::Map {
++                    domain,
++                    base_ops,
++                    load_strides,
++                    ..
++                }
++                | ComputeNode::AffineStencil {
++                    domain,
++                    base_ops,
++                    load_strides,
++                    ..
++                } => {
++                    self.visit_program(base_ops)?;
++                    self.visit_affine_load_ranges(domain, base_ops, load_strides)?;
++                }
++            }
++        }
++        Ok(())
++    }
++
++    fn visit_program(
++        &mut self,
++        program: &[LinearOp],
++    ) -> Result<(), ContinuousRefreshConstructionError> {
++        for operation in program {
++            match operation {
++                LinearOp::LoadTime { .. } => self.reads_time = true,
++                LinearOp::LoadY { index, .. } => self.add_y_range(*index, 1)?,
++                LinearOp::LoadP { index, .. } => self.add_p_range(*index, 1)?,
++                LinearOp::LoadIndexedP { base, count, .. } => {
++                    self.add_p_range(*base, *count)?
++                }
++                LinearOp::TensorLoad {
++                    input,
++                    input_start,
++                    count,
++                    seed_start,
++                    ..
++                } => {
++                    match input {
++                        crate::TensorInputKind::Y => self.add_y_range(*input_start, *count)?,
++                        crate::TensorInputKind::P => self.add_p_range(*input_start, *count)?,
++                    }
++                    self.reads_ad_mode |= seed_start.is_some();
++                }
++                LinearOp::LoadSeed { .. } | LinearOp::LoadIndexedSeed { .. } => {
++                    self.reads_ad_mode = true;
++                }
++                LinearOp::TableBounds { .. }
++                | LinearOp::TableLookup { .. }
++                | LinearOp::TableLookupSlope { .. }
++                | LinearOp::TableNextEvent { .. } => {
++                    self.reads_external_table_state = true;
++                }
++                LinearOp::ImpureRandomInit { .. }
++                | LinearOp::ImpureRandom { .. }
++                | LinearOp::ImpureRandomInteger { .. } => {
++                    self.reads_impure_state = true;
++                }
++                LinearOp::FunctionFold { program, .. }
++                | LinearOp::GuardedFunctionFold { program, .. }
++                | LinearOp::StoreOutputFunctionFold { program, .. } => {
++                    self.visit_program(&program.update)?;
++                }
++                LinearOp::FunctionConditional { program, .. } => {
++                    for arm in &program.arms {
++                        self.visit_program(&arm.condition)?;
++                        self.visit_program(&arm.result)?;
++                    }
++                    self.visit_program(&program.fallback)?;
++                }
++                LinearOp::PureCallDirectional { .. } => self.reads_ad_mode = true,
++                _ => {}
++            }
++        }
++        Ok(())
++    }
++
++    fn visit_affine_load_ranges(
++        &mut self,
++        domain: &rumoca_core::StructuredIndexDomain,
++        base_ops: &[LinearOp],
++        load_strides: &[crate::AffineStencilLoadStride],
++    ) -> Result<(), ContinuousRefreshConstructionError> {
++        let extents = domain
++            .extents()
++            .map_err(|error| ContinuousRefreshConstructionError {
++                reason: format!("continuous refresh affine domain is invalid: {error}"),
++            })?;
++        for stride in load_strides {
++            let (minimum, maximum) = affine_adjustment_bounds(&extents, &stride.terms)?;
++            let Some(operation) = base_ops.get(stride.op_position) else {
++                return refresh_error(
++                    "continuous refresh affine dependency refers to a missing operation"
++                        .to_string(),
++                );
++            };
++            match operation {
++                LinearOp::LoadY { index, .. } => {
++                    let (start, count) = adjusted_coordinate_range(*index, minimum, maximum)?;
++                    self.add_y_range(start, count)?;
++                }
++                LinearOp::LoadP { index, .. } => {
++                    let (start, count) = adjusted_coordinate_range(*index, minimum, maximum)?;
++                    self.add_p_range(start, count)?;
++                }
++                LinearOp::LoadSeed { .. } => self.reads_ad_mode = true,
++                _ => {
++                    return refresh_error(
++                        "continuous refresh affine dependency is not attached to a compact load"
++                            .to_string(),
++                    );
++                }
++            }
++        }
++        Ok(())
++    }
++
++    fn add_y_range(
++        &mut self,
++        start: usize,
++        count: usize,
++    ) -> Result<(), ContinuousRefreshConstructionError> {
++        push_coordinate_range(&mut self.y_ranges, start, count)?;
++        if storage_range_has_event_value(self.solve_layout, true, start, count)? {
++            self.reads_event_generation = true;
++        }
++        Ok(())
++    }
++
++    fn add_p_range(
++        &mut self,
++        start: usize,
++        count: usize,
++    ) -> Result<(), ContinuousRefreshConstructionError> {
++        push_coordinate_range(&mut self.p_ranges, start, count)?;
++        if storage_range_has_event_value(self.solve_layout, false, start, count)? {
++            self.reads_event_generation = true;
++        }
++        for binding in &self.solve_layout.pre_param_bindings {
++            if coordinate_range_contains(start, count, binding.dest_p_index)? {
++                if binding.clock_schedule.is_some() {
++                    self.reads_previous_generation = true;
++                } else {
++                    self.reads_pre_generation = true;
++                }
++                self.reads_history_generation = true;
++            }
++        }
++        if self
++            .solve_layout
++            .relation_memory_parameter_indices
++            .iter()
++            .copied()
++            .any(|index| coordinate_range_contains(start, count, index).unwrap_or(true))
++        {
++            self.reads_event_generation = true;
++            self.reads_history_generation = true;
++        }
++        for index in [
++            self.solve_layout.initial_event_parameter_index,
++            self.solve_layout.terminal_event_parameter_index,
++            self.solve_layout.initial_homotopy_parameter_index,
++        ]
++        .into_iter()
++        .flatten()
++        {
++            if coordinate_range_contains(start, count, index)? {
++                self.reads_event_generation = true;
++            }
++        }
++        Ok(())
++    }
++}
++
++fn affine_adjustment_bounds(
++    extents: &[usize],
++    terms: &[crate::AffineStencilIndexStrideTerm],
++) -> Result<(i128, i128), ContinuousRefreshConstructionError> {
++    let mut minimum = 0i128;
++    let mut maximum = 0i128;
++    for term in terms {
++        let extent = extents.get(term.dimension).copied().ok_or_else(|| {
++            ContinuousRefreshConstructionError {
++                reason: "continuous refresh affine dependency dimension is out of bounds"
++                    .to_string(),
++            }
++        })?;
++        let steps = i128::try_from(extent.saturating_sub(1)).map_err(|_| {
++            ContinuousRefreshConstructionError {
++                reason: "continuous refresh affine dependency extent overflows".to_string(),
++            }
++        })?;
++        let adjustment = (term.stride as i128).checked_mul(steps).ok_or_else(|| {
++            ContinuousRefreshConstructionError {
++                reason: "continuous refresh affine dependency adjustment overflows".to_string(),
++            }
++        })?;
++        if adjustment < 0 {
++            minimum = minimum.checked_add(adjustment).ok_or_else(|| {
++                ContinuousRefreshConstructionError {
++                    reason: "continuous refresh affine dependency minimum overflows".to_string(),
++                }
++            })?;
++        } else {
++            maximum = maximum.checked_add(adjustment).ok_or_else(|| {
++                ContinuousRefreshConstructionError {
++                    reason: "continuous refresh affine dependency maximum overflows".to_string(),
++                }
++            })?;
++        }
++    }
++    Ok((minimum, maximum))
++}
++
++fn adjusted_coordinate_range(
++    base: usize,
++    minimum: i128,
++    maximum: i128,
++) -> Result<(usize, usize), ContinuousRefreshConstructionError> {
++    let base = i128::try_from(base).map_err(|_| ContinuousRefreshConstructionError {
++        reason: "continuous refresh affine dependency base overflows".to_string(),
++    })?;
++    let start = base
++        .checked_add(minimum)
++        .and_then(|value| usize::try_from(value).ok())
++        .ok_or_else(|| ContinuousRefreshConstructionError {
++            reason: "continuous refresh affine dependency starts outside storage".to_string(),
++        })?;
++    let end = base
++        .checked_add(maximum)
++        .and_then(|value| value.checked_add(1))
++        .and_then(|value| usize::try_from(value).ok())
++        .ok_or_else(|| ContinuousRefreshConstructionError {
++            reason: "continuous refresh affine dependency ends outside storage".to_string(),
++        })?;
++    Ok((start, end - start))
++}
++
++fn push_coordinate_range(
++    ranges: &mut Vec<RefreshCoordinateRange>,
++    start: usize,
++    count: usize,
++) -> Result<(), ContinuousRefreshConstructionError> {
++    if count == 0 {
++        return Ok(());
++    }
++    start
++        .checked_add(count)
++        .ok_or_else(|| ContinuousRefreshConstructionError {
++            reason: "continuous refresh coordinate range overflows".to_string(),
++        })?;
++    ranges.push(RefreshCoordinateRange { start, count });
++    Ok(())
++}
++
++fn coalesce_coordinate_ranges(
++    mut ranges: Vec<RefreshCoordinateRange>,
++) -> Result<Box<[RefreshCoordinateRange]>, ContinuousRefreshConstructionError> {
++    ranges.sort_unstable_by_key(|range| range.start);
++    let mut coalesced: Vec<RefreshCoordinateRange> = Vec::with_capacity(ranges.len());
++    for range in ranges {
++        let range_end = range.start.checked_add(range.count).ok_or_else(|| {
++            ContinuousRefreshConstructionError {
++                reason: "continuous refresh coordinate range overflows".to_string(),
++            }
++        })?;
++        if let Some(previous) = coalesced.last_mut() {
++            let previous_end = previous.start.checked_add(previous.count).ok_or_else(|| {
++                ContinuousRefreshConstructionError {
++                    reason: "continuous refresh coordinate range overflows".to_string(),
++                }
++            })?;
++            if range.start <= previous_end {
++                previous.count = previous_end.max(range_end) - previous.start;
++                continue;
++            }
++        }
++        coalesced.push(range);
++    }
++    Ok(coalesced.into_boxed_slice())
++}
++
++fn coordinate_range_contains(
++    start: usize,
++    count: usize,
++    index: usize,
++) -> Result<bool, ContinuousRefreshConstructionError> {
++    let end = start
++        .checked_add(count)
++        .ok_or_else(|| ContinuousRefreshConstructionError {
++            reason: "continuous refresh coordinate range overflows".to_string(),
++        })?;
++    Ok((start..end).contains(&index))
++}
++
++fn storage_range_has_event_value(
++    solve_layout: &crate::SolveLayout,
++    y_storage: bool,
++    start: usize,
++    count: usize,
++) -> Result<bool, ContinuousRefreshConstructionError> {
++    let end = start
++        .checked_add(count)
++        .ok_or_else(|| ContinuousRefreshConstructionError {
++            reason: "continuous refresh coordinate range overflows".to_string(),
++        })?;
++    Ok(solve_layout.variable_storage_runs.iter().any(|run| {
++        let (run_start, same_storage) = match run.base {
++            crate::ScalarSlot::Y { index, .. } => (index, y_storage),
++            crate::ScalarSlot::P { index, .. } => (index, !y_storage),
++            crate::ScalarSlot::Time | crate::ScalarSlot::Constant(_) => (0, false),
++        };
++        if !same_storage {
++            return false;
++        }
++        let Some(run_end) = run_start.checked_add(run.scalar_count) else {
++            return true;
++        };
++        start < run_end
++            && run_start < end
++            && matches!(
++                run.role,
++                crate::SolveVariableStorageRole::DiscreteReal
++                    | crate::SolveVariableStorageRole::DiscreteValue
++            )
++    }))
++}
++
+ fn validate_refresh_sources(
+     label: &str,
+     plan: &RefreshPlan,
+diff --git a/crates/rumoca-ir-solve/src/refresh/tests.rs b/crates/rumoca-ir-solve/src/refresh/tests.rs
+index 1c78f73b..e820a1d4 100644
+--- a/crates/rumoca-ir-solve/src/refresh/tests.rs
++++ b/crates/rumoca-ir-solve/src/refresh/tests.rs
+@@ -66,6 +66,42 @@ fn two_output_source(second_reads_first_target: bool) -> ComputeBlock {
+     )
+ }
+ 
++fn coordinate_dependency_source() -> ComputeBlock {
++    let span = rumoca_core::Span::from_offsets(
++        rumoca_core::SourceId::from_source_name("refresh_coordinate_test.mo"),
++        0,
++        1,
++    );
++    ComputeBlock::from_scalar_program_block(
++        crate::ScalarProgramBlock::with_source_span(
++            vec![vec![
++                crate::LinearOp::LoadY { dst: 0, index: 4 },
++                crate::LinearOp::TensorLoad {
++                    dst_start: 1,
++                    input: crate::TensorInputKind::Y,
++                    input_start: 5,
++                    count: 3,
++                    seed_start: None,
++                    lanes: 1,
++                },
++                crate::LinearOp::LoadP { dst: 4, index: 2 },
++                crate::LinearOp::LoadTime { dst: 5 },
++                crate::LinearOp::Const { dst: 6, value: 0.0 },
++                crate::LinearOp::TableBounds {
++                    dst: 7,
++                    table_id: 6,
++                    max: false,
++                },
++                crate::LinearOp::ImpureRandomInit { dst: 8, seed: 6 },
++                crate::LinearOp::LoadSeed { dst: 9, index: 4 },
++                crate::LinearOp::StoreOutput { src: 0 },
++            ]],
++            rumoca_core::ProvenanceSpan::new(span, "refresh coordinate test").unwrap(),
++        )
++        .unwrap(),
++    )
++}
++
+ fn grouped_row(target: usize, output_offset: usize, expr_reg: u32) -> AlgebraicRefreshRow {
+     AlgebraicRefreshRow {
+         owner_id: RefreshRowOwnerId::checked(target).unwrap(),
+@@ -151,6 +187,7 @@ fn refresh_owner_rejects_a_source_outside_the_canonical_compute_block() {
+     };
+     let error = ContinuousRefreshOwners::checked_for_source(
+         &source_block(),
++        &crate::SolveLayout::default(),
+         plan,
+         RefreshPlan::default(),
+         RefreshPlan::default(),
+@@ -176,6 +213,7 @@ fn refresh_owner_rejects_a_source_output_for_another_equation() {
+     };
+     let error = ContinuousRefreshOwners::checked_for_source(
+         &source_block(),
++        &crate::SolveLayout::default(),
+         plan,
+         RefreshPlan::default(),
+         RefreshPlan::default(),
+@@ -196,6 +234,7 @@ fn exact_assignment_program_is_constructed_once_and_not_serialized() {
+     };
+     let owners = ContinuousRefreshOwners::checked_for_source(
+         &source_block(),
++        &crate::SolveLayout::default(),
+         plan,
+         RefreshPlan::default(),
+         RefreshPlan::default(),
+@@ -241,6 +280,7 @@ fn exact_assignment_program_is_constructed_once_and_not_serialized() {
+ fn independent_outputs_from_one_source_keep_one_checked_program_owner() {
+     let owners = ContinuousRefreshOwners::checked_for_source(
+         &two_output_source(false),
++        &crate::SolveLayout::default(),
+         two_row_dynamic_plan(),
+         RefreshPlan::default(),
+         RefreshPlan::default(),
+@@ -269,6 +309,7 @@ fn independent_outputs_from_one_source_keep_one_checked_program_owner() {
+ fn dependent_outputs_from_one_source_preserve_sequential_program_owners() {
+     let owners = ContinuousRefreshOwners::checked_for_source(
+         &two_output_source(true),
++        &crate::SolveLayout::default(),
+         two_row_dynamic_plan(),
+         RefreshPlan::default(),
+         RefreshPlan::default(),
+@@ -293,7 +334,62 @@ fn dependent_outputs_from_one_source_preserve_sequential_program_owners() {
+ }
+ 
+ #[test]
+-fn wire_reconstructs_the_root_remainder_relation() {
++fn coordinate_dependencies_are_compact_and_source_derived() {
++    let mut solve_layout = crate::SolveLayout::default();
++    solve_layout.pre_param_bindings.push(crate::PreParamBinding {
++        dest_p_index: 2,
++        source: crate::PreParamSource::Y { index: 0 },
++        clock_schedule: None,
++    });
++    let plan = RefreshPlan {
++        rows: vec![row(0)],
++        ..RefreshPlan::default()
++    };
++    let source = coordinate_dependency_source();
++    let owners = ContinuousRefreshOwners::checked_for_source(
++        &source,
++        &solve_layout,
++        plan,
++        RefreshPlan::default(),
++        RefreshPlan::default(),
++        RefreshPlan::default(),
++        Vec::new(),
++    )
++    .unwrap();
++
++    let [algebraic, derivative, root, event] = owners.coordinate_dependencies() else {
++        panic!("four fixed refresh owners must issue four coordinate certificates")
++    };
++    assert_eq!(
++        algebraic.purpose(),
++        ContinuousRefreshPurpose::AlgebraicValue
++    );
++    assert_eq!(
++        algebraic.y_ranges(),
++        &[RefreshCoordinateRange { start: 4, count: 4 }]
++    );
++    assert_eq!(
++        algebraic.p_ranges(),
++        &[RefreshCoordinateRange { start: 2, count: 1 }]
++    );
++    assert!(algebraic.reads_time());
++    assert!(algebraic.reads_pre_generation());
++    assert!(algebraic.reads_history_generation());
++    assert!(algebraic.reads_external_table_state());
++    assert!(algebraic.reads_impure_state());
++    assert!(algebraic.reads_arithmetic_profile());
++    assert!(algebraic.reads_ad_mode());
++    assert_eq!(derivative.purpose(), ContinuousRefreshPurpose::Derivative);
++    assert_eq!(root.purpose(), ContinuousRefreshPurpose::Root);
++    assert_eq!(event.purpose(), ContinuousRefreshPurpose::Event);
++    assert!(event.reads_event_generation());
++
++    let wire = serde_json::to_value(&owners).unwrap();
++    assert!(wire.get("coordinate_dependencies").is_none());
++}
++
++#[test]
++fn standalone_wire_reconstructs_the_root_remainder_relation_before_model_replay() {
+     let owners = ContinuousRefreshOwners::checked(
+         RefreshPlan::default(),
+         RefreshPlan::default(),
+@@ -305,7 +401,7 @@ fn wire_reconstructs_the_root_remainder_relation() {
+     let wire = serde_json::to_value(&owners).unwrap();
+     assert!(wire.get("root_after_derivative").is_none());
+     let replayed: ContinuousRefreshOwners = serde_json::from_value(wire).unwrap();
+-    assert!(replayed.is_issued());
++    assert!(!replayed.is_issued());
+     assert!(replayed.root_after_derivative().is_some());
+ }
+ 

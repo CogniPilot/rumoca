@@ -126,11 +126,11 @@ structural-parameter values are available only after instantiation.
 Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`,
 `rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` evaluates the
 shared typed Solve program vocabulary and both checked Solve roots, including
-tensor-kernel selection and `SolveAlgorithmBlock` lifecycle execution; it MUST
-NOT depend on a Tier 4/5 crate. The numerical simulation state machine and
-driver remain in `rumoca-solver::runtime`. `rumoca-eval-galec` remains an
-independent Algorithm Code oracle and MUST NOT delegate to Solve lowering or
-evaluation.
+tensor-kernel selection and `SolveAlgorithmBlock` lifecycle execution (pending:
+2026-08-08 plan, M3-4); it MUST NOT depend on a Tier 4/5 crate. The numerical
+simulation state machine and driver remain in `rumoca-solver::runtime`.
+`rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
+delegate to Solve lowering or evaluation.
 
 Phase crates MAY depend on the evaluation crate for the IR they are actively processing
 when the phase needs compile-time evaluation of that representation. For example,
@@ -197,7 +197,7 @@ Its root API MUST stay minimal:
 
 - Allowed root exports: `Session`, `SessionConfig`.
 - Compile result and helper types remain under explicit namespaces such as `rumoca_compile::compile::*`.
-- Non-compile helper surfaces remain under explicit namespaces (`analysis`, `parsing`, `runtime`, `source_roots`, `project`).
+- Non-compile helper surfaces remain under explicit namespaces. The current set is `analysis`, `cache`, `codegen`, `parallelism`, `parsing`, `phase_structural`, `scenario`, `source_roots`, `workspace`; adding one is a spec update.
 
 CI enforcement:
 - Violations MUST fail CI.
@@ -261,13 +261,13 @@ existing view MUST require no Rust change; adding support for another IR adds
 only its target-neutral semantic view and capability vocabulary. An export IR
 selectable by a target remains outside the canonical compiler pipeline.
 
-GALEC Production Code consumes a checked `SolveAlgorithmBlock`, never the
-high-level Algorithm Code template view. `rumoca-phase-solve` owns exhaustive
-`AlgorithmCodePackage` lowering into typed storage-neutral programs and ordered
-lifecycle actions. `rumoca-phase-codegen` exposes the completed root and its
-checked correlations; C/H templates may spell the selected ABI but MUST NOT
-choose passing mode, storage, scalar/tensor lowering, scope, scheduling,
-operation, or failure behavior.
+GALEC Production Code consumes a checked `SolveAlgorithmBlock` (pending:
+2026-08-08 plan, M3-4), never the high-level Algorithm Code template view.
+`rumoca-phase-solve` owns exhaustive `AlgorithmCodePackage` lowering into typed
+storage-neutral programs and ordered lifecycle actions. `rumoca-phase-codegen`
+exposes the completed root and its checked correlations; C/H templates may spell
+the selected ABI but MUST NOT choose passing mode, storage, scalar/tensor
+lowering, scope, scheduling, operation, or failure behavior.
 
 `rumoca-phase-codegen` Rust may derive target-neutral typed contexts, schedules,
 shapes, dependency/bounds proofs, symbols, and provenance. It MUST NOT spell or

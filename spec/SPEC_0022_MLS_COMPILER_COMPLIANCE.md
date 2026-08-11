@@ -10,36 +10,36 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 
 **Purpose:** Pre-extracted contracts to guide implementation of a spec-compliant Modelica compiler.
 
-**Note:** This is a 930-line reference document. Do not load it in full as AI context. Use the section index below to find the relevant section.
+**Note:** This is a 1010-line reference document. Do not load it in full as AI context. Use the section index below to find the relevant section.
 
 ### Section Index (for selective loading)
 
 | Section | Lines | Content |
 |---------|-------|---------|
-| §1. Key Definitions | 15–26 | MLS terminology (component, element, flattening, etc.) |
-| §2. Compilation Pipeline | 27–42 | Source → Class Tree → Instance Tree → Flat → DAE → Simulation |
-| §3. Data Structures | 43–294 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
-| §4.1 LEX contracts | 297–314 | Lexical rules (18 contracts) |
-| §4.2 DECL contracts | 315–355 | Declaration rules (41 contracts) |
-| §4.3 INST contracts | 356–413 | Instantiation rules (45 contracts) |
-| §4.4 EXPR contracts | 414–458 | Expression/operator rules (45 contracts) |
-| §4.5 EQN contracts | 459–501 | Equation rules (43 contracts) |
-| §4.6 ALG contracts | 502–523 | Algorithm rules (22 contracts) |
-| §4.7 CONN contracts | 524–557 | Connection rules (34 contracts) |
-| §4.8 FUNC contracts | 558–597 | Function rules (40 contracts) |
-| §4.9 TYPE contracts | 598–637 | Type/interface rules (40 contracts) |
-| §4.10 ARR contracts | 638–682 | Array rules (45 contracts) |
-| §4.11 PKG contracts | 683–699 | Package/import rules (17 contracts) |
-| §4.12 OPREC contracts | 700–715 | Operator record rules (16 contracts) |
-| §4.13 SIM contracts | 716–729 | Simulation rules (14 contracts) |
-| §4.14 CLK contracts | 730–754 | Clock/synchronous rules (25 contracts) |
-| §4.15 STRM contracts | 755–770 | Stream connector rules (16 contracts) |
-| §4.16 SM contracts | 771–783 | State machine rules (13 contracts) |
-| §4.17 ANN contracts | 784–803 | Annotation rules (20 contracts) |
-| §4.18 UNIT contracts | 804–819 | Unit expression rules (16 contracts) |
-| §5. Contract Summary | 820–845 | Category counts and totals |
-| §6. Compiler Phases | 846–893 | Phase input/output mapping |
-| §7. MLS Chapter Index | 894–921 | MLS chapter → contract category mapping |
+| §1. Key Definitions | 46–57 | MLS terminology (component, element, flattening, etc.) |
+| §2. Compilation Pipeline | 58–73 | Source → Class Tree → Instance Tree → Flat → DAE → Simulation |
+| §3. Data Structures | 74–325 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
+| §4.1 LEX contracts | 326–345 | Contract catalog heading + lexical rules (13 contracts) |
+| §4.2 DECL contracts | 346–386 | Declaration rules (36 contracts) |
+| §4.3 INST contracts | 387–444 | Instantiation rules (53 contracts) |
+| §4.4 EXPR contracts | 445–489 | Expression/operator rules (40 contracts) |
+| §4.5 EQN contracts | 490–532 | Equation rules (38 contracts) |
+| §4.6 ALG contracts | 533–554 | Algorithm rules (17 contracts) |
+| §4.7 CONN contracts | 555–589 | Connection rules (30 contracts) |
+| §4.8 FUNC contracts | 590–632 | Function rules (38 contracts) |
+| §4.9 TYPE contracts | 633–672 | Type/interface rules (35 contracts) |
+| §4.10 ARR contracts | 673–719 | Array rules (42 contracts) |
+| §4.11 PKG contracts | 720–736 | Package/import rules (12 contracts) |
+| §4.12 OPREC contracts | 737–752 | Operator record rules (11 contracts) |
+| §4.13 SIM contracts | 753–767 | Simulation rules (10 contracts) |
+| §4.14 CLK contracts | 768–792 | Clock/synchronous rules (20 contracts) |
+| §4.15 STRM contracts | 793–808 | Stream connector rules (11 contracts) |
+| §4.16 SM contracts | 809–861 | State machine rules (8 contracts) + §4.16.1 Rumoca Phase 5 scope note |
+| §4.17 ANN contracts | 862–881 | Annotation rules (15 contracts) |
+| §4.18 UNIT contracts | 882–897 | Unit expression rules (9 contracts) |
+| §5. Contract Summary | 898–923 | Category counts and totals |
+| §6. Compiler Phases | 924–973 | Phase input/output mapping |
+| §7. MLS Chapter Index | 974–1001 | MLS chapter → contract category mapping |
 
 ---
 
@@ -763,7 +763,7 @@ Defines state-to-state transitions with priority and timing control.
 | SIM-007 | Non-Integer flip form | App B | "Non-Integer equations require at most flipping sides to obtain assignment form" |
 | SIM-008 | Discrete variable stability | App B | "Values of conditions c, z, and m only changed at event instant, constant during continuous integration" |
 | SIM-009 | DAE structure | App B | "System shall consist of differential equations, discrete equations, discrete-valued assignments, and condition equations" |
-| SIM-010 | Clocked event-iteration participation | App B | "Clocked variables use previous values and their equations are solved only in the first event iteration; they do not participate in ordinary z == pre(z), m == pre(m) convergence" |
+| SIM-010 | Clocked event-iteration participation | App B | "Clocked variables use previous values, and a clock partition is solved once per tick, in the first event iteration of that tick"; that restriction bounds fixed-point RE-ITERATION of the partition, not value exchange between producers inside that single solution, and clocked lanes do not participate in ordinary z == pre(z), m == pre(m) convergence. Partial: the first-iteration restriction and the excluded clocked lanes are implemented; equation-shaped same-tick exchange inside the partition is owned by SPEC_0040 SOLVE-C57 (pending: dev/2026-08-11-clock-partition-transaction-design.md, pre-implementation), under which a guarded producer without a per-tick totality proof stays a hold-fallback member |
 
 ### 4.14 Clock/Synchronous Contracts (CLK)
 

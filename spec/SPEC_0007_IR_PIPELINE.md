@@ -8,9 +8,9 @@ ACCEPTED
 Rumoca transforms Modelica through AST → Flat → DAE → Solve IRs. Each stage
 defines its contents, ownership, and boundary.
 
-The per-stage contract rows and the structural-lowering transformation list are
-catalogued in [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md). Every row
-there is normative by reference from the stage section that links it.
+Per-stage contract rows and the structural-lowering transformation list are
+catalogued in [SPEC_0040](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md). Every row is
+normative by reference from the stage section linking it.
 
 ## Specification
 
@@ -21,13 +21,13 @@ Modelica source (.mo)
   ┌──────────┐
   │   AST    │  rumoca-ir-ast        ◄─ consumers: formatters, source-aware
   └────┬─────┘                           documentation tools
-       │  rumoca-phase-resolve, rumoca-phase-typecheck,
-       │  rumoca-phase-instantiate
+       │  rumoca-phase-resolve, rumoca-phase-instantiate,
+       │  rumoca-phase-typecheck, rumoca-phase-flatten
        ▼
   ┌──────────┐
   │   Flat   │  rumoca-ir-flat       ◄─ codegen: flat Modelica export
   └────┬─────┘
-       │  rumoca-phase-flatten, rumoca-phase-dae
+       │  rumoca-phase-dae
        ▼
   ┌──────────┐
   │   DAE    │  rumoca-ir-dae        ◄─ codegen: DAE-level symbolic/array
@@ -48,7 +48,7 @@ Modelica source (.mo)
 | DAE residual and symbolic-analysis targets | DAE | MLS B.1 form, residual ownership, source traceability |
 | Numeric simulation and explicit-ODE products | `SolveProblem` | Register-machine plus tensor bytecode |
 | eFMI Algorithm Code | checked `AlgorithmCodePackage` derived from DAE | Causal GALEC lifecycle and language semantics |
-| eFMI Production Code and GALEC-derived embedded execution | checked `SolveAlgorithmBlock` derived from `AlgorithmCodePackage` | Typed executable lifecycle, storage, effects, and ABI obligations |
+| eFMI Production Code and GALEC-derived embedded execution | checked `SolveAlgorithmBlock` derived from `AlgorithmCodePackage` (pending: 2026-08-08 plan, M3-4) | Typed executable lifecycle, storage, effects, and ABI obligations |
 | FMI 2/3 components | checked FMI component export IR derived from DAE + Solve | DAE metadata and tensor shape plus one executable checked kernel |
 
 `rumoca-phase-codegen` renders text; execution adapters wrap toolchains and
@@ -61,22 +61,21 @@ semantic view of that artifact to MiniJinja. Rendering MUST NOT resolve names,
 infer types or shapes, lower to another IR, mutate its input, or repair an
 invalid artifact.
 
-The code-generation architecture is therefore:
+Code-generation architecture:
 
 ```text
 proven-valid IR -> typed semantic template view -> target.toml + MiniJinja -> artifacts
 ```
 
-This boundary applies uniformly to syntax, Resolve, Flat, DAE, Solve, and
-checked export IRs. Adding a target for an already-supported IR requires only a
-target directory. Supporting a new IR requires one target-neutral semantic view
-and capability vocabulary, never a target-language renderer in Rust. Export IRs
-remain projections and do not become canonical pipeline stages merely because a
-target manifest can select them.
+This boundary applies uniformly to syntax, Flat, DAE, Solve, and checked export
+IRs. Adding a target for an already-supported IR requires only a target
+directory. Supporting a new IR requires one target-neutral semantic view and
+capability vocabulary, never a target-language renderer in Rust. Export IRs
+remain projections, never canonical pipeline stages.
 
 The checked FMI component export is the single deployment projection for FMI 2
 and FMI 3. Its constructor binds DAE-owned variable identity, causality, type,
-shape, units, and provenance to the exact executable Solve kernel. FMI-version
+shape, units, and provenance to the executable Solve kernel. FMI-version
 adapters may scalarize only the external value-reference view required by that
 version; they MUST NOT repeat equation lowering, initialization, event, or
 state-machine semantics. A raw derivative-only C kernel is not an FMI component
@@ -100,10 +99,9 @@ roadmap marker. Every directory registered below
 | Documentation and tests are target-local and discoverable | The target `README.md` lists the exact focused tests and external gates that support its readiness claim |
 | Experimental status narrows claims, not evidence | A readiness-zero target may expose a pinned experimental interface, but still emits and validates a useful artifact; readiness zero cannot excuse a non-product |
 
-If a target has only a proposed future use case, keep the design in a spec,
-issue, or development note until an artifact and its minimum evidence exist.
-Templates MUST use a span-bearing failure for an unsupported checked construct;
-lossy placeholder text is never an acceptable source reconstruction.
+Proposed-future-use targets stay in specs or notes until an artifact and
+evidence exist. Templates MUST fail with a span-bearing error on an unsupported
+checked construct; lossy placeholder text is never acceptable.
 
 ---
 
@@ -117,10 +115,10 @@ lossy placeholder text is never an acceptable source reconstruction.
 - Every node carries a source `Span`; later AST merges must preserve parser
   provenance instead of rewriting source ids.
 
-**What to do here:** Parsing, formatting, early syntax diagnostics.
+**Do here:** Parsing, formatting, early syntax diagnostics.
 
-**What NOT to do here:** Name lookup, class instantiation, type inference,
-equation manipulation.
+**Do not:** Name lookup, class instantiation, type inference, equation
+manipulation.
 
 ---
 
@@ -176,9 +174,9 @@ Modelica-specific operators: pure functions over
 solver cache. One canonical variable catalog owns stable variable identity;
 typed views classify `p`, `x`, `y`, `z`, and `m`, while input/output causality
 is orthogonal metadata. Dedicated continuous, initialization, discrete,
-condition, event, and clock systems own their respective behavior. Schema
-version 12 is the only supported wire version; every other version is rejected
-without superseded readers or adapters.
+condition, event, and clock systems own their respective behavior. The current
+`DAE_SCHEMA_VERSION` wire schema is the only supported version; every other
+version is rejected without superseded readers or adapters.
 
 Finalized DAE is valid by construction. Invariant-bearing fields are private,
 checked child constructors establish local expression/type/shape/domain
@@ -235,7 +233,7 @@ Canonical terminology:
 | `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
 | `FunctionFoldProgram` | `FunctionFoldProgram` | A finite-domain loop with an explicit loop-carried tuple and compact typed body |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
-| `SolveAlgorithmBlock` | `SolveAlgorithmBlock` | Checked Algorithm Code execution root |
+| `SolveAlgorithmBlock` | (pending: 2026-08-08 plan, M3-4) | Checked Algorithm Code execution root |
 
 New Solve-IR APIs use `ScalarProgram` / `ScalarProgramBlock` terminology, not
 `RowBlock` / `ScalarRows`.
@@ -245,18 +243,20 @@ structured-family domains plus affine operand proofs. It carries the compact
 iteration domain and strides; Solve lowering must not recover stencils by
 scanning unstructured scalar rows after structured-family metadata is discarded.
 
-Structured B.1c definitions follow the same boundary. Solve lowering preserves
-their authoritative DAE domain and scalar view as a compact map plus a compact
-target map. Scalar programs are derived only by evaluator/backend scalar-view
-APIs; phase lowering does not create a parallel scalar owner.
+Structured B.1c definitions follow the same boundary: Solve preserves their
+authoritative DAE domain as a compact map plus a compact target map, and phase
+lowering creates no parallel scalar owner (SOLVE-C20).
 
-Each scalar or structured discrete update also owns a typed integrator-history
-effect derived by Solve lowering. The effect is `Preserve` only when compiler
-dependency analysis proves that changing the update cannot reach continuous
-dynamics; every unresolved dependency, cycle, unsupported target, or state
-reinitialization is `Restart`. Runtimes may combine this construction evidence
-with the set of updates that actually changed at an event, but must not recover
-the effect from model names, row positions, or observed numerical behavior.
+Each scalar and structured discrete update owns a typed integrator-history
+effect derived by Solve lowering, never recovered by a runtime from model
+names, row positions, or observed numerical behavior (SOLVE-C21).
+
+One clocked partition has one equation-shaped owner: producers proved total on
+that tick exchange same-tick values through construction-issued intermediates,
+guarded producers lacking that proof remain hold-fallback members under the
+checked hold rows, and event-transaction, `sample`, and causally unowned rows
+keep their existing owners (SOLVE-C57; pending design
+`dev/2026-08-11-clock-partition-transaction-design.md`).
 
 Serialized Solve roots carry a mandatory schema version; unsupported and
 pre-versioned payloads are rejected.
@@ -268,10 +268,10 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 `lower_solve_problem` must not eagerly populate them.
 
 `SolveAlgorithmBlock` is constructed only from checked Algorithm Code under an
-explicit arithmetic profile. It is not a mode of `SolveProblem`; rows
-SOLVE-C32–C38 define its complete obligations.
+explicit arithmetic profile (pending: 2026-08-08 plan, M3-4). It is not a mode
+of `SolveProblem`; rows SOLVE-C32–C38 define its complete obligations.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C56` in
+**Contract:** rows `SOLVE-C01`–`SOLVE-C57` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
 Objectives, adjoints, sensitivities, and optimizer projections are derived
@@ -282,8 +282,9 @@ provenance, and its execution contract.
 
 Sparsity follows [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md); compact
 affine patterns originate from SPEC_0032 owners, never scalar-row recovery.
-**Do NOT do here:** work assigned to DAE/structural phases, concrete execution
-crates, or `rumoca-phase-codegen` by SPEC_0029.
+
+**Do not:** work assigned to DAE/structural phases, concrete execution crates,
+or `rumoca-phase-codegen` by SPEC_0029.
 
 ---
 

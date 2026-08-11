@@ -88,8 +88,8 @@ Promote this only after:
 
 ## References
 
-- [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) — deferred phase proofs
-  and assurance-evidence architecture.
+- [SPEC_0037](../../SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) — active DRAFT for
+  the intended phase-refinement proofs and assurance-evidence architecture.
 - [FAA AC 20-115D](https://www.faa.gov/regulations_policies/advisory_circulars/index.cfm/go/document.information/documentID/1032046)
 - [RTCA DO-178C and supplements](https://www.rtca.org/do-178/)
 - [MISRA Compliance:2020](https://www.misra.org.uk/app/uploads/2021/06/MISRA-Compliance-2020.pdf)

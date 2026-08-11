@@ -10,8 +10,10 @@ the `.alg` language server).
 
 ## Summary
 Rumoca exports eFMI Algorithm Code from checked GALEC and Production Code from
-its checked `SolveAlgorithmBlock` executable refinement; GALEC is never a
-canonical Modelica IR stage and MiniJinja never performs semantic lowering.
+its checked `SolveAlgorithmBlock` executable refinement (pending: 2026-08-08
+plan, M3-4 — the refinement is not built yet, so Production C/H is still
+rendered from the Algorithm Code view); GALEC is never a canonical Modelica IR
+stage and MiniJinja never performs semantic lowering.
 
 ## Pipeline Placement
 
@@ -21,7 +23,7 @@ DAE
   -> rumoca-phase-galec
   -> AlgorithmCodePackage = checked GALEC + checked target-neutral correlations
        |-> typed Algorithm Code view -> MiniJinja -> .alg + AC metadata
-       `-> rumoca-phase-solve -> SolveAlgorithmBlock
+       `-> rumoca-phase-solve -> SolveAlgorithmBlock   (pending: 2026-08-08 plan, M3-4)
               -> typed executable view -> MiniJinja -> Production C/H + PC metadata
 ```
 
@@ -48,7 +50,7 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-005 | Parity source of truth is the §3.2.6 builtin catalog: accepted constructs lower to semantic operations that templates render exactly; Appendix C names are rejected. | `rumoca-phase-galec` + `rumoca-ir-galec` | Gate/template drift emits nonexistent functions (T8). |
 | GAL-006 | Generic capability validation always runs; GALEC admissibility is additive. Manifests select checked GALEC; construction completes before rendering. | `rumoca-compile` | No validator bypass or render-time lowering (SPEC_0029 §12). |
 | GAL-007 | Unsupported features fail with stable `unsupported-feature:<feature_id>` diagnostics; errors are structured phase-local enums with stable codes and spans (SPEC_0008); no silent defaults. | `rumoca-phase-galec` | Fail early; CI-aggregatable. |
-| GAL-008 | Templates own syntax and artifact policy. Production C/H receives a closed checked `SolveAlgorithmBlock` view and makes no semantic choice. | target directories | SPEC_0029 §12. |
+| GAL-008 | Templates own syntax and artifact policy. Production C/H receives a closed checked `SolveAlgorithmBlock` view and makes no semantic choice (pending: 2026-08-08 plan, M3-4). | target directories | SPEC_0029 §12. |
 | GAL-009 | MiniJinja renders `.alg` from the checked semantic view. Rust exposes typed semantics and provenance; it MUST NOT print fragments. | `rumoca-phase-codegen` templates | Same boundary as every IR. |
 | GAL-010 | IR owns checked Algorithm Code/correlations; parse owns `.alg` and private recovery; phase-galec owns projection/admissibility; codegen owns generic rendering and the typed view; target directories own GALEC/C/XML/package policy. No compatibility facade or codegen eFMI subsystem exists. | workspace layout | Enforce ownership. |
 | GAL-011 | GALEC output via `--target galec` / `--target embedded-c-galec`; `--emit` stays reserved for canonical IR inspection. | `rumoca` CLI | Preserves the CLI contract. |
@@ -64,7 +66,7 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-021 | Claims follow machine-checked Conformance Ladder rungs. `target.toml` declares artifact/checksum graphs and schema gates; generic commands use exact bytes and CI recomputes from disk. No placeholder checksum; lower-rung targets self-describe honestly. | target directories + generic artifact commands | Wrong checksums invalidate eFMUs. |
 | GAL-022 | Version pinning: profile string `efmi-1.0.0-beta-1`; container XSD `0.11.0` / AlgorithmCode `0.14.0` / ProductionCode `0.17.0`; `efmiVersion` fixed `"1.0.0"`. These are literals declared by the owning target's `target.toml` and templates, never Rust constants or context fields. | target directories | Beta-fixed constants change at 1.0.0 final. |
 | GAL-023 | Vendored BSD-3-Clause Beta-1 XSDs live in target assets, retain LICENSE, and are copied by declared operations. CC-BY-SA standard text/grammar/examples are not copied beyond short attributed quotes; no endorsement is implied. | target directories | License terms. |
-| GAL-024 | Both C tracks consume one float32-profile `SolveAlgorithmBlock`; its evaluator rounds every Real operation, and Production Code declares `efmiFloat32`/`32-bit`. | Solve lowering + templates | **Why** below. |
+| GAL-024 | Both C tracks consume one float32-profile `SolveAlgorithmBlock` (pending: 2026-08-08 plan, M3-4); its evaluator rounds every Real operation, and Production Code declares `efmiFloat32`/`32-bit`. | Solve lowering + templates | **Why** below. |
 | GAL-025 | v1 scope rejections say "not yet supported by the Rumoca GALEC projection" — never "unsupported by eFMI". | `rumoca-phase-galec` | eFMI expects discretized models. |
 | GAL-026 | Checked GALEC and Solve data are array-native; aggregate operations are first-class and templates only render them. | IR + lowering + templates | Preserve optimization. |
 | GAL-027 | `rumoca-eval-galec` defines explicit semantics for checked blocks: statement order, method transitions, signals, escape sets, `limit`, NaN comparisons, and conversions. It returns typed failures and has no lowering/codegen dependency. | `rumoca-eval-galec` | Independent proof/differential oracle. |
@@ -101,7 +103,7 @@ Reopening one requires amending this spec.
 | "GALEC-derived text export" | `.alg` + `manifest.xml` render; honest self-description only | Earned (`galec`; `embedded-c-galec` is the honest non-eFMI track) |
 | "eFMI Algorithm Code export" | Schema-valid eFMU: `__content.xml` + `schemas/` + Algorithm Code container; correct SHA-1s, UUID/ids, strict UTC timestamps | Earned (`galec`) |
 | "GALEC language conformance" | Above + round-trip parse of emitted `.alg`: render∘parse∘render idempotence | Earned (`galec`; `rumoca-phase-parse-galec` round-trip integration tests) |
-| "eFMI Production Code export" | Schema-valid co-emitted AC/PC; complete LogicalData/method mapping; exact manifest reference and recomputed checksum web | Earned (`galec-production`) |
+| "eFMI Production Code export" | Schema-valid co-emitted AC/PC; complete LogicalData/method mapping; exact manifest reference and recomputed checksum web | Earned (`galec-production`): co-emitted AC/PC container, LogicalData/method mapping, and checksum web are machine-checked. The C body is still template-lowered from the Algorithm Code view; the GAL-008/GAL-024 `SolveAlgorithmBlock` refinement is an internal-provenance obligation outside this rung's requirement (pending: 2026-08-08 plan, M3-4) |
 
 ### Variable Classification (GAL-020, normative)
 

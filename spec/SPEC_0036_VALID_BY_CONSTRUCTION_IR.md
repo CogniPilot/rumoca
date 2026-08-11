@@ -314,6 +314,6 @@ The checked FMI projection follows
 - [SPEC_0032](SPEC_0032_RANGE_PRESERVING_TENSORS.md) — structured families
 - [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) — sound dependency patterns
 - [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) — construction catalogs
-- [SPEC_0037](archive/deferred/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) —
-  deferred formal-verification architecture
+- [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) —
+  formal-verification architecture
 - [MLS Appendix B](https://specification.modelica.org/maint/3.6/modelica-dae-representation.html)

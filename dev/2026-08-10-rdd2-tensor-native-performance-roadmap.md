@@ -24,24 +24,38 @@ on it.
 
 ## Current completion snapshot
 
-Overall completion is approximately **51%**. This is a weighted acceptance
-estimate, not a count of changed lines or checked boxes:
+Overall completion is approximately **43%**. This is a replayable weighted
+acceptance estimate, not a count of changed lines or checked boxes. Phase
+weights are P1 20%, P2 30%, P3 20%, P4 20%, and P5 10%:
 
-- Phase 1, lazy guarded-fold correctness and ownership: **100%**.
-- Phase 2, tensor-native hot-path architecture and performance: **about 84%**.
-  The checked model-level table has collapsed 10,374 call occurrences to 326
-  issued owners, and all typed scalar, tensor, `Conditional`, `Fold`, and `Map`
-  operations now have final-boundary Cranelift lowering. Native/interpreter
-  parity, release-mode attribution, further owner optimization, and the 10x
-  runtime gate remain open.
-- Phase 3, pure-Modelica mission qualification: **about 25%**. Short optical
-  traces agree closely with matched OMC DASSL, but neither full 45 s optical
-  nor full GPS route is qualified.
+- Phase 1, lazy guarded-fold correctness and ownership: **about 75%**. Exact
+  definition-keyed fold capture and event-transaction ownership are real, but
+  repeated call-owner identity is still unsound, same-tick scheduled-event
+  producer flow is stale, guarded C57 semantics need correction, and algorithm
+  assertions are not ordered transaction barriers.
+- Phase 2, tensor-native hot-path architecture and performance: **about 55%**.
+  Compact typed `Conditional`, `Fold`, and `Map` owners exist, but Phase Solve,
+  runtime preparation, structural incidence, root construction, and codegen
+  still scalarize or enumerate compact domains before the final target. Native
+  execution is not fail-closed and has backend ABI/semantic divergences. The
+  corrected 0.5 s artifact's best `0.146923 s` is 3.40x realtime and 2.94x
+  slower than the `0.05 s` acceptance gate; it is not a measurement of the
+  current dirty worktree.
+- Phase 3, pure-Modelica mission qualification: **about 50%**. Both 45 s
+  Rumoca optical and GPS routes now run for 9,001 samples with finite outputs
+  and reach the final mission segment, but the qualifier lacks several required
+  route/estimator/touchdown assertions and no full-horizon OMC trace or
+  fail-closed required-channel comparison exists.
 - Phase 4, shared GALEC/Production-C and firmware/eFMU qualification:
-  **about 5%**. The shared contracts exist, but the end-to-end migration,
-  builds, simulations, and trace parity remain open.
-- Phase 5, final verification and cleanup: **not started as a closing gate**;
-  recurring reviews are active throughout the work.
+  **about 5%**. The method/effect vocabulary and differential fixtures are
+  scaffolding only: GALEC remains an independent DAE semantic lowerer,
+  Production C does not consume a checked `SolveAlgorithmBlock`, downstream
+  repositories do not pin this tree, firmware sensor routes are hard-coded
+  invalid, and no equivalent eFMU/firmware mission has run.
+- Phase 5, final verification and cleanup: **0% as a closing gate**. Recurring
+  adversarial reviews are active and finding stop-ships; there is no clean,
+  signed, fully qualified checkpoint from which final repository/PR gates can
+  begin.
 
 The correct-by-construction and range-preserving IR requirements are gates on
 every percentage above. A speed result obtained by scalarizing before final
@@ -50,6 +64,10 @@ or changing mission semantics earns no roadmap credit.
 
 ## Roadmap operating cadence
 
+- While Claude and Codex are working concurrently, Codex checks the live
+  handoff mailbox approximately every five minutes and immediately before any
+  ownership, checkpoint, or status decision; the check is read-only and never
+  pauses the implementer.
 - Update this ledger immediately after every material implementation,
   correctness result, benchmark/profile, discovered blocker, and review.
 - Run focused tests and the fixed Tier 1 canary after every capability change;
@@ -711,49 +729,99 @@ Review checkpoint R5:
 | 2026-08-11 | R2 event-settled clock-remainder review | Event dependency refresh immediately precedes every active-clock refresh at the same time, Y/P/event/history state, external-table state, and arithmetic mode, with no intervening mutation. Each complete clock plan previously repeated every row already settled by the event owner. The runtime could not infer this by comparing plans: the compatible directional relation had to be issued while constructing `ContinuousRefreshOwners` and replayed from the serialized source plans. | Solve construction now issues one event-to-clock `RefreshRemainderRelation` per clock, gives every remainder a distinct sequence identity, rebuilds its exact-assignment schedule, and exposes only the checked remainder to runtime. Wire coverage proves a shared canonical row is removed and an uncovered row remains; runtime fails closed on relation/clock cardinality. No runtime union, filtering, graph comparison, expansion, or recollapse was added. Solve IR 172/172 plus three doctests, solver 288/288, diffsol 107/107, formatting, and `git diff --check` pass. The exact rebuilt canary completes 101 points at 0.5 s in `0.147422652 s` average/`0.146777937 s` best. A delayed 499 Hz runtime-only profile averages `0.148941707 s`, best `0.147759861 s`, with 5,863 samples and zero loss; owner 30 is `13.10%`, owner 22 `5.89%`, schedules 3/5 `5.14%`/`4.76%`, and `memmove` `4.35%`. This is a small covered-work reduction, not the 0.05 s solution: short-slice native counts remain 143/107/3 for owners 30/22/145. Compact row selections and the complete owner coordinate certificate remain open. Artifact: `/tmp/rdd2-schema58-clock-after-event-runtime-only.perf.data`. |
 | 2026-08-11 | R2 schema-59 compact refresh-selection review | `RefreshPlan` owned each canonical `AlgebraicRefreshRow` once but cloned the complete metadata into causal, static/dynamic, exact-assignment, and projection-seed schedules. Remainder construction cloned those rows again. This was metadata expansion before the final boundary and made schedule proofs harder to audit. | Solve schema 59 replaces every stored row schedule with a checked `RefreshRowSelection`: an ordered boxed sequence of `u32` positions into the plan's sole canonical row catalog. Construction rejects out-of-range and duplicate positions; outer checked wire replay revalidates every selection and stage. Consumers use a zero-allocation borrowed `RefreshRows` view, and exact-assignment construction creates only temporary references, never cloned row metadata or expression graphs. The wire regression proves `[0]` is serialized instead of a row object. Solve IR 172/172 plus three doctests, evaluator 139/139, Cranelift 59/59, Phase Solve 87/87, codegen 99/99, solver 288/288, and diffsol 107/107 pass. A clean release rebuild completes 101 points at exactly 0.5 s with `0.149262073 s` average/`0.147334356 s` best, performance-neutral against schema 58. The remaining SOLVE-C56 blocker is the complete coordinate dependency/invalidation certificate, not row-selection ownership. |
 
+| 2026-08-11 | Full-mission Phase 3 scouting (read-only, release binary at schema-59) | Both 45 s missions COMPLETE with zero NaN/Inf (9001 pts, exact final time; optical hot 13.64 s = 3.30x RT, GPS 16.25 s = 2.77x RT). But rotational dynamics are dead: `plant.dynamics.M_b` peaks ~2.4 N·m while `bodyAngularVelocityRate` and `omega` are exactly 0 for all t, so the truth quaternion stays (1,0,0,0), truth East/North are identically 0.0, and the box route is never flown (vertical motion only, peak 3.224 m at t=6.535 s). Suspect path: `der(omega) = bodyAngularVelocityRate` fed by `LinearAlgebra.solveSPD(inertia, rhs)[:,1]`; sibling der() paths that avoid solveSPD do integrate. GPS-vs-optical parity is currently vacuous (only plan/waypoint channels differ; all truth states bit-identical). No full-mission OMC ground truth exists (/tmp artifacts cover 0–0.5 s only). | Mission qualification is BLOCKED on this correctness defect, which outranks the 10x gate. A dedicated root-cause investigation is in flight; candidate mechanisms include the confirmed solver-Y dependency false negative (`rumoca-eval-solve/src/sparsity.rs` TensorLoad primal lane recorded empty) and a typed pure-call dependency gap. Fix must land via the construction-issued SOLVE-C56 dependency authority, not runtime rediscovery. Artifacts: /tmp/scratch-optical45.csv, /tmp/scratch-gps45.csv |
+| 2026-08-11 | SOLVE-C56 ownership transfer and draft disposition | Codex stood down from implementation (read-only review only); this worktree and the full roadmap are now owned by the coordinating Claude agent. Codex's uncommitted SOLVE-C56 coordinate-certificate draft (~755 lines across ir-solve refresh.rs/tests, ir-solve lib.rs, eval-solve refresh_plan.rs, exec-cranelift lib.rs) was archived and excised; its own review rejected it as-is: duplicated LinearOp dependency interpretation, over-broadened projection owners, weakened standalone valid-by-construction deserialization, missing runtime coordinate/remainder verification. | Accepted direction for the reimplementation: ONE canonical, output-projection-aware dependency summary in Solve IR, consumed by grouping, certificates, wire replay, runtime invalidation, and remainder relations; tensor ranges stay compact. Archive: dev/2026-08-11-codex-solve-c56-draft.patch exists (36,759 bytes) and is apply-verified — `git apply --check` succeeds against a pristine `git archive 07e9d5df` export (re-verified 2026-08-11 16:58). Against the current dirty tree plain `git apply --check` also succeeds; only the index-aware forms (`--index`, `--3way`) report the expected `crates/rumoca-ir-solve/src/lib.rs: does not match index`. Raw copy: /tmp/codex-solve-c56-coordinate-certificate-draft-2026-08-11.patch. The solver-Y TensorLoad false negative is folded into this slice with a regression test |
+
+| 2026-08-11 | Dead-rotational-dynamics root cause (investigation, read-only) | First divergent layer = Solve typed-function lowering, NOT the solver-Y dependency hole, NOT solveSPD(ok=false), NOT lowering rejection. `rumoca-phase-solve/src/lower/typed_functions.rs` caches function locals by `FunctionValueId` alone (`function_values` map :559, lookup :1399-1403), discarding the DAE's construction-issued `definition_ordinal` (`ir-dae/src/expression/nodes.rs:304-308`; contrast `eval-dae/src/numeric.rs:145-147` resolving via `definition.rhs()`). Fold regions seed carried targets with loop-ENTRY values (:906), so a sibling nested fold reading a target completed by an earlier sibling gets stale zeros — `solveSPD` forward pass is exact (L, Y verified numerically), back substitution returns X=0, `der(omega)`=0, missions never rotate. Existing suite already shows it: `function_spd_loop_compaction` has 3 failing cases at HEAD (`spd_solve_preserves_sequential_scratch` derivatives [0,0,0]). Two separate pre-existing defects found en route: 1x1 `solveSPD` rejected with ED020 at a zero-trip `for column in 1:row` domain; parameter matrix bound into a record field fails with EX001 "missing seed[37]". Repros retained in the session scratchpad. | Fix (Claude, in flight): key the typed-function environment by issued definition identity `(value, definition_ordinal)` so the miss path resolves `definition.rhs()` and demand order becomes topological — construction-issued authority, SOLVE-C56 clean, no runtime rediscovery. Regression: sibling nested folds asserting numeric output. The two side defects are queued separately |
+| 2026-08-11 | Clocked one-tick-lag attribution and mechanism (investigation, read-only) | Present at committed HEAD 7a24727c (detached-worktree reproduction byte-identical; uncommitted work did not introduce it). Mechanism: `when sample(...)` lowers to clock-owned GuardedAssignmentPrograms whose consumers read same-tick producers via `LoadP` of the storage slot rather than the reaching definition, and the runtime's first-iteration locks hold the stale tuple; disabling the three `event_iteration != 0` locks makes all galec_equivalence fixtures pass but is a rejected Gauss-Jacobi re-sweep (attribution oracle only). GALEC/C matches MLS and the closed-form anchors; the reference leg is wrong. SPEC_0022 SIM-010 wording conflates fixed-point re-iteration with intra-partition value exchange and needs tightening. | Fix (Claude, in flight): emit one clock partition's guarded-assignment groups in `CausalDiscretePlan::discrete_real_order()` causal order and forward in-program reaching definitions (model-algorithm event transactions already do this by construction per SPEC_0043 "current/pre reaching definitions"); cross-clock multirate ordering (`slowSnapshot = fastAlias` through an algebraic alias at coincident ticks) deferred until Codex's eval-solve slice lands |
+| 2026-08-11 | R2 affine refresh-dependency soundness slice (`9c1af21e`) | `compute_block_dependencies` read only `base_ops` for `Map`/`AffineStencil`, so an affine `LoadY` at base 10 with stride 2 over three points certified only coordinate 10 and could omit required refresh producers 12 and 14. The focused regression failed `{10}` versus `{10,12,14}` before the fix. | Refresh construction now retains each checked domain and the accumulated per-operation load strides as a compact affine may-depend image, then intersects that relation with the already-issued scalar refresh target catalog. It never calls `index_tuples`, clones a body per point, or recollapses a graph. Negative/duplicate strides, empty domains, and a million-point constant-storage case are covered; full `rumoca-eval-solve` passes 143/143 under `nix develop`, with rustfmt and diff checks green. This closes the concrete false-negative but not SOLVE-C56: the certificate is still a narrow evaluator-owned Y slice rather than the one output-projection-aware Solve owner shared by sparsity, wire replay, runtime invalidation, and remainder proofs. Mission attribution waits for the independent dead-omega fix above to leave its in-flight state. |
+| 2026-08-11 | R2 correct-by-construction SolveModel wire review (`07e9d5df`) | A red exploit replaced a freshly lowered three-state model's full JVP with an empty but locally valid `ScalarProgramBlock`; direct `SolveModel` deserialization accepted it and runtime would execute the unrelated derivative artifact. The same root silently dropped skipped structural artifacts. Review rejected both post-hoc graph comparison and split IR/phase Serde ownership. | `SolveModel` and `SolveArtifacts` now implement neither `Serialize` nor `Deserialize`. One phase-Solve module owns an artifact-free borrowed wire view and private checked replay grammar. The wire contains only the canonical problem, checked pure-call table, and correlated runtime/visible inputs; replay checks schema and vector/name/output correlation, mechanically reconstructs all JVP and structural artifacts through the sole artifact derivation path, validates the completed root, and only then exposes it. Caller-supplied artifact fields fail as unknown; non-identity mass-matrix artifacts fail before serialization rather than being silently omitted. The canonical round trip reconstructs nonempty derivative JVP/structure and simulates identically. Under isolated `nix develop`: four focused replay/negative tests pass, `rumoca-ir-solve` passes 171/171 plus three doctests — re-measured 2026-08-11 16:55 from a pristine `git archive 07e9d5df` export, so the figure is anchored to the commit rather than to the dirty tree. Working-tree counts are a moving target and are not citable evidence: the same suite measured 209 unit tests plus nine doctests at 16:57 while sibling slices were still adding `typed_program` modules (an earlier reading recorded in this row was 200 plus four). The previously recorded "196/196 plus three doctests" came from Codex's 14:06 mailbox claim and reproduces at neither point, the curated-facade gate passes, the main WASM diffsol producer/consumer test passes, and `rumoca-worker` plus the lazy diffsol addon check clean. This closes the confirmed forged-artifact wire defect; public mutable Solve roots and scalar artifact derivation remain separate roadmap debt. |
+
+| 2026-08-11 | Dead-omega typed-function fix landed (uncommitted) | Environment rekeyed from `dae::FunctionValueId` to issued `dae::FunctionDefinitionId` across inserts/reads; fold regions seed parameter ids and install update ids per ordered member; misses resolve `definition.rhs()` and memoize, so demand order is topological. Captures take the fold's issued parameter-ordinal boundary so sibling-fold results are computed once in the owning scope. Files: `rumoca-phase-solve/src/lower/typed_functions.rs`, `.../lower/typed_functions/captures.rs`, `.../lower/typed_functions/regions.rs` (plus `.../typed_functions/tests.rs`) — earlier notes shortened the last two to `lower/captures.rs`/`lower/regions.rs`, dropping the `typed_functions/` segment. Evidence: reverted-sources probe yields beta=6 vs 18 with the fix; phase-solve 88/88 (+1 sibling-fold numeric regression); `spd_solve_preserves_sequential_scratch` GREEN (derivatives 1/11, 7/11, 2); suite_core net −3 failures vs baseline, zero new; CLI probes: solveSPD X exact, `der(omega)` = (25.454, −9.175, 2.4975) hand-verified. | Full-mission re-probe COMPLETE (superseding the "pending release rebuild" note): the rebuilt release flies the 45 s optical WaypointMission — 9,001 points, exact final time 45.0, zero NaN/Inf, `plant.dynamics.omega` nonzero from t=3.045 s (trace /tmp/mission-optical45-fixed.csv), and the GPS variant likewise (/tmp/mission-gps45-fixed.csv). Caveat of record from the 2026-08-11 15:58 mailbox message: the optical trace has an undisclosed one-sample 41-column touchdown transient at t=24.745 s (global max `|omega|` 2-norm 0.3337 rad/s is that sample; the pre-touchdown maximum is 0.3004 rad/s at t=5.355 s — both re-verified against /tmp/mission-optical45-fixed.csv, which also confirms 9,001 points, final time exactly 45.0, zero NaN/Inf, and first nonzero omega at t=3.045 s), tracked as its own OPEN row. Two remaining `function_spd_loop_compaction` failures are distinct pre-existing defects (1x1 ToDae InvalidArity at zero-trip inner domain; assertion-loop action-count expectation conflicting with the committed map-reduce regression) — queued separately |
+| 2026-08-11 | Clocked same-tick slice REVERTED after review | Codex review confirmed a construction gap (discrete-value definitions admitted without a shared dependency/cycle proof; silent storage fallback on re-entry) and a no-expansion violation (recursive producer inlining into consumers duplicates compact tensor/fold work in the legacy scalar path), plus O(n^2) rank recovery. All ten files restored to HEAD. | Accepted replacement design: one branded whole-clock causal transition/partition program beside/extending `EventTransactionProgram` — structural plan supplies typed producer order + intermediate definition identities (rank issued directly), Solve lowers each definition once to compact regions, consumers load issued intermediates, final targets commit atomically, cycles unconstructible with typed contract failures; interpreter/Cranelift/GALEC/C consume the same owner. SPEC_0040/0043 rows + SPEC_0022 SIM-010 tightening land BEFORE implementation |
+| 2026-08-11 | RED CASE: GALEC declared-limit divergence C-vs-oracle (flight path) | `LimitSmoke` (discrete Real ySat(min=-2, max=2), ySat = count): C emits no clamping (embedded-c-galec/model.c.jinja statements macro has no limit arm; explicit limit statements would hit fail_closed) so ySat = 1..5; rumoca-eval-galec saturates at method boundaries (interpreter.rs:272-286 limit_all) so ySat = 1,2,2,2,2. First divergence tick 3. The regression fixture is retained out-of-gate pending adjudication. | Adjudicate the normative meaning (SPEC_0034/SPEC_0042/eFMI GALEC text: does a declared range imply boundary saturation or only explicit limit statements?), fix the WRONG consumer, then land the fixture as a gate. Until then, range-attributed models must be considered unsafe to export through embedded-c-galec. GAL-028 Integer range-proof enforcement remains absent; no compliance claim is made |
+
+| 2026-08-11 | MISSION UNBLOCKED: 45 s optical WaypointMission flies with the typed-function fix | Release rebuild at the current tree: 9,001 points, exact final time 45.0, zero NaN/Inf. `plant.dynamics.omega` integrates (first nonzero t=3.045 s, max ~0.30 rad/s); truth East 3.853 m / North 3.809 m (the 4 m box route is executed); altitude peaks 1.966 m vs cruiseAltitude 2.0; final position returns to ~[0.086, 0.028, 0.098]. Trace: /tmp/mission-optical45-fixed.csv. | Next Phase-3 evidence: GPS variant probe, then OMC full-mission comparison via `cargo xtask repo msl -- plot-compare` (full-horizon OMC traces must be generated first — none exist beyond 0.5 s). Mission-behavior acceptance criteria (waypoint arrivals, phase sequencing) still need explicit checks beyond trajectory sanity |
+| 2026-08-11 | GAL-038 explicitly OPEN (roadmap failures, per independent GALEC review) | (a) Production C still consumes an independently lowered `AlgorithmCodePackage`; (b) no production consumer/lowerer uses the new Solve method/effect types; (c) GALEC still enumerates coordinates in phase lowering; (d) user-function lowering remains duplicated outside the common Solve owner (SPEC_0041 §4 one-lowerer rule). | These are M3/M4 exit obligations. The three-leg differential harness proves template-level agreement only and claims nothing about common-IR or tensor-native completion |
+
+| 2026-08-11 | Corrected-physics timing + GPS mission | 0.5 s canonical bench on the rebuilt release: hot avg 0.147585 s / best 0.146923 s (compile 0.951 s, prepare 5.179 s) — statistically identical to the dead-dynamics numbers, so prior profiles remain representative and the 10x gate scope is unchanged. GPS 45 s GlobalWaypointMission flies: 9,001 pts, zero NaN, East 3.829 / North 3.810 m box, altitude peak 2.059 m, return to origin, activeSegment reaches 7; wall 24.5 s. Optical criterion confirmed independently by Codex (activeSegment 7, complete 1). Artifacts: /tmp/bench-corrected-05.json, /tmp/mission-gps45-fixed.csv, /tmp/mission-optical45-fixed.csv. | Phase 3 next: generate full-horizon OMC traces for both missions and run `cargo xtask repo msl -- plot-compare`; add mission-criteria assertions (segment arrivals, completion flags) to the acceptance harness. Typed-function P2 cleanups (DAE-issued fold/scope ownership capability, multi-root traversal, SPEC_0021 splits) queued as one follow-up slice |
+
+| 2026-08-11 | SOLVE-C17/SPEC_0039 in-process pattern authority gap — CLOSED (decode path still OPEN, restated) | Closed as specified: the edge-omitting storage constructors (`empty`/`diagonal`/`banded`/`csr`) and `from_checked_row_dependencies` are private, and the only in-process routes to a sparse pattern are the exhaustive derivations over a checked semantic owner — `StructuralPattern::derive_from_scalar_jvp` (walks the checked `ScalarProgramBlock` itself), `derive_row_seed_dependencies`, `derive_output_y_dependencies`, and `project` (restricts an already-certified pattern). No caller can supply a dependency row. `from_row_dependencies` is now the explicit fixture constructor behind `#[cfg(any(test, feature = "pattern-fixtures"))]`, and `pattern-fixtures` is enabled only from `[dev-dependencies]` (eval-solve, solver-diffsol, solver, exec-mlir, phase-codegen — verified: all five sit under a `[dev-dependencies]` header). Conservative `Full` stays publicly constructible. Both production call sites are migrated: `eval-solve/src/sparsity.rs` now supplies owner+extents and delegates every derivation to the ir-solve authority, and `solver-diffsol` production code takes its patterns from `derive_solve_structural_artifacts` (its only `from_row_dependencies` uses are in `#[cfg(test)]` modules). Evidence: two compile-fail doctests (fixture constructor absent from a default build; `csr` private) red-proved by swapping in `full` — both then compile and the doctests fail; source-scan tests `caller_supplied_rows_stay_behind_the_fixture_gate` and `pattern_fixture_feature_is_dev_only`; forgery regressions `derived_rows_come_from_the_owner_and_not_from_any_caller`, `a_derived_pattern_cannot_be_asked_for_a_dropped_edge`, `projection_cannot_invent_an_edge_the_source_does_not_certify`. Wire records gained `deny_unknown_fields` with a `wire_records_reject_smuggled_fields` smuggle probe. Gates: ir-solve 212 + 12 doctests, eval-solve 143, solver-diffsol 107, all green. | RESIDUAL, unchanged by this slice and now stated exactly in the `PatternProvenance` doc: `Deserialize for StructuralPattern` is a second entry point that replays a caller-supplied *sparse* representation (local shape/CSR integrity and non-dummy span only). It is production-reachable through `deserialize_solve_model` (used by `rumoca-bind-wasm-diffsol`), and `eval-solve/prepared` + `tensor_policy` consume `pattern.contains` for product skipping and kernel selection, so a forged wire claim is a wrong-answer path. The owner of those patterns is `ComputeNode` (`lhs_ops`/`rhs_ops`/`setup_ops`), not `structural_pattern.rs`; the durable fix is to drop the pattern fields from the node wire in `ir-solve/src/tensor.rs` and rederive from the decoded operand owner. Not attempted here: it requires `tensor.rs`, `ir-solve/src/tests.rs`, and `tests/golden/representative_solve_problem.solve.json`, none of which are in this slice's ownership. Mitigating fact: every production producer today emits `full` (`phase-solve/src/lower.rs:1253`, `phase-solve/src/ad.rs:359`), so no production wire currently carries a sparse claim. SECOND RESIDUAL (SPEC_0021, relocated not created): the migration moved the derivation walk verbatim out of `eval-solve/src/sparsity.rs`, carrying its clippy denials with it — `structural_pattern.rs` now reports 34 `excessive_nesting` plus `too_many_lines` (765/100) on `program_output_dependencies_with_fold`, all inside that moved walk (the two `excessive_nesting` sites in the *new* `project` code were fixed here via `checked_projection_axis`). Workspace clippy was already red at HEAD for this same code and for `linear_op.rs` (12 + a 1054-line fn), `refresh.rs` (5 + 205), `lib.rs` (4), `shape_error.rs` (126), `typed_program/program.rs` (107); splitting the walk is its own slice |
+| 2026-08-11 | Integer-P0 design + I10 fail-closed landed | Design at /tmp/integer-p0-design.md: T5 already blocks Integer division/power; live UB sites are Integer +,-,* (confirmed 20-tick overflow probe), unary minus, subscript decrement, and for-advance — the last two are template-invented and unreachable by AC-side certificates, so the durable range-proof home is the M3 `SolveAlgorithmBlock` lowering. Declared ranges only became enforceable facts when the T3 limit emission landed. CONFIRMED defect I10: `integer()` fell through the template's fail-open symbol default. FIXED: `integer()` and the entire unknown-builtin else-default are now fail-closed (`unsupported-feature:embedded-c-*`); phase-codegen 103+10, suite_galec_fmu 29/29, cli_target_embedded_c_galec 5/5 green after the change. | Range-proof engine decision deferred to M3 per the design's recommendation; SPEC_0042 T14 signal-row adjudication for `integer()` requested from Codex; until then RealToInteger conversions fail closed in both the method scaffold and the C template |
+
+| 2026-08-11 | OPEN FINDING: touchdown transient in the optical mission trace | One-sample, 41-column discontinuity at t=24.745 s (touchdown): `M_ground_b[2]` 0 -> -5.52 -> +0.07 N·m across single 5 ms samples; `bodyAngularVelocityRate[2]` reaches -254.4 rad/s^2; propagates into `plant.imu.*` and the estimator's IMU inputs. Global max omega 0.3337 rad/s occurs AT this sample (in-mission max is 0.3004 at t=5.355). Found by adversarial review of the mission-evidence claims, not by the original audit. | Investigate whether this is a legitimate contact impulse under 5 ms sampling or a contact-model/integration defect; mission-criteria checks must bound or exclude the landing transient explicitly; OMC comparison must compare the landing window with matched solver settings before attributing differences |
+
 ## Current next action
 
-Schema 58 now constructs exact assignment sequences before runtime preparation,
-uses the Solve-IR dependency authority, materializes scalar execution only in
-final adapters, has no runtime or fixture fallback construction, issues an
-event-settled remainder for each immediately following active-clock owner, and
-stores all causal/stage schedules as compact checked schema-59 selections into
-one canonical row catalog. The exact rebuilt release reaches `0.147334356 s`
-best (`3.39x` realtime) for the real 0.5 s slice. The `0.05 s` gate remains
-open. Complete SOLVE-C56 before crediting the owner cutover: add the complete
-coordinate dependency/invalidation certificate
-covering time, Y/P generations, event/pre/previous/history state, external
-tables, impure state, and arithmetic/AD mode. Runtime preparation must only
-attach backend storage/code to those checked objects; neither it nor Production
-C/GALEC may call `exact_target_assignment_*` to rediscover programs. Derivative,
-root, event, interpreter, Cranelift, GALEC, and Production C consumers must use
-that same owner. The repeated 89-row schedules and their 9-point fold helpers
-may not be shared by body equality or pointer coincidence. The fresh
-runtime-only profile leaves the 3x3 rigid-body `LinearAlgebra.solveSPD` owner 30
-as the largest single symbol at `13.10%` and 7,626 executions per slice. Before
-specializing it, specify a source-issued semantic linear-algebra intrinsic and
-a compact checked `SolveSPD` operation/directional relation; function-name or
-expanded-body recognition is forbidden. Compare that final-boundary kernel
-opportunity with the broader schedule/copy cost so the next implementation
-attacks the largest provable necessary work. The event transaction reduces
-`MultiSensorInvariant.step` to one checked execution per tick; the remaining
-`predict=502` count for 101 ticks must be addressed only if the new issued
-refresh contract proves those invocations share the same semantic coordinate.
-The certificate must survive the outer-program boundary instead of resetting
-inside each native residual call, without hoisting inactive corrections.
+First checkpoint the current typed-scope/capture work as a small, reviewable,
+signed slice after it closes the exact definition/coercion regressions and
+passes its focused gates. The live worktree is still based on `07e9d5df` with
+more than ninety changed/untracked paths, so neither its semantics nor its
+speed are checkpoint evidence.
 
-Then repeat native/interpreter parity, dynamic call counts, the 0.5 s release
-benchmark, and runtime-only `perf`. Optimize `solveSPD` further only if it
-remains hot after duplicate schedule/transaction work is removed; the current
-profile proves the complete Kalman `step` subtree is about 7.8% inclusive time,
-not the order-of-magnitude gap.
+Before another broad implementation batch, pass an explicit core-architecture
+convergence gate. Codex and Claude independently map the current compiler,
+exchange adversarial proposals, and agree the smallest formally verifiable,
+tensor-native end state. The result is written in `dev/` with the chosen stage
+roots and capabilities, identity/provenance model, single semantic lowering
+authority, compact execution/event/cache owners, checked target profiles,
+crate dependency direction, rejected alternatives, active-spec amendments,
+and a migration/deletion sequence. Conflicts with active specs are amended
+through the spec process first; the architecture note cannot waive them. Each
+cutover must delete its superseded path in the same bounded series and carry an
+executable proof gate. No further compiler surface is fleshed out until this
+review accepts the core shape.
 
-The accepted 0.5 s slice must reach at most 0.05 s without Phase Solve
-scalarization, inferred body equality, expansion/recollapse, interpreter
-callbacks, skipped events, or changed solver/mission semantics. Only then
-proceed to full optical-flow and GPS traces against OMC, shared
-GALEC/Production-C lowering, and `cerebri_rdd2` eFMU/firmware mission
-qualification.
+Agreement alone is not acceptance. For every major structural choice, the
+record must steelman at least two credible alternatives, state concrete
+semantic/performance/proof/maintenance counterexamples, quantify migration and
+temporary proof-surface cost, and name a falsifiable experiment or invariant
+that would reverse the preference. The surviving decisions are then codified
+in their governing specs (pipeline/roots in SPEC_0007, ownership in
+SPEC_0029/0041, compact families in SPEC_0032, construction/identity in
+SPEC_0036/0043 or a dedicated new spec, formal evidence in SPEC_0037,
+GALEC/C in SPEC_0034/0042, solver/FMI in SPEC_0038, events in
+SPEC_0022/0040/0043, and migration/review gates in SPEC_0033/0025) before
+implementation credit. The dev decision record is non-normative and may not
+place aspirational rules into ACCEPTED specs ahead of their construction root
+and production consumer.
+
+Under that negotiated shape, fix the scheduled-event boundary before further
+performance credit:
+
+1. amend the pending C57 design so every guarded producer owns one compact lazy
+   total next value, `guard ? rhs : held_entry`, and ordinary same-instant
+   consumers read that issued value;
+2. construct one activation-aware causal transaction across coincident
+   `sample(start, period)` schedules, with explicit history barriers and one
+   atomic final commit;
+3. replace the global union of every event consumer plus empty per-clock plans
+   with construction-issued `EventFirstPassBase`, `EventFixedPointBase`, and
+   exact active-schedule refresh owners, using a complete output-projection and
+   coordinate-generation certificate;
+4. strengthen refresh remainder identity beyond block index to include exact
+   seed/output projection, arithmetic/numerics profile, and coordinate; and
+5. add a real `NativeRequired` mode with complete compact TensorLoad/input/
+   output ABI proofs and zero interpreter-fallback counters.
+
+Reprofile only after those correctness gates pass. Current stable artifact
+timing is derivative `~27.9 ms`, roots `~28.6 ms`, and scheduled events
+`~88.6-89.0 ms`; deleting all event cost would still leave a `~56.5 ms`
+derivative/root floor above the entire `50 ms` target. Issue one compact
+derivative/root result tuple at a certified coordinate, remove runtime root
+ownership reconstruction, and re-rank the source-issued `SolveSPD` opportunity.
+Owner 30 is 7,626 calls and about 13.1% self; estimator owner 145 is 101 calls,
+owner 133 `predict` is 101, owner 342 `step` is 102, and controller owners
+108/110/350 are about 502. The prior `predict=502` attribution is false.
+
+The accepted 0.5 s slice must reach at most `0.05 s` without Phase Solve or
+runtime scalarization, inferred body equality, expansion/recollapse,
+interpreter fallback, skipped events, or changed solver/mission semantics.
+After that gate, run the full optical/GPS Rumoca and OMC experiments through a
+fail-closed comparator with an explicit required channel roster, exact horizon,
+event alignment, provenance, and mission assertions. Only qualified model
+traces may feed the common Solve-to-GALEC/Production-C cutover and the pinned
+`cerebri_rdd2` eFMU/firmware mission work.
 
 ## Prior next-action history (superseded)
 
