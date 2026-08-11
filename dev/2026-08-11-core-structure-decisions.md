@@ -887,10 +887,14 @@ Codex's 21:27/21:36 counter-round resolved against §13, item by item:
    commit. Edge legality: once->iterative legal; iterative->post-settle
    legal; iterative->once OPEN on one ruling — MLS-legal clocked
    `sample(u)` of an unclocked discrete variable at a coincident tick:
-   entry/first-iteration capture vs settled fixed point (Codex to rule
-   with cite; both encode as explicit lane capture, never silent storage
-   read). Four distinct history capabilities (LeftLimit, iterative Pre,
-   clock Previous, sampled lanes); no unified buffer.
+   RULED (Codex 21:47, MLS 16.5.1): `sample(u)` is a LEFT-LIMIT lane
+   captured at clock-partition entry (clocked partitions evaluate first
+   and once; iteration only over the unclocked partition afterward), so
+   the example dissolves and joint-owner-or-reject stands unweakened for
+   genuine SameInstant iterative->once edges. Four distinct history
+   capabilities (event-entry Pre, iterative pre_iter, clock Previous,
+   SampledLeftLimit); no unified buffer. Added preregistered fixtures:
+   coincident-change retention; noClock(x) vs sample(hold(x)).
 4. Identity reds tightened: duplicate DEFINITION rejects; multiple uses of
    one definition converge to one handle. Member-kind vocabulary removed
    from test prose; guarded-total-next coincident-schedule fixture.
