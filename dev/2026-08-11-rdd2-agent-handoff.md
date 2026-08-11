@@ -97,6 +97,17 @@ Latest verified result after `e5ddf351`:
 - Best `0.150515297 s`.
 - About 3.32x realtime; still approximately 3.01x slower than the 0.05 s gate.
 
+The current uncommitted clock-after-event relation slice has also completed an
+exact release canary:
+
+- 101 output points, final time exactly 0.5 s.
+- Average `0.1477608889 s`.
+- Best `0.146462222 s`.
+- About 3.41x realtime and still approximately 2.93x slower than the gate.
+- Short-slice native counts remain owner 30 = 143, owner 22 = 107, and owner
+  145 = 3, so the improvement is reduced covered assignment work rather than
+  a changed call-cache policy.
+
 Fresh delayed runtime-only perf capture:
 
 - `/tmp/rdd2-schema58-runtime-only.perf.data`
@@ -146,43 +157,57 @@ Do not repeat these without a new representation:
 
 ## Current uncommitted worktree
 
-There is one intentionally incomplete, untested edit:
+There is one coherent implementation slice across four files:
 
 ```text
  M crates/rumoca-ir-solve/src/refresh.rs
+ M crates/rumoca-ir-solve/src/refresh/tests.rs
+ M crates/rumoca-solver/src/runtime/solve_runtime.rs
+ M crates/rumoca-solver/src/runtime/solve_runtime/refresh_execution.rs
 ```
 
-It adds 31 lines beginning a construction-issued `clock_events_after_event`
-relation inventory:
+It completes the construction-issued `clock_events_after_event` relation
+inventory:
 
 - a skipped/private `Vec<RefreshRemainderRelation>` field;
 - issuance of one clock-plan remainder after the event plan;
 - unique sequence IDs after the normal clock owners;
 - inclusion in exact-assignment schedule rebuilding;
 - a read-only accessor;
-- `is_issued` checks relation cardinality.
+- `is_issued` checks relation cardinality;
+- wire replay reconstructs the private relation and a focused test proves
+  covered row 0 is removed while uncovered row 1 remains;
+- `SolveRuntime` retains the issued relations and fails closed if their count
+  differs from the clock-owner inventory;
+- immediately after event refresh, each active clock executes the issued
+  remainder rather than its complete plan.
 
-This partial edit has not been compiled or tested. Runtime has not been wired
-to consume the relations, and tests have not been added. Inspect it with:
+This is a safe same-coordinate boundary: event refresh immediately precedes
+the clock refresh and no state mutation occurs between them. The runtime does
+not compare, union, filter, expand, or recollapse plans. It only consumes the
+checked directional relation issued by Solve IR.
+
+Verification completed for this slice:
+
+- the 12 focused refresh construction/wire tests pass;
+- `cargo check -p rumoca-solver` passes;
+- `git diff --check` passes;
+- the exact release canary and native call counts above pass.
+
+The full affected test gate was started, but its final output was lost at the
+agent handoff boundary. Re-run it before committing rather than assuming it
+passed:
 
 ```bash
-git diff -- crates/rumoca-ir-solve/src/refresh.rs
+cargo test -p rumoca-ir-solve
+cargo test -p rumoca-solver --lib
+cargo test -p rumoca-solver-diffsol --lib
+cargo fmt --all -- --check
 ```
 
-Do not commit it as-is. The intended completion is:
-
-1. Add wire-replay/cardinality and coverage tests in
-   `crates/rumoca-ir-solve/src/refresh/tests.rs`.
-2. Add a matching runtime field in
-   `crates/rumoca-solver/src/runtime/solve_runtime.rs` and clone the issued
-   relations during `SolveRuntime` construction.
-3. In `refresh_event_dependency_slots_certified`, execute each active clock's
-   `clock_events_after_event[clock].remainder()` after the event plan instead of
-   its complete clock plan. There is no mutation between these two refreshes,
-   so this is the first safe same-coordinate reuse boundary.
-4. Fail closed if relation count and clock plan count differ.
-5. Run the focused/full gates, exact canary, native call counts, and delayed
-   runtime-only perf. Revert if call count or hot time regresses.
+Then capture delayed runtime-only `perf`, inspect the diff as a scheduled R2
+review, update the roadmap review log, and commit this slice if those gates are
+green. Do not mix the next compact-row-selection refactor into this commit.
 
 The next extension should cover earlier active clocks as well, but only with a
 construction-issued ordered coverage relation. Do not dynamically union plans
@@ -211,7 +236,7 @@ SOLVE-C56 remains open:
 
 ## Performance next steps
 
-After completing the clock-after-event relation:
+After completing the clock-after-event relation gates:
 
 1. Re-run runtime-only perf with delayed collection. The command pattern is:
 
@@ -266,4 +291,3 @@ Do not claim completion until all of these have current evidence:
 - eFMU code generation.
 - Firmware/eFMU simulations completing the same GPS and optical missions with
   trace parity.
-
