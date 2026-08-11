@@ -599,6 +599,7 @@ fn project_algebraics_recovers_from_misordered_singular_direct_chain_guess() {
     install_dense_algebraic_projection_plan(&mut model);
     model.initial_y = vec![0.0, 1.0];
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let ode_model = OdeModel::new(&model).expect("ODE model should build from solve-IR rows");
     let mut y = model.initial_y.clone();
     project_algebraics(&ode_model, &mut y, &[], 0.01, 0, 1.0e-12)
@@ -870,6 +871,7 @@ fn initialization_projects_demoted_state_layout_slots() {
         },
     ];
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let ode_model = OdeModel::new(&model).expect("ODE model should build from solve-IR rows");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let mut y = model.initial_y.clone();

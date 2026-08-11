@@ -49,6 +49,7 @@ fn state_only_bdf_accepts_projection_backed_derivative_dependencies() {
 #[test]
 fn simulate_rejects_an_unprojectable_derivative_dependency_by_name() {
     let mut model = projected_derivative_model();
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan::default();
 
     let error = simulate(
@@ -113,7 +114,7 @@ fn explicit_decay_model() -> solve::SolveModel {
 /// model that runs.
 #[test]
 fn check_initialization_settles_pure_explicit_odes_on_the_state_only_path() {
-    let model = explicit_decay_model();
+    let mut model = explicit_decay_model();
     assert!(
         model.problem.continuous.implicit_rhs.is_empty(),
         "fixture must keep the pure-explicit shape Solve emits for der(x) = -x"
@@ -127,6 +128,7 @@ fn check_initialization_settles_pure_explicit_odes_on_the_state_only_path() {
     require_state_only_bdf(&model)
         .expect("a pure explicit ODE satisfies the reduced state-only contract");
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     check_initialization(&model, &opts).expect(
         "initialization must be checked on the path the simulation builds, not the implicit one",
     );
@@ -188,7 +190,8 @@ fn bdf_sets_terminal_marker_only_at_final_event() {
 
 #[test]
 fn bdf_session_processes_terminal_event_at_horizon() {
-    let model = terminal_marker_model();
+    let mut model = terminal_marker_model();
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let mut session = session::SimulationSession::new(
         &model,
         SimOptions {

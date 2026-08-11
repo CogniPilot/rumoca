@@ -66,7 +66,7 @@ pub(crate) fn lower_solve_problem(
         );
         profile::typed_owner_calls(&pure_calls);
     }
-    let problem = solve::SolveProblem {
+    let mut problem = solve::SolveProblem {
         schema_version: solve::SOLVE_SCHEMA_VERSION,
         layout: lowered.layout,
         solve_layout: lowered.solve_layout,
@@ -76,6 +76,13 @@ pub(crate) fn lower_solve_problem(
         events,
         clocks: clocks.partition,
     };
+    problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&problem).map_err(
+            |error| match error.source_span() {
+                Some(span) => LowerError::contract(error.to_string(), span),
+                None => LowerError::unspanned_non_computable(error.to_string()),
+            },
+        )?;
     solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
     if std::env::var_os("RUMOCA_PROFILE_IR").is_some() {
         profile::pure_call_sites(&problem);
@@ -469,6 +476,7 @@ fn lower_continuous<'dae>(
             layout.solve_layout.state_scalar_count(),
             first_model_span(view),
         )?,
+        refresh_owners: solve::ContinuousRefreshOwners::default(),
     })
 }
 

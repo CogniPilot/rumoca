@@ -635,6 +635,7 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
         manifold_residual: ComputeBlock::default(),
         manifold_projection_plan: AlgebraicProjectionPlan::default(),
         derivative_rhs: representative_derivative_rhs(),
+        refresh_owners: ContinuousRefreshOwners::default(),
     }
 }
 

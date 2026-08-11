@@ -17,9 +17,10 @@ impl SolveRuntime {
         if !self.can_refresh_from_tensor_output(first) {
             return Ok(None);
         }
+        let first_program = self.refresh_program_row(first)?;
         let Some(first_output) = self
             .implicit_scalar_rhs
-            .row_output_index(first.row_idx, first.output_offset)
+            .row_output_index(first_program, first.output_offset())
         else {
             return Ok(None);
         };
@@ -27,9 +28,10 @@ impl SolveRuntime {
         let mut end = start + 1;
         let mut next_output = first_output + 1;
         while end < plan.len() && self.can_refresh_from_tensor_output(&plan[end]) {
+            let program = self.refresh_program_row(&plan[end])?;
             let Some(output_index) = self
                 .implicit_scalar_rhs
-                .row_output_index(plan[end].row_idx, plan[end].output_offset)
+                .row_output_index(program, plan[end].output_offset())
             else {
                 break;
             };
@@ -61,13 +63,15 @@ impl SolveRuntime {
         }
 
         for refresh_row in &plan[start..end] {
+            let program = self.refresh_program_row(refresh_row)?;
             let Some(output_index) = self
                 .implicit_scalar_rhs
-                .row_output_index(refresh_row.row_idx, refresh_row.output_offset)
+                .row_output_index(program, refresh_row.output_offset())
             else {
                 return Err(RuntimeSolveError::solve_ir(format!(
                     "tensor refresh row {} output offset {} has no scalar output index",
-                    refresh_row.row_idx, refresh_row.output_offset
+                    refresh_row.equation_index(),
+                    refresh_row.output_offset()
                 )));
             };
             let Some(value) = tensor_out.get(output_index).copied() else {
@@ -78,9 +82,9 @@ impl SolveRuntime {
                 )));
             };
             if !value.is_finite() {
-                return Err(self.non_finite_value_error(refresh_row.target_index, value));
+                return Err(self.non_finite_value_error(refresh_row.target_index(), value));
             }
-            solver_y[refresh_row.target_index] = value;
+            solver_y[refresh_row.target_index()] = value;
         }
         Ok(Some(end))
     }
@@ -95,16 +99,16 @@ impl SolveRuntime {
         row_outputs: &mut Vec<f64>,
     ) -> Result<Option<usize>, RuntimeSolveError> {
         let first = &plan[start];
-        let Some(output_count) = self.implicit_scalar_rhs.row_output_count(first.row_idx) else {
+        let row_idx = self.refresh_program_row(first)?;
+        let Some(output_count) = self.implicit_scalar_rhs.row_output_count(row_idx) else {
             return Ok(None);
         };
         if output_count <= 1 || !self.can_batch_shapeless_output_refresh(first) {
             return Ok(None);
         }
-        let row_idx = first.row_idx;
         let mut end = start + 1;
         while end < plan.len()
-            && plan[end].row_idx == row_idx
+            && plan[end].source() == first.source()
             && self.can_batch_shapeless_output_refresh(&plan[end])
         {
             end += 1;
@@ -120,45 +124,49 @@ impl SolveRuntime {
                 row_outputs,
             )?;
         for refresh_row in &plan[start..end] {
-            let Some(value) = row_outputs.get(refresh_row.output_offset).copied() else {
+            let Some(value) = row_outputs.get(refresh_row.output_offset()).copied() else {
                 return Err(RuntimeSolveError::solve_ir(format!(
                     "refresh row {} requested output offset {} from {} outputs",
-                    refresh_row.row_idx,
-                    refresh_row.output_offset,
+                    refresh_row.equation_index(),
+                    refresh_row.output_offset(),
                     row_outputs.len()
                 )));
             };
             if !value.is_finite() {
-                return Err(self.non_finite_value_error(refresh_row.target_index, value));
+                return Err(self.non_finite_value_error(refresh_row.target_index(), value));
             }
-            solver_y[refresh_row.target_index] = value;
+            solver_y[refresh_row.target_index()] = value;
         }
         Ok(Some(end))
     }
 
     pub(super) fn can_batch_assignment_refresh(&self, plan: &[AlgebraicRefreshRow]) -> bool {
         plan.iter().all(|row| {
-            row.assignment_target == Some(row.target_index)
+            row.assignment_target() == Some(row.target_index())
                 && row
-                    .assignment_shape
-                    .is_some_and(|shape| shape.target_y_index() == row.target_index)
+                    .assignment_shape()
+                    .is_some_and(|shape| shape.target_y_index() == row.target_index())
         })
     }
 
     fn can_batch_shapeless_output_refresh(&self, row: &AlgebraicRefreshRow) -> bool {
-        row.assignment_target == Some(row.target_index)
+        let Some(program) = self.refresh_program_rows.get(&row.source()).copied() else {
+            return false;
+        };
+        row.assignment_target() == Some(row.target_index())
+            && !self.implicit_scalar_rhs.row_has_assignment_shape(program)
             && !self
                 .implicit_scalar_rhs
-                .row_has_assignment_shape(row.row_idx)
-            && !self
-                .implicit_scalar_rhs
-                .row_reads_y(row.row_idx, row.target_index)
+                .row_reads_y(program, row.target_index())
     }
 
     fn can_refresh_from_tensor_output(&self, row: &AlgebraicRefreshRow) -> bool {
-        row.assignment_target == Some(row.target_index)
+        let Some(program) = self.refresh_program_rows.get(&row.source()).copied() else {
+            return false;
+        };
+        row.assignment_target() == Some(row.target_index())
             && !self
                 .implicit_scalar_rhs
-                .row_reads_y(row.row_idx, row.target_index)
+                .row_reads_y(program, row.target_index())
     }
 }

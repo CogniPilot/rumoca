@@ -12,6 +12,7 @@ mod compute_block_tests;
 mod layout;
 mod linear_op;
 mod model;
+mod refresh;
 #[cfg(test)]
 mod scalar_program_tests;
 mod shape_error;
@@ -40,10 +41,11 @@ pub use linear_op::{
     BinaryOp, CompareOp, FoldInitialSource, FoldTensorNode, FoldTensorUpdate,
     FunctionConditionalArmProgram, FunctionConditionalOwnerId, FunctionConditionalProgram,
     FunctionFoldProgram, LinearOp, RandomGenerator, Reg, ScalarProgramRegisterError,
-    ScalarProgramRegisterFlow, TensorConcatenateSource, TensorIndex, TensorInputKind,
-    TensorSubscript, TensorUpdateSubscript, UnaryOp, resolve_indexed_slot,
+    ScalarProgramRegisterFlow, TargetAssignmentShape, TensorConcatenateSource, TensorIndex,
+    TensorInputKind, TensorSubscript, TensorUpdateSubscript, UnaryOp, resolve_indexed_slot,
 };
 pub use model::*;
+pub use refresh::*;
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use typed_program::*;
 pub use visitor::{
@@ -51,7 +53,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 57;
+pub const SOLVE_SCHEMA_VERSION: u16 = 58;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -707,7 +709,7 @@ impl<'de> Deserialize<'de> for SolveProblem {
             )));
         }
 
-        let problem = Self {
+        let mut problem = Self {
             schema_version: wire.schema_version,
             layout: wire.layout,
             solve_layout: wire.solve_layout,
@@ -717,6 +719,11 @@ impl<'de> Deserialize<'de> for SolveProblem {
             events: wire.events,
             clocks: wire.clocks,
         };
+        problem
+            .continuous
+            .refresh_owners
+            .rebuild_exact_assignment_programs(&problem.continuous.implicit_rhs)
+            .map_err(serde::de::Error::custom)?;
         problem.validate().map_err(serde::de::Error::custom)?;
         Ok(problem)
     }
@@ -1880,6 +1887,14 @@ fn validate_continuous_system_shape(
     system
         .derivative_rhs
         .validate_shape_contract("continuous.derivative_rhs")?;
+    system
+        .refresh_owners
+        .validate_against(&system.implicit_rhs)
+        .map_err(
+            |error| SolveProblemShapeContractError::ContinuousRefreshOwner {
+                detail: error.to_string(),
+            },
+        )?;
     for (context, block) in [
         ("continuous.implicit_rhs", &system.implicit_rhs),
         ("continuous.residual", &system.residual),

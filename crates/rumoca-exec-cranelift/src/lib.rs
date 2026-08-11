@@ -360,6 +360,25 @@ pub fn compile_assignment_schedule_with_pure_calls(
     .map(|jit| CompiledAssignmentSchedule { jit })
 }
 
+pub fn compile_exact_assignment_schedule(
+    source: &rumoca_ir_solve::ComputeBlock,
+    owners: &rumoca_ir_solve::ContinuousRefreshOwners,
+    schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
+) -> Result<CompiledAssignmentSchedule, CompileError> {
+    emit::compile_exact_assignment_schedule(source, owners, schedule, None)
+        .map(|jit| CompiledAssignmentSchedule { jit })
+}
+
+pub fn compile_exact_assignment_schedule_with_pure_calls(
+    source: &rumoca_ir_solve::ComputeBlock,
+    owners: &rumoca_ir_solve::ContinuousRefreshOwners,
+    schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
+    pure_calls: &CompiledPureCallTable,
+) -> Result<CompiledAssignmentSchedule, CompileError> {
+    emit::compile_exact_assignment_schedule(source, owners, schedule, Some(pure_calls.jit.clone()))
+        .map(|jit| CompiledAssignmentSchedule { jit })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,6 +751,96 @@ mod tests {
         compiled.call(&mut y, &[3.0], 0.0).expect("run schedule");
 
         assert_eq!(y, [6.0, 3.0]);
+    }
+
+    #[test]
+    fn compiled_exact_owner_schedule_preserves_construction_order() {
+        let source = ScalarProgramBlock::with_source_span(
+            vec![
+                vec![
+                    LinearOp::LoadY { dst: 0, index: 1 },
+                    LinearOp::Const { dst: 1, value: 3.0 },
+                    LinearOp::Binary {
+                        dst: 2,
+                        op: rumoca_ir_solve::BinaryOp::Sub,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    LinearOp::StoreOutput { src: 2 },
+                ],
+                vec![
+                    LinearOp::LoadY { dst: 0, index: 0 },
+                    LinearOp::LoadY { dst: 1, index: 1 },
+                    LinearOp::Const { dst: 2, value: 2.0 },
+                    LinearOp::Binary {
+                        dst: 3,
+                        op: rumoca_ir_solve::BinaryOp::Add,
+                        lhs: 1,
+                        rhs: 2,
+                    },
+                    LinearOp::Binary {
+                        dst: 4,
+                        op: rumoca_ir_solve::BinaryOp::Sub,
+                        lhs: 0,
+                        rhs: 3,
+                    },
+                    LinearOp::StoreOutput { src: 4 },
+                ],
+            ],
+            fixture_span()
+                .require_provenance("exact owner schedule fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture source is computable");
+        let row = |owner, source, equation, target, expr_reg, expr_eval_len| {
+            rumoca_ir_solve::AlgebraicRefreshRow::checked(
+                rumoca_ir_solve::AlgebraicRefreshRowDraft {
+                    owner_id: rumoca_ir_solve::RefreshRowOwnerId::checked(owner).unwrap(),
+                    source: rumoca_ir_solve::RefreshScalarProgramSource::checked(0, source)
+                        .unwrap(),
+                    equation_index: equation,
+                    output_offset: 0,
+                    target_index: target,
+                    assignment_target: Some(target),
+                    assignment_shape: Some(rumoca_ir_solve::TargetAssignmentShape::Direct {
+                        target_y_index: target,
+                        expr_reg,
+                        target_scale: 1.0,
+                        expr_eval_len,
+                    }),
+                    direct_assignment_certified: true,
+                    exact_assignment_certified: true,
+                },
+            )
+            .unwrap()
+        };
+        let first = row(1, 0, 0, 1, 1, 2);
+        let second = row(0, 1, 1, 0, 3, 4);
+        let plan = rumoca_ir_solve::RefreshPlan {
+            rows: vec![first.clone(), second.clone()],
+            dynamic_causal_seed_rows: vec![first, second],
+            ..Default::default()
+        };
+        let source = rumoca_ir_solve::ComputeBlock::from_scalar_program_block(source);
+        let owners = rumoca_ir_solve::ContinuousRefreshOwners::checked_for_source(
+            &source,
+            plan,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Vec::new(),
+        )
+        .expect("refresh owners should construct");
+        let schedule = owners
+            .exact_assignment_schedule(owners.algebraic().dynamic_causal_sequence)
+            .expect("construction should freeze the exact order");
+        let compiled = compile_exact_assignment_schedule(&source, &owners, schedule)
+            .expect("compile owner schedule");
+        let mut y = [0.0, 0.0];
+
+        compiled.call(&mut y, &[], 0.0).expect("run schedule");
+
+        assert_eq!(y, [5.0, 3.0]);
     }
 
     #[test]

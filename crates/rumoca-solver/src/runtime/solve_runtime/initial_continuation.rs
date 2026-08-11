@@ -38,9 +38,8 @@
 //! * `InitializationProjectionBlock::rows` and `AlgebraicProjectionBlock::rows`
 //!   are equation indices into the corresponding residual vector.
 //! * [`AlgebraicRefreshRow::equation_index`] is an equation index;
-//!   `AlgebraicRefreshRow::row_idx` is a *program* index (documented at
-//!   `rumoca-eval-solve/src/refresh_plan.rs`). Only `equation_index` is read
-//!   here.
+//!   its opaque canonical scalar-program source is resolved only by the final
+//!   evaluator adapter. Only `equation_index` is read here.
 //!
 //! [`AlgebraicRefreshRow::equation_index`]: rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow::equation_index
 //!
@@ -402,7 +401,7 @@ fn algebraic_refresh_equations(plan: &RefreshPlan) -> BTreeSet<usize> {
     plan.rows
         .iter()
         .chain(plan.causal_seed_rows.iter())
-        .map(|row| row.equation_index)
+        .map(|row| row.equation_index())
         .chain(
             plan.simultaneous_plan
                 .blocks
@@ -497,16 +496,20 @@ mod tests {
         equation_index: usize,
         row_idx: usize,
     ) -> rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow {
-        rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow {
-            equation_index,
-            row_idx,
-            output_offset: 0,
-            target_index: 0,
-            assignment_target: None,
-            assignment_shape: None,
-            direct_assignment_certified: false,
-            exact_assignment_certified: false,
-        }
+        rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow::checked(
+            solve::AlgebraicRefreshRowDraft {
+                owner_id: Default::default(),
+                source: solve::RefreshScalarProgramSource::checked(0, row_idx).unwrap(),
+                equation_index,
+                output_offset: 0,
+                target_index: 0,
+                assignment_target: None,
+                assignment_shape: None,
+                direct_assignment_certified: false,
+                exact_assignment_certified: false,
+            },
+        )
+        .unwrap()
     }
 
     fn plain_program() -> Vec<solve::LinearOp> {

@@ -86,7 +86,7 @@ fn projection_coupled_state_model(k: f64) -> solve::SolveModel {
 #[test]
 fn state_jacobian_includes_projection_forward_sensitivity() {
     let k = 2.0;
-    let runtime = SolveRuntime::new(&projection_coupled_state_model(k))
+    let runtime = SolveRuntime::new_fixture(&projection_coupled_state_model(k))
         .expect("valid runtime should prepare");
     let mut out = [0.0_f64];
     runtime
@@ -115,7 +115,7 @@ fn state_jacobian_includes_projection_forward_sensitivity() {
 #[test]
 fn exact_dependency_owner_keeps_primal_and_jvp_consistent_below_projection_tolerance() {
     let k = 2.0;
-    let runtime = SolveRuntime::new(&projection_coupled_state_model(k))
+    let runtime = SolveRuntime::new_fixture(&projection_coupled_state_model(k))
         .expect("valid runtime should prepare");
     assert!(runtime.derivative_refresh.causal_solution_certified);
     assert!(
@@ -271,7 +271,8 @@ fn parameter_projection_model() -> solve::SolveModel {
 #[test]
 fn algebraic_projection_seed_includes_direct_parameter_path() {
     let model = parameter_projection_model();
-    let runtime = SolveRuntime::new(&model).expect("parameter projection fixture should prepare");
+    let runtime =
+        SolveRuntime::new_fixture(&model).expect("parameter projection fixture should prepare");
     let mut out = [0.0; 2];
     runtime
         .project_state_sensitivity_to_solver_y(
@@ -452,7 +453,7 @@ fn affine3(
 
 #[test]
 fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
-    let runtime = SolveRuntime::new(&linear_algebraic_loop_state_model())
+    let runtime = SolveRuntime::new_fixture(&linear_algebraic_loop_state_model())
         .expect("valid runtime should prepare");
     assert_eq!(runtime.derivative_refresh.simultaneous_plan.blocks.len(), 1);
     let mut out = [0.0_f64];
@@ -481,7 +482,7 @@ fn state_jacobian_resolves_linear_algebraic_loop_sensitivity() {
 
 #[test]
 fn seed_refresh_directly_solves_coupled_algebraic_loop() {
-    let runtime = SolveRuntime::new(&linear_algebraic_loop_state_model())
+    let runtime = SolveRuntime::new_fixture(&linear_algebraic_loop_state_model())
         .expect("valid runtime should prepare");
     let solver_y = [1.0, 2.0 / 15.0, 7.0 / 15.0];
     let mut seed = [1.0, 0.0, 0.0];
@@ -518,7 +519,7 @@ fn seed_refresh_directly_solves_coupled_algebraic_loop() {
 
 #[test]
 fn seed_refresh_reports_singular_coupled_algebraic_loop() {
-    let runtime = SolveRuntime::new(&singular_algebraic_loop_state_model())
+    let runtime = SolveRuntime::new_fixture(&singular_algebraic_loop_state_model())
         .expect("valid runtime should prepare");
     let solver_y = [1.0, 0.5, 0.5];
     let mut seed = [1.0, 9.0, -4.0];
@@ -578,7 +579,7 @@ fn sum_row(load_lhs: solve::LinearOp, load_rhs: solve::LinearOp) -> Vec<solve::L
 #[test]
 fn reverse_implicit_residual_vjp_transposes_forward_jvp() {
     let model = linear_algebraic_loop_state_model();
-    let runtime = SolveRuntime::new(&model).expect("runtime builds");
+    let runtime = SolveRuntime::new_fixture(&model).expect("runtime builds");
     let n = runtime.solver_count;
     let p_scalars = runtime.model.problem.layout.p_scalars();
     let solver_y = [2.0_f64, 0.5, -0.3]; // arbitrary linearization point

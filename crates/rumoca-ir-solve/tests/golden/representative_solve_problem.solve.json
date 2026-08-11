@@ -1,5 +1,5 @@
 {
-  "schema_version": 57,
+  "schema_version": 58,
   "layout": {
     "bindings": {
       "x": {
@@ -305,6 +305,53 @@
           }
         }
       ]
+    },
+    "refresh_owners": {
+      "algebraic": {
+        "simultaneous_plan": { "blocks": [] },
+        "simultaneous_block_indices": [],
+        "value_projection_plan": { "blocks": [] },
+        "rows": [],
+        "causal_seed_rows": [],
+        "static_causal_seed_rows": [],
+        "dynamic_causal_seed_rows": [],
+        "value_stages": [],
+        "causal_solution_certified": false
+      },
+      "derivative": {
+        "simultaneous_plan": { "blocks": [] },
+        "simultaneous_block_indices": [],
+        "value_projection_plan": { "blocks": [] },
+        "rows": [],
+        "causal_seed_rows": [],
+        "static_causal_seed_rows": [],
+        "dynamic_causal_seed_rows": [],
+        "value_stages": [],
+        "causal_solution_certified": false
+      },
+      "root": {
+        "simultaneous_plan": { "blocks": [] },
+        "simultaneous_block_indices": [],
+        "value_projection_plan": { "blocks": [] },
+        "rows": [],
+        "causal_seed_rows": [],
+        "static_causal_seed_rows": [],
+        "dynamic_causal_seed_rows": [],
+        "value_stages": [],
+        "causal_solution_certified": false
+      },
+      "event": {
+        "simultaneous_plan": { "blocks": [] },
+        "simultaneous_block_indices": [],
+        "value_projection_plan": { "blocks": [] },
+        "rows": [],
+        "causal_seed_rows": [],
+        "static_causal_seed_rows": [],
+        "dynamic_causal_seed_rows": [],
+        "value_stages": [],
+        "causal_solution_certified": false
+      },
+      "clock_events": []
     }
   },
   "initialization": {

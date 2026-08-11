@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn typed_root_crossing_side_overrides_a_strict_relation_at_the_exact_boundary() {
         let model = strict_no_state_relation_model();
-        let runtime = SolveRuntime::new(&model).expect("strict relation fixture prepares");
+        let runtime = SolveRuntime::new_fixture(&model).expect("strict relation fixture prepares");
         let mut y = Vec::new();
         let mut p = vec![0.0];
         let mut termination = None;
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn no_state_root_search_retains_the_typed_post_side() {
         let model = strict_no_state_relation_model();
-        let runtime = SolveRuntime::new(&model).expect("strict relation fixture prepares");
+        let runtime = SolveRuntime::new_fixture(&model).expect("strict relation fixture prepares");
         let mut params_scratch = vec![0.0];
         let mut root_scratch = NoStateRootSearchScratch::new(1);
         let mut before_scratch = vec![0.0];

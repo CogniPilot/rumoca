@@ -119,7 +119,7 @@ pub(super) fn root_condition_plan(
     let static_y = root_refresh
         .static_causal_seed_rows
         .iter()
-        .map(|row| row.target_index)
+        .map(|row| row.target_index())
         .collect::<BTreeSet<_>>();
     for (row_idx, row) in roots.programs().iter().enumerate() {
         if solve::ScalarProgramBlock::program_output_count(row) != 1 {

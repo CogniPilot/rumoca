@@ -361,7 +361,7 @@ pub(super) fn checked_prepared_output_count(
         })
 }
 
-pub(super) fn non_causal_linear_op(op: &LinearOp) -> bool {
+pub(crate) fn non_causal_linear_op(op: &LinearOp) -> bool {
     matches!(
         op,
         LinearOp::LoadSeed { .. }

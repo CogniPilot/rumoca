@@ -32,18 +32,70 @@ use crate::{
 use affine_eval::*;
 #[cfg(test)]
 use assignment_shape::checked_expr_eval_len;
+use assignment_shape::eval_assignment_shape;
 use assignment_shape::target_assignment_shapes_with_output_offsets;
-pub use assignment_shape::{
-    TargetAssignmentShape, target_assignment_shape, target_assignment_shapes,
-};
+pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
 use dependency::{parameter_static_y_gradient, row_parameter_indices};
 pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, ComputeBlock, ComputeNode,
-    LinearOp, ScalarProgramBlock, StructuralPattern, TensorOutputMap, UnaryOp,
+    LinearOp, ScalarProgramBlock, StructuralPattern, TargetAssignmentShape, TensorOutputMap,
+    UnaryOp,
 };
 use support::*;
+
+pub(crate) fn assignment_shape_for_program_output(
+    program: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> Result<Option<TargetAssignmentShape>, EvalSolveError> {
+    Ok(target_assignment_shapes_with_output_offsets(program)?
+        .into_iter()
+        .find_map(|(output, shape)| {
+            (output == output_offset && shape.target_y_index() == target_y_index).then_some(shape)
+        }))
+}
+
+pub(crate) fn program_can_evaluate_declared_target(
+    program: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> Result<bool, EvalSolveError> {
+    let shapes = target_assignment_shapes_with_output_offsets(program)?;
+    let selected = shapes.iter().find_map(|(output, shape)| {
+        (*output == output_offset && shape.target_y_index() == target_y_index).then_some(*shape)
+    });
+    Ok(match selected {
+        Some(TargetAssignmentShape::AffineResidual { .. }) => false,
+        Some(_) => true,
+        None => {
+            !shapes.iter().any(|(output, _)| *output == output_offset)
+                && !row_output_depends_on_y_index(program, output_offset, target_y_index)
+        }
+    })
+}
+
+pub(crate) fn program_certifies_direct_target(
+    program: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> Result<bool, EvalSolveError> {
+    Ok(!program.iter().any(non_causal_linear_op)
+        && matches!(
+            assignment_shape_for_program_output(program, output_offset, target_y_index)?,
+            Some(TargetAssignmentShape::Direct { .. })
+        ))
+}
+
+pub(crate) fn program_certifies_exact_target(
+    program: &[LinearOp],
+    output_offset: usize,
+    target_y_index: usize,
+) -> Result<bool, EvalSolveError> {
+    Ok(!program.iter().any(non_causal_linear_op)
+        && assignment_shape_for_program_output(program, output_offset, target_y_index)?.is_some())
+}
 
 /// Reusable evaluator for one Solve-IR row block.
 pub struct PreparedScalarProgramBlock {
@@ -826,6 +878,7 @@ impl PreparedScalarProgramBlock {
     pub fn apply_target_assignment_rows_unchecked_with_context(
         &self,
         rows: &[AlgebraicRefreshRow],
+        mut program_row: impl FnMut(&AlgebraicRefreshRow) -> Option<usize>,
         y: &mut [f64],
         p: &[f64],
         t: f64,
@@ -842,21 +895,24 @@ impl PreparedScalarProgramBlock {
         let mut scratch = self.scratch.borrow_mut();
         record_solve_block_eval("target_rows_batch", self.output_count, rows.len());
         for row in rows {
-            let shape = row.assignment_shape.ok_or_else(|| {
+            let row_idx = program_row(row).ok_or_else(|| {
+                invalid_prepared_row("target assignment source projection is incomplete")
+            })?;
+            let shape = row.assignment_shape().ok_or_else(|| {
                 invalid_prepared_row_with_span(
                     "batched target assignment row has no selected assignment shape",
-                    self.block.program_span(row.row_idx),
+                    self.block.program_span(row_idx),
                 )
             })?;
-            if shape.target_y_index() != row.target_index {
+            if shape.target_y_index() != row.target_index() {
                 return Err(invalid_prepared_row_with_span(
                     "batched target assignment shape does not match its refresh target",
-                    self.block.program_span(row.row_idx),
+                    self.block.program_span(row_idx),
                 ));
             }
             let value =
                 self.eval_target_assignment_row_with_scratch(TargetAssignmentScratchRequest {
-                    row_idx: row.row_idx,
+                    row_idx,
                     shape,
                     y,
                     p,
@@ -864,7 +920,7 @@ impl PreparedScalarProgramBlock {
                     context,
                     scratch: &mut scratch,
                 })?;
-            y[row.target_index] = value;
+            y[row.target_index()] = value;
         }
         Ok(())
     }
@@ -973,8 +1029,7 @@ impl PreparedScalarProgramBlock {
             &mut scratch,
         )
         .map_err(|error| error.with_source_span(span))?;
-        let value = shape
-            .eval_value(request.row_idx, &scratch.regs, span)
+        let value = eval_assignment_shape(shape, request.row_idx, &scratch.regs, span)
             .map_err(|error| error.with_source_span(span))?;
         Ok(Some(value))
     }
@@ -1027,13 +1082,13 @@ impl PreparedScalarProgramBlock {
             &mut *request.scratch,
         )
         .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
-        shape
-            .eval_value(
-                request.row_idx,
-                &request.scratch.regs,
-                self.block.program_span(request.row_idx),
-            )
-            .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
+        eval_assignment_shape(
+            shape,
+            request.row_idx,
+            &request.scratch.regs,
+            self.block.program_span(request.row_idx),
+        )
+        .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
     }
 
     pub(crate) fn assignment_shape_for_output(
@@ -1274,7 +1329,7 @@ impl<'a> AssignmentProgramBuilder<'a> {
     }
 }
 
-fn row_output_depends_on_y_index(
+pub(crate) fn row_output_depends_on_y_index(
     row: &[LinearOp],
     output_offset: usize,
     target_y_index: usize,

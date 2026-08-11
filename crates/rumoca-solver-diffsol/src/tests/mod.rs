@@ -25,6 +25,36 @@ mod tensor_runtime;
 
 mod runtime_value_tests;
 
+fn issue_fixture_refresh_owners(model: &mut solve::SolveModel) -> Result<(), SimError> {
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)?;
+    Ok(())
+}
+
+trait FixtureSolveModel {
+    fn into_fixture_model(self) -> solve::SolveModel;
+}
+
+impl FixtureSolveModel for solve::SolveModel {
+    fn into_fixture_model(self) -> solve::SolveModel {
+        self
+    }
+}
+
+impl FixtureSolveModel for &solve::SolveModel {
+    fn into_fixture_model(self) -> solve::SolveModel {
+        self.clone()
+    }
+}
+
+fn simulate(model: impl FixtureSolveModel, opts: &SimOptions) -> Result<SimResult, SimError> {
+    let mut model = model.into_fixture_model();
+    if !model.problem.continuous.refresh_owners.is_issued() {
+        issue_fixture_refresh_owners(&mut model)?;
+    }
+    super::simulate(&model, opts)
+}
+
 fn periodic_schedule(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
     solve::PeriodicEventSchedule::from_seconds(period, phase).unwrap()
 }
@@ -791,6 +821,7 @@ fn fixed_static_event_keeps_follow_current_pre_rows_iterating() {
     );
     model.parameters = vec![1.0, 0.0, 0.0];
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
@@ -1016,6 +1047,7 @@ fn observation_refresh_keeps_pre_values_fixed_during_settle() {
     );
     let mut y = Vec::new();
     let mut p = vec![0.0, 0.0, 0.0];
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
 
     let changed = runtime
@@ -1056,6 +1088,7 @@ fn observation_refresh_resets_fixed_pre_event_history_rows() {
     );
     let mut y = Vec::new();
     let mut p = vec![1.0, 0.0, 0.0, 0.0];
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
 
     let changed = runtime
@@ -1466,6 +1499,7 @@ fn event_update_converges_boolean_pre_feedback_loop_row_by_row() {
     );
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
@@ -1517,6 +1551,7 @@ fn fixed_time_event_does_not_freeze_follow_current_rows() {
     );
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
@@ -1591,6 +1626,7 @@ fn event_update_rechecks_change_guard_after_runtime_alias_refresh() {
     );
     model.parameters = vec![1.0, 1.0, 0.0, 0.0, 0.0];
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("solve model should build");
     let mut y = Vec::new();
@@ -1638,6 +1674,7 @@ fn event_update_refreshes_runtime_aliases_before_parameter_only_projection() {
         scalar_program_block!(vec![load_parameter_row(2)], fixture_span!());
     model.parameters = vec![0.0, 2.0, 2.0];
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
     let ode_model = OdeModel::new(&model).expect("ODE model should build");
     let mut y = model.initial_y.clone();

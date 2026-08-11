@@ -1,6 +1,20 @@
 use crate::RuntimeSolveError;
 use indexmap::IndexMap;
+use rumoca_ir_solve as solve;
+use std::collections::HashMap;
 use std::hash::Hash;
+
+pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Option<T> {
+    match result {
+        Ok(compiled) => Some(compiled),
+        Err(error) => {
+            if std::env::var_os("RUMOCA_PROFILE_COMPILED").is_some() {
+                eprintln!("rumoca-compiled-profile label={label} error={error}");
+            }
+            None
+        }
+    }
+}
 
 pub(super) fn zero_runtime_values(
     len: usize,
@@ -69,4 +83,61 @@ where
     values
         .try_reserve(capacity)
         .map_err(|_| RuntimeSolveError::solve_ir(format!("{context} capacity overflows")))
+}
+
+pub(super) fn build_visible_name_index(model: &solve::SolveModel) -> HashMap<String, usize> {
+    model
+        .visible_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect()
+}
+
+pub(super) fn fill_inactive_root_output(out: &mut [f64]) -> Result<(), RuntimeSolveError> {
+    if let Some(first) = out.first_mut() {
+        *first = 1.0;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_runtime_output_len(
+    context: &str,
+    expected: usize,
+    actual: usize,
+) -> Result<(), RuntimeSolveError> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(RuntimeSolveError::solve_ir(format!(
+        "{context} expected {expected} values, got {actual}"
+    )))
+}
+
+pub(super) fn validate_finite_runtime_output(
+    context: &str,
+    values: &[f64],
+) -> Result<(), RuntimeSolveError> {
+    if let Some((index, value)) = values
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(RuntimeSolveError::solve_ir(format!(
+            "{context} produced non-finite value {value} at index {index}"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn visible_value_index_error(
+    name: &str,
+    index: usize,
+    len: usize,
+    context: &'static str,
+) -> RuntimeSolveError {
+    RuntimeSolveError::solve_ir(format!(
+        "{context} for visible name `{name}` reference index {index}, but only {len} values are available"
+    ))
 }

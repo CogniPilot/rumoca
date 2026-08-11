@@ -21,6 +21,9 @@ use super::{
 fn zero_state_event_continuation_is_independent_of_value_tolerance() {
     let mut model = solve::SolveModel::default();
     model.problem.events.scheduled_time_events = vec![2.5e-9];
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+            .expect("zero-state fixture refresh owners construct");
     let run = |atol| {
         let mut session = MeNoStateSession::instantiate(
             MeModelSource::new(&model),
@@ -337,7 +340,7 @@ fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
 #[test]
 fn event_right_limit_derivative_retains_the_full_algebraic_seed() {
     let model = nonlinear_right_limit_seed_model();
-    let runtime = crate::runtime::solve_runtime::SolveRuntime::new(&model)
+    let runtime = crate::runtime::solve_runtime::SolveRuntime::new_fixture(&model)
         .expect("right-limit seed fixture should prepare");
     let settle = crate::runtime::solve_runtime::AlgebraicSettle {
         tol: 1.0e-12,
@@ -640,8 +643,12 @@ fn instantiate_with_numerics(
     model: &solve::SolveModel,
     numerics_profile: super::MeNumericsProfile,
 ) -> SolveMeKernel {
+    let mut model = model.clone();
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+            .expect("ME fixture refresh owners construct");
     SolveMeKernel::instantiate(
-        MeModelSource::new(model),
+        MeModelSource::new(&model),
         &MeInstanceConfig {
             instance_name: "fmi-me-test",
             tolerance: 1.0e-10,
@@ -718,6 +725,9 @@ fn roots_refresh_from_the_exact_derivative_algebraic_branch() {
         ]],
         "fmi_me_cached_root_branch.mo",
     );
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+            .expect("cached-root fixture refresh owners construct");
     let kernel = SolveMeKernel::instantiate(
         MeModelSource::new(&model),
         &MeInstanceConfig {

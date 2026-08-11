@@ -6,20 +6,24 @@
 //! `rumoca-solver`'s runtime should construct or mutate a [`RefreshPlan`].
 
 mod schedule;
+mod source_catalog;
+#[cfg(test)]
+mod tests;
 
-use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+#[cfg(test)]
+use std::sync::Arc;
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_ir_solve as solve;
 
 use crate::prepared::{assignment_shape_reads_y_index, row_y_input_ranges};
 use crate::sparsity::program_output_y_dependencies;
-use crate::{EvalSolveError, PreparedScalarProgramBlock, TargetAssignmentShape};
+use crate::{EvalSolveError, PreparedScalarProgramBlock};
 
-pub use schedule::{RefreshStage, build_refresh_stages};
+pub use rumoca_ir_solve::{AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshStage};
+pub use schedule::build_refresh_stages;
+use source_catalog::CanonicalScalarProgramCatalog;
 
 pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshPlan) {
     if !trace_algebraic_refresh() {
@@ -35,9 +39,13 @@ pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshP
                 .solve_layout
                 .solver_maps
                 .names
-                .get(row.target_index)
+                .get(row.target_index())
                 .map_or("<unnamed>", String::as_str);
-            format!("{target}@row{}", row.row_idx)
+            format!(
+                "{target}@source{}:{}",
+                row.source().node(),
+                row.source().program()
+            )
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -50,9 +58,13 @@ pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshP
                 .solve_layout
                 .solver_maps
                 .names
-                .get(row.target_index)
+                .get(row.target_index())
                 .map_or("<unnamed>", String::as_str);
-            format!("{target}@row{}", row.row_idx)
+            format!(
+                "{target}@source{}:{}",
+                row.source().node(),
+                row.source().program()
+            )
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -60,7 +72,7 @@ pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshP
         - plan
             .rows
             .iter()
-            .map(|row| row.target_index)
+            .map(|row| row.target_index())
             .collect::<IndexSet<_>>()
             .len();
     let projection_unknowns = plan
@@ -85,12 +97,12 @@ pub fn trace_refresh_plan(model: &solve::SolveModel, name: &str, plan: &RefreshP
     let direct_rows = plan
         .rows
         .iter()
-        .filter(|row| row.direct_assignment_certified)
+        .filter(|row| row.direct_assignment_certified())
         .count();
     let exact_rows = plan
         .rows
         .iter()
-        .filter(|row| row.exact_assignment_certified)
+        .filter(|row| row.exact_assignment_certified())
         .count();
     tracing::debug!(
         target: "rumoca_eval_solve::refresh",
@@ -116,223 +128,168 @@ fn trace_algebraic_refresh() -> bool {
     tracing::enabled!(target: "rumoca_eval_solve::refresh", tracing::Level::DEBUG)
 }
 
-#[derive(Clone)]
-pub struct AlgebraicRefreshRow {
-    /// Logical equation/output index in the canonical implicit system.
-    pub equation_index: usize,
-    /// ScalarProgramBlock program index that produces this refresh row.
-    pub row_idx: usize,
-    /// Output offset inside `row_idx`. Shared Solve programs may store multiple
-    /// row outputs while still evaluating one source program.
-    pub output_offset: usize,
-    /// Solver-Y slot this plan entry updates.
-    pub target_index: usize,
-    /// The row's own implicit assignment target, when the lowering placed it
-    /// as `target = expr`. When this differs from `target_index` the runtime
-    /// must linear-solve the row's residual for the paired variable instead
-    /// of evaluating the assignment value.
-    pub assignment_target: Option<usize>,
-    /// Prepared isolator selected for this exact target during construction.
-    /// Runtime execution consumes this certificate directly instead of
-    /// searching the row's other algebraically valid isolators.
-    pub assignment_shape: Option<TargetAssignmentShape>,
-    /// The prepared row proves a direct target assignment, allowing an
-    /// acyclic dependency-complete schedule to skip simultaneous projection.
-    pub direct_assignment_certified: bool,
-    /// The row has an exact direct or affine target assignment. This can omit
-    /// a seeded singleton from value rechecking. A complete acyclic inventory
-    /// of exact assignments also certifies the whole value solution; sensitivity
-    /// projection continues to retain the compiler-owned simultaneous plan.
-    pub exact_assignment_certified: bool,
-}
-
-#[derive(Clone, Default)]
-pub struct RefreshPlan {
-    pub source_block: Arc<solve::ScalarProgramBlock>,
-    /// Complete compiler-owned BLT used to certify and solve the canonical
-    /// implicit residual system after the causal seed schedule.
-    pub simultaneous_plan: solve::AlgebraicProjectionPlan,
-    /// Stable indices into the complete compiler-owned BLT. Subplans retain
-    /// artifact identity instead of renumbering blocks from zero.
-    pub simultaneous_block_indices: Vec<usize>,
-    /// Residual blocks that still require value settling after exact causal
-    /// seed rows run. Sensitivity projection retains `simultaneous_plan`.
-    pub value_projection_plan: solve::AlgebraicProjectionPlan,
-    pub rows: Vec<AlgebraicRefreshRow>,
-    /// Causal seed rows that can initialize algebraic values before the
-    /// remaining simultaneous projection blocks are settled.
-    pub causal_seed_rows: Vec<AlgebraicRefreshRow>,
-    /// Causal rows proven to depend only on the parameter vector and other
-    /// rows in this set. Runtime may reuse them while that complete snapshot
-    /// is unchanged.
-    pub static_causal_seed_rows: Vec<AlgebraicRefreshRow>,
-    /// Causal rows that can depend on time, state, runtime operations, or
-    /// dynamic algebraics and therefore execute on every refresh.
-    pub dynamic_causal_seed_rows: Vec<AlgebraicRefreshRow>,
-    /// Proof-directed value order. The complete causal warm-start precedes
-    /// the numerical projection blocks whose residuals still require settling.
-    pub value_stages: Vec<RefreshStage>,
-    pub causal_solution_certified: bool,
-}
-
-impl RefreshPlan {
-    pub fn source_block(&self) -> &solve::ScalarProgramBlock {
-        &self.source_block
-    }
-
-    /// Derive the value stages that remain after `settled` has completed at
-    /// the identical coordinate. Shared exact assignments and atomic
-    /// projection blocks are construction-identical; uncovered stages retain
-    /// this plan's checked BLT order.
-    pub fn certified_value_remainder_after(&self, settled: &Self) -> Option<Self> {
-        if !Arc::ptr_eq(&self.source_block, &settled.source_block) {
-            return None;
-        }
-        let settled = refresh_stage_identities(&settled.value_stages);
-        let value_stages = self
-            .value_stages
-            .iter()
-            .filter_map(|stage| uncovered_refresh_stage(stage, &settled))
-            .collect();
-        let mut remainder = self.clone();
-        remainder.value_stages = value_stages;
-        Some(remainder)
-    }
-}
-
-#[derive(PartialEq)]
-enum RefreshStageIdentity {
-    ExactAssignment {
-        equation_index: usize,
-        row_idx: usize,
-        output_offset: usize,
-        target_index: usize,
-        assignment_target: Option<usize>,
-        assignment_shape: Option<TargetAssignmentShape>,
-    },
-    ProjectionBlock {
-        block_index: usize,
-        blocks: Vec<(Vec<usize>, Vec<usize>)>,
-    },
-}
-
-fn refresh_stage_identities(stages: &[RefreshStage]) -> Vec<RefreshStageIdentity> {
-    let mut identities = Vec::new();
-    for stage in stages {
-        match stage {
-            RefreshStage::CausalSeedSweep {
-                static_rows,
-                dynamic_rows,
-            }
-            | RefreshStage::ExactAssignments {
-                static_rows,
-                dynamic_rows,
-            } => identities.extend(
-                static_rows
-                    .iter()
-                    .chain(dynamic_rows.iter())
-                    .map(refresh_row_identity),
-            ),
-            RefreshStage::ProjectionBlock {
-                block_index, plan, ..
-            } => {
-                identities.push(projection_stage_identity(*block_index, plan));
-            }
-        }
-    }
-    identities
-}
-
-fn uncovered_refresh_rows(
-    rows: &[AlgebraicRefreshRow],
-    settled: &[RefreshStageIdentity],
-) -> Vec<AlgebraicRefreshRow> {
-    rows.iter()
-        .filter(|row| !settled.contains(&refresh_row_identity(row)))
-        .cloned()
-        .collect()
-}
-
-fn uncovered_refresh_stage(
-    stage: &RefreshStage,
-    settled: &[RefreshStageIdentity],
-) -> Option<RefreshStage> {
-    match stage {
-        RefreshStage::CausalSeedSweep {
-            static_rows,
-            dynamic_rows,
-        } => uncovered_causal_seed_stage(static_rows, dynamic_rows, settled),
-        RefreshStage::ExactAssignments {
-            static_rows,
-            dynamic_rows,
-        } => uncovered_exact_assignment_stage(static_rows, dynamic_rows, settled),
-        RefreshStage::ProjectionBlock {
-            block_index, plan, ..
-        } => {
-            let identity = projection_stage_identity(*block_index, plan);
-            (!settled.contains(&identity)).then(|| stage.clone())
-        }
-    }
-}
-
-fn uncovered_exact_assignment_stage(
-    static_rows: &[AlgebraicRefreshRow],
-    dynamic_rows: &[AlgebraicRefreshRow],
-    settled: &[RefreshStageIdentity],
-) -> Option<RefreshStage> {
-    let static_rows = uncovered_refresh_rows(static_rows, settled);
-    let dynamic_rows = uncovered_refresh_rows(dynamic_rows, settled);
-    (!static_rows.is_empty() || !dynamic_rows.is_empty()).then(|| RefreshStage::ExactAssignments {
-        static_rows: static_rows.into_boxed_slice(),
-        dynamic_rows: dynamic_rows.into_boxed_slice(),
+fn construct_refresh_row(
+    draft: solve::AlgebraicRefreshRowDraft,
+    span: Option<rumoca_core::Span>,
+) -> Result<AlgebraicRefreshRow, EvalSolveError> {
+    AlgebraicRefreshRow::checked(draft).map_err(|error| EvalSolveError::InvalidRow {
+        message: error.to_string(),
+        span,
     })
 }
 
-fn uncovered_causal_seed_stage(
-    static_rows: &[AlgebraicRefreshRow],
-    dynamic_rows: &[AlgebraicRefreshRow],
-    settled: &[RefreshStageIdentity],
-) -> Option<RefreshStage> {
-    let static_rows = uncovered_refresh_rows(static_rows, settled);
-    let dynamic_rows = uncovered_refresh_rows(dynamic_rows, settled);
-    (!static_rows.is_empty() || !dynamic_rows.is_empty()).then(|| RefreshStage::CausalSeedSweep {
-        static_rows: static_rows.into_boxed_slice(),
-        dynamic_rows: dynamic_rows.into_boxed_slice(),
-    })
+fn build_canonical_algebraic_refresh_plan(
+    problem: &solve::SolveProblem,
+    catalog: &CanonicalScalarProgramCatalog<'_>,
+) -> Result<RefreshPlan, EvalSolveError> {
+    validate_canonical_implicit_output_inventory(problem, catalog)?;
+    let state_count = problem.solve_layout.state_scalar_count();
+    let solver_count = problem.solve_layout.solver_scalar_count();
+    let span = catalog.first_span();
+    let mut rows = Vec::new();
+    reserve_refresh_vec_capacity(
+        &mut rows,
+        catalog.len(),
+        "canonical refresh assignment owners",
+        span,
+    )?;
+    let mut claimed_targets = IndexSet::new();
+    reserve_refresh_index_set_capacity(
+        &mut claimed_targets,
+        catalog.len(),
+        "canonical refresh target owners",
+        span,
+    )?;
+    for (equation_index, target) in problem.continuous.implicit_row_targets.iter().enumerate() {
+        let Some(solve::ScalarSlot::Y {
+            index: target_index,
+            ..
+        }) = target
+        else {
+            continue;
+        };
+        if *target_index < state_count || *target_index >= solver_count {
+            continue;
+        }
+        let Some(position) = catalog.positions().get(&equation_index).copied() else {
+            // Tensor nodes remain owned by the compact ComputeBlock and its
+            // BLT projection stage. They never become scalar assignments here.
+            continue;
+        };
+        let Some(program) = catalog.program(position.program_index) else {
+            continue;
+        };
+        if !crate::prepared::program_can_evaluate_declared_target(
+            program.operations,
+            position.output_offset,
+            *target_index,
+        )? || !claimed_targets.insert(*target_index)
+        {
+            continue;
+        }
+        let assignment_shape = crate::prepared::assignment_shape_for_program_output(
+            program.operations,
+            position.output_offset,
+            *target_index,
+        )?;
+        rows.push(construct_refresh_row(
+            solve::AlgebraicRefreshRowDraft {
+                owner_id: RefreshRowOwnerId::checked(*target_index).ok_or_else(|| {
+                    EvalSolveError::InvalidRow {
+                        message: "continuous refresh row owner index exceeds u32".to_string(),
+                        span: Some(program.span),
+                    }
+                })?,
+                source: program.source,
+                equation_index,
+                output_offset: position.output_offset,
+                target_index: *target_index,
+                assignment_target: Some(*target_index),
+                assignment_shape,
+                direct_assignment_certified: crate::prepared::program_certifies_direct_target(
+                    program.operations,
+                    position.output_offset,
+                    *target_index,
+                )?,
+                exact_assignment_certified: crate::prepared::program_certifies_exact_target(
+                    program.operations,
+                    position.output_offset,
+                    *target_index,
+                )?,
+            },
+            Some(program.span),
+        )?);
+    }
+    let causal_solution_certified =
+        complete_causal_projection_is_certified(problem, catalog, &rows);
+    let mut plan = order_refresh_rows(rows, catalog, state_count, causal_solution_certified)?;
+    plan.simultaneous_plan = problem.continuous.algebraic_projection_plan.clone();
+    plan.simultaneous_block_indices = (0..plan.simultaneous_plan.blocks.len()).collect();
+    configure_causal_seed_rows(&mut plan, catalog, state_count)?;
+    Ok(plan)
 }
 
-fn projection_stage_identity(
-    block_index: usize,
-    plan: &solve::AlgebraicProjectionPlan,
-) -> RefreshStageIdentity {
-    RefreshStageIdentity::ProjectionBlock {
-        block_index,
-        blocks: plan
-            .blocks
+fn validate_canonical_implicit_output_inventory(
+    problem: &solve::SolveProblem,
+    catalog: &CanonicalScalarProgramCatalog<'_>,
+) -> Result<(), EvalSolveError> {
+    let state_count = problem.solve_layout.state_scalar_count();
+    let solver_count = problem.solve_layout.solver_scalar_count();
+    let mut produced = vec![false; solver_count];
+    for (equation, target) in problem.continuous.implicit_row_targets.iter().enumerate() {
+        let Some(solve::ScalarSlot::Y { index, .. }) = target else {
+            continue;
+        };
+        if *index >= solver_count {
+            return Err(EvalSolveError::InvalidRow {
+                message: format!(
+                    "implicit residual output row {equation} targets Y index {index}, but the solver layout has {solver_count} rows"
+                ),
+                span: catalog.first_span(),
+            });
+        }
+        if *index < state_count {
+            continue;
+        }
+        if !catalog.produces_output(equation) {
+            return Err(EvalSolveError::InvalidRow {
+                message: format!(
+                    "implicit algebraic system is missing residual output row {equation}"
+                ),
+                span: catalog.first_span(),
+            });
+        }
+        produced[*index] = true;
+    }
+    for projection in &problem.continuous.algebraic_projection_plan.blocks {
+        if projection
+            .rows
             .iter()
-            .map(|block| (block.rows.clone(), block.y_indices.clone()))
-            .collect(),
+            .all(|row| catalog.produces_output(*row))
+        {
+            for &index in &projection.y_indices {
+                if index < solver_count {
+                    produced[index] = true;
+                }
+            }
+        }
     }
-}
-
-fn refresh_row_identity(row: &AlgebraicRefreshRow) -> RefreshStageIdentity {
-    RefreshStageIdentity::ExactAssignment {
-        equation_index: row.equation_index,
-        row_idx: row.row_idx,
-        output_offset: row.output_offset,
-        target_index: row.target_index,
-        assignment_target: row.assignment_target,
-        assignment_shape: row.assignment_shape,
+    if let Some(index) = (state_count..solver_count).find(|index| !produced[*index]) {
+        return Err(EvalSolveError::InvalidRow {
+            message: format!("implicit algebraic system is missing a producer for Y index {index}"),
+            span: catalog.first_span(),
+        });
     }
+    Ok(())
 }
 
 pub fn build_algebraic_refresh_plan(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     block: &PreparedScalarProgramBlock,
 ) -> Result<RefreshPlan, EvalSolveError> {
-    let state_count = model.state_scalar_count();
-    validate_implicit_output_inventory(model, block.block())?;
-    let row_target_rows = algebraic_refresh_rows_from_row_targets(model, block, state_count)?;
+    let state_count = problem.solve_layout.state_scalar_count();
+    validate_implicit_output_inventory(problem, block.block())?;
+    let row_target_rows = algebraic_refresh_rows_from_row_targets(problem, block, state_count)?;
     let mut rows_by_target = IndexMap::new();
     reserve_refresh_index_map_capacity(
         &mut rows_by_target,
@@ -341,7 +298,7 @@ pub fn build_algebraic_refresh_plan(
         first_block_span(block.block()),
     )?;
     for row in row_target_rows {
-        rows_by_target.insert(row.target_index, row);
+        rows_by_target.insert(row.target_index(), row);
     }
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
@@ -354,10 +311,9 @@ pub fn build_algebraic_refresh_plan(
     if trace_algebraic_refresh() {
         let owned = rows
             .iter()
-            .map(|row| row.target_index)
+            .map(|row| row.target_index())
             .collect::<BTreeSet<_>>();
-        let missing = model
-            .problem
+        let missing = problem
             .continuous
             .algebraic_projection_plan
             .blocks
@@ -365,8 +321,7 @@ pub fn build_algebraic_refresh_plan(
             .flat_map(|block| block.y_indices.iter().copied())
             .filter(|target| !owned.contains(target))
             .filter_map(|target| {
-                model
-                    .problem
+                problem
                     .solve_layout
                     .solver_maps
                     .names
@@ -376,33 +331,29 @@ pub fn build_algebraic_refresh_plan(
             .collect::<Vec<_>>();
         tracing::debug!(target: "rumoca_eval_solve::refresh", ?missing, "algebraic targets without exact refresh owners");
     }
-    let causal_solution_certified = complete_causal_projection_is_certified(model, block, &rows);
+    let causal_solution_certified =
+        complete_causal_projection_is_certified(problem, block.block(), &rows);
     tracing::debug!(
         target: "rumoca_eval_solve::refresh",
         candidate = causal_solution_certified,
         rows = rows.len(),
         "complete algebraic causal-certificate candidate"
     );
-    let mut plan = order_refresh_rows(
-        rows,
-        Arc::new(block.block().clone()),
-        state_count,
-        causal_solution_certified,
-    )?;
-    plan.simultaneous_plan = model.problem.continuous.algebraic_projection_plan.clone();
+    let mut plan = order_refresh_rows(rows, block.block(), state_count, causal_solution_certified)?;
+    plan.simultaneous_plan = problem.continuous.algebraic_projection_plan.clone();
     plan.simultaneous_block_indices = (0..plan.simultaneous_plan.blocks.len()).collect();
-    configure_causal_seed_rows(&mut plan, state_count)?;
+    configure_causal_seed_rows(&mut plan, block.block(), state_count)?;
     Ok(plan)
 }
 
 fn validate_implicit_output_inventory(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     block: &solve::ScalarProgramBlock,
 ) -> Result<(), EvalSolveError> {
     let positions = output_row_positions(block)?;
-    let state_count = model.state_scalar_count();
-    let solver_count = model.solver_scalar_count();
-    let targets = &model.problem.continuous.implicit_row_targets;
+    let state_count = problem.solve_layout.state_scalar_count();
+    let solver_count = problem.solve_layout.solver_scalar_count();
+    let targets = &problem.continuous.implicit_row_targets;
     let mut produced = vec![false; solver_count];
     for (row, target) in targets.iter().enumerate() {
         let Some(solve::ScalarSlot::Y { index, .. }) = target else {
@@ -434,7 +385,7 @@ fn validate_implicit_output_inventory(
     }
     // A coupled or otherwise non-isolatable residual legitimately has no
     // direct row target. Its compiler-owned projection block is the producer.
-    for projection in &model.problem.continuous.algebraic_projection_plan.blocks {
+    for projection in &problem.continuous.algebraic_projection_plan.blocks {
         if projection
             .rows
             .iter()
@@ -457,34 +408,28 @@ fn validate_implicit_output_inventory(
 }
 
 fn algebraic_refresh_rows_from_row_targets(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     block: &PreparedScalarProgramBlock,
     state_count: usize,
 ) -> Result<Vec<AlgebraicRefreshRow>, EvalSolveError> {
-    let solver_count = model.solver_scalar_count();
+    let solver_count = problem.solve_layout.solver_scalar_count();
     let span = first_block_span(block.block());
     let output_row_positions = output_row_positions(block.block())?;
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(
         &mut rows,
-        model.problem.continuous.implicit_row_targets.len(),
+        problem.continuous.implicit_row_targets.len(),
         "row-target refresh rows",
         span,
     )?;
     let mut claimed_targets = IndexSet::new();
     reserve_refresh_index_set_capacity(
         &mut claimed_targets,
-        model.problem.continuous.implicit_row_targets.len(),
+        problem.continuous.implicit_row_targets.len(),
         "claimed row targets",
         span,
     )?;
-    for (row_idx, target) in model
-        .problem
-        .continuous
-        .implicit_row_targets
-        .iter()
-        .enumerate()
-    {
+    for (row_idx, target) in problem.continuous.implicit_row_targets.iter().enumerate() {
         let Some(solve::ScalarSlot::Y { index, .. }) = target else {
             continue;
         };
@@ -506,52 +451,235 @@ fn algebraic_refresh_rows_from_row_targets(
         if !claimed_targets.insert(target_index) {
             continue;
         }
-        rows.push(AlgebraicRefreshRow {
-            equation_index: row_idx,
-            row_idx: position.program_index,
-            output_offset: position.output_offset,
-            target_index,
-            assignment_target: Some(target_index),
-            assignment_shape: block.assignment_shape_for_output(
-                position.program_index,
-                position.output_offset,
+        rows.push(construct_refresh_row(
+            solve::AlgebraicRefreshRowDraft {
+                owner_id: RefreshRowOwnerId::checked(target_index).ok_or_else(|| {
+                    EvalSolveError::InvalidRow {
+                        message: "continuous refresh row owner index exceeds u32".to_string(),
+                        span,
+                    }
+                })?,
+                source: solve::RefreshScalarProgramSource::checked(0, position.program_index)
+                    .ok_or_else(|| EvalSolveError::InvalidRow {
+                        message: "continuous refresh source identity exceeds u32".to_string(),
+                        span,
+                    })?,
+                equation_index: row_idx,
+                output_offset: position.output_offset,
                 target_index,
-            ),
-            direct_assignment_certified: block.certifies_direct_target_assignment(
-                position.program_index,
-                position.output_offset,
-                target_index,
-            ),
-            exact_assignment_certified: block.certifies_exact_target_assignment_output(
-                position.program_index,
-                position.output_offset,
-                target_index,
-            ),
-        });
+                assignment_target: Some(target_index),
+                assignment_shape: block.assignment_shape_for_output(
+                    position.program_index,
+                    position.output_offset,
+                    target_index,
+                ),
+                direct_assignment_certified: block.certifies_direct_target_assignment(
+                    position.program_index,
+                    position.output_offset,
+                    target_index,
+                ),
+                exact_assignment_certified: block.certifies_exact_target_assignment_output(
+                    position.program_index,
+                    position.output_offset,
+                    target_index,
+                ),
+            },
+            span,
+        )?);
     }
     Ok(rows)
 }
 
 pub fn build_derivative_refresh_plan(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     derivative_block: &solve::ScalarProgramBlock,
     implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
 ) -> Result<RefreshPlan, EvalSolveError> {
-    let state_count = model.state_scalar_count();
+    let state_count = problem.solve_layout.state_scalar_count();
     let initial_deps = derivative_row_dependencies(derivative_block, state_count)?;
-    build_dependency_refresh_plan(model, implicit_block, full_plan, initial_deps)
+    build_dependency_refresh_plan(problem, implicit_block, full_plan, initial_deps)
 }
 
 pub fn build_root_refresh_plan(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
 ) -> Result<RefreshPlan, EvalSolveError> {
-    let state_count = model.state_scalar_count();
-    let initial_deps =
-        root_condition_dependencies(&model.problem.events.root_conditions, state_count)?;
-    build_dependency_refresh_plan(model, implicit_block, full_plan, initial_deps)
+    let state_count = problem.solve_layout.state_scalar_count();
+    let initial_deps = root_condition_dependencies(&problem.events.root_conditions, state_count)?;
+    build_dependency_refresh_plan(problem, implicit_block, full_plan, initial_deps)
+}
+
+/// Construct the complete checked refresh inventory while Solve lowering owns
+/// the canonical continuous and event projections. Runtime adapters consume
+/// this aggregate and never rerun dependency or assignment discovery.
+pub fn build_continuous_refresh_owners(
+    problem: &solve::SolveProblem,
+) -> Result<solve::ContinuousRefreshOwners, EvalSolveError> {
+    let catalog = CanonicalScalarProgramCatalog::construct(&problem.continuous.implicit_rhs)?;
+    let algebraic = build_canonical_algebraic_refresh_plan(problem, &catalog)?;
+    let state_count = problem.solve_layout.state_scalar_count();
+    let derivative_dependencies =
+        compute_block_dependencies(&problem.continuous.derivative_rhs, state_count)?;
+    let derivative = build_dependency_refresh_plan_from_access(
+        problem,
+        &catalog,
+        &algebraic,
+        derivative_dependencies,
+        catalog.positions(),
+    )?;
+    let root_dependencies =
+        scalar_program_block_dependencies(&problem.events.root_conditions, state_count)?;
+    let root = build_dependency_refresh_plan_from_access(
+        problem,
+        &catalog,
+        &algebraic,
+        root_dependencies,
+        catalog.positions(),
+    )?;
+    let event_dependencies = event_consumer_dependencies(problem, state_count)?;
+    let event = build_dependency_refresh_plan_from_access(
+        problem,
+        &catalog,
+        &algebraic,
+        event_dependencies,
+        catalog.positions(),
+    )?;
+    let clock_events = vec![RefreshPlan::default(); problem.clocks.periodic_event_schedules.len()];
+    solve::ContinuousRefreshOwners::checked_for_source(
+        &problem.continuous.implicit_rhs,
+        algebraic,
+        derivative,
+        root,
+        event,
+        clock_events,
+    )
+    .map_err(|error| EvalSolveError::InvalidRow {
+        message: error.to_string(),
+        span: catalog.first_span(),
+    })
+}
+
+fn event_consumer_dependencies(
+    problem: &solve::SolveProblem,
+    state_count: usize,
+) -> Result<IndexSet<usize>, EvalSolveError> {
+    let mut dependencies = IndexSet::new();
+    for block in [
+        &problem.discrete.runtime_assignment_rhs,
+        &problem.discrete.post_commit_assignment_rhs,
+        &problem.events.root_conditions,
+        &problem.discrete.rhs,
+        &problem.events.action_conditions,
+    ] {
+        extend_dependency_set(
+            &mut dependencies,
+            scalar_program_block_dependencies(block, state_count)?,
+            first_block_span(block),
+        )?;
+    }
+    extend_dependency_set(
+        &mut dependencies,
+        compute_block_dependencies(&problem.discrete.structured_rhs, state_count)?,
+        problem
+            .discrete
+            .structured_rhs
+            .nodes
+            .iter()
+            .find_map(|node| match node {
+                solve::ComputeNode::ScalarPrograms(block) => block.first_source_span(),
+                solve::ComputeNode::MatMul { span, .. }
+                | solve::ComputeNode::LinSolve { span, .. }
+                | solve::ComputeNode::Map { span, .. }
+                | solve::ComputeNode::AffineStencil { span, .. } => Some(*span),
+            }),
+    )?;
+    for program in &problem.discrete.guarded_assignments {
+        for index in row_y_input_ranges(program.program())
+            .into_iter()
+            .flatten()
+            .filter(|index| *index >= state_count)
+        {
+            reserve_refresh_index_set_capacity(
+                &mut dependencies,
+                1,
+                "event guarded dependency set",
+                Some(program.span()),
+            )?;
+            dependencies.insert(index);
+        }
+    }
+    Ok(dependencies)
+}
+
+fn compute_block_dependencies(
+    block: &solve::ComputeBlock,
+    state_count: usize,
+) -> Result<IndexSet<usize>, EvalSolveError> {
+    let mut dependencies = IndexSet::new();
+    for node in &block.nodes {
+        match node {
+            solve::ComputeNode::ScalarPrograms(block) => {
+                extend_dependency_set(
+                    &mut dependencies,
+                    scalar_program_block_dependencies(block, state_count)?,
+                    first_block_span(block),
+                )?;
+            }
+            solve::ComputeNode::MatMul {
+                lhs_ops,
+                rhs_ops,
+                span,
+                ..
+            } => {
+                extend_program_dependencies(&mut dependencies, lhs_ops, state_count, Some(*span))?;
+                extend_program_dependencies(&mut dependencies, rhs_ops, state_count, Some(*span))?;
+            }
+            solve::ComputeNode::LinSolve {
+                setup_ops, span, ..
+            } => {
+                extend_program_dependencies(&mut dependencies, setup_ops, state_count, Some(*span))?
+            }
+            solve::ComputeNode::Map { base_ops, span, .. }
+            | solve::ComputeNode::AffineStencil { base_ops, span, .. } => {
+                extend_program_dependencies(&mut dependencies, base_ops, state_count, Some(*span))?;
+            }
+        }
+    }
+    Ok(dependencies)
+}
+
+fn extend_program_dependencies(
+    dependencies: &mut IndexSet<usize>,
+    program: &[solve::LinearOp],
+    state_count: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    for index in row_y_input_ranges(program)
+        .into_iter()
+        .flatten()
+        .filter(|index| *index >= state_count)
+    {
+        reserve_refresh_index_set_capacity(
+            dependencies,
+            1,
+            "compact compute dependency set",
+            span,
+        )?;
+        dependencies.insert(index);
+    }
+    Ok(())
+}
+
+fn extend_dependency_set(
+    target: &mut IndexSet<usize>,
+    source: IndexSet<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    reserve_refresh_index_set_capacity(target, source.len(), "refresh dependency set", span)?;
+    target.extend(source);
+    Ok(())
 }
 
 /// Build the algebraic refresh closure required by a collection of scalar
@@ -561,13 +689,13 @@ pub fn build_root_refresh_plan(
 /// does not execute or reconstruct unrelated algebraic/output lanes merely
 /// because the consumers run at the same runtime boundary.
 pub fn build_scalar_dependency_refresh_plan(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
     consumer_blocks: &[&solve::ScalarProgramBlock],
 ) -> Result<RefreshPlan, EvalSolveError> {
     build_scalar_dependency_refresh_plan_with_outputs(
-        model,
+        problem,
         implicit_block,
         full_plan,
         consumer_blocks,
@@ -578,14 +706,14 @@ pub fn build_scalar_dependency_refresh_plan(
 /// Build a dependency refresh plan from whole consumer blocks plus selected
 /// logical outputs of grouped programs.
 pub fn build_scalar_dependency_refresh_plan_with_outputs(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
     consumer_blocks: &[&solve::ScalarProgramBlock],
     consumer_outputs: &[(&solve::ScalarProgramBlock, &[usize])],
 ) -> Result<RefreshPlan, EvalSolveError> {
     build_scalar_dependency_refresh_plan_with_outputs_and_programs(
-        model,
+        problem,
         implicit_block,
         full_plan,
         consumer_blocks,
@@ -597,14 +725,14 @@ pub fn build_scalar_dependency_refresh_plan_with_outputs(
 /// Build a dependency refresh plan while retaining compact multi-output
 /// consumer programs that have no scalar output catalog.
 pub fn build_scalar_dependency_refresh_plan_with_outputs_and_programs(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
     consumer_blocks: &[&solve::ScalarProgramBlock],
     consumer_outputs: &[(&solve::ScalarProgramBlock, &[usize])],
     compact_consumers: &[(&[solve::LinearOp], rumoca_core::Span)],
 ) -> Result<RefreshPlan, EvalSolveError> {
-    let state_count = model.state_scalar_count();
+    let state_count = problem.solve_layout.state_scalar_count();
     let mut initial_deps = IndexSet::new();
     for block in consumer_blocks {
         let block_deps = scalar_program_block_dependencies(block, state_count)?;
@@ -652,19 +780,18 @@ pub fn build_scalar_dependency_refresh_plan_with_outputs_and_programs(
                 "selected consumer dependency set",
                 block.program_span(position.program_index),
             )?;
-            initial_deps.extend(
-                dependencies
-                    .iter()
-                    .copied()
-                    .filter(|index| *index >= state_count && *index < model.solver_scalar_count()),
-            );
+            initial_deps.extend(dependencies.iter().copied().filter(|index| {
+                *index >= state_count && *index < problem.solve_layout.solver_scalar_count()
+            }));
         }
     }
     for &(program, span) in compact_consumers {
         for index in row_y_input_ranges(program)
             .into_iter()
             .flatten()
-            .filter(|index| *index >= state_count && *index < model.solver_scalar_count())
+            .filter(|index| {
+                *index >= state_count && *index < problem.solve_layout.solver_scalar_count()
+            })
         {
             reserve_refresh_index_set_capacity(
                 &mut initial_deps,
@@ -675,53 +802,44 @@ pub fn build_scalar_dependency_refresh_plan_with_outputs_and_programs(
             initial_deps.insert(index);
         }
     }
-    build_dependency_refresh_plan(model, implicit_block, full_plan, initial_deps)
-}
-
-/// Union already dependency-closed refresh plans and rebuild one canonical
-/// causal schedule. This is used for coincident typed clocks so shared
-/// algebraic prerequisites execute once.
-pub fn merge_dependency_refresh_plans(
-    model: &solve::SolveModel,
-    implicit_block: &PreparedScalarProgramBlock,
-    full_plan: &RefreshPlan,
-    plans: &[&RefreshPlan],
-) -> Result<RefreshPlan, EvalSolveError> {
-    let mut initial_deps = IndexSet::new();
-    for plan in plans {
-        reserve_refresh_index_set_capacity(
-            &mut initial_deps,
-            plan.rows.len(),
-            "merged dependency set",
-            first_block_span(full_plan.source_block()),
-        )?;
-        initial_deps.extend(plan.rows.iter().map(|row| row.target_index));
-        for block in &plan.simultaneous_plan.blocks {
-            initial_deps.extend(block.y_indices.iter().copied());
-        }
-    }
-    build_dependency_refresh_plan(model, implicit_block, full_plan, initial_deps)
+    build_dependency_refresh_plan(problem, implicit_block, full_plan, initial_deps)
 }
 
 fn build_dependency_refresh_plan(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     prepared_implicit_block: &PreparedScalarProgramBlock,
     full_plan: &RefreshPlan,
     initial_deps: IndexSet<usize>,
 ) -> Result<RefreshPlan, EvalSolveError> {
-    let implicit_block = full_plan.source_block();
-    let state_count = model.state_scalar_count();
-    let span = first_block_span(implicit_block);
+    let implicit_block = prepared_implicit_block.block();
     let output_positions = output_row_positions(implicit_block)?;
+    build_dependency_refresh_plan_from_access(
+        problem,
+        implicit_block,
+        full_plan,
+        initial_deps,
+        &output_positions,
+    )
+}
+
+fn build_dependency_refresh_plan_from_access<A: RefreshProgramAccess + ?Sized>(
+    problem: &solve::SolveProblem,
+    implicit_block: &A,
+    full_plan: &RefreshPlan,
+    initial_deps: IndexSet<usize>,
+    output_positions: &IndexMap<usize, OutputRowPosition>,
+) -> Result<RefreshPlan, EvalSolveError> {
+    let state_count = problem.solve_layout.state_scalar_count();
+    let span = implicit_block.first_span();
     let target_to_row = dependency_target_rows(full_plan, span)?;
-    let block_by_target = dependency_blocks_by_target(model, full_plan, state_count, span)?;
+    let block_by_target = dependency_blocks_by_target(problem, full_plan, state_count, span)?;
     let (needed, needed_blocks) = collect_dependency_closure(
         full_plan,
         implicit_block,
         initial_deps,
         &target_to_row,
         &block_by_target,
-        &output_positions,
+        output_positions,
         state_count,
     )?;
     let mut rows = Vec::new();
@@ -735,15 +853,15 @@ fn build_dependency_refresh_plan(
         full_plan
             .rows
             .iter()
-            .filter(|row| needed.contains(&row.target_index))
+            .filter(|row| needed.contains(&row.target_index()))
             .cloned(),
     );
     append_exact_projection_owners(
-        prepared_implicit_block,
+        implicit_block,
         full_plan,
         &needed,
         &needed_blocks,
-        &output_positions,
+        output_positions,
         &mut rows,
     )?;
     let selected_blocks = full_plan
@@ -764,37 +882,32 @@ fn build_dependency_refresh_plan(
         .map(|(local_index, _)| full_plan.simultaneous_block_indices[*local_index])
         .collect();
     let causal_solution_certified = dependency_causal_projection_is_certified(
-        implicit_block,
         &rows,
         &needed,
         &simultaneous_plan,
         state_count,
-        model.solver_scalar_count(),
+        problem.solve_layout.solver_scalar_count(),
     );
-    let mut plan = order_refresh_rows(
-        rows,
-        full_plan.source_block.clone(),
-        state_count,
-        causal_solution_certified,
-    )?;
+    let mut plan =
+        order_refresh_rows(rows, implicit_block, state_count, causal_solution_certified)?;
     plan.simultaneous_plan = simultaneous_plan;
     plan.simultaneous_block_indices = simultaneous_block_indices;
-    configure_causal_seed_rows(&mut plan, state_count)?;
+    configure_causal_seed_rows(&mut plan, implicit_block, state_count)?;
     Ok(plan)
 }
 
-fn append_exact_projection_owners(
-    block: &PreparedScalarProgramBlock,
+fn append_exact_projection_owners<A: RefreshProgramAccess + ?Sized>(
+    block: &A,
     full_plan: &RefreshPlan,
     needed: &IndexSet<usize>,
     needed_blocks: &IndexSet<usize>,
     output_positions: &IndexMap<usize, OutputRowPosition>,
     rows: &mut Vec<AlgebraicRefreshRow>,
 ) -> Result<(), EvalSolveError> {
-    let span = first_block_span(block.block());
+    let span = block.first_span();
     let mut claimed_targets = rows
         .iter()
-        .map(|row| row.target_index)
+        .map(|row| row.target_index())
         .collect::<IndexSet<_>>();
     reserve_refresh_index_set_capacity(
         &mut claimed_targets,
@@ -818,36 +931,49 @@ fn append_exact_projection_owners(
         let Some(position) = output_positions.get(equation_index).copied() else {
             continue;
         };
-        if !block.can_evaluate_target_assignment_output(
-            position.program_index,
+        let Some(program) = block.program(position.program_index) else {
+            continue;
+        };
+        if !crate::prepared::program_certifies_exact_target(
+            program,
             position.output_offset,
             *target_index,
-        ) || !block.certifies_exact_target_assignment_output(
-            position.program_index,
-            position.output_offset,
-            *target_index,
-        ) {
+        )? {
             continue;
         }
         reserve_refresh_vec_capacity(rows, 1, "dependency exact-owner rows", span)?;
-        rows.push(AlgebraicRefreshRow {
-            equation_index: *equation_index,
-            row_idx: position.program_index,
-            output_offset: position.output_offset,
-            target_index: *target_index,
-            assignment_target: Some(*target_index),
-            assignment_shape: block.assignment_shape_for_output(
-                position.program_index,
-                position.output_offset,
-                *target_index,
-            ),
-            direct_assignment_certified: block.certifies_direct_target_assignment(
-                position.program_index,
-                position.output_offset,
-                *target_index,
-            ),
-            exact_assignment_certified: true,
-        });
+        rows.push(construct_refresh_row(
+            solve::AlgebraicRefreshRowDraft {
+                owner_id: RefreshRowOwnerId::checked(*target_index).ok_or_else(|| {
+                    EvalSolveError::InvalidRow {
+                        message: "continuous refresh row owner index exceeds u32".to_string(),
+                        span,
+                    }
+                })?,
+                source: block.source(position.program_index).ok_or_else(|| {
+                    EvalSolveError::InvalidRow {
+                        message: "continuous refresh source identity exceeds u32".to_string(),
+                        span,
+                    }
+                })?,
+                equation_index: *equation_index,
+                output_offset: position.output_offset,
+                target_index: *target_index,
+                assignment_target: Some(*target_index),
+                assignment_shape: crate::prepared::assignment_shape_for_program_output(
+                    program,
+                    position.output_offset,
+                    *target_index,
+                )?,
+                direct_assignment_certified: crate::prepared::program_certifies_direct_target(
+                    program,
+                    position.output_offset,
+                    *target_index,
+                )?,
+                exact_assignment_certified: true,
+            },
+            span,
+        )?);
         claimed_targets.insert(*target_index);
     }
     Ok(())
@@ -856,7 +982,7 @@ fn append_exact_projection_owners(
 fn dependency_target_rows(
     plan: &RefreshPlan,
     span: Option<rumoca_core::Span>,
-) -> Result<IndexMap<usize, usize>, EvalSolveError> {
+) -> Result<IndexMap<usize, solve::RefreshScalarProgramSource>, EvalSolveError> {
     let mut target_to_row = IndexMap::new();
     reserve_refresh_index_map_capacity(
         &mut target_to_row,
@@ -864,12 +990,16 @@ fn dependency_target_rows(
         "dependency target-to-row map",
         span,
     )?;
-    target_to_row.extend(plan.rows.iter().map(|row| (row.target_index, row.row_idx)));
+    target_to_row.extend(
+        plan.rows
+            .iter()
+            .map(|row| (row.target_index(), row.source())),
+    );
     Ok(target_to_row)
 }
 
 fn dependency_blocks_by_target(
-    model: &solve::SolveModel,
+    problem: &solve::SolveProblem,
     plan: &RefreshPlan,
     state_count: usize,
     span: Option<rumoca_core::Span>,
@@ -877,7 +1007,10 @@ fn dependency_blocks_by_target(
     let mut block_by_target = IndexMap::new();
     reserve_refresh_index_map_capacity(
         &mut block_by_target,
-        model.solver_scalar_count().saturating_sub(state_count),
+        problem
+            .solve_layout
+            .solver_scalar_count()
+            .saturating_sub(state_count),
         "dependency projection-block map",
         span,
     )?;
@@ -892,16 +1025,16 @@ fn dependency_blocks_by_target(
     Ok(block_by_target)
 }
 
-fn collect_dependency_closure(
+fn collect_dependency_closure<A: RefreshProgramAccess + ?Sized>(
     plan: &RefreshPlan,
-    implicit_block: &solve::ScalarProgramBlock,
+    implicit_block: &A,
     initial_deps: IndexSet<usize>,
-    target_to_row: &IndexMap<usize, usize>,
+    target_to_row: &IndexMap<usize, solve::RefreshScalarProgramSource>,
     block_by_target: &IndexMap<usize, usize>,
     output_positions: &IndexMap<usize, OutputRowPosition>,
     state_count: usize,
 ) -> Result<(IndexSet<usize>, IndexSet<usize>), EvalSolveError> {
-    let span = first_block_span(implicit_block);
+    let span = implicit_block.first_span();
     let mut needed = IndexSet::new();
     reserve_refresh_index_set_capacity(
         &mut needed,
@@ -932,8 +1065,8 @@ fn collect_dependency_closure(
                     &mut stack,
                 )?;
             }
-        } else if let Some(row_index) = target_to_row.get(&index).copied() {
-            enqueue_row_dependencies(implicit_block, row_index, state_count, &mut stack, span)?;
+        } else if let Some(source) = target_to_row.get(&index).copied() {
+            enqueue_source_dependencies(implicit_block, source, state_count, &mut stack, span)?;
         }
     }
     Ok((needed, needed_blocks))
@@ -957,15 +1090,15 @@ fn insert_projection_block(
     Ok(needed.insert(index))
 }
 
-fn enqueue_projection_block_dependencies(
+fn enqueue_projection_block_dependencies<A: RefreshProgramAccess + ?Sized>(
     plan: &RefreshPlan,
-    implicit_block: &solve::ScalarProgramBlock,
+    implicit_block: &A,
     output_positions: &IndexMap<usize, OutputRowPosition>,
     block_index: usize,
     state_count: usize,
     stack: &mut Vec<usize>,
 ) -> Result<(), EvalSolveError> {
-    let span = first_block_span(implicit_block);
+    let span = implicit_block.first_span();
     let block = &plan.simultaneous_plan.blocks[block_index];
     reserve_refresh_vec_capacity(stack, block.y_indices.len(), "dependency stack", span)?;
     stack.extend(block.y_indices.iter().copied());
@@ -983,14 +1116,17 @@ fn enqueue_projection_block_dependencies(
     Ok(())
 }
 
-fn enqueue_row_dependencies(
-    block: &solve::ScalarProgramBlock,
+fn enqueue_row_dependencies<A: RefreshProgramAccess + ?Sized>(
+    block: &A,
     row_index: usize,
     state_count: usize,
     stack: &mut Vec<usize>,
     span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
-    for dependency in row_all_y_dependencies(block, row_index) {
+    let Some(program) = block.program(row_index) else {
+        return Ok(());
+    };
+    for dependency in row_y_input_ranges(program).into_iter().flatten() {
         if dependency >= state_count {
             reserve_refresh_vec_capacity(stack, 1, "dependency stack", span)?;
             stack.push(dependency);
@@ -999,26 +1135,46 @@ fn enqueue_row_dependencies(
     Ok(())
 }
 
-fn configure_causal_seed_rows(
+fn enqueue_source_dependencies<A: RefreshProgramAccess + ?Sized>(
+    block: &A,
+    source: solve::RefreshScalarProgramSource,
+    state_count: usize,
+    stack: &mut Vec<usize>,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let Some(program) = block.source_program(source) else {
+        return Ok(());
+    };
+    for dependency in row_y_input_ranges(program).into_iter().flatten() {
+        if dependency >= state_count {
+            reserve_refresh_vec_capacity(stack, 1, "dependency stack", span)?;
+            stack.push(dependency);
+        }
+    }
+    Ok(())
+}
+
+fn configure_causal_seed_rows<A: RefreshProgramAccess + ?Sized>(
     plan: &mut RefreshPlan,
+    block: &A,
     state_count: usize,
 ) -> Result<(), EvalSolveError> {
-    let span = first_block_span(plan.source_block());
+    let span = block.first_span();
     let mut rows = Vec::new();
     reserve_refresh_vec_capacity(&mut rows, plan.rows.len(), "causal seed rows", span)?;
     rows.extend(plan.rows.iter().cloned());
     plan.causal_seed_rows = rows;
-    let static_targets = parameter_static_refresh_targets(plan, state_count);
+    let static_targets = parameter_static_refresh_targets(plan, block, state_count);
     plan.static_causal_seed_rows = plan
         .causal_seed_rows
         .iter()
-        .filter(|row| static_targets.contains(&row.target_index))
+        .filter(|row| static_targets.contains(&row.target_index()))
         .cloned()
         .collect();
     plan.dynamic_causal_seed_rows = plan
         .causal_seed_rows
         .iter()
-        .filter(|row| !static_targets.contains(&row.target_index))
+        .filter(|row| !static_targets.contains(&row.target_index()))
         .cloned()
         .collect();
     plan.value_projection_plan = if plan.causal_solution_certified {
@@ -1048,24 +1204,28 @@ fn configure_causal_seed_rows(
     Ok(())
 }
 
-fn parameter_static_refresh_targets(plan: &RefreshPlan, state_count: usize) -> BTreeSet<usize> {
+fn parameter_static_refresh_targets<A: RefreshProgramAccess + ?Sized>(
+    plan: &RefreshPlan,
+    block: &A,
+    state_count: usize,
+) -> BTreeSet<usize> {
     let mut static_targets = BTreeSet::new();
     loop {
         let mut changed = false;
         for refresh_row in &plan.causal_seed_rows {
-            if static_targets.contains(&refresh_row.target_index) {
+            if static_targets.contains(&refresh_row.target_index()) {
                 continue;
             }
-            let Some(row) = plan.source_block.programs().get(refresh_row.row_idx) else {
+            let Some(row) = block.source_program(refresh_row.source()) else {
                 continue;
             };
             if parameter_static_refresh_row(
                 row,
-                refresh_row.target_index,
+                refresh_row.target_index(),
                 state_count,
                 &static_targets,
             ) {
-                static_targets.insert(refresh_row.target_index);
+                static_targets.insert(refresh_row.target_index());
                 changed = true;
             }
         }
@@ -1221,16 +1381,15 @@ fn block_is_exactly_seeded(
             .zip(&block.y_indices)
             .all(|(&row, &target)| {
                 seed_rows.iter().any(|seed| {
-                    seed.equation_index == row
-                        && seed.target_index == target
-                        && seed.assignment_target == Some(target)
-                        && seed.exact_assignment_certified
+                    seed.equation_index() == row
+                        && seed.target_index() == target
+                        && seed.assignment_target() == Some(target)
+                        && seed.exact_assignment_certified()
                 })
             })
 }
 
 fn dependency_causal_projection_is_certified(
-    _block: &solve::ScalarProgramBlock,
     rows: &[AlgebraicRefreshRow],
     needed: &IndexSet<usize>,
     plan: &solve::AlgebraicProjectionPlan,
@@ -1242,14 +1401,14 @@ fn dependency_causal_projection_is_certified(
     }
     let rows_by_target = rows
         .iter()
-        .map(|row| (row.target_index, row))
+        .map(|row| (row.target_index(), row))
         .collect::<IndexMap<_, _>>();
     if rows_by_target.len() != needed.len()
         || rows.iter().any(|row| {
-            row.target_index < state_count
-                || row.target_index >= solver_count
-                || row.assignment_target != Some(row.target_index)
-                || !row.exact_assignment_certified
+            row.target_index() < state_count
+                || row.target_index() >= solver_count
+                || row.assignment_target() != Some(row.target_index())
+                || !row.exact_assignment_certified()
         })
     {
         return false;
@@ -1265,7 +1424,7 @@ fn dependency_causal_projection_is_certified(
         let Some(row) = rows_by_target.get(target_index) else {
             return false;
         };
-        if row.equation_index != *equation_index
+        if row.equation_index() != *equation_index
             || !needed.contains(target_index)
             || !matched.insert(*target_index)
         {
@@ -1275,16 +1434,84 @@ fn dependency_causal_projection_is_certified(
     matched.len() == needed.len()
 }
 
-fn order_refresh_rows(
+trait RefreshProgramAccess {
+    fn program(&self, index: usize) -> Option<&[solve::LinearOp]>;
+    fn source(&self, index: usize) -> Option<solve::RefreshScalarProgramSource>;
+    fn source_index(&self, source: solve::RefreshScalarProgramSource) -> Option<usize>;
+    fn program_span(&self, index: usize) -> Option<rumoca_core::Span>;
+    fn first_span(&self) -> Option<rumoca_core::Span>;
+
+    fn source_program(
+        &self,
+        source: solve::RefreshScalarProgramSource,
+    ) -> Option<&[solve::LinearOp]> {
+        self.source_index(source)
+            .and_then(|index| self.program(index))
+    }
+
+    fn source_span(&self, source: solve::RefreshScalarProgramSource) -> Option<rumoca_core::Span> {
+        self.source_index(source)
+            .and_then(|index| self.program_span(index))
+    }
+}
+
+impl RefreshProgramAccess for solve::ScalarProgramBlock {
+    fn program(&self, index: usize) -> Option<&[solve::LinearOp]> {
+        self.programs().get(index).map(Vec::as_slice)
+    }
+
+    fn source(&self, index: usize) -> Option<solve::RefreshScalarProgramSource> {
+        solve::RefreshScalarProgramSource::checked(0, index)
+    }
+
+    fn source_index(&self, source: solve::RefreshScalarProgramSource) -> Option<usize> {
+        (source.node() == 0)
+            .then(|| usize::try_from(source.program()).ok())
+            .flatten()
+            .filter(|index| *index < self.programs().len())
+    }
+
+    fn program_span(&self, index: usize) -> Option<rumoca_core::Span> {
+        self.program_span(index)
+    }
+
+    fn first_span(&self) -> Option<rumoca_core::Span> {
+        first_block_span(self)
+    }
+}
+
+impl RefreshProgramAccess for CanonicalScalarProgramCatalog<'_> {
+    fn program(&self, index: usize) -> Option<&[solve::LinearOp]> {
+        self.program(index).map(|program| program.operations)
+    }
+
+    fn source(&self, index: usize) -> Option<solve::RefreshScalarProgramSource> {
+        self.program(index).map(|program| program.source)
+    }
+
+    fn source_index(&self, source: solve::RefreshScalarProgramSource) -> Option<usize> {
+        CanonicalScalarProgramCatalog::source_index(self, source)
+    }
+
+    fn program_span(&self, index: usize) -> Option<rumoca_core::Span> {
+        self.program(index).map(|program| program.span)
+    }
+
+    fn first_span(&self) -> Option<rumoca_core::Span> {
+        self.first_span()
+    }
+}
+
+fn order_refresh_rows<A: RefreshProgramAccess + ?Sized>(
     rows: Vec<AlgebraicRefreshRow>,
-    block: Arc<solve::ScalarProgramBlock>,
+    block: &A,
     state_count: usize,
     causal_solution_certified: bool,
 ) -> Result<RefreshPlan, EvalSolveError> {
-    let span = first_block_span(&block);
+    let span = block.first_span();
     let mut producer_by_target = BTreeMap::new();
     for (pos, row) in rows.iter().enumerate() {
-        producer_by_target.insert(row.target_index, pos);
+        producer_by_target.insert(row.target_index(), pos);
     }
     let mut edges = Vec::new();
     reserve_refresh_vec_capacity(&mut edges, rows.len(), "refresh order edges", span)?;
@@ -1293,7 +1520,7 @@ fn order_refresh_rows(
     reserve_refresh_vec_capacity(&mut indegree, rows.len(), "refresh order indegree", span)?;
     indegree.resize(rows.len(), 0usize);
     for (row_pos, row) in rows.iter().enumerate() {
-        let Some(ops) = block.programs().get(row.row_idx) else {
+        let Some(ops) = block.source_program(row.source()) else {
             continue;
         };
         for dep_pos in refresh_row_dependency_positions(row, ops, state_count, &producer_by_target)
@@ -1305,7 +1532,7 @@ fn order_refresh_rows(
                 &mut edges[dep_pos],
                 1,
                 "refresh order edge list",
-                row_span(&block, row.row_idx),
+                block.source_span(row.source()).or(span),
             )?;
             edges[dep_pos].push(row_pos);
             indegree[row_pos] += 1;
@@ -1343,9 +1570,10 @@ fn order_refresh_rows(
         reserve_refresh_vec_capacity(&mut emitted, rows.len(), "refresh emitted flags", span)?;
         emitted.resize(rows.len(), false);
         for row in &ordered {
-            if let Some(pos) = rows.iter().position(|candidate| {
-                candidate.row_idx == row.row_idx && candidate.target_index == row.target_index
-            }) {
+            if let Some(pos) = rows
+                .iter()
+                .position(|candidate| candidate.owner_id() == row.owner_id())
+            {
                 emitted[pos] = true;
             }
         }
@@ -1356,7 +1584,8 @@ fn order_refresh_rows(
         );
     }
     Ok(RefreshPlan {
-        source_block: block,
+        static_causal_sequence: Default::default(),
+        dynamic_causal_sequence: Default::default(),
         simultaneous_plan: solve::AlgebraicProjectionPlan::default(),
         simultaneous_block_indices: Vec::new(),
         value_projection_plan: solve::AlgebraicProjectionPlan::default(),
@@ -1382,9 +1611,9 @@ fn refresh_row_dependency_positions(
             continue;
         }
         for (&index, &position) in producer_by_target.range(range) {
-            if index == row.target_index
+            if index == row.target_index()
                 || row
-                    .assignment_shape
+                    .assignment_shape()
                     .is_some_and(|shape| !assignment_shape_reads_y_index(ops, shape, index))
             {
                 continue;
@@ -1395,13 +1624,13 @@ fn refresh_row_dependency_positions(
     positions.into_iter().collect()
 }
 
-fn complete_causal_projection_is_certified(
-    model: &solve::SolveModel,
-    block: &PreparedScalarProgramBlock,
+fn complete_causal_projection_is_certified<A: RefreshProgramAccess + ?Sized>(
+    problem: &solve::SolveProblem,
+    block: &A,
     rows: &[AlgebraicRefreshRow],
 ) -> bool {
-    let state_count = model.state_scalar_count();
-    let solver_count = model.solver_scalar_count();
+    let state_count = problem.solve_layout.state_scalar_count();
+    let solver_count = problem.solve_layout.solver_scalar_count();
     // The projection tail contains both algebraic variables and computed
     // outputs; all are solver-Y unknowns in the compiler-owned BLT plan.
     let Some(projection_count) = solver_count.checked_sub(state_count) else {
@@ -1413,34 +1642,40 @@ fn complete_causal_projection_is_certified(
     }
     let rows_by_equation = rows
         .iter()
-        .map(|row| (row.equation_index, row))
+        .map(|row| (row.equation_index(), row))
         .collect::<IndexMap<_, _>>();
     if rows_by_equation.len() != projection_count {
         tracing::debug!(target: "rumoca_eval_solve::refresh", reason = "duplicate equation", equations = rows_by_equation.len(), projection_count, "causal certificate rejected");
         return false;
     }
-    let implicit_row_targets = &model.problem.continuous.implicit_row_targets;
+    let implicit_row_targets = &problem.continuous.implicit_row_targets;
     if let Some(row) = rows.iter().find(|row| {
         implicit_row_targets
-            .get(row.equation_index)
+            .get(row.equation_index())
             .is_none_or(|target| {
-                !matches!(target, Some(solve::ScalarSlot::Y { index, .. }) if *index == row.target_index)
+                !matches!(target, Some(solve::ScalarSlot::Y { index, .. }) if *index == row.target_index())
             })
-            || row.target_index < state_count
-            || row.target_index >= solver_count
-            || row_all_y_dependencies(block.block(), row.row_idx).any(|index| index >= solver_count)
-            || !block.certifies_exact_target_assignment_output(
-                row.row_idx,
-                row.output_offset,
-                row.target_index,
-            )
+            || row.target_index() < state_count
+            || row.target_index() >= solver_count
+            || block.source_program(row.source()).is_none_or(|program| {
+                row_y_input_ranges(program)
+                    .into_iter()
+                    .flatten()
+                    .any(|index| index >= solver_count)
+                    || !crate::prepared::program_certifies_exact_target(
+                        program,
+                        row.output_offset(),
+                        row.target_index(),
+                    )
+                    .unwrap_or(false)
+            })
     }) {
-        tracing::debug!(target: "rumoca_eval_solve::refresh", reason = "invalid row", equation = row.equation_index, program = row.row_idx, target = row.target_index, exact = block.certifies_exact_target_assignment_output(row.row_idx, row.output_offset, row.target_index), "causal certificate rejected");
+        tracing::debug!(target: "rumoca_eval_solve::refresh", reason = "invalid row", equation = row.equation_index(), source_node = row.source().node(), source_program = row.source().program(), target = row.target_index(), "causal certificate rejected");
         return false;
     }
     let mut matched_rows = IndexSet::new();
     let mut matched_targets = IndexSet::new();
-    for projection_block in &model.problem.continuous.algebraic_projection_plan.blocks {
+    for projection_block in &problem.continuous.algebraic_projection_plan.blocks {
         let ([equation_index], [target_index]) = (
             projection_block.rows.as_slice(),
             projection_block.y_indices.as_slice(),
@@ -1457,11 +1692,11 @@ fn complete_causal_projection_is_certified(
                 })
             || rows_by_equation
                 .get(equation_index)
-                .is_none_or(|row| row.target_index != *target_index)
+                .is_none_or(|row| row.target_index() != *target_index)
             || !matched_rows.insert(*equation_index)
             || !matched_targets.insert(*target_index)
         {
-            tracing::debug!(target: "rumoca_eval_solve::refresh", reason = "projection mismatch", equation = *equation_index, target = *target_index, state_count, solver_count, mapped = rows_by_equation.get(equation_index).map(|row| row.target_index), "causal certificate rejected");
+            tracing::debug!(target: "rumoca_eval_solve::refresh", reason = "projection mismatch", equation = *equation_index, target = *target_index, state_count, solver_count, mapped = rows_by_equation.get(equation_index).map(|row| row.target_index()), "causal certificate rejected");
             return false;
         }
     }
@@ -1548,10 +1783,6 @@ fn row_all_y_dependencies(
 
 fn first_block_span(block: &solve::ScalarProgramBlock) -> Option<rumoca_core::Span> {
     block.first_source_span()
-}
-
-fn row_span(block: &solve::ScalarProgramBlock, row: usize) -> Option<rumoca_core::Span> {
-    block.program_span(row).or_else(|| first_block_span(block))
 }
 
 #[derive(Clone, Copy)]
@@ -1676,162 +1907,5 @@ fn refresh_plan_capacity_error(
     EvalSolveError::InvalidRow {
         message: format!("refresh plan {context} capacity overflows"),
         span,
-    }
-}
-
-#[cfg(test)]
-mod parameter_static_tests {
-    use super::*;
-    use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
-
-    fn checked(program: Vec<solve::LinearOp>) -> Vec<solve::LinearOp> {
-        solve::ScalarProgramRegisterFlow::derive(&program)
-            .expect("parameter-static fixture must be a checked register program");
-        program
-    }
-
-    fn certifies(program: &[solve::LinearOp]) -> bool {
-        parameter_static_refresh_program(program, 10, 2, &BTreeSet::from([11, 12]))
-    }
-
-    #[test]
-    fn compact_tensor_inputs_preserve_the_parameter_static_certificate() {
-        let parameter_tensor = checked(vec![
-            solve::LinearOp::TensorLoad {
-                dst_start: 0,
-                input: solve::TensorInputKind::P,
-                input_start: 4,
-                count: 3,
-                seed_start: None,
-                lanes: 1,
-            },
-            solve::LinearOp::TensorFill {
-                dst_start: 3,
-                value_start: 0,
-                count: 3,
-                lanes: 1,
-            },
-            solve::LinearOp::StoreOutputRange {
-                start: 3,
-                count: 3,
-                stride: 1,
-            },
-        ]);
-        assert!(certifies(&parameter_tensor));
-
-        let certified_y_tensor = checked(vec![
-            solve::LinearOp::TensorLoad {
-                dst_start: 0,
-                input: solve::TensorInputKind::Y,
-                input_start: 10,
-                count: 3,
-                seed_start: None,
-                lanes: 1,
-            },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]);
-        assert!(certifies(&certified_y_tensor));
-
-        let dynamic_y_tensor = checked(vec![
-            solve::LinearOp::TensorLoad {
-                dst_start: 0,
-                input: solve::TensorInputKind::Y,
-                input_start: 10,
-                count: 4,
-                seed_start: None,
-                lanes: 1,
-            },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]);
-        assert!(!certifies(&dynamic_y_tensor));
-    }
-
-    #[test]
-    fn seed_dependent_tensor_load_is_never_parameter_static() {
-        let seeded_parameter_tensor = checked(vec![
-            solve::LinearOp::TensorLoad {
-                dst_start: 0,
-                input: solve::TensorInputKind::P,
-                input_start: 4,
-                count: 1,
-                seed_start: Some(0),
-                lanes: 2,
-            },
-            solve::LinearOp::StoreOutput { src: 1 },
-        ]);
-        assert!(!certifies(&seeded_parameter_tensor));
-    }
-
-    #[test]
-    fn compact_fold_owner_is_certified_without_domain_expansion() {
-        let fold = solve::FunctionFoldProgram::checked(
-            StructuredIndexDomain {
-                binders: vec![StructuredIndexBinder {
-                    id: 0,
-                    display_name: "i".to_string(),
-                    lower: 1,
-                    upper: 3,
-                    step: 1,
-                }],
-            },
-            1,
-            1,
-            vec![
-                solve::LinearOp::LoadFoldCarried { dst: 0, index: 0 },
-                solve::LinearOp::LoadFoldCapture { dst: 1, index: 0 },
-                solve::LinearOp::Binary {
-                    dst: 2,
-                    op: solve::BinaryOp::Add,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                solve::LinearOp::StoreOutput { src: 2 },
-            ],
-        )
-        .expect("compact fold fixture has a checked carried/capture ABI");
-        let program = checked(vec![
-            solve::LinearOp::LoadP { dst: 0, index: 4 },
-            solve::LinearOp::Const { dst: 1, value: 0.0 },
-            solve::LinearOp::FunctionFold {
-                dst_start: 2,
-                initial_start: 1,
-                capture_start: 0,
-                program: Arc::new(fold),
-            },
-            solve::LinearOp::StoreOutput { src: 2 },
-        ]);
-        assert!(certifies(&program));
-    }
-
-    #[test]
-    fn lazy_conditional_regions_are_recursively_fail_closed() {
-        let conditional = solve::FunctionConditionalProgram::checked(
-            0,
-            [1],
-            [(
-                vec![
-                    solve::LinearOp::LoadTime { dst: 0 },
-                    solve::LinearOp::StoreOutput { src: 0 },
-                ],
-                vec![
-                    solve::LinearOp::Const { dst: 0, value: 1.0 },
-                    solve::LinearOp::StoreOutput { src: 0 },
-                ],
-            )],
-            vec![
-                solve::LinearOp::Const { dst: 0, value: 0.0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-        )
-        .expect("lazy conditional fixture has checked correlated regions");
-        let program = checked(vec![
-            solve::LinearOp::FunctionConditional {
-                dst_start: 0,
-                capture_start: 0,
-                program: Arc::new(conditional),
-            },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]);
-        assert!(!certifies(&program));
     }
 }

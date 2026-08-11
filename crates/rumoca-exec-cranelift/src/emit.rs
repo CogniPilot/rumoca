@@ -455,7 +455,7 @@ static NEXT_ASSIGNMENT_KERNEL_ID: AtomicUsize = AtomicUsize::new(0);
 // matrices without turning larger tensor domains into straight-line code.
 const INLINE_FIXED_FOLD_POINT_LIMIT: usize = 8;
 
-fn profile_linear_ir(kind: &str, rows: &[Vec<LinearOp>]) {
+fn profile_linear_ir<R: AsRef<[LinearOp]>>(kind: &str, rows: &[R]) {
     if std::env::var_os("RUMOCA_PROFILE_IR").is_none() {
         return;
     }
@@ -478,6 +478,7 @@ fn profile_linear_ir(kind: &str, rows: &[Vec<LinearOp>]) {
     let mut unique_fold_kinds = BTreeMap::<&'static str, usize>::new();
     let mut direct_kinds = BTreeMap::<&'static str, usize>::new();
     for row in rows {
+        let row = row.as_ref();
         for operation in row {
             *direct_kinds.entry(operation.kind_name()).or_default() += 1;
         }
@@ -656,6 +657,7 @@ fn profile_linear_ir(kind: &str, rows: &[Vec<LinearOp>]) {
         }
     }
     for row in rows {
+        let row = row.as_ref();
         direct_ops = direct_ops.saturating_add(row.len());
         max_row_ops = max_row_ops.max(row.len());
         let mut row_recursive = 0usize;
@@ -865,6 +867,53 @@ fn compile_assignment_schedule_attached(
     target_y_indices: &[usize],
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
+    let row_refs = rows.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    compile_assignment_schedule_slices(&row_refs, target_y_indices, pure_calls)
+}
+
+pub(crate) fn compile_exact_assignment_schedule(
+    source: &rumoca_ir_solve::ComputeBlock,
+    owners: &rumoca_ir_solve::ContinuousRefreshOwners,
+    schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
+    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+) -> Result<CompiledAssignmentSchedule, CompileError> {
+    let mut blocks =
+        checked_vec_with_capacity(schedule.program_ids().len(), "exact assignment rows")?;
+    let mut targets = Vec::new();
+    for id in schedule.program_ids() {
+        let program = owners.exact_assignment_program(*id).ok_or_else(|| {
+            CompileError::Input(
+                "exact assignment schedule refers to a missing constructed program".to_string(),
+            )
+        })?;
+        let block = program.final_scalar_program(source).map_err(|error| {
+            CompileError::Input(format!("exact assignment final projection failed: {error}"))
+        })?;
+        let [_] = block.programs() else {
+            return Err(CompileError::Input(
+                "exact assignment owner must contain one program".to_string(),
+            ));
+        };
+        blocks.push(block);
+        targets
+            .try_reserve_exact(program.target_indices().len())
+            .map_err(|_| {
+                CompileError::Input("exact assignment targets exceed memory".to_string())
+            })?;
+        targets.extend_from_slice(program.target_indices());
+    }
+    let rows = blocks
+        .iter()
+        .map(|block| block.programs()[0].as_slice())
+        .collect::<Vec<_>>();
+    compile_assignment_schedule_slices(&rows, &targets, pure_calls)
+}
+
+fn compile_assignment_schedule_slices(
+    rows: &[&[LinearOp]],
+    target_y_indices: &[usize],
+    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+) -> Result<CompiledAssignmentSchedule, CompileError> {
     profile_linear_ir("assignment", rows);
     let output_count = rows.iter().try_fold(0usize, |count, row| {
         count.checked_add(ScalarProgramBlock::program_output_count(row))
@@ -963,10 +1012,10 @@ fn compile_jacobian_rows_attached(
     })
 }
 
-fn plan_rows(rows: &[Vec<LinearOp>]) -> Result<Vec<RowPlan>, CompileError> {
+fn plan_rows<R: AsRef<[LinearOp]>>(rows: &[R]) -> Result<Vec<RowPlan>, CompileError> {
     let mut plans = checked_vec_with_capacity(rows.len(), "row plans")?;
     for row in rows {
-        plans.push(plan_row(row)?);
+        plans.push(plan_row(row.as_ref())?);
     }
     Ok(plans)
 }
@@ -1844,14 +1893,14 @@ impl CraneliftEmitter {
         Ok(func_id)
     }
 
-    fn compile_assignment_schedule(
+    fn compile_assignment_schedule<R: AsRef<[LinearOp]>>(
         &mut self,
-        rows: &[Vec<LinearOp>],
+        rows: &[R],
         target_y_indices: &[usize],
     ) -> Result<FuncId, CompileError> {
         for row in rows {
-            self.ensure_fold_programs(row, RowKind::Residual)?;
-            self.ensure_conditional_programs(row, RowKind::Residual)?;
+            self.ensure_fold_programs(row.as_ref(), RowKind::Residual)?;
+            self.ensure_conditional_programs(row.as_ref(), RowKind::Residual)?;
         }
         let pointer_type = self.module.target_config().pointer_type();
         let mut signature = self.module.make_signature();
@@ -1882,6 +1931,7 @@ impl CraneliftEmitter {
             let flags = MemFlags::new();
             let mut target_offset = 0usize;
             for row in rows {
+                let row = row.as_ref();
                 // Assignment programs execute sequentially and may overwrite
                 // solver-Y slots read by later programs. Keep load CSE local
                 // to one program: cross-program SSA values become stale after
@@ -1938,18 +1988,18 @@ impl CraneliftEmitter {
     }
 }
 
-fn profile_assignment_kernel(
+fn profile_assignment_kernel<R: AsRef<[LinearOp]>>(
     profile_id: usize,
-    rows: &[Vec<LinearOp>],
+    rows: &[R],
     target_y_indices: &[usize],
 ) {
     if std::env::var_os("RUMOCA_PROFILE_ASSIGNMENT_KERNELS").is_none() {
         return;
     }
-    let direct_ops = rows.iter().map(Vec::len).sum::<usize>();
+    let direct_ops = rows.iter().map(|row| row.as_ref().len()).sum::<usize>();
     let recursive_ops = rows
         .iter()
-        .map(|row| residual_program_cost(row))
+        .map(|row| residual_program_cost(row.as_ref()))
         .sum::<usize>();
     let target_min = target_y_indices.iter().copied().min();
     let target_max = target_y_indices.iter().copied().max();

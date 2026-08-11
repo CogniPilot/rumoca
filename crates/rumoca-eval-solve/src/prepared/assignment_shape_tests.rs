@@ -195,21 +195,26 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
     let selected = prepared
         .assignment_shape_for_output(0, 0, 1)
         .expect("the first factor has an isolator");
-    let refresh = crate::refresh_plan::AlgebraicRefreshRow {
-        equation_index: 0,
-        row_idx: 0,
-        output_offset: 0,
-        target_index: 1,
-        assignment_target: Some(1),
-        assignment_shape: Some(selected),
-        direct_assignment_certified: false,
-        exact_assignment_certified: true,
-    };
+    let refresh = crate::refresh_plan::AlgebraicRefreshRow::checked(
+        rumoca_ir_solve::AlgebraicRefreshRowDraft {
+            owner_id: Default::default(),
+            source: rumoca_ir_solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
+            equation_index: 0,
+            output_offset: 0,
+            target_index: 1,
+            assignment_target: Some(1),
+            assignment_shape: Some(selected),
+            direct_assignment_certified: false,
+            exact_assignment_certified: true,
+        },
+    )
+    .expect("selected isolator must construct a checked refresh row");
     let mut y = vec![6.0, 99.0, 2.0];
 
     prepared
         .apply_target_assignment_rows_unchecked_with_context(
             std::slice::from_ref(&refresh),
+            |_| Some(0),
             &mut y,
             &[],
             0.0,
@@ -218,25 +223,21 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
         .expect("the selected target certificate should execute directly");
     assert_eq!(y, vec![6.0, 3.0, 2.0]);
 
-    let mismatched = crate::refresh_plan::AlgebraicRefreshRow {
-        target_index: 2,
-        assignment_target: Some(2),
-        ..refresh
-    };
-    let error = prepared
-        .apply_target_assignment_rows_unchecked_with_context(
-            &[mismatched],
-            &mut y,
-            &[],
-            0.0,
-            RowEvalContext::default(),
-        )
-        .expect_err("a selected isolator cannot be reused for another target");
-    assert!(
-        error
-            .to_string()
-            .contains("shape does not match its refresh target")
-    );
+    let error = crate::refresh_plan::AlgebraicRefreshRow::checked(
+        rumoca_ir_solve::AlgebraicRefreshRowDraft {
+            owner_id: Default::default(),
+            source: rumoca_ir_solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
+            equation_index: 0,
+            output_offset: 0,
+            target_index: 2,
+            assignment_target: Some(2),
+            assignment_shape: Some(selected),
+            direct_assignment_certified: false,
+            exact_assignment_certified: true,
+        },
+    )
+    .expect_err("a selected isolator cannot be reused for another target");
+    assert!(error.to_string().contains("belongs to another target"));
 }
 
 #[test]

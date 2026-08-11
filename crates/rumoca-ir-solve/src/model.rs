@@ -15,9 +15,12 @@ pub struct ContinuousSolveSystem {
     /// coordinates than residual rows; runtimes use a minimum-norm correction.
     pub manifold_projection_plan: AlgebraicProjectionPlan,
     pub derivative_rhs: ComputeBlock,
+    /// Exact checked refresh owners issued during Solve construction. Runtime
+    /// adapters prepare these schedules but never discover or filter them.
+    pub refresh_owners: ContinuousRefreshOwners,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AlgebraicProjectionPlan {
     pub blocks: Vec<AlgebraicProjectionBlock>,
 }
@@ -28,7 +31,7 @@ impl AlgebraicProjectionPlan {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AlgebraicProjectionBlock {
     pub rows: Vec<usize>,
     pub y_indices: Vec<usize>,

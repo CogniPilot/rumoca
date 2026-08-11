@@ -10,7 +10,7 @@ fn visible_values_for_names_preserves_requested_order() {
         ),
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let names = vec!["a".to_string(), "missing".to_string(), "b".to_string()];
 
     let values = runtime
@@ -39,7 +39,7 @@ fn visible_values_fast_path_reads_direct_sources() {
         ),
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     let values = runtime
         .visible_values(&[10.0, 20.0], &[3.5], 4.25)
@@ -58,7 +58,7 @@ fn visible_values_mixed_plan_keeps_expression_rows() {
         ),
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     let values = runtime
         .visible_values(&[10.0, 20.0], &[], 0.0)
@@ -85,7 +85,7 @@ fn visible_value_plan_deduplicates_equal_expression_rows() {
         ),
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
         .visible_value_plan
         .as_ref()
@@ -127,7 +127,7 @@ fn root_condition_plan_keeps_full_values_but_neutralizes_search_roots() {
         parameters: vec![2.5, 9.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
         .root_condition_plan
         .as_ref()
@@ -186,7 +186,7 @@ fn initial_event_commits_delay_left_limit_before_the_synthetic_right_limit() {
         parameters: vec![1.0, 0.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("delay runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("delay runtime should prepare");
     let mut p = model.parameters.clone();
     runtime
         .initialize_delay_history(0.0, &[], &mut p)
@@ -251,7 +251,7 @@ fn initial_event_advances_pre_memory_before_the_synthetic_right_limit() {
         parameters: vec![2.0, 1.0, 0.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     let mut p = model.parameters.clone();
     let event_pre_p = p.clone();
 
@@ -345,7 +345,7 @@ fn phase_zero_clock_tick_executes_once_after_initialization() {
         ),
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("clock fixture should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("clock fixture should prepare");
     let mut p = model.parameters.clone();
     let event_pre_p = p.clone();
 
@@ -398,7 +398,7 @@ fn root_evaluation_rejects_non_finite_surfaces() {
         },
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("root runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("root runtime should prepare");
 
     let error = runtime
         .eval_root_conditions_from_solver_y(0.0, &[], &[])
@@ -412,7 +412,7 @@ fn root_evaluation_rejects_non_finite_surfaces() {
 #[test]
 fn root_condition_plan_neutralizes_parameter_static_algebraic_outputs() {
     let model = algebraic_output_root_model(assignment_residual_row());
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
         .root_condition_plan
         .as_ref()
@@ -436,7 +436,7 @@ fn root_condition_plan_neutralizes_parameter_static_algebraic_outputs() {
 #[test]
 fn root_condition_plan_keeps_state_dependent_algebraic_outputs_dynamic() {
     let model = algebraic_output_root_model(add_assignment_residual_row(1, 0, 1.0));
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let plan = runtime
         .root_condition_plan
         .as_ref()
@@ -485,7 +485,7 @@ fn parameter_static_refresh_cache_invalidates_with_parameter_snapshot() {
         ..Default::default()
     };
     set_causal_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert_eq!(runtime.algebraic_refresh.static_causal_seed_rows.len(), 1);
     assert!(
         runtime
@@ -568,7 +568,7 @@ fn root_condition_plan_reports_next_direct_time_root() {
         parameters: vec![2.5],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     assert_eq!(
         runtime
@@ -607,7 +607,7 @@ fn visible_value_runtime_errors_keep_row_span() {
         .expect("fixture program is computable"),
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     let names = vec!["x".to_string()];
     let err = runtime

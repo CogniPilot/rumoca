@@ -46,7 +46,7 @@ fn projection_honors_nonidentity_scalar_output_mapping() {
         parameters: vec![1.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
     runtime

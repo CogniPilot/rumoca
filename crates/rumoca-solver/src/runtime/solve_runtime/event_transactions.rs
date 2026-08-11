@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn failed_predicate_commits_no_target_and_success_commits_whole_tuple() {
         let model = transaction_model();
-        let runtime = SolveRuntime::new(&model).unwrap();
+        let runtime = SolveRuntime::new_fixture(&model).unwrap();
         let mut y = Vec::new();
         let mut p = vec![4.5, 0.0, 9.0, 9.0];
 
@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn checked_transaction_replaces_legacy_row_and_executes_only_on_first_pass() {
         let model = transaction_model();
-        let runtime = SolveRuntime::new(&model).unwrap();
+        let runtime = SolveRuntime::new_fixture(&model).unwrap();
         let mut y = Vec::new();
         let mut p = vec![7.25, 1.0, 9.0, 9.0];
         let first = super::super::event_update::DiscretePreSnapshot {

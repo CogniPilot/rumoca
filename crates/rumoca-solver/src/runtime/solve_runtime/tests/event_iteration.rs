@@ -61,7 +61,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
         .problem
         .validate_shape_contract()
         .expect("compact structured update satisfies the Solve contract");
-    let runtime = SolveRuntime::new(&model).expect("structured runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("structured runtime should prepare");
     let mut y = Vec::new();
     let mut p = vec![0.0; 2];
     let event_pre_p = p.clone();
@@ -165,7 +165,7 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
         .problem
         .validate_shape_contract()
         .expect("guarded range satisfies the Solve contract");
-    let runtime = SolveRuntime::new(&model).expect("guarded runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("guarded runtime should prepare");
     assert!(runtime.discrete_rhs.is_empty());
     assert_eq!(runtime.guarded_assignment_programs.len(), 1);
     assert_eq!(runtime.guarded_assignment_programs[0].output_count(), 2);
@@ -251,7 +251,7 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
         parameters: vec![0.0, 0.0, 0.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("root cascade runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("root cascade runtime should prepare");
     let mut y = model.initial_y.clone();
     let mut p = model.parameters.clone();
     let event_pre_y = y.clone();
@@ -331,7 +331,7 @@ fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
         .problem
         .validate_shape_contract()
         .expect("the typed event-iteration fixture is complete");
-    let runtime = SolveRuntime::new(&model).expect("the event fixture should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("the event fixture should prepare");
     let mut y = model.initial_y.clone();
     let mut p = model.parameters.clone();
     let event_pre_y = y.clone();
@@ -607,7 +607,7 @@ fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre()
         .problem
         .validate_shape_contract()
         .expect("the mixed-pre fixture satisfies the Solve contract");
-    let runtime = SolveRuntime::new(&model).expect("the mixed-pre fixture should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("the mixed-pre fixture should prepare");
     let mut y = model.initial_y.clone();
     let mut p = model.parameters.clone();
     let event_pre_y = y.clone();
@@ -752,7 +752,8 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
         .problem
         .validate_shape_contract()
         .expect("clock-first-pass fixture satisfies the Solve contract");
-    let runtime = SolveRuntime::new(&model).expect("clock-first-pass fixture should prepare");
+    let runtime =
+        SolveRuntime::new_fixture(&model).expect("clock-first-pass fixture should prepare");
     let mut p = model.parameters.clone();
     let event_pre_p = p.clone();
 
@@ -815,7 +816,7 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
         parameters: vec![0.0, 0.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("typed root target is a valid runtime");
+    let runtime = SolveRuntime::new_fixture(&model).expect("typed root target is a valid runtime");
     let mut params = model.parameters.clone();
 
     runtime
@@ -829,7 +830,7 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
     );
 
     model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_y(0))];
-    let runtime = SolveRuntime::new(&model).expect("the root target shape remains aligned");
+    let runtime = SolveRuntime::new_fixture(&model).expect("the root target shape remains aligned");
     let error = runtime
         .update_relation_memory_from_state(0.0, &model.initial_y, &mut params, 1.0e-12, 4)
         .expect_err("a relation-memory root cannot write continuous solver storage");
@@ -913,7 +914,8 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
         parameters: vec![-1.0, 0.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("typed relation partition should prepare");
+    let runtime =
+        SolveRuntime::new_fixture(&model).expect("typed relation partition should prepare");
     let mut params = model.parameters.clone();
 
     runtime
@@ -980,8 +982,8 @@ fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
     let plan = valid_algebraic_refresh_plan(&model, &block);
 
     assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].row_idx, 1);
-    assert_eq!(plan.rows[0].target_index, 1);
+    assert_eq!(plan.rows[0].source().program(), 1);
+    assert_eq!(plan.rows[0].target_index(), 1);
     assert!(!plan.causal_solution_certified);
     assert_eq!(plan.simultaneous_plan.blocks.len(), 1);
     assert_eq!(plan.simultaneous_plan.blocks[0].rows, vec![0, 1]);

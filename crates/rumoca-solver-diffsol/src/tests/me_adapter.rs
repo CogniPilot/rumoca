@@ -64,7 +64,7 @@ fn me_runtime_contract_crosses_the_driver_with_its_kind_and_stage() {
 /// `z = 2` stops at different floating-point values.
 #[test]
 fn me_rhs_callbacks_preserve_frozen_algebraic_seed_and_commit_policy() {
-    let model = nonlinear_projection_backed_derivative_model();
+    let mut model = nonlinear_projection_backed_derivative_model();
     require_state_only_bdf(&model).expect("fixture must use the reduced state-only path");
     let opts = SimOptions {
         t_start: 0.0,
@@ -73,6 +73,7 @@ fn me_rhs_callbacks_preserve_frozen_algebraic_seed_and_commit_policy() {
         ..Default::default()
     };
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("fixture runtime should prepare");
     let equilibrium_model = OdeModel::new(&model).expect("fixture ODE projection should prepare");
     let mut accepted_y = model.initial_y.clone();
@@ -146,7 +147,7 @@ fn frozen_me_state_event_keeps_located_nonstate_lanes_when_time_snaps_back() {
     const LOCATED_ROOT: f64 = 0.220_05;
     const THRESHOLD: f64 = 2.000_05;
 
-    let model = strict_algebraic_threshold_condition_memory_model();
+    let mut model = strict_algebraic_threshold_condition_memory_model();
     let opts = SimOptions {
         t_start: 0.0,
         t_end: 1.0,
@@ -155,6 +156,7 @@ fn frozen_me_state_event_keeps_located_nonstate_lanes_when_time_snaps_back() {
     };
     const { assert!(LOCATED_ROOT > HORIZON) };
 
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("fixture runtime should prepare");
     let equilibrium_model = OdeModel::new(&model).expect("fixture ODE projection should prepare");
     let mut accepted_y = model.initial_y.clone();
@@ -252,7 +254,7 @@ fn frozen_me_state_event_uses_snapped_host_time_for_discrete_rows() {
     const HORIZON: f64 = 0.215;
     const LOCATED_ROOT: f64 = 0.215_000_000_000_000_02;
 
-    let model = snapped_time_condition_memory_model(HORIZON, LOCATED_ROOT);
+    let mut model = snapped_time_condition_memory_model(HORIZON, LOCATED_ROOT);
 
     let opts = SimOptions {
         t_start: 0.0,
@@ -260,6 +262,7 @@ fn frozen_me_state_event_uses_snapped_host_time_for_discrete_rows() {
         atol: CALLBACK_TOLERANCE,
         ..Default::default()
     };
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("fixture runtime should prepare");
     let equilibrium_model = OdeModel::new(&model).expect("fixture ODE should prepare");
     let mut accepted_y = model.initial_y.clone();
@@ -382,13 +385,14 @@ fn frozen_me_positive_dt_state_event_keeps_located_nonstate_lanes() {
     const HORIZON: f64 = 1.0;
     const THRESHOLD: f64 = 2.000_041;
 
-    let model = falling_algebraic_threshold_condition_memory_model(THRESHOLD);
+    let mut model = falling_algebraic_threshold_condition_memory_model(THRESHOLD);
     let opts = SimOptions {
         t_start: 0.0,
         t_end: HORIZON,
         atol: CALLBACK_TOLERANCE,
         ..Default::default()
     };
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("fixture runtime should prepare");
     let equilibrium_model = OdeModel::new(&model).expect("fixture ODE projection should prepare");
     let mut accepted_y = model.initial_y.clone();
@@ -479,13 +483,14 @@ fn frozen_coincident_clock_root_preserves_the_exact_post_clock_state() {
     const ROOT_TIME: f64 = 0.05;
     const HORIZON: f64 = 0.1;
 
-    let model = super::root_events::clock_owned_sample_with_coincident_root();
+    let mut model = super::root_events::clock_owned_sample_with_coincident_root();
     let opts = SimOptions {
         t_start: 0.0,
         t_end: HORIZON,
         atol: CALLBACK_TOLERANCE,
         ..Default::default()
     };
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let runtime = SolveRuntime::new(&model).expect("fixture runtime should prepare");
     let equilibrium_model = OdeModel::new(&model).expect("fixture ODE should prepare");
     let mut accepted_y = model.initial_y.clone();
@@ -532,13 +537,14 @@ fn frozen_clock_root_samples_event_entry_state() {
     const ROOT_TIME: f64 = 0.05;
     const HORIZON: f64 = 0.1;
 
-    let model = super::root_events::clock_owned_sample_with_coincident_root();
+    let mut model = super::root_events::clock_owned_sample_with_coincident_root();
     let opts = SimOptions {
         t_start: 0.0,
         t_end: HORIZON,
         atol: CALLBACK_TOLERANCE,
         ..Default::default()
     };
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners should construct");
     let host = instantiate_me_host(rumoca_solver::fmi_me::MeModelSource::new(&model), &opts)
         .expect("ME host should instantiate");
     host.initialize_component()

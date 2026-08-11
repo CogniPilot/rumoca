@@ -189,16 +189,19 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
 
     fn compile_assignment_schedule(
         &self,
-        programs: &[Vec<rumoca_ir_solve::LinearOp>],
-        target_y_indices: &[usize],
+        source: &rumoca_ir_solve::ComputeBlock,
+        owners: &rumoca_ir_solve::ContinuousRefreshOwners,
+        schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
     ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
         let compiled = match &self.pure_calls {
-            Some(pure_calls) => rumoca_exec_cranelift::compile_assignment_schedule_with_pure_calls(
-                programs,
-                target_y_indices,
-                pure_calls,
-            ),
-            None => rumoca_exec_cranelift::compile_assignment_schedule(programs, target_y_indices),
+            Some(pure_calls) => {
+                rumoca_exec_cranelift::compile_exact_assignment_schedule_with_pure_calls(
+                    source, owners, schedule, pure_calls,
+                )
+            }
+            None => {
+                rumoca_exec_cranelift::compile_exact_assignment_schedule(source, owners, schedule)
+            }
         };
         compiled
             .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)

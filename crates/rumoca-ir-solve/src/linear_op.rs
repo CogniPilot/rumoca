@@ -10,6 +10,56 @@ use crate::{SolvePureCallDirectionalSite, SolvePureCallSite};
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
 
+/// Checked isolator for one exact scalar view of an implicit output.
+///
+/// The Solve phase issues this certificate with its continuous refresh owner;
+/// evaluators execute it directly and never search the residual program for a
+/// target assignment.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TargetAssignmentShape {
+    Direct {
+        target_y_index: usize,
+        expr_reg: Reg,
+        target_scale: f64,
+        expr_eval_len: usize,
+    },
+    Affine {
+        target_y_index: usize,
+        offset_reg: Reg,
+        coefficient_reg: Option<Reg>,
+        offset_scale: f64,
+        coefficient_scale: f64,
+        expr_eval_len: usize,
+    },
+    AffineResidual {
+        target_y_index: usize,
+        target_reg: Reg,
+        residual_reg: Reg,
+        coefficient: f64,
+        expr_eval_len: usize,
+    },
+}
+
+impl TargetAssignmentShape {
+    #[must_use]
+    pub const fn target_y_index(self) -> usize {
+        match self {
+            Self::Direct { target_y_index, .. }
+            | Self::Affine { target_y_index, .. }
+            | Self::AffineResidual { target_y_index, .. } => target_y_index,
+        }
+    }
+
+    #[must_use]
+    pub const fn expr_eval_len(self) -> usize {
+        match self {
+            Self::Direct { expr_eval_len, .. }
+            | Self::Affine { expr_eval_len, .. }
+            | Self::AffineResidual { expr_eval_len, .. } => expr_eval_len,
+        }
+    }
+}
+
 /// Scalar unary operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnaryOp {

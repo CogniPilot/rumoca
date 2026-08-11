@@ -3,10 +3,9 @@ use rumoca_ir_solve as solve;
 use rumoca_solver::SimOptions;
 
 use super::{
-    ordinary_equation_row_metadata, periodic_schedule, set_equation_row_metadata,
+    ordinary_equation_row_metadata, periodic_schedule, set_equation_row_metadata, simulate,
     unit_integrator_model,
 };
-use crate::simulate;
 
 macro_rules! fixture_span {
     () => {

@@ -701,8 +701,8 @@ mod tests {
 
     #[test]
     fn projected_event_update_recovers_picard_oscillation_with_coupled_newton() {
-        let runtime =
-            SolveRuntime::new(&coupled_event_test_model()).expect("event model should prepare");
+        let runtime = SolveRuntime::new_fixture(&coupled_event_test_model())
+            .expect("event model should prepare");
         let mut y = vec![0.0];
         let mut p = vec![0.0, 0.0];
         let event_pre_y = y.clone();

@@ -95,6 +95,9 @@ pub enum SolveProblemShapeContractError {
         owner: u32,
         span: Option<Span>,
     },
+    ContinuousRefreshOwner {
+        detail: String,
+    },
     ZeroTensorDimension {
         context: String,
         node_index: usize,
@@ -241,6 +244,7 @@ impl SolveProblemShapeContractError {
             | Self::DuplicateProjectionUnknown { span, .. }
             | Self::InvalidProjectionUnknown { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
+            Self::ContinuousRefreshOwner { .. } => None,
             Self::ScalarProgramMissingProvenance { .. } => None,
             Self::ZeroTensorDimension { span, .. }
             | Self::StructuredIndexDomain { span, .. }
@@ -368,6 +372,9 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 f,
                 "{context} references pure-call owner {owner} with a missing or mismatched interface"
             ),
+            Self::ContinuousRefreshOwner { detail } => {
+                write!(f, "continuous refresh owner is invalid: {detail}")
+            }
             error @ (Self::ZeroTensorDimension { .. }
             | Self::StructuredIndexDomain { .. }
             | Self::TensorOutputMapDimension { .. }

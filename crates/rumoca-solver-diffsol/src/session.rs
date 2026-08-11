@@ -1116,6 +1116,12 @@ mod tests {
         session.advance_to(target).expect(context);
     }
 
+    fn issue_fixture_refresh_owners(model: &mut solve::SolveModel) {
+        model.problem.continuous.refresh_owners =
+            rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+                .expect("fixture refresh owners should construct");
+    }
+
     #[test]
     fn event_iteration_streak_resets_when_time_advances() {
         let mut streak = EventIterationStreak::default();
@@ -1140,7 +1146,8 @@ mod tests {
 
     #[test]
     fn set_input_updates_solve_ir_parameter_tail() {
-        let model = single_input_integrator();
+        let mut model = single_input_integrator();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1164,7 +1171,8 @@ mod tests {
 
     #[test]
     fn changed_input_refreshes_bdf_history() {
-        let model = single_input_integrator();
+        let mut model = single_input_integrator();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1190,7 +1198,8 @@ mod tests {
 
     #[test]
     fn zero_input_equilibrium_advances_without_bdf_underflow() {
-        let model = single_input_integrator();
+        let mut model = single_input_integrator();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1220,7 +1229,8 @@ mod tests {
 
     #[test]
     fn advance_to_clamps_to_sim_options_end_time() {
-        let model = single_input_integrator();
+        let mut model = single_input_integrator();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1247,7 +1257,8 @@ mod tests {
 
     #[test]
     fn incremental_session_can_extend_past_initial_end_time() {
-        let model = single_input_integrator();
+        let mut model = single_input_integrator();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1276,7 +1287,8 @@ mod tests {
 
     #[test]
     fn bdf_session_reset_restores_cached_initial_state() {
-        let model = single_input_integrator();
+        let mut model = single_input_integrator();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1315,7 +1327,8 @@ mod tests {
 
     #[test]
     fn advance_updates_relation_memory_before_projecting_algebraics() {
-        let model = falling_contact_probe();
+        let mut model = falling_contact_probe();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1344,7 +1357,8 @@ mod tests {
 
     #[test]
     fn root_at_advance_deadline_does_not_overshoot_target() {
-        let model = falling_contact_probe();
+        let mut model = falling_contact_probe();
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1381,6 +1395,7 @@ mod tests {
         model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
         model.parameters = vec![7.0];
         model.visible_names = vec!["m".to_string()];
+        issue_fixture_refresh_owners(&mut model);
 
         let mut session = SimulationSession::new(
             &model,
@@ -1416,6 +1431,7 @@ mod tests {
         model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
         model.parameters = vec![7.0];
         model.visible_names = vec!["m".to_string()];
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1457,6 +1473,7 @@ mod tests {
         model.problem.discrete.clock_owners = vec![model.problem.clocks.periodic_clock_id(0)];
         model.parameters = vec![0.0];
         model.visible_names = vec!["m".to_string()];
+        issue_fixture_refresh_owners(&mut model);
         let mut session = SimulationSession::new(
             &model,
             SimOptions {
@@ -1501,6 +1518,7 @@ mod tests {
                     manifold_residual: ComputeBlock::default(),
                     manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(rhs.clone()),
+                    refresh_owners: solve::ContinuousRefreshOwners::default(),
                 },
                 initialization: solve::InitializationSolveSystem {
                     residual: ComputeBlock::from_scalar_program_block(zero.clone()),
@@ -1600,6 +1618,7 @@ mod tests {
                     manifold_residual: ComputeBlock::default(),
                     manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(derivative.clone()),
+                    refresh_owners: solve::ContinuousRefreshOwners::default(),
                 },
                 initialization: solve::InitializationSolveSystem {
                     residual: ComputeBlock::from_scalar_program_block(scalar_block(vec![

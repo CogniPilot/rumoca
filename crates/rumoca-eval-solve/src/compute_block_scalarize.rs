@@ -1,6 +1,6 @@
 use rumoca_ir_solve::{
-    ComputeBlock, ComputeNode, LinearOp, Reg, ScalarProgramBlock, SolveProblemShapeContractError,
-    SolveVisitor,
+    ComputeBlock, ComputeNode, LinearOp, RefreshScalarProgramSource, Reg, ScalarProgramBlock,
+    SolveProblemShapeContractError, SolveVisitor,
 };
 
 mod affine;
@@ -20,17 +20,57 @@ use dense::{MatMulScalarizeInput, scalarize_linsolve, scalarize_matmul};
 /// Solve IR directly. Invalid tensor metadata is reported as `ScalarizeError`
 /// instead of treated as an internal invariant.
 pub fn to_scalar_program_block(block: &ComputeBlock) -> Result<ScalarProgramBlock, ScalarizeError> {
+    Ok(to_scalar_program_projection(block)?.block)
+}
+
+/// Final scalar fallback plus the exact canonical source of every retained
+/// scalar program. Tensor-generated rows have no scalar-program source.
+pub struct ScalarProgramProjection {
+    block: ScalarProgramBlock,
+    sources: Box<[Option<RefreshScalarProgramSource>]>,
+}
+
+impl ScalarProgramProjection {
+    #[must_use]
+    pub const fn block(&self) -> &ScalarProgramBlock {
+        &self.block
+    }
+
+    #[must_use]
+    pub const fn sources(&self) -> &[Option<RefreshScalarProgramSource>] {
+        &self.sources
+    }
+
+    #[must_use]
+    pub fn into_block(self) -> ScalarProgramBlock {
+        self.block
+    }
+}
+
+pub fn to_scalar_program_projection(
+    block: &ComputeBlock,
+) -> Result<ScalarProgramProjection, ScalarizeError> {
     block
         .validate_shape_contract("scalarize compute block")
         .map_err(ScalarizeError::from)?;
     let mut collector = ScalarProgramCollector::default();
     collector.visit_compute_block(block)?;
-    ScalarProgramBlock::with_output_indices(
+    let block = ScalarProgramBlock::with_output_indices(
         collector.rows,
         collector.program_spans,
         collector.output_indices,
     )
-    .map_err(ScalarizeError::from)
+    .map_err(ScalarizeError::from)?;
+    if collector.sources.len() != block.programs().len() {
+        return Err(ScalarizeError::ShapeContract {
+            message: "scalar fallback source projection is not row-aligned".to_string(),
+            span: block.first_source_span(),
+        });
+    }
+    Ok(ScalarProgramProjection {
+        block,
+        sources: collector.sources.into_boxed_slice(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,15 +306,31 @@ struct ScalarProgramCollector {
     rows: Vec<Vec<LinearOp>>,
     program_spans: Vec<rumoca_core::Span>,
     output_indices: Vec<usize>,
+    sources: Vec<Option<RefreshScalarProgramSource>>,
     next_output: usize,
 }
 
 impl ScalarProgramCollector {
     fn append_scalar_program_block(
         &mut self,
+        node_index: usize,
         block: &ScalarProgramBlock,
     ) -> Result<(), ScalarizeError> {
         let span = scalar_program_block_span(block);
+        reserve_vec_additional_optional(
+            &mut self.sources,
+            block.programs().len(),
+            "scalar program sources",
+            span,
+        )?;
+        for program_index in 0..block.programs().len() {
+            let source = RefreshScalarProgramSource::checked(node_index, program_index)
+                .ok_or_else(|| ScalarizeError::ShapeContract {
+                    message: "scalar program source identity exceeds u32".to_string(),
+                    span,
+                })?;
+            self.sources.push(Some(source));
+        }
         let mut programs = cloned_scalar_rows_optional(block.programs(), "scalar programs", span)?;
         append_vec_optional(&mut self.rows, &mut programs, "scalar programs", span)?;
         extend_cloned_values(
@@ -307,6 +363,9 @@ impl ScalarProgramCollector {
         span: rumoca_core::Span,
         kind: &'static str,
     ) -> Result<(), ScalarizeError> {
+        reserve_vec_additional(&mut self.sources, programs.len(), kind, span)?;
+        self.sources
+            .extend(std::iter::repeat_n(None, programs.len()));
         push_repeated_spans(&mut self.program_spans, span, programs.len(), kind)?;
         extend_output_range(&mut self.output_indices, start, end, kind, span)?;
         self.next_output = end;
@@ -320,6 +379,9 @@ impl ScalarProgramCollector {
         span: rumoca_core::Span,
         kind: &'static str,
     ) -> Result<(), ScalarizeError> {
+        reserve_vec_additional(&mut self.sources, programs.len(), kind, span)?;
+        self.sources
+            .extend(std::iter::repeat_n(None, programs.len()));
         push_repeated_spans(&mut self.program_spans, span, programs.len(), kind)?;
         self.next_output = self.next_output.max(checked_tensor_output_count(
             &output_indices,
@@ -331,9 +393,15 @@ impl ScalarProgramCollector {
         append_vec(&mut self.rows, &mut programs, kind, span)
     }
 
-    fn append_compute_node(&mut self, node: &ComputeNode) -> Result<(), ScalarizeError> {
+    fn append_compute_node(
+        &mut self,
+        node_index: usize,
+        node: &ComputeNode,
+    ) -> Result<(), ScalarizeError> {
         match node {
-            ComputeNode::ScalarPrograms(block) => self.append_scalar_program_block(block),
+            ComputeNode::ScalarPrograms(block) => {
+                self.append_scalar_program_block(node_index, block)
+            }
             ComputeNode::MatMul {
                 lhs_ops,
                 lhs_start,
@@ -478,7 +546,7 @@ impl SolveVisitor for ScalarProgramCollector {
         node: &ComputeNode,
     ) -> Result<(), Self::Error> {
         let output_cursor_before = self.next_output;
-        self.append_compute_node(node)?;
+        self.append_compute_node(node_index, node)?;
         self.trace_compute_node(node_index, node, output_cursor_before);
         Ok(())
     }
@@ -495,6 +563,8 @@ impl SolveVisitor for ScalarProgramCollector {
         reserve_vec_additional(&mut self.rows, 1, "scalar program rows", span)?;
         self.rows
             .push(cloned_linear_ops(ops, "scalar program", span)?);
+        reserve_vec_additional(&mut self.sources, 1, "scalar program sources", span)?;
+        self.sources.push(None);
         reserve_vec_additional(&mut self.program_spans, 1, "scalar program spans", span)?;
         self.program_spans.push(span);
         reserve_vec_additional(

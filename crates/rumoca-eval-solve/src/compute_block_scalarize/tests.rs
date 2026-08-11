@@ -818,6 +818,37 @@ fn local_scalar_node_is_placed_after_prior_tensor_output() {
 }
 
 #[test]
+fn final_scalar_projection_retains_only_canonical_scalar_source_identities() {
+    let span = fixture_span();
+    let scalar = || {
+        ComputeNode::ScalarPrograms(
+            ScalarProgramBlock::with_source_span(
+                vec![const_store_row(7.0)],
+                span.require_provenance("scalar source projection fixture")
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+    };
+    let block = ComputeBlock {
+        nodes: vec![scalar(), one_by_one_matmul_node(2.0, 3.0), scalar()],
+    };
+
+    let projection =
+        to_scalar_program_projection(&block).expect("mixed final projection should be valid");
+
+    assert_eq!(projection.block().programs().len(), 3);
+    assert_eq!(
+        projection.sources(),
+        [
+            RefreshScalarProgramSource::checked(0, 0),
+            None,
+            RefreshScalarProgramSource::checked(2, 0),
+        ]
+    );
+}
+
+#[test]
 fn explicit_scalar_node_advances_following_tensor_output_cursor() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("explicit_scalar_tensor.mo"),

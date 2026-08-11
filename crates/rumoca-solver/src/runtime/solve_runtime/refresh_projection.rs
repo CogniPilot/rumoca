@@ -766,26 +766,44 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         match stage {
             RefreshStage::CausalSeedSweep {
+                static_sequence,
+                dynamic_sequence,
                 static_rows,
                 dynamic_rows,
             } => {
-                let seeded =
-                    self.refresh_stage_seed_sweep(static_rows, dynamic_rows, args, incoming)?;
+                let seeded = self.refresh_stage_seed_sweep(
+                    *static_sequence,
+                    *dynamic_sequence,
+                    static_rows,
+                    dynamic_rows,
+                    args,
+                    incoming,
+                )?;
                 self.continue_or_project_complete(seeded, complete_plan, args)
             }
             RefreshStage::ExactAssignments {
+                static_sequence,
+                dynamic_sequence,
                 static_rows,
                 dynamic_rows,
             } => {
-                let assigned =
-                    self.refresh_stage_seed_sweep(static_rows, dynamic_rows, args, incoming)?;
+                let assigned = self.refresh_stage_seed_sweep(
+                    *static_sequence,
+                    *dynamic_sequence,
+                    static_rows,
+                    dynamic_rows,
+                    args,
+                    incoming,
+                )?;
                 self.continue_or_project_complete(assigned, complete_plan, args)
             }
             RefreshStage::ProjectionBlock {
+                seed_sequence,
                 block_index,
                 plan,
                 seed_rows,
             } => self.refresh_projection_stage_with_seed(
+                *seed_sequence,
                 *block_index,
                 plan,
                 seed_rows,
@@ -811,6 +829,7 @@ impl SolveRuntime {
 
     fn refresh_projection_stage_with_seed(
         &self,
+        seed_sequence: solve::RefreshSequenceId,
         block_index: usize,
         plan: &solve::AlgebraicProjectionPlan,
         seed_rows: &[AlgebraicRefreshRow],
@@ -818,7 +837,8 @@ impl SolveRuntime {
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<bool, RuntimeSolveError> {
-        let result = self.refresh_slots_once(seed_rows, args.t, args.solver_y, args.params);
+        let result =
+            self.refresh_slots_once(seed_rows, seed_sequence, args.t, args.solver_y, args.params);
         if let Err(error) = result {
             restore_after_causal_seed_error(error, args.solver_y, incoming)?;
             self.project_refresh_slots(complete_plan, args, true)?;
@@ -830,15 +850,29 @@ impl SolveRuntime {
 
     fn refresh_stage_seed_sweep(
         &self,
+        static_sequence: solve::RefreshSequenceId,
+        dynamic_sequence: solve::RefreshSequenceId,
         static_rows: &[AlgebraicRefreshRow],
         dynamic_rows: &[AlgebraicRefreshRow],
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<bool, RuntimeSolveError> {
         let result = self
-            .refresh_prepared_static_rows(static_rows, args.t, args.solver_y, args.params)
+            .refresh_prepared_static_rows(
+                static_rows,
+                static_sequence,
+                args.t,
+                args.solver_y,
+                args.params,
+            )
             .and_then(|()| {
-                self.refresh_slots_once(dynamic_rows, args.t, args.solver_y, args.params)
+                self.refresh_slots_once(
+                    dynamic_rows,
+                    dynamic_sequence,
+                    args.t,
+                    args.solver_y,
+                    args.params,
+                )
             });
         if let Err(error) = result {
             restore_after_causal_seed_error(error, args.solver_y, incoming)?;
@@ -897,7 +931,7 @@ pub(super) fn value_stage_seed_coverage_is_complete(stages: &[RefreshStage]) -> 
             block
                 .y_indices
                 .iter()
-                .all(|target| seed_rows.iter().any(|row| row.target_index == *target))
+                .all(|target| seed_rows.iter().any(|row| row.target_index() == *target))
         }),
         _ => true,
     })

@@ -1,12 +1,15 @@
 //! Runtime projection and event regression tests.
 
 use super::*;
+use rumoca_eval_solve::refresh_plan::{
+    build_algebraic_refresh_plan, build_derivative_refresh_plan,
+};
 
 fn valid_algebraic_refresh_plan(
     model: &solve::SolveModel,
     block: &PreparedScalarProgramBlock,
 ) -> RefreshPlan {
-    match build_algebraic_refresh_plan(model, block) {
+    match build_algebraic_refresh_plan(&model.problem, block) {
         Ok(plan) => plan,
         Err(error) => panic!("valid algebraic refresh plan should build: {error}"),
     }
@@ -130,7 +133,7 @@ fn warm_start_test_model() -> solve::SolveModel {
 #[test]
 fn solver_y_warm_start_preserves_algebraic_guess() {
     let model = warm_start_test_model();
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = vec![10.0, 42.0];
 
     runtime
@@ -143,7 +146,7 @@ fn solver_y_warm_start_preserves_algebraic_guess() {
 #[test]
 fn row_eval_context_carries_the_model_pure_call_table() {
     let model = warm_start_test_model();
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
 
     let context = runtime.row_eval_context();
     let table = context
@@ -156,7 +159,7 @@ fn row_eval_context_carries_the_model_pure_call_table() {
 #[test]
 fn solver_y_warm_start_rejects_layout_mismatch() {
     let model = warm_start_test_model();
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = vec![9.0];
 
     let error = runtime
@@ -209,7 +212,7 @@ fn runtime_new_reports_invalid_native_stride_metadata() {
         ..Default::default()
     };
 
-    let error = match SolveRuntime::new(&model) {
+    let error = match SolveRuntime::new_fixture(&model) {
         Ok(_) => panic!("invalid native stride metadata should fail runtime preparation"),
         Err(error) => error,
     };
@@ -283,13 +286,13 @@ fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output(
         "derivative_dependency_slice_rhs.mo",
     );
 
-    let plan = build_derivative_refresh_plan(&model, &derivative, &implicit, &full)
+    let plan = build_derivative_refresh_plan(&model.problem, &derivative, &implicit, &full)
         .expect("dependency refresh should retain complete coupled blocks");
 
     assert_eq!(
         plan.rows
             .iter()
-            .map(|row| row.target_index)
+            .map(|row| row.target_index())
             .collect::<Vec<_>>(),
         vec![2, 1]
     );
@@ -344,7 +347,7 @@ fn derivative_refresh_rejects_missing_owner_without_exact_isolation() {
         "missing_exact_dependency_owner_rhs.mo",
     );
 
-    let plan = build_derivative_refresh_plan(&model, &derivative, &implicit, &full)
+    let plan = build_derivative_refresh_plan(&model.problem, &derivative, &implicit, &full)
         .expect("an unproved owner must retain residual projection");
 
     assert!(plan.rows.is_empty());
@@ -404,8 +407,8 @@ fn refresh_plan_accepts_scaled_affine_residual_target() {
         .expect("scaled residual should evaluate");
 
     assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].row_idx, 1);
-    assert_eq!(plan.rows[0].target_index, 1);
+    assert_eq!(plan.rows[0].source().program(), 1);
+    assert_eq!(plan.rows[0].target_index(), 1);
     assert_eq!(value, Some(3.0));
 }
 
@@ -449,8 +452,8 @@ fn causal_certificate_keeps_equation_rows_distinct_from_solver_y_indices() {
 
     assert!(plan.causal_solution_certified);
     assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].equation_index, 0);
-    assert_eq!(plan.rows[0].target_index, 1);
+    assert_eq!(plan.rows[0].equation_index(), 0);
+    assert_eq!(plan.rows[0].target_index(), 1);
 }
 
 #[test]
@@ -489,7 +492,7 @@ fn batched_assignment_refresh_preserves_row_order_dependencies() {
         ..Default::default()
     };
     set_causal_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();
 
@@ -526,7 +529,7 @@ fn certified_assignment_refresh_rejects_nonfinite_value_and_restores_input() {
         ..Default::default()
     };
     set_causal_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();
 
@@ -585,7 +588,7 @@ fn causal_certificate_rejects_swapped_blt_equation_target_pairs() {
         ..Default::default()
     };
 
-    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
 }
 
@@ -664,7 +667,7 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
         parameters: vec![3.0],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new(&model).expect("runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     assert_eq!(
         runtime.algebraic_refresh.value_projection_plan.blocks.len(),
@@ -732,8 +735,8 @@ fn refresh_plan_accepts_direct_affine_residual_target() {
         .expect("direct affine residual should evaluate");
 
     assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].row_idx, 2);
-    assert_eq!(plan.rows[0].target_index, 2);
+    assert_eq!(plan.rows[0].source().program(), 2);
+    assert_eq!(plan.rows[0].target_index(), 2);
     assert_eq!(value, Some(-1000.0));
 }
 
@@ -787,7 +790,7 @@ fn refresh_residual_fallback_solves_positive_unit_coefficient() {
         ]],
         "positive_residual_jvp.mo",
     );
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
     runtime
@@ -924,7 +927,7 @@ fn refresh_newton_repivots_mode_dependent_coupled_residuals() {
     // At k=0, row 0 is structurally incident on x but numerically independent
     // of it. The complete Jacobian remains nonsingular.
     let model = mode_dependent_repivot_model();
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(runtime.algebraic_refresh.rows.is_empty());
     assert_eq!(runtime.algebraic_refresh.simultaneous_plan.blocks.len(), 1);
 
@@ -1053,7 +1056,7 @@ fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
         "causal_newton_seed_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();
     refresh_with_value_stages(&runtime, &mut solver_y)
@@ -1096,7 +1099,7 @@ fn refresh_accepts_assignment_seed_only_when_residual_is_within_tolerance() {
         ..Default::default()
     };
     set_complete_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(!runtime.algebraic_refresh.causal_solution_certified);
     let mut solver_y = model.initial_y.clone();
 
@@ -1200,7 +1203,7 @@ fn refresh_newton_backtracks_across_expression_domain_boundary() {
         "damped_newton_domain_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
     runtime
@@ -1287,7 +1290,7 @@ fn refresh_projects_rank_deficient_bilinear_start() {
         "bilinear_start_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = model.initial_y.clone();
 
     runtime
@@ -1340,7 +1343,7 @@ fn refresh_iteration_propagates_semantic_errors_and_restores_snapshot() {
         ..Default::default()
     };
     set_complete_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     let mut solver_y = vec![19.0];
 
     let error = runtime
@@ -1378,6 +1381,7 @@ fn singular_affine_seed_falls_back_to_preserved_projection() {
 #[test]
 fn staged_projection_requires_a_seed_for_every_block_coordinate() {
     let stage = RefreshStage::ProjectionBlock {
+        seed_sequence: Default::default(),
         block_index: 0,
         plan: solve::AlgebraicProjectionPlan {
             blocks: vec![solve::AlgebraicProjectionBlock {
@@ -1385,16 +1389,20 @@ fn staged_projection_requires_a_seed_for_every_block_coordinate() {
                 y_indices: vec![0, 1],
             }],
         },
-        seed_rows: vec![AlgebraicRefreshRow {
-            equation_index: 0,
-            row_idx: 0,
-            output_offset: 0,
-            target_index: 0,
-            assignment_target: Some(0),
-            assignment_shape: None,
-            direct_assignment_certified: true,
-            exact_assignment_certified: false,
-        }]
+        seed_rows: vec![
+            AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
+                owner_id: Default::default(),
+                source: solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
+                equation_index: 0,
+                output_offset: 0,
+                target_index: 0,
+                assignment_target: Some(0),
+                assignment_shape: None,
+                direct_assignment_certified: false,
+                exact_assignment_certified: false,
+            })
+            .unwrap(),
+        ]
         .into_boxed_slice(),
     };
 
@@ -1434,7 +1442,7 @@ fn refresh_projects_complete_system_with_empty_causal_schedule() {
         "empty_causal_projection_jvp.mo",
     );
     set_complete_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
+    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
     assert!(runtime.algebraic_refresh.rows.is_empty());
     let mut solver_y = model.initial_y.clone();
 
@@ -1470,7 +1478,7 @@ fn runtime_rejects_missing_algebraic_implicit_row() {
         initial_y: vec![0.0, 0.0],
         ..Default::default()
     };
-    let err = match SolveRuntime::new(&model) {
+    let err = match SolveRuntime::new_fixture(&model) {
         Ok(_) => panic!("incomplete implicit algebraic system must be rejected"),
         Err(err) => err,
     };
@@ -1984,31 +1992,4 @@ fn direct_assignment_residual_row() -> Vec<solve::LinearOp> {
 
 mod projection_output_mapping;
 mod projection_sensitivity;
-
-#[test]
-fn apply_discrete_slot_value_reports_out_of_bounds_target() {
-    let mut y = [0.0];
-    let mut p = [];
-
-    let err = crate::apply_discrete_slot_value(
-        solve::ScalarSlot::Y {
-            index: 2,
-            byte_offset: 16,
-        },
-        1.0,
-        &mut y,
-        &mut p,
-        1e-12,
-    )
-    .expect_err("out-of-bounds discrete target must be reported");
-
-    assert_eq!(
-        err,
-        EvalSolveError::MissingInput {
-            vector: "y",
-            index: 2,
-            len: 1,
-            span: None,
-        }
-    );
-}
+mod slot_updates;

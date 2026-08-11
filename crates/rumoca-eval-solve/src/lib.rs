@@ -42,15 +42,15 @@ pub mod tensor_policy;
 mod typed_program;
 mod update_rows;
 pub use compute_block_scalarize::{
-    ScalarizeError, checked_contiguous_output_count, checked_tensor_output_count,
-    scalar_program_output_count, scalar_program_output_indices, tensor_output_indices,
-    to_scalar_program_block,
+    ScalarProgramProjection, ScalarizeError, checked_contiguous_output_count,
+    checked_tensor_output_count, scalar_program_output_count, scalar_program_output_indices,
+    tensor_output_indices, to_scalar_program_block, to_scalar_program_projection,
 };
 use linear_solve::{solve_component_op, solve_component_unchecked};
 pub(crate) use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
-    TargetAssignmentShape, target_assignment_shape, target_assignment_shapes,
+    target_assignment_shape, target_assignment_shapes,
 };
 pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;
@@ -58,6 +58,7 @@ use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
+pub use rumoca_ir_solve::TargetAssignmentShape;
 pub use sparsity::{
     derive_column_coloring, derive_jacobian_pattern_from_jvp,
     derive_jacobian_pattern_from_scalar_jvp, derive_solve_structural_artifacts,

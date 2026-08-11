@@ -34,8 +34,12 @@ struct ObservableKernelState {
 }
 
 fn instantiate(model: &rumoca_ir_solve::SolveModel) -> SolveMeKernel {
+    let mut model = model.clone();
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+            .expect("verification fixture refresh owners construct");
     SolveMeKernel::instantiate(
-        MeModelSource::new(model),
+        MeModelSource::new(&model),
         &MeInstanceConfig {
             instance_name: "solve-verification",
             tolerance: TOLERANCE,

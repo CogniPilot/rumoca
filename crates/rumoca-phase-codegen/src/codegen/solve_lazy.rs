@@ -386,33 +386,38 @@ fn continuous_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenE
 }
 
 fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bool), CodegenError> {
-    let scalar = rumoca_eval_solve::to_scalar_program_block(&problem.continuous.implicit_rhs)?;
-    let prepared = rumoca_eval_solve::PreparedScalarProgramBlock::new(scalar.clone())
-        .map_err(|error| CodegenError::template(error.to_string()))?;
+    let owners = &problem.continuous.refresh_owners;
     let mut programs = Vec::new();
     let mut spans = Vec::new();
     let mut targets = Vec::new();
     let mut complete = true;
-    for block in &problem.continuous.algebraic_projection_plan.blocks {
-        let ([row], [target]) = (block.rows.as_slice(), block.y_indices.as_slice()) else {
-            complete = false;
-            continue;
-        };
-        let Some(program_index) = prepared.single_output_row_for_output_index(*row) else {
-            complete = false;
-            continue;
-        };
-        let Some(program) = prepared.exact_target_assignment_program(program_index, *target) else {
-            complete = false;
-            continue;
-        };
-        programs.push(program);
-        spans.push(
-            scalar
-                .program_span(program_index)
-                .expect("checked scalar projection row has provenance"),
-        );
-        targets.push(*target);
+    for stage in &owners.algebraic().value_stages {
+        match stage {
+            solve::RefreshStage::CausalSeedSweep { .. } => {}
+            solve::RefreshStage::ExactAssignments {
+                static_sequence,
+                dynamic_sequence,
+                ..
+            } => {
+                append_issued_assignment_sequence(
+                    &problem.continuous.implicit_rhs,
+                    owners,
+                    *static_sequence,
+                    &mut programs,
+                    &mut spans,
+                    &mut targets,
+                )?;
+                append_issued_assignment_sequence(
+                    &problem.continuous.implicit_rhs,
+                    owners,
+                    *dynamic_sequence,
+                    &mut programs,
+                    &mut spans,
+                    &mut targets,
+                )?;
+            }
+            solve::RefreshStage::ProjectionBlock { .. } => complete = false,
+        }
     }
     let assignments = solve::ScalarProgramBlock::with_output_indices(programs, spans, targets)
         .map_err(|error| CodegenError::template(error.to_string()))?;
@@ -420,6 +425,41 @@ fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bo
         Arc::new(assignments),
     )?);
     Ok((plan, complete))
+}
+
+fn append_issued_assignment_sequence(
+    source: &solve::ComputeBlock,
+    owners: &solve::ContinuousRefreshOwners,
+    sequence: solve::RefreshSequenceId,
+    programs: &mut Vec<Vec<solve::LinearOp>>,
+    spans: &mut Vec<rumoca_core::Span>,
+    targets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    let Some(schedule) = owners.exact_assignment_schedule(sequence) else {
+        return Ok(());
+    };
+    for program_id in schedule.program_ids() {
+        let program = owners
+            .exact_assignment_program(*program_id)
+            .ok_or_else(|| {
+                CodegenError::template("issued algebraic assignment schedule has no program owner")
+            })?;
+        let block = program
+            .final_scalar_program(source)
+            .map_err(|error| CodegenError::template(error.to_string()))?;
+        let [operations] = block.programs() else {
+            return Err(CodegenError::template(
+                "issued algebraic assignment owner is not one correlated program",
+            ));
+        };
+        let span = block.program_span(0).ok_or_else(|| {
+            CodegenError::template("issued algebraic assignment owner has no provenance")
+        })?;
+        programs.push(operations.clone());
+        spans.push(span);
+        targets.extend_from_slice(program.target_indices());
+    }
+    Ok(())
 }
 
 fn discrete_value(problem: Arc<solve::SolveProblem>) -> Result<Value, CodegenError> {
