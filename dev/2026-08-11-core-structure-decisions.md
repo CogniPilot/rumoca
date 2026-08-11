@@ -902,3 +902,44 @@ Governance final: 19/20 spec count; two-commit voted PR (PROPOSED ->
 DRAFT + atomic accepted-surface extraction); SPEC_0000 has no
 DRAFT->ACCEPTED path today — whether to add one is scoped into the same
 voted series.
+
+## Appendix C: DCO repair hash map (rebase --signoff, tree-identical, 00:55)
+
+```
+489f7fd3 -> 74973f6d  Implement tensor-native Solve owners and event transactions	74973f6d
+522613a6 -> d191377c  Execute checked event transactions atomically	d191377c
+6499d8d0 -> d2935e36  Specify checked continuous refresh ownership	d2935e36
+7c4de0c7 -> 3ca62c3f  Execute continuous calls through checked directional owners	3ca62c3f
+0e1d7d15 -> 12c7e6f5  Select exact typed region captures	12c7e6f5
+ae636cce -> 3a42cb32  Issue canonical continuous refresh schedules	3a42cb32
+8c0e28d1 -> 09b864ea  Document rejected Cranelift optimization experiments	09b864ea
+e5ddf351 -> 64644ca0  Issue exact causal refresh remainders	64644ca0
+72d3d318 -> ce868f1b  Document RDD2 performance handoff	ce868f1b
+32c9cb90 -> 5c7d7fde  Update RDD2 agent handoff	5c7d7fde
+e72f9dd3 -> 91db17f5  Reuse event-settled clock refresh owners	91db17f5
+95315052 -> 3c1ad654  Store compact refresh row selections	3c1ad654
+7a24727c -> 7acba844  Refresh RDD2 agent handoff	7acba844
+9c1af21e -> 9fbf56e4  Preserve affine refresh dependencies	9fbf56e4
+07e9d5df -> ff0a1786  Rebuild Solve artifacts on wire replay	ff0a1786
+c63cff21 -> d5f1904a  Reject typed pure-call ops in the WASM emitter	d5f1904a
+106fb650 -> f0097adf  Fix zero-trip fold arity, algorithm activation panic, exec-mlir tests	f0097adf
+b1e86183 -> 9822c05e  Key typed-function lowering by issued definition identity	9822c05e
+690ad951 -> bef79023  Harden the typed method/effect scaffold	bef79023
+50fcecef -> ad85fca2  Close in-process structural-pattern authority	ad85fca2
+3df0b4ac -> 43eeab93  GALEC C codegen: single-source symbols, checked limits, partials	43eeab93
+31458892 -> 4e8fa8ec  Wire the three-leg GALEC differential oracle	4e8fa8ec
+305b211b -> 394cea34  Sync the contract registry with the SPEC_0022 catalog	394cea34
+d14d7e9b -> 6d7c372d  Require assumptions in the Kani proof manifest (schema 3)	6d7c372d
+24b8838d -> 3d873d5e  Enforce the scalar-op vocabulary freeze; file-size markers	3d873d5e
+c3db795f -> 86435a8b  Spec truthing, C57 reconciliation, decision and evidence records	86435a8b
+9a7d52fd -> d40c6567  Post the batch release to the coordination mailbox	d40c6567
+18c8354a -> ecb5d795  Disposition the three architecture alternatives passes	ecb5d795
+87f43c85 -> e4e46148  Reject orphaned construction; admit zero-trip loop domains	e4e46148
+60dff295 -> fe53875d  Acknowledge the stop-ship repair and position dispositions in the mailbox	fe53875d
+a150cf34 -> cb68cf6a  Record the three-angle post-checkpoint audit verdict (Codex ledger row)	cb68cf6a
+6c2a2b58 -> ff732d3b  Accept the checkpoint-audit dispositions; sequence the corrected series	ff732d3b
+cdb8a0df -> ef42d406  Counterpositions and stricter gates for the SPEC_0045/0046 drafts	ef42d406
+6d798c28 -> 95d33729  Counter the draft architecture gates	95d33729
+1cb868c6 -> eaee351d  Resolve scheduled-event iteration strata	eaee351d
+7639c05b -> 9bc2b6b9  Resolve SPEC_0045/0046 counter-round to drafting constraints	9bc2b6b9
+```
