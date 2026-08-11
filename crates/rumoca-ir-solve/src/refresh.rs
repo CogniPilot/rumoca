@@ -1675,14 +1675,32 @@ impl RefreshRemainderRelation {
 
 impl RefreshPlan {
     fn issue_value_remainder_after(&self, settled: &Self) -> RefreshRemainderRelation {
-        let settled = refresh_stage_coverage(&settled.value_stages);
+        let settled_stages = refresh_stage_coverage(&settled.value_stages);
         let value_stages = self
             .value_stages
             .iter()
-            .filter_map(|stage| uncovered_refresh_stage(stage, &settled))
+            .filter_map(|stage| uncovered_refresh_stage(stage, &settled_stages))
             .collect();
         let mut remainder = self.clone();
         remainder.value_stages = value_stages;
+        if self.causal_solution_certified && settled.causal_solution_certified {
+            let settled_rows = settled
+                .causal_seed_rows
+                .iter()
+                .map(|row| RefreshStageIdentity::ExactAssignment(row.owner_id))
+                .collect::<Vec<_>>();
+            remainder.causal_seed_rows =
+                uncovered_refresh_rows(&self.causal_seed_rows, &settled_rows);
+            remainder.static_causal_seed_rows =
+                uncovered_refresh_rows(&self.static_causal_seed_rows, &settled_rows);
+            remainder.dynamic_causal_seed_rows =
+                uncovered_refresh_rows(&self.dynamic_causal_seed_rows, &settled_rows);
+        } else {
+            // A staged remainder cannot inherit the complete plan's causal
+            // certificate. Doing so would select an unfiltered causal schedule
+            // and discard the construction-issued uncovered stages.
+            remainder.causal_solution_certified = false;
+        }
         RefreshRemainderRelation { remainder }
     }
 }

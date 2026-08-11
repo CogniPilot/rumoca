@@ -334,11 +334,17 @@ fn derivative_settle_relation_keeps_only_uncovered_root_stages() {
         seed_rows: Box::new([]),
     };
     let root = RefreshPlan {
+        causal_seed_rows: vec![row(0), row(3)],
+        dynamic_causal_seed_rows: vec![row(0), row(3)],
         value_stages: vec![exact_stage(0), projection.clone(), exact_stage(3)],
+        causal_solution_certified: true,
         ..RefreshPlan::default()
     };
     let derivative = RefreshPlan {
+        causal_seed_rows: vec![row(0), row(9)],
+        dynamic_causal_seed_rows: vec![row(0), row(9)],
         value_stages: vec![exact_stage(0), exact_stage(9), projection],
+        causal_solution_certified: true,
         ..RefreshPlan::default()
     };
 
@@ -348,6 +354,9 @@ fn derivative_settle_relation_keeps_only_uncovered_root_stages() {
         [RefreshStage::ExactAssignments { dynamic_rows, .. }]
             if dynamic_rows.len() == 1 && dynamic_rows[0].target_index == 3
     ));
+    assert!(relation.remainder().causal_solution_certified);
+    assert_eq!(relation.remainder().causal_seed_rows, [row(3)]);
+    assert_eq!(relation.remainder().dynamic_causal_seed_rows, [row(3)]);
 }
 
 fn exact_stage(index: usize) -> RefreshStage {
