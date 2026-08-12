@@ -138,16 +138,16 @@ translation-validation witness mapping each eliminated execution to a
 dominating exact-context owner (SEV-046, SEV-049).
 
 **Benchmark topology binding.** A performance discriminator over an EXTERNAL
-model is vacuous unless its topology is pinned. The RDD2 estimator
-discriminator therefore pins the external model's revision or content digest,
-OR asserts the compiled structural precondition it depends on: exactly one
-correlated `step` occurrence; predict evaluated before correction; the exact
-mocap, joint-GPS, GPS-position, GPS-velocity, optical, and hold priority chain;
-and the later `navigationEstimateArrays` current read. A topology change
-INVALIDATES the gate rather than silently passing a simpler model. Counters
-bind the issued `OccurrenceId` and `InvocationOwnerId` plus the source digest —
-never owner ordinals, display names, or function names, which are unstable
-across construction (SEV-044, SEV-047).
+model is vacuous unless its topology is pinned. The RDD2 estimator discriminator
+therefore selects ONE BINDING CERTIFICATE: either the external model's revision
+or content digest, or the compiled structural precondition it depends on —
+exactly one correlated `step` occurrence; predict evaluated before correction;
+the exact mocap, joint-GPS, GPS-position, GPS-velocity, optical, and hold
+priority chain; and the later `navigationEstimateArrays` current read. A
+topology change INVALIDATES the gate rather than silently passing a simpler
+model. Counters bind the issued `OccurrenceId` and `InvocationOwnerId` plus THE
+SELECTED BINDING CERTIFICATE — never owner ordinals, display names, or function
+names, which are unstable across construction (SEV-044, SEV-047).
 
 ### 3. Rejected Alternatives
 
@@ -320,7 +320,7 @@ names the `SDO` rule it covers.
 | Absent | Laziness is not semantic: work under an inactive target is skipped by evaluation order, not proven to execute zero times | runtime | SDO-003 |
 | Partial | Migration-period uniformity and row-filter runtime proofs exist in the working tree, each with a named deletion edge; they are transition debt, not the strata | `rumoca-solver` runtime | SDO-031, SDO-032 |
 | Partial | The one-tick and settle restorations are LANDED behavior and are the only strata semantics presently correct. Whole-event ACTION STAGING is NOT landed — see the next row | `rumoca-solver` runtime | SDO-033 |
-| Absent | No whole-event candidate/commit relation: outcomes publish as they settle, no owner defines whole-event publication, and effects are not staged | `rumoca-solver` runtime | SDO-040, SDO-043 |
+| Absent | No whole-event candidate/commit relation: outcomes publish as they settle, no owner defines whole-event publication, and effects are not staged | `rumoca-solver` runtime | SDO-040, SDO-044 |
 | Partial | `SolveRuntimeSnapshot` already captures the static refresh cache, evaluator random and impure state, and delay state. ABSENT are: one enclosing `EventAttempt` invoking it on EVERY failure path; relation and condition memory; integrator invalidation/restart and FMI lifecycle, termination, and next-event state; schedule-consumption and history restoration; and the observable action ledgers | `rumoca-solver` runtime | SDO-041 |
 | Absent | The `Publish`/`Abort` outcome form does not exist; warning and terminate paths are ad hoc and staged-effect order is not retained | `rumoca-solver` runtime | SDO-042 |
 | Absent | No `EventInstantExecutionPlan` static owner with nonoverlapping child coverage and one outer commit | `rumoca-ir-solve` | SDO-010, SDO-011 |
@@ -337,7 +337,7 @@ names the `SDO` rule it covers.
 | SDO-200 | Total next, both polarities | An ACTIVE target's same-instant read observes the lazily selected RHS; an INACTIVE target's read observes the held entry through the SAME relation, with no storage-fallback path taken | SDO-001, SDO-002 |
 | SDO-201 | Inactive effects execute zero times | Calls, assertions, folds, and tensor kernels under an inactive target or untaken arm execute EXACTLY zero times, counted by issued identity | SDO-003 |
 | SDO-202 | Residual SCC rejection | A legal coupled or nonlinear B.1b SCC rejects at its owning source spans; no order is invented and no coverage hole appears | SDO-021 |
-| SDO-203 | Independent base-clock permutation | Permuting independent base clocks leaves every observable identical | SDO-031 |
+| SDO-203 | Independent base-clock permutation | Permuting independent base clocks leaves every observable identical — the between-partition invariance half of SDO-046 | SDO-031, SDO-046 |
 | SDO-204 | Scheduled results stay current | Scheduled `m = pre(m) + 1` followed by unclocked `n = pre(m)` cascades correctly: the scheduled owner does not rerun in later passes, and only iterative `pre` advances | SDO-033 |
 | SDO-205 | Coincident directions | In one fixture at one instant: Boolean code reading `hold(clockVar)` observes THIS tick's newly solved value, while a Clock partition sampling a Boolean-updated variable observes its captured left limit | SDO-034 |
 | SDO-206b | Round-2 activation | A condition-triggered unclocked algorithm activating at Appendix-B round `k >= 2` consumes current scheduled and iterative definitions and exposes its final tuple to later iterative members; feeding a once-only owner rejects absent a joint owner; the post-settle suffix then consumes the settled tuple before the single commit | SDO-036, SDO-037, SDO-038 |
@@ -346,7 +346,7 @@ names the `SDO` rule it covers.
 | SDO-208 | Sibling-commit rollback | One sibling's failure restores every other sibling's targets, histories, schedule consumption, and evaluator/delay/cache state | SDO-041 |
 | SDO-209 | Full rollback scope | Abort restores relation and condition memory, random and impure state, integrator invalidation and restart, FMI lifecycle and next-event state, and observable ledgers — each checked separately | SDO-041 |
 | SDO-210 | Nonconvergence rollback | A non-converging iteration restores entry state completely rather than publishing a partial settle | SDO-041 |
-| SDO-211 | Ordered outcomes | `Publish { ordered_staged_effects }` emits each staged effect once in issued and source order, multiplicity retained; `Publish` with a terminate emits both and publishes the terminal state; `Abort { fatal_failure }` restores and emits only that failure | SDO-042 |
+| SDO-211 | Ordered outcomes | `Publish { ordered_staged_effects }` emits each staged effect once in issued and source order, multiplicity retained — the within-owner ordering half of SDO-046; `Publish` with a terminate emits both and publishes the terminal state; `Abort { fatal_failure }` restores and emits only that failure | SDO-042, SDO-046 |
 | SDO-211b | Fatal after warnings | An attempt that stages warnings and then fails FATALLY emits its specified failure ONCE and emits NONE of the earlier staged warning, terminate, or status effects; the preregistered failing-late-action fixture publishes nothing | SDO-043, SDO-044 |
 | SDO-212 | Non-rollbackable effect | A transactional external effect that cannot be snapshot-and-replayed rejects BEFORE the attempt starts | SDO-045 |
 | SDO-213 | Two same-body occurrences | Two calls to ONE function body at one instant issue TWO invocation and effect owners sharing ONE immutable relation body; counts and effects are per occurrence | SDO-050 |

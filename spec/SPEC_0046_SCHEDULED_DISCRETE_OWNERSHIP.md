@@ -67,7 +67,7 @@ coordination mailbox rulings of 2026-08-12.
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| SDO-010 | `EventInstantExecutionPlan` is an opaque STATIC composition root issued ONCE per Solve semantic root and event system — one plan, or one bounded event-owner family, REUSED by every `EventAttempt` coordinate. Issuing a plan per runtime instant is FORBIDDEN: plan count and IR size must not grow with simulated duration. | `rumoca-ir-solve` | Static count, unbounded instants |
+| SDO-010 | `EventInstantExecutionPlan` is an opaque STATIC composition root issued ONCE per Solve semantic root and event system, REUSED by every `EventAttempt` coordinate. Issuing a plan per runtime instant is FORBIDDEN: plan count and IR size must not grow with simulated duration. | `rumoca-ir-solve` | Static count, unbounded instants |
 | SDO-011 | Its compact body is stored ONCE, independent of how many consumers read it; a consumer loads the issued definition and never re-lowers, inlines, duplicates, or memoizes the producer graph. | construction | Size grows with producers, not readers |
 | SDO-012 | `EventAttempt` is the RUNTIME coordinate and private work state for one instant, and issues no static structure. EXACTLY ONE plan admits and owns each attempt and its outer commit. PER-OCCURRENCE identity is `InvocationOwnerId` (SDO-050) — a child owner, never a plan. | runtime | Occurrences are owners, not plans |
 
