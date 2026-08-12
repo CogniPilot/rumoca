@@ -71,7 +71,7 @@ policy that can change a result value is semantics and belongs to the root.
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-020 | The bound profile is ROOT-IDENTITY-BEARING; folding is profile-bound, and interning ACROSS profiles is forbidden. | construction | Protects constant identity |
-| SEV-021 | A profile admits a SET of types plus one declared default-Real specialization, never context-dependent; one format per program is a special case. | checked profile | Stable reasoning |
+| SEV-021 | A profile admits a SET of types plus ONE declared default specialization for source `Real` and ONE for source `Integer`, neither context-dependent; one format per program is a special case. | checked profile | Stable reasoning |
 | SEV-022 | Registers are exactly typed; mixed-format programs are normal, each cross-format edge a licensed conversion. | construction | Mixing is normal |
 | SEV-023 | The profile binds BEFORE construction of the executable root; changing widths later is FORBIDDEN. | pipeline order | Rounding differs |
 | SEV-024 | The profile supplies defaults and admissible contracts; construction resolves EXACTLY ONE contract per opcode over [§4.3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). | construction | Width alone does not close arithmetic |
