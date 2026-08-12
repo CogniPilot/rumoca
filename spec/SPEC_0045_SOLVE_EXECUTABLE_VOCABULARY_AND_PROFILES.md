@@ -40,12 +40,12 @@ sibling SPEC_0046, not in tree).
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-001 | The grammar factors into `ValueOp`, `InvokeOp`, `EffectOp`, `Terminator`; a `RegionId` names regions of blocks and ops. | `rumoca-ir-solve` | No god enum |
-| SEV-002 | All factors share ONE wire form, ONE definitional-semantics and total-dispatch contract, ONE provenance model, and ONE capability union; a root admits a checked SUBSET, never a dialect. Interpreter, Cranelift, C, and other executors are SEPARATE implementations checked against that contract. The prohibition is a scalar-versus-tensor semantics fork, never multiple independent executable oracles. | `rumoca-ir-solve` | One contract, many executors |
+| SEV-002 | All factors share ONE wire form, ONE definitional-semantics and total-dispatch contract, ONE provenance model, and ONE capability union, enumerated variant by variant in [SPEC_0049 §1](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md#1-value-invoke-and-effect-variants); a root admits a checked SUBSET, never a dialect. Interpreter, Cranelift, C, and other executors are SEPARATE implementations checked against that contract. The prohibition is a scalar-versus-tensor semantics fork, never multiple independent executable oracles. | `rumoca-ir-solve` | One contract, many executors |
 | SEV-003 | The canonical executable product is an opaque package binding ONE concrete profile value; Binary32 and Binary64 are different roots before folding, CSE, AD, and range proofs (`16_777_217`). | `rumoca-phase-solve` | Profiles change results |
 | SEV-004 | Lowering code and immutable inputs are shared; an executable profile-neutral body is not. | `rumoca-phase-solve` | Inputs, not bodies |
 | SEV-005 | Rank-0 and rank-N are values of one grammar: no scalar-versus-tensor GRAPH-KIND bit, graph-kind conversion, cache, AD path, or call ABI. Explicit numeric conversions inside the one grammar remain REQUIRED by SEV-010/022. Opcodes are shape-polymorphic only where the algebra is identical. | `rumoca-ir-solve` | Flavors duplicate proofs |
 | SEV-006 | `ScalarOp`/`LinearOp` is a frozen superseded adapter awaiting deletion; a scalar projection is a borrowed final view, never stored. | `rumoca-ir-solve` | Views are not owners |
-| SEV-007 | Consumers cover the vocabulary exhaustively or reject a declared capability. **Stage test:** a new stage needs a different CONTRACT, not a granularity. | Solve consumers | Granularity duplicates proofs |
+| SEV-007 | Consumers cover the vocabulary exhaustively or reject a declared capability. An UNCLASSIFIED variant — one absent from SPEC_0049 §1 — fails every matcher and total dispatcher until classified. **Stage test:** a new stage needs a different CONTRACT, not a granularity. | Solve consumers | Granularity duplicates proofs |
 
 **Why:** CasADi is the cited warning, precisely. `SX` builds one scalar node per
 element while `MX` admits matrix-valued primitives, so `3*x+y` on a 2-vector is
@@ -65,7 +65,7 @@ are the useful lesson; graph-kind identity is the mistake.
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-010 | A value type owns semantic KIND, NOMINAL IDENTITY, SHAPE, REPRESENTABLE DOMAIN, and ENCODING — and nothing else. Arithmetic, sensitivity, execution, and target-layout policy are EXCLUDED. Any representation-changing COERCION of a value is FORBIDDEN: a representation change requires an explicit typed `Convert`. Every other operation declares its exact typed result. | Solve types | Policy doubles lattices |
-| SEV-011 | The root profile declares defaults and admissible contracts; construction resolves EXACTLY ONE arithmetic contract per operation occurrence, which that operation then carries. Neither the value type nor a backend chooses. The resolved contract is part of the term and op key; profile admissibility is part of `RootDigest`. | construction | One authority per occurrence |
+| SEV-011 | The root profile declares defaults and admissible contracts; construction resolves EXACTLY ONE arithmetic contract per occurrence of an operation whose [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) contract class is applicable — a `NotApplicable` leaf such as a load, store, Boolean control, call, effect, or terminator resolves NONE, and no backend may invent one. Neither the value type nor a backend chooses. The resolved contract is part of the term and op key; profile admissibility is part of `RootDigest`. | construction | One authority per occurrence |
 | SEV-012 | The admitted families are exactly [§4.1](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); records are FINITE ACYCLIC by value, recursing only via an explicit reference or opaque capability. | Solve types | Not all float |
 | SEV-018 | `SolveScalarType::Integer { repr: IntRepr }` owns signedness, width, and encoding ONLY. Interval and range facts are SEPARATE root-bound facts on SSA definitions and slots, derived from source declarations and construction. An explicit narrowing conversion changes `repr`; ordinary range refinement does NOT change value-type equality. | Solve types | Representation is not a range |
 | SEV-013 | Solve keeps nominal record, field, and shape identity; every layout fact in [§4.2](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) is a prepared mapping, injective on the proven domain and round-tripping across FMI/eFMI. | Solve types | Layout is not identity |
@@ -82,7 +82,7 @@ are the useful lesson; graph-kind identity is the mistake.
 | SEV-021 | A profile admits a SET of types plus ONE declared default specialization for source `Real` and ONE for source `Integer`, neither context-dependent; one format per program is a special case. | checked profile | Stable reasoning |
 | SEV-022 | Registers are exactly typed; mixed-format programs are normal, each cross-format edge a licensed conversion. | construction | Mixing is normal |
 | SEV-023 | The profile binds BEFORE construction of the executable root; changing widths later is FORBIDDEN. | pipeline order | Rounding differs |
-| SEV-024 | The profile supplies defaults and admissible contracts; construction resolves EXACTLY ONE contract per opcode over [§4.3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). | construction | Width alone does not close arithmetic |
+| SEV-024 | For each APPLICABLE contract class, construction resolves exactly one contract over [§4.3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs): `ExactIntegral` resolves domain and status only, `FloatingPrimitive` the rounding fields, `FloatingTranscendental` those plus its accuracy contract, and `Reduction` those plus accumulator and order. | construction | Width alone does not close arithmetic |
 | SEV-025 | Integer arithmetic and conversion are exact-in-domain or a typed failure, with divide-by-zero and `MIN/-1` explicit; host UB, wrapping, and saturation are prohibited. Operations use the SEV-018 interval facts to prove overflow unreachable, or emit the profile's checked typed-failure path. Replay rederives those facts under SEV-092; they are never serialized. | construction | UB disagrees silently |
 | SEV-026 | Observable status is an EFFECT: it blocks execution CSE unless multiplicity is proven unobservable. | construction | Two raises, not one |
 | SEV-027 | Saturation, wrapping, and Q-format rescaling are NEVER a target strategy for ordinary arithmetic: admit a distinct operation or prove it unreachable. | construction | Strategy preserves results |
@@ -108,6 +108,7 @@ Three semantics exist, MUST NOT be conflated, and carry distinct profile IDs:
 |----|------|-------------|---------------------|
 | SEV-040 | `RootHandle<'r>` and root-local typed IDs are in-process authority and never serialize. | `rumoca-ir-solve` | Handles are not digests |
 | SEV-041 | `RootDigest` hashes [§4.13](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) excluding the claimed digest; semantic schedules are payload, implementation schedules enter `PreparedDigest`, and decode recomputes the claim. | wire | Noncircular, recomputable |
+| SEV-042 | The digest ladder is closed and ancestral: `PreparedDigest` hashes [§4.28](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) and `ArtifactDigest` hashes [§4.29](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), each naming its parent digest. Provenance placement is [§4.30](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). Decode RECOMPUTES every claimed digest; no layer may be substituted across roots, targets, receipts, or templates. | wire, preparation | Ancestry or substitution |
 | SEV-043 | `ValueDefinitionId` identifies ONE SSA definition; region and block position give canonical dominance; prepared schedules are checked relations over handles. | construction | Dominance is structural |
 | SEV-044 | The split adds an OPTIONAL span-free `PureTermId` quotient, `OccurrenceId` with compact `OccurrenceFamilyId`, a monomorphic `FunctionRelationId`, an `InvocationOwnerId` keyed by [§4.4](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), and typed value/effect projections. | construction | Three questions differ |
 | SEV-045 | `TermKey` binds the generative root handle and [§4.5](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) — never a span, never a target strategy. | construction | Keys precede digests |
@@ -139,7 +140,7 @@ Defeated alternatives are
 
 | ID | Reopening | Requires |
 |----|-----------|----------|
-| SEV-110 | A second canonical graph | An operation not representable in the grammar plus a checked target view, AND a prototype beating direct emission on a NAMED benchmark by a PRE-STATED margin |
+| SEV-110 | A second canonical graph | ALL of: a genuinely different stage contract; an operation not representable in the grammar plus a checked target view; an INDEPENDENT semantic oracle for the second graph; a checked relation preserving type, profile, effect, and provenance identity across the boundary; and NAMED wire, AD, and capability proof-cost budgets it must stay within. Unrepresentability plus speed is not sufficient |
 | SEV-111 | A new core type family | A product inexpressible as a semantics-preserving ABI mapping, an independent oracle, AND two consumers or one safety-critical consumer with parity evidence |
 | SEV-113 | A profile-neutral construction recipe | Three-profile parity plus preregistered compile and RSS benefit; it stays non-executable |
 | SEV-114 | Abandoning the §2 factoring | Cross-factor escapes exceed 20%, or boilerplate exceeds 15% without reducing proof surface; keeping it needs ≥30% fewer unrelated touch sites with ≤3% evaluator and ≤5% wire regressions |
@@ -155,4 +156,5 @@ Defeated alternatives are
   evidence and field-catalog annex; binding force lives in the rules above,
   which enumerate their field lists and gates there.
 - [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) — target
-  refinement and prepared products.
+  refinement and prepared products;
+  [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) — the bound grammar catalog.
