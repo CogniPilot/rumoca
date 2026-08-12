@@ -5,17 +5,18 @@ REFERENCE
 
 ## Summary
 
-Shared evidence and field-catalog annex for **two** parents:
+Shared evidence and field-catalog annex for **three** parents:
 [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md)
-(`SEV-NNN` rules) and
+(`SEV-NNN` rules),
+[SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) (`SDO-NNN` rules), and
 [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) (`TRP-NNN`
 rules).
 
 ## How To Use This Catalog
 
 This annex holds no governing rules — §§5, 6, and 8 read as obligations only
-because TRP-049, TRP-050, and SPEC_0048 §1 impose them. Every rule lives in
-SPEC_0045 or SPEC_0048;
+because TRP-049, TRP-050, and SPEC_0048 §1 impose them, and §7's rows are bound
+by SPEC_0046 §9. Every rule lives in SPEC_0045, SPEC_0046, or SPEC_0048;
 the rows here are the inventory, gate registry, recorded alternatives, and bound
 field catalogs those rules link. Rows are normative by reference from the parent
 section that links them, and both parents are DRAFT, so the rows bind when their
@@ -306,28 +307,66 @@ declared transport by ONE declared relation, never by convention:
 | Effect multiplicity | One Signal per raising occurrence; suppression is declared, never implicit | One transport event per raising occurrence |
 | No transport for a raisable operation | Rejects at admission (§4.26 status class) | Rejects at admission |
 
-### 7. Series Plan: Proposed SPEC_0046 Scope
+### 7. Scheduled Discrete Ownership (SPEC_0046)
 
-Recorded here so the voted series is complete; SPEC_0046 is not in tree and no
-rule below binds until it is authored and accepted.
+Bound by [SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) §9. Every row
+names the `SDO` rule it covers.
 
-**First scope.** Proved-acyclic scheduled equation owners plus ordinary
-Appendix-B iteration. A legal coupled or nonlinear B.1b residual SCC is a TYPED
-REJECTION at its source spans — not a coverage hole and never a silently
-invented topological order. SIM-010 stays `Partial` until a future compact
-`ResidualSccOwner` exists carrying its simultaneous tuple, solver contract,
-activation, rollback, and backend refinement. B.1c assignment cycles remain
-illegal.
+**Present state.** None of SPEC_0046 §2–§8 is implemented.
 
-**Execution strata (pinned).** Lane capture → once-only first-pass
-scheduled/clock subplans → unclocked `z`/`m`/`when` fixed point, with `pre_iter`
-advancing between rounds and condition-triggered algorithm transactions living
-INSIDE the relation → post-settle actions → single commit.
+| State | Present-tense fact | Where | Covers |
+|---|---|---|---|
+| Partial | Migration-period uniformity and row-filter runtime proofs exist in the working tree, each with a named deletion edge; they are transition debt, not the strata | `rumoca-solver` runtime | SDO-011, SDO-012 |
+| Partial | The one-tick and settle restorations are LANDED behavior and are the only strata semantics presently correct | `rumoca-solver` runtime | SDO-013 |
+| Absent | No whole-event candidate/commit relation exists: outcomes publish as they settle, so no owner defines whole-event publication | `rumoca-solver` runtime | SDO-020, SDO-021 |
+| Absent | No staged effect boundary: `assert`, `terminate`, and status effects emit during the attempt | `rumoca-solver` runtime | SDO-022, SDO-023 |
+| Absent | Activation and pre-mode capabilities are not construction-issued per transaction; mixed modes are representable | construction | SDO-030 |
+| Absent | No static per-step `InvocationOwnerId`; identity is not issued once per step body | construction | SDO-032 |
+| Absent | Algorithm transactions expose no complete final target tuple; statement intermediates escape the atomic section | construction | SDO-040, SDO-041 |
+| Absent | No symbolic activation proof; there is no lattice or phase-shift analysis to accept a false-union cycle or reject a jointly active one | construction | SDO-050, SDO-051 |
+| Absent | Counters are not split by phase, so an initialization firing and a runtime tick are indistinguishable | evidence | SDO-060, SDO-061 |
+| Absent | `ScheduledActivationId` and `ClockId` are conflated: Boolean `sample(start, interval)` is owned as a periodic clock | `rumoca-phase-dae` | SDO-015 |
 
-**101-activation discriminator.** One `t = 0` initialization arm plus 100 ticks
-from ONE static owner at 0.5 s over a 5 ms step, bound to the source digest and
-counted by issued identities (`OccurrenceId`, `InvocationOwnerId`) — never by
-ordinals or names.
+**Preregistered gates.**
+
+| ID | Gate | Passes when | Covers |
+|----|------|-------------|--------|
+| SDO-200 | Residual SCC rejection | A legal coupled or nonlinear B.1b SCC rejects at its owning source spans; no topological order is invented and no coverage hole appears | SDO-002 |
+| SDO-201 | Independent base-clock permutation | Permuting independent base clocks leaves every observable identical; a product that observes their order fails | SDO-011 |
+| SDO-202 | Coincident directions | Boolean code reading `hold(clockVar)` observes THIS tick's newly solved value, while a Clock partition sampling a Boolean-updated variable observes its captured left limit — in one fixture, both directions at one instant | SDO-014 |
+| SDO-203 | Retry exactness | A retried attempt produces bit-identical published state to a first-try success from the same entry state | SDO-020, SDO-021 |
+| SDO-204 | Sibling-commit rollback | One sibling's failure restores every other sibling's targets, histories, schedule consumption, and evaluator/delay/cache state | SDO-021 |
+| SDO-205 | Nonconvergence rollback | A non-converging iteration restores entry state completely rather than publishing a partial settle | SDO-021 |
+| SDO-206 | Failing late action | The preregistered failing-late-action fixture emits NO `assert`, `terminate`, or status effect and leaves no published target | SDO-022 |
+| SDO-207 | Non-rollbackable effect | A transactional external effect that cannot be snapshot-and-replayed rejects BEFORE the attempt starts, not during commit | SDO-023 |
+| SDO-208 | Mixed-mode unconstructible | A transaction mixing activation or pre modes fails construction; no runtime check substitutes | SDO-030 |
+| SDO-209 | Static step identity | One static `InvocationOwnerId` per step body; IR size is invariant to simulated duration across a long run | SDO-032 |
+| SDO-210 | Statement atomicity | `x := a; x := b(x)` publishes `b(a)` as the single final target value, and no consumer observes the intermediate | SDO-040 |
+| SDO-211 | Opaque cross-owner cycle | A cross-owner cycle through a transaction rejects as one block; no split or interleaved schedule is produced | SDO-041 |
+| SDO-212 | Phase-shift acceptance | A phase-shifted cycle with provably empty activation union ACCEPTS via lattice proof, while a jointly active cycle REJECTS at its owning spans | SDO-051 |
+| SDO-213 | Coprime cost | Coprime periods stay O(owners + compact edges + rank); no cost tracks the period product, and no hyperperiod table or activation bitset is allocated | SDO-050, SDO-052 |
+| SDO-214 | Initialization phase | `sample(0, T)` does not fire during Modelica initialization, and the three-way counter split distinguishes initialization, the estimator init arm, and runtime ticks | SDO-060, SDO-061 |
+
+**RDD2 estimator discriminator (SDO-215).** Bound to the external model's source
+digest or its compiled structural precondition (§2's topology binding), and
+invalidated by a topology change: 101 activations — one `t = 0` initialization
+arm plus 100 runtime ticks — from ONE static owner at 0.5 s over a 5 ms step;
+per-arm ZERO-EXECUTION proofs per `navigationSource` (`= 1` exercises the
+joint-GPS arm only; `= 2` the optical arm on post-initialization fresh ticks;
+`= 0` leaves `step`, `predict`, and `navigationEstimateArrays` with corrections
+zero); the in-transaction total-next read; four-way identical per-owner counts
+split into initialization and runtime; and O(source owners + rank) independence
+from covariance extents. Counts bind issued `OccurrenceId` and
+`InvocationOwnerId` plus the source digest, never ordinals or names.
+Covers SDO-032, SDO-060, SDO-061.
+
+**Rejected alternatives.**
+
+| Alternative | Cost that defeated it | Reversal gate |
+|---|---|---|
+| A runtime row cache | A dichotomy with no escape: a cache keyed loosely enough to hit serves a STALE REPLAY, and one keyed tightly enough to be correct re-executes the row's EFFECTS. Both horns are wrong answers, not slow ones | SDO-111 |
+| Value convergence as execution cardinality | Equal values across passes prove nothing about how many times a row executed, so a million-row scalar adapter reporting one activation looks converged; cardinality is an execution fact, not a value fact | SDO-032 |
+| Combined first-pass ordering | Merging the scheduled and clocked first pass with the unclocked round invents an order among INDEPENDENT base clocks that MLS §16.5.1.1 leaves unordered | SDO-112 |
 
 ### 8. Acceptance-Time Amendment Map
 

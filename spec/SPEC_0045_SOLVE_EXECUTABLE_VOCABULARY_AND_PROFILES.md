@@ -31,15 +31,15 @@ This also amends DRAFT SPEC_0036 and SPEC_0043 §9 with its rounding rows
 (profile-bound identity and the §6 split). Target-facing parents are amended by
 [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) §1.
 
-**Series arithmetic.** 17 before this proposal series; +0045 and +0048 = 19;
-planned 0046 = 20. SPEC_0035 is not retired here, so the cap is reached and a
-later slice must free a slot before another active spec is added.
+**Series arithmetic.** 17 before this proposal series; +0045, +0046, and +0048
+= 20, the SPEC_0000 §3 cap. SPEC_0035 is not retired here, so a later slice MUST
+free a slot before another ACCEPTED or DRAFT spec is added.
 
 Governed: the Solve grammar, type algebra, root-bound profiles, executable
 identity, term sharing, and wire replay. Target refinement, prepared products,
 and the final expansion boundary are SPEC_0048. Not governed: DAE equation
-ownership, FMI, solver algorithms, GALEC syntax, and discrete events (proposed
-sibling SPEC_0046, not in tree).
+ownership, FMI, solver algorithms, GALEC syntax, and scheduled discrete
+ownership ([SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md)).
 
 ### 2. One Typed Operation Grammar
 
