@@ -1665,7 +1665,7 @@ rumoca-ir-dae (SPEC_0007 key invariant 2; SPEC_0029 §3)"
         event_lowering.contains("fn lower_roots")
             && event_lowering.contains("fn root_zero_domain")
             && event_lowering.contains("root_conditions: roots.programs")
-            && event_lowering.contains(".root_program(root.relation())"),
+            && event_lowering.contains(".root_program_outputs(relations.iter().copied())"),
         "Solve lowering must own signed root-program construction and threshold-domain \
 classification"
     );
