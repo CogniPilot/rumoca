@@ -41,7 +41,7 @@
 //!   its opaque canonical scalar-program source is resolved only by the final
 //!   evaluator adapter. Only `equation_index` is read here.
 //!
-//! [`AlgebraicRefreshRow::equation_index`]: rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow::equation_index
+//! [`AlgebraicRefreshRow::equation_index`]: rumoca_ir_solve::AlgebraicRefreshRow::equation_index
 //!
 //! # Acceptance contract (SPEC 0008 / SPEC 0036)
 //!
@@ -85,9 +85,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rumoca_eval_solve::{
-    EvalSolveError, PreparedScalarProgramBlock, refresh_plan::RefreshPlan, to_scalar_program_block,
-};
+use rumoca_eval_solve::{EvalSolveError, PreparedScalarProgramBlock, to_scalar_program_block};
 use rumoca_ir_solve as solve;
 
 /// The exact solves the initialization homotopy continuation drives.
@@ -118,7 +116,7 @@ impl InitialContinuationCoverage {
     pub(super) fn certify_runtime_blocks(
         model: &solve::SolveModel,
         implicit_scalar_rhs: &PreparedScalarProgramBlock,
-        algebraic_refresh: &RefreshPlan,
+        algebraic_refresh: &solve::RefreshPlan,
     ) -> Result<(solve::ScalarProgramBlock, Option<Self>), EvalSolveError> {
         let initial_scalar_residual =
             to_scalar_program_block(&model.problem.initialization.residual)?;
@@ -138,7 +136,7 @@ impl InitialContinuationCoverage {
         model: &solve::SolveModel,
         implicit_block: &solve::ScalarProgramBlock,
         initial_block: &solve::ScalarProgramBlock,
-        algebraic_refresh: &RefreshPlan,
+        algebraic_refresh: &solve::RefreshPlan,
     ) -> Result<Option<Self>, EvalSolveError> {
         let Some(lambda_index) = model.problem.solve_layout.initial_homotopy_parameter_index else {
             return Ok(None);
@@ -397,7 +395,7 @@ impl solve::visitor::SolveVisitor for ParameterReadScan {
 }
 
 /// Equation indices the algebraic refresh re-solves at every continuation value.
-fn algebraic_refresh_equations(plan: &RefreshPlan) -> BTreeSet<usize> {
+fn algebraic_refresh_equations(plan: &solve::RefreshPlan) -> BTreeSet<usize> {
     plan.rows
         .iter()
         .chain(plan.causal_rows().iter())
@@ -492,23 +490,18 @@ mod tests {
         ]
     }
 
-    fn refresh_row(
-        equation_index: usize,
-        row_idx: usize,
-    ) -> rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow {
-        rumoca_eval_solve::refresh_plan::AlgebraicRefreshRow::checked(
-            solve::AlgebraicRefreshRowDraft {
-                owner_id: Default::default(),
-                source: solve::RefreshScalarProgramSource::checked(0, row_idx).unwrap(),
-                equation_index,
-                output_offset: 0,
-                target_index: 0,
-                assignment_target: None,
-                assignment_shape: None,
-                direct_assignment_certified: false,
-                exact_assignment_certified: false,
-            },
-        )
+    fn refresh_row(equation_index: usize, row_idx: usize) -> solve::AlgebraicRefreshRow {
+        solve::AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
+            owner_id: Default::default(),
+            source: solve::RefreshScalarProgramSource::checked(0, row_idx).unwrap(),
+            equation_index,
+            output_offset: 0,
+            target_index: 0,
+            assignment_target: None,
+            assignment_shape: None,
+            direct_assignment_certified: false,
+            exact_assignment_certified: false,
+        })
         .unwrap()
     }
 
@@ -550,7 +543,7 @@ mod tests {
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![plain_program()]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect("a model without homotopy certifies");
 
@@ -566,7 +559,7 @@ mod tests {
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![reads_lambda_program(1)]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect("a plan-covered homotopy row certifies")
         .expect("a continuation parameter yields coverage");
@@ -582,7 +575,7 @@ mod tests {
     fn refresh_covered_implicit_row_drives_the_algebraic_refresh() {
         let mut model = model_with_lambda(Some(1));
         model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
-        let refresh = RefreshPlan {
+        let refresh = solve::RefreshPlan {
             rows: vec![refresh_row(0, 0)],
             ..Default::default()
         };
@@ -613,7 +606,7 @@ mod tests {
             Some(solve::scalar_slot_y(1)),
             Some(solve::scalar_slot_y(2)),
         ];
-        let refresh = RefreshPlan {
+        let refresh = solve::RefreshPlan {
             simultaneous_plan: solve::AlgebraicProjectionPlan {
                 blocks: vec![solve::AlgebraicProjectionBlock {
                     rows: vec![1, 2],
@@ -659,7 +652,7 @@ mod tests {
             "the program-index reading of the lambda row must resolve to None, \
              so this fixture proves the translation and not an accident"
         );
-        let refresh = RefreshPlan {
+        let refresh = solve::RefreshPlan {
             simultaneous_plan: solve::AlgebraicProjectionPlan {
                 blocks: vec![
                     solve::AlgebraicProjectionBlock {
@@ -721,7 +714,7 @@ mod tests {
             Some(solve::scalar_slot_y(4)),
             Some(solve::scalar_slot_y(5)),
         ];
-        let refresh = RefreshPlan {
+        let refresh = solve::RefreshPlan {
             simultaneous_plan: solve::AlgebraicProjectionPlan {
                 blocks: vec![solve::AlgebraicProjectionBlock {
                     rows: vec![4, 5],
@@ -762,7 +755,7 @@ mod tests {
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![plain_program()]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect_err("an allocated slot that nothing reads must be rejected");
 
@@ -779,7 +772,7 @@ mod tests {
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![plain_program()]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect_err("an out-of-range continuation slot must be rejected");
 
@@ -808,7 +801,7 @@ mod tests {
             &model,
             &scalar_block(vec![]),
             &scalar_block(vec![]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect("der(y) = homotopy(..) is legal MLS and must not be rejected")
         .expect("a continuation parameter yields coverage");
@@ -829,7 +822,7 @@ mod tests {
             &model,
             &scalar_block(vec![]),
             &scalar_block(vec![]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect("when-clause homotopy is legal MLS and must not be rejected")
         .expect("a continuation parameter yields coverage");
@@ -852,7 +845,7 @@ mod tests {
             &model,
             &scalar_block(vec![]),
             &scalar_block(vec![reads_lambda_program(0)]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect("a steady-state initialization row no plan solves must not be rejected")
         .expect("a continuation parameter yields coverage");
@@ -877,7 +870,7 @@ mod tests {
             &model,
             &scalar_block(vec![]),
             &scalar_block(vec![reads_lambda_program(1), plain_program()]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect_err("a homotopy row its own solve block omits must be rejected");
 
@@ -904,7 +897,7 @@ mod tests {
             &model,
             &permuted_block(vec![plain_program(), reads_lambda_program(1)], vec![2, 1]),
             &scalar_block(vec![]),
-            &RefreshPlan::default(),
+            &solve::RefreshPlan::default(),
         )
         .expect_err("an algebraic homotopy row no refresh plan solves must be rejected");
 

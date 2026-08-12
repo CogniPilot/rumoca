@@ -24,7 +24,7 @@ use crate::{EvalSolveError, PreparedScalarProgramBlock};
 
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
 
-pub use rumoca_ir_solve::{
+use rumoca_ir_solve::{
     AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
     RefreshStage,
 };

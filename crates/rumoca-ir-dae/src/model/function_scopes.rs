@@ -148,11 +148,13 @@ impl<'dae> FunctionScopeView<'dae> {
             // The top-level body strictly encloses every loop region.
             return true;
         };
-        self.scope_chain(entry, self.parent_scope(entry, region.ordinal()))
+        self.scope_chain(entry, self.parent_fold_ordinal(entry, region.ordinal()))
             .any(|ancestor| ancestor == scope)
     }
 
-    fn parent_scope(self, entry: &'dae FunctionEntry, fold: u32) -> Option<u32> {
+    /// The fold ordinal that structurally encloses `fold`, from the issued
+    /// nesting forest. This walks IR fold identities, not rendered names.
+    fn parent_fold_ordinal(self, entry: &'dae FunctionEntry, fold: u32) -> Option<u32> {
         self.fold_entry(entry, fold).and_then(|entry| entry.parent)
     }
 
@@ -169,7 +171,7 @@ impl<'dae> FunctionScopeView<'dae> {
         std::iter::from_fn(move || {
             let fold = next?;
             next = self
-                .parent_scope(entry, fold)
+                .parent_fold_ordinal(entry, fold)
                 .filter(|parent| *parent < fold);
             Some(fold)
         })

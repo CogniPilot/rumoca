@@ -562,39 +562,54 @@ fn validate_function_conditional_owners(
         owners: &mut HashMap<FunctionConditionalOwnerId, &'a FunctionConditionalProgram>,
     ) -> Option<u64> {
         for operation in operations {
-            match operation {
-                LinearOp::FunctionConditional { program, .. } => {
-                    if let Some(owner) = program.owner {
-                        if let Some(previous) = owners.get(&owner) {
-                            if !std::ptr::eq(*previous, program.as_ref())
-                                && *previous != program.as_ref()
-                            {
-                                return Some(owner.get());
-                            }
-                        } else {
-                            owners.insert(owner, program);
-                        }
-                    }
-                    for arm in &program.arms {
-                        if let Some(owner) =
-                            visit(&arm.condition, owners).or_else(|| visit(&arm.result, owners))
-                        {
-                            return Some(owner);
-                        }
-                    }
-                    if let Some(owner) = visit(&program.fallback, owners) {
-                        return Some(owner);
-                    }
-                }
+            let mismatched = match operation {
+                LinearOp::FunctionConditional { program, .. } => visit_conditional(program, owners),
                 LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
                 | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                    if let Some(owner) = visit(&program.update, owners) {
-                        return Some(owner);
-                    }
+                    visit(&program.update, owners)
                 }
-                _ => {}
+                _ => None,
+            };
+            if mismatched.is_some() {
+                return mismatched;
             }
+        }
+        None
+    }
+
+    /// Claims the conditional body for its owner id, then walks its arms and
+    /// fallback in construction order.
+    fn visit_conditional<'a>(
+        program: &'a FunctionConditionalProgram,
+        owners: &mut HashMap<FunctionConditionalOwnerId, &'a FunctionConditionalProgram>,
+    ) -> Option<u64> {
+        if let Some(owner) = claim_conditional_owner(program, owners) {
+            return Some(owner);
+        }
+        for arm in &program.arms {
+            if let Some(owner) =
+                visit(&arm.condition, owners).or_else(|| visit(&arm.result, owners))
+            {
+                return Some(owner);
+            }
+        }
+        visit(&program.fallback, owners)
+    }
+
+    /// Records the first checked body seen for an owner id, reporting the owner
+    /// when a later body claims the same id with different contents.
+    fn claim_conditional_owner<'a>(
+        program: &'a FunctionConditionalProgram,
+        owners: &mut HashMap<FunctionConditionalOwnerId, &'a FunctionConditionalProgram>,
+    ) -> Option<u64> {
+        let owner = program.owner?;
+        let Some(previous) = owners.get(&owner) else {
+            owners.insert(owner, program);
+            return None;
+        };
+        if !std::ptr::eq(*previous, program) && *previous != program {
+            return Some(owner.get());
         }
         None
     }

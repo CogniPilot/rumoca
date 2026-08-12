@@ -722,7 +722,7 @@ impl RefreshProjectionModel<'_> {
 }
 
 impl SolveRuntime {
-    pub(super) fn value_stage_schedule_is_certified(&self, plan: &RefreshPlan) -> bool {
+    pub(super) fn value_stage_schedule_is_certified(&self, plan: &solve::RefreshPlan) -> bool {
         let structural = self.continuous_structural.algebraic_projection();
         plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()
             && !plan.value_stages.is_empty()
@@ -744,7 +744,7 @@ impl SolveRuntime {
 
     pub(super) fn refresh_slots_with_stages(
         &self,
-        plan: &RefreshPlan,
+        plan: &solve::RefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<(), RuntimeSolveError> {
@@ -759,13 +759,13 @@ impl SolveRuntime {
 
     fn execute_refresh_stage(
         &self,
-        stage: &RefreshStage,
-        complete_plan: &RefreshPlan,
+        stage: &solve::RefreshStage,
+        complete_plan: &solve::RefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<bool, RuntimeSolveError> {
         match stage {
-            RefreshStage::CausalSeedSweep {
+            solve::RefreshStage::CausalSeedSweep {
                 static_sequence,
                 dynamic_sequence,
                 static_rows,
@@ -781,7 +781,7 @@ impl SolveRuntime {
                 )?;
                 self.continue_or_project_complete(seeded, complete_plan, args)
             }
-            RefreshStage::ExactAssignments {
+            solve::RefreshStage::ExactAssignments {
                 static_sequence,
                 dynamic_sequence,
                 static_rows,
@@ -797,7 +797,7 @@ impl SolveRuntime {
                 )?;
                 self.continue_or_project_complete(assigned, complete_plan, args)
             }
-            RefreshStage::ProjectionBlock {
+            solve::RefreshStage::ProjectionBlock {
                 seed_sequence,
                 block_index,
                 plan,
@@ -817,7 +817,7 @@ impl SolveRuntime {
     fn continue_or_project_complete(
         &self,
         seeded: bool,
-        complete_plan: &RefreshPlan,
+        complete_plan: &solve::RefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
     ) -> Result<bool, RuntimeSolveError> {
         if seeded {
@@ -833,7 +833,7 @@ impl SolveRuntime {
         block_index: usize,
         plan: &solve::AlgebraicProjectionPlan,
         seed_rows: solve::RefreshRows<'_>,
-        complete_plan: &RefreshPlan,
+        complete_plan: &solve::RefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         incoming: &[f64],
     ) -> Result<bool, RuntimeSolveError> {
@@ -923,9 +923,9 @@ impl SolveRuntime {
     }
 }
 
-pub(super) fn value_stage_seed_coverage_is_complete(plan: &RefreshPlan) -> bool {
+pub(super) fn value_stage_seed_coverage_is_complete(plan: &solve::RefreshPlan) -> bool {
     plan.value_stages.iter().all(|stage| match stage {
-        RefreshStage::ProjectionBlock {
+        solve::RefreshStage::ProjectionBlock {
             plan: projection,
             seed_rows,
             ..

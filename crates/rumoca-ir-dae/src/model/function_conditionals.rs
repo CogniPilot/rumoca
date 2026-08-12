@@ -16,7 +16,7 @@ impl<'dae> Functions<'_, 'dae> {
     /// effect — there is nothing for a later read to observe and nothing a
     /// projection could preserve. This is the same rule [`assign_all`] applies
     /// to an empty assignment list, and keeping the two in step is what lets
-    /// every stored [`FunctionStatementWire::AssignmentGroup`] carry at least
+    /// every stored `FunctionStatementWire::AssignmentGroup` carry at least
     /// one definition, so replay never has to reconstruct an empty group.
     ///
     /// [`assign_all`]: Functions::assign_all
