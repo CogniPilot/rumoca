@@ -14,13 +14,21 @@ issued variant.
 ### 1. Governance, Scope, And Acceptance-Time Amendment Map
 
 This DRAFT proposes the amendments below and claims none today. On acceptance
-it amends SPEC_0007 Stage 4 with lockstep SPEC_0040 C13/C14/C20 (scalar
-programs exist only at the final emitter, as an issued plan); SPEC_0029 §§5/12
-with SPEC_0041 ownership rows (preparation, not templates, owns product
-choice); SPEC_0032 §§2/4/5 (the shared `rumoca-eval-solve` scalar-fallback
-license narrows to the final expansion boundary); SPEC_0034 Summary, pipeline,
-GAL-027, and GAL-038 (TRP-030 replaces independently lowered AlgorithmCode
-bodies); and DRAFT SPEC_0036 with SPEC_0043 product-root rows.
+it amends SPEC_0007 Stage 4 with lockstep SPEC_0040 C13/C14/C20 (scalar programs
+exist only at the final emitter, as an issued plan); SPEC_0032 §§2/4/5 (the
+shared `rumoca-eval-solve` scalar-fallback license narrows to the final
+expansion boundary); SPEC_0034 Summary, pipeline, GAL-027, and GAL-038 (TRP-030
+replaces independently lowered AlgorithmCode bodies); and DRAFT SPEC_0036 with
+SPEC_0043 product-root rows.
+
+It further amends SPEC_0029 §5 and §12 with these exact SPEC_0041 §4 rows, which
+TRP-032 splits: *"Compilation/session orchestration"* (`rumoca-compile`) gains
+atomic sibling-package orchestration; *"DAE → `SolveProblem`; checked Algorithm
+Code → `SolveAlgorithmBlock` lowering"* and *"Checked DAE pure-function graph →
+shared typed Solve program regions and pure-call owners"* (`rumoca-phase-solve`)
+gain the shared expression and function relation construction plus profile-bound
+root closure; and *"DAE/Solve → checked GALEC lowering"* (`rumoca-phase-galec`)
+narrows to projection and container authority with no expression lowering.
 
 Governed: prepared execution artifacts, the target build session, typed target
 manifests, product plans, the final expansion boundary, product budgets and
@@ -64,7 +72,8 @@ profiles, and identity ladder are
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| TRP-030 | **eFMI siblings are co-issued from one checked semantic construction; AlgorithmCode owns a closed final-language projection, never a second semantic lowerer.** Both issue under the correlation and checksum obligations of [§4.19](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); neither is lowered from the other, and neither validates its own construction. | `rumoca-phase-galec` | Neither validates itself |
+| TRP-030 | **eFMI siblings are co-issued from one checked semantic construction; AlgorithmCode owns a closed final-language projection, never a second semantic lowerer.** Both issue under the correlation and checksum obligations of [§4.19](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); neither is lowered from the other, and neither validates its own construction. | see TRP-032 | Neither validates itself |
+| TRP-032 | TRP-030's ownership splits three ways: the ONE shared expression and function relation construction plus the profile-bound Solve root closure belong to `rumoca-phase-solve`; the GALEC admissibility and lifecycle PROJECTION belongs to `rumoca-phase-galec`, which owns projection and container authority only; the atomic sibling-package orchestration — one construction transaction, the correlation web, and checksum binding — belongs to the build session in `rumoca-compile`. **`rumoca-phase-galec` owns no expression or function lowering.** | three crates | No second Solve compiler |
 | TRP-031 | Untouched DAE keeps an independent GALEC/eFMI admissibility receipt; `eval-galec` checks the projection, a definitional Solve evaluator checks Solve, compiled C checks refinement, and OMC remains the independent frontend leg. | oracles | Four legs, no self-proof |
 
 ### 6. Current State, Gates, And Rejected Alternatives

@@ -40,7 +40,7 @@ sibling SPEC_0046, not in tree).
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-001 | The grammar factors into `ValueOp`, `InvokeOp`, `EffectOp`, `Terminator`; a `RegionId` names regions of blocks and ops. | `rumoca-ir-solve` | No god enum |
-| SEV-002 | All factors share one wire, evaluator, provenance, and capability union; a root admits a checked SUBSET, never a dialect. | `rumoca-ir-solve` | Subsets cannot fork |
+| SEV-002 | All factors share ONE wire form, ONE definitional-semantics and total-dispatch contract, ONE provenance model, and ONE capability union; a root admits a checked SUBSET, never a dialect. Interpreter, Cranelift, C, and other executors are SEPARATE implementations checked against that contract. The prohibition is a scalar-versus-tensor semantics fork, never multiple independent executable oracles. | `rumoca-ir-solve` | One contract, many executors |
 | SEV-003 | The canonical executable product is an opaque package binding ONE concrete profile value; Binary32 and Binary64 are different roots before folding, CSE, AD, and range proofs (`16_777_217`). | `rumoca-phase-solve` | Profiles change results |
 | SEV-004 | Lowering code and immutable inputs are shared; an executable profile-neutral body is not. | `rumoca-phase-solve` | Inputs, not bodies |
 | SEV-005 | Rank-0 and rank-N are values of one grammar: no graph-kind bit, conversion, cache, AD path, or call ABI; opcodes are shape-polymorphic only where the algebra is identical. | `rumoca-ir-solve` | Flavors duplicate proofs |
@@ -91,7 +91,7 @@ Three semantics exist, MUST NOT be conflated, and carry distinct profile IDs:
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-033 | Narrowing, fixed-point, or saturating conversion inside an AD-required region REJECTS unless the sensitivity profile defines it; widening MAY refine the ideal derivative. | construction | Rounding is discontinuous |
-| SEV-034 | AD-capable profiles admit Binary64 first, Binary32 once parity is defined; primal and directional programs share all three identities. | profiles | No mixed conventions |
+| SEV-034 | AD-capable profiles admit Binary64 first, Binary32 once parity is defined. A primal and its directional program share the same `RootHandle`/`RootDigest` (SEV-040/041), the same SEV-024 resolved arithmetic contracts, and the same SEV-047 source and occurrence correlation; the sensitivity profile ID (SEV-030…032) is the one identity that DIFFERS, and the directional program carries it explicitly. | profiles | One difference, declared |
 
 ### 6. Identity, Occurrence, And Term Sharing
 
