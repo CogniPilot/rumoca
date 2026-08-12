@@ -6,9 +6,9 @@ DRAFT
 ## Summary
 
 Scheduled and clocked discrete execution rests on one total lazy `next`
-relation, one static plan owner per source occurrence executed once per
-activation, and one whole-event commit; coupled residual cycles are typed
-rejections, never an invented order.
+relation and ONE composition root per event instant, whose many child
+occurrence owners settle under a single whole-event commit; coupled residual
+cycles are typed rejections, never an invented order.
 
 ## Specification
 
@@ -27,7 +27,13 @@ transaction), **SOLVE-C11** (event-timing partition), **SOLVE-C22** (compact
 event-iteration plan), **SOLVE-C47**, **SOLVE-C48**, **SOLVE-C49** (guarded-
 assignment activation, branch lowering, and first-true-arm-otherwise-hold),
 **SOLVE-C55** (`EventTransactionProgram`), and **SOLVE-C57**; SPEC_0022
-**SIM-010**; and the SPEC_0043 C57 construction and evidence rows.
+**SIM-010**; and the SPEC_0043 §9 C57 EXTRACTION rows (the whole-clock plan, producer,
+proof-and-lowering route, admitted-producer lowering, transaction-exclusion,
+SOLVE-C28 boundary, and unowned-row rows) together with its C57 EVIDENCE rows
+(the false-narrower-guard HOLD case, reverse-ordered B.1b exchange, mixed
+B.1b/B.1c chain, compact-tensor traversal, linear-growth, event-transaction
+exclusion, `hold`/`sample` boundary, and unowned-row cases). The HOLD tests and
+the transaction-exclusion rows cannot survive the atomic amendment.
 
 SOLVE-C57's **EXCHANGE / HOLD-FALLBACK split cannot survive acceptance**: its
 hold-fallback member preserves "no active branch means hold the current target"
@@ -52,7 +58,7 @@ coordination mailbox rulings of 2026-08-12.
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| SDO-001 | **`next = active ? lazy(first-selected RHS, else held-entry) : held-entry`.** One total relation per target, defined at every instant, with no storage-read fallback. | construction | Totality removes the hold branch |
+| SDO-001 | **`next = active ? lazy(first-selected RHS, else held-entry) : held-entry`.** ONE compact total relation per PRODUCER COMPLETE RESULT TUPLE or range, with issued projections — never one phi per coordinate and never one per target, which would split a correlated aggregate or an algorithm transaction. Defined at every instant, with no storage-read fallback. | construction | Producers are the unit, not targets |
 | SDO-002 | An ordinary same-instant read consumes `next`. ONLY an explicit `pre`, `previous`, or `sample(u)` consumes its named history lane. | construction | One read rule, one exception set |
 | SDO-003 | Laziness is semantic, not an optimization: when a target is inactive or its selected arm is not taken, the calls, assertions, folds, and tensor kernels under it execute ZERO times. | construction, runtime | Inactive work is not skipped work |
 | SDO-004 | SDO-001 REPLACES SOLVE-C57's EXCHANGE/HOLD-FALLBACK split. No member kind distinguishes a totality-proved producer from an admitted remainder. | construction | One relation needs no member kinds |
@@ -61,9 +67,9 @@ coordination mailbox rulings of 2026-08-12.
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| SDO-010 | `EventInstantExecutionPlan` is an opaque STATIC owner: complete nonoverlapping child-owner coverage, typed SameInstant and history edges, an activation-aware causal relation, and ONE outer commit. | `rumoca-ir-solve` | Static structure, runtime coordinate |
+| SDO-010 | `EventInstantExecutionPlan` is THE SINGLE composition root for one event instant: an opaque STATIC owner with complete nonoverlapping child-owner coverage, typed SameInstant and history edges, an activation-aware causal relation, and exactly ONE outer commit. Two plans for one instant, or a plan that commits part of an instant, are unconstructible. | `rumoca-ir-solve` | One root, one commit |
 | SDO-011 | Its compact body is stored ONCE, independent of how many consumers read it; a consumer loads the issued definition and never re-lowers, inlines, duplicates, or memoizes the producer graph. | construction | Size grows with producers, not readers |
-| SDO-012 | `EventAttempt` is the RUNTIME coordinate and private work state for one instant. It issues no static structure. | runtime | Attempts are occurrences of the plan |
+| SDO-012 | `EventAttempt` is the RUNTIME coordinate and private work state for one instant, and issues no static structure. PER-OCCURRENCE identity is `InvocationOwnerId` (SDO-050) — a child owner, never a plan. | runtime | Occurrences are owners, not plans |
 
 ### 4. First Scope And The Rejection Boundary
 
@@ -82,6 +88,9 @@ coordination mailbox rulings of 2026-08-12.
 | SDO-031 | Active synchronous base partitions execute ONCE. INDEPENDENT base clocks are PERMUTATION-INVARIANT: no order among them is invented, and none may be observed (MLS §16.5.1.1). | runtime | Independence is not an ordering |
 | SDO-032 | Unclocked round 1 follows, where Boolean `sample(start, interval)` owners run once; ordinary Appendix-B iteration continues from there. | runtime | One first pass, then iterate |
 | SDO-033 | Scheduled total-next results stay CURRENT across every later Appendix-B pass and NEVER rerun. Only iterative `pre(z/m)` advances between rounds. Witness: scheduled `m = pre(m) + 1` then unclocked `n = pre(m)` must cascade correctly. | runtime | Rerunning a scheduled owner double-counts |
+| SDO-036 | A condition-triggered UNCLOCKED algorithm may activate at Appendix-B round `k >= 2`. It consumes the CURRENT scheduled and iterative definitions, and exposes its final tuple to later iterative members. | runtime | Late activation is ordinary iteration |
+| SDO-037 | Such an algorithm CANNOT feed a once-only owner: that requires a joint owner or a typed rejection, never a rerun of the once-only owner. | construction | Once-only means once |
+| SDO-038 | After convergence the POST-SETTLE SUFFIX runs — actions and outputs consume the SETTLED tuple — and then the one outer commit (SDO-040) publishes. | runtime | Settle, then act, then commit |
 | SDO-034 | Both coincident directions are pinned: Boolean code reading `hold(clockVar)` sees THIS tick's newly solved clock value; a Clock partition sampling a Boolean-updated variable sees its CAPTURED LEFT LIMIT. | construction | The asymmetry is the semantics |
 | SDO-035 | `ScheduledActivationId` and `ClockId` are DISJOINT semantic types; neither converts to the other. | `rumoca-ir-solve` | Conflation loses an advancement rule |
 
@@ -91,9 +100,10 @@ coordination mailbox rulings of 2026-08-12.
 |----|------|-------------|---------------------|
 | SDO-040 | An event instant is one whole-event CANDIDATE/COMMIT relation: every target, history, and action outcome settles in PRIVATE work state, and success publishes atomically. | runtime | Half an event is not an event |
 | SDO-041 | Abort restores ALL of: `Y`, `P`, evaluator, delay, and cache state; relation and condition memory; random and impure state; integrator invalidation and restart state; FMI lifecycle, termination, and next-event state; schedule consumption; histories; and observable ledgers. A partial restore is a defect. | runtime | Rollback is total or absent |
-| SDO-042 | Outcomes are exactly: `Success`; `Success + Warnings`; `Success + Terminate` (publish the terminal state, emit once); `Abort` (restore, and emit only its specified failure). | runtime | Four outcomes, no implicit fifth |
-| SDO-043 | `assert`, `terminate`, and status effects are STAGED until commit, and a retry duplicates NO effect. | runtime | Retries must not double-report |
-| SDO-044 | A transactional impure, random, or external effect is admitted only when snapshot-and-replayed; a NON-ROLLBACKABLE effect REJECTS before the attempt begins. | construction | Reject early, not mid-commit |
+| SDO-042 | An outcome is a PRODUCT STATE: (`Publish` \| `Abort`) × a warnings MULTISET × an optional terminate. `Publish` commits and emits its warnings and any terminate exactly once; `Abort` restores. Warnings and terminate therefore combine freely. | runtime | Outcomes combine, they do not enumerate |
+| SDO-043 | A FATAL failure emits its specified failure ONCE and SUPPRESSES every earlier staged warning, terminate, and status effect of that attempt. | runtime | A failed attempt reports one thing |
+| SDO-044 | `assert`, `terminate`, and status effects are STAGED until commit, and a retry duplicates NO effect. | runtime | Retries must not double-report |
+| SDO-045 | A transactional impure, random, or external effect is admitted only when snapshot-and-replayed; a NON-ROLLBACKABLE effect REJECTS before the attempt begins. | construction | Reject early, not mid-commit |
 
 ### 7. Discrete Identities
 
@@ -108,7 +118,7 @@ coordination mailbox rulings of 2026-08-12.
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| SDO-060 | An algorithm transaction is ONE outer producer exposing the COMPLETE FINAL target tuple. Statement intermediates are visible ONLY within its source-ordered atomic section. | construction | `x := a; x := b(x)` must yield `b(a)` |
+| SDO-060 | An algorithm transaction is ONE outer producer whose COMPLETE FINAL target tuple is one value of the SDO-001 form. Statement intermediates are visible ONLY within its source-ordered atomic section. | construction | `x := a; x := b(x)` must yield `b(a)` |
 | SDO-061 | A cross-owner cycle treats the transaction as ONE OPAQUE BLOCK: reject it, or solve it jointly in a future slice. Splitting or interleaving its statements is prohibited. | construction | Interleaving fabricates a schedule |
 
 ### 9. Activation Proof
@@ -133,14 +143,17 @@ coordination mailbox rulings of 2026-08-12.
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SDO-090 | Root, wire, preparation, AND stored bodies stay O(compact bodies + owners + edges + rank/ranges). No tensor-coordinate node is constructed at any of those layers. | construction | Four layers, one bound |
-| SDO-091 | Only the SELECTED payload's work and storage may scale with tensor extent, and only at execution. | runtime | Selection is the only extent license |
+| SDO-091 | Inherent model state, input, and output tensor PAYLOAD storage scales with source extent legally. What SDO-090 prohibits is extent-DERIVED METADATA in the semantic graph, wire, preparation, or stored body. Selected-branch work and transient payload scale at execution. | runtime | Payload is data, metadata is structure |
 
 ### 12. Current State, Gates, And Rejected Alternatives
 
 **None of §2–§11 is implemented.** The migration-period runtime proofs
-(uniformity, row-filter) exist in the working tree with named deletion edges;
-the one-tick and settle restorations are landed behavior; everything else is
-`Absent`. Row-level state, the preregistered gates including the RDD2 estimator
+(uniformity, row-filter) exist in the working tree with named deletion edges,
+and the one-tick and settle restorations are landed behavior.
+`SolveRuntimeSnapshot` ALREADY captures the static refresh cache, evaluator
+random and impure state, and delay state: the defect is the ABSENCE of one
+enclosing `EventAttempt` that invokes it on EVERY failure path, plus the absent
+observable ledgers. Everything else is `Absent`. Row-level state, the preregistered gates including the RDD2 estimator
 discriminator, and the defeated alternatives are
 [SPEC_0047 §7](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#7-scheduled-discrete-ownership-spec_0046);
 each row there names the `SDO` rule it covers.

@@ -38,9 +38,9 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) | Valid-by-Construction Catalog | IR | ~256 | REFERENCE |
 | [SPEC_0044](SPEC_0044_FMI_EXECUTION_CATALOG.md) | FMI Execution Contract Catalog | runtime/verification | ~151 | REFERENCE |
 | [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md) | Solve Executable Vocabulary and Profiles | IR | ~165 | DRAFT |
-| [SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) | Scheduled Discrete Ownership | IR/runtime | ~170 | DRAFT |
-| [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~487 | REFERENCE |
-| [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~119 | DRAFT |
+| [SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) | Scheduled Discrete Ownership | IR/runtime | ~183 | DRAFT |
+| [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~499 | REFERENCE |
+| [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~118 | DRAFT |
 | [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~214 | REFERENCE |
 
 ### Reference annexes
