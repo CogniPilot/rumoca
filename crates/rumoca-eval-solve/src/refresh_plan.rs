@@ -6,6 +6,7 @@
 //! `rumoca-solver`'s runtime should construct or mutate a [`RefreshPlan`].
 
 mod dependency_domain;
+mod event_dependencies;
 mod schedule;
 mod source_catalog;
 #[cfg(test)]
@@ -23,6 +24,7 @@ use crate::sparsity::program_output_y_dependencies;
 use crate::{EvalSolveError, PreparedScalarProgramBlock};
 
 use dependency_domain::{CompactYDependencyError, CompactYDependencySet};
+use event_dependencies::event_consumer_dependencies;
 
 use rumoca_ir_solve::{
     AlgebraicRefreshRow, RefreshPlan, RefreshRowOwnerId, RefreshRowSelection, RefreshRows,
@@ -555,7 +557,7 @@ pub fn build_continuous_refresh_owners(
         CompactYDependencySet::from_explicit(root_dependencies),
         catalog.positions(),
     )?;
-    let event_dependencies = event_consumer_dependencies(problem, state_count)?;
+    let event_dependencies = event_consumer_dependencies(problem, state_count, None)?;
     let event = build_dependency_refresh_plan_from_access(
         problem,
         &catalog,
@@ -563,7 +565,25 @@ pub fn build_continuous_refresh_owners(
         event_dependencies,
         catalog.positions(),
     )?;
-    let clock_events = vec![RefreshPlan::default(); problem.clocks.periodic_event_schedules.len()];
+    let clock_events = (0..problem.clocks.periodic_event_schedules.len())
+        .map(|clock_index| {
+            let clock = problem
+                .clocks
+                .periodic_clock_id(clock_index)
+                .ok_or_else(|| EvalSolveError::InvalidRow {
+                    message: "periodic refresh clock identity is invalid".to_string(),
+                    span: catalog.first_span(),
+                })?;
+            let dependencies = event_consumer_dependencies(problem, state_count, Some(clock))?;
+            build_dependency_refresh_plan_from_access(
+                problem,
+                &catalog,
+                &algebraic,
+                dependencies,
+                catalog.positions(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     solve::ContinuousRefreshOwners::checked_for_source(
         &problem.continuous.implicit_rhs,
         algebraic,
@@ -578,50 +598,14 @@ pub fn build_continuous_refresh_owners(
     })
 }
 
-fn event_consumer_dependencies(
-    problem: &solve::SolveProblem,
+fn extend_scalar_block_dependencies(
+    dependencies: &mut CompactYDependencySet,
+    block: &solve::ScalarProgramBlock,
     state_count: usize,
-) -> Result<CompactYDependencySet, EvalSolveError> {
-    let mut dependencies = CompactYDependencySet::default();
-    for block in [
-        &problem.discrete.runtime_assignment_rhs,
-        &problem.discrete.post_commit_assignment_rhs,
-        &problem.events.root_conditions,
-        &problem.discrete.rhs,
-        &problem.events.action_conditions,
-    ] {
-        dependencies
-            .extend_explicit(scalar_program_block_dependencies(block, state_count)?)
-            .map_err(|error| compact_dependency_error(error, first_block_span(block)))?;
-    }
-    let structured_span =
-        problem
-            .discrete
-            .structured_rhs
-            .nodes
-            .iter()
-            .find_map(|node| match node {
-                solve::ComputeNode::ScalarPrograms(block) => block.first_source_span(),
-                solve::ComputeNode::MatMul { span, .. }
-                | solve::ComputeNode::LinSolve { span, .. }
-                | solve::ComputeNode::Map { span, .. }
-                | solve::ComputeNode::AffineStencil { span, .. } => Some(*span),
-            });
+) -> Result<(), EvalSolveError> {
     dependencies
-        .extend(compute_block_dependencies(
-            &problem.discrete.structured_rhs,
-            state_count,
-        )?)
-        .map_err(|error| compact_dependency_error(error, structured_span))?;
-    for program in &problem.discrete.guarded_assignments {
-        for mut range in row_y_input_ranges(program.program()) {
-            range.start = range.start.max(state_count);
-            dependencies
-                .insert_range(range)
-                .map_err(|error| compact_dependency_error(error, Some(program.span())))?;
-        }
-    }
-    Ok(dependencies)
+        .extend_explicit(scalar_program_block_dependencies(block, state_count)?)
+        .map_err(|error| compact_dependency_error(error, first_block_span(block)))
 }
 
 fn compute_block_dependencies(
@@ -631,52 +615,55 @@ fn compute_block_dependencies(
     block.validate_shape_contract("continuous refresh dependency certificate")?;
     let mut dependencies = CompactYDependencySet::default();
     for node in &block.nodes {
-        match node {
-            solve::ComputeNode::ScalarPrograms(block) => {
-                dependencies
-                    .extend_explicit(scalar_program_block_dependencies(block, state_count)?)
-                    .map_err(|error| compact_dependency_error(error, first_block_span(block)))?;
-            }
-            solve::ComputeNode::MatMul {
-                lhs_ops,
-                rhs_ops,
-                span,
-                ..
-            } => {
-                extend_program_dependencies(&mut dependencies, lhs_ops, state_count, Some(*span))?;
-                extend_program_dependencies(&mut dependencies, rhs_ops, state_count, Some(*span))?;
-            }
-            solve::ComputeNode::LinSolve {
-                setup_ops, span, ..
-            } => {
-                extend_program_dependencies(&mut dependencies, setup_ops, state_count, Some(*span))?
-            }
-            solve::ComputeNode::Map {
-                domain,
-                base_ops,
-                load_strides,
-                span,
-                ..
-            }
-            | solve::ComputeNode::AffineStencil {
-                domain,
-                base_ops,
-                load_strides,
-                span,
-                ..
-            } => {
-                extend_affine_program_dependencies(
-                    &mut dependencies,
-                    domain,
-                    base_ops,
-                    load_strides,
-                    state_count,
-                    *span,
-                )?;
-            }
-        }
+        extend_compute_node_dependencies(&mut dependencies, node, state_count)?;
     }
     Ok(dependencies)
+}
+
+fn extend_compute_node_dependencies(
+    dependencies: &mut CompactYDependencySet,
+    node: &solve::ComputeNode,
+    state_count: usize,
+) -> Result<(), EvalSolveError> {
+    match node {
+        solve::ComputeNode::ScalarPrograms(block) => {
+            extend_scalar_block_dependencies(dependencies, block, state_count)?;
+        }
+        solve::ComputeNode::MatMul {
+            lhs_ops,
+            rhs_ops,
+            span,
+            ..
+        } => {
+            extend_program_dependencies(dependencies, lhs_ops, state_count, Some(*span))?;
+            extend_program_dependencies(dependencies, rhs_ops, state_count, Some(*span))?;
+        }
+        solve::ComputeNode::LinSolve {
+            setup_ops, span, ..
+        } => extend_program_dependencies(dependencies, setup_ops, state_count, Some(*span))?,
+        solve::ComputeNode::Map {
+            domain,
+            base_ops,
+            load_strides,
+            span,
+            ..
+        }
+        | solve::ComputeNode::AffineStencil {
+            domain,
+            base_ops,
+            load_strides,
+            span,
+            ..
+        } => extend_affine_program_dependencies(
+            dependencies,
+            domain,
+            base_ops,
+            load_strides,
+            state_count,
+            *span,
+        )?,
+    }
+    Ok(())
 }
 
 fn extend_affine_program_dependencies(

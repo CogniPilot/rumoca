@@ -327,3 +327,127 @@ fn empty_affine_domain_has_no_runtime_y_dependencies() {
             .is_empty()
     );
 }
+
+#[test]
+fn clocked_and_unclocked_outputs_get_distinct_refresh_dependencies() {
+    let consumer = solve::ScalarProgramBlock::with_output_indices(
+        vec![checked(vec![
+            solve::LinearOp::LoadY { dst: 0, index: 10 },
+            solve::LinearOp::StoreOutput { src: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 11 },
+            solve::LinearOp::StoreOutput { src: 1 },
+        ])],
+        vec![solve::source_span_from_offsets(1, 0, 1)],
+        vec![0, 1],
+    )
+    .expect("two correlated outputs have a checked scalar-program owner");
+    let mut problem = solve::SolveProblem::default();
+    problem.clocks.periodic_event_schedules = vec![
+        solve::PeriodicEventSchedule::from_seconds(0.01, 0.0)
+            .expect("fixture period is an exact positive schedule"),
+    ];
+    problem.clocks.activation_parameter_indices = vec![0];
+    let clock = problem
+        .clocks
+        .periodic_clock_id(0)
+        .expect("fixture clock identity is issued by its partition");
+    problem.discrete.rhs = consumer;
+    problem.discrete.clock_owners = vec![None, Some(clock)];
+
+    let unclocked = event_consumer_dependencies(&problem, 10, None)
+        .expect("unclocked dependency projection is checked");
+    let clocked = event_consumer_dependencies(&problem, 10, Some(clock))
+        .expect("clock dependency projection is checked");
+
+    assert_eq!(
+        unclocked
+            .into_seed_stack(10..12)
+            .expect("fixture candidate range is finite"),
+        vec![10]
+    );
+    assert_eq!(
+        clocked
+            .into_seed_stack(10..12)
+            .expect("fixture candidate range is finite"),
+        vec![11]
+    );
+}
+
+#[test]
+fn construction_issues_event_base_and_clock_remainder_plans() {
+    let span = solve::source_span_from_offsets(2, 0, 1);
+    let implicit = solve::ScalarProgramBlock::with_output_indices(
+        vec![
+            checked(vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+            checked(vec![
+                solve::LinearOp::Const { dst: 0, value: 2.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]),
+        ],
+        vec![span, span],
+        vec![0, 1],
+    )
+    .expect("fixture algebraics have checked independent owners");
+    let consumer = solve::ScalarProgramBlock::with_output_indices(
+        vec![checked(vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+            solve::LinearOp::LoadY { dst: 1, index: 1 },
+            solve::LinearOp::StoreOutput { src: 1 },
+        ])],
+        vec![span],
+        vec![0, 1],
+    )
+    .expect("fixture event consumer has checked correlated outputs");
+    let mut problem = solve::SolveProblem::default();
+    problem.solve_layout.state_scalar_count = 0;
+    problem.solve_layout.algebraic_scalar_count = 2;
+    problem.solve_layout.solver_maps.names = vec!["a".to_string(), "b".to_string()];
+    problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(implicit);
+    problem.continuous.implicit_row_targets =
+        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+    problem.clocks.periodic_event_schedules = vec![
+        solve::PeriodicEventSchedule::from_seconds(0.01, 0.0)
+            .expect("fixture period is an exact positive schedule"),
+    ];
+    problem.clocks.activation_parameter_indices = vec![0];
+    let clock = problem
+        .clocks
+        .periodic_clock_id(0)
+        .expect("fixture clock identity is issued by its partition");
+    problem.discrete.rhs = consumer;
+    problem.discrete.clock_owners = vec![None, Some(clock)];
+
+    let owners = build_continuous_refresh_owners(&problem)
+        .expect("construction can partition the checked event dependencies");
+
+    assert_eq!(
+        owners
+            .event()
+            .rows
+            .iter()
+            .map(solve::AlgebraicRefreshRow::target_index)
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
+    assert_eq!(
+        owners.clock_events()[0]
+            .rows
+            .iter()
+            .map(solve::AlgebraicRefreshRow::target_index)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(
+        owners.clock_events_after_event()[0]
+            .remainder()
+            .rows
+            .iter()
+            .map(solve::AlgebraicRefreshRow::target_index)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+}
