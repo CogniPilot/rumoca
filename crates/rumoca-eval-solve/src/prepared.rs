@@ -14,6 +14,7 @@ mod support;
 
 use std::cell::RefCell;
 
+use crate::refresh_plan::AlgebraicRefreshRow;
 use crate::tensor_policy::{
     LinearSolveKernel, MatMulKernel, select_linear_solve_kernel, select_matmul_kernel,
 };
@@ -39,7 +40,6 @@ pub use assignment_shape::{target_assignment_shape, target_assignment_shapes};
 use dependency::{parameter_static_y_gradient, row_parameter_indices};
 pub(crate) use dependency::{row_reads_y_index, row_y_input_ranges};
 use rumoca_core::StructuredIndexDomain;
-use rumoca_ir_solve::AlgebraicRefreshRow;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, ComputeBlock, ComputeNode,
     LinearOp, ScalarProgramBlock, StructuralPattern, TargetAssignmentShape, TensorOutputMap,

@@ -1,14 +1,13 @@
 use crate::RuntimeSolveError;
 
-use rumoca_ir_solve as solve;
-
 use super::SolveRuntime;
 use rumoca_eval_solve::ComputeNodeOutputRangeRequest;
+use rumoca_eval_solve::refresh_plan::{AlgebraicRefreshRow, RefreshRows};
 
 impl SolveRuntime {
     pub(super) fn try_refresh_tensor_output_segment(
         &self,
-        plan: solve::RefreshRows<'_>,
+        plan: RefreshRows<'_>,
         start: usize,
         t: f64,
         solver_y: &mut [f64],
@@ -93,7 +92,7 @@ impl SolveRuntime {
 
     pub(super) fn try_refresh_shapeless_output_segment(
         &self,
-        plan: solve::RefreshRows<'_>,
+        plan: RefreshRows<'_>,
         start: usize,
         t: f64,
         solver_y: &mut [f64],
@@ -143,7 +142,7 @@ impl SolveRuntime {
         Ok(Some(end))
     }
 
-    pub(super) fn can_batch_assignment_refresh(&self, plan: solve::RefreshRows<'_>) -> bool {
+    pub(super) fn can_batch_assignment_refresh(&self, plan: RefreshRows<'_>) -> bool {
         plan.iter().all(|row| {
             row.assignment_target() == Some(row.target_index())
                 && row
@@ -152,7 +151,7 @@ impl SolveRuntime {
         })
     }
 
-    fn can_batch_shapeless_output_refresh(&self, row: &solve::AlgebraicRefreshRow) -> bool {
+    fn can_batch_shapeless_output_refresh(&self, row: &AlgebraicRefreshRow) -> bool {
         let Some(program) = self.refresh_program_rows.get(&row.source()).copied() else {
             return false;
         };
@@ -163,7 +162,7 @@ impl SolveRuntime {
                 .row_reads_y(program, row.target_index())
     }
 
-    fn can_refresh_from_tensor_output(&self, row: &solve::AlgebraicRefreshRow) -> bool {
+    fn can_refresh_from_tensor_output(&self, row: &AlgebraicRefreshRow) -> bool {
         let Some(program) = self.refresh_program_rows.get(&row.source()).copied() else {
             return false;
         };

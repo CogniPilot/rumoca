@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn static_refresh_parameter_indices<'a>(
     implicit: &PreparedScalarProgramBlock,
-    plans: impl IntoIterator<Item = &'a solve::RefreshPlan>,
+    plans: impl IntoIterator<Item = &'a RefreshPlan>,
     program_rows: &HashMap<solve::RefreshScalarProgramSource, usize>,
 ) -> Box<[usize]> {
     let mut row_indices = BTreeSet::new();
@@ -14,15 +14,15 @@ pub(super) fn static_refresh_parameter_indices<'a>(
         );
         for stage in &plan.value_stages {
             match stage {
-                solve::RefreshStage::CausalSeedSweep { static_rows, .. }
-                | solve::RefreshStage::ExactAssignments { static_rows, .. } => {
+                RefreshStage::CausalSeedSweep { static_rows, .. }
+                | RefreshStage::ExactAssignments { static_rows, .. } => {
                     row_indices.extend(
                         plan.selected_rows(static_rows)
                             .iter()
                             .filter_map(|row| program_rows.get(&row.source()).copied()),
                     );
                 }
-                solve::RefreshStage::ProjectionBlock { .. } => {}
+                RefreshStage::ProjectionBlock { .. } => {}
             }
         }
     }
@@ -41,7 +41,7 @@ pub(super) fn static_refresh_parameter_indices<'a>(
 impl SolveRuntime {
     pub(super) fn refresh_program_row(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        row: &AlgebraicRefreshRow,
     ) -> Result<usize, RuntimeSolveError> {
         self.refresh_program_rows
             .get(&row.source())
@@ -168,7 +168,7 @@ impl SolveRuntime {
 
     pub(super) fn refresh_slots_with_plan(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &RefreshPlan,
         mut args: RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
         if plan.rows.is_empty() && plan.simultaneous_plan.is_empty() {
@@ -219,7 +219,7 @@ impl SolveRuntime {
 
     fn refresh_causal_seed_rows(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &RefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
         self.refresh_parameter_static_seed_rows(
@@ -315,7 +315,7 @@ impl SolveRuntime {
 
     pub(super) fn project_refresh_slots(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &RefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         use_complete_plan: bool,
     ) -> Result<(), RuntimeSolveError> {
@@ -413,7 +413,7 @@ impl SolveRuntime {
 
     fn eval_refresh_row(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        row: &AlgebraicRefreshRow,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
@@ -475,7 +475,7 @@ impl SolveRuntime {
 
     fn eval_refresh_row_value(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        row: &AlgebraicRefreshRow,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
@@ -508,7 +508,7 @@ impl SolveRuntime {
     /// Evaluate one scalar view of the canonical implicit residual system.
     fn refresh_row_residual(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        row: &AlgebraicRefreshRow,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
@@ -528,7 +528,7 @@ impl SolveRuntime {
 
     fn solve_refresh_residual_row(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        row: &AlgebraicRefreshRow,
         residual: f64,
         t: f64,
         solver_y: &[f64],

@@ -614,50 +614,41 @@ impl ContinuousRefreshOwners {
             .chain(self.clock_events.iter())
         {
             for row in &plan.rows {
-                self.validate_row_assignment_program(row)?;
+                let program = self
+                    .exact_assignment_programs
+                    .iter()
+                    .find(|program| program.row_owners.contains(&row.owner_id));
+                if row.exact_assignment_certified {
+                    let Some(program) = program else {
+                        return refresh_error(
+                            "exact continuous refresh row has no constructed assignment program"
+                                .to_string(),
+                        );
+                    };
+                    let Some(position) = program
+                        .row_owners
+                        .iter()
+                        .position(|owner| *owner == row.owner_id)
+                    else {
+                        return refresh_error(
+                            "exact continuous refresh program lost its row owner".to_string(),
+                        );
+                    };
+                    if program.source != row.source
+                        || program.target_indices.get(position) != Some(&row.target_index)
+                    {
+                        return refresh_error(
+                            "exact continuous refresh program does not replay its row owner"
+                                .to_string(),
+                        );
+                    }
+                } else if program.is_some() {
+                    return refresh_error(
+                        "non-exact continuous refresh row owns an exact assignment program"
+                            .to_string(),
+                    );
+                }
             }
-        }
-        Ok(())
-    }
-
-    /// Checks that one refresh row and the exact assignment program inventory
-    /// agree on whether the row replays as an exact assignment.
-    fn validate_row_assignment_program(
-        &self,
-        row: &AlgebraicRefreshRow,
-    ) -> Result<(), ContinuousRefreshConstructionError> {
-        let program = self
-            .exact_assignment_programs
-            .iter()
-            .find(|program| program.row_owners.contains(&row.owner_id));
-        if !row.exact_assignment_certified {
-            if program.is_some() {
-                return refresh_error(
-                    "non-exact continuous refresh row owns an exact assignment program".to_string(),
-                );
-            }
-            return Ok(());
-        }
-        let Some(program) = program else {
-            return refresh_error(
-                "exact continuous refresh row has no constructed assignment program".to_string(),
-            );
-        };
-        let Some(position) = program
-            .row_owners
-            .iter()
-            .position(|owner| *owner == row.owner_id)
-        else {
-            return refresh_error(
-                "exact continuous refresh program lost its row owner".to_string(),
-            );
-        };
-        if program.source != row.source
-            || program.target_indices.get(position) != Some(&row.target_index)
-        {
-            return refresh_error(
-                "exact continuous refresh program does not replay its row owner".to_string(),
-            );
         }
         Ok(())
     }
@@ -680,31 +671,25 @@ impl ContinuousRefreshOwners {
             .find(|schedule| schedule.sequence_id == sequence)
     }
 
-    /// Checks that every plan carrying a given row owner id carries the exact
-    /// same canonical row.
-    fn validate_canonical_row_owners(&self) -> Result<(), ContinuousRefreshConstructionError> {
-        let mut rows = BTreeMap::new();
-        for row in [&self.algebraic, &self.derivative, &self.root, &self.event]
-            .into_iter()
-            .chain(self.clock_events.iter())
-            .flat_map(|plan| plan.rows.iter())
-        {
-            if let Some(existing) = rows.insert(row.owner_id, row)
-                && existing != row
-            {
-                return refresh_error(
-                    "continuous refresh plans disagree on a canonical row owner".to_string(),
-                );
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn rebuild_exact_assignment_programs(
         &mut self,
         implicit_rhs: &ComputeBlock,
     ) -> Result<(), ContinuousRefreshConstructionError> {
-        self.validate_canonical_row_owners()?;
+        let mut rows = BTreeMap::new();
+        for plan in [&self.algebraic, &self.derivative, &self.root, &self.event]
+            .into_iter()
+            .chain(self.clock_events.iter())
+        {
+            for row in &plan.rows {
+                if let Some(existing) = rows.insert(row.owner_id, row)
+                    && existing != row
+                {
+                    return refresh_error(
+                        "continuous refresh plans disagree on a canonical row owner".to_string(),
+                    );
+                }
+            }
+        }
         let Self {
             algebraic,
             derivative,
@@ -1101,45 +1086,26 @@ impl<'a> ScalarProgramYDependency<'a> {
                 dimensions,
                 indices,
                 ..
-            } => self.indexed_register_depends(base, stride, &dimensions, &indices, target),
+            } => {
+                dimensions
+                    .iter()
+                    .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+                    .is_none_or(|count| {
+                        (0..count).any(|offset| {
+                            u32::try_from(offset.saturating_mul(stride))
+                                .ok()
+                                .and_then(|offset| base.checked_add(offset))
+                                .is_none_or(|register| self.depends_on(register, target))
+                        })
+                    })
+                    || indices
+                        .iter()
+                        .any(|index| self.tensor_index_depends(index, target))
+            }
             LinearOp::LoadIndexedFoldCarried { indices, .. }
             | LinearOp::LoadIndexedFoldCapture { indices, .. } => indices
                 .iter()
                 .any(|index| self.tensor_index_depends(index, target)),
-            other => self.tensor_algebra_operation_depends(target, other),
-        }
-    }
-
-    /// Fail-closed dependence for one packed-tensor scalar projection: any
-    /// unrepresentable address range is treated as dependent.
-    fn indexed_register_depends(
-        &mut self,
-        base: u32,
-        stride: usize,
-        dimensions: &[u32],
-        indices: &[crate::TensorIndex],
-        target: usize,
-    ) -> bool {
-        dimensions
-            .iter()
-            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
-            .is_none_or(|count| {
-                (0..count).any(|offset| {
-                    u32::try_from(offset.saturating_mul(stride))
-                        .ok()
-                        .and_then(|offset| base.checked_add(offset))
-                        .is_none_or(|register| self.depends_on(register, target))
-                })
-            })
-            || indices
-                .iter()
-                .any(|index| self.tensor_index_depends(index, target))
-    }
-
-    /// Dependence for the dense linear-algebra operations, which read whole
-    /// compact register ranges rather than individual scalars.
-    fn tensor_algebra_operation_depends(&mut self, target: usize, operation: LinearOp) -> bool {
-        match operation {
             LinearOp::LinearSolveComponent {
                 matrix_start,
                 rhs_start,
@@ -1178,13 +1144,6 @@ impl<'a> ScalarProgramYDependency<'a> {
                         .and_then(|count| count.checked_mul(lanes))
                         .is_none_or(|count| self.range_depends(rhs_start, count, target))
             }
-            other => self.tensor_element_operation_depends(target, other),
-        }
-    }
-
-    /// Dependence for the element-wise and structural tensor operations.
-    fn tensor_element_operation_depends(&mut self, target: usize, operation: LinearOp) -> bool {
-        match operation {
             LinearOp::TensorBinary {
                 lhs_start,
                 rhs_start,
@@ -1241,15 +1200,6 @@ impl<'a> ScalarProgramYDependency<'a> {
             LinearOp::TensorFill {
                 value_start, lanes, ..
             } => self.range_depends(value_start, lanes, target),
-            other => self.call_operation_depends(target, other),
-        }
-    }
-
-    /// Dependence for the checked call and structured-body operations, plus the
-    /// closed set of operations that never read `Y`. Anything not named here is
-    /// fail-closed to dependent.
-    fn call_operation_depends(&mut self, target: usize, operation: LinearOp) -> bool {
-        match operation {
             LinearOp::PureCall {
                 input_starts, site, ..
             } => input_starts

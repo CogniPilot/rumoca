@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::{SolvePureCallDirectionalSite, SolvePureCallSite, SolveValueType};
+use crate::{SolvePureCallDirectionalSite, SolvePureCallSite};
 
 /// Register index in a lowered op sequence.
 pub type Reg = u32;
@@ -1301,7 +1301,9 @@ impl ScalarProgramRegisterFlow {
             let dst_count = op.dst_register_count();
             if let Some(dst) = op.dst_register() {
                 let last = register_range_last(op_index, op.kind_name(), dst, dst_count)?;
-                mark_register_range_initialized(&mut initialized, dst, dst_count);
+                for offset in 0..dst_count {
+                    mark_register_initialized(&mut initialized, dst + offset as Reg);
+                }
                 max_register = Some(max_register.map_or(last, |max: Reg| max.max(last)));
             }
         }
@@ -1419,130 +1421,6 @@ fn mark_register_initialized(initialized: &mut Vec<bool>, register: Reg) {
     initialized[index] = true;
 }
 
-/// Mark one compact destination range as written by the operation at `dst`.
-fn mark_register_range_initialized(initialized: &mut Vec<bool>, dst: Reg, count: usize) {
-    for offset in 0..count {
-        mark_register_initialized(initialized, dst + offset as Reg);
-    }
-}
-
-/// Read-only context for one operation's source-register proof.
-///
-/// Every extracted check needs the same row context, so bundling it keeps the
-/// per-operation helpers below the workspace argument budget and keeps one
-/// operation-name spelling (`LinearOp::kind_name`) in every diagnostic.
-#[derive(Clone, Copy)]
-struct OpSources<'a> {
-    op: &'a LinearOp,
-    op_index: usize,
-    initialized: &'a [bool],
-    fold_context: Option<(usize, usize, usize)>,
-    conditional_capture_count: Option<usize>,
-}
-
-impl OpSources<'_> {
-    /// Stable operation name carried by every register-flow diagnostic.
-    fn operation(self) -> &'static str {
-        self.op.kind_name()
-    }
-
-    /// Prove one scalar source register is dominated by an earlier write.
-    fn require(self, register: Reg) -> Result<(), ScalarProgramRegisterError> {
-        require_register(self.op_index, self.operation(), register, self.initialized)
-    }
-
-    /// Prove one compact consecutive source range and return its last register.
-    fn require_range(self, start: Reg, len: usize) -> Result<Reg, ScalarProgramRegisterError> {
-        require_register_range(
-            self.op_index,
-            self.operation(),
-            start,
-            len,
-            self.initialized,
-        )
-    }
-
-    /// Last register of one compact consecutive range.
-    fn range_last(self, start: Reg, len: usize) -> Result<Reg, ScalarProgramRegisterError> {
-        register_range_last(self.op_index, self.operation(), start, len)
-    }
-
-    /// Prove one projection selects an element inside its checked tuple.
-    fn projection(self, projection: usize, len: usize) -> Result<(), ScalarProgramRegisterError> {
-        validate_projection(self.op_index, self.operation(), projection, len)
-    }
-
-    fn fold_error(self, reason: &'static str) -> ScalarProgramRegisterError {
-        ScalarProgramRegisterError::InvalidFunctionFold {
-            op_index: self.op_index,
-            reason,
-        }
-    }
-
-    fn conditional_error(self, reason: &'static str) -> ScalarProgramRegisterError {
-        ScalarProgramRegisterError::InvalidFunctionConditional {
-            op_index: self.op_index,
-            reason,
-        }
-    }
-
-    fn pure_call_error(self, reason: &'static str) -> ScalarProgramRegisterError {
-        ScalarProgramRegisterError::InvalidPureCall {
-            op_index: self.op_index,
-            reason,
-        }
-    }
-
-    fn tensor_error(self, reason: &'static str) -> ScalarProgramRegisterError {
-        ScalarProgramRegisterError::InvalidTensorProjection {
-            op_index: self.op_index,
-            reason,
-        }
-    }
-}
-
-/// Which compact tuple of the enclosing function-fold ABI a scalar load reads.
-#[derive(Clone, Copy)]
-enum FoldSlot {
-    Carried,
-    Binder,
-    Capture,
-}
-
-impl FoldSlot {
-    /// Width of this tuple in the enclosing update body's ABI.
-    const fn count(self, fold_context: (usize, usize, usize)) -> usize {
-        let (carried_count, dimension_count, capture_count) = fold_context;
-        match self {
-            Self::Carried => carried_count,
-            Self::Binder => dimension_count,
-            Self::Capture => capture_count,
-        }
-    }
-
-    /// Diagnostic reported when the load escaped its function-fold update body.
-    const fn escaped_reason(self) -> &'static str {
-        match self {
-            Self::Carried => "carried load escaped its update body",
-            Self::Binder => "binder load escaped its update body",
-            Self::Capture => "capture load escaped its update body",
-        }
-    }
-}
-
-/// Source-register proof for one checked [`LinearOp`].
-///
-/// This is the sole dispatch table of the proof: every arm names its variant
-/// and delegates to one checked helper, so the table carries the operation
-/// vocabulary and no validation logic. The match stays exhaustive with no
-/// catch-all arm, so a new `LinearOp` variant cannot reach an evaluator until
-/// its sources are proved here.
-///
-/// The table is laid out by hand (`rustfmt::skip`) so one arm reads as one
-/// entry. Automatic formatting expands every multi-field pattern to one field
-/// per line, which triples the table without telling a reader anything the
-/// single-line form does not.
-#[rustfmt::skip]
 fn validate_op_sources(
     op: &LinearOp,
     op_index: usize,
@@ -1551,904 +1429,1111 @@ fn validate_op_sources(
     conditional_capture_count: Option<usize>,
     validation: &mut ScalarProgramValidationCache,
 ) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let cx = OpSources { op, op_index, initialized, fold_context, conditional_capture_count };
     match *op {
-        LinearOp::Const { .. } | LinearOp::LoadTime { .. } | LinearOp::LoadY { .. }
-        | LinearOp::LoadP { .. } | LinearOp::LoadSeed { .. } => Ok(None),
-        LinearOp::LoadFoldCarried { index, .. } => fold_load(cx, index, FoldSlot::Carried),
-        LinearOp::LoadFoldIndex { dimension, .. } => fold_load(cx, dimension, FoldSlot::Binder),
-        LinearOp::LoadFoldCapture { index, .. } => fold_load(cx, index, FoldSlot::Capture),
-        LinearOp::LoadFunctionConditionalCapture { index, .. } => conditional_capture(cx, index),
-        LinearOp::LoadFunctionConditionalCaptureRange { index_start, count, .. } =>
-            conditional_capture_range(cx, index_start, count),
-        LinearOp::Move { src, .. } | LinearOp::Unary { arg: src, .. }
-        | LinearOp::LoadIndexedP { index: src, .. } | LinearOp::LoadIndexedSeed { index: src, .. }
-        | LinearOp::StoreOutput { src } => single_source(cx, src),
-        LinearOp::StoreOutputRange { start, count, stride } =>
-            output_range(cx, start, count, stride),
-        LinearOp::LoadIndexedRegister { base, stride, ref dimensions, ref indices, .. } =>
-            indexed_register(cx, base, stride, dimensions, indices),
-        LinearOp::LoadIndexedFoldCarried { base, stride, ref dimensions, ref indices, .. } =>
-            indexed_fold_carried(cx, base, stride, dimensions, indices),
-        LinearOp::LoadIndexedFoldCapture { base, stride, ref dimensions, ref indices, .. } =>
-            indexed_fold_capture(cx, base, stride, dimensions, indices),
-        LinearOp::StoreOutputFoldTensorUpdate {
-            source_base, source_stride, ref dimensions, ref updates, ref nodes, result, lanes,
+        LinearOp::Const { .. }
+        | LinearOp::LoadTime { .. }
+        | LinearOp::LoadY { .. }
+        | LinearOp::LoadP { .. }
+        | LinearOp::LoadSeed { .. } => Ok(None),
+        LinearOp::LoadFoldCarried { index, .. } => {
+            let Some((carried_count, _, _)) = fold_context else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "carried load escaped its update body",
+                });
+            };
+            validate_projection(op_index, op.kind_name(), index, carried_count)?;
+            Ok(None)
+        }
+        LinearOp::LoadFoldIndex { dimension, .. } => {
+            let Some((_, dimension_count, _)) = fold_context else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "binder load escaped its update body",
+                });
+            };
+            validate_projection(op_index, op.kind_name(), dimension, dimension_count)?;
+            Ok(None)
+        }
+        LinearOp::LoadFoldCapture { index, .. } => {
+            let Some((_, _, capture_count)) = fold_context else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "capture load escaped its update body",
+                });
+            };
+            validate_projection(op_index, op.kind_name(), index, capture_count)?;
+            Ok(None)
+        }
+        LinearOp::LoadFunctionConditionalCapture { index, .. } => {
+            let Some(capture_count) = conditional_capture_count else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
+                    op_index,
+                    reason: "capture load escaped its conditional region",
+                });
+            };
+            validate_projection(op_index, op.kind_name(), index, capture_count)?;
+            Ok(None)
+        }
+        LinearOp::LoadFunctionConditionalCaptureRange {
+            index_start, count, ..
         } => {
-            fold_tensor_source(cx, source_base, source_stride, dimensions, updates, lanes)?;
-            let max_register = fold_tensor_patches(cx, dimensions, updates, lanes)?;
-            fold_tensor_nodes(cx, nodes, updates.len(), result, max_register)
+            let Some(capture_count) = conditional_capture_count else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
+                    op_index,
+                    reason: "capture range load escaped its conditional region",
+                });
+            };
+            if count == 0
+                || index_start
+                    .checked_add(count)
+                    .is_none_or(|end| end > capture_count)
+            {
+                return Err(ScalarProgramRegisterError::InvalidFunctionConditional {
+                    op_index,
+                    reason: "capture range load is empty, overflows, or exceeds the capture ABI",
+                });
+            }
+            Ok(None)
+        }
+        LinearOp::Move { src, .. }
+        | LinearOp::Unary { arg: src, .. }
+        | LinearOp::LoadIndexedP { index: src, .. }
+        | LinearOp::LoadIndexedSeed { index: src, .. }
+        | LinearOp::StoreOutput { src } => {
+            require_register(op_index, op.kind_name(), src, initialized)?;
+            Ok(Some(src))
+        }
+        LinearOp::StoreOutputRange {
+            start,
+            count,
+            stride,
+        } => require_strided_register_range(
+            op_index,
+            op.kind_name(),
+            start,
+            count,
+            stride,
+            initialized,
+        )
+        .map(Some),
+        LinearOp::LoadIndexedRegister {
+            base,
+            stride,
+            ref dimensions,
+            ref indices,
+            ..
+        } => {
+            if dimensions.is_empty() || dimensions.len() != indices.len() {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor projection rank does not match its checked dimensions",
+                });
+            }
+            let count = dimensions.iter().try_fold(1usize, |count, &extent| {
+                (extent != 0)
+                    .then(|| count.checked_mul(extent as usize))
+                    .flatten()
+            });
+            let Some(count) = count else {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor projection dimensions are empty or overflow",
+                });
+            };
+            if stride == 0 {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor projection register stride is zero",
+                });
+            }
+            let last_offset = (count - 1).checked_mul(stride).ok_or(
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor projection register stride overflows",
+                },
+            )?;
+            let last_offset = Reg::try_from(last_offset).map_err(|_| {
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor projection register stride overflows",
+                }
+            })?;
+            let base_last = base.checked_add(last_offset).ok_or(
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor projection register range overflows",
+                },
+            )?;
+            for offset in 0..count {
+                require_register(
+                    op_index,
+                    "LoadIndexedRegister",
+                    base + (offset * stride) as Reg,
+                    initialized,
+                )?;
+            }
+            let mut source_last = base_last;
+            for (&extent, index) in dimensions.iter().zip(indices.iter()) {
+                match *index {
+                    TensorIndex::Constant(coordinate) if coordinate >= extent => {
+                        return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                            op_index,
+                            reason: "constant tensor coordinate is out of range",
+                        });
+                    }
+                    TensorIndex::Constant(_) => {}
+                    TensorIndex::Runtime(register) => {
+                        require_register(op_index, "LoadIndexedRegister", register, initialized)?;
+                        source_last = source_last.max(register);
+                    }
+                }
+            }
+            Ok(Some(source_last))
+        }
+        LinearOp::LoadIndexedFoldCarried {
+            base,
+            stride,
+            ref dimensions,
+            ref indices,
+            ..
+        } => {
+            let Some((carried_count, _, _)) = fold_context else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "indexed carried load escaped its update body",
+                });
+            };
+            validate_tensor_projection_shape(op_index, dimensions.as_ref(), indices.as_ref())?;
+            let count = tensor_scalar_count(op_index, dimensions.as_ref())?;
+            let last = base
+                .checked_add((count - 1).checked_mul(stride).ok_or(
+                    ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "indexed carried projection stride overflows",
+                    },
+                )?)
+                .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "indexed carried projection range overflows",
+                })?;
+            if stride == 0 || last >= carried_count {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "indexed carried projection is outside its tuple",
+                });
+            }
+            let mut source_last = None;
+            for index in indices.iter() {
+                if let TensorIndex::Runtime(register) = *index {
+                    require_register(op_index, "LoadIndexedFoldCarried", register, initialized)?;
+                    source_last =
+                        Some(source_last.map_or(register, |last: Reg| last.max(register)));
+                }
+            }
+            Ok(source_last)
+        }
+        LinearOp::LoadIndexedFoldCapture {
+            base,
+            stride,
+            ref dimensions,
+            ref indices,
+            ..
+        } => {
+            let Some((_, _, capture_count)) = fold_context else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "indexed capture load escaped its update body",
+                });
+            };
+            validate_tensor_projection_shape(op_index, dimensions.as_ref(), indices.as_ref())?;
+            let count = tensor_scalar_count(op_index, dimensions.as_ref())?;
+            let last = base
+                .checked_add((count - 1).checked_mul(stride).ok_or(
+                    ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "indexed capture projection stride overflows",
+                    },
+                )?)
+                .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "indexed capture projection range overflows",
+                })?;
+            if stride == 0 || last >= capture_count {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "indexed capture projection is outside its tuple",
+                });
+            }
+            let mut source_last = None;
+            for index in indices.iter() {
+                if let TensorIndex::Runtime(register) = *index {
+                    require_register(op_index, "LoadIndexedFoldCapture", register, initialized)?;
+                    source_last =
+                        Some(source_last.map_or(register, |last: Reg| last.max(register)));
+                }
+            }
+            Ok(source_last)
+        }
+        LinearOp::StoreOutputFoldTensorUpdate {
+            source_base,
+            source_stride,
+            ref dimensions,
+            ref updates,
+            ref nodes,
+            result,
+            lanes,
+        } => {
+            let Some((carried_count, _, _)) = fold_context else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "aggregate output escaped its function-fold update body",
+                });
+            };
+            if dimensions.is_empty() || updates.is_empty() {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor update has no checked rank or patches",
+                });
+            }
+            if lanes == 0 || source_stride != lanes {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor update storage is not element-major by lane",
+                });
+            }
+            let count = tensor_scalar_count(op_index, dimensions.as_ref())?;
+            let source_last = source_base
+                .checked_add((count - 1).checked_mul(source_stride).ok_or(
+                    ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor update carried stride overflows",
+                    },
+                )?)
+                .and_then(|last| last.checked_add(lanes - 1))
+                .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor update carried range overflows",
+                })?;
+            if source_last >= carried_count {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor update source is outside its carried tuple",
+                });
+            }
+            let mut max_register = None;
+            for update in updates {
+                if dimensions.len() != update.subscripts.len() || update.value_stride != lanes {
+                    return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor patch shape or lane layout is invalid",
+                    });
+                }
+                let mut value_count = 1usize;
+                if let Some(condition) = update.condition {
+                    require_register(
+                        op_index,
+                        "StoreOutputFoldTensorUpdate",
+                        condition,
+                        initialized,
+                    )?;
+                    max_register =
+                        Some(max_register.map_or(condition, |last: Reg| last.max(condition)));
+                }
+                for (&extent, subscript) in dimensions.iter().zip(update.subscripts.iter()) {
+                    match *subscript {
+                        TensorSubscript::Whole => {
+                            value_count = value_count.checked_mul(extent as usize).ok_or(
+                                ScalarProgramRegisterError::InvalidTensorProjection {
+                                    op_index,
+                                    reason: "tensor update value extent overflows",
+                                },
+                            )?;
+                        }
+                        TensorSubscript::Index(TensorIndex::Constant(coordinate)) => {
+                            if coordinate >= extent {
+                                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                                    op_index,
+                                    reason: "constant tensor update coordinate is out of range",
+                                });
+                            }
+                        }
+                        TensorSubscript::Index(TensorIndex::Runtime(register)) => {
+                            require_register(
+                                op_index,
+                                "StoreOutputFoldTensorUpdate",
+                                register,
+                                initialized,
+                            )?;
+                            max_register =
+                                Some(max_register.map_or(register, |last: Reg| last.max(register)));
+                        }
+                    }
+                }
+                let value_last_offset = (value_count - 1)
+                    .checked_mul(update.value_stride)
+                    .and_then(|offset| offset.checked_add(lanes - 1))
+                    .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor update value range overflows",
+                    })?;
+                let value_last_offset = Reg::try_from(value_last_offset).map_err(|_| {
+                    ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor update value range exceeds register identity",
+                    }
+                })?;
+                let value_last = update.value_start.checked_add(value_last_offset).ok_or(
+                    ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor update value register range overflows",
+                    },
+                )?;
+                for element in 0..value_count {
+                    for lane in 0..lanes {
+                        require_register(
+                            op_index,
+                            "StoreOutputFoldTensorUpdate",
+                            update.value_start + (element * update.value_stride + lane) as Reg,
+                            initialized,
+                        )?;
+                    }
+                }
+                max_register = Some(max_register.map_or(value_last, |last| last.max(value_last)));
+            }
+            for (index, node) in nodes.iter().enumerate() {
+                let current = u32::try_from(index + 1).map_err(|_| {
+                    ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor expression node identity overflows",
+                    }
+                })?;
+                match *node {
+                    FoldTensorNode::Update { base, update } => {
+                        if base >= current || update as usize >= updates.len() {
+                            return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                                op_index,
+                                reason: "tensor update node is not topological",
+                            });
+                        }
+                    }
+                    FoldTensorNode::Select {
+                        condition,
+                        if_true,
+                        if_false,
+                    } => {
+                        if if_true >= current || if_false >= current {
+                            return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                                op_index,
+                                reason: "tensor select node is not topological",
+                            });
+                        }
+                        require_register(
+                            op_index,
+                            "StoreOutputFoldTensorUpdate",
+                            condition,
+                            initialized,
+                        )?;
+                        max_register =
+                            Some(max_register.map_or(condition, |last| last.max(condition)));
+                    }
+                }
+            }
+            if result == 0 || result as usize > nodes.len() {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor expression result does not name a stored node",
+                });
+            }
+            Ok(max_register)
         }
         LinearOp::StoreOutputFunctionFold {
-            ref initial, capture_start, ref program, result_base, count, condition, ..
-        } => nested_fold(cx, initial, capture_start, program, result_base, count, condition),
-        LinearOp::FunctionConditional { capture_start, ref program, .. } =>
-            conditional_program(cx, capture_start, program, validation),
-        LinearOp::PureCall { ref input_starts, ref site, .. } => pure_call(cx, input_starts, site),
-        LinearOp::PureCallDirectional { ref input_starts, ref site, .. } =>
-            directional_call(cx, input_starts, site),
-        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } =>
-            two_sources(cx, lhs, rhs),
-        LinearOp::Select { cond, if_true, if_false, .. } =>
-            three_sources(cx, cond, if_true, if_false),
-        LinearOp::LinearSolveComponent { matrix_start, rhs_start, n, component, .. } =>
-            linear_solve_sources(cx, matrix_start, rhs_start, n, component).map(Some),
-        LinearOp::DotProduct { lhs_start, rhs_start, count, lhs_stride, rhs_stride, .. } =>
-            dot_product_sources(cx, lhs_start, rhs_start, count, lhs_stride, rhs_stride).map(Some),
-        LinearOp::MatrixMultiply { lhs_start, rhs_start, rows, inner, columns, lanes, .. } =>
-            matrix_multiply(cx, lhs_start, rhs_start, rows, inner, columns, lanes),
-        LinearOp::TensorBinary {
-            op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes, ..
-        } => tensor_binary(cx, op, (lhs_start, lhs_stride), (rhs_start, rhs_stride), count, lanes),
-        LinearOp::TensorCross { lhs_start, rhs_start, lanes, .. } =>
-            tensor_cross(cx, lhs_start, rhs_start, lanes),
-        LinearOp::TensorTranspose { src_start, rows, columns, element_width, lanes, .. } =>
-            tensor_transpose(cx, src_start, rows, columns, element_width, lanes),
-        LinearOp::TensorConcatenate { ref sources, ref dimensions, axis, lanes, .. } =>
-            tensor_concatenate(cx, sources, dimensions, axis, lanes),
-        LinearOp::TensorUpdate {
-            base_start, value_start, ref dimensions, ref subscripts, lanes, ..
-        } => tensor_update(cx, base_start, value_start, dimensions, subscripts, lanes),
-        LinearOp::TensorFill { value_start, count, lanes, .. } =>
-            tensor_fill(cx, value_start, count, lanes),
-        LinearOp::TensorIdentity { size, lanes, .. } => tensor_identity(cx, size, lanes),
-        LinearOp::TensorLoad { count, seed_start, lanes, .. } =>
-            tensor_load(cx, count, seed_start, lanes),
-        LinearOp::TableBounds { table_id, .. } => single_source(cx, table_id),
-        LinearOp::TableLookup { table_id, column, input, .. }
-        | LinearOp::TableLookupSlope { table_id, column, input, .. } =>
-            three_sources(cx, table_id, column, input),
-        LinearOp::TableNextEvent { table_id, time, .. } => two_sources(cx, table_id, time),
-        LinearOp::RandomInitialState { .. } | LinearOp::RandomResult { .. }
-        | LinearOp::RandomState { .. } | LinearOp::ImpureRandomInit { .. }
-        | LinearOp::ImpureRandom { .. } | LinearOp::ImpureRandomInteger { .. } =>
-            random_sources(cx),
-        LinearOp::FunctionFold { initial_start, capture_start, ref program, .. } =>
-            function_fold_sources(cx, initial_start, capture_start, None, program),
-        LinearOp::GuardedFunctionFold {
-            initial_start, capture_start, activation, ref program, ..
-        } => function_fold_sources(cx, initial_start, capture_start, Some(activation), program),
-    }
-}
-
-/// One scalar load from a compact function-fold tuple.
-fn fold_load(
-    cx: OpSources<'_>,
-    index: usize,
-    slot: FoldSlot,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let Some(fold_context) = cx.fold_context else {
-        return Err(cx.fold_error(slot.escaped_reason()));
-    };
-    cx.projection(index, slot.count(fold_context))?;
-    Ok(None)
-}
-
-/// One scalar load from the enclosing function-conditional capture ABI.
-fn conditional_capture(
-    cx: OpSources<'_>,
-    index: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let Some(capture_count) = cx.conditional_capture_count else {
-        return Err(cx.conditional_error("capture load escaped its conditional region"));
-    };
-    cx.projection(index, capture_count)?;
-    Ok(None)
-}
-
-/// One compact consecutive range of the function-conditional capture ABI.
-fn conditional_capture_range(
-    cx: OpSources<'_>,
-    index_start: usize,
-    count: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let Some(capture_count) = cx.conditional_capture_count else {
-        return Err(cx.conditional_error("capture range load escaped its conditional region"));
-    };
-    if count == 0
-        || index_start
-            .checked_add(count)
-            .is_none_or(|end| end > capture_count)
-    {
-        return Err(cx.conditional_error(
-            "capture range load is empty, overflows, or exceeds the capture ABI",
-        ));
-    }
-    Ok(None)
-}
-
-/// One operation whose only source is a single scalar register.
-fn single_source(cx: OpSources<'_>, src: Reg) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    cx.require(src)?;
-    Ok(Some(src))
-}
-
-/// One operation reading exactly two scalar source registers.
-fn two_sources(
-    cx: OpSources<'_>,
-    first: Reg,
-    second: Reg,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    cx.require(first)?;
-    cx.require(second)?;
-    Ok(Some(first.max(second)))
-}
-
-/// One operation reading exactly three scalar source registers.
-fn three_sources(
-    cx: OpSources<'_>,
-    first: Reg,
-    second: Reg,
-    third: Reg,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    cx.require(first)?;
-    cx.require(second)?;
-    cx.require(third)?;
-    Ok(Some(first.max(second).max(third)))
-}
-
-/// One compact affine register range projected as consecutive outputs.
-fn output_range(
-    cx: OpSources<'_>,
-    start: Reg,
-    count: usize,
-    stride: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    require_strided_register_range(
-        cx.op_index,
-        cx.operation(),
-        start,
-        count,
-        stride,
-        cx.initialized,
-    )
-    .map(Some)
-}
-
-/// One scalar projected from a packed tensor register range.
-fn indexed_register(
-    cx: OpSources<'_>,
-    base: Reg,
-    stride: usize,
-    dimensions: &[u32],
-    indices: &[TensorIndex],
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if dimensions.is_empty() || dimensions.len() != indices.len() {
-        return Err(cx.tensor_error("tensor projection rank does not match its checked dimensions"));
-    }
-    let count = dimensions.iter().try_fold(1usize, |count, &extent| {
-        (extent != 0)
-            .then(|| count.checked_mul(extent as usize))
-            .flatten()
-    });
-    let Some(count) = count else {
-        return Err(cx.tensor_error("tensor projection dimensions are empty or overflow"));
-    };
-    if stride == 0 {
-        return Err(cx.tensor_error("tensor projection register stride is zero"));
-    }
-    let last_offset = (count - 1)
-        .checked_mul(stride)
-        .ok_or_else(|| cx.tensor_error("tensor projection register stride overflows"))?;
-    let last_offset = Reg::try_from(last_offset)
-        .map_err(|_| cx.tensor_error("tensor projection register stride overflows"))?;
-    let base_last = base
-        .checked_add(last_offset)
-        .ok_or_else(|| cx.tensor_error("tensor projection register range overflows"))?;
-    for offset in 0..count {
-        cx.require(base + (offset * stride) as Reg)?;
-    }
-    let mut source_last = base_last;
-    for (&extent, index) in dimensions.iter().zip(indices.iter()) {
-        match *index {
-            TensorIndex::Constant(coordinate) if coordinate >= extent => {
-                return Err(cx.tensor_error("constant tensor coordinate is out of range"));
-            }
-            TensorIndex::Constant(_) => {}
-            TensorIndex::Runtime(register) => {
-                cx.require(register)?;
-                source_last = source_last.max(register);
-            }
-        }
-    }
-    Ok(Some(source_last))
-}
-
-/// One scalar projected from the current aggregate carried tuple.
-fn indexed_fold_carried(
-    cx: OpSources<'_>,
-    base: usize,
-    stride: usize,
-    dimensions: &[u32],
-    indices: &[TensorIndex],
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let Some((carried_count, _, _)) = cx.fold_context else {
-        return Err(cx.fold_error("indexed carried load escaped its update body"));
-    };
-    validate_tensor_projection_shape(cx.op_index, dimensions, indices)?;
-    let count = tensor_scalar_count(cx.op_index, dimensions)?;
-    let last = base
-        .checked_add(
-            (count - 1)
-                .checked_mul(stride)
-                .ok_or_else(|| cx.tensor_error("indexed carried projection stride overflows"))?,
-        )
-        .ok_or_else(|| cx.tensor_error("indexed carried projection range overflows"))?;
-    if stride == 0 || last >= carried_count {
-        return Err(cx.tensor_error("indexed carried projection is outside its tuple"));
-    }
-    indexed_fold_runtime_indices(cx, indices)
-}
-
-/// One scalar projected from the immutable capture tuple of a function fold.
-fn indexed_fold_capture(
-    cx: OpSources<'_>,
-    base: usize,
-    stride: usize,
-    dimensions: &[u32],
-    indices: &[TensorIndex],
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let Some((_, _, capture_count)) = cx.fold_context else {
-        return Err(cx.fold_error("indexed capture load escaped its update body"));
-    };
-    validate_tensor_projection_shape(cx.op_index, dimensions, indices)?;
-    let count = tensor_scalar_count(cx.op_index, dimensions)?;
-    let last = base
-        .checked_add(
-            (count - 1)
-                .checked_mul(stride)
-                .ok_or_else(|| cx.tensor_error("indexed capture projection stride overflows"))?,
-        )
-        .ok_or_else(|| cx.tensor_error("indexed capture projection range overflows"))?;
-    if stride == 0 || last >= capture_count {
-        return Err(cx.tensor_error("indexed capture projection is outside its tuple"));
-    }
-    indexed_fold_runtime_indices(cx, indices)
-}
-
-/// Runtime coordinate registers read by one indexed function-fold projection.
-fn indexed_fold_runtime_indices(
-    cx: OpSources<'_>,
-    indices: &[TensorIndex],
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let mut source_last = None;
-    for index in indices {
-        if let TensorIndex::Runtime(register) = *index {
-            cx.require(register)?;
-            source_last = Some(source_last.map_or(register, |last: Reg| last.max(register)));
-        }
-    }
-    Ok(source_last)
-}
-
-/// Carried source range read by one compact tensor-valued fold transition.
-fn fold_tensor_source(
-    cx: OpSources<'_>,
-    source_base: usize,
-    source_stride: usize,
-    dimensions: &[u32],
-    updates: &[FoldTensorUpdate],
-    lanes: usize,
-) -> Result<(), ScalarProgramRegisterError> {
-    let Some((carried_count, _, _)) = cx.fold_context else {
-        return Err(cx.fold_error("aggregate output escaped its function-fold update body"));
-    };
-    if dimensions.is_empty() || updates.is_empty() {
-        return Err(cx.tensor_error("tensor update has no checked rank or patches"));
-    }
-    if lanes == 0 || source_stride != lanes {
-        return Err(cx.tensor_error("tensor update storage is not element-major by lane"));
-    }
-    let count = tensor_scalar_count(cx.op_index, dimensions)?;
-    let source_last = source_base
-        .checked_add(
-            (count - 1)
-                .checked_mul(source_stride)
-                .ok_or_else(|| cx.tensor_error("tensor update carried stride overflows"))?,
-        )
-        .and_then(|last| last.checked_add(lanes - 1))
-        .ok_or_else(|| cx.tensor_error("tensor update carried range overflows"))?;
-    if source_last >= carried_count {
-        return Err(cx.tensor_error("tensor update source is outside its carried tuple"));
-    }
-    Ok(())
-}
-
-/// Ordered aggregate patches of one compact tensor-valued fold transition.
-fn fold_tensor_patches(
-    cx: OpSources<'_>,
-    dimensions: &[u32],
-    updates: &[FoldTensorUpdate],
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let mut max_register = None;
-    for update in updates {
-        if dimensions.len() != update.subscripts.len() || update.value_stride != lanes {
-            return Err(cx.tensor_error("tensor patch shape or lane layout is invalid"));
-        }
-        let mut value_count = 1usize;
-        if let Some(condition) = update.condition {
-            cx.require(condition)?;
-            max_register = Some(max_register.map_or(condition, |last: Reg| last.max(condition)));
-        }
-        for (&extent, subscript) in dimensions.iter().zip(update.subscripts.iter()) {
-            value_count =
-                fold_tensor_subscript(cx, extent, *subscript, value_count, &mut max_register)?;
-        }
-        let value_last_offset = (value_count - 1)
-            .checked_mul(update.value_stride)
-            .and_then(|offset| offset.checked_add(lanes - 1))
-            .ok_or_else(|| cx.tensor_error("tensor update value range overflows"))?;
-        let value_last_offset = Reg::try_from(value_last_offset)
-            .map_err(|_| cx.tensor_error("tensor update value range exceeds register identity"))?;
-        let value_last = update
-            .value_start
-            .checked_add(value_last_offset)
-            .ok_or_else(|| cx.tensor_error("tensor update value register range overflows"))?;
-        fold_tensor_values(cx, update, value_count, lanes)?;
-        max_register = Some(max_register.map_or(value_last, |last| last.max(value_last)));
-    }
-    Ok(max_register)
-}
-
-/// One axis of one aggregate patch in a tensor-valued fold transition.
-fn fold_tensor_subscript(
-    cx: OpSources<'_>,
-    extent: u32,
-    subscript: TensorSubscript,
-    value_count: usize,
-    max_register: &mut Option<Reg>,
-) -> Result<usize, ScalarProgramRegisterError> {
-    match subscript {
-        TensorSubscript::Whole => value_count
-            .checked_mul(extent as usize)
-            .ok_or_else(|| cx.tensor_error("tensor update value extent overflows")),
-        TensorSubscript::Index(TensorIndex::Constant(coordinate)) => {
-            if coordinate >= extent {
-                return Err(cx.tensor_error("constant tensor update coordinate is out of range"));
-            }
-            Ok(value_count)
-        }
-        TensorSubscript::Index(TensorIndex::Runtime(register)) => {
-            cx.require(register)?;
-            *max_register = Some(max_register.map_or(register, |last: Reg| last.max(register)));
-            Ok(value_count)
-        }
-    }
-}
-
-/// Element-major lane values read by one aggregate tensor patch.
-fn fold_tensor_values(
-    cx: OpSources<'_>,
-    update: &FoldTensorUpdate,
-    value_count: usize,
-    lanes: usize,
-) -> Result<(), ScalarProgramRegisterError> {
-    for element in 0..value_count {
-        for lane in 0..lanes {
-            cx.require(update.value_start + (element * update.value_stride + lane) as Reg)?;
-        }
-    }
-    Ok(())
-}
-
-/// Topological node list and result selector of one tensor fold transition.
-fn fold_tensor_nodes(
-    cx: OpSources<'_>,
-    nodes: &[FoldTensorNode],
-    update_count: usize,
-    result: u32,
-    max_register: Option<Reg>,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let mut max_register = max_register;
-    for (index, node) in nodes.iter().enumerate() {
-        let current = u32::try_from(index + 1)
-            .map_err(|_| cx.tensor_error("tensor expression node identity overflows"))?;
-        fold_tensor_node(cx, node, current, update_count, &mut max_register)?;
-    }
-    if result == 0 || result as usize > nodes.len() {
-        return Err(cx.tensor_error("tensor expression result does not name a stored node"));
-    }
-    Ok(max_register)
-}
-
-/// One compact tensor-expression node of a fold transition.
-fn fold_tensor_node(
-    cx: OpSources<'_>,
-    node: &FoldTensorNode,
-    current: u32,
-    update_count: usize,
-    max_register: &mut Option<Reg>,
-) -> Result<(), ScalarProgramRegisterError> {
-    match *node {
-        FoldTensorNode::Update { base, update } => {
-            if base >= current || update as usize >= update_count {
-                return Err(cx.tensor_error("tensor update node is not topological"));
-            }
-        }
-        FoldTensorNode::Select {
+            ref initial,
+            capture_start,
+            ref program,
+            result_base,
+            count,
             condition,
+            ..
+        } => {
+            let Some((parent_carried, _, _)) = fold_context else {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "nested aggregate fold escaped its parent update body",
+                });
+            };
+            let mut initial_count = 0usize;
+            let mut max_register = None;
+            for source in initial {
+                let source_count = match *source {
+                    FoldInitialSource::Registers { start, count } => {
+                        if count != 0 {
+                            let last = register_range_last(
+                                op_index,
+                                "StoreOutputFunctionFold",
+                                start,
+                                count,
+                            )?;
+                            for offset in 0..count {
+                                require_register(
+                                    op_index,
+                                    "StoreOutputFunctionFold",
+                                    start + offset as Reg,
+                                    initialized,
+                                )?;
+                            }
+                            max_register =
+                                Some(max_register.map_or(last, |current: Reg| current.max(last)));
+                        }
+                        count
+                    }
+                    FoldInitialSource::ParentCarried { base, count } => {
+                        if base
+                            .checked_add(count)
+                            .is_none_or(|end| end > parent_carried)
+                        {
+                            return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                                op_index,
+                                reason: "nested fold parent-carried initial source is invalid",
+                            });
+                        }
+                        count
+                    }
+                };
+                initial_count = initial_count.checked_add(source_count).ok_or(
+                    ScalarProgramRegisterError::InvalidFunctionFold {
+                        op_index,
+                        reason: "nested fold initial source count overflows",
+                    },
+                )?;
+            }
+            if initial_count != program.carried_count
+                || count == 0
+                || result_base
+                    .checked_add(count)
+                    .is_none_or(|end| end > program.carried_count)
+            {
+                return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+                    op_index,
+                    reason: "nested fold initial/result layout is invalid",
+                });
+            }
+            if program.capture_count != 0 {
+                let last = register_range_last(
+                    op_index,
+                    "StoreOutputFunctionFold",
+                    capture_start,
+                    program.capture_count,
+                )?;
+                for offset in 0..program.capture_count {
+                    require_register(
+                        op_index,
+                        "StoreOutputFunctionFold",
+                        capture_start + offset as Reg,
+                        initialized,
+                    )?;
+                }
+                max_register = Some(max_register.map_or(last, |current: Reg| current.max(last)));
+            }
+            if let Some(condition) = condition {
+                require_register(op_index, "StoreOutputFunctionFold", condition, initialized)?;
+                max_register =
+                    Some(max_register.map_or(condition, |current: Reg| current.max(condition)));
+            }
+            Ok(max_register)
+        }
+        LinearOp::FunctionConditional {
+            capture_start,
+            ref program,
+            ..
+        } => {
+            program
+                .validate_with_cache(validation)
+                .map_err(|error| match error {
+                    ScalarProgramRegisterError::InvalidFunctionConditional { reason, .. } => {
+                        ScalarProgramRegisterError::InvalidFunctionConditional { op_index, reason }
+                    }
+                    other => other,
+                })?;
+            if program.capture_count == 0 {
+                return Ok(None);
+            }
+            require_register_range(
+                op_index,
+                "FunctionConditional",
+                capture_start,
+                program.capture_count,
+                initialized,
+            )
+            .map(Some)
+        }
+        LinearOp::PureCall {
+            ref input_starts,
+            ref site,
+            ..
+        } => {
+            if input_starts.len() != site.inputs().len()
+                || site.output_scalar_count().is_none_or(|count| count == 0)
+            {
+                return Err(ScalarProgramRegisterError::InvalidPureCall {
+                    op_index,
+                    reason: "typed call interface has invalid input or output width",
+                });
+            }
+            let mut last = None;
+            for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
+                let count = value_type.scalar_count() as usize;
+                require_register_range(op_index, "PureCall", start, count, initialized)?;
+                let range_last = register_range_last(op_index, "PureCall", start, count)?;
+                last = Some(last.map_or(range_last, |current: Reg| current.max(range_last)));
+            }
+            Ok(last)
+        }
+        LinearOp::PureCallDirectional {
+            ref input_starts,
+            ref site,
+            ..
+        } => {
+            if input_starts.len() != site.inputs().len()
+                || site.output_scalar_count().is_none_or(|count| count == 0)
+            {
+                return Err(ScalarProgramRegisterError::InvalidPureCall {
+                    op_index,
+                    reason: "typed directional call interface has invalid input or output width",
+                });
+            }
+            let mut last = None;
+            for (&start, value_type) in input_starts.iter().zip(site.inputs()) {
+                let count = value_type.scalar_count() as usize;
+                require_register_range(op_index, "PureCallDirectional", start, count, initialized)?;
+                let range_last =
+                    register_range_last(op_index, "PureCallDirectional", start, count)?;
+                last = Some(last.map_or(range_last, |current: Reg| current.max(range_last)));
+            }
+            Ok(last)
+        }
+        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
+            require_register(op_index, op.kind_name(), lhs, initialized)?;
+            require_register(op_index, op.kind_name(), rhs, initialized)?;
+            Ok(Some(lhs.max(rhs)))
+        }
+        LinearOp::Select {
+            cond,
             if_true,
             if_false,
+            ..
         } => {
-            if if_true >= current || if_false >= current {
-                return Err(cx.tensor_error("tensor select node is not topological"));
-            }
-            cx.require(condition)?;
-            *max_register = Some(max_register.map_or(condition, |last| last.max(condition)));
+            require_register(op_index, op.kind_name(), cond, initialized)?;
+            require_register(op_index, op.kind_name(), if_true, initialized)?;
+            require_register(op_index, op.kind_name(), if_false, initialized)?;
+            Ok(Some(cond.max(if_true).max(if_false)))
         }
-    }
-    Ok(())
-}
-
-/// One nested fold projected directly as this fold's aggregate output.
-fn nested_fold(
-    cx: OpSources<'_>,
-    initial: &[FoldInitialSource],
-    capture_start: Reg,
-    program: &FunctionFoldProgram,
-    result_base: usize,
-    count: usize,
-    condition: Option<Reg>,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let Some((parent_carried, _, _)) = cx.fold_context else {
-        return Err(cx.fold_error("nested aggregate fold escaped its parent update body"));
-    };
-    let mut initial_count = 0usize;
-    let mut max_register = None;
-    for source in initial {
-        let source_count = nested_fold_initial(cx, source, parent_carried, &mut max_register)?;
-        initial_count = initial_count
-            .checked_add(source_count)
-            .ok_or_else(|| cx.fold_error("nested fold initial source count overflows"))?;
-    }
-    if initial_count != program.carried_count
-        || count == 0
-        || result_base
-            .checked_add(count)
-            .is_none_or(|end| end > program.carried_count)
-    {
-        return Err(cx.fold_error("nested fold initial/result layout is invalid"));
-    }
-    if program.capture_count != 0 {
-        let last = cx.range_last(capture_start, program.capture_count)?;
-        for offset in 0..program.capture_count {
-            cx.require(capture_start + offset as Reg)?;
-        }
-        max_register = Some(max_register.map_or(last, |current: Reg| current.max(last)));
-    }
-    if let Some(condition) = condition {
-        cx.require(condition)?;
-        max_register = Some(max_register.map_or(condition, |current: Reg| current.max(condition)));
-    }
-    Ok(max_register)
-}
-
-/// One compact source of a nested fold's initial carried tuple.
-fn nested_fold_initial(
-    cx: OpSources<'_>,
-    source: &FoldInitialSource,
-    parent_carried: usize,
-    max_register: &mut Option<Reg>,
-) -> Result<usize, ScalarProgramRegisterError> {
-    match *source {
-        FoldInitialSource::Registers { start, count } => {
-            if count != 0 {
-                let last = cx.range_last(start, count)?;
-                for offset in 0..count {
-                    cx.require(start + offset as Reg)?;
-                }
-                *max_register = Some(max_register.map_or(last, |current: Reg| current.max(last)));
-            }
-            Ok(count)
-        }
-        FoldInitialSource::ParentCarried { base, count } => {
-            if base
-                .checked_add(count)
-                .is_none_or(|end| end > parent_carried)
-            {
-                return Err(cx.fold_error("nested fold parent-carried initial source is invalid"));
-            }
-            Ok(count)
-        }
-    }
-}
-
-/// One issued multi-target function conditional and its capture ABI.
-fn conditional_program(
-    cx: OpSources<'_>,
-    capture_start: Reg,
-    program: &FunctionConditionalProgram,
-    validation: &mut ScalarProgramValidationCache,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    program
-        .validate_with_cache(validation)
-        .map_err(|error| match error {
-            ScalarProgramRegisterError::InvalidFunctionConditional { reason, .. } => {
-                cx.conditional_error(reason)
-            }
-            other => other,
-        })?;
-    if program.capture_count == 0 {
-        return Ok(None);
-    }
-    cx.require_range(capture_start, program.capture_count)
-        .map(Some)
-}
-
-/// One issued model-level typed pure-call owner.
-fn pure_call(
-    cx: OpSources<'_>,
-    input_starts: &[Reg],
-    site: &SolvePureCallSite,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    typed_call_sources(
-        cx,
-        input_starts,
-        site.inputs(),
-        site.output_scalar_count(),
-        "typed call interface has invalid input or output width",
-    )
-}
-
-/// The checked compact directional relation of one typed pure-call owner.
-fn directional_call(
-    cx: OpSources<'_>,
-    input_starts: &[Reg],
-    site: &SolvePureCallDirectionalSite,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    typed_call_sources(
-        cx,
-        input_starts,
-        site.inputs(),
-        site.output_scalar_count(),
-        "typed directional call interface has invalid input or output width",
-    )
-}
-
-/// Compact input ranges of one typed call, sized by its declared value types.
-fn typed_call_sources(
-    cx: OpSources<'_>,
-    input_starts: &[Reg],
-    inputs: &[SolveValueType],
-    output_scalar_count: Option<usize>,
-    reason: &'static str,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if input_starts.len() != inputs.len() || output_scalar_count.is_none_or(|count| count == 0) {
-        return Err(cx.pure_call_error(reason));
-    }
-    let mut last = None;
-    for (&start, value_type) in input_starts.iter().zip(inputs) {
-        let count = value_type.scalar_count() as usize;
-        cx.require_range(start, count)?;
-        let range_last = cx.range_last(start, count)?;
-        last = Some(last.map_or(range_last, |current: Reg| current.max(range_last)));
-    }
-    Ok(last)
-}
-
-/// Two dense row-major tensor operands of one aggregate matrix multiply.
-fn matrix_multiply(
-    cx: OpSources<'_>,
-    lhs_start: Reg,
-    rhs_start: Reg,
-    rows: usize,
-    inner: usize,
-    columns: usize,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if rows == 0 || inner == 0 || columns == 0 || lanes == 0 || lanes > 2 {
-        return Err(cx.tensor_error("matrix multiply has an invalid shape or lane count"));
-    }
-    let lhs_count = rows
-        .checked_mul(inner)
-        .and_then(|count| count.checked_mul(lanes))
-        .ok_or_else(|| cx.tensor_error("matrix multiply lhs range overflows"))?;
-    let rhs_count = inner
-        .checked_mul(columns)
-        .and_then(|count| count.checked_mul(lanes))
-        .ok_or_else(|| cx.tensor_error("matrix multiply rhs range overflows"))?;
-    cx.require_range(lhs_start, lhs_count)?;
-    cx.require_range(rhs_start, rhs_count)?;
-    Ok(Some(
-        cx.range_last(lhs_start, lhs_count)?
-            .max(cx.range_last(rhs_start, rhs_count)?),
-    ))
-}
-
-/// Two strided operand ranges of one elementwise tensor binary operation.
-///
-/// `lhs` and `rhs` are each one `(start, stride)` source range; a zero stride
-/// broadcasts one scalar across the output range.
-fn tensor_binary(
-    cx: OpSources<'_>,
-    op: BinaryOp,
-    lhs: (Reg, usize),
-    rhs: (Reg, usize),
-    count: usize,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if count == 0
-        || lanes == 0
-        || lanes > 2
-        || !matches!(
-            op,
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+        LinearOp::LinearSolveComponent {
+            matrix_start,
+            rhs_start,
+            n,
+            component,
+            ..
+        } => linear_solve_sources(op_index, matrix_start, rhs_start, n, component, initialized)
+            .map(Some),
+        LinearOp::DotProduct {
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            ..
+        } => dot_product_sources(
+            op_index,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            initialized,
         )
-    {
-        return Err(cx.tensor_error("tensor binary has an invalid operator, extent, or lane count"));
-    }
-    let (lhs_start, lhs_stride) = lhs;
-    let (rhs_start, rhs_stride) = rhs;
-    let source_count = |stride: usize| {
-        count
-            .saturating_sub(1)
-            .checked_mul(stride)
-            .and_then(|last| last.checked_add(1))
-            .and_then(|elements| elements.checked_mul(lanes))
-    };
-    let lhs_count = source_count(lhs_stride)
-        .ok_or_else(|| cx.tensor_error("tensor binary lhs range overflows"))?;
-    let rhs_count = source_count(rhs_stride)
-        .ok_or_else(|| cx.tensor_error("tensor binary rhs range overflows"))?;
-    cx.require_range(lhs_start, lhs_count)?;
-    cx.require_range(rhs_start, rhs_count)?;
-    Ok(Some(
-        cx.range_last(lhs_start, lhs_count)?
-            .max(cx.range_last(rhs_start, rhs_count)?),
-    ))
-}
-
-/// Two length-three vector operands of one aggregate cross product.
-fn tensor_cross(
-    cx: OpSources<'_>,
-    lhs_start: Reg,
-    rhs_start: Reg,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if lanes == 0 || lanes > 2 {
-        return Err(cx.tensor_error("tensor cross product has an invalid lane count"));
-    }
-    let count = 3usize
-        .checked_mul(lanes)
-        .ok_or_else(|| cx.tensor_error("tensor cross product input range overflows"))?;
-    cx.require_range(lhs_start, count)?;
-    cx.require_range(rhs_start, count)?;
-    Ok(Some(
-        cx.range_last(lhs_start, count)?
-            .max(cx.range_last(rhs_start, count)?),
-    ))
-}
-
-/// The dense row-major source of one aggregate tensor transpose.
-fn tensor_transpose(
-    cx: OpSources<'_>,
-    src_start: Reg,
-    rows: usize,
-    columns: usize,
-    element_width: usize,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    let count = rows
-        .checked_mul(columns)
-        .and_then(|count| count.checked_mul(element_width))
-        .and_then(|count| count.checked_mul(lanes))
-        .ok_or_else(|| cx.tensor_error("tensor transpose range overflows"))?;
-    if rows == 0 || columns == 0 || element_width == 0 || lanes == 0 || lanes > 2 {
-        return Err(
-            cx.tensor_error("tensor transpose has an invalid shape, element width, or lane count")
-        );
-    }
-    cx.require_range(src_start, count)?;
-    cx.range_last(src_start, count).map(Some)
-}
-
-/// Every dense row-major source of one aggregate tensor concatenation.
-fn tensor_concatenate(
-    cx: OpSources<'_>,
-    sources: &[TensorConcatenateSource],
-    dimensions: &[u32],
-    axis: usize,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if sources.is_empty()
-        || dimensions.is_empty()
-        || axis >= dimensions.len()
-        || lanes == 0
-        || lanes > 2
-    {
-        return Err(cx.tensor_error("tensor concatenate has an invalid shape, axis, or lane count"));
-    }
-    let mut axis_extent = 0u32;
-    let mut last = 0;
-    for source in sources {
-        if source.dimensions.len() != dimensions.len()
-            || source
-                .dimensions
-                .iter()
-                .zip(dimensions.iter())
-                .enumerate()
-                .any(|(dimension, (source, result))| dimension != axis && source != result)
-        {
-            return Err(cx.tensor_error("tensor concatenate source shape is incompatible"));
-        }
-        axis_extent = axis_extent
-            .checked_add(source.dimensions[axis])
-            .ok_or_else(|| cx.tensor_error("tensor concatenate axis extent overflows"))?;
-        let count = source
-            .dimensions
-            .iter()
-            .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
-            .ok_or_else(|| cx.tensor_error("tensor concatenate source extent overflows"))?;
-        cx.require_range(source.start, count)?;
-        last = last.max(cx.range_last(source.start, count)?);
-    }
-    if axis_extent != dimensions[axis] {
-        return Err(cx.tensor_error("tensor concatenate sources do not cover the result axis"));
-    }
-    Ok(Some(last))
-}
-
-/// The base range, projection, and value range of one shape-preserving patch.
-fn tensor_update(
-    cx: OpSources<'_>,
-    base_start: Reg,
-    value_start: Reg,
-    dimensions: &[u32],
-    subscripts: &[TensorUpdateSubscript],
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if dimensions.is_empty()
-        || dimensions.len() != subscripts.len()
-        || lanes == 0
-        || lanes > 2
-        || dimensions.contains(&0)
-    {
-        return Err(
-            cx.tensor_error("tensor update has an invalid shape, projection, or lane count")
-        );
-    }
-    let base_count = dimensions
-        .iter()
-        .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
-        .ok_or_else(|| cx.tensor_error("tensor update base extent overflows"))?;
-    cx.require_range(base_start, base_count)?;
-    let mut last = cx.range_last(base_start, base_count)?;
-    let mut value_count = lanes;
-    for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
-        value_count = tensor_update_subscript(cx, extent, subscript, value_count, &mut last)?;
-    }
-    cx.require_range(value_start, value_count)?;
-    last = last.max(cx.range_last(value_start, value_count)?);
-    Ok(Some(last))
-}
-
-/// One axis of a compact ordinary tensor update.
-fn tensor_update_subscript(
-    cx: OpSources<'_>,
-    extent: u32,
-    subscript: &TensorUpdateSubscript,
-    value_count: usize,
-    last: &mut Reg,
-) -> Result<usize, ScalarProgramRegisterError> {
-    match subscript {
-        TensorUpdateSubscript::Whole => value_count
-            .checked_mul(extent as usize)
-            .ok_or_else(|| cx.tensor_error("tensor update value extent overflows")),
-        TensorUpdateSubscript::Index(TensorIndex::Constant(coordinate)) => {
-            if *coordinate >= extent {
-                return Err(cx.tensor_error("tensor update constant index is out of range"));
+        .map(Some),
+        LinearOp::MatrixMultiply {
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes,
+            ..
+        } => {
+            if rows == 0 || inner == 0 || columns == 0 || lanes == 0 || lanes > 2 {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "matrix multiply has an invalid shape or lane count",
+                });
             }
-            Ok(value_count)
+            let lhs_count = rows
+                .checked_mul(inner)
+                .and_then(|count| count.checked_mul(lanes))
+                .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "matrix multiply lhs range overflows",
+                })?;
+            let rhs_count = inner
+                .checked_mul(columns)
+                .and_then(|count| count.checked_mul(lanes))
+                .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "matrix multiply rhs range overflows",
+                })?;
+            require_register_range(
+                op_index,
+                "MatrixMultiply",
+                lhs_start,
+                lhs_count,
+                initialized,
+            )?;
+            require_register_range(
+                op_index,
+                "MatrixMultiply",
+                rhs_start,
+                rhs_count,
+                initialized,
+            )?;
+            Ok(Some(
+                register_range_last(op_index, "MatrixMultiply", lhs_start, lhs_count)?.max(
+                    register_range_last(op_index, "MatrixMultiply", rhs_start, rhs_count)?,
+                ),
+            ))
         }
-        TensorUpdateSubscript::Index(TensorIndex::Runtime(register)) => {
-            cx.require(*register)?;
-            *last = (*last).max(*register);
-            Ok(value_count)
-        }
-        TensorUpdateSubscript::Slice { start, dimensions } => {
-            if dimensions.is_empty() || dimensions.contains(&0) {
-                return Err(cx.tensor_error("tensor update slice has an invalid shape"));
+        LinearOp::TensorBinary {
+            op,
+            lhs_start,
+            rhs_start,
+            count,
+            lhs_stride,
+            rhs_stride,
+            lanes,
+            ..
+        } => {
+            if count == 0
+                || lanes == 0
+                || lanes > 2
+                || !matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
+                )
+            {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor binary has an invalid operator, extent, or lane count",
+                });
             }
-            let count = dimensions
-                .iter()
-                .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
-                .ok_or_else(|| cx.tensor_error("tensor update slice extent overflows"))?;
-            cx.require_range(*start, count)?;
-            *last = (*last).max(cx.range_last(*start, count)?);
-            value_count
-                .checked_mul(count)
-                .ok_or_else(|| cx.tensor_error("tensor update sliced value extent overflows"))
+            let source_count = |stride: usize| {
+                count
+                    .saturating_sub(1)
+                    .checked_mul(stride)
+                    .and_then(|last| last.checked_add(1))
+                    .and_then(|elements| elements.checked_mul(lanes))
+            };
+            let lhs_count = source_count(lhs_stride).ok_or(
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor binary lhs range overflows",
+                },
+            )?;
+            let rhs_count = source_count(rhs_stride).ok_or(
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor binary rhs range overflows",
+                },
+            )?;
+            require_register_range(op_index, "TensorBinary", lhs_start, lhs_count, initialized)?;
+            require_register_range(op_index, "TensorBinary", rhs_start, rhs_count, initialized)?;
+            Ok(Some(
+                register_range_last(op_index, "TensorBinary", lhs_start, lhs_count)?.max(
+                    register_range_last(op_index, "TensorBinary", rhs_start, rhs_count)?,
+                ),
+            ))
         }
+        LinearOp::TensorCross {
+            lhs_start,
+            rhs_start,
+            lanes,
+            ..
+        } => {
+            if lanes == 0 || lanes > 2 {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor cross product has an invalid lane count",
+                });
+            }
+            let count = 3usize.checked_mul(lanes).ok_or(
+                ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor cross product input range overflows",
+                },
+            )?;
+            require_register_range(op_index, "TensorCross", lhs_start, count, initialized)?;
+            require_register_range(op_index, "TensorCross", rhs_start, count, initialized)?;
+            Ok(Some(
+                register_range_last(op_index, "TensorCross", lhs_start, count)?.max(
+                    register_range_last(op_index, "TensorCross", rhs_start, count)?,
+                ),
+            ))
+        }
+        LinearOp::TensorTranspose {
+            src_start,
+            rows,
+            columns,
+            element_width,
+            lanes,
+            ..
+        } => {
+            let count = rows
+                .checked_mul(columns)
+                .and_then(|count| count.checked_mul(element_width))
+                .and_then(|count| count.checked_mul(lanes))
+                .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor transpose range overflows",
+                })?;
+            if rows == 0 || columns == 0 || element_width == 0 || lanes == 0 || lanes > 2 {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor transpose has an invalid shape, element width, or lane count",
+                });
+            }
+            require_register_range(op_index, "TensorTranspose", src_start, count, initialized)?;
+            register_range_last(op_index, "TensorTranspose", src_start, count).map(Some)
+        }
+        LinearOp::TensorConcatenate {
+            ref sources,
+            ref dimensions,
+            axis,
+            lanes,
+            ..
+        } => {
+            if sources.is_empty()
+                || dimensions.is_empty()
+                || axis >= dimensions.len()
+                || lanes == 0
+                || lanes > 2
+            {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor concatenate has an invalid shape, axis, or lane count",
+                });
+            }
+            let mut axis_extent = 0u32;
+            let mut last = 0;
+            for source in sources.iter() {
+                if source.dimensions.len() != dimensions.len()
+                    || source
+                        .dimensions
+                        .iter()
+                        .zip(dimensions.iter())
+                        .enumerate()
+                        .any(|(dimension, (source, result))| dimension != axis && source != result)
+                {
+                    return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor concatenate source shape is incompatible",
+                    });
+                }
+                axis_extent = axis_extent.checked_add(source.dimensions[axis]).ok_or(
+                    ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor concatenate axis extent overflows",
+                    },
+                )?;
+                let count = source
+                    .dimensions
+                    .iter()
+                    .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
+                    .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                        op_index,
+                        reason: "tensor concatenate source extent overflows",
+                    })?;
+                require_register_range(
+                    op_index,
+                    "TensorConcatenate",
+                    source.start,
+                    count,
+                    initialized,
+                )?;
+                last = last.max(register_range_last(
+                    op_index,
+                    "TensorConcatenate",
+                    source.start,
+                    count,
+                )?);
+            }
+            if axis_extent != dimensions[axis] {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor concatenate sources do not cover the result axis",
+                });
+            }
+            Ok(Some(last))
+        }
+        LinearOp::TensorUpdate {
+            base_start,
+            value_start,
+            ref dimensions,
+            ref subscripts,
+            lanes,
+            ..
+        } => {
+            if dimensions.is_empty()
+                || dimensions.len() != subscripts.len()
+                || lanes == 0
+                || lanes > 2
+                || dimensions.contains(&0)
+            {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor update has an invalid shape, projection, or lane count",
+                });
+            }
+            let base_count = dimensions
+                .iter()
+                .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
+                .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor update base extent overflows",
+                })?;
+            require_register_range(
+                op_index,
+                "TensorUpdate",
+                base_start,
+                base_count,
+                initialized,
+            )?;
+            let mut last = register_range_last(op_index, "TensorUpdate", base_start, base_count)?;
+            let mut value_count = lanes;
+            for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
+                match subscript {
+                    TensorUpdateSubscript::Whole => {
+                        value_count = value_count.checked_mul(extent as usize).ok_or(
+                            ScalarProgramRegisterError::InvalidTensorProjection {
+                                op_index,
+                                reason: "tensor update value extent overflows",
+                            },
+                        )?;
+                    }
+                    TensorUpdateSubscript::Index(TensorIndex::Constant(coordinate)) => {
+                        if *coordinate >= extent {
+                            return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                                op_index,
+                                reason: "tensor update constant index is out of range",
+                            });
+                        }
+                    }
+                    TensorUpdateSubscript::Index(TensorIndex::Runtime(register)) => {
+                        require_register(op_index, "TensorUpdate", *register, initialized)?;
+                        last = last.max(*register);
+                    }
+                    TensorUpdateSubscript::Slice { start, dimensions } => {
+                        if dimensions.is_empty() || dimensions.contains(&0) {
+                            return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                                op_index,
+                                reason: "tensor update slice has an invalid shape",
+                            });
+                        }
+                        let count = dimensions
+                            .iter()
+                            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+                            .ok_or(ScalarProgramRegisterError::InvalidTensorProjection {
+                                op_index,
+                                reason: "tensor update slice extent overflows",
+                            })?;
+                        require_register_range(
+                            op_index,
+                            "TensorUpdate",
+                            *start,
+                            count,
+                            initialized,
+                        )?;
+                        last = last.max(register_range_last(
+                            op_index,
+                            "TensorUpdate",
+                            *start,
+                            count,
+                        )?);
+                        value_count = value_count.checked_mul(count).ok_or(
+                            ScalarProgramRegisterError::InvalidTensorProjection {
+                                op_index,
+                                reason: "tensor update sliced value extent overflows",
+                            },
+                        )?;
+                    }
+                }
+            }
+            require_register_range(
+                op_index,
+                "TensorUpdate",
+                value_start,
+                value_count,
+                initialized,
+            )?;
+            last = last.max(register_range_last(
+                op_index,
+                "TensorUpdate",
+                value_start,
+                value_count,
+            )?);
+            Ok(Some(last))
+        }
+        LinearOp::TensorFill {
+            value_start,
+            count,
+            lanes,
+            ..
+        } => {
+            if count == 0 || lanes == 0 || lanes > 2 {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor fill has an invalid extent or lane count",
+                });
+            }
+            require_register_range(op_index, "TensorFill", value_start, lanes, initialized)?;
+            register_range_last(op_index, "TensorFill", value_start, lanes).map(Some)
+        }
+        LinearOp::TensorIdentity { size, lanes, .. } => {
+            if size == 0 || lanes == 0 || lanes > 2 || size.checked_mul(size).is_none() {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor identity has an invalid extent or lane count",
+                });
+            }
+            Ok(None)
+        }
+        LinearOp::TensorLoad {
+            count,
+            seed_start,
+            lanes,
+            ..
+        } => {
+            if count == 0 || lanes == 0 || lanes > 2 || (lanes == 1 && seed_start.is_some()) {
+                return Err(ScalarProgramRegisterError::InvalidTensorProjection {
+                    op_index,
+                    reason: "tensor load has an invalid extent, seed, or lane count",
+                });
+            }
+            Ok(None)
+        }
+        LinearOp::TableBounds { table_id, .. } => {
+            require_register(op_index, op.kind_name(), table_id, initialized)?;
+            Ok(Some(table_id))
+        }
+        LinearOp::TableLookup {
+            table_id,
+            column,
+            input,
+            ..
+        }
+        | LinearOp::TableLookupSlope {
+            table_id,
+            column,
+            input,
+            ..
+        } => {
+            require_register(op_index, op.kind_name(), table_id, initialized)?;
+            require_register(op_index, op.kind_name(), column, initialized)?;
+            require_register(op_index, op.kind_name(), input, initialized)?;
+            Ok(Some(table_id.max(column).max(input)))
+        }
+        LinearOp::TableNextEvent { table_id, time, .. } => {
+            require_register(op_index, op.kind_name(), table_id, initialized)?;
+            require_register(op_index, op.kind_name(), time, initialized)?;
+            Ok(Some(table_id.max(time)))
+        }
+        LinearOp::RandomInitialState { .. }
+        | LinearOp::RandomResult { .. }
+        | LinearOp::RandomState { .. }
+        | LinearOp::ImpureRandomInit { .. }
+        | LinearOp::ImpureRandom { .. }
+        | LinearOp::ImpureRandomInteger { .. } => {
+            validate_random_sources(op, op_index, initialized)
+        }
+        LinearOp::FunctionFold {
+            initial_start,
+            capture_start,
+            ref program,
+            ..
+        } => validate_function_fold_sources(
+            op_index,
+            "FunctionFold",
+            initial_start,
+            capture_start,
+            None,
+            program,
+            initialized,
+        ),
+        LinearOp::GuardedFunctionFold {
+            initial_start,
+            capture_start,
+            activation,
+            ref program,
+            ..
+        } => validate_function_fold_sources(
+            op_index,
+            "GuardedFunctionFold",
+            initial_start,
+            capture_start,
+            Some(activation),
+            program,
+            initialized,
+        ),
     }
 }
 
-/// The replicated scalar (or interleaved dual scalar) of one tensor fill.
-fn tensor_fill(
-    cx: OpSources<'_>,
-    value_start: Reg,
-    count: usize,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if count == 0 || lanes == 0 || lanes > 2 {
-        return Err(cx.tensor_error("tensor fill has an invalid extent or lane count"));
-    }
-    cx.require_range(value_start, lanes)?;
-    cx.range_last(value_start, lanes).map(Some)
-}
-
-/// The checked extent of one square identity tensor.
-fn tensor_identity(
-    cx: OpSources<'_>,
-    size: usize,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if size == 0 || lanes == 0 || lanes > 2 || size.checked_mul(size).is_none() {
-        return Err(cx.tensor_error("tensor identity has an invalid extent or lane count"));
-    }
-    Ok(None)
-}
-
-/// The checked extent and seed interleaving of one runtime tensor load.
-fn tensor_load(
-    cx: OpSources<'_>,
-    count: usize,
-    seed_start: Option<usize>,
-    lanes: usize,
-) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    if count == 0 || lanes == 0 || lanes > 2 || (lanes == 1 && seed_start.is_some()) {
-        return Err(cx.tensor_error("tensor load has an invalid extent, seed, or lane count"));
-    }
-    Ok(None)
-}
-
-/// The compact call ABI of one issued finite-domain function fold.
-fn function_fold_sources(
-    cx: OpSources<'_>,
+fn validate_function_fold_sources(
+    op_index: usize,
+    operation: &'static str,
     initial_start: Reg,
     capture_start: Reg,
     activation: Option<Reg>,
     program: &FunctionFoldProgram,
+    initialized: &[bool],
 ) -> Result<Option<Reg>, ScalarProgramRegisterError> {
     if program.carried_count == 0 {
-        return Err(cx.fold_error("carried tuple is empty"));
+        return Err(ScalarProgramRegisterError::InvalidFunctionFold {
+            op_index,
+            reason: "carried tuple is empty",
+        });
     }
-    cx.require_range(initial_start, program.carried_count)?;
+    require_register_range(
+        op_index,
+        operation,
+        initial_start,
+        program.carried_count,
+        initialized,
+    )?;
     if program.capture_count != 0 {
-        cx.require_range(capture_start, program.capture_count)?;
+        require_register_range(
+            op_index,
+            operation,
+            capture_start,
+            program.capture_count,
+            initialized,
+        )?;
     }
     if let Some(activation) = activation {
-        cx.require(activation)?;
+        require_register(op_index, operation, activation, initialized)?;
     }
     // `FunctionFoldProgram::checked` (including checked wire replay) owns
     // body/domain/output validation. A reference from an outer program proves
     // only its compact call ABI; recursively re-proving the immutable Arc here
     // would turn a shared program DAG back into an extent-sized traversal tree.
-    let initial_last = cx.range_last(initial_start, program.carried_count)?;
+    let initial_last =
+        register_range_last(op_index, operation, initial_start, program.carried_count)?;
     let mut source_last = if program.capture_count == 0 {
         initial_last
     } else {
-        initial_last.max(cx.range_last(capture_start, program.capture_count)?)
+        initial_last.max(register_range_last(
+            op_index,
+            operation,
+            capture_start,
+            program.capture_count,
+        )?)
     };
     if let Some(activation) = activation {
         source_last = source_last.max(activation);
@@ -2526,9 +2611,12 @@ fn tensor_scalar_count(
         })
 }
 
-/// The input state and seed registers of one deterministic random operation.
-fn random_sources(cx: OpSources<'_>) -> Result<Option<Reg>, ScalarProgramRegisterError> {
-    match *cx.op {
+fn validate_random_sources(
+    op: &LinearOp,
+    op_index: usize,
+    initialized: &[bool],
+) -> Result<Option<Reg>, ScalarProgramRegisterError> {
+    match *op {
         LinearOp::RandomInitialState {
             local_seed,
             global_seed,
@@ -2536,76 +2624,111 @@ fn random_sources(cx: OpSources<'_>) -> Result<Option<Reg>, ScalarProgramRegiste
             state_index,
             ..
         } => {
-            cx.projection(state_index, state_len)?;
-            two_sources(cx, local_seed, global_seed)
+            validate_projection(op_index, op.kind_name(), state_index, state_len)?;
+            require_register(op_index, op.kind_name(), local_seed, initialized)?;
+            require_register(op_index, op.kind_name(), global_seed, initialized)?;
+            Ok(Some(local_seed.max(global_seed)))
         }
         LinearOp::RandomResult {
             state_start,
             state_len,
             ..
-        } => cx.require_range(state_start, state_len).map(Some),
+        } => require_register_range(
+            op_index,
+            op.kind_name(),
+            state_start,
+            state_len,
+            initialized,
+        )
+        .map(Some),
         LinearOp::RandomState {
             state_start,
             state_len,
             state_index,
             ..
         } => {
-            cx.projection(state_index, state_len)?;
-            cx.require_range(state_start, state_len).map(Some)
+            validate_projection(op_index, op.kind_name(), state_index, state_len)?;
+            require_register_range(
+                op_index,
+                op.kind_name(),
+                state_start,
+                state_len,
+                initialized,
+            )
+            .map(Some)
         }
-        LinearOp::ImpureRandomInit { seed, .. } => single_source(cx, seed),
-        LinearOp::ImpureRandom { id, .. } => single_source(cx, id),
-        LinearOp::ImpureRandomInteger { id, imin, imax, .. } => three_sources(cx, id, imin, imax),
+        LinearOp::ImpureRandomInit { seed, .. } => {
+            require_register(op_index, op.kind_name(), seed, initialized)?;
+            Ok(Some(seed))
+        }
+        LinearOp::ImpureRandom { id, .. } => {
+            require_register(op_index, op.kind_name(), id, initialized)?;
+            Ok(Some(id))
+        }
+        LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
+            require_register(op_index, op.kind_name(), id, initialized)?;
+            require_register(op_index, op.kind_name(), imin, initialized)?;
+            require_register(op_index, op.kind_name(), imax, initialized)?;
+            Ok(Some(id.max(imin).max(imax)))
+        }
         _ => unreachable!("random source validation requires a random operation"),
     }
 }
 
-/// The dense matrix and right-hand side of one linear-system component solve.
 fn linear_solve_sources(
-    cx: OpSources<'_>,
+    op_index: usize,
     matrix_start: Reg,
     rhs_start: Reg,
     n: usize,
     component: usize,
+    initialized: &[bool],
 ) -> Result<Reg, ScalarProgramRegisterError> {
-    cx.projection(component, n)?;
+    validate_projection(op_index, "LinearSolveComponent", component, n)?;
     let matrix_len = n
         .checked_mul(n)
         .ok_or(ScalarProgramRegisterError::RegisterRangeOverflow {
-            op_index: cx.op_index,
+            op_index,
             operation: "LinearSolveComponent",
             start: matrix_start,
             len: n,
         })?;
-    let matrix_end = cx.require_range(matrix_start, matrix_len)?;
-    let rhs_end = cx.require_range(rhs_start, n)?;
+    let matrix_end = require_register_range(
+        op_index,
+        "LinearSolveComponent",
+        matrix_start,
+        matrix_len,
+        initialized,
+    )?;
+    let rhs_end =
+        require_register_range(op_index, "LinearSolveComponent", rhs_start, n, initialized)?;
     Ok(matrix_end.max(rhs_end))
 }
 
-/// The two strided operand ranges of one scalar dot product.
+#[allow(clippy::too_many_arguments)]
 fn dot_product_sources(
-    cx: OpSources<'_>,
+    op_index: usize,
     lhs_start: Reg,
     rhs_start: Reg,
     count: usize,
     lhs_stride: usize,
     rhs_stride: usize,
+    initialized: &[bool],
 ) -> Result<Reg, ScalarProgramRegisterError> {
     let lhs_end = require_strided_registers(
-        cx.op_index,
-        cx.operation(),
+        op_index,
+        "DotProduct",
         lhs_start,
         count,
         lhs_stride,
-        cx.initialized,
+        initialized,
     )?;
     let rhs_end = require_strided_registers(
-        cx.op_index,
-        cx.operation(),
+        op_index,
+        "DotProduct",
         rhs_start,
         count,
         rhs_stride,
-        cx.initialized,
+        initialized,
     )?;
     Ok(lhs_end.max(rhs_end))
 }

@@ -24,7 +24,7 @@ pub enum PatternDerivation {
 /// constructor issued its rows, not by the label carried here. This type
 /// therefore derives neither `Default` nor `Deserialize`, so a dummy span can
 /// never be laundered in through a decoder (wire data reaches it through
-/// `PatternProvenanceWire`), and [`PatternProvenance::derived`] stays public
+/// [`PatternProvenanceWire`]), and [`PatternProvenance::derived`] stays public
 /// only because every publicly reachable constructor that accepts an arbitrary
 /// provenance produces a *conservative* pattern: [`StructuralPattern::full`]
 /// over-approximates every relation and cannot omit a true edge whatever label
@@ -1073,1051 +1073,771 @@ fn program_output_dependencies_with_fold(
     conditional_captures: Option<&[DependencyState]>,
     source: DependencySource,
 ) -> Result<Vec<DependencyState>, StructuralPatternError> {
-    let mut walk = DependencyWalk {
-        registers: Vec::new(),
-        outputs: Vec::new(),
-        span,
-        fold_carried,
-        fold_captures,
-        conditional_captures,
-        source,
-    };
+    let mut registers: Vec<Option<DependencyState>> = Vec::new();
+    let mut outputs = Vec::new();
     for op in program.iter().cloned() {
-        apply_dependency_op(&mut walk, op)?;
-    }
-    Ok(walk.outputs)
-}
-
-/// Register and output state of one structural dependency walk.
-///
-/// The walk holds no evaluated value: every method reads `LinearOp` register
-/// flow only, which is what makes the derived pattern a structural proof
-/// rather than a sampled observation.
-struct DependencyWalk<'a> {
-    registers: Vec<Option<DependencyState>>,
-    outputs: Vec<DependencyState>,
-    span: Option<Span>,
-    fold_carried: Option<&'a [DependencyState]>,
-    fold_captures: Option<&'a [DependencyState]>,
-    conditional_captures: Option<&'a [DependencyState]>,
-    source: DependencySource,
-}
-
-/// Structural classification of one checked [`LinearOp`].
-///
-/// This is the sole dispatch table of the derivation: every arm names its
-/// variant and delegates to one [`DependencyWalk`] method, so the table
-/// carries the operation vocabulary and no analysis logic. The match stays
-/// exhaustive with no catch-all arm, so a new `LinearOp` variant cannot reach
-/// the derivation until it is classified here.
-///
-/// The table is laid out by hand (`rustfmt::skip`) so one arm reads as one
-/// entry. Automatic formatting expands every multi-field pattern to one field
-/// per line, which triples the table without telling a reader anything the
-/// single-line form does not.
-#[rustfmt::skip]
-fn apply_dependency_op(
-    walk: &mut DependencyWalk<'_>,
-    op: LinearOp,
-) -> Result<(), StructuralPatternError> {
-    match op {
-        LinearOp::Const { dst, .. } | LinearOp::LoadTime { dst } | LinearOp::LoadP { dst, .. } =>
-            walk.set_empty(dst),
-        LinearOp::LoadY { dst, index } => walk.load_y(dst, index),
-        LinearOp::LoadSeed { dst, index } => walk.load_seed(dst, index),
-        LinearOp::LoadFoldCarried { dst, index } => walk.load_fold_carried(dst, index)?,
-        LinearOp::LoadFoldIndex { dst, .. } => walk.set_empty(dst),
-        LinearOp::LoadFoldCapture { dst, index } => walk.load_fold_capture(dst, index)?,
-        LinearOp::LoadFunctionConditionalCapture { dst, index } =>
-            walk.load_conditional_capture(dst, index)?,
-        LinearOp::LoadFunctionConditionalCaptureRange { dst_start, index_start, count } =>
-            walk.load_conditional_capture_range(dst_start, index_start, count)?,
-        LinearOp::LoadIndexedP { dst, index, .. } => walk.copy(dst, index)?,
-        LinearOp::LoadIndexedRegister { dst, base, stride, dimensions, indices } =>
-            walk.load_indexed_register(dst, base, stride, &dimensions, &indices)?,
-        LinearOp::LoadIndexedFoldCarried { dst, base, stride, dimensions, indices } =>
-            walk.load_indexed_fold_carried(dst, base, stride, &dimensions, &indices)?,
-        LinearOp::LoadIndexedFoldCapture { dst, base, stride, dimensions, indices } =>
-            walk.load_indexed_fold_capture(dst, base, stride, &dimensions, &indices)?,
-        LinearOp::LoadIndexedSeed { dst, base, count, index } =>
-            walk.load_indexed_seed(dst, base, count, index)?,
-        LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => walk.copy(dst, src)?,
-        LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } =>
-            walk.union(dst, [lhs, rhs])?,
-        LinearOp::Select { dst, cond, if_true, if_false } =>
-            walk.union(dst, [cond, if_true, if_false])?,
-        LinearOp::LinearSolveComponent { dst, matrix_start, rhs_start, n, .. } =>
-            walk.linear_solve(dst, matrix_start, rhs_start, n)?,
-        LinearOp::DotProduct { dst, lhs_start, rhs_start, count, lhs_stride, rhs_stride } =>
-            walk.dot_product(dst, lhs_start, rhs_start, count, lhs_stride, rhs_stride)?,
-        LinearOp::MatrixMultiply { dst_start, lhs_start, rhs_start, rows, inner, columns, lanes } =>
-            walk.matrix_multiply(&MatrixMultiplyShape {
-                dst_start, lhs_start, rhs_start, rows, inner, columns, lanes,
-            })?,
-        LinearOp::TensorBinary {
-            dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
-        } => walk.tensor_binary(&TensorBinaryShape {
-            dst_start, op, lhs_start, rhs_start, count, lhs_stride, rhs_stride, lanes,
-        })?,
-        LinearOp::TensorCross { dst_start, lhs_start, rhs_start, lanes } =>
-            walk.tensor_cross(dst_start, lhs_start, rhs_start, lanes)?,
-        LinearOp::TensorTranspose { dst_start, src_start, rows, columns, element_width, lanes } =>
-            walk.tensor_transpose(dst_start, src_start, rows, columns, element_width, lanes)?,
-        LinearOp::TensorConcatenate { dst_start, sources, dimensions, axis, lanes } =>
-            walk.tensor_concatenate(dst_start, &sources, &dimensions, axis, lanes)?,
-        LinearOp::TensorUpdate {
-            dst_start, base_start, value_start, dimensions, subscripts, lanes,
-        } => walk.tensor_update(
-            dst_start, base_start, value_start, &dimensions, &subscripts, lanes,
-        )?,
-        LinearOp::TensorFill { dst_start, value_start, count, lanes } =>
-            walk.tensor_fill(dst_start, value_start, count, lanes)?,
-        LinearOp::TensorIdentity { dst_start, size, lanes } =>
-            walk.tensor_identity(dst_start, size, lanes),
-        LinearOp::TensorLoad { dst_start, count, seed_start, lanes, .. } =>
-            walk.tensor_load(dst_start, count, seed_start, lanes),
-        op @ (LinearOp::TableBounds { .. } | LinearOp::TableLookup { .. }
-        | LinearOp::TableLookupSlope { .. } | LinearOp::TableNextEvent { .. }
-        | LinearOp::RandomInitialState { .. } | LinearOp::RandomResult { .. }
-        | LinearOp::RandomState { .. } | LinearOp::ImpureRandomInit { .. }
-        | LinearOp::ImpureRandom { .. } | LinearOp::ImpureRandomInteger { .. }) =>
-            walk.runtime(op)?,
-        LinearOp::FunctionFold { dst_start, initial_start, capture_start, program } =>
-            walk.function_fold(dst_start, initial_start, capture_start, &program)?,
-        LinearOp::GuardedFunctionFold {
-            dst_start, initial_start, capture_start, activation, program,
-        } => walk.guarded_fold(dst_start, initial_start, capture_start, activation, &program)?,
-        LinearOp::FunctionConditional { dst_start, capture_start, program } =>
-            walk.function_conditional(dst_start, capture_start, &program)?,
-        LinearOp::PureCall { dst_start, input_starts, site } => walk.pure_call(
-            dst_start, &input_starts, site.inputs(), site.output_scalar_count(),
-            "pure-call output width overflows",
-        )?,
-        LinearOp::PureCallDirectional { dst_start, input_starts, site } => walk.pure_call(
-            dst_start, &input_starts, site.inputs(), site.output_scalar_count(),
-            "directional pure-call output width overflows",
-        )?,
-        LinearOp::StoreOutputFoldTensorUpdate {
-            source_base, source_stride, dimensions, updates, nodes, lanes, ..
-        } => walk.store_fold_tensor_update(
-            source_base, source_stride, &dimensions, &updates, &nodes, lanes,
-        )?,
-        LinearOp::StoreOutputFunctionFold {
-            initial, capture_start, program, result_base, count, condition, ..
-        } => walk.nested_fold(&initial, capture_start, &program, result_base, count, condition)?,
-        LinearOp::StoreOutputRange { start, count, stride } =>
-            walk.store_output_range(start, count, stride)?,
-        LinearOp::StoreOutput { src } => walk.store_output(src)?,
-    }
-    Ok(())
-}
-
-/// Dense matrix product shape, kept as one owner so the walk method stays
-/// inside the argument budget without splitting a single operation in two.
-struct MatrixMultiplyShape {
-    dst_start: Reg,
-    lhs_start: Reg,
-    rhs_start: Reg,
-    rows: usize,
-    inner: usize,
-    columns: usize,
-    lanes: usize,
-}
-
-/// Elementwise tensor-operator shape, kept as one owner for the same reason as
-/// [`MatrixMultiplyShape`].
-struct TensorBinaryShape {
-    dst_start: Reg,
-    op: BinaryOp,
-    lhs_start: Reg,
-    rhs_start: Reg,
-    count: usize,
-    lhs_stride: usize,
-    rhs_stride: usize,
-    lanes: usize,
-}
-
-/// The value tuple and the three diagnostics that distinguish an indexed
-/// function-fold *carried* projection from an indexed *capture* projection.
-/// Everything else about the two operations is identical, so they share one
-/// implementation parameterized by this record.
-struct IndexedFoldContext<'a> {
-    values: Option<&'a [DependencyState]>,
-    missing: &'static str,
-    overflow: &'static str,
-    invalid_range: &'static str,
-}
-
-impl DependencyWalk<'_> {
-    fn get(&self, register_id: Reg) -> Result<DependencyState, StructuralPatternError> {
-        register(&self.registers, register_id, self.span)
-    }
-
-    fn range(&self, start: Reg, len: usize) -> Result<DependencyState, StructuralPatternError> {
-        register_range(&self.registers, start, len, self.span)
-    }
-
-    fn register_tuple(
-        &self,
-        start: Reg,
-        count: usize,
-    ) -> Result<Vec<DependencyState>, StructuralPatternError> {
-        (0..count)
-            .map(|offset| self.get(start + offset as Reg))
-            .collect()
-    }
-
-    fn set(&mut self, dst: Reg, dependencies: DependencyState) {
-        set_register(&mut self.registers, dst, dependencies);
-    }
-
-    fn set_empty(&mut self, dst: Reg) {
-        set_empty_dependency(&mut self.registers, dst);
-    }
-
-    fn set_seed(&mut self, dst: Reg, index: usize) {
-        set_seed_dependency(&mut self.registers, dst, index);
-    }
-
-    fn copy(&mut self, dst: Reg, src: Reg) -> Result<(), StructuralPatternError> {
-        copy_dependency(&mut self.registers, dst, src, self.span)
-    }
-
-    fn union<const N: usize>(
-        &mut self,
-        dst: Reg,
-        sources: [Reg; N],
-    ) -> Result<(), StructuralPatternError> {
-        set_union_dependency(&mut self.registers, dst, sources, self.span)
-    }
-
-    /// Solver-`Y` loads seed the solver-`Y` walk and the AD-seed walk sees them
-    /// as constants; [`DependencyWalk::load_seed`] is the mirror image.
-    fn load_y(&mut self, dst: Reg, index: usize) {
-        match self.source {
-            DependencySource::Seed => self.set_empty(dst),
-            DependencySource::SolverY => self.set_seed(dst, index),
-        }
-    }
-
-    fn load_seed(&mut self, dst: Reg, index: usize) {
-        match self.source {
-            DependencySource::Seed => self.set_seed(dst, index),
-            DependencySource::SolverY => self.set_empty(dst),
-        }
-    }
-
-    fn load_context_value(
-        &mut self,
-        dst: Reg,
-        values: Option<&[DependencyState]>,
-        index: usize,
-        message: &'static str,
-    ) -> Result<(), StructuralPatternError> {
-        let dependency = values
-            .and_then(|values| values.get(index))
-            .cloned()
-            .ok_or_else(|| dependency_error(message, self.span))?;
-        self.set(dst, dependency);
-        Ok(())
-    }
-
-    fn load_fold_carried(&mut self, dst: Reg, index: usize) -> Result<(), StructuralPatternError> {
-        let values = self.fold_carried;
-        self.load_context_value(dst, values, index, "invalid function-fold carried load")
-    }
-
-    fn load_fold_capture(&mut self, dst: Reg, index: usize) -> Result<(), StructuralPatternError> {
-        let values = self.fold_captures;
-        self.load_context_value(dst, values, index, "invalid function-fold capture load")
-    }
-
-    fn load_conditional_capture(
-        &mut self,
-        dst: Reg,
-        index: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let values = self.conditional_captures;
-        self.load_context_value(
-            dst,
-            values,
-            index,
-            "invalid function-conditional capture load",
-        )
-    }
-
-    fn load_conditional_capture_range(
-        &mut self,
-        dst_start: Reg,
-        index_start: usize,
-        count: usize,
-    ) -> Result<(), StructuralPatternError> {
-        const MESSAGE: &str = "invalid function-conditional capture range load";
-        let captures = self
-            .conditional_captures
-            .ok_or_else(|| dependency_error(MESSAGE, self.span))?;
-        for offset in 0..count {
-            let dependency = captures
-                .get(index_start + offset)
-                .cloned()
-                .ok_or_else(|| dependency_error(MESSAGE, self.span))?;
-            self.set(dst_start + offset as Reg, dependency);
-        }
-        Ok(())
-    }
-
-    /// Runtime subscript registers of one compact tensor projection.
-    fn union_runtime_indices(
-        &self,
-        mut dependencies: DependencyState,
-        indices: &[crate::TensorIndex],
-    ) -> Result<DependencyState, StructuralPatternError> {
-        for index in indices {
-            if let crate::TensorIndex::Runtime(register_id) = index {
-                dependencies = dependencies.union(self.get(*register_id)?);
+        match op {
+            LinearOp::Const { dst, .. }
+            | LinearOp::LoadTime { dst }
+            | LinearOp::LoadP { dst, .. } => set_empty_dependency(&mut registers, dst),
+            LinearOp::LoadY { dst, index } => match source {
+                DependencySource::Seed => set_empty_dependency(&mut registers, dst),
+                DependencySource::SolverY => set_seed_dependency(&mut registers, dst, index),
+            },
+            LinearOp::LoadSeed { dst, index } => match source {
+                DependencySource::Seed => set_seed_dependency(&mut registers, dst, index),
+                DependencySource::SolverY => set_empty_dependency(&mut registers, dst),
+            },
+            LinearOp::LoadFoldCarried { dst, index } => {
+                let dependency = fold_carried
+                    .and_then(|values| values.get(index))
+                    .cloned()
+                    .ok_or_else(|| dependency_error("invalid function-fold carried load", span))?;
+                set_register(&mut registers, dst, dependency);
             }
-        }
-        Ok(dependencies)
-    }
-
-    fn load_indexed_register(
-        &mut self,
-        dst: Reg,
-        base: Reg,
-        stride: usize,
-        dimensions: &[u32],
-        indices: &[crate::TensorIndex],
-    ) -> Result<(), StructuralPatternError> {
-        let count = checked_tensor_extent(dimensions).ok_or_else(|| {
-            dependency_error("runtime tensor projection extent overflow", self.span)
-        })?;
-        let mut dependencies = DependencyState::empty();
-        for offset in 0..count {
-            dependencies = dependencies.union(self.get(base + (offset * stride) as Reg)?);
-        }
-        let dependencies = self.union_runtime_indices(dependencies, indices)?;
-        self.set(dst, dependencies);
-        Ok(())
-    }
-
-    fn load_indexed_fold_carried(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        stride: usize,
-        dimensions: &[u32],
-        indices: &[crate::TensorIndex],
-    ) -> Result<(), StructuralPatternError> {
-        let context = IndexedFoldContext {
-            values: self.fold_carried,
-            missing: "invalid indexed function-fold carried load",
-            overflow: "indexed function-fold carried extent overflow",
-            invalid_range: "indexed function-fold carried range is invalid",
-        };
-        self.load_indexed_fold(dst, base, stride, dimensions, indices, context)
-    }
-
-    fn load_indexed_fold_capture(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        stride: usize,
-        dimensions: &[u32],
-        indices: &[crate::TensorIndex],
-    ) -> Result<(), StructuralPatternError> {
-        let context = IndexedFoldContext {
-            values: self.fold_captures,
-            missing: "invalid indexed function-fold capture load",
-            overflow: "indexed function-fold capture extent overflow",
-            invalid_range: "indexed function-fold capture range is invalid",
-        };
-        self.load_indexed_fold(dst, base, stride, dimensions, indices, context)
-    }
-
-    fn load_indexed_fold(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        stride: usize,
-        dimensions: &[u32],
-        indices: &[crate::TensorIndex],
-        context: IndexedFoldContext<'_>,
-    ) -> Result<(), StructuralPatternError> {
-        let values = context
-            .values
-            .ok_or_else(|| dependency_error(context.missing, self.span))?;
-        let count = checked_tensor_extent(dimensions)
-            .ok_or_else(|| dependency_error(context.overflow, self.span))?;
-        let mut dependencies = DependencyState::empty();
-        for offset in 0..count {
-            let dependency = values
-                .get(base + offset * stride)
-                .ok_or_else(|| dependency_error(context.invalid_range, self.span))?;
-            dependencies = dependencies.union(dependency.clone());
-        }
-        let dependencies = self.union_runtime_indices(dependencies, indices)?;
-        self.set(dst, dependencies);
-        Ok(())
-    }
-
-    fn load_indexed_seed(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<(), StructuralPatternError> {
-        set_indexed_seed_dependency(
-            &mut self.registers,
-            IndexedSeedDependency {
+            LinearOp::LoadFoldIndex { dst, .. } => {
+                set_empty_dependency(&mut registers, dst);
+            }
+            LinearOp::LoadFoldCapture { dst, index } => {
+                let dependency = fold_captures
+                    .and_then(|values| values.get(index))
+                    .cloned()
+                    .ok_or_else(|| dependency_error("invalid function-fold capture load", span))?;
+                set_register(&mut registers, dst, dependency);
+            }
+            LinearOp::LoadFunctionConditionalCapture { dst, index } => {
+                let dependency = conditional_captures
+                    .and_then(|values| values.get(index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        dependency_error("invalid function-conditional capture load", span)
+                    })?;
+                set_register(&mut registers, dst, dependency);
+            }
+            LinearOp::LoadFunctionConditionalCaptureRange {
+                dst_start,
+                index_start,
+                count,
+            } => {
+                let captures = conditional_captures.ok_or_else(|| {
+                    dependency_error("invalid function-conditional capture range load", span)
+                })?;
+                for offset in 0..count {
+                    let dependency =
+                        captures.get(index_start + offset).cloned().ok_or_else(|| {
+                            dependency_error(
+                                "invalid function-conditional capture range load",
+                                span,
+                            )
+                        })?;
+                    set_register(&mut registers, dst_start + offset as Reg, dependency);
+                }
+            }
+            LinearOp::LoadIndexedP { dst, index, .. } => {
+                copy_dependency(&mut registers, dst, index, span)?;
+            }
+            LinearOp::LoadIndexedRegister {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| {
+                        dependency_error("runtime tensor projection extent overflow", span)
+                    })?;
+                let mut dependencies = DependencyState::empty();
+                for offset in 0..count {
+                    dependencies = dependencies.union(register(
+                        &registers,
+                        base + (offset * stride) as Reg,
+                        span,
+                    )?);
+                }
+                for index in indices {
+                    if let crate::TensorIndex::Runtime(register_id) = index {
+                        dependencies = dependencies.union(register(&registers, register_id, span)?);
+                    }
+                }
+                set_register(&mut registers, dst, dependencies);
+            }
+            LinearOp::LoadIndexedFoldCarried {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let carried = fold_carried.ok_or_else(|| {
+                    dependency_error("invalid indexed function-fold carried load", span)
+                })?;
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| {
+                        dependency_error("indexed function-fold carried extent overflow", span)
+                    })?;
+                let mut dependencies = DependencyState::empty();
+                for offset in 0..count {
+                    let dependency = carried.get(base + offset * stride).ok_or_else(|| {
+                        dependency_error("indexed function-fold carried range is invalid", span)
+                    })?;
+                    dependencies = dependencies.union(dependency.clone());
+                }
+                for index in indices {
+                    if let crate::TensorIndex::Runtime(register_id) = index {
+                        dependencies = dependencies.union(register(&registers, register_id, span)?);
+                    }
+                }
+                set_register(&mut registers, dst, dependencies);
+            }
+            LinearOp::LoadIndexedFoldCapture {
+                dst,
+                base,
+                stride,
+                dimensions,
+                indices,
+            } => {
+                let captures = fold_captures.ok_or_else(|| {
+                    dependency_error("invalid indexed function-fold capture load", span)
+                })?;
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| {
+                        dependency_error("indexed function-fold capture extent overflow", span)
+                    })?;
+                let mut dependencies = DependencyState::empty();
+                for offset in 0..count {
+                    let dependency = captures.get(base + offset * stride).ok_or_else(|| {
+                        dependency_error("indexed function-fold capture range is invalid", span)
+                    })?;
+                    dependencies = dependencies.union(dependency.clone());
+                }
+                for index in indices {
+                    if let crate::TensorIndex::Runtime(register_id) = index {
+                        dependencies = dependencies.union(register(&registers, register_id, span)?);
+                    }
+                }
+                set_register(&mut registers, dst, dependencies);
+            }
+            LinearOp::LoadIndexedSeed {
                 dst,
                 base,
                 count,
                 index,
-            },
-            self.span,
-        )
-    }
-
-    fn linear_solve(
-        &mut self,
-        dst: Reg,
-        matrix_start: Reg,
-        rhs_start: Reg,
-        n: usize,
-    ) -> Result<(), StructuralPatternError> {
-        set_linear_solve_dependency(
-            &mut self.registers,
-            LinearSolveDependency {
+            } => set_indexed_seed_dependency(
+                &mut registers,
+                IndexedSeedDependency {
+                    dst,
+                    base,
+                    count,
+                    index,
+                },
+                span,
+            )?,
+            LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => {
+                copy_dependency(&mut registers, dst, src, span)?;
+            }
+            LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
+                set_union_dependency(&mut registers, dst, [lhs, rhs], span)?;
+            }
+            LinearOp::Select {
+                dst,
+                cond,
+                if_true,
+                if_false,
+            } => {
+                set_union_dependency(&mut registers, dst, [cond, if_true, if_false], span)?;
+            }
+            LinearOp::LinearSolveComponent {
                 dst,
                 matrix_start,
                 rhs_start,
                 n,
-            },
-            self.span,
-        )
-    }
-
-    fn dot_product(
-        &mut self,
-        dst: Reg,
-        lhs_start: Reg,
-        rhs_start: Reg,
-        count: usize,
-        lhs_stride: usize,
-        rhs_stride: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let mut sources = Vec::with_capacity(count.saturating_mul(2));
-        for term in 0..count {
-            sources.push(lhs_start + (term * lhs_stride) as Reg);
-            sources.push(rhs_start + (term * rhs_stride) as Reg);
-        }
-        let mut dependencies = DependencyState::empty();
-        for source in sources {
-            dependencies = dependencies.union(self.get(source)?);
-        }
-        self.set(dst, dependencies);
-        Ok(())
-    }
-
-    fn matrix_multiply(
-        &mut self,
-        shape: &MatrixMultiplyShape,
-    ) -> Result<(), StructuralPatternError> {
-        for row in 0..shape.rows {
-            for column in 0..shape.columns {
-                self.matrix_multiply_element(shape, row, column)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// One row/column element of a dense product, over every AD lane.
-    fn matrix_multiply_element(
-        &mut self,
-        shape: &MatrixMultiplyShape,
-        row: usize,
-        column: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let output = (row * shape.columns + column) * shape.lanes;
-        for lane in 0..shape.lanes {
-            let dependencies = self.matrix_multiply_lane(shape, row, column, lane)?;
-            self.set(shape.dst_start + (output + lane) as Reg, dependencies);
-        }
-        Ok(())
-    }
-
-    /// One lane of one dense product element, accumulated over the inner
-    /// extent. The second lane of a dual product also depends on both primal
-    /// operands, which is why it unions the lane-zero registers as well.
-    fn matrix_multiply_lane(
-        &self,
-        shape: &MatrixMultiplyShape,
-        row: usize,
-        column: usize,
-        lane: usize,
-    ) -> Result<DependencyState, StructuralPatternError> {
-        let mut dependencies = DependencyState::empty();
-        for term in 0..shape.inner {
-            let lhs = (row * shape.inner + term) * shape.lanes;
-            let rhs = (term * shape.columns + column) * shape.lanes;
-            dependencies = dependencies.union(self.get(shape.lhs_start + (lhs + lane) as Reg)?);
-            dependencies = dependencies.union(self.get(shape.rhs_start + (rhs + lane) as Reg)?);
-            if shape.lanes == 2 && lane == 1 {
-                dependencies = dependencies.union(self.get(shape.lhs_start + lhs as Reg)?);
-                dependencies = dependencies.union(self.get(shape.rhs_start + rhs as Reg)?);
-            }
-        }
-        Ok(dependencies)
-    }
-
-    fn tensor_binary(&mut self, shape: &TensorBinaryShape) -> Result<(), StructuralPatternError> {
-        for element in 0..shape.count {
-            let lhs = shape.lhs_start + (element * shape.lhs_stride * shape.lanes) as Reg;
-            let rhs = shape.rhs_start + (element * shape.rhs_stride * shape.lanes) as Reg;
-            let output = shape.dst_start + (element * shape.lanes) as Reg;
-            let primal = self.get(lhs)?.union(self.get(rhs)?);
-            self.set(output, primal.clone());
-            if shape.lanes == 2 {
-                let tangent = self.tensor_binary_tangent(shape, lhs, rhs, primal)?;
-                self.set(output + 1, tangent);
-            }
-        }
-        Ok(())
-    }
-
-    /// Tangent lane of one elementwise tensor operator. A product or quotient
-    /// tangent also depends on both primal operands.
-    fn tensor_binary_tangent(
-        &self,
-        shape: &TensorBinaryShape,
-        lhs: Reg,
-        rhs: Reg,
-        primal: DependencyState,
-    ) -> Result<DependencyState, StructuralPatternError> {
-        let mut tangent = self.get(lhs + 1)?.union(self.get(rhs + 1)?);
-        if matches!(shape.op, BinaryOp::Mul | BinaryOp::Div) {
-            tangent = tangent.union(primal);
-        }
-        Ok(tangent)
-    }
-
-    fn tensor_cross(
-        &mut self,
-        dst_start: Reg,
-        lhs_start: Reg,
-        rhs_start: Reg,
-        lanes: usize,
-    ) -> Result<(), StructuralPatternError> {
-        for (component, (first, second)) in
-            [(1usize, 2usize), (2, 0), (0, 1)].into_iter().enumerate()
-        {
-            let lhs_first = lhs_start + (first * lanes) as Reg;
-            let lhs_second = lhs_start + (second * lanes) as Reg;
-            let rhs_first = rhs_start + (first * lanes) as Reg;
-            let rhs_second = rhs_start + (second * lanes) as Reg;
-            let primal = self
-                .get(lhs_first)?
-                .union(self.get(lhs_second)?)
-                .union(self.get(rhs_first)?)
-                .union(self.get(rhs_second)?);
-            let output = dst_start + (component * lanes) as Reg;
-            self.set(output, primal.clone());
-            if lanes == 2 {
-                let tangent = primal
-                    .union(self.get(lhs_first + 1)?)
-                    .union(self.get(lhs_second + 1)?)
-                    .union(self.get(rhs_first + 1)?)
-                    .union(self.get(rhs_second + 1)?);
-                self.set(output + 1, tangent);
-            }
-        }
-        Ok(())
-    }
-
-    fn tensor_transpose(
-        &mut self,
-        dst_start: Reg,
-        src_start: Reg,
-        rows: usize,
-        columns: usize,
-        element_width: usize,
-        lanes: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let value_width = element_width * lanes;
-        for row in 0..rows {
-            for column in 0..columns {
-                let dst = (row * columns + column) * value_width;
-                let src = (column * rows + row) * value_width;
-                self.transpose_element(dst_start, src_start, dst, src, value_width)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Every untouched trailing value of one transposed element, copied from
-    /// its source coordinate to its destination coordinate.
-    fn transpose_element(
-        &mut self,
-        dst_start: Reg,
-        src_start: Reg,
-        dst_base: usize,
-        src_base: usize,
-        value_width: usize,
-    ) -> Result<(), StructuralPatternError> {
-        for value in 0..value_width {
-            let dst = dst_base + value;
-            let src = src_base + value;
-            let dependencies = self.get(src_start + src as Reg)?;
-            self.set(dst_start + dst as Reg, dependencies);
-        }
-        Ok(())
-    }
-
-    fn tensor_concatenate(
-        &mut self,
-        dst_start: Reg,
-        sources: &[crate::TensorConcatenateSource],
-        dimensions: &[u32],
-        axis: usize,
-        lanes: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let span = self.span;
-        let registers = &mut self.registers;
-        visit_tensor_concatenate(sources, dimensions, axis, lanes, |source, destination| {
-            let dependencies = register(registers, source, span)?;
-            set_register(registers, dst_start + destination as Reg, dependencies);
-            Ok::<(), StructuralPatternError>(())
-        })
-    }
-
-    fn tensor_update(
-        &mut self,
-        dst_start: Reg,
-        base_start: Reg,
-        value_start: Reg,
-        dimensions: &[u32],
-        subscripts: &[crate::TensorUpdateSubscript],
-        lanes: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let count = saturating_tensor_extent(dimensions);
-        let (value_count, selector) = self.tensor_update_patch(dimensions, subscripts, lanes)?;
-        let patch = self.range(value_start, value_count)?.union(selector);
-        for element in 0..count {
-            for lane in 0..lanes {
-                let offset = element * lanes + lane;
-                let dependencies = self.get(base_start + offset as Reg)?.union(patch.clone());
-                self.set(dst_start + offset as Reg, dependencies);
-            }
-        }
-        Ok(())
-    }
-
-    /// Width of the patch value range and the dependencies of the runtime
-    /// coordinates that select where the patch lands.
-    fn tensor_update_patch(
-        &self,
-        dimensions: &[u32],
-        subscripts: &[crate::TensorUpdateSubscript],
-        lanes: usize,
-    ) -> Result<(usize, DependencyState), StructuralPatternError> {
-        let mut value_count = lanes;
-        let mut selector = DependencyState::empty();
-        for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
-            match subscript {
-                crate::TensorUpdateSubscript::Whole => {
-                    value_count = value_count.saturating_mul(extent as usize);
+                ..
+            } => set_linear_solve_dependency(
+                &mut registers,
+                LinearSolveDependency {
+                    dst,
+                    matrix_start,
+                    rhs_start,
+                    n,
+                },
+                span,
+            )?,
+            LinearOp::DotProduct {
+                dst,
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+            } => {
+                let mut sources = Vec::with_capacity(count.saturating_mul(2));
+                for term in 0..count {
+                    sources.push(lhs_start + (term * lhs_stride) as Reg);
+                    sources.push(rhs_start + (term * rhs_stride) as Reg);
                 }
-                crate::TensorUpdateSubscript::Index(crate::TensorIndex::Runtime(register_id)) => {
-                    selector = selector.union(self.get(*register_id)?);
+                let mut dependencies = DependencyState::empty();
+                for source in sources {
+                    dependencies = dependencies.union(register(&registers, source, span)?);
                 }
-                crate::TensorUpdateSubscript::Index(crate::TensorIndex::Constant(_)) => {}
-                crate::TensorUpdateSubscript::Slice { start, dimensions } => {
-                    let slice_count = saturating_tensor_extent(dimensions);
-                    selector = selector.union(self.range(*start, slice_count)?);
-                    value_count = value_count.saturating_mul(slice_count);
+                set_register(&mut registers, dst, dependencies);
+            }
+            LinearOp::MatrixMultiply {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                rows,
+                inner,
+                columns,
+                lanes,
+            } => {
+                for row in 0..rows {
+                    for column in 0..columns {
+                        let output = (row * columns + column) * lanes;
+                        for lane in 0..lanes {
+                            let mut dependencies = DependencyState::empty();
+                            for term in 0..inner {
+                                let lhs = (row * inner + term) * lanes;
+                                let rhs = (term * columns + column) * lanes;
+                                dependencies = dependencies.union(register(
+                                    &registers,
+                                    lhs_start + (lhs + lane) as Reg,
+                                    span,
+                                )?);
+                                dependencies = dependencies.union(register(
+                                    &registers,
+                                    rhs_start + (rhs + lane) as Reg,
+                                    span,
+                                )?);
+                                if lanes == 2 && lane == 1 {
+                                    dependencies = dependencies.union(register(
+                                        &registers,
+                                        lhs_start + lhs as Reg,
+                                        span,
+                                    )?);
+                                    dependencies = dependencies.union(register(
+                                        &registers,
+                                        rhs_start + rhs as Reg,
+                                        span,
+                                    )?);
+                                }
+                            }
+                            set_register(
+                                &mut registers,
+                                dst_start + (output + lane) as Reg,
+                                dependencies,
+                            );
+                        }
+                    }
                 }
             }
-        }
-        Ok((value_count, selector))
-    }
-
-    fn tensor_fill(
-        &mut self,
-        dst_start: Reg,
-        value_start: Reg,
-        count: usize,
-        lanes: usize,
-    ) -> Result<(), StructuralPatternError> {
-        for element in 0..count {
-            for lane in 0..lanes {
-                let dependencies = self.get(value_start + lane as Reg)?;
-                self.set(dst_start + (element * lanes + lane) as Reg, dependencies);
+            LinearOp::TensorBinary {
+                dst_start,
+                op,
+                lhs_start,
+                rhs_start,
+                count,
+                lhs_stride,
+                rhs_stride,
+                lanes,
+            } => {
+                for element in 0..count {
+                    let lhs = lhs_start + (element * lhs_stride * lanes) as Reg;
+                    let rhs = rhs_start + (element * rhs_stride * lanes) as Reg;
+                    let output = dst_start + (element * lanes) as Reg;
+                    let primal =
+                        register(&registers, lhs, span)?.union(register(&registers, rhs, span)?);
+                    set_register(&mut registers, output, primal.clone());
+                    if lanes == 2 {
+                        let mut tangent = register(&registers, lhs + 1, span)?.union(register(
+                            &registers,
+                            rhs + 1,
+                            span,
+                        )?);
+                        if matches!(op, BinaryOp::Mul | BinaryOp::Div) {
+                            tangent = tangent.union(primal);
+                        }
+                        set_register(&mut registers, output + 1, tangent);
+                    }
+                }
             }
-        }
-        Ok(())
-    }
-
-    fn tensor_identity(&mut self, dst_start: Reg, size: usize, lanes: usize) {
-        for offset in 0..size * size * lanes {
-            self.set_empty(dst_start + offset as Reg);
-        }
-    }
-
-    fn tensor_load(
-        &mut self,
-        dst_start: Reg,
-        count: usize,
-        seed_start: Option<usize>,
-        lanes: usize,
-    ) {
-        for element in 0..count {
-            self.set_empty(dst_start + (element * lanes) as Reg);
-            if lanes == 2 {
-                let dependency = tensor_load_seed(seed_start, element);
-                self.set(dst_start + (element * lanes + 1) as Reg, dependency);
+            LinearOp::TensorCross {
+                dst_start,
+                lhs_start,
+                rhs_start,
+                lanes,
+            } => {
+                for (component, (first, second)) in
+                    [(1usize, 2usize), (2, 0), (0, 1)].into_iter().enumerate()
+                {
+                    let lhs_first = lhs_start + (first * lanes) as Reg;
+                    let lhs_second = lhs_start + (second * lanes) as Reg;
+                    let rhs_first = rhs_start + (first * lanes) as Reg;
+                    let rhs_second = rhs_start + (second * lanes) as Reg;
+                    let primal = register(&registers, lhs_first, span)?
+                        .union(register(&registers, lhs_second, span)?)
+                        .union(register(&registers, rhs_first, span)?)
+                        .union(register(&registers, rhs_second, span)?);
+                    let output = dst_start + (component * lanes) as Reg;
+                    set_register(&mut registers, output, primal.clone());
+                    if lanes == 2 {
+                        let tangent = primal
+                            .union(register(&registers, lhs_first + 1, span)?)
+                            .union(register(&registers, lhs_second + 1, span)?)
+                            .union(register(&registers, rhs_first + 1, span)?)
+                            .union(register(&registers, rhs_second + 1, span)?);
+                        set_register(&mut registers, output + 1, tangent);
+                    }
+                }
             }
-        }
-    }
-
-    fn runtime(&mut self, op: LinearOp) -> Result<(), StructuralPatternError> {
-        apply_runtime_dependency(&mut self.registers, op, self.span)
-    }
-
-    fn function_fold(
-        &mut self,
-        dst_start: Reg,
-        initial_start: Reg,
-        capture_start: Reg,
-        program: &crate::FunctionFoldProgram,
-    ) -> Result<(), StructuralPatternError> {
-        let carried = self.register_tuple(initial_start, program.carried_count)?;
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
-        for (offset, dependency) in carried.into_iter().enumerate() {
-            self.set(dst_start + offset as Reg, dependency);
-        }
-        Ok(())
-    }
-
-    fn guarded_fold(
-        &mut self,
-        dst_start: Reg,
-        initial_start: Reg,
-        capture_start: Reg,
-        activation: Reg,
-        program: &crate::FunctionFoldProgram,
-    ) -> Result<(), StructuralPatternError> {
-        let activation = self.get(activation)?;
-        let carried = self.register_tuple(initial_start, program.carried_count)?;
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
-        for (offset, dependency) in carried.into_iter().enumerate() {
-            self.set(
-                dst_start + offset as Reg,
-                dependency.union(activation.clone()),
-            );
-        }
-        Ok(())
-    }
-
-    /// One nested program of the enclosing walk, evaluated under the same fold
-    /// context but with its own function-conditional capture tuple.
-    fn nested_program(
-        &self,
-        program: &[LinearOp],
-        captures: &[DependencyState],
-    ) -> Result<Vec<DependencyState>, StructuralPatternError> {
-        program_output_dependencies_with_fold(
-            program,
-            self.span,
-            self.fold_carried,
-            self.fold_captures,
-            Some(captures),
-            self.source,
-        )
-    }
-
-    fn function_conditional(
-        &mut self,
-        dst_start: Reg,
-        capture_start: Reg,
-        program: &crate::FunctionConditionalProgram,
-    ) -> Result<(), StructuralPatternError> {
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let mut condition_dependency = DependencyState::empty();
-        let mut result = vec![DependencyState::empty(); program.result_count];
-        for arm in &program.arms {
-            let condition = self.nested_program(&arm.condition, &captures)?;
-            let condition = condition
-                .first()
-                .cloned()
-                .ok_or_else(|| dependency_error("missing conditional condition", self.span))?;
-            condition_dependency = condition_dependency.union(condition);
-            let branch = self.nested_program(&arm.result, &captures)?;
-            union_conditional_results(&mut result, branch, self.span)?;
-        }
-        let fallback = self.nested_program(&program.fallback, &captures)?;
-        union_conditional_results(&mut result, fallback, self.span)?;
-        for (offset, dependency) in result.into_iter().enumerate() {
-            let dependency = dependency.union(condition_dependency.clone());
-            self.set(dst_start + offset as Reg, dependency);
-        }
-        Ok(())
-    }
-
-    fn union_scalar_range(
-        &self,
-        mut dependency: DependencyState,
-        start: Reg,
-        count: usize,
-    ) -> Result<DependencyState, StructuralPatternError> {
-        for offset in 0..count {
-            dependency = dependency.union(self.get(start + offset as Reg)?);
-        }
-        Ok(dependency)
-    }
-
-    /// Every ordered result of a typed pure call depends on every typed input:
-    /// the call owner is opaque to this structural walk, so the conservative
-    /// closure is the only sound one. The plain and directional sites differ
-    /// only in the diagnostic their output-width overflow reports.
-    fn pure_call(
-        &mut self,
-        dst_start: Reg,
-        input_starts: &[Reg],
-        inputs: &[crate::SolveValueType],
-        output_scalar_count: Option<usize>,
-        message: &'static str,
-    ) -> Result<(), StructuralPatternError> {
-        let mut dependency = DependencyState::empty();
-        for (start, value_type) in input_starts.iter().zip(inputs) {
-            let count = value_type.scalar_count() as usize;
-            dependency = self.union_scalar_range(dependency, *start, count)?;
-        }
-        let output_count =
-            output_scalar_count.ok_or_else(|| dependency_error(message, self.span))?;
-        for offset in 0..output_count {
-            self.set(dst_start + offset as Reg, dependency.clone());
-        }
-        Ok(())
-    }
-
-    fn store_fold_tensor_update(
-        &mut self,
-        source_base: usize,
-        source_stride: usize,
-        dimensions: &[u32],
-        updates: &[crate::FoldTensorUpdate],
-        nodes: &[crate::FoldTensorNode],
-        lanes: usize,
-    ) -> Result<(), StructuralPatternError> {
-        let carried = self.fold_carried.ok_or_else(|| {
-            dependency_error(
-                "aggregate output escaped its function-fold update body",
-                self.span,
-            )
-        })?;
-        let count = checked_tensor_extent(dimensions)
-            .ok_or_else(|| dependency_error("tensor update extent overflow", self.span))?;
-        let mut update_dependency = DependencyState::empty();
-        for update in updates {
-            update_dependency =
-                self.union_fold_tensor_update(update_dependency, dimensions, update, lanes)?;
-        }
-        for node in nodes {
-            if let crate::FoldTensorNode::Select { condition, .. } = *node {
-                update_dependency = update_dependency.union(self.get(condition)?);
+            LinearOp::TensorTranspose {
+                dst_start,
+                src_start,
+                rows,
+                columns,
+                element_width,
+                lanes,
+            } => {
+                let value_width = element_width * lanes;
+                for row in 0..rows {
+                    for column in 0..columns {
+                        for value in 0..value_width {
+                            let dst = (row * columns + column) * value_width + value;
+                            let src = (column * rows + row) * value_width + value;
+                            let dependencies = register(&registers, src_start + src as Reg, span)?;
+                            set_register(&mut registers, dst_start + dst as Reg, dependencies);
+                        }
+                    }
+                }
             }
-        }
-        for element in 0..count {
-            let source = source_base + element * source_stride;
-            self.push_fold_tensor_element(carried, source, lanes, &update_dependency)?;
-        }
-        Ok(())
-    }
-
-    /// One aggregate element of a carried tensor update, over every AD lane.
-    /// The unchanged carried value stays in the dependency set because a patch
-    /// that misses this coordinate leaves it in place.
-    fn push_fold_tensor_element(
-        &mut self,
-        carried: &[DependencyState],
-        source: usize,
-        lanes: usize,
-        update_dependency: &DependencyState,
-    ) -> Result<(), StructuralPatternError> {
-        for lane in 0..lanes {
-            let unchanged = carried.get(source + lane).cloned().ok_or_else(|| {
-                dependency_error("tensor update carried source is invalid", self.span)
-            })?;
-            self.outputs
-                .push(unchanged.union(update_dependency.clone()));
-        }
-        Ok(())
-    }
-
-    /// Condition, patch values and runtime coordinates of one aggregate patch.
-    fn union_fold_tensor_update(
-        &self,
-        mut update_dependency: DependencyState,
-        dimensions: &[u32],
-        update: &crate::FoldTensorUpdate,
-        lanes: usize,
-    ) -> Result<DependencyState, StructuralPatternError> {
-        let value_count = dimensions
-            .iter()
-            .zip(update.subscripts.iter())
-            .try_fold(1usize, |count, (&extent, subscript)| {
-                if matches!(subscript, crate::TensorSubscript::Whole) {
-                    count.checked_mul(extent as usize)
+            LinearOp::TensorConcatenate {
+                dst_start,
+                sources,
+                dimensions,
+                axis,
+                lanes,
+            } => {
+                visit_tensor_concatenate(
+                    &sources,
+                    &dimensions,
+                    axis,
+                    lanes,
+                    |source, destination| {
+                        let dependencies = register(&registers, source, span)?;
+                        set_register(&mut registers, dst_start + destination as Reg, dependencies);
+                        Ok::<(), StructuralPatternError>(())
+                    },
+                )?;
+            }
+            LinearOp::TensorUpdate {
+                dst_start,
+                base_start,
+                value_start,
+                dimensions,
+                subscripts,
+                lanes,
+            } => {
+                let count = dimensions.iter().fold(1usize, |count, extent| {
+                    count.saturating_mul(*extent as usize)
+                });
+                let mut value_count = lanes;
+                let mut selector = DependencyState::empty();
+                for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
+                    match subscript {
+                        crate::TensorUpdateSubscript::Whole => {
+                            value_count = value_count.saturating_mul(extent as usize);
+                        }
+                        crate::TensorUpdateSubscript::Index(crate::TensorIndex::Runtime(
+                            register_id,
+                        )) => {
+                            selector = selector.union(register(&registers, *register_id, span)?);
+                        }
+                        crate::TensorUpdateSubscript::Index(crate::TensorIndex::Constant(_)) => {}
+                        crate::TensorUpdateSubscript::Slice { start, dimensions } => {
+                            let slice_count = dimensions.iter().fold(1usize, |count, extent| {
+                                count.saturating_mul(*extent as usize)
+                            });
+                            selector = selector.union(register_range(
+                                &registers,
+                                *start,
+                                slice_count,
+                                span,
+                            )?);
+                            value_count = value_count.saturating_mul(slice_count);
+                        }
+                    }
+                }
+                let patch =
+                    register_range(&registers, value_start, value_count, span)?.union(selector);
+                for element in 0..count {
+                    for lane in 0..lanes {
+                        let offset = element * lanes + lane;
+                        let dependencies = register(&registers, base_start + offset as Reg, span)?
+                            .union(patch.clone());
+                        set_register(&mut registers, dst_start + offset as Reg, dependencies);
+                    }
+                }
+            }
+            LinearOp::TensorFill {
+                dst_start,
+                value_start,
+                count,
+                lanes,
+            } => {
+                for element in 0..count {
+                    for lane in 0..lanes {
+                        let dependencies = register(&registers, value_start + lane as Reg, span)?;
+                        set_register(
+                            &mut registers,
+                            dst_start + (element * lanes + lane) as Reg,
+                            dependencies,
+                        );
+                    }
+                }
+            }
+            LinearOp::TensorIdentity {
+                dst_start,
+                size,
+                lanes,
+            } => {
+                for offset in 0..size * size * lanes {
+                    set_empty_dependency(&mut registers, dst_start + offset as Reg);
+                }
+            }
+            LinearOp::TensorLoad {
+                dst_start,
+                count,
+                seed_start,
+                lanes,
+                ..
+            } => {
+                for element in 0..count {
+                    set_empty_dependency(&mut registers, dst_start + (element * lanes) as Reg);
+                    if lanes == 2 {
+                        let dependency = seed_start
+                            .map_or_else(DependencyState::empty, |seed_start| {
+                                DependencyState::singleton(seed_start + element)
+                            });
+                        set_register(
+                            &mut registers,
+                            dst_start + (element * lanes + 1) as Reg,
+                            dependency,
+                        );
+                    }
+                }
+            }
+            op @ (LinearOp::TableBounds { .. }
+            | LinearOp::TableLookup { .. }
+            | LinearOp::TableLookupSlope { .. }
+            | LinearOp::TableNextEvent { .. }
+            | LinearOp::RandomInitialState { .. }
+            | LinearOp::RandomResult { .. }
+            | LinearOp::RandomState { .. }
+            | LinearOp::ImpureRandomInit { .. }
+            | LinearOp::ImpureRandom { .. }
+            | LinearOp::ImpureRandomInteger { .. }) => {
+                apply_runtime_dependency(&mut registers, op, span)?;
+            }
+            LinearOp::FunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                program,
+            } => {
+                let carried = (0..program.carried_count)
+                    .map(|offset| register(&registers, initial_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let carried =
+                    function_fold_dependencies(&program, carried, &captures, span, source)?;
+                for (offset, dependency) in carried.into_iter().enumerate() {
+                    set_register(&mut registers, dst_start + offset as Reg, dependency);
+                }
+            }
+            LinearOp::GuardedFunctionFold {
+                dst_start,
+                initial_start,
+                capture_start,
+                activation,
+                program,
+            } => {
+                let activation = register(&registers, activation, span)?;
+                let carried = (0..program.carried_count)
+                    .map(|offset| register(&registers, initial_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let carried =
+                    function_fold_dependencies(&program, carried, &captures, span, source)?;
+                for (offset, dependency) in carried.into_iter().enumerate() {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.union(activation.clone()),
+                    );
+                }
+            }
+            LinearOp::FunctionConditional {
+                dst_start,
+                capture_start,
+                program,
+            } => {
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut condition_dependency = DependencyState::empty();
+                let mut result = vec![DependencyState::empty(); program.result_count];
+                for arm in &program.arms {
+                    let condition = program_output_dependencies_with_fold(
+                        &arm.condition,
+                        span,
+                        fold_carried,
+                        fold_captures,
+                        Some(&captures),
+                        source,
+                    )?;
+                    condition_dependency =
+                        condition_dependency.union(condition.first().cloned().ok_or_else(
+                            || dependency_error("missing conditional condition", span),
+                        )?);
+                    let branch = program_output_dependencies_with_fold(
+                        &arm.result,
+                        span,
+                        fold_carried,
+                        fold_captures,
+                        Some(&captures),
+                        source,
+                    )?;
+                    union_conditional_results(&mut result, branch, span)?;
+                }
+                let fallback = program_output_dependencies_with_fold(
+                    &program.fallback,
+                    span,
+                    fold_carried,
+                    fold_captures,
+                    Some(&captures),
+                    source,
+                )?;
+                union_conditional_results(&mut result, fallback, span)?;
+                for (offset, dependency) in result.into_iter().enumerate() {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.union(condition_dependency.clone()),
+                    );
+                }
+            }
+            LinearOp::PureCall {
+                dst_start,
+                input_starts,
+                site,
+            } => {
+                let mut dependency = DependencyState::empty();
+                for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+                    for offset in 0..value_type.scalar_count() as usize {
+                        dependency =
+                            dependency.union(register(&registers, start + offset as Reg, span)?);
+                    }
+                }
+                let output_count = site
+                    .output_scalar_count()
+                    .ok_or_else(|| dependency_error("pure-call output width overflows", span))?;
+                for offset in 0..output_count {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.clone(),
+                    );
+                }
+            }
+            LinearOp::PureCallDirectional {
+                dst_start,
+                input_starts,
+                site,
+            } => {
+                let mut dependency = DependencyState::empty();
+                for (start, value_type) in input_starts.iter().zip(site.inputs()) {
+                    for offset in 0..value_type.scalar_count() as usize {
+                        dependency =
+                            dependency.union(register(&registers, start + offset as Reg, span)?);
+                    }
+                }
+                let output_count = site.output_scalar_count().ok_or_else(|| {
+                    dependency_error("directional pure-call output width overflows", span)
+                })?;
+                for offset in 0..output_count {
+                    set_register(
+                        &mut registers,
+                        dst_start + offset as Reg,
+                        dependency.clone(),
+                    );
+                }
+            }
+            LinearOp::StoreOutputFoldTensorUpdate {
+                source_base,
+                source_stride,
+                dimensions,
+                updates,
+                nodes,
+                lanes,
+                ..
+            } => {
+                let carried = fold_carried.ok_or_else(|| {
+                    dependency_error(
+                        "aggregate output escaped its function-fold update body",
+                        span,
+                    )
+                })?;
+                let count = dimensions
+                    .iter()
+                    .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
+                    .ok_or_else(|| dependency_error("tensor update extent overflow", span))?;
+                let mut update_dependency = DependencyState::empty();
+                for update in &updates {
+                    let value_count = dimensions
+                        .iter()
+                        .zip(update.subscripts.iter())
+                        .try_fold(1usize, |count, (&extent, subscript)| {
+                            if matches!(subscript, crate::TensorSubscript::Whole) {
+                                count.checked_mul(extent as usize)
+                            } else {
+                                Some(count)
+                            }
+                        })
+                        .ok_or_else(|| {
+                            dependency_error("tensor update value extent overflow", span)
+                        })?;
+                    if let Some(condition) = update.condition {
+                        update_dependency =
+                            update_dependency.union(register(&registers, condition, span)?);
+                    }
+                    for element in 0..value_count {
+                        for lane in 0..lanes {
+                            update_dependency = update_dependency.union(register(
+                                &registers,
+                                update.value_start + (element * update.value_stride + lane) as Reg,
+                                span,
+                            )?);
+                        }
+                    }
+                    for subscript in &update.subscripts {
+                        if let crate::TensorSubscript::Index(crate::TensorIndex::Runtime(
+                            register_id,
+                        )) = subscript
+                        {
+                            update_dependency =
+                                update_dependency.union(register(&registers, *register_id, span)?);
+                        }
+                    }
+                }
+                for node in &nodes {
+                    if let crate::FoldTensorNode::Select { condition, .. } = *node {
+                        update_dependency =
+                            update_dependency.union(register(&registers, condition, span)?);
+                    }
+                }
+                for element in 0..count {
+                    for lane in 0..lanes {
+                        let unchanged = carried
+                            .get(source_base + element * source_stride + lane)
+                            .cloned()
+                            .ok_or_else(|| {
+                                dependency_error("tensor update carried source is invalid", span)
+                            })?;
+                        outputs.push(unchanged.union(update_dependency.clone()));
+                    }
+                }
+            }
+            LinearOp::StoreOutputFunctionFold {
+                initial,
+                capture_start,
+                program,
+                result_base,
+                count,
+                condition,
+                ..
+            } => {
+                let parent = fold_carried.ok_or_else(|| {
+                    dependency_error("nested aggregate fold escaped its parent update body", span)
+                })?;
+                let mut carried = Vec::with_capacity(program.carried_count);
+                for source in initial.iter() {
+                    match *source {
+                        crate::FoldInitialSource::Registers { start, count } => {
+                            for offset in 0..count {
+                                carried.push(register(&registers, start + offset as Reg, span)?);
+                            }
+                        }
+                        crate::FoldInitialSource::ParentCarried { base, count } => {
+                            let end = base.checked_add(count).ok_or_else(|| {
+                                dependency_error("nested fold carried range overflow", span)
+                            })?;
+                            let values = parent.get(base..end).ok_or_else(|| {
+                                dependency_error("nested fold carried range is invalid", span)
+                            })?;
+                            carried.extend_from_slice(values);
+                        }
+                    }
+                }
+                let captures = (0..program.capture_count)
+                    .map(|offset| register(&registers, capture_start + offset as Reg, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let carried =
+                    function_fold_dependencies(&program, carried, &captures, span, source)?;
+                let end = result_base
+                    .checked_add(count)
+                    .ok_or_else(|| dependency_error("nested fold result range overflow", span))?;
+                let result = carried
+                    .get(result_base..end)
+                    .ok_or_else(|| dependency_error("nested fold result range is invalid", span))?;
+                if let Some(condition) = condition {
+                    let condition = register(&registers, condition, span)?;
+                    let output_base = outputs.len();
+                    for (offset, nested) in result.iter().cloned().enumerate() {
+                        let unchanged =
+                            parent.get(output_base + offset).cloned().ok_or_else(|| {
+                                dependency_error(
+                                    "conditional nested fold parent range is invalid",
+                                    span,
+                                )
+                            })?;
+                        outputs.push(nested.union(unchanged).union(condition.clone()));
+                    }
                 } else {
-                    Some(count)
-                }
-            })
-            .ok_or_else(|| dependency_error("tensor update value extent overflow", self.span))?;
-        if let Some(condition) = update.condition {
-            update_dependency = update_dependency.union(self.get(condition)?);
-        }
-        for element in 0..value_count {
-            for lane in 0..lanes {
-                let offset = (element * update.value_stride + lane) as Reg;
-                update_dependency = update_dependency.union(self.get(update.value_start + offset)?);
-            }
-        }
-        for subscript in &update.subscripts {
-            if let crate::TensorSubscript::Index(crate::TensorIndex::Runtime(register_id)) =
-                subscript
-            {
-                update_dependency = update_dependency.union(self.get(*register_id)?);
-            }
-        }
-        Ok(update_dependency)
-    }
-
-    fn nested_fold(
-        &mut self,
-        initial: &[crate::FoldInitialSource],
-        capture_start: Reg,
-        program: &crate::FunctionFoldProgram,
-        result_base: usize,
-        count: usize,
-        condition: Option<Reg>,
-    ) -> Result<(), StructuralPatternError> {
-        let parent = self.fold_carried.ok_or_else(|| {
-            dependency_error(
-                "nested aggregate fold escaped its parent update body",
-                self.span,
-            )
-        })?;
-        let mut carried = Vec::with_capacity(program.carried_count);
-        for source in initial {
-            self.push_nested_fold_initial(&mut carried, parent, source)?;
-        }
-        let captures = self.register_tuple(capture_start, program.capture_count)?;
-        let carried =
-            function_fold_dependencies(program, carried, &captures, self.span, self.source)?;
-        let end = result_base
-            .checked_add(count)
-            .ok_or_else(|| dependency_error("nested fold result range overflow", self.span))?;
-        let result = carried
-            .get(result_base..end)
-            .ok_or_else(|| dependency_error("nested fold result range is invalid", self.span))?;
-        let Some(condition) = condition else {
-            self.outputs.extend_from_slice(result);
-            return Ok(());
-        };
-        let condition = self.get(condition)?;
-        let output_base = self.outputs.len();
-        for (offset, nested) in result.iter().cloned().enumerate() {
-            let unchanged = parent.get(output_base + offset).cloned().ok_or_else(|| {
-                dependency_error("conditional nested fold parent range is invalid", self.span)
-            })?;
-            self.outputs
-                .push(nested.union(unchanged).union(condition.clone()));
-        }
-        Ok(())
-    }
-
-    fn push_nested_fold_initial(
-        &self,
-        carried: &mut Vec<DependencyState>,
-        parent: &[DependencyState],
-        source: &crate::FoldInitialSource,
-    ) -> Result<(), StructuralPatternError> {
-        match *source {
-            crate::FoldInitialSource::Registers { start, count } => {
-                for offset in 0..count {
-                    carried.push(self.get(start + offset as Reg)?);
+                    outputs.extend_from_slice(result);
                 }
             }
-            crate::FoldInitialSource::ParentCarried { base, count } => {
-                let end = base.checked_add(count).ok_or_else(|| {
-                    dependency_error("nested fold carried range overflow", self.span)
-                })?;
-                let values = parent.get(base..end).ok_or_else(|| {
-                    dependency_error("nested fold carried range is invalid", self.span)
-                })?;
-                carried.extend_from_slice(values);
+            LinearOp::StoreOutputRange {
+                start,
+                count,
+                stride,
+            } => {
+                for ordinal in 0..count {
+                    let offset = ordinal.checked_mul(stride).ok_or_else(|| {
+                        dependency_error("conditional output range offset overflows", span)
+                    })?;
+                    let offset = Reg::try_from(offset).map_err(|_| {
+                        dependency_error("conditional output range exceeds registers", span)
+                    })?;
+                    let source = start.checked_add(offset).ok_or_else(|| {
+                        dependency_error("conditional output register overflows", span)
+                    })?;
+                    outputs.push(register(&registers, source, span)?);
+                }
             }
+            LinearOp::StoreOutput { src } => outputs.push(register(&registers, src, span)?),
         }
-        Ok(())
     }
-
-    fn store_output_range(
-        &mut self,
-        start: Reg,
-        count: usize,
-        stride: usize,
-    ) -> Result<(), StructuralPatternError> {
-        for ordinal in 0..count {
-            let offset = ordinal.checked_mul(stride).ok_or_else(|| {
-                dependency_error("conditional output range offset overflows", self.span)
-            })?;
-            let offset = Reg::try_from(offset).map_err(|_| {
-                dependency_error("conditional output range exceeds registers", self.span)
-            })?;
-            let source = start.checked_add(offset).ok_or_else(|| {
-                dependency_error("conditional output register overflows", self.span)
-            })?;
-            let dependency = self.get(source)?;
-            self.outputs.push(dependency);
-        }
-        Ok(())
-    }
-
-    fn store_output(&mut self, src: Reg) -> Result<(), StructuralPatternError> {
-        let dependency = self.get(src)?;
-        self.outputs.push(dependency);
-        Ok(())
-    }
-}
-
-/// Row-major element count of a compact tensor shape, or `None` when the shape
-/// product leaves the register range.
-fn checked_tensor_extent(dimensions: &[u32]) -> Option<usize> {
-    dimensions
-        .iter()
-        .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
-}
-
-/// Row-major element count of a shape-preserving array patch. This walk
-/// saturates rather than reporting overflow because the patch is a subrange of
-/// an aggregate whose own extent was already checked by its owner.
-fn saturating_tensor_extent(dimensions: &[u32]) -> usize {
-    dimensions.iter().fold(1usize, |count, extent| {
-        count.saturating_mul(*extent as usize)
-    })
-}
-
-/// AD seed dependency of one scalar of a runtime tensor load, empty when the
-/// load carries no seed region.
-fn tensor_load_seed(seed_start: Option<usize>, element: usize) -> DependencyState {
-    seed_start.map_or_else(DependencyState::empty, |seed_start| {
-        DependencyState::singleton(seed_start + element)
-    })
+    Ok(outputs)
 }
 
 fn union_conditional_results(
@@ -2796,35 +2516,25 @@ mod tests {
             let Ok(text) = std::fs::read_to_string(&manifest) else {
                 continue;
             };
-            collect_fixture_offenders(&manifest, &text, &mut offenders);
+            let mut in_dev_section = false;
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('[') {
+                    in_dev_section = trimmed.contains("dev-dependencies");
+                }
+                if trimmed.contains("pattern-fixtures")
+                    && !trimmed.starts_with('#')
+                    && !trimmed.starts_with("pattern-fixtures =")
+                    && !in_dev_section
+                {
+                    offenders.push(format!("{}: {trimmed}", manifest.display()));
+                }
+            }
         }
         assert!(
             offenders.is_empty(),
             "pattern-fixtures may only be enabled from [dev-dependencies]: {offenders:?}"
         );
-    }
-
-    /// Record every line of one manifest that turns the fixture gate on from a
-    /// section other than `[dev-dependencies]`.
-    fn collect_fixture_offenders(
-        manifest: &std::path::Path,
-        text: &str,
-        offenders: &mut Vec<String>,
-    ) {
-        let mut in_dev_section = false;
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') {
-                in_dev_section = trimmed.contains("dev-dependencies");
-            }
-            if trimmed.contains("pattern-fixtures")
-                && !trimmed.starts_with('#')
-                && !trimmed.starts_with("pattern-fixtures =")
-                && !in_dev_section
-            {
-                offenders.push(format!("{}: {trimmed}", manifest.display()));
-            }
-        }
     }
 
     #[test]

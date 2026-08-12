@@ -267,6 +267,111 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 "Solve schema version {actual} does not match expected {expected}"
             ),
             Self::Layout(err) => write!(f, "Solve layout shape contract failed: {err}"),
+            Self::ScalarProgramSpanMismatch {
+                context,
+                node_index,
+                programs,
+                spans,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} has {programs} scalar programs but {spans} spans"
+            ),
+            Self::ScalarProgramMissingProvenance {
+                context,
+                node_index,
+                program_index,
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} has no source provenance"
+            ),
+            Self::ScalarProgramOutputIndexMismatch {
+                context,
+                node_index,
+                programs,
+                output_indices,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} has {programs} scalar programs but \
+                 {output_indices} output indices"
+            ),
+            Self::ScalarProgramMissingOutput {
+                context,
+                node_index,
+                program_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} stores no output"
+            ),
+            Self::ScalarProgramRegisterFlow {
+                context,
+                node_index,
+                program_index,
+                error,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} has invalid register \
+                 flow: {error}"
+            ),
+            Self::FunctionConditionalOwnerMismatch {
+                context,
+                node_index,
+                owner,
+                program_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} assigns conditional \
+                 owner {owner} to a different checked body"
+            ),
+            Self::ScalarProgramCountMismatch {
+                context,
+                expected,
+                actual,
+                ..
+            } => write!(f, "{context} expected {expected} rows, got {actual}"),
+            Self::DiscreteCertificate {
+                context,
+                row,
+                detail,
+                ..
+            } => write!(
+                f,
+                "{context} row {row} has an invalid certificate: {detail}"
+            ),
+            Self::StructuredDiscreteUpdate {
+                update_index,
+                node_index,
+                detail,
+                ..
+            } => write!(
+                f,
+                "structured discrete update {update_index} for compute node {node_index} is \
+                 invalid: {detail}"
+            ),
+            Self::GuardedAssignmentProgram {
+                program_index,
+                detail,
+                ..
+            } => write!(
+                f,
+                "guarded assignment program {program_index} is invalid: {detail}"
+            ),
+            Self::EventTransactionProgram {
+                program_index,
+                detail,
+                ..
+            } => write!(
+                f,
+                "event transaction program {program_index} is invalid: {detail}"
+            ),
+            Self::PureCallSiteMismatch { context, owner, .. } => write!(
+                f,
+                "{context} references pure-call owner {owner} with a missing or mismatched interface"
+            ),
             Self::ContinuousRefreshOwner { detail } => {
                 write!(f, "continuous refresh owner is invalid: {detail}")
             }
@@ -280,136 +385,8 @@ impl std::fmt::Display for SolveProblemShapeContractError {
             | Self::AffineLoadIndexRange { .. }
             | Self::AffineLoadIndexOverflow { .. }
             | Self::OutputIndexOverflow { .. }) => fmt_tensor_shape_contract_error(error, f),
-            error => fmt_scalar_program_shape_contract_error(error, f),
+            error => fmt_index_shape_contract_error(error, f),
         }
-    }
-}
-
-/// Renders the contract failures raised while replaying one scalar program.
-fn fmt_scalar_program_shape_contract_error(
-    error: &SolveProblemShapeContractError,
-    f: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    use SolveProblemShapeContractError as Error;
-    match error {
-        Error::ScalarProgramSpanMismatch {
-            context,
-            node_index,
-            programs,
-            spans,
-            ..
-        } => write!(
-            f,
-            "{context} node {node_index} has {programs} scalar programs but {spans} spans"
-        ),
-        Error::ScalarProgramMissingProvenance {
-            context,
-            node_index,
-            program_index,
-        } => write!(
-            f,
-            "{context} node {node_index} scalar program {program_index} has no source provenance"
-        ),
-        Error::ScalarProgramOutputIndexMismatch {
-            context,
-            node_index,
-            programs,
-            output_indices,
-            ..
-        } => write!(
-            f,
-            "{context} node {node_index} has {programs} scalar programs but \
-             {output_indices} output indices"
-        ),
-        Error::ScalarProgramMissingOutput {
-            context,
-            node_index,
-            program_index,
-            ..
-        } => write!(
-            f,
-            "{context} node {node_index} scalar program {program_index} stores no output"
-        ),
-        Error::ScalarProgramRegisterFlow {
-            context,
-            node_index,
-            program_index,
-            error,
-            ..
-        } => write!(
-            f,
-            "{context} node {node_index} scalar program {program_index} has invalid register \
-             flow: {error}"
-        ),
-        Error::FunctionConditionalOwnerMismatch {
-            context,
-            node_index,
-            owner,
-            program_index,
-            ..
-        } => write!(
-            f,
-            "{context} node {node_index} scalar program {program_index} assigns conditional \
-             owner {owner} to a different checked body"
-        ),
-        Error::ScalarProgramCountMismatch {
-            context,
-            expected,
-            actual,
-            ..
-        } => write!(f, "{context} expected {expected} rows, got {actual}"),
-        Error::PureCallSiteMismatch { context, owner, .. } => write!(
-            f,
-            "{context} references pure-call owner {owner} with a missing or mismatched interface"
-        ),
-        error => fmt_discrete_program_shape_contract_error(error, f),
-    }
-}
-
-/// Renders the contract failures raised by the discrete, guarded and event
-/// transaction program inventories.
-fn fmt_discrete_program_shape_contract_error(
-    error: &SolveProblemShapeContractError,
-    f: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    use SolveProblemShapeContractError as Error;
-    match error {
-        Error::DiscreteCertificate {
-            context,
-            row,
-            detail,
-            ..
-        } => write!(
-            f,
-            "{context} row {row} has an invalid certificate: {detail}"
-        ),
-        Error::StructuredDiscreteUpdate {
-            update_index,
-            node_index,
-            detail,
-            ..
-        } => write!(
-            f,
-            "structured discrete update {update_index} for compute node {node_index} is \
-             invalid: {detail}"
-        ),
-        Error::GuardedAssignmentProgram {
-            program_index,
-            detail,
-            ..
-        } => write!(
-            f,
-            "guarded assignment program {program_index} is invalid: {detail}"
-        ),
-        Error::EventTransactionProgram {
-            program_index,
-            detail,
-            ..
-        } => write!(
-            f,
-            "event transaction program {program_index} is invalid: {detail}"
-        ),
-        error => fmt_index_shape_contract_error(error, f),
     }
 }
 

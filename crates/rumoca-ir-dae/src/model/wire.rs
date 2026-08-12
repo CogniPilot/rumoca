@@ -1369,7 +1369,18 @@ fn rebuild_node<'dae>(
         } => {
             let function = mapped(&ids.functions, *function, "function", provenance)?;
             let arguments = map_expression_operands(wire, ids, *operand_count, provenance)?;
-            rebuild_call(ids, at, *owner, function, *output, arguments, provenance)
+            if *owner as usize == ids.expressions.len() {
+                at.call(function, *output as usize, arguments)
+            } else {
+                if *operand_count != 0 {
+                    return Err(malformed("expressions.nodes.call.operand_count"));
+                }
+                at.replay_call_projection(
+                    mapped(&ids.expressions, *owner, "function call owner", provenance)?,
+                    function,
+                    *output as usize,
+                )
+            }
         }
         node @ ExprNodeWire::StringConversion { .. } => {
             rebuild_string_conversion(ids, at, WireStringConversion::from_node(node), provenance)
@@ -1382,34 +1393,6 @@ fn rebuild_node<'dae>(
             rebuild_clock_transfer(ids, at, node, provenance)
         }
     }
-}
-
-/// Rebuild one call node from its already-mapped function and arguments.
-///
-/// A node that owns its own call replays those arguments; any other owner is a
-/// projection of one output out of that earlier call node and therefore carries
-/// no arguments of its own, which `arguments` being empty restates exactly
-/// because the wire operand count is what produced it.
-fn rebuild_call<'dae>(
-    ids: &WireIds<'dae>,
-    at: ExpressionAt<'_, 'dae>,
-    owner: u32,
-    function: FunctionId<'dae>,
-    output: u32,
-    arguments: Vec<ExprId<'dae>>,
-    provenance: DaeProvenance,
-) -> Result<ExprId<'dae>, DaeConstructionError> {
-    if owner as usize == ids.expressions.len() {
-        return at.call(function, output as usize, arguments);
-    }
-    if !arguments.is_empty() {
-        return Err(malformed("expressions.nodes.call.operand_count"));
-    }
-    at.replay_call_projection(
-        mapped(&ids.expressions, owner, "function call owner", provenance)?,
-        function,
-        output as usize,
-    )
 }
 
 fn rebuild_clock_transfer<'dae>(

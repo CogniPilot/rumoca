@@ -25,7 +25,9 @@ use crate::{
     relation_memory_value_from_root, replace_last_visible_values,
     timeline::sample_time_match_with_tol,
 };
-use rumoca_eval_solve::refresh_plan::trace_refresh_plan;
+use rumoca_eval_solve::refresh_plan::{
+    AlgebraicRefreshRow, RefreshPlan, RefreshStage, trace_refresh_plan,
+};
 use rumoca_eval_solve::{
     EvalSolveError, PreparedComputeBlock, PreparedEventTransactionProgram,
     PreparedGuardedAssignmentProgram, PreparedScalarProgramBlock, RowEvalContext,
@@ -250,10 +252,10 @@ pub struct SolveRuntime {
     continuous_structural: solve::ContinuousStructuralArtifacts,
     initialization_structural: solve::InitializationStructuralArtifacts,
     algebraic_newton_caches: Vec<RefCell<crate::runtime::projection::SparseNewtonCache>>,
-    algebraic_refresh: solve::RefreshPlan,
-    derivative_refresh: solve::RefreshPlan,
-    root_refresh: solve::RefreshPlan,
-    event_refresh: solve::RefreshPlan,
+    algebraic_refresh: RefreshPlan,
+    derivative_refresh: RefreshPlan,
+    root_refresh: RefreshPlan,
+    event_refresh: RefreshPlan,
     root_refresh_after_derivative: Option<solve::RefreshRemainderRelation>,
     clock_event_refresh_after_event: Vec<solve::RefreshRemainderRelation>,
     /// Certified coverage for the initialization homotopy continuation; the

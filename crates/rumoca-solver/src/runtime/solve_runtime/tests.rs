@@ -8,7 +8,7 @@ use rumoca_eval_solve::refresh_plan::{
 fn valid_algebraic_refresh_plan(
     model: &solve::SolveModel,
     block: &PreparedScalarProgramBlock,
-) -> solve::RefreshPlan {
+) -> RefreshPlan {
     match build_algebraic_refresh_plan(&model.problem, block) {
         Ok(plan) => plan,
         Err(error) => panic!("valid algebraic refresh plan should build: {error}"),
@@ -1381,7 +1381,7 @@ fn singular_affine_seed_falls_back_to_preserved_projection() {
 #[test]
 fn staged_projection_requires_a_seed_for_every_block_coordinate() {
     let rows = vec![
-        solve::AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
+        AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
             owner_id: Default::default(),
             source: solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
             equation_index: 0,
@@ -1394,7 +1394,7 @@ fn staged_projection_requires_a_seed_for_every_block_coordinate() {
         })
         .unwrap(),
     ];
-    let stage = solve::RefreshStage::ProjectionBlock {
+    let stage = RefreshStage::ProjectionBlock {
         seed_sequence: Default::default(),
         block_index: 0,
         plan: solve::AlgebraicProjectionPlan {
@@ -1405,10 +1405,10 @@ fn staged_projection_requires_a_seed_for_every_block_coordinate() {
         },
         seed_rows: solve::RefreshRowSelection::checked(rows.len(), [0]).unwrap(),
     };
-    let refresh = solve::RefreshPlan {
+    let refresh = RefreshPlan {
         rows,
         value_stages: vec![stage],
-        ..solve::RefreshPlan::default()
+        ..RefreshPlan::default()
     };
 
     assert!(!value_stage_seed_coverage_is_complete(&refresh));

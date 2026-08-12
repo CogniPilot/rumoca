@@ -100,7 +100,14 @@ impl<'program> TypedProgramBuilder<'program> {
         for (axis, base_extent) in axes.iter().zip(aggregate_type.dimensions()) {
             match *axis {
                 ProgramTensorViewAxis::Index(index) => {
-                    self.require_scalar_view_index(index, provenance)?;
+                    let index_type = self.register_type(index, provenance)?;
+                    if !index_type.dimensions().is_empty()
+                        || !matches!(index_type.element_type(), SolveScalarType::Integer(_))
+                    {
+                        return Err(SolveProgramConstructionError::InvalidProjection {
+                            provenance,
+                        });
+                    }
                 }
                 ProgramTensorViewAxis::Span { origin, extent }
                     if extent > 0
@@ -119,21 +126,6 @@ impl<'program> TypedProgramBuilder<'program> {
             return Err(SolveProgramConstructionError::InvalidProjection { provenance });
         }
         Ok(dimensions)
-    }
-
-    /// Requires that a view index axis addresses one scalar integer register.
-    fn require_scalar_view_index(
-        &self,
-        index: ProgramRegister<'program>,
-        provenance: Span,
-    ) -> Result<(), SolveProgramConstructionError> {
-        let index_type = self.register_type(index, provenance)?;
-        if !index_type.dimensions().is_empty()
-            || !matches!(index_type.element_type(), SolveScalarType::Integer(_))
-        {
-            return Err(SolveProgramConstructionError::InvalidProjection { provenance });
-        }
-        Ok(())
     }
 
     pub fn diagonal(

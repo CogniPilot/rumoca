@@ -593,7 +593,7 @@ impl SolveRuntime {
     /// their seed filled).
     pub(super) fn seed_refresh_with_plan(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &RefreshPlan,
         lin: AlgebraicLinearization<'_>,
         solver_y: &[f64],
         seed: &mut [f64],

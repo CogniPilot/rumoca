@@ -3,6 +3,7 @@ use rumoca_ir_solve as solve;
 use std::collections::BTreeSet;
 
 use crate::RuntimeSolveError;
+use rumoca_eval_solve::refresh_plan::RefreshPlan;
 use rumoca_eval_solve::{EvalSolveError, PreparedComputeBlock, RowEvalContext};
 
 #[derive(Clone, Copy)]
@@ -106,7 +107,7 @@ pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleVal
 
 pub(super) fn root_condition_plan(
     model: &solve::SolveModel,
-    root_refresh: &solve::RefreshPlan,
+    root_refresh: &RefreshPlan,
 ) -> Option<RootConditionPlan> {
     let roots = &model.problem.events.root_conditions;
     if roots.row_count() != roots.output_count() || !roots.uses_local_contiguous_output_indices() {
