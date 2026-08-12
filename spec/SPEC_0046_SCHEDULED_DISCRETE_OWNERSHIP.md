@@ -6,9 +6,9 @@ DRAFT
 ## Summary
 
 Scheduled and clocked discrete execution rests on one total lazy `next`
-relation and ONE composition root per event instant, whose many child
-occurrence owners settle under a single whole-event commit; coupled residual
-cycles are typed rejections, never an invented order.
+relation and ONE STATIC composition root per Solve event system, reused by every
+runtime attempt, whose child occurrence owners settle under a single whole-event
+commit; coupled residual cycles are typed rejections, never an invented order.
 
 ## Specification
 
@@ -27,9 +27,9 @@ transaction), **SOLVE-C11** (event-timing partition), **SOLVE-C22** (compact
 event-iteration plan), **SOLVE-C47**, **SOLVE-C48**, **SOLVE-C49** (guarded-
 assignment activation, branch lowering, and first-true-arm-otherwise-hold),
 **SOLVE-C55** (`EventTransactionProgram`), and **SOLVE-C57**; SPEC_0022
-**SIM-010**; and the SPEC_0043 §9 C57 EXTRACTION rows (the whole-clock plan, producer,
+**SIM-010**; and the SPEC_0043 §4 C57 EXTRACTION rows (the whole-clock plan, producer,
 proof-and-lowering route, admitted-producer lowering, transaction-exclusion,
-SOLVE-C28 boundary, and unowned-row rows) together with its C57 EVIDENCE rows
+SOLVE-C28 boundary, and unowned-row rows) together with its §5 C57 EVIDENCE rows
 (the false-narrower-guard HOLD case, reverse-ordered B.1b exchange, mixed
 B.1b/B.1c chain, compact-tensor traversal, linear-growth, event-transaction
 exclusion, `hold`/`sample` boundary, and unowned-row cases). The HOLD tests and
@@ -67,9 +67,9 @@ coordination mailbox rulings of 2026-08-12.
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| SDO-010 | `EventInstantExecutionPlan` is THE SINGLE composition root for one event instant: an opaque STATIC owner with complete nonoverlapping child-owner coverage, typed SameInstant and history edges, an activation-aware causal relation, and exactly ONE outer commit. Two plans for one instant, or a plan that commits part of an instant, are unconstructible. | `rumoca-ir-solve` | One root, one commit |
+| SDO-010 | `EventInstantExecutionPlan` is an opaque STATIC composition root issued ONCE per Solve semantic root and event system — one plan, or one bounded event-owner family, REUSED by every `EventAttempt` coordinate. Issuing a plan per runtime instant is FORBIDDEN: plan count and IR size must not grow with simulated duration. | `rumoca-ir-solve` | Static count, unbounded instants |
 | SDO-011 | Its compact body is stored ONCE, independent of how many consumers read it; a consumer loads the issued definition and never re-lowers, inlines, duplicates, or memoizes the producer graph. | construction | Size grows with producers, not readers |
-| SDO-012 | `EventAttempt` is the RUNTIME coordinate and private work state for one instant, and issues no static structure. PER-OCCURRENCE identity is `InvocationOwnerId` (SDO-050) — a child owner, never a plan. | runtime | Occurrences are owners, not plans |
+| SDO-012 | `EventAttempt` is the RUNTIME coordinate and private work state for one instant, and issues no static structure. EXACTLY ONE plan admits and owns each attempt and its outer commit. PER-OCCURRENCE identity is `InvocationOwnerId` (SDO-050) — a child owner, never a plan. | runtime | Occurrences are owners, not plans |
 
 ### 4. First Scope And The Rejection Boundary
 
@@ -100,9 +100,10 @@ coordination mailbox rulings of 2026-08-12.
 |----|------|-------------|---------------------|
 | SDO-040 | An event instant is one whole-event CANDIDATE/COMMIT relation: every target, history, and action outcome settles in PRIVATE work state, and success publishes atomically. | runtime | Half an event is not an event |
 | SDO-041 | Abort restores ALL of: `Y`, `P`, evaluator, delay, and cache state; relation and condition memory; random and impure state; integrator invalidation and restart state; FMI lifecycle, termination, and next-event state; schedule consumption; histories; and observable ledgers. A partial restore is a defect. | runtime | Rollback is total or absent |
-| SDO-042 | An outcome is a PRODUCT STATE: (`Publish` \| `Abort`) × a warnings MULTISET × an optional terminate. `Publish` commits and emits its warnings and any terminate exactly once; `Abort` restores. Warnings and terminate therefore combine freely. | runtime | Outcomes combine, they do not enumerate |
+| SDO-042 | An outcome is exactly `Publish { ordered_staged_effects, terminate? }` or `Abort { fatal_failure }`. `Publish` commits and emits its staged effects once, in ISSUED and SOURCE order within each ordered owner, retaining multiplicity; `Abort` restores and carries no staged fields. | runtime | Abort has no effects to describe |
 | SDO-043 | A FATAL failure emits its specified failure ONCE and SUPPRESSES every earlier staged warning, terminate, and status effect of that attempt. | runtime | A failed attempt reports one thing |
 | SDO-044 | `assert`, `terminate`, and status effects are STAGED until commit, and a retry duplicates NO effect. | runtime | Retries must not double-report |
+| SDO-046 | Two orderings are DISTINCT and neither implies the other: staged effects are ORDERED within each ordered owner (SDO-042), while INDEPENDENT base partitions remain permutation-invariant (SDO-031). Effect order inside an owner is observable; partition order between independent clocks is not. | runtime | Order within, invariance between |
 | SDO-045 | A transactional impure, random, or external effect is admitted only when snapshot-and-replayed; a NON-ROLLBACKABLE effect REJECTS before the attempt begins. | construction | Reject early, not mid-commit |
 
 ### 7. Discrete Identities

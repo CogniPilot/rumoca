@@ -321,8 +321,8 @@ names the `SDO` rule it covers.
 | Partial | Migration-period uniformity and row-filter runtime proofs exist in the working tree, each with a named deletion edge; they are transition debt, not the strata | `rumoca-solver` runtime | SDO-031, SDO-032 |
 | Partial | The one-tick and settle restorations are LANDED behavior and are the only strata semantics presently correct. Whole-event ACTION STAGING is NOT landed — see the next row | `rumoca-solver` runtime | SDO-033 |
 | Absent | No whole-event candidate/commit relation: outcomes publish as they settle, no owner defines whole-event publication, and effects are not staged | `rumoca-solver` runtime | SDO-040, SDO-043 |
-| Absent | Rollback covers no more than target state; relation/condition memory, random state, integrator restart, FMI lifecycle, and observable ledgers are unrestored | `rumoca-solver` runtime | SDO-041 |
-| Absent | The four-outcome taxonomy does not exist; warning and terminate paths are ad hoc | `rumoca-solver` runtime | SDO-042 |
+| Partial | `SolveRuntimeSnapshot` already captures the static refresh cache, evaluator random and impure state, and delay state. ABSENT are: one enclosing `EventAttempt` invoking it on EVERY failure path; relation and condition memory; integrator invalidation/restart and FMI lifecycle, termination, and next-event state; schedule-consumption and history restoration; and the observable action ledgers | `rumoca-solver` runtime | SDO-041 |
+| Absent | The `Publish`/`Abort` outcome form does not exist; warning and terminate paths are ad hoc and staged-effect order is not retained | `rumoca-solver` runtime | SDO-042 |
 | Absent | No `EventInstantExecutionPlan` static owner with nonoverlapping child coverage and one outer commit | `rumoca-ir-solve` | SDO-010, SDO-011 |
 | Absent | `InvocationOwnerId` is not keyed by source call occurrence plus activation, domain, and profile | construction | SDO-050, SDO-051 |
 | Partial | SOLVE-C55 already requires one `EventTransactionProgram` with a complete result tuple, so the tuple itself is not the gap. What is Absent is COMPOSITION and PUBLICATION: cross-owner cycles have no opaque-block rule, and the transaction's publication is not part of a whole-event commit | construction | SDO-060, SDO-061 |
@@ -342,15 +342,16 @@ names the `SDO` rule it covers.
 | SDO-205 | Coincident directions | In one fixture at one instant: Boolean code reading `hold(clockVar)` observes THIS tick's newly solved value, while a Clock partition sampling a Boolean-updated variable observes its captured left limit | SDO-034 |
 | SDO-206b | Round-2 activation | A condition-triggered unclocked algorithm activating at Appendix-B round `k >= 2` consumes current scheduled and iterative definitions and exposes its final tuple to later iterative members; feeding a once-only owner rejects absent a joint owner; the post-settle suffix then consumes the settled tuple before the single commit | SDO-036, SDO-037, SDO-038 |
 | SDO-206 | Cross-period cascade | An equation → algorithm → equation chain across different periods observes each stage's total-next result exactly once per activation | SDO-033, SDO-060 |
-| SDO-207 | Retry exactness | A retried attempt publishes bit-identical state to a first-try success from the same entry state | SDO-040, SDO-043 |
+| SDO-207 | Retry exactness | A retried attempt publishes bit-identical state to a first-try success from the same entry state, restoring completely between tries and duplicating no effect | SDO-040, SDO-041, SDO-044 |
 | SDO-208 | Sibling-commit rollback | One sibling's failure restores every other sibling's targets, histories, schedule consumption, and evaluator/delay/cache state | SDO-041 |
 | SDO-209 | Full rollback scope | Abort restores relation and condition memory, random and impure state, integrator invalidation and restart, FMI lifecycle and next-event state, and observable ledgers — each checked separately | SDO-041 |
 | SDO-210 | Nonconvergence rollback | A non-converging iteration restores entry state completely rather than publishing a partial settle | SDO-041 |
-| SDO-211 | Outcome product state | `Publish` with a warnings multiset emits each warning once; `Publish` with warnings AND terminate emits both once and publishes the terminal state; `Abort` restores and emits only its specified failure | SDO-042 |
+| SDO-211 | Ordered outcomes | `Publish { ordered_staged_effects }` emits each staged effect once in issued and source order, multiplicity retained; `Publish` with a terminate emits both and publishes the terminal state; `Abort { fatal_failure }` restores and emits only that failure | SDO-042 |
 | SDO-211b | Fatal after warnings | An attempt that stages warnings and then fails FATALLY emits its specified failure ONCE and emits NONE of the earlier staged warning, terminate, or status effects; the preregistered failing-late-action fixture publishes nothing | SDO-043, SDO-044 |
-| SDO-212 | Non-rollbackable effect | A transactional external effect that cannot be snapshot-and-replayed rejects BEFORE the attempt starts | SDO-044 |
+| SDO-212 | Non-rollbackable effect | A transactional external effect that cannot be snapshot-and-replayed rejects BEFORE the attempt starts | SDO-045 |
 | SDO-213 | Two same-body occurrences | Two calls to ONE function body at one instant issue TWO invocation and effect owners sharing ONE immutable relation body; counts and effects are per occurrence | SDO-050 |
 | SDO-214 | Static step identity | Identity issuance is static: IR size is invariant to simulated duration across a long run | SDO-051 |
+| SDO-214b | Static plan count | PLAN COUNT and IR size are invariant to simulated duration: a long run reuses the same `EventInstantExecutionPlan` for every attempt, and no plan is issued per runtime instant | SDO-010 |
 | SDO-215 | Statement atomicity | `x := a; x := b(x)` publishes `b(a)` as the single final target value, and no consumer observes the intermediate | SDO-060 |
 | SDO-216 | Opaque cross-owner cycle | A cross-owner cycle through a transaction rejects as one block; no split or interleaved schedule is produced | SDO-061 |
 | SDO-217 | False-cycle intersection | A cyclic edge set whose activation INTERSECTION is empty ACCEPTS via lattice proof; a jointly satisfiable cycle REJECTS at its owning spans | SDO-071 |
@@ -358,10 +359,11 @@ names the `SDO` rule it covers.
 | SDO-219 | Coprime cost | Coprime periods stay O(owners + compact edges + rank); no hyperperiod table or activation bitset is allocated | SDO-070, SDO-074 |
 | SDO-220 | Initialization phase | `sample(0, T)` does not fire during Modelica initialization, and the three-way counter split distinguishes initialization, the estimator init arm, and runtime ticks | SDO-080, SDO-081 |
 | SDO-221 | Million-element lazy aggregate | A million-element aggregate target under a lazy arm keeps semantic-graph, wire, preparation, and stored-body METADATA at O(compact bodies + owners + edges + rank); inherent payload storage may scale with source extent, and only the SELECTED branch's work and transient payload scale at execution | SDO-090, SDO-091 |
-| SDO-222 | Four-backend parity | Interpreter, Cranelift, generated C, and the definitional evaluator agree on final state AND status for one discrete fixture spanning active, inactive, warning, and terminate outcomes | SDO-042, SDO-200 |
+| SDO-222 | Four-backend parity | Interpreter, Cranelift, generated C, and the definitional evaluator agree on final state AND status for one discrete fixture spanning active, inactive, warning, and terminate outcomes | SDO-001, SDO-002, SDO-003, SDO-042, SDO-043, SDO-044 |
 
-**RDD2 estimator discriminator (SDO-223).** Bound to the external model's
-source digest OR to a structural precondition that is itself non-vacuous:
+**RDD2 estimator discriminator (SDO-223).** Bound by ONE SELECTED BINDING
+CERTIFICATE — either the external model's source digest, or a structural
+precondition that is itself non-vacuous:
 exactly ONE `step` occurrence; `predict` evaluated BEFORE correction; the exact
 priority chain `mocap → joint GPS → GPS position → GPS velocity → optical →
 hold`; and the later `navigationEstimateArrays` read observing the CURRENT
@@ -377,10 +379,12 @@ zero. The four legs are named: the interpreter, `NativeRequired` Cranelift,
 generated C, and the INDEPENDENT AlgorithmCode evaluator — all four report
 identical per-owner counts split into initialization and runtime. Branch, call,
 assertion, fold, tensor, and commit identities are each correlated to their
-issued `OccurrenceId` and `InvocationOwnerId` plus the source digest, never to
-ordinals or names, and cost stays O(source owners + rank) independent of
-covariance extents. Covers SDO-003, SDO-036, SDO-050, SDO-051, SDO-080,
-SDO-081.
+issued `OccurrenceId` and `InvocationOwnerId` plus THE SELECTED BINDING
+CERTIFICATE — whichever of the two was chosen — never to ordinals or names, and
+cost stays O(source owners + rank) independent of covariance extents. Covers
+SDO-001, SDO-002, SDO-003, SDO-050, SDO-051, SDO-060, SDO-080, SDO-081,
+SDO-090. It does NOT cover SDO-036: the RDD2 Boolean `sample` transaction
+activates in round 1, so this fixture proves no `k >= 2` behavior.
 
 **Rejected alternatives.**
 
