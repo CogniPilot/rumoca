@@ -1002,6 +1002,16 @@ compact ops; the existing eval-solve scalarizer is transition debt.
 Acceptance evidence: million-element case with O(1)/O(rank) compiler
 metadata and preparation — emitted loops acceptable, materialized
 million-op vectors nowhere.
+WORDING GENERALIZATION (04:55, for the SPEC_0032/0045 amendment): the
+boundary is the FINAL CHECKED PRODUCT EMITTER/EXECUTOR, of which a
+textual target's MiniJinja render is one instance — Cranelift, WASM,
+interpreters, and native tensor kernels have no Jinja stage and consume
+the same compact tensor/domain owner directly (loop, vector instruction,
+checked kernel call; never a stored scalar graph). Permission is
+separate from efficiency: reaching the final emitter never licenses
+unbounded unrolling — each product carries a checked
+work/code-size/resource budget and an admitted compact loop or kernel
+path; bounded unroll is an explicit small-shape optimization.
 
 ### 13.4 Gate definition (ratified 02:20)
 
