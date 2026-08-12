@@ -47,10 +47,18 @@ sibling SPEC_0046, not in tree).
 | SEV-006 | `ScalarOp`/`LinearOp` is a frozen superseded adapter awaiting deletion; a scalar projection is a borrowed final view, never stored. | `rumoca-ir-solve` | Views are not owners |
 | SEV-007 | Consumers cover the vocabulary exhaustively or reject a declared capability. **Stage test:** a new stage needs a different CONTRACT, not a granularity. | Solve consumers | Granularity duplicates proofs |
 
-**Why:** CasADi's SX/MX split is the cited warning — two graph universes
-duplicate evaluator, AD, dependency, and codegen proofs, and conversion between
-them changes identity and dominance. The rest follows from one consequence:
-policy that can change a result value is semantics and belongs to the root.
+**Why:** CasADi is the cited warning, precisely. `SX` builds one scalar node per
+element while `MX` admits matrix-valued primitives, so `3*x+y` on a 2-vector is
+eight `SX` operations and two `MX` operations; the two cannot mix in one
+expression, and the only sanctioned boundary is an `MX` call to an `SX` function,
+with `expand()` trading speed for memory. The split had a REAL profitability
+basis — low-overhead scalar relations and compact aggregate owners genuinely
+differ — and Rumoca keeps that benefit through one grammar's compact
+shape-polymorphic ops, `FunctionRelationId`/`InvokeOp` boundaries, borrowed final
+views (SEV-006), and backend-private SSA (TRP-003). What is rejected is only the
+rest: two incompatible semantic graph universes, identity-changing graph-kind
+conversion, and duplicated evaluator, AD, and wire proofs. Function boundaries
+are the useful lesson; graph-kind identity is the mistake.
 
 ### 3. Semantic Type Algebra
 
@@ -140,6 +148,9 @@ Defeated alternatives are
 
 - `dev/2026-08-11-core-structure-decisions.md` §13.1–§13.6 — the user-ratified
   decision record consolidated here.
+- CasADi user guide, `web.casadi.org/docs` §3.1 (`SX` scalar expression graphs),
+  §3.3 (`MX` matrix primitives), §3.4 (mixing `SX` and `MX`), §4.2 (`expand()`)
+  — the §2 rationale.
 - [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) — shared
   evidence and field-catalog annex; binding force lives in the rules above,
   which enumerate their field lists and gates there.
