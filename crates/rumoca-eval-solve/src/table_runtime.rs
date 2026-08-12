@@ -1,4 +1,4 @@
-use rumoca_ir_solve::ExternalTableData;
+use rumoca_core::ExternalTableData;
 
 const NO_NEXT_TIME_EVENT: f64 = f64::MAX;
 const TIME_EVENT_EPS: f64 = 1.0e-12;

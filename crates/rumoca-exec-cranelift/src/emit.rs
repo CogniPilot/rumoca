@@ -11,11 +11,11 @@ use cranelift_codegen::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
+use rumoca_core::ExternalTableData;
 use rumoca_eval_solve::{
     eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
     eval_time_table_next_event_value_in,
 };
-use rumoca_ir_solve::ExternalTableData;
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, LinearOp, ScalarProgramBlock, UnaryOp, resolve_indexed_slot,
 };

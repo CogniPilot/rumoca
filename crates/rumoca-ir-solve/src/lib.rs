@@ -24,7 +24,8 @@ pub mod visitor;
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ProvenanceSpan, SourceId, Span, StructuredIndexDomain, StructuredIndexDomainError,
+    ExternalTableData, ProvenanceSpan, SourceId, Span, StructuredIndexDomain,
+    StructuredIndexDomainError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -58,22 +59,6 @@ pub const SOLVE_SCHEMA_VERSION: u16 = 59;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
-}
-
-/// Loaded external table descriptor.
-///
-/// Carries the evaluated numeric contents of a Modelica `ExternalObject`
-/// table (e.g. `Modelica.Blocks.Tables.CombiTable1D`) across the
-/// eval-DAE → solver boundary. This IR-specific descriptor is co-owned here
-/// with the [`ExternalTables`] column that holds it, and execution consumers
-/// import it from Solve IR.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ExternalTableData {
-    pub id: u64,
-    pub data: Vec<Vec<f64>>,
-    pub columns: Vec<usize>,
-    pub smoothness: i64,
-    pub extrapolation: i64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

@@ -1,9 +1,9 @@
 use cranelift_jit::JITBuilder;
+use rumoca_core::ExternalTableData;
 use rumoca_eval_solve::{
     eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
     eval_time_table_next_event_value_in,
 };
-use rumoca_ir_solve::ExternalTableData;
 use std::cell::Cell;
 
 pub(super) fn register_math_symbols(builder: &mut JITBuilder) {

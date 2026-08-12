@@ -86,7 +86,7 @@ pub trait CompiledSolveExpression {
         y: &[f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_ir_solve::ExternalTableData],
+        external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String>;
 }
@@ -99,7 +99,7 @@ pub trait CompiledSolveJacobianExpression {
         p: &[f64],
         t: f64,
         seed: &[f64],
-        external_tables: &[rumoca_ir_solve::ExternalTableData],
+        external_tables: &[rumoca_core::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String>;
 }
@@ -114,7 +114,7 @@ pub trait CompiledSolveAssignmentSchedule {
         y: &mut [f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_ir_solve::ExternalTableData],
+        external_tables: &[rumoca_core::ExternalTableData],
     ) -> Result<(), String>;
 }
 
