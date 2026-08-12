@@ -1451,21 +1451,6 @@ pub struct DerivativeAnnotation {
     pub no_derivative: Vec<String>,
 }
 
-/// Loaded external table descriptor.
-///
-/// Carries the evaluated numeric contents of a Modelica `ExternalObject`
-/// table (e.g. `Modelica.Blocks.Tables.CombiTable1D`) across the
-/// eval-DAE → solver boundary. Shared by the eval and solve crates so
-/// neither side needs to depend on the other for this type alone.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ExternalTableData {
-    pub id: u64,
-    pub data: Vec<Vec<f64>>,
-    pub columns: Vec<usize>,
-    pub smoothness: i64,
-    pub extrapolation: i64,
-}
-
 /// Semantic expression tree shared by Flat and DAE IR.
 ///
 /// AST keeps a separate syntax-preserving expression type with tokens,

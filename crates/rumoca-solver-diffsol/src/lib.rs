@@ -94,7 +94,7 @@ impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
         y: &[f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String> {
         self.0
@@ -111,7 +111,7 @@ impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpress
         p: &[f64],
         t: f64,
         seed: &[f64],
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), String> {
         self.0
@@ -127,7 +127,7 @@ impl rumoca_solver::CompiledSolveAssignmentSchedule for CraneliftAssignmentSched
         y: &mut [f64],
         p: &[f64],
         t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
+        external_tables: &[rumoca_ir_solve::ExternalTableData],
     ) -> Result<(), String> {
         self.0
             .call_with_external_tables(y, p, t, external_tables)

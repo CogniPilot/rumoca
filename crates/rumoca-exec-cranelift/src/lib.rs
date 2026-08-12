@@ -7,7 +7,7 @@
 
 mod emit;
 
-use rumoca_core::ExternalTableData;
+use rumoca_ir_solve::ExternalTableData;
 use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
 use std::rc::Rc;
 

@@ -128,11 +128,11 @@ fn prepared_parameter_dependencies_recurse_through_lazy_conditional_regions() {
     );
 }
 
-fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
+fn time_table() -> (f64, Vec<rumoca_ir_solve::ExternalTableData>) {
     let table_id = 1_u64;
     (
         table_id as f64,
-        vec![rumoca_core::ExternalTableData {
+        vec![rumoca_ir_solve::ExternalTableData {
             id: table_id,
             data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
             columns: vec![2],
@@ -450,7 +450,7 @@ fn eval_row_hydrates_serialized_external_table_data() {
     let model = rumoca_ir_solve::SolveModel {
         parameters: vec![table_id],
         external_tables: rumoca_ir_solve::ExternalTables::new(vec![
-            rumoca_core::ExternalTableData {
+            rumoca_ir_solve::ExternalTableData {
                 id: table_id as u64,
                 data: vec![vec![1.0, 0.0], vec![3.0, 1.0]],
                 columns: vec![2],
@@ -546,7 +546,7 @@ fn eval_row_sign_is_zero_at_zero() {
 #[test]
 fn eval_row_uses_context_external_tables() {
     let table_id = 515_151.0;
-    let local_tables = vec![rumoca_core::ExternalTableData {
+    let local_tables = vec![rumoca_ir_solve::ExternalTableData {
         id: table_id as u64,
         data: vec![vec![1.0, 10.0], vec![3.0, 30.0]],
         columns: vec![2],
@@ -682,7 +682,7 @@ fn eval_row_table_lookup_invalid_column_is_error_not_clamped() {
 #[test]
 fn eval_row_table_lookup_invalid_table_column_metadata_is_error_not_clamped() {
     let table_id = 616_161.0;
-    let tables = vec![rumoca_core::ExternalTableData {
+    let tables = vec![rumoca_ir_solve::ExternalTableData {
         id: table_id as u64,
         data: vec![vec![0.0, 10.0], vec![1.0, 20.0]],
         columns: vec![3],

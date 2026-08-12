@@ -8,7 +8,6 @@ repository.workspace = true
 
 [dependencies]
 rumoca-solver = { workspace = true }
-rumoca-core = { workspace = true }
 rumoca-eval-solve = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 indexmap = { workspace = true }
