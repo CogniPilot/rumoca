@@ -46,6 +46,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | Absent | No structural term merging exists: DAE issues fresh `ExprId`s, lowering memoizes those exact IDs, and `TypedProgramBuilder` emits a new spanned op per use | `rumoca-ir-dae`, `rumoca-phase-solve` | SEV-044…SEV-049 |
 | Absent | `RootDigest`, `PreparedDigest`, and `ArtifactDigest` do not exist as distinct recomputable digests | `rumoca-ir-solve`, `rumoca-compile` | SEV-041, TRP-011 |
 | Absent | No volatile or atomic effect owner exists; `volatile` is an emitter spelling | backends, templates | SEV-016 |
+| Partial | `dae_has_external_functions` returns a hard-coded `false`, so the `external_functions == Some(false)` capability check at `codegen_target.rs:722` never fires: a target declaring no external-function support is admitted against a DAE that has them. The capability fails OPEN | `rumoca-compile/src/codegen_target/feature_analysis.rs` | SEV-155 |
 | Absent | No WASM, MLIR, or C consumer of `SolveOperation` exists | backend crates | SEV-007 |
 | Absent | `ValueCapabilityProfile`, `OperationEffectCapabilityProfile`, and `ExecutionEnvironmentProfile` do not exist; a target's numeric declaration is the only admission check, so nonnumeric families, grammar operations, and effects are never closed over | `rumoca-compile` | TRP-039, TRP-042 |
 | Partial | `rust-fixed` is HOSTED and explicitly not `no_std` per its own README; it is allocator-free only inside the derivative call, and its template, runtime-math, panic, and library behavior is not transitively checked | rust-fixed target | TRP-039 |
@@ -111,6 +112,8 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | SEV-150a | Cross-layer substitution | Five negatives reject: a prepared plan under the WRONG root, the WRONG target profile, a WRONG or missing receipt, an artifact under the WRONG template or toolchain, and any digest presented at the wrong layer of the ladder | SEV-042 |
 | SEV-150b | Decode recompute | Decoding recomputes `RootDigest`, `PreparedDigest`, and `ArtifactDigest` from their §4.13/§4.28/§4.29 fields; a claimed digest disagreeing with the recomputation rejects, and an artifact whose ancestry link is absent rejects | SEV-042 |
 | SEV-150c | Provenance is sidecar | Editing only a source span or occurrence annotation moves NO digest in the ladder; conversely no digest change is caused by provenance alone | SEV-042 |
+| SEV-150d | Provenance sidecar integrity | Mutating any §4.30 field — a span, an origin, a scope path, a role, or the sequence order — changes `ProvenanceDigest`; a sidecar whose claimed digest disagrees with the recomputation rejects, as does one bound to a different `RootDigest` or a second sidecar bound to the same root | SEV-042 |
+| SEV-155 | External-function capability fails CLOSED | A DAE carrying an admitted external interface makes a target declaring `external_functions = false` REJECT. Today `dae_has_external_functions` returns a hard-coded `false` (`rumoca-compile/src/codegen_target/feature_analysis.rs`), so the check at `codegen_target.rs:722` cannot fire and the capability fails OPEN | TRP-042, TRP-048 |
 | SEV-151 | Receipt issuance and replay | A receipt replayed against the wrong owner, wrong root, wrong descriptor, wrong effect footprint, or a different binary version REJECTS; a receipt lacking issuing authority or evidence is not selectable; a candidate that saturates or reorders differently from its declared relation builds a distinct root or rejects | TRP-013, TRP-045 |
 | SEV-149 | Typed result, not coercion | `Index`/view (`Tensor<T>` to `T`), record `Field` projection, `Compare` (`T`,`T` to `Boolean`), and `Reduce` each declare an exact typed result and are NOT conversions; an `f64` to `f32` edge MUST be an explicit `Convert` and rejects otherwise | SEV-010 |
 
@@ -204,7 +207,7 @@ Each row is bound by the parent rule naming it.
 | §4.9 | TRP-013 | Kernel receipt, content-addressed and compiler-known: owning `RootDigest` and canonical OwnerPath; owner and operation identity; entry symbol, signature, and calling convention; SEMANTIC operand types plus PHYSICAL layouts and strides; the predicate domain it is selected for; library version or binary hash and build flags; accumulator and order; alias and overlap; alignment and address space; workspace; preconditions; status behavior; effect footprint (`errno`, floating-point environment, globals, threading); issuing authority and its evidence; and replay protection. CMSIS descriptors additionally bind buffer lifetime, shape/stride/quantized format, and address-space alias rules |
 | §4.28 | SEV-042 | `PreparedDigest = H(domain, RootDigest, normalized target/capability/environment profiles, ALL receipts, the selected coverage plan, preparer and schema and toolchain contract)`. Ancestry on `RootDigest` is mandatory |
 | §4.29 | SEV-042 | `ArtifactDigest = H(domain, PreparedDigest, emitter/template/asset/package identities, output manifest and bytes)`. Ancestry on `PreparedDigest` is mandatory. Bytes IDENTIFY an output; they never prove refinement |
-| §4.30 | SEV-042 | Occurrence and source provenance is a CORRELATED SIDECAR, not semantic Root payload. It is keyed by canonical wire-local occurrence and owner PATHS reissued under `RootDigest` — never by a serialized root-local ID or ordinal (SEV-040). The sidecar carries its OWN recomputed evidence digest, so provenance edits move no digest in the §4.28/§4.29 ladder while remaining tamper-evident in their own right |
+| §4.30 | SEV-042 | Occurrence and source provenance is a CORRELATED SIDECAR, not semantic Root payload, keyed by canonical wire-local occurrence and owner PATHS reissued under `RootDigest` — never a serialized root-local ID or ordinal (SEV-040). `ProvenanceDigest = H(provenance domain tag, owning RootDigest, provenance schema version, canonical sorted sequence of (owner path, occurrence path, span, origin, instance and scope path, statement and operand role))`, excluding the claimed digest. `RootDigest` ancestry is mandatory, decode RECOMPUTES the claim, and one record binds exactly one sidecar to one root. It verifies independently of the §4.28/§4.29 ladder, so provenance edits move no ladder digest yet stay tamper-evident |
 | §4.10 | TRP-017 | ABI, coverage, loop/kernel, arithmetic relation, provenance, and the typed resource request of §4.25 — the bare word "resources" is not a request |
 | §4.24 | TRP-039 | `ValueCapabilityProfile`, deny-unknown and closed: per-family admission for rank-0 and rank-N Boolean, sized signed and unsigned integers, each admitted real format, nested record arrays, empty fields and values, enum brands, complex, and opaque VALUE handles. Effect owners are NOT here — they are §4.26. Checked TRANSITIVELY against every root owner before plan selection |
 | §4.26 | TRP-042 | `OperationEffectCapabilityProfile`, deny-unknown and closed, keyed EXHAUSTIVELY to the `ValueOp`, `InvokeOp`, `EffectOp`, and `Terminator` families, including declared structured, control, and lifecycle subsets, and the volatile/atomic EFFECT owners. Adding a grammar variant MUST make every capability matcher fail to compile or explicitly reject: no wildcard or default-support arm exists |
@@ -212,7 +215,7 @@ Each row is bound by the parent rule naming it.
 | §4.32 | TRP-031 | AC-to-PC operational refinement, declared per product: storage rounding and INTERMEDIATE rounding; contraction and evaluation order; the exceptional and status mapping (§6); and any allowed approximation with its exact relation and tolerance. AlgorithmCode is auditor-facing and profile-neutral, so the relation is a REFINEMENT, never equality; if eFMI admits approximation the tolerance is stated numerically, and if it does not the relation is stated as bit-exact for the declared mapping |
 | §4.31 | TRP-039, TRP-045 | Emitted-language and toolchain semantic contract: C, Rust, or WASM standard and runtime identity; toolchain identity; and the flags that change legality or results — fast-math, contraction and floating-point environment, overflow checks, panic behavior, and atomics. LEGALITY-CHANGING facts enter preparation and `PreparedDigest`; purely spelling and packaging facts enter `ArtifactDigest`. A source or binary hash IDENTIFIES an output and is never a refinement proof |
 | §4.27 | TRP-045 | Handler contract, closed and checked — never a bare label: entry symbol and ABI; language, runtime, and toolchain identity; the disposition it implements; termination and non-return behavior; stack and allocation needs; reentrancy, concurrency, and interrupt assumptions; observable effects; and a binary or source hash, or a compiler-known contract version. Selection CHECKS the contract against the environment and the requested disposition; its NORMALIZED CONTENT — never the label — enters `PreparedDigest` |
-| §4.11 | SEV-014 | Opaque handles admit no literals, ordering, generic wire, arithmetic, address inspection, AD, or tensorization |
+| §4.11 | SEV-014 | The nominal capability family — opaque external handles AND the explicit reference that makes a record acyclic — admits no literals, ordering, generic wire, arithmetic, address inspection, AD, or tensorization. A reference is reachable only through its declared owner |
 | §4.13 | SEV-041 | Hash-domain separation tag; typed SEMANTIC ROOT KIND identity; typed LIFECYCLE CONTRACT identity; canonical semantic payload excluding the claimed digest (semantic event schedules included); normalized arithmetic and sensitivity profiles; semantic schema and lowering version. Root kind and lifecycle contract are named typed fields, not implied by the domain tag |
 | §4.14 | TRP-001 | Mandatory legality/refinement (no speed gate); optional optimizations (hot, code, RSS); persistent caches (compile, start, storage); backend-local SSA/CFG (local identity, zero authority) |
 | §4.15 | SEV-015 | Type, field path, occurrence, ABI ordinal, wire identity; `[0,3]`, `[0,4]`, two empty arguments, and no argument are four distinct values; empty reductions and `[m,0]×[0,n]` carry exact semantics |
@@ -268,13 +271,20 @@ rejection recorded in the product's own profiles.
 
 | Product | Product/root kind | Closure obligations |
 |---|---|---|
-| Embedded / Production C | AlgorithmBlock eFMI PC | Every §4.1 family, §4.24 key, SPEC_0049 §1 key, §4.25 environment, status class, and §4.2 layout |
-| Hosted Rust | Simulation C-ODE | As above, `environment::hosted` |
-| `no_std` Rust | Simulation C-ODE | As above, `environment::freestanding` with its allocation, disposition, and handler decisions |
-| Native / Cranelift | Simulation C-ODE | As above, plus the typed backend ABI of SEV-102 |
-| WASM | Simulation C-ODE | As above; WGSL f32 remains the standing red (SEV-108) |
+| Hosted Rust | Simulation `SolveProblem` | Every §4.1 family, §4.24 key, SPEC_0049 §1/§2 key, §4.25 environment, status class, and §4.2 layout, at `environment::hosted` |
+| `no_std` Rust | Simulation `SolveProblem` | As above at `environment::freestanding`, with its allocation, disposition, and handler decisions |
+| Native / Cranelift | Simulation `SolveProblem` | As above, plus the typed backend ABI of SEV-102 |
+| WASM | Simulation `SolveProblem` | As above; WGSL f32 remains the standing red (SEV-108) |
+| Simulation C-ODE | C-ODE | Its own product kind: a C source ODE product, not the Rust/native/WASM kind above |
+| FMI component | FMI component | Kernel semantics end at the Solve root; checked FMI metadata binds into prepared, artifact, and package identity only (TRP-019) |
+| Embedded C | Embedded C | Its own product kind; it does NOT collapse into eFMI Production Code and carries no eFMI container obligations |
 | eFMI Algorithm Code | AC sibling projection | Admissibility receipt only; MAY reject families it does not model, per SEV-147's selected-mapping scope |
-| eFMI Production Code | AlgorithmBlock eFMI PC | As Production C, under the §4.31 AC-to-PC refinement |
+| eFMI Production Code | AlgorithmBlock eFMI PC | As Embedded C, plus the §4.32 AC-to-PC refinement and the co-issuance obligations of §4.19 |
+
+The four rows naming Simulation `SolveProblem` genuinely SHARE that root kind —
+they differ by environment, ABI, and emitter, not by root — and they are listed
+separately because their §4.25 and §4.24 obligations differ. Every other row is
+a distinct product and root kind; no row borrows another's name.
 
 ### 6. Failure and Status Mapping
 
@@ -310,3 +320,51 @@ INSIDE the relation → post-settle actions → single commit.
 from ONE static owner at 0.5 s over a 5 ms step, bound to the source digest and
 counted by issued identities (`OccurrenceId`, `InvocationOwnerId`) — never by
 ordinals or names.
+
+### 8. Acceptance-Time Amendment Map
+
+Bound by SPEC_0048 §1. Each clause was verified against its source before
+listing; on acceptance the voted series amends all of them atomically.
+
+SPEC_0007
+line 270 states `SolveAlgorithmBlock` is constructed ONLY FROM checked Algorithm
+Code; TRP-030 states neither sibling lowers from the other, so that clause and
+its bound SPEC_0040 SOLVE-C34 (method ownership) and SOLVE-C38 (injective
+mapping to Algorithm Code identity) are amended to co-issuance from one shared
+construction with bidirectional correlation. SPEC_0034 GAL-004 ("checked
+construction closes the package after lowering") and GAL-005 ("accepted
+constructs lower to semantic operations", owner `rumoca-phase-galec`) assign
+expression lowering to phase-galec and are amended to projection-and-
+admissibility only, per TRP-032.
+
+The scalar-program conflicts are enumerated, not promised: SPEC_0040 SOLVE-C03
+(flow-action calls in "Solve-IR scalar programs"), SOLVE-C25 (scalar root
+projection for call-scoped assertions), SOLVE-C39 (`FunctionFoldProgram`),
+SOLVE-C43 and SOLVE-C50 (`ScalarProgramBlock` owner table and its immutable
+execution certificate), and SOLVE-C45 (scalar-view projections over one pure
+aggregate-call occurrence) all presume a stored scalar program that TRP-020/021
+and TRP-035 confine to post-seal emission; each is amended to the final-emitter
+projection. Their SPEC_0043 §9 counterparts — the `ScalarProgramBlock`
+function-conditional table row and the scalar-program execution-certificate row
+— are amended in lockstep. SPEC_0036 "Solve Algorithm Block Construction" states
+`SolveAlgorithmBlock::construct` is the sole authority for the GALEC-DERIVED
+executable root and "consumes one checked `AlgorithmCodePackage`"; TRP-030
+co-issues the siblings from one shared construction, so that clause and its
+SPEC_0043 §9 link are amended together.
+
+### 9. Complex Contract (SPEC_0035 Retirement)
+
+Bound by SEV-017. SPEC_0035 is retired in the same voted series, so every rule
+it owned is carried here or the family is not admitted. Complex stays `Current`
+in §4.1 only because these rows carry it; if a row below is not implemented,
+Complex is `Proposed` until it is.
+
+| Carried rule | From | Placement |
+|---|---|---|
+| Operator applications resolve to the DECLARING function, never by name matching | SPEC_0035 §2 | Frontend resolve/instantiate; unchanged by this series |
+| A record whose operator bodies are proved equivalent to complex formulas maps to the complex element type; an unrecognized operator record does NOT, and the refusal is reason-coded | SPEC_0035 §2 | DAE lowering. Under TRP-020/021 the refusal is a typed rejection or a real-lane record, never a scalarized program |
+| Solver STATE slots are real; the layout records component pairing as one id with N component offsets | SPEC_0035 §3 | Real-state boundary; the integrator contract is unchanged |
+| Interleaved is the default layout, planar is opt-in, and the view and typed form agree by construction | SPEC_0035 §3 | A §4.2 prepared layout under TRP-044, receipted like every other |
+| One node set over two element types: existing tensor operations accept complex elements and the evaluator runs a native complex kernel | SPEC_0035 §4 | SEV-005 shape-polymorphism; SPEC_0049 §3 splits the keys by element kind |
+| Differentiation is exact over REAL lanes; native complex AD requires a PROVED HOLOMORPHIC operation, since non-holomorphic rules differ | SPEC_0035 §4 | SEV-030's ideal-real claim; a non-holomorphic operation in an AD-required region REJECTS under SEV-033 |
+| A backend without complex support requests the real view | SPEC_0035 §4 | Now a typed rejection or an admitted real-lane family under §4.24, never an implicit fallback (TRP-021) |

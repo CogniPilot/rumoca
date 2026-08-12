@@ -21,17 +21,8 @@ expansion boundary); SPEC_0034 Summary, pipeline, GAL-027, and GAL-038 (TRP-030
 replaces independently lowered AlgorithmCode bodies); and DRAFT SPEC_0036 with
 SPEC_0043 product-root rows.
 
-**Direct clause conflicts, amended atomically in the same vote.** SPEC_0007
-line 270 states `SolveAlgorithmBlock` is constructed ONLY FROM checked Algorithm
-Code; TRP-030 states neither sibling lowers from the other, so that clause and
-its bound SPEC_0040 SOLVE-C34 (method ownership) and SOLVE-C38 (injective
-mapping to Algorithm Code identity) are amended to co-issuance from one shared
-construction with bidirectional correlation. SPEC_0034 GAL-004 ("checked
-construction closes the package after lowering") and GAL-005 ("accepted
-constructs lower to semantic operations", owner `rumoca-phase-galec`) assign
-expression lowering to phase-galec and are amended to projection-and-
-admissibility only, per TRP-032. Every clause of those parents is audited in the
-voted series, not only the headline rows.
+**Direct clause conflicts** are enumerated clause by clause in
+[SPEC_0047 §8](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#8-acceptance-time-amendment-map); every row there is amended atomically in this vote.
 
 It further amends SPEC_0029 §5 and §12 with these exact SPEC_0041 §4 rows, which
 TRP-032 splits: *"Compilation/session orchestration"* (`rumoca-compile`) gains
@@ -83,7 +74,7 @@ profiles, and identity ladder are
 | TRP-016 | `NativeRequired` rejects incomplete coverage; `HybridMigration` is explicit, recorded, and never silent. | preparation | Fallback must be visible |
 | TRP-017 | There is no universal target program: the factors in [§4.10](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) compose into sealed product-specific plans, and a common base is promoted only when three different products share an IDENTICAL mandatory invariant and checker flow. | preparation | Invariants, not counts |
 | TRP-018 | The emitter sees one sealed plan and no candidates; renderer construction takes ONLY that plan plus packaging facts, and no context offers both compact and scalarized alternatives. | `rumoca-phase-codegen` | Template choice unverifiable |
-| TRP-019 | The executable COMPUTATIONAL KERNEL semantics of C, Rust, WASM, and native products end at a profile-bound Solve root. A lifecycle product MAY additionally bind checked FMI component metadata, the eFMI AC sibling, and package facts — these enter prepared, artifact, and package identity, NEVER a forged `RootDigest`. Flat, DAE, and Algorithm-Code exports stay at their lowest valid IR. Distinct product and root kinds: Simulation C-ODE, FMI component, AlgorithmBlock eFMI PC. | `rumoca-compile` | Kernels end at the root |
+| TRP-019 | The executable COMPUTATIONAL KERNEL semantics of C, Rust, WASM, and native products end at a profile-bound Solve root. A lifecycle product MAY additionally bind checked FMI component metadata, the eFMI AC sibling, and package facts — these enter prepared, artifact, and package identity, NEVER a forged `RootDigest`. Flat, DAE, and Algorithm-Code exports stay at their lowest valid IR. Distinct product and root kinds, enumerated in [SPEC_0047 §5](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#5-product-closure-matrix): Simulation `SolveProblem`, Simulation C-ODE, FMI component, Embedded C, and AlgorithmBlock eFMI PC. Products sharing a root kind say so; none borrows another's name. | `rumoca-compile` | Kernels end at the root |
 | TRP-038 | Two products share a root ONLY when their semantic root KIND, complete semantic inputs, normalized arithmetic and sensitivity profile, AND lifecycle contract are all identical. Any difference — notably a Simulation versus AlgorithmBlock lifecycle — yields distinct roots that MUST NOT be substituted for one another, even when their issued expression and function correlations match. | `rumoca-compile` | Lifecycle is root identity |
 
 ### 4. Final Expansion Boundary And Budgets

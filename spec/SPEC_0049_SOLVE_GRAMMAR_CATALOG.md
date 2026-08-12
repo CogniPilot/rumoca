@@ -75,12 +75,14 @@ edit, so re-read before relying on it.
 
 ### 1. Value, Invoke, and Effect Variants
 
-**The checked constructors are the semantic authority.** `TypedProgram`'s
-`push_*` constructors in `crates/rumoca-ir-solve/src/typed_program/program.rs`
-and `program/tensor.rs` define these operations; this section is a complete
-faithful SYNOPSIS of them, verified field by field, never a competing
-definition. Where synopsis and constructor disagree, the constructor governs
-and this row is a defect.
+**Authority split.** The DRAFT parent rule plus its bound row here define the
+INTENDED SEMANTIC CONTRACT. The `Status` column REPORTS what today's checked
+constructors in `crates/rumoca-ir-solve/src/typed_program/program.rs` and
+`program/tensor.rs` admit, without adding normative future behavior. Constructor
+parity tests prove the IMPLEMENTATION conforms to the row. A disagreement is
+therefore either an implementation defect or a separately reviewed spec
+amendment — never a constructor-wins resolution, because a mutable
+implementation is not the normative oracle.
 
 Status: **Current** = constructible in the working tree today; **Proposed** =
 declared end state that construction does not admit yet.
