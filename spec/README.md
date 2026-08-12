@@ -40,7 +40,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md) | Solve Executable Vocabulary and Profiles | IR | ~160 | DRAFT |
 | [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~312 | REFERENCE |
 | [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~129 | DRAFT |
-| [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~152 | REFERENCE |
+| [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~191 | REFERENCE |
 
 ### Reference annexes
 

@@ -49,7 +49,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | Absent | No WASM, MLIR, or C consumer of `SolveOperation` exists | backend crates | SEV-007 |
 | Absent | `ValueCapabilityProfile`, `OperationEffectCapabilityProfile`, and `ExecutionEnvironmentProfile` do not exist; a target's numeric declaration is the only admission check, so nonnumeric families, grammar operations, and effects are never closed over | `rumoca-compile` | TRP-039, TRP-042 |
 | Partial | `rust-fixed` is HOSTED and explicitly not `no_std` per its own README; it is allocator-free only inside the derivative call, and its template, runtime-math, panic, and library behavior is not transitively checked | rust-fixed target | TRP-039 |
-| Absent | The SPEC_0049 catalog-to-Rust exhaustiveness test does not exist: no check compares the catalog's key set to `SolveOperation` and its embedded operator enums, so a new variant would not fail anything | `rumoca-ir-solve` tests | SPEC_0049 promotion gate |
+| Absent | Neither SPEC_0049 promotion gate exists: no key-set exhaustiveness test compares the catalog to `SolveOperation` and its embedded operator enums, and no constructor PARITY cases check each row's admitted and rejected element kinds, operand arity, and distinguishing operands. A name-set check alone would pass a wrong arity or a missing operand | `rumoca-ir-solve` tests | SPEC_0049 promotion gates |
 | Absent | SEV-001's `EffectOp` and `Terminator` factors and SEV-016's volatile/atomic owners have no discriminants and are uncataloged; the grammar is NOT closed today | `rumoca-ir-solve` | SEV-001, SEV-016 |
 | Absent | No Kani rows prove the type, conversion, identity, or refinement claims | proof manifest | §2 rows |
 
