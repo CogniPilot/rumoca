@@ -6,8 +6,8 @@ DRAFT
 ## Summary
 
 One closed factored Solve operation grammar, one identity system, value types
-stating representable domain and encoding only, and all arithmetic and
-sensitivity policy on root-bound profiles.
+owning semantic kind, nominal identity, shape, representable domain, and
+encoding, and all arithmetic and sensitivity policy on root-bound profiles.
 
 ## Specification
 
@@ -56,7 +56,7 @@ policy that can change a result value is semantics and belongs to the root.
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| SEV-010 | A value type identifies representable domain and encoding ONLY; every cross-type edge is an explicit conversion. | Solve types | Policy doubles lattices |
+| SEV-010 | A value type owns semantic KIND, NOMINAL IDENTITY, SHAPE, REPRESENTABLE DOMAIN, and ENCODING — and nothing else. Arithmetic, sensitivity, execution, and target-layout policy are EXCLUDED. Every cross-type edge is an explicit conversion. | Solve types | Policy doubles lattices |
 | SEV-011 | The root profile declares defaults and admissible contracts; construction resolves EXACTLY ONE arithmetic contract per operation occurrence, which that operation then carries. Neither the value type nor a backend chooses. The resolved contract is part of the term and op key; profile admissibility is part of `RootDigest`. | construction | One authority per occurrence |
 | SEV-012 | The admitted families are exactly [§4.1](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); records are FINITE ACYCLIC by value, recursing only via an explicit reference or opaque capability. | Solve types | Not all float |
 | SEV-018 | `SolveScalarType::Integer { repr: IntRepr }` owns signedness, width, and encoding ONLY. Interval and range facts are SEPARATE root-bound facts on SSA definitions and slots, derived from source declarations and construction. An explicit narrowing conversion changes `repr`; ordinary range refinement does NOT change value-type equality. | Solve types | Representation is not a range |
