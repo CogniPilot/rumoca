@@ -11,6 +11,10 @@ encoding, and all arithmetic and sensitivity policy on root-bound profiles.
 
 ## Specification
 
+**Sections.** 1 governance · 2 grammar · 3 type algebra · 4 profiles and
+arithmetic closure · 5 sensitivity · 6 identity and term sharing · 7 wire ·
+8 state, gates, alternatives · 9 reversal gates.
+
 ### 1. Governance, Scope, And Acceptance-Time Amendment Map
 
 This DRAFT proposes the amendments below and claims none today. A SPEC_0000
@@ -20,14 +24,16 @@ voted series; until it passes, this file stays DRAFT.
 
 On acceptance this amends SPEC_0035 Summary and §§1/3/4 — precision-neutral
 `Real`, codegen-time width selection, and record scalarization are superseded by
-§3–§4, SPEC_0035's Complex rules are narrowed into SEV-017, and SPEC_0035 is
-retired in the same series so two numeric authorities never coexist. It also
-amends DRAFT SPEC_0036 and SPEC_0043 §9 with its rounding rows (profile-bound
-identity and the §6 split). Target-facing parents are amended by
+§3–§4. SPEC_0035 is NOT retired by this series: SEV-017 keeps Complex
+transport-only, so SPEC_0035 remains the DRAFT owner of the Complex rules until
+its own slice lands, and retiring it now would orphan a half-specified family.
+This also amends DRAFT SPEC_0036 and SPEC_0043 §9 with its rounding rows
+(profile-bound identity and the §6 split). Target-facing parents are amended by
 [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) §1.
 
 **Series arithmetic.** 17 before this proposal series; +0045 and +0048 = 19;
-planned 0046 = 20; retiring 0035 = 19.
+planned 0046 = 20. SPEC_0035 is not retired here, so the cap is reached and a
+later slice must free a slot before another active spec is added.
 
 Governed: the Solve grammar, type algebra, root-bound profiles, executable
 identity, term sharing, and wire replay. Target refinement, prepared products,
@@ -52,11 +58,10 @@ element while `MX` admits matrix-valued primitives, so `3*x+y` on a 2-vector is
 eight `SX` operations and two `MX` operations; the two cannot mix in one
 expression, and the only sanctioned boundary is an `MX` call to an `SX` function,
 with `expand()` trading speed for memory. The split had a REAL profitability
-basis — low-overhead scalar relations and compact aggregate owners genuinely
-differ — and Rumoca keeps that benefit through one grammar's compact
+basis, and Rumoca keeps that benefit through one grammar's compact
 shape-polymorphic ops, `FunctionRelationId`/`InvokeOp` boundaries, borrowed final
-views (SEV-006), and backend-private SSA (TRP-003). What is rejected is only the
-rest: two incompatible semantic graph universes, identity-changing graph-kind
+views (SEV-006), and backend-private SSA (TRP-003). Rejected is only the rest:
+two incompatible semantic graph universes, identity-changing graph-kind
 conversion, and duplicated evaluator, AD, and wire proofs. Function boundaries
 are the useful lesson; graph-kind identity is the mistake.
 
@@ -72,7 +77,7 @@ are the useful lesson; graph-kind identity is the mistake.
 | SEV-014 | Enum TYPE identity is `{EnumTypeId, cardinality}`; an ordinal identifies a VALUE of that type, so ordinal 1 of two enums is two values of two unequal types. Opaque handles and the explicit REFERENCE that makes a record acyclic (SEV-012) are one nominal capability family restricted by [§4.11](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). | Solve types | Else a pointer |
 | SEV-015 | Zero storage is not zero identity: an empty value keeps every identity in [§4.15](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) and zero domains never run bodies. | construction | Empty is a value |
 | SEV-016 | `volatile` is NOT ABI-only: an MMIO read may change value and its access count is observable, so a cacheable `Load` cannot map to volatile. Admit only the owners in [§4.16](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), or reject. | Solve effects | Access count observable |
-| SEV-017 | Complex is one element type over an admitted binary format, never a record or pair; interleaved versus planar storage is a prepared layout. This narrows and replaces SPEC_0035 §1, and every other rule SPEC_0035 owned — operator-record recognition, the real-state boundary, evaluator equivalence, and holomorphic AD — is carried in [SPEC_0047 §9](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#9-complex-contract-spec_0035-retirement); Complex is admitted only while those rows hold. | `rumoca-ir-solve` | One numeric authority |
+| SEV-017 | **PROPOSED, transport-only.** Complex is one element type over an admitted binary format, never a record or pair, and interleaved versus planar storage is a prepared layout. No product in this series requires it, so no `SolveScalarType::Complex` value form, wire form, or per-operation leaf is specified here: Complex may be carried and declared, never computed on, until its own slice lands. [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) stays DRAFT and un-retired meanwhile; [SPEC_0047 §9](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#9-complex-contract-spec_0035-narrowing) records what a full specification must carry. | `rumoca-ir-solve` | Half a family is no family |
 
 ### 4. Root-Bound Profiles And Arithmetic Closure
 
@@ -121,7 +126,7 @@ Three semantics exist, MUST NOT be conflated, and carry distinct profile IDs:
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
-| SEV-090 | Canonical Solve serialization binds `RootDigest` only; prepared and evidence records bind `PreparedDigest`, and checksum graphs bind output bytes. | Solve wire | One layer per record |
+| SEV-090 | A record binds the digest of the LAYER IT ANNOTATES: canonical Solve serialization binds `RootDigest`; prepared records and preparation evidence bind `PreparedDigest`; artifact checksum graphs bind output bytes; and the occurrence/provenance sidecar annotates the ROOT, so its `ProvenanceDigest` takes `RootDigest` ancestry (§4.30). | Solve wire | Bind the layer you annotate |
 | SEV-091 | Forged representation, value, record, enum-brand, or empty-layout mutations reject on decode, which replays checked constructors; canonical byte order is interning-invariant. | wire constructors | Decode is construction |
 | SEV-092 | Derived range and interval facts are rederived on replay from serialized semantic inputs, never stored per operation, unless irreducible. | wire schema | Certificates bloat wire |
 

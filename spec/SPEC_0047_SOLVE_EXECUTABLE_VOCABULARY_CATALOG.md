@@ -13,7 +13,9 @@ rules).
 
 ## How To Use This Catalog
 
-This annex holds no governing rules. Every rule lives in SPEC_0045 or SPEC_0048;
+This annex holds no governing rules — §§5, 6, and 8 read as obligations only
+because TRP-049, TRP-050, and SPEC_0048 §1 impose them. Every rule lives in
+SPEC_0045 or SPEC_0048;
 the rows here are the inventory, gate registry, recorded alternatives, and bound
 field catalogs those rules link. Rows are normative by reference from the parent
 section that links them, and both parents are DRAFT, so the rows bind when their
@@ -113,7 +115,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | SEV-150b | Decode recompute | Decoding recomputes `RootDigest`, `PreparedDigest`, and `ArtifactDigest` from their §4.13/§4.28/§4.29 fields; a claimed digest disagreeing with the recomputation rejects, and an artifact whose ancestry link is absent rejects | SEV-042 |
 | SEV-150c | Provenance is sidecar | Editing only a source span or occurrence annotation moves NO digest in the ladder; conversely no digest change is caused by provenance alone | SEV-042 |
 | SEV-150d | Provenance sidecar integrity | Mutating any §4.30 field — a span, an origin, a scope path, a role, or the sequence order — changes `ProvenanceDigest`; a sidecar whose claimed digest disagrees with the recomputation rejects, as does one bound to a different `RootDigest` or a second sidecar bound to the same root | SEV-042 |
-| SEV-155 | External-function capability fails CLOSED | A DAE carrying an admitted external interface makes a target declaring `external_functions = false` REJECT. Today `dae_has_external_functions` returns a hard-coded `false` (`rumoca-compile/src/codegen_target/feature_analysis.rs`), so the check at `codegen_target.rs:722` cannot fire and the capability fails OPEN | TRP-042, TRP-048 |
+| SEV-155 | External-function capability fails CLOSED | A DAE carrying an admitted external interface makes a target declaring `external_functions = false` REJECT. The explicit NEGATIVE against the constant-false probe: a DAE with an external interface must make the check FIRE — a test that passes only because `dae_has_external_functions` returns a hard-coded `false` (`rumoca-compile/src/codegen_target/feature_analysis.rs`) does not discharge this row, since the check at `codegen_target.rs:722` cannot fire today and the capability fails OPEN | TRP-042, TRP-048 |
 | SEV-151 | Receipt issuance and replay | A receipt replayed against the wrong owner, wrong root, wrong descriptor, wrong effect footprint, or a different binary version REJECTS; a receipt lacking issuing authority or evidence is not selectable; a candidate that saturates or reorders differently from its declared relation builds a distinct root or rejects | TRP-013, TRP-045 |
 | SEV-149 | Typed result, not coercion | `Index`/view (`Tensor<T>` to `T`), record `Field` projection, `Compare` (`T`,`T` to `Boolean`), and `Reduce` each declare an exact typed result and are NOT conversions; an `f64` to `f32` edge MUST be an explicit `Convert` and rejects otherwise | SEV-010 |
 
@@ -195,7 +197,7 @@ Each row is bound by the parent rule naming it.
 
 | Ref | Bound by | Fields |
 |---|---|---|
-| §4.1 | SEV-012 | Boolean; sized signed and unsigned integers; Binary32; Binary64; Complex over an admitted binary format (SEV-017); branded enums (SEV-014); compact tensors of checked shape; finite acyclic by-value records, whose recursion passes through an explicit reference or opaque capability; and opaque VALUE handles (SEV-014, §4.24). Binary16, BFloat16, and fixed point are reserved descriptor shapes needing evaluator, conversion, and status contracts before admission |
+| §4.1 | SEV-012 | Boolean; sized signed and unsigned integers; Binary32; Binary64; Complex over an admitted binary format, TRANSPORT-ONLY and Proposed (SEV-017); branded enums (SEV-014); compact tensors of checked shape; finite acyclic by-value records, whose recursion passes through an explicit reference or opaque capability; and opaque VALUE handles (SEV-014, §4.24). Binary16, BFloat16, and fixed point are reserved descriptor shapes needing evaluator, conversion, and status contracts before admission |
 | §4.2 | SEV-013 | AoS/SoA choice, padding, field offsets, alignment, address space, `repr(C)`, CMSIS descriptors, interleaved or planar complex storage |
 | §4.3 | SEV-024 (contract fields), TRP-015 (exact target-relation preservation) | Accumulator format, evaluation order, per-step and result rounding, contraction/FMA, signed zero, NaN payload and quieting, infinity, subnormal/FTZ, status, transcendental contract |
 | §4.4 | SEV-044 | Callee, ordered arguments, activation, clock, domain, captures, effects, read versions, profile |
@@ -214,6 +216,8 @@ Each row is bound by the parent rule naming it.
 | §4.25 | TRP-039, TRP-045 | `ExecutionEnvironmentProfile`, deny-unknown and closed: `environment::{hosted, freestanding}`; `allocation::{forbidden, admitted}` with scratch limits; recursion and stack limits; `failure::{returned_status, panic { disposition::{abort, unwind, halt, reset}, handler::{none, named(§4.27)} }}`; available runtime math; concurrency and atomic model; admitted library contracts and ISA features. CANONICAL SHAPE: `handler` exists ONLY nested under `panic`; `returned_status` carries no handler field at all, so absence is its canonical form and two serializations of one meaning never exist. DISPOSITION is the observable outcome and `handler` the owning MECHANISM — independent axes, since one disposition may be reached through a handler or directly. Compatibility is declared, not inferred: `freestanding` with `halt` or `reset` REQUIRES `named`; `abort` and `unwind` admit either, subject to the environment's own rules. Declaring an ISA or library available NEVER authorizes a kernel — only its §4.9 receipt does |
 | §4.32 | TRP-031 | AC-to-PC operational refinement, declared per product: storage rounding and INTERMEDIATE rounding; contraction and evaluation order; the exceptional and status mapping (§6); and any allowed approximation with its exact relation and tolerance. AlgorithmCode is auditor-facing and profile-neutral, so the relation is a REFINEMENT, never equality; if eFMI admits approximation the tolerance is stated numerically, and if it does not the relation is stated as bit-exact for the declared mapping |
 | §4.31 | TRP-039, TRP-045 | Emitted-language and toolchain semantic contract: C, Rust, or WASM standard and runtime identity; toolchain identity; and the flags that change legality or results — fast-math, contraction and floating-point environment, overflow checks, panic behavior, and atomics. LEGALITY-CHANGING facts enter preparation and `PreparedDigest`; purely spelling and packaging facts enter `ArtifactDigest`. A source or binary hash IDENTIFIES an output and is never a refinement proof |
+| §4.33 | TRP-050 | `ProductKind` × `RootKind` closed schema. Per variant: `ProductTag` (typed, REQUIRED for every product); `CoverageMode` (REQUIRED for Solve-executable products, FORBIDDEN for Flat/DAE/AC-only exports); ordered candidate lists (REQUIRED where a §4.18 plan admits alternatives, FORBIDDEN for `DirectCompact`-only products); budgets (REQUIRED for every product, TRP-022); receipts (REQUIRED per selected kernel, layout, and environment — §4.9, §4.23, §4.27). No variant carries a default; an absent REQUIRED field rejects, and a present FORBIDDEN field rejects |
+| §4.34 | TRP-013, TRP-015 | Receipt root-equivalence: a CMSIS descriptor or quantized-format mapping is root-equivalent ONLY when its receipt proves a LOSSLESS relation on the proven domain — same values, same exceptional and status behavior, same order. Absent that proof it constructs a distinct arithmetic root declaring the different semantics, or rejects; it never rides the original root as an optimization |
 | §4.27 | TRP-045 | Handler contract, closed and checked — never a bare label: entry symbol and ABI; language, runtime, and toolchain identity; the disposition it implements; termination and non-return behavior; stack and allocation needs; reentrancy, concurrency, and interrupt assumptions; observable effects; and a binary or source hash, or a compiler-known contract version. Selection CHECKS the contract against the environment and the requested disposition; its NORMALIZED CONTENT — never the label — enters `PreparedDigest` |
 | §4.11 | SEV-014 | The nominal capability family — opaque external handles AND the explicit reference that makes a record acyclic — admits no literals, ordering, generic wire, arithmetic, address inspection, AD, or tensorization. A reference is reachable only through its declared owner |
 | §4.13 | SEV-041 | Hash-domain separation tag; typed SEMANTIC ROOT KIND identity; typed LIFECYCLE CONTRACT identity; canonical semantic payload excluding the claimed digest (semantic event schedules included); normalized arithmetic and sensitivity profiles; semantic schema and lowering version. Root kind and lifecycle contract are named typed fields, not implied by the domain tag |
@@ -274,7 +278,8 @@ rejection recorded in the product's own profiles.
 | Hosted Rust | Simulation `SolveProblem` | Every §4.1 family, §4.24 key, SPEC_0049 §1/§2 key, §4.25 environment, status class, and §4.2 layout, at `environment::hosted` |
 | `no_std` Rust | Simulation `SolveProblem` | As above at `environment::freestanding`, with its allocation, disposition, and handler decisions |
 | Native / Cranelift | Simulation `SolveProblem` | As above, plus the typed backend ABI of SEV-102 |
-| WASM | Simulation `SolveProblem` | As above; WGSL f32 remains the standing red (SEV-108) |
+| WASM | Simulation `SolveProblem` | As above, for the WebAssembly product |
+| WGSL | Simulation `SolveProblem` | A DISTINCT product from WASM: a GPU shading-language product whose f32 declaration remains the standing red (SEV-108) |
 | Simulation C-ODE | C-ODE | Its own product kind: a C source ODE product, not the Rust/native/WASM kind above |
 | FMI component | FMI component | Kernel semantics end at the Solve root; checked FMI metadata binds into prepared, artifact, and package identity only (TRP-019) |
 | Embedded C | Embedded C | Its own product kind; it does NOT collapse into eFMI Production Code and carries no eFMI container obligations |
@@ -352,12 +357,13 @@ executable root and "consumes one checked `AlgorithmCodePackage`"; TRP-030
 co-issues the siblings from one shared construction, so that clause and its
 SPEC_0043 §9 link are amended together.
 
-### 9. Complex Contract (SPEC_0035 Retirement)
+### 9. Complex Contract (SPEC_0035 Narrowing)
 
-Bound by SEV-017. SPEC_0035 is retired in the same voted series, so every rule
-it owned is carried here or the family is not admitted. Complex stays `Current`
-in §4.1 only because these rows carry it; if a row below is not implemented,
-Complex is `Proposed` until it is.
+Bound by SEV-017, which keeps Complex **Proposed and transport-only**. SPEC_0035
+is NOT retired: it stays the DRAFT owner of these rules. The table below is the
+checklist a future Complex slice must discharge before Complex becomes
+computable — value form, wire form, per-operation leaves, and classes included.
+Until then §4.1 admits Complex for transport only.
 
 | Carried rule | From | Placement |
 |---|---|---|
@@ -368,3 +374,12 @@ Complex is `Proposed` until it is.
 | One node set over two element types: existing tensor operations accept complex elements and the evaluator runs a native complex kernel | SPEC_0035 §4 | SEV-005 shape-polymorphism; SPEC_0049 §3 splits the keys by element kind |
 | Differentiation is exact over REAL lanes; native complex AD requires a PROVED HOLOMORPHIC operation, since non-holomorphic rules differ | SPEC_0035 §4 | SEV-030's ideal-real claim; a non-holomorphic operation in an AD-required region REJECTS under SEV-033 |
 | A backend without complex support requests the real view | SPEC_0035 §4 | Now a typed rejection or an admitted real-lane family under §4.24, never an implicit fallback (TRP-021) |
+
+**SPEC_0029 §5/§12 ownership rows (SPEC_0041 §4), split by TRP-032.**
+
+| SPEC_0041 §4 row | Amended to |
+|---|---|
+| *"Compilation/session orchestration"* (`rumoca-compile`) | Gains atomic sibling-package orchestration: one construction transaction, the correlation web, and checksum binding |
+| *"DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering"* (`rumoca-phase-solve`) | Gains the shared expression and function relation construction plus profile-bound root closure |
+| *"Checked DAE pure-function graph → shared typed Solve program regions and pure-call owners"* (`rumoca-phase-solve`) | Same shared construction; the AC sibling references it rather than re-lowering |
+| *"DAE/Solve → checked GALEC lowering"* (`rumoca-phase-galec`) | Narrows to projection and container authority, with NO expression or function lowering |

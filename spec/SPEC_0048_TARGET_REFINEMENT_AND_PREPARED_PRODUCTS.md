@@ -11,6 +11,10 @@ emitter exactly one issued variant.
 
 ## Specification
 
+**Sections.** 1 governance · 2 prepared artifacts · 3 build session and product
+plans · 4 expansion boundary and budgets · 5 eFMI siblings · 6 state, gates,
+alternatives · 7 reversal gates.
+
 ### 1. Governance, Scope, And Acceptance-Time Amendment Map
 
 This DRAFT proposes the amendments below and claims none today. On acceptance
@@ -24,19 +28,12 @@ SPEC_0043 product-root rows.
 **Direct clause conflicts** are enumerated clause by clause in
 [SPEC_0047 §8](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#8-acceptance-time-amendment-map); every row there is amended atomically in this vote.
 
-It further amends SPEC_0029 §5 and §12 with these exact SPEC_0041 §4 rows, which
-TRP-032 splits: *"Compilation/session orchestration"* (`rumoca-compile`) gains
-atomic sibling-package orchestration; *"DAE → `SolveProblem`; checked Algorithm
-Code → `SolveAlgorithmBlock` lowering"* and *"Checked DAE pure-function graph →
-shared typed Solve program regions and pure-call owners"* (`rumoca-phase-solve`)
-gain the shared expression and function relation construction plus profile-bound
-root closure; and *"DAE/Solve → checked GALEC lowering"* (`rumoca-phase-galec`)
-narrows to projection and container authority with no expression lowering.
+It further amends SPEC_0029 §5 and §12 with the exact SPEC_0041 §4 ownership
+rows TRP-032 splits, also enumerated in SPEC_0047 §8.
 
-Governed: prepared execution artifacts, the target build session, typed target
-manifests, product plans, the final expansion boundary, product budgets and
-digests, and the eFMI sibling contract. The Solve grammar, type algebra,
-profiles, and identity ladder are
+Governed: prepared artifacts, the build session, typed manifests, product plans,
+the final expansion boundary, budgets and digests, and the eFMI sibling
+contract. Grammar, type algebra, profiles, and the identity ladder are
 [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md).
 
 ### 2. Prepared Execution Artifacts
@@ -54,8 +51,10 @@ profiles, and identity ladder are
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | TRP-010 | One per-invocation build session issues target identity and profile once and validates capabilities from the issued inventory. It MAY issue and correlate MULTIPLE semantic roots, sealing EACH exactly once (problem plus correlated typed call and effect tables); demand-built artifacts derive once per ARTIFACT KEY — the tuple of owning root, artifact kind, and the normalized inputs that artifact consumes. | `rumoca-compile` | Seal each root once |
-| TRP-011 | Every rendered file, capability record, and prepared variant records its own layer's digest; no product mixes layers. | `rumoca-compile` | One layer per record |
+| TRP-011 | Every rendered file, capability record, and prepared variant records its own layer's digest, and no product mixes layers. A digest CLAIM is never self-hashing: an `ArtifactDigest` claim carried inside the bytes it covers is normatively EXCLUDED from the hashed input by a canonical rule, so it may sit in the file; otherwise the claim stays EXTERNAL to those bytes. Which of the two applies is declared by the product's packaging facts. | `rumoca-compile` | A claim cannot hash itself |
 | TRP-012 | `target.toml` EXTENDS the existing deny-unknown manifest schema with the product-tagged typed fields of [§4.8](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), including `CoverageMode::{NativeRequired, HybridMigration}` — a new axis, distinct from the existing `execution_mode`. It is not a parallel universal schema, and no dtype strings appear. | `rumoca-compile` | Free text fails open |
+| TRP-049 | Every advertised product MUST discharge the closure obligations of its row in [SPEC_0047 §5](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#5-product-closure-matrix) through the one §4.24/§4.25/§4.26 checker flow, and MUST map Solve typed failures and status effects by the declared relation of [SPEC_0047 §6](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#6-failure-and-status-mapping). No cell is blank: each is an explicit admit or an explicit typed rejection. | preparation | Closure is per product |
+| TRP-050 | `ProductKind` × `RootKind` is a CLOSED typed schema ([§4.33](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs)): each variant declares which fields are REQUIRED and which FORBIDDEN. Every field is a type, never a label; no variant has a default. | `rumoca-compile` | Variants differ in obligation |
 | TRP-047 | Manifest obligations are PRODUCT-TAGGED: a Solve-executable or Production-C product REQUIRES numeric, value, operation/effect, environment, and emission profiles; a Flat, DAE, or AC-only export FORBIDS root and preparation fields; a co-issued eFMI package carries tagged sibling inputs. OMISSION of a capability key canonically means DENY, never unknown. | `rumoca-compile` | Silence denies |
 | TRP-033 | The `NumericProfile` request is the closed schema of [§4.21](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), or a compiler-known named profile expanding to exactly those normalized fields. The source Modelica `Integer` default is SIGNED; an unsigned SEMANTIC representation comes ONLY from an explicit checked conversion — never from a range refinement (SEV-018) and never from a target-wide reinterpretation. | `rumoca-compile` | No silent reinterpretation |
 | TRP-037 | Unsigned machine STORAGE for a semantically signed value is a prepared physical-layout optimization at the `PreparedDigest` layer: the value stays semantic `I32`, and the layout carries the [§4.23](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) round-trip and no-reinterpretation receipt or is not selected. It is the unsigned special case of TRP-044. | preparation | Storage is not semantics |

@@ -13,7 +13,10 @@ targets declare.
 
 ## How To Use This Catalog
 
-This annex holds no governing rules; SEV-001, SEV-002, SEV-007, and TRP-042 do.
+This annex holds no governing rules. Its rows are bound by SEV-001, SEV-002 and
+SEV-007 (the grammar and its exhaustive coverage), SEV-011 and SEV-024 (which
+consume §2's contract classes and §3's element-kind splits), and TRP-042 (the
+capability profile keyed to §1/§2).
 Each row is one grammar variant with its capability key, typed signature,
 region and termination contract, effect and status class, and definitional
 evaluator rule. Rows are normative by reference from those rules, and both
@@ -124,8 +127,12 @@ declared end state that construction does not admit yet.
 **Aspirational.** SEV-001's `InvokeOp`/`EffectOp`/`Terminator` factoring is the
 proposed end state. Today `Call` is the single pure-call owner above — there is
 no general effectful invoke, no volatile/atomic effect owner (SEV-016), and no
-terminator discriminant. Those factors are uncataloged and the grammar is NOT
-closed; SPEC_0047 §1 carries the gap rows.
+terminator discriminant. EXTERNAL FUNCTIONS belong to that same future closure:
+a external-function invocation is an `InvokeOp` with a declared effect footprint,
+so it cannot be cataloged or capability-checked until those factors exist, which
+is why its capability check has nothing to interrogate today (SEV-155). Those
+factors are uncataloged and the grammar is NOT closed; SPEC_0047 §1 carries the
+gap rows.
 
 ### 2. Operator Leaves
 

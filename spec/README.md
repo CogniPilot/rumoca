@@ -37,20 +37,23 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) | GALEC Language and Decision Catalog | target/codegen | ~67 | REFERENCE |
 | [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) | Valid-by-Construction Catalog | IR | ~256 | REFERENCE |
 | [SPEC_0044](SPEC_0044_FMI_EXECUTION_CATALOG.md) | FMI Execution Contract Catalog | runtime/verification | ~151 | REFERENCE |
-| [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md) | Solve Executable Vocabulary and Profiles | IR | ~160 | DRAFT |
-| [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~370 | REFERENCE |
-| [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~120 | DRAFT |
-| [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~193 | REFERENCE |
+| [SPEC_0045](SPEC_0045_SOLVE_EXECUTABLE_VOCABULARY_AND_PROFILES.md) | Solve Executable Vocabulary and Profiles | IR | ~165 | DRAFT |
+| [SPEC_0047](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md) | Solve Vocabulary and Target Refinement Catalog | IR/target | ~385 | REFERENCE |
+| [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~119 | DRAFT |
+| [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~200 | REFERENCE |
 
 ### Reference annexes
 
-`SPEC_0040`–`SPEC_0044` and `SPEC_0047` are REFERENCE annexes: they carry the
-lookup catalogs split out of their parent spec under SPEC_0000 §3/§3a size
-budgets. Every row in an annex is normative by reference from the parent section
-that links it (SPEC_0007→0040, SPEC_0029→0041, SPEC_0034→0042, SPEC_0036→0043).
-`SPEC_0047` serves two parents, SPEC_0045 and SPEC_0048; each of its gate rows
-names the parent rule it covers. Annexes add no rules of their own; edit the
-parent when the requirement itself changes.
+`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, and `SPEC_0049` are REFERENCE annexes:
+they carry the lookup catalogs split out of their parent spec under SPEC_0000
+§3/§3a size budgets. Every row in an annex is normative by reference from the
+parent section that links it (SPEC_0007→0040, SPEC_0029→0041, SPEC_0034→0042,
+SPEC_0036→0043). `SPEC_0047` serves two parents, SPEC_0045 and SPEC_0048, and
+each of its gate rows names the parent rule it covers. `SPEC_0049` also serves
+both, bound by SEV-001/002/007 (grammar and coverage), SEV-011/024 (contract
+classes and element-kind splits), and TRP-042 (the capability profile keyed to
+its rows). Annexes add no rules of their own; edit the parent when the
+requirement itself changes.
 
 ## Deferred Specifications
 
