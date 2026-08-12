@@ -7,8 +7,21 @@ use rumoca_ir_solve::{
 use super::*;
 
 /// Build the ME component a test host drives, exactly as `simulate` does.
+/// Hand-built fixtures mirror construction: the canonical eval-solve builder
+/// issues the checked refresh inventory the runtime refuses to run without.
+/// Tests mutate fixture problems after construction and owners bind to the
+/// exact problem they were built from, so every consumption point re-issues
+/// against the final shape (idempotent for unmutated fixtures).
+fn issue_fixture_refresh_owners(mut model: solve::SolveModel) -> solve::SolveModel {
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&model.problem)
+            .expect("fixture problems admit canonical refresh owners");
+    model
+}
+
 fn test_backend(model: &solve::SolveModel, opts: &SimOptions) -> Rk45Backend {
-    let kernel = SolveMeKernel::instantiate(MeModelSource::new(model), &instance_config(opts))
+    let model = issue_fixture_refresh_owners(model.clone());
+    let kernel = SolveMeKernel::instantiate(MeModelSource::new(&model), &instance_config(opts))
         .expect("fixture model should instantiate an ME component");
     Rk45Backend::new(kernel, opts).expect("RK45 backend should initialize")
 }
@@ -82,7 +95,7 @@ fn rk45_simulates_solve_ir_integrator() {
         LinearOp::StoreOutput { src: 0 },
     ]]);
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             t_end: 0.2,
             dt: Some(0.01),
@@ -100,7 +113,7 @@ fn rk45_simulates_solve_ir_integrator() {
 fn rk45_integrates_continuous_transport_delay_from_accepted_history() {
     let model = delayed_ramp_model();
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             t_start: 0.0,
             t_end: 1.0,
@@ -124,7 +137,7 @@ fn rk45_integrates_continuous_transport_delay_from_accepted_history() {
 fn rk45_localizes_variable_discrete_delay_event_at_query_time() {
     let model = variable_discrete_delay_model();
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             t_start: 0.0,
             t_end: 0.8,
@@ -164,7 +177,7 @@ fn rk45_sets_terminal_marker_only_at_final_event() {
     );
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             t_start: 0.0,
             t_end: 0.1,
@@ -190,7 +203,7 @@ fn rk45_emits_one_series_per_visible_name() {
     model.visible_names = vec!["x".to_string(), "c[1]".to_string()];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             t_end: 0.1,
             dt: Some(0.05),
@@ -255,9 +268,8 @@ fn rk45_refreshes_algebraic_ode_ir_layout() {
     };
     model.initial_y = vec![1.0, 2.0];
     model.visible_names = vec!["x".to_string(), "a".to_string()];
-
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             t_end: 0.1,
             dt: Some(0.01),
@@ -312,7 +324,7 @@ fn rk45_snapshots_pre_params_before_event_updates() {
     );
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -363,7 +375,7 @@ fn rk45_terminate_returns_partial_success() {
     }];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -399,7 +411,7 @@ fn rk45_applies_scheduled_time_event_update() {
     model.visible_names = vec!["x".to_string(), "m".to_string()];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -424,7 +436,7 @@ fn rk45_simulate_records_initialization_updates_at_start_sample() {
     model.problem.initialization.update_rhs = const_scalar_program_block(4.0);
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -473,7 +485,7 @@ fn rk45_applies_root_event_update() {
     model.visible_names = vec!["x".to_string(), "m".to_string()];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -640,7 +652,7 @@ fn rk45_root_event_updates_relation_memory_for_continuous_if_branch() {
     model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_p(0))];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.2,
@@ -676,7 +688,7 @@ fn rk45_applies_periodic_event_update() {
     model.visible_names = vec!["x".to_string(), "m".to_string()];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -769,7 +781,7 @@ fn rk45_periodic_event_seeds_scheduled_sample_relation_memory() {
     ];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.06,
@@ -871,7 +883,7 @@ fn rk45_clears_scheduled_sample_relation_memory_between_ticks() {
     ];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.11,
@@ -905,7 +917,7 @@ fn rk45_applies_dynamic_time_event_update() {
     model.visible_names = vec!["x".to_string(), "next".to_string(), "m".to_string()];
 
     let result = simulate(
-        &model,
+        &issue_fixture_refresh_owners(model.clone()),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -1335,11 +1347,12 @@ fn stiff_contact_model() -> solve::SolveModel {
         },
         LinearOp::StoreOutput { src: 14 },
     ];
-    solve::SolveModel {
+    issue_fixture_refresh_owners(solve::SolveModel {
         problem: SolveProblem {
             schema_version: solve::SOLVE_SCHEMA_VERSION,
             layout: solve::VarLayout::from_parts(Default::default(), 2, 1),
             continuous: solve::ContinuousSolveSystem {
+                refresh_owners: solve::ContinuousRefreshOwners::default(),
                 implicit_rhs: ComputeBlock::from_scalar_program_block(scalar_program_block!(
                     vec![dx.clone(), dv.clone()],
                     fixture_span!(),
@@ -1435,7 +1448,7 @@ fn stiff_contact_model() -> solve::SolveModel {
         visible_names: vec!["x".to_string(), "v".to_string(), "contact".to_string()],
         visible_value_rows: solve::ScalarProgramBlock::default(),
         variable_meta: Vec::new(),
-    }
+    })
 }
 
 fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
@@ -1447,11 +1460,12 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
-    solve::SolveModel {
+    issue_fixture_refresh_owners(solve::SolveModel {
         problem: SolveProblem {
             schema_version: solve::SOLVE_SCHEMA_VERSION,
             layout: solve::VarLayout::from_parts(Default::default(), 1, 1),
             continuous: solve::ContinuousSolveSystem {
+                refresh_owners: solve::ContinuousRefreshOwners::default(),
                 implicit_rhs: ComputeBlock::from_scalar_program_block(scalar_program_block!(
                     rhs_rows.clone(),
                     fixture_span!(),
@@ -1523,7 +1537,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
         visible_names: vec!["x".to_string()],
         visible_value_rows: solve::ScalarProgramBlock::default(),
         variable_meta: Vec::new(),
-    }
+    })
 }
 
 fn delayed_ramp_model() -> solve::SolveModel {
@@ -1701,11 +1715,12 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
-    solve::SolveModel {
+    issue_fixture_refresh_owners(solve::SolveModel {
         problem: SolveProblem {
             schema_version: solve::SOLVE_SCHEMA_VERSION,
             layout: solve::VarLayout::from_parts(Default::default(), 0, 1),
             continuous: solve::ContinuousSolveSystem {
+                refresh_owners: solve::ContinuousRefreshOwners::default(),
                 implicit_rhs: ComputeBlock::from_scalar_program_block(preserve_y.clone()),
                 implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                 residual: ComputeBlock::from_scalar_program_block(preserve_y.clone()),
@@ -1790,5 +1805,5 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
             fixture_span!(),
         ),
         variable_meta: Vec::new(),
-    }
+    })
 }

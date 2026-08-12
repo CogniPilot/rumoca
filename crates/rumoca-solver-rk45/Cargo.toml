@@ -21,6 +21,10 @@ tracing = { workspace = true }
 # linked into the library, so the SPEC_0038 boundary above still holds for
 # every production path in this crate.
 rumoca-ir-solve = { workspace = true }
+# Issues the checked refresh inventory for those hand-built fixtures through
+# the same canonical builder Solve lowering uses; still test-only, so the
+# SPEC_0038 production boundary is unchanged.
+rumoca-eval-solve = { workspace = true }
 
 [lints]
 workspace = true
