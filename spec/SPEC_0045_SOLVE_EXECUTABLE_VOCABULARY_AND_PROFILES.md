@@ -6,8 +6,8 @@ DRAFT
 ## Summary
 
 One closed factored Solve operation grammar, one identity system, value types
-stating representable domain only, and all arithmetic and sensitivity policy on
-root-bound profiles.
+stating representable domain and encoding only, and all arithmetic and
+sensitivity policy on root-bound profiles.
 
 ## Specification
 
@@ -43,7 +43,7 @@ sibling SPEC_0046, not in tree).
 | SEV-002 | All factors share ONE wire form, ONE definitional-semantics and total-dispatch contract, ONE provenance model, and ONE capability union; a root admits a checked SUBSET, never a dialect. Interpreter, Cranelift, C, and other executors are SEPARATE implementations checked against that contract. The prohibition is a scalar-versus-tensor semantics fork, never multiple independent executable oracles. | `rumoca-ir-solve` | One contract, many executors |
 | SEV-003 | The canonical executable product is an opaque package binding ONE concrete profile value; Binary32 and Binary64 are different roots before folding, CSE, AD, and range proofs (`16_777_217`). | `rumoca-phase-solve` | Profiles change results |
 | SEV-004 | Lowering code and immutable inputs are shared; an executable profile-neutral body is not. | `rumoca-phase-solve` | Inputs, not bodies |
-| SEV-005 | Rank-0 and rank-N are values of one grammar: no graph-kind bit, conversion, cache, AD path, or call ABI; opcodes are shape-polymorphic only where the algebra is identical. | `rumoca-ir-solve` | Flavors duplicate proofs |
+| SEV-005 | Rank-0 and rank-N are values of one grammar: no scalar-versus-tensor GRAPH-KIND bit, graph-kind conversion, cache, AD path, or call ABI. Explicit numeric conversions inside the one grammar remain REQUIRED by SEV-010/022. Opcodes are shape-polymorphic only where the algebra is identical. | `rumoca-ir-solve` | Flavors duplicate proofs |
 | SEV-006 | `ScalarOp`/`LinearOp` is a frozen superseded adapter awaiting deletion; a scalar projection is a borrowed final view, never stored. | `rumoca-ir-solve` | Views are not owners |
 | SEV-007 | Consumers cover the vocabulary exhaustively or reject a declared capability. **Stage test:** a new stage needs a different CONTRACT, not a granularity. | Solve consumers | Granularity duplicates proofs |
 
@@ -74,7 +74,7 @@ policy that can change a result value is semantics and belongs to the root.
 | SEV-021 | A profile admits a SET of types plus one declared default-Real specialization, never context-dependent; one format per program is a special case. | checked profile | Stable reasoning |
 | SEV-022 | Registers are exactly typed; mixed-format programs are normal, each cross-format edge a licensed conversion. | construction | Mixing is normal |
 | SEV-023 | The profile binds BEFORE construction of the executable root; changing widths later is FORBIDDEN. | pipeline order | Rounding differs |
-| SEV-024 | The profile supplies defaults and admissible contracts; construction resolves EXACTLY ONE contract per opcode over [§4.3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). | construction | Width is not semantics |
+| SEV-024 | The profile supplies defaults and admissible contracts; construction resolves EXACTLY ONE contract per opcode over [§4.3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). | construction | Width alone does not close arithmetic |
 | SEV-025 | Integer arithmetic and conversion are exact-in-domain or a typed failure, with divide-by-zero and `MIN/-1` explicit; host UB, wrapping, and saturation are prohibited. Operations use the SEV-018 interval facts to prove overflow unreachable, or emit the profile's checked typed-failure path. Replay rederives those facts under SEV-092; they are never serialized. | construction | UB disagrees silently |
 | SEV-026 | Observable status is an EFFECT: it blocks execution CSE unless multiplicity is proven unobservable. | construction | Two raises, not one |
 | SEV-027 | Saturation, wrapping, and Q-format rescaling are NEVER a target strategy for ordinary arithmetic: admit a distinct operation or prove it unreachable. | construction | Strategy preserves results |
