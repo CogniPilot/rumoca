@@ -13,9 +13,10 @@ root-bound profiles.
 
 ### 1. Governance, Scope, And Acceptance-Time Amendment Map
 
-This DRAFT proposes the amendments below and claims none today. The same voted
-series adds SPEC_0000's missing lifecycle edges (PROPOSED in the required-status
-and README tables; PROPOSED → DRAFT → vote → ACCEPTED), so this stays DRAFT.
+This DRAFT proposes the amendments below and claims none today. A SPEC_0000
+amendment adding the missing lifecycle edges (PROPOSED in the required-status
+and README tables; PROPOSED → DRAFT → vote → ACCEPTED) is planned for the same
+voted series; until it passes, this file stays DRAFT.
 
 On acceptance this amends SPEC_0035 Summary and §§1/3/4 — precision-neutral
 `Real`, codegen-time width selection, and record scalarization are superseded by
@@ -25,9 +26,8 @@ amends DRAFT SPEC_0036 and SPEC_0043 §9 with its rounding rows (profile-bound
 identity and the §6 split). Target-facing parents are amended by
 [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) §1.
 
-**Series arithmetic.** 17 ACCEPTED+DRAFT specs exist today; SPEC_0045, the
-planned SPEC_0046, and SPEC_0048 reach the cap of 20, and retiring SPEC_0035
-restores one slot.
+**Series arithmetic.** 17 before this proposal series; +0045 and +0048 = 19;
+planned 0046 = 20; retiring 0035 = 19.
 
 Governed: the Solve grammar, type algebra, root-bound profiles, executable
 identity, term sharing, and wire replay. Target refinement, prepared products,
@@ -57,7 +57,7 @@ policy that can change a result value is semantics and belongs to the root.
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-010 | A value type identifies representable domain and encoding ONLY; every cross-type edge is an explicit conversion. | Solve types | Policy doubles lattices |
-| SEV-011 | ALL arithmetic policy belongs to the operation or its profile, never to a value type. | operations | No fake conversions |
+| SEV-011 | The root profile declares defaults and admissible contracts; construction resolves EXACTLY ONE arithmetic contract per operation occurrence, which that operation then carries. Neither the value type nor a backend chooses. The resolved contract is part of the term and op key; profile admissibility is part of `RootDigest`. | construction | One authority per occurrence |
 | SEV-012 | The admitted families are exactly [§4.1](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); records are FINITE ACYCLIC by value, recursing only via an explicit reference or opaque capability. | Solve types | Not all float |
 | SEV-013 | Solve keeps nominal record, field, and shape identity; every layout fact in [§4.2](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) is a prepared mapping, injective on the proven domain and round-tripping across FMI/eFMI. | Solve types | Layout is not identity |
 | SEV-014 | Enum identity is `{EnumTypeId, cardinality, ordinal}`; ordinal 1 of two enums cannot alias. Opaque handles are nominal capabilities restricted by [§4.11](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). | Solve types | Else a pointer |

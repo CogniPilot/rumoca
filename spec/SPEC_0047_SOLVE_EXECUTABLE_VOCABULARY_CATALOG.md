@@ -119,9 +119,16 @@ dominating exact-context owner (SEV-046, SEV-049).
 
 | Option | Cost | Status |
 |---|---|---|
-| Solve/regions-first with a body-free AlgorithmCode reference | A body-free `.alg` is likely not valid Algorithm Code | Rejected; TRP-041 reopens |
+| **Regions-first with a complete projected body** — checked Solve regions mechanically project a COMPLETE GALEC-language AlgorithmCode body, yielding a syntactically valid `.alg`. Centralizes executable semantics in one place and may reduce construction cost | Makes the auditor-facing, profile-neutral AC projection DOWNSTREAM of a profile-bound root; risks losing direct source, lifecycle, and effect identity; and weakens the independent `eval-galec` leg unless exact reverse correlations and projection validation are supplied | Rejected only if TRP-030's gates beat it; TRP-041 reopens |
+| Regions-first with a body-free AlgorithmCode reference (separate, weaker variant) | A body-free `.alg` is not valid Algorithm Code | Rejected outright |
 | AC-first (current): independently lowered AlgorithmCode bodies | A second semantic compiler for the same expressions | Rejected; TRP-041 reopens |
 | Shared-construction correlated siblings | Requires exact bidirectional correlation and a preregistered projection-overhead budget | **Chosen** (TRP-030) |
+
+The correlated-sibling hybrid wins over the complete-projection alternative
+ONLY if the specified correlation obligations (§4.19), the four-leg
+discriminator (SEV-135), and the preregistered code-size and construction-time
+budgets are met. If they are not, the complete-projection design is the better
+answer and TRP-041 is the route back.
 
 **Boundary counterposition (retained).** "Solve can represent anything a C
 target might use" MUST NOT mean an unbounded union of every platform ABI detail,
@@ -137,7 +144,7 @@ Each row is bound by the parent rule naming it.
 |---|---|---|
 | §4.1 | SEV-012 | Boolean; sized signed and unsigned integers; Binary32; Binary64; branded enums; compact tensors of checked shape; finite acyclic by-value records. Binary16, BFloat16, and fixed point are reserved descriptor shapes needing evaluator, conversion, and status contracts before admission |
 | §4.2 | SEV-013 | AoS/SoA choice, padding, field offsets, alignment, address space, `repr(C)`, CMSIS descriptors, interleaved or planar complex storage |
-| §4.3 | SEV-024, SEV-042, TRP-015 | Accumulator format, evaluation order, per-step and result rounding, contraction/FMA, signed zero, NaN payload and quieting, infinity, subnormal/FTZ, status, transcendental contract |
+| §4.3 | SEV-024 (contract fields), TRP-015 (exact target-relation preservation) | Accumulator format, evaluation order, per-step and result rounding, contraction/FMA, signed zero, NaN payload and quieting, infinity, subnormal/FTZ, status, transcendental contract |
 | §4.4 | SEV-044 | Callee, ordered arguments, activation, clock, domain, captures, effects, read versions, profile |
 | §4.5 | SEV-045 | Root handle and profile, result type, opcode plus arithmetic and status policy, ordered operand terms, compact shape/domain/view metadata, issued SSA and read-version atoms |
 | §4.6 | SEV-047 | Exact span and origin, instance and scope path, statement and operand role, ordered child occurrences, execution-owner correlation |
