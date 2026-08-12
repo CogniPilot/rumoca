@@ -91,7 +91,7 @@ Three semantics exist, MUST NOT be conflated, and carry distinct profile IDs:
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-033 | Narrowing, fixed-point, or saturating conversion inside an AD-required region REJECTS unless the sensitivity profile defines it; widening MAY refine the ideal derivative. | construction | Rounding is discontinuous |
-| SEV-034 | AD-capable profiles admit Binary64 first, Binary32 once parity is defined. A primal and its directional program share the same `RootHandle`/`RootDigest` (SEV-040/041), the same SEV-024 resolved arithmetic contracts, and the same SEV-047 source and occurrence correlation; the sensitivity profile ID (SEV-030…032) is the one identity that DIFFERS, and the directional program carries it explicitly. | profiles | One difference, declared |
+| SEV-034 | AD-capable profiles admit Binary64 first, Binary32 once parity is defined. A primal and its directional program are DISTINCT executable roots with distinct `RootHandle`s and `RootDigest`s, because the sensitivity profile differs and SEV-041 hashes normalized profiles. They share the SEV-047 source and occurrence correlation, the SEV-044 `FunctionRelationId` and owner correlation, and the SEV-024 resolved PRIMAL arithmetic contracts, and are bound by a mechanically checked DERIVATION EDGE: the directional root records which primal root and which sensitivity profile it derives from. | profiles | Distinct roots, checked edge |
 
 ### 6. Identity, Occurrence, And Term Sharing
 

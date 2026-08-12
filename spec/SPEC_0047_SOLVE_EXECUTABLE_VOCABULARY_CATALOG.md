@@ -78,6 +78,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | SEV-133 | Layer movement | A template-only change preserves `RootDigest` and `PreparedDigest` while moving `ArtifactDigest` | SEV-041, TRP-011 |
 | SEV-134 | eFMI correlation mutation | Mutating any AC↔Solve source, body, lifecycle, or effect correlation makes the package reject | TRP-030 |
 | SEV-135 | Four-way comparison | `eval-galec`, the definitional Solve evaluator, compiled C, and OMC agree; PC→AC traceability holds within preregistered code-size, metadata, and construction-time budgets | TRP-030, TRP-031 |
+| SEV-136 | Sensitivity digest separation | One source under one arithmetic profile yields DISTINCT `RootDigest`s for ideal versus quantized sensitivity; claimed profile metadata that disagrees with the recomputed digest rejects; no artifact ever presents one digest with two claimed profiles, and a foreign directional root substituted under a primal's derivation edge rejects | SEV-034, SEV-041 |
 
 **First vertical witness (SEV-109, covers TRP-014/TRP-018).** One real target
 (prefer `rust-fixed` or a minimal embedded C target); one declared format; one
