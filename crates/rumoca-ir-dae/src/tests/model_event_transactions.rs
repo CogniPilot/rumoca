@@ -3,6 +3,41 @@ use super::*;
 const SOURCE: &str = "discrete Real z; discrete Boolean valid; \
     when sample(0, 1) then z := 1; valid := true; end when;";
 
+/// Declare the fixture's two discrete variables together with the scalar types
+/// they carry: the clock ownership, condition and event topology below all hang
+/// off exactly these two coordinates.
+fn declare_discrete_variables<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    z_at: DaeProvenance,
+    valid_at: DaeProvenance,
+) -> Result<(DiscreteRealId<'dae>, DiscreteValueId<'dae>), DaeConstructionError> {
+    let real =
+        dae.types(|types| types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at))?;
+    let boolean = dae.types(|types| {
+        types.intern(
+            TypeId::new(1),
+            ValueType::scalar(ScalarType::Boolean),
+            valid_at,
+        )
+    })?;
+    dae.variables(|variables| {
+        Ok((
+            variables.discrete_real(
+                VarName::new("z"),
+                real,
+                z_at,
+                VariableAttributes::default(),
+            )?,
+            variables.discrete_value(
+                VarName::new("valid"),
+                boolean,
+                valid_at,
+                VariableAttributes::default(),
+            )?,
+        ))
+    })
+}
+
 fn fixture() -> Dae {
     let source = TestSource::new(SOURCE);
     let z_at = source.source("discrete Real z", 0);
@@ -12,32 +47,7 @@ fn fixture() -> Dae {
     let z_definition_at = source.source("z := 1", 0);
     let valid_definition_at = source.source("valid := true", 0);
     Dae::construct(source.map, |dae| {
-        let real = dae.types(|types| {
-            types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at)
-        })?;
-        let boolean = dae.types(|types| {
-            types.intern(
-                TypeId::new(1),
-                ValueType::scalar(ScalarType::Boolean),
-                valid_at,
-            )
-        })?;
-        let (z, valid) = dae.variables(|variables| {
-            Ok((
-                variables.discrete_real(
-                    VarName::new("z"),
-                    real,
-                    z_at,
-                    VariableAttributes::default(),
-                )?,
-                variables.discrete_value(
-                    VarName::new("valid"),
-                    boolean,
-                    valid_at,
-                    VariableAttributes::default(),
-                )?,
-            ))
-        })?;
+        let (z, valid) = declare_discrete_variables(dae, z_at, valid_at)?;
         let clock = dae.clocks(|clocks| {
             let clock = clocks.periodic(
                 ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),

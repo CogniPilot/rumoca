@@ -4,6 +4,7 @@ mod external_functions;
 mod function_conditionals;
 mod function_owners;
 mod function_scopes;
+mod function_tensor_builtins;
 mod function_wire;
 mod model_event_transactions;
 mod provenance;
@@ -723,24 +724,25 @@ fn exact_row_major_scalar_projection_recovers_only_its_whole_tensor() {
                 .at(at)
                 .coordinate(CoordinateInput::Input(matrix))?;
             let mut scalars = Vec::new();
-            for row in 1..=2 {
-                for column in 1..=3 {
-                    let row = expressions.at(at).literal(DaeLiteral::Integer(row))?;
-                    let column = expressions.at(at).literal(DaeLiteral::Integer(column))?;
-                    scalars.push(expressions.at(at).index(
-                        base,
-                        [
-                            Subscript::Index {
-                                expression: row,
-                                provenance: at,
-                            },
-                            Subscript::Index {
-                                expression: column,
-                                provenance: at,
-                            },
-                        ],
-                    )?);
-                }
+            // Row-major enumeration of the 2x3 coordinates, flattened into one
+            // loop so the projection family stays readable at a glance.
+            let coordinates = (1..=2).flat_map(|row| (1..=3).map(move |column| (row, column)));
+            for (row, column) in coordinates {
+                let row = expressions.at(at).literal(DaeLiteral::Integer(row))?;
+                let column = expressions.at(at).literal(DaeLiteral::Integer(column))?;
+                scalars.push(expressions.at(at).index(
+                    base,
+                    [
+                        Subscript::Index {
+                            expression: row,
+                            provenance: at,
+                        },
+                        Subscript::Index {
+                            expression: column,
+                            provenance: at,
+                        },
+                    ],
+                )?);
             }
             Ok((base, scalars))
         })?;
