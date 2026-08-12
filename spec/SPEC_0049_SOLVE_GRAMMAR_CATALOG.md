@@ -15,8 +15,10 @@ targets declare.
 
 This annex holds no governing rules. Its rows are bound by SEV-001, SEV-002 and
 SEV-007 (the grammar and its exhaustive coverage), SEV-011 and SEV-024 (which
-consume §2's contract classes and §3's element-kind splits), and TRP-042 (the
-capability profile keyed to §1/§2).
+consume EVERY §2 contract class — `ExactIntegral`, `FloatingPrimitive`,
+`FloatingTranscendental`, `Reduction`, `RelationalEquality`,
+`RelationalOrdering`, `Conversion`, `Indexing`, and `NotApplicable` — and §3's
+element-kind splits), and TRP-042 (the capability profile keyed to §1/§2).
 Each row is one grammar variant with its capability key, typed signature,
 region and termination contract, effect and status class, and definitional
 evaluator rule. Rows are normative by reference from those rules, and both
@@ -132,7 +134,18 @@ a external-function invocation is an `InvokeOp` with a declared effect footprint
 so it cannot be cataloged or capability-checked until those factors exist, which
 is why its capability check has nothing to interrogate today (SEV-155). Those
 factors are uncataloged and the grammar is NOT closed; SPEC_0047 §1 carries the
-gap rows.
+gap rows, and SEV-156 makes the consequence explicit — every external function
+REJECTS today, since there is no grammar for it to be checked against.
+
+The Proposed leaves that slice must add, sketched so the reject arm has a
+successor:
+
+| Proposed key | Factor | Sketch |
+|---|---|---|
+| `InvokePure` | I | External call declared pure and total: arguments and results typed, no effect footprint, CSE-eligible under SEV-046 |
+| `InvokeImpure` | I | External call with a declared effect footprint (§4.9's `errno`, fenv, globals, threading) and a declared status relation; never merges (SEV-048) |
+| `EffectVolatile` | E | The volatile/atomic load-store owner SEV-016 requires, with its access-count semantics |
+| `Terminator` | T | Region exit: the factor SEV-001 names and the tree does not yet have |
 
 ### 2. Operator Leaves
 
