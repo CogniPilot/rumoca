@@ -997,3 +997,21 @@ compact ops; the existing eval-solve scalarizer is transition debt.
 Acceptance evidence: million-element case with O(1)/O(rank) compiler
 metadata and preparation — emitted loops acceptable, materialized
 million-op vectors nowhere.
+
+### 13.4 Gate definition (ratified 02:20)
+
+Two reported states, never merged:
+1. ORDINARY WORKSPACE GATE: `cargo test --workspace` reaches ZERO
+   failures. Triage labels (REGRESSED / PRE-EXISTING / ABSENT-AT-BASE)
+   route evidence; they never waive it. Ratchets, baselines, allowlists,
+   and size limits are POLICY surfaces: a failing guard is repaired at the
+   source or escalated as a voted policy change — never edited under a
+   named-commit justification.
+2. TOPIC COUNTEREXAMPLE INVENTORY: deliberately-authored future
+   counterexamples (the GALEC oracle trio; preregistered event-strata
+   reds) live in a topic harness for PLACEMENT only — the harness runs in
+   CI reporting-only and prints its inventory with linked roadmap rows
+   every run; the corresponding milestone gates mechanically on
+   inventory-zero. Stop-ship status is retained; inventory membership is
+   never semantic green nor permission to advance to performance work.
+The checkpoint is explicitly non-green until state (1) is zero.
