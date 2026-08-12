@@ -60,7 +60,6 @@ use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
-pub use rumoca_ir_solve::TargetAssignmentShape;
 pub use sparsity::{
     derive_column_coloring, derive_jacobian_pattern_from_jvp,
     derive_jacobian_pattern_from_scalar_jvp, derive_solve_structural_artifacts,

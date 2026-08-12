@@ -137,30 +137,15 @@ impl<'storage, 'dae> Expressions<'storage, 'dae> {
             return Ok(None);
         }
         for (linear, scalar) in scalars.iter().copied().enumerate() {
-            let Some(ExprNode::Index { base, subscripts }) =
-                self.storage.expressions.nodes.get(scalar.index() as usize)
-            else {
+            if !is_row_major_projection(
+                self.storage,
+                scalar,
+                *common_base,
+                extents,
+                scalar_count,
+                linear,
+            ) {
                 return Ok(None);
-            };
-            if base != common_base || subscripts.len as usize != extents.len() {
-                return Ok(None);
-            }
-            let mut stride = scalar_count;
-            for (subscript, extent) in self.storage.expressions.subscripts[subscripts.indices()]
-                .iter()
-                .zip(extents)
-            {
-                stride /= *extent as usize;
-                let expected = ((linear / stride) % *extent as usize) as i64 + 1;
-                let PackedSubscriptKind::Index(index) = subscript.kind else {
-                    return Ok(None);
-                };
-                if !matches!(
-                    self.storage.expressions.nodes.get(index as usize),
-                    Some(ExprNode::Literal(DaeLiteral::Integer(found))) if *found == expected
-                ) {
-                    return Ok(None);
-                }
             }
         }
         Ok(Some(base))
@@ -175,6 +160,50 @@ impl<'storage, 'dae> Expressions<'storage, 'dae> {
             marker: std::marker::PhantomData,
         }
     }
+}
+
+/// True when `scalar` is exactly the full-rank integer `Index` of `base` that
+/// sits at row-major position `linear` inside `extents`.
+///
+/// Every failure is a plain `false`: the caller owns the single
+/// "this family is not an exact projection" answer, so this helper never
+/// invents a diagnostic of its own.
+fn is_row_major_projection(
+    storage: &Storage,
+    scalar: ExprId<'_>,
+    base: u32,
+    extents: &[u32],
+    scalar_count: usize,
+    linear: usize,
+) -> bool {
+    let Some(ExprNode::Index {
+        base: scalar_base,
+        subscripts,
+    }) = storage.expressions.nodes.get(scalar.index() as usize)
+    else {
+        return false;
+    };
+    if *scalar_base != base || subscripts.len as usize != extents.len() {
+        return false;
+    }
+    let mut stride = scalar_count;
+    for (subscript, extent) in storage.expressions.subscripts[subscripts.indices()]
+        .iter()
+        .zip(extents)
+    {
+        stride /= *extent as usize;
+        let expected = ((linear / stride) % *extent as usize) as i64 + 1;
+        let PackedSubscriptKind::Index(index) = subscript.kind else {
+            return false;
+        };
+        if !matches!(
+            storage.expressions.nodes.get(index as usize),
+            Some(ExprNode::Literal(DaeLiteral::Integer(found))) if *found == expected
+        ) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Inline node-construction scope selected by [`Expressions::at`].

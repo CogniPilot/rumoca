@@ -391,10 +391,7 @@ impl SolveOperation {
             Self::Binary { lhs, rhs, .. }
             | Self::Compare { lhs, rhs, .. }
             | Self::MatrixMultiply { lhs, rhs, .. }
-            | Self::Cross { lhs, rhs, .. } => {
-                visit(*lhs);
-                visit(*rhs);
-            }
+            | Self::Cross { lhs, rhs, .. } => visit_register_pair(*lhs, *rhs, &mut visit),
             Self::Select {
                 condition,
                 if_true,
@@ -409,10 +406,7 @@ impl SolveOperation {
                 condition,
                 captures,
                 ..
-            } => {
-                visit(*condition);
-                captures.iter().copied().for_each(&mut visit);
-            }
+            } => visit_register_then_list(*condition, captures, &mut visit),
             Self::Map { captures, .. } => captures.iter().copied().for_each(&mut visit),
             Self::Fold {
                 initial, captures, ..
@@ -425,10 +419,7 @@ impl SolveOperation {
             }
             | Self::BroadcastBinary {
                 aggregate, scalar, ..
-            } => {
-                visit(*aggregate);
-                visit(*scalar);
-            }
+            } => visit_register_pair(*aggregate, *scalar, &mut visit),
             Self::Concatenate { operands, .. }
             | Self::ConstructAggregate {
                 elements: operands, ..
@@ -439,10 +430,7 @@ impl SolveOperation {
             }
             Self::ProjectElementDynamic {
                 aggregate, indices, ..
-            } => {
-                visit(*aggregate);
-                indices.iter().copied().for_each(&mut visit);
-            }
+            } => visit_register_then_list(*aggregate, indices, &mut visit),
             Self::ProjectView {
                 aggregate, axes, ..
             } => {
@@ -455,8 +443,7 @@ impl SolveOperation {
                 out_of_range,
                 ..
             } => {
-                visit(*aggregate);
-                indices.iter().copied().for_each(&mut visit);
+                visit_register_then_list(*aggregate, indices, &mut visit);
                 visit(*out_of_range);
             }
             Self::UpdateElement {
@@ -464,17 +451,10 @@ impl SolveOperation {
                 value,
                 indices,
                 ..
-            } => {
-                visit(*aggregate);
-                visit(*value);
-                indices.iter().copied().for_each(&mut visit);
-            }
+            } => visit_register_pair_then_list(*aggregate, *value, indices, &mut visit),
             Self::UpdateSlice {
                 aggregate, value, ..
-            } => {
-                visit(*aggregate);
-                visit(*value);
-            }
+            } => visit_register_pair(*aggregate, *value, &mut visit),
             Self::UpdateView {
                 aggregate,
                 value,
@@ -538,6 +518,38 @@ fn visit_view_axis_registers(
             visit(*register);
         }
     }
+}
+
+/// Visits two operand registers in semantic order.
+fn visit_register_pair(
+    first: SolveRegisterId,
+    second: SolveRegisterId,
+    visit: &mut impl FnMut(SolveRegisterId),
+) {
+    visit(first);
+    visit(second);
+}
+
+/// Visits one leading operand register, then a compact operand list.
+fn visit_register_then_list(
+    first: SolveRegisterId,
+    registers: &[SolveRegisterId],
+    visit: &mut impl FnMut(SolveRegisterId),
+) {
+    visit(first);
+    registers.iter().copied().for_each(visit);
+}
+
+/// Visits two leading operand registers, then a compact operand list.
+fn visit_register_pair_then_list(
+    first: SolveRegisterId,
+    second: SolveRegisterId,
+    registers: &[SolveRegisterId],
+    visit: &mut impl FnMut(SolveRegisterId),
+) {
+    visit(first);
+    visit(second);
+    registers.iter().copied().for_each(visit);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1890,11 +1902,17 @@ pub enum SolveProgramConstructionError {
 }
 
 impl SolveProgramConstructionError {
+    /// The owner span this rejection was raised at, when the rejected
+    /// construct had one.
+    ///
+    /// SPEC_0008: the two provenance-free rejections are exactly the ones that
+    /// fire *because* no owner span was recoverable, so they report `None`
+    /// rather than manufacturing the dummy sentinel. Callers that render a
+    /// diagnostic must handle the unspanned case explicitly.
     #[must_use]
-    pub const fn provenance(&self) -> Span {
+    pub const fn provenance(&self) -> Option<Span> {
         match self {
-            Self::MissingProvenance => Span::DUMMY,
-            Self::WireMismatch => Span::DUMMY,
+            Self::MissingProvenance | Self::WireMismatch => None,
             Self::IdentityOverflow { provenance }
             | Self::ProfileMismatch { provenance }
             | Self::WritableConstant { provenance }
@@ -1914,7 +1932,7 @@ impl SolveProgramConstructionError {
             | Self::InvalidTensorAlgebra { provenance }
             | Self::IncompleteCallOutput { provenance }
             | Self::DuplicateCallIdentity { provenance }
-            | Self::UninitializedSlot { provenance } => *provenance,
+            | Self::UninitializedSlot { provenance } => Some(*provenance),
         }
     }
 }

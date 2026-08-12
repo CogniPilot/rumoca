@@ -195,8 +195,8 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
     let selected = prepared
         .assignment_shape_for_output(0, 0, 1)
         .expect("the first factor has an isolator");
-    let refresh = crate::refresh_plan::AlgebraicRefreshRow::checked(
-        rumoca_ir_solve::AlgebraicRefreshRowDraft {
+    let refresh =
+        rumoca_ir_solve::AlgebraicRefreshRow::checked(rumoca_ir_solve::AlgebraicRefreshRowDraft {
             owner_id: Default::default(),
             source: rumoca_ir_solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
             equation_index: 0,
@@ -206,9 +206,8 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
             assignment_shape: Some(selected),
             direct_assignment_certified: false,
             exact_assignment_certified: true,
-        },
-    )
-    .expect("selected isolator must construct a checked refresh row");
+        })
+        .expect("selected isolator must construct a checked refresh row");
     let mut y = vec![6.0, 99.0, 2.0];
 
     prepared
@@ -223,8 +222,8 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
         .expect("the selected target certificate should execute directly");
     assert_eq!(y, vec![6.0, 3.0, 2.0]);
 
-    let error = crate::refresh_plan::AlgebraicRefreshRow::checked(
-        rumoca_ir_solve::AlgebraicRefreshRowDraft {
+    let error =
+        rumoca_ir_solve::AlgebraicRefreshRow::checked(rumoca_ir_solve::AlgebraicRefreshRowDraft {
             owner_id: Default::default(),
             source: rumoca_ir_solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
             equation_index: 0,
@@ -234,9 +233,8 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
             assignment_shape: Some(selected),
             direct_assignment_certified: false,
             exact_assignment_certified: true,
-        },
-    )
-    .expect_err("a selected isolator cannot be reused for another target");
+        })
+        .expect_err("a selected isolator cannot be reused for another target");
     assert!(error.to_string().contains("belongs to another target"));
 }
 
