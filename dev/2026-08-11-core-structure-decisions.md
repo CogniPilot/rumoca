@@ -981,7 +981,12 @@ EventInstantExecutionPlan (opaque coverage root over typed subrelations,
 compact child owners by ID/range) accepted as the converged composition
 shape.
 
-### 13.3 Expansion-boundary sharpening (00:06/00:12 stops, ratified 02:05)
+### 13.3 Expansion-boundary sharpening (00:06/00:12 stops; ratified
+proposed amendment and implementation freeze, 02:05 — NOT active spec law:
+SPEC_0032 still authorizes the shared eval-solve scalar fallback until the
+scheduled amendment removing that license and establishing the final
+template/target execution as the sole materialization boundary is voted in
+the SPEC_0045/0046 series)
 
 The scalar-projection license in earlier drafts ("scalar-only targets are
 a sanctioned projection point at the view layer") is WITHDRAWN — two
@@ -1007,11 +1012,16 @@ Two reported states, never merged:
    and size limits are POLICY surfaces: a failing guard is repaired at the
    source or escalated as a voted policy change — never edited under a
    named-commit justification.
-2. TOPIC COUNTEREXAMPLE INVENTORY: deliberately-authored future
-   counterexamples (the GALEC oracle trio; preregistered event-strata
-   reds) live in a topic harness for PLACEMENT only — the harness runs in
-   CI reporting-only and prints its inventory with linked roadmap rows
-   every run; the corresponding milestone gates mechanically on
-   inventory-zero. Stop-ship status is retained; inventory membership is
+2. TOPIC COUNTEREXAMPLE INVENTORY (adopted implementation requirement,
+   PENDING — no manifest, harness, CI job, or milestone gate exists yet):
+   deliberately-authored future counterexamples live in a topic harness
+   for PLACEMENT only — the harness runs in CI reporting-only and prints
+   its inventory with linked roadmap rows every run; the corresponding
+   milestone gates mechanically on inventory-zero. ADMISSION RULE: a test
+   that was ever ordinary/current may NOT move into the inventory; only
+   counterexamples authored and preregistered for a future milestone
+   qualify. (Note: the 02:20 GALEC-trio placement is VOID — the 02:50
+   classification proved those tests formerly green, hence ordinary
+   regressions, hence ordinary-gate reds to fix.) Stop-ship status is retained; inventory membership is
    never semantic green nor permission to advance to performance work.
 The checkpoint is explicitly non-green until state (1) is zero.
