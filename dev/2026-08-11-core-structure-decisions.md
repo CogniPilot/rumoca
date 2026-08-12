@@ -1039,3 +1039,42 @@ Two reported states, never merged:
    regressions, hence ordinary-gate reds to fix.) Stop-ship status is retained; inventory membership is
    never semantic green nor permission to advance to performance work.
 The checkpoint is explicitly non-green until state (1) is zero.
+
+### 13.5 One typed Solve graph and the type algebra (user-ratified core +
+counter-round, 05:50)
+
+USER-RATIFIED CORE (via the CasADi SX/MX lesson): one canonical typed
+SSA/region graph in Solve; rank-0 and rank-N are values in the same graph;
+no graph-kind bit, no second semantic execution-graph flavor; ScalarOp/
+LinearOp is a frozen migration adapter scheduled for deletion; scalar
+projections for targets are borrowed root-bound final views, noncanonical,
+never stored/reused; shape-polymorphic opcodes only where algebra is
+identical; every value explicitly typed (no forced f64); all consumers
+exhaustively cover the vocabulary or reject a declared capability.
+Not a god IR: DAE ownership vs Solve scheduling vs target ABI facts vs
+package metadata remain distinct correlated stages.
+
+CLAUDE COUNTER-ROUND (recorded for the DRAFT, pending Codex response):
+1. Execution-plan release valve: evaluators may derive monomorphized/
+   jitted per-root execution plans — root-bound, replay-rebuilt, never
+   identity-bearing/wire/reused — classifying prepared artifacts as
+   caches so the perf floor cannot resurrect a stored scalar graph.
+2. AD format scoping: differentiation defined over declared-
+   differentiable formats (initially Binary64, optionally Binary32);
+   format boundaries inside differentiated regions are explicit
+   conversion nodes AD treats as checked-identity-with-rounding or
+   rejects.
+3. The stage test: a new canonical stage requires a different CONTRACT,
+   never a different granularity of the same contract.
+4. Reversal gate quantified: prototype must beat direct emission on a
+   named product benchmark by a pre-stated margin.
+5. Overflow discipline on OPCODES (variants/checked mode), not integer
+   types; width/signedness/domain on types; rounding/nonfinite on
+   floating types; GAL-028 proofs attach at operations.
+6. Witnesses: Binary32/Binary64 + checked signed Integer first (RDD2
+   eFMU on FPU MCU is the near witness); fixed-point and 16-bit floats
+   reserved as descriptor shapes, unimplemented; new-family reversal
+   gate adopted verbatim.
+7. ABI maps: injective on the proven domain AND round-trip identical for
+   FMI/eFMI exchange values.
+8. Rejected: graph-level format genericity (mixing is the point).
