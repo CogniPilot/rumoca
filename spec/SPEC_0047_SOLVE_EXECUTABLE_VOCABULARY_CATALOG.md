@@ -79,6 +79,9 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | SEV-134 | eFMI correlation mutation | Mutating any AC↔Solve source, body, lifecycle, or effect correlation makes the package reject | TRP-030 |
 | SEV-135 | Four-way comparison | `eval-galec`, the definitional Solve evaluator, compiled C, and OMC agree; PC→AC traceability holds within preregistered code-size, metadata, and construction-time budgets | TRP-030, TRP-031 |
 | SEV-136 | Sensitivity digest separation | One source under one arithmetic profile yields DISTINCT `RootDigest`s for ideal versus quantized sensitivity; claimed profile metadata that disagrees with the recomputed digest rejects; no artifact ever presents one digest with two claimed profiles, and a foreign directional root substituted under a primal's derivation edge rejects | SEV-034, SEV-041 |
+| SEV-137 | `NumericProfile` parse and normalization | `f32`+`i32`, `f64`+`i64`, and a mixed allowed set each parse, deny unknown keys, normalize to §4.21 fields, and produce the expected distinct `RootDigest`s; unsigned widths parse only as declared representations; an unavailable format rejects with its reserved-shape reason | TRP-012, TRP-033 |
+| SEV-138 | Profile mismatch against a built root | A target request disagreeing with an already-profiled root rejects; no path converts a built root to another width | TRP-034 |
+| SEV-139 | Range refinement without conversion | Two `i32` inputs with ranges `[0,10]` and `[0,100]` add with NO type conversion while the result interval is derived; the same value narrowed to `i8` requires an explicit checked conversion; `i8` `MAX+1` is statically rejected or returns the one typed overflow status, never host promotion or UB | SEV-018, SEV-025 |
 
 **First vertical witness (SEV-109, covers TRP-014/TRP-018).** One real target
 (prefer `rust-fixed` or a minimal embedded C target); one declared format; one
@@ -105,6 +108,7 @@ dominating exact-context owner (SEV-046, SEV-049).
 | One god operation enum instead of the factored union | Every consumer pays for every factor; pure-term and AD proofs stop being local | SEV-114 |
 | Graph-level format genericity (`graph<F>`) and pseudotype `SolvePackage<P>` | Mixing is the point; genericity pushes it to the least checkable boundaries | SEV-111 |
 | Rounding policy on value types | Doubles the lattice and forces fake conversions between equal widths | SEV-111 |
+| A dependent subrange integer type (range carried in the value type) | Range refinement becomes a type change, so two equal-representation `i32` values with different proven ranges are different types and need conversions between identical machine encodings; type equality, term keys, and ABI mappings all fragment along proof strength | SEV-111; an advocate must exhibit a witness showing it creates NO conversion between equal-representation values |
 | Precision-neutral `Real` with codegen-time width (SPEC_0035) | Intermediate rounding, comparisons, guards, and assertions differ from the built program | SEV-111 |
 | Importing the C type system wholesale | A god IR: pointers, unions, bitfields, and vendor structs have no portable value relation | SEV-111 |
 | Dtype strings and template-side semantic choice | Fail-open and unverifiable; recreates an untyped backend | TRP-012 |
@@ -150,7 +154,8 @@ Each row is bound by the parent rule naming it.
 | §4.5 | SEV-045 | Root handle and profile, result type, opcode plus arithmetic and status policy, ordered operand terms, compact shape/domain/view metadata, issued SSA and read-version atoms |
 | §4.6 | SEV-047 | Exact span and origin, instance and scope path, statement and operand role, ordered child occurrences, execution-owner correlation |
 | §4.7 | SEV-049 | Dominance, identical lazy activation, coordinate or loop invariance, read/history/external generations, arithmetic and AD seed or mode, total/fault/status/effect behavior, profitability |
-| §4.8 | TRP-012 | `NumericProfile`, `ExecutionMode::{NativeRequired, HybridMigration}`, ordered candidates with compiler-decidable predicates, budgets, receipt selectors; deny-unknown |
+| §4.8 | TRP-012 | `ExecutionMode::{NativeRequired, HybridMigration}`, ordered candidates with compiler-decidable predicates, budgets, receipt selectors; deny-unknown. `NumericProfile` is the closed request schema of §4.21 |
+| §4.21 | TRP-012 | `RealRepr::{Binary32, Binary64}`; `IntRepr::{I8, I16, I32, I64, U8, U16, U32, U64}`; ONE default mapping for source Modelica `Real` and one for `Integer`; the allowed representation SET for mixed-width Solve values; and the arithmetic-contract or profile ID closing rounding, overflow and status, subnormal, and reduction behavior. A compiler-known named profile is admissible only when it expands to exactly these normalized fields. Reserved Binary16, BFloat16, and fixed forms REJECT until their §4.1 contracts exist; no extension string adds semantics |
 | §4.9 | TRP-013 | Library version or binary hash, build flags, accumulator and order, alias and overlap, alignment, workspace, preconditions, status |
 | §4.10 | TRP-017 | ABI, coverage, loop/kernel, arithmetic relation, resources, provenance |
 | §4.11 | SEV-014 | Opaque handles admit no literals, ordering, generic wire, arithmetic, address inspection, AD, or tensorization |
@@ -194,5 +199,5 @@ pub struct SolveValueType {
 |---|---|---|
 | `SolveRealFormat` | Gains the reserved descriptor shapes (Binary16, BFloat16, fixed point) only once evaluator, conversion, and status contracts exist; Complex becomes an element type over an admitted format, not a record | SEV-012, SEV-017 |
 | `SolveArithmeticProfile` | Gains the full §4.3 contract set — accumulator, order, per-step and result rounding, contraction, signed zero, NaN payload and quieting, infinity, subnormal/FTZ, status, transcendentals — and becomes root-identity-bearing | SEV-020, SEV-024 |
-| `SolveScalarType` | `Real` drops `rounding`, since rounding is operation and profile policy, not a value-type discriminator; unsigned integers and branded enums join the union | SEV-010, SEV-011, SEV-014 |
+| `SolveScalarType` | `Real` drops `rounding`, since rounding is operation and profile policy, not a value-type discriminator. `Integer(SolveIntegerDomain)` becomes `Integer { repr: IntRepr }` over the §4.21 set: today's `SolveIntegerDomain { minimum, maximum }` conflates representation with range and is the transitional state, since range belongs to separate root-bound facts. Branded enums join the union | SEV-010, SEV-011, SEV-014, SEV-018 |
 | `SolveValueType` | Gains finite acyclic by-value records with nominal field identity, and empty extents that keep type, field path, occurrence, ABI ordinal, and wire identity | SEV-013, SEV-015 |
