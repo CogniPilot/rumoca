@@ -96,7 +96,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | SEV-141 | Signed representation stability | An `i32` value with derived range `[0,10]` retains semantic `I32` and an unchanged `RootDigest`; only an explicit checked conversion yields semantic `U32`; unsigned storage selected under TRP-037 leaves the semantic type and digest untouched and carries its §4.23 receipt | SEV-018, TRP-033, TRP-037 |
 | SEV-142 | Profile set normalization | Permutations and duplicates of an allowed set normalize to identical canonical profile bytes and `RootDigest`; an empty kind set rejects; EITHER default absent from its kind's set — Real or Integer, independently — rejects rather than being unioned in | SEV-021, TRP-033 |
 | SEV-143 | Lifecycle root separation | One f32/i32 profile and one expression body under Simulation versus AlgorithmBlock lifecycle contracts yield DISTINCT `RootHandle`s and `RootDigest`s; substituting one for the other rejects, while their issued expression and function correlations still match | TRP-010, TRP-038 |
-| SEV-144 | Value-capability closure | Rank-0 and rank-N Boolean, sized integers, reals, nested record arrays, empty fields and values, enum brands, complex, and opaque VALUE handles each accept or reject per the declared profile, checked transitively over every root owner before plan selection; a capability change moves `PreparedDigest` while a numeric-width semantic change still moves `RootDigest`. Operations and effects are OUT of scope here — SEV-148 gates those. SEV-102 covers backend value TRANSPORT and SEV-104 covers WIRE forgery; neither covers this admission closure | TRP-039 |
+| SEV-144 | Value-capability closure | Rank-0 and rank-N Boolean, sized integers, reals, nested record arrays, empty fields and values, enum brands, and opaque VALUE handles each accept or reject per the declared profile, checked transitively over every root owner before plan selection; a capability change moves `PreparedDigest` while a numeric-width semantic change still moves `RootDigest`. Operations and effects are OUT of scope here — SEV-148 gates those. SEV-102 covers backend value TRANSPORT and SEV-104 covers WIRE forgery; neither covers this admission closure | TRP-039 |
 | SEV-145a | Crossed environment requests | One Solve root prepared under `{freestanding, forbidden, returned_status}`, `{freestanding, admitted, panic{halt, handler::named}}`, `{hosted, forbidden, returned_status}`, and `{hosted, admitted, panic{unwind, handler::none}}` yields four distinct `PreparedDigest`s, each artifact obeying ITS OWN requested policy. The crossed pairs defeat a backend that branches only on `freestanding` | TRP-039, TRP-045 |
 | SEV-145b | Positive capability exercise | Each admitted capability is exercised by a plan that genuinely NEEDS it: the `{freestanding, admitted, …}` case prepares a plan that really allocates scratch, and each `returned_status` case drives a failure path that really transports status. A tuple whose plan never requires the capability does not discharge this row | TRP-039, TRP-043 |
 | SEV-145c | Crossed negatives | The same needing plans REJECT when their capability is forbidden: allocation-needing under `allocation::forbidden`, status-transport-needing under a profile lacking it, and a scratch-needing plan over its limit | TRP-039, TRP-043 |
@@ -106,7 +106,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | SEV-145f | One-axis digest mutation | Changing exactly ONE dimension — environment, allocation, disposition, or `handler::{none, named}` — while holding the others fixed moves `PreparedDigest`, wherever the §4.25 compatibility rules admit that single change; the four axes are independent, so `freestanding` alone neither forbids `alloc` nor fixes a disposition, and a named handler alone fixes no disposition | TRP-045 |
 | SEV-145g | Environment-invariant semantics | Across all requests the declared value and status RELATION is identical and only its transport differs as requested; an absent required math, status, or scratch capability rejects typed before rendering | TRP-039, TRP-043 |
 | SEV-146 | Nominal type equality | Two equal-cardinality enums remain UNEQUAL types; two field-isomorphic nominal records remain UNEQUAL despite identical physical domain and encoding; one nominal record prepared AoS versus SoA retains ONE semantic type | SEV-010, SEV-013, SEV-014 |
-| SEV-147 | Prepared layout round-trip, per family | For each §4.2 layout family a product ADMITS, its SELECTED mapping gets a receipt, digest-mutation, and round-trip witness: record AoS versus SoA versus padding; `repr(C)` field offset and order; CMSIS descriptor; interleaved versus planar Complex storage; enum mapping; empty-field mapping; and unsigned storage (SEV-141). The selected mapping retains the same semantic type and values through FMI/eFMI, each mutation moves `PreparedDigest`, and each selection carries a valid receipt or rejects. A product that REJECTS a family — GALEC/eFMI may reject empty extents, enums, Complex, or opaque handles — owes a typed rejection, not a round-trip | SEV-013, TRP-044 |
+| SEV-147 | Prepared layout round-trip, per family | For each §4.2 layout family a product ADMITS, its SELECTED mapping gets a receipt, digest-mutation, and round-trip witness: record AoS versus SoA versus padding; `repr(C)` field offset and order; CMSIS descriptor; enum mapping; empty-field mapping; and unsigned storage (SEV-141). The selected mapping retains the same semantic type and values through FMI/eFMI, each mutation moves `PreparedDigest`, and each selection carries a valid receipt or rejects. A product that REJECTS a family — GALEC/eFMI may reject empty extents, enums, Complex, or opaque handles — owes a typed rejection, not a round-trip | SEV-013, TRP-044 |
 | SEV-152 | Persisted plan replay | A plan persisted as `RootDigest` plus canonical `OwnerPath` replays through checked root construction to fresh handles with owner kind and type rechecked; a forged path, a wrong-root digest, and a path whose owner kind changed each REJECT; interning order and construction order do not change the stored path | TRP-046 |
 | SEV-153 | Candidate-specific fitting | Two candidates for ONE root with different scratch or stack needs: only the fitting one is selectable, the other rejects during selection rather than at admission, and the sealed receipt records which was chosen | TRP-048 |
 | SEV-154 | Manifest product tagging | A Solve-executable product missing any required profile REJECTS; a Flat/DAE/AC-only export carrying root or preparation fields REJECTS; an omitted capability key behaves as DENY, never as permissive-unknown | TRP-047 |
@@ -198,8 +198,8 @@ Each row is bound by the parent rule naming it.
 
 | Ref | Bound by | Fields |
 |---|---|---|
-| §4.1 | SEV-012 | Boolean; sized signed and unsigned integers; Binary32; Binary64; Complex over an admitted binary format, TRANSPORT-ONLY and Proposed (SEV-017); branded enums (SEV-014); compact tensors of checked shape; finite acyclic by-value records, whose recursion passes through an explicit reference or opaque capability; and opaque VALUE handles (SEV-014, §4.24). Binary16, BFloat16, and fixed point are reserved descriptor shapes needing evaluator, conversion, and status contracts before admission |
-| §4.2 | SEV-013 | AoS/SoA choice, padding, field offsets, alignment, address space, `repr(C)`, CMSIS descriptors, interleaved or planar complex storage |
+| §4.1 | SEV-012 | Boolean; sized signed and unsigned integers; Binary32; Binary64; branded enums (SEV-014); compact tensors of checked shape; finite acyclic by-value records, whose recursion passes through an explicit reference or opaque capability; and opaque VALUE handles (SEV-014, §4.24). Complex is NOT admitted (SEV-017); Binary16, BFloat16, and fixed point are reserved descriptor shapes needing evaluator, conversion, and status contracts before admission |
+| §4.2 | SEV-013 | AoS/SoA choice, padding, field offsets, alignment, address space, `repr(C)`, CMSIS descriptors |
 | §4.3 | SEV-024 (contract fields), TRP-015 (exact target-relation preservation) | Accumulator format, evaluation order, per-step and result rounding, contraction/FMA, signed zero, NaN payload and quieting, infinity, subnormal/FTZ, status, transcendental contract |
 | §4.4 | SEV-044 | Callee, ordered arguments, activation, clock, domain, captures, effects, read versions, profile |
 | §4.5 | SEV-045 | Root handle and profile, result type, opcode plus arithmetic and status policy, ordered operand terms, compact shape/domain/view metadata, issued SSA and read-version atoms |
@@ -209,16 +209,16 @@ Each row is bound by the parent rule naming it.
 | §4.21 | TRP-012, TRP-033 | `RealRepr::{Binary32, Binary64}`; `IntRepr::{I8, I16, I32, I64, U8, U16, U32, U64}`; ONE default mapping for source Modelica `Real` and one for `Integer`; the allowed representation set for mixed-width Solve values; and the arithmetic-contract or profile ID closing rounding, overflow and status, subnormal, and reduction behavior. The allowed set is KIND-TAGGED — a `RealRepr` set and an `IntRepr` set, or one union whose members carry a kind tag; a raw heterogeneous list is inadmissible. Each kind's set is NONEMPTY and normalizes by canonical sort and dedup, and BOTH defaults MUST be members of their kind's set: a profile whose default is absent REJECTS, and normalization never unions into or mutates the request. A compiler-known named profile is admissible only when it expands to exactly these normalized fields. Reserved Binary16, BFloat16, and fixed forms REJECT until their §4.1 contracts exist; no extension string adds semantics |
 | §4.9 | TRP-013 | Kernel receipt, content-addressed and compiler-known: owning `RootDigest` and canonical OwnerPath; owner and operation identity; entry symbol, signature, and calling convention; SEMANTIC operand types plus PHYSICAL layouts and strides; the predicate domain it is selected for; library version or binary hash and build flags; accumulator and order; alias and overlap; alignment and address space; workspace; preconditions; status behavior; effect footprint (`errno`, floating-point environment, globals, threading); issuing authority and its evidence; and replay protection. CMSIS descriptors additionally bind buffer lifetime, shape/stride/quantized format, and address-space alias rules |
 | §4.28 | SEV-042 | `PreparedDigest = H(domain, RootDigest, normalized target/capability/environment profiles, ALL receipts, the selected coverage plan, preparer and schema and toolchain contract)`. Ancestry on `RootDigest` is mandatory |
-| §4.29 | SEV-042 | `ArtifactDigest = H(domain, PreparedDigest, emitter/template/asset/package identities, output manifest and bytes)`. Ancestry on `PreparedDigest` is mandatory. Bytes IDENTIFY an output; they never prove refinement |
+| §4.29 | SEV-042 | `ArtifactDigest = H(domain, PreparedDigest, emitter/template/asset/package identities, output manifest and RAW output bytes)`. Ancestry on `PreparedDigest` is mandatory. The claim is external to those bytes (TRP-011), so no placeholder, exclusion, or canonicalization machinery exists. Bytes IDENTIFY an output; they never prove refinement |
 | §4.30 | SEV-042 | Occurrence and source provenance is a CORRELATED SIDECAR, not semantic Root payload, keyed by canonical wire-local occurrence and owner PATHS reissued under `RootDigest` — never a serialized root-local ID or ordinal (SEV-040). `ProvenanceDigest = H(provenance domain tag, owning RootDigest, provenance schema version, canonical sorted sequence of records, each carrying the COMPLETE §4.6 payload: owner path, occurrence path, span, origin, instance and scope path, statement and operand role, ORDERED CHILD occurrences, and execution-owner correlation)`, excluding the claimed digest. `RootDigest` ancestry is mandatory, decode RECOMPUTES the claim, and one record binds exactly one sidecar to one root. It verifies independently of the §4.28/§4.29 ladder, so provenance edits move no ladder digest yet stay tamper-evident |
 | §4.10 | TRP-017 | ABI, coverage, loop/kernel, arithmetic relation, provenance, and the typed resource request of §4.25 — the bare word "resources" is not a request |
-| §4.24 | TRP-039 | `ValueCapabilityProfile`, deny-unknown and closed: per-family admission for rank-0 and rank-N Boolean, sized signed and unsigned integers, each admitted real format, nested record arrays, empty fields and values, enum brands, complex, and opaque VALUE handles. Effect owners are NOT here — they are §4.26. Checked TRANSITIVELY against every root owner before plan selection |
+| §4.24 | TRP-039 | `ValueCapabilityProfile`, deny-unknown and closed: per-family admission for rank-0 and rank-N Boolean, sized signed and unsigned integers, each admitted real format, nested record arrays, empty fields and values, enum brands, and opaque VALUE handles. Effect owners are NOT here — they are §4.26. Checked TRANSITIVELY against every root owner before plan selection |
 | §4.26 | TRP-042 | `OperationEffectCapabilityProfile`, deny-unknown and closed, keyed EXHAUSTIVELY to the `ValueOp`, `InvokeOp`, `EffectOp`, and `Terminator` families, including declared structured, control, and lifecycle subsets, and the volatile/atomic EFFECT owners. Adding a grammar variant MUST make every capability matcher fail to compile or explicitly reject: no wildcard or default-support arm exists |
 | §4.25 | TRP-039, TRP-045 | `ExecutionEnvironmentProfile`, deny-unknown and closed: `environment::{hosted, freestanding}`; `allocation::{forbidden, admitted}` with scratch limits; recursion and stack limits; `failure::{returned_status, panic { disposition::{abort, unwind, halt, reset}, handler::{none, named(§4.27)} }}`; available runtime math; concurrency and atomic model; admitted library contracts and ISA features. CANONICAL SHAPE: `handler` exists ONLY nested under `panic`; `returned_status` carries no handler field at all, so absence is its canonical form and two serializations of one meaning never exist. DISPOSITION is the observable outcome and `handler` the owning MECHANISM — independent axes, since one disposition may be reached through a handler or directly. Compatibility is declared, not inferred: `freestanding` with `halt` or `reset` REQUIRES `named`; `abort` and `unwind` admit either, subject to the environment's own rules. Declaring an ISA or library available NEVER authorizes a kernel — only its §4.9 receipt does |
 | §4.32 | TRP-031 | AC-to-PC operational refinement, declared per product: storage rounding and INTERMEDIATE rounding; contraction and evaluation order; the exceptional and status mapping (§6); and any allowed approximation with its exact relation and tolerance. AlgorithmCode is auditor-facing and profile-neutral, so the relation is a REFINEMENT, never equality; if eFMI admits approximation the tolerance is stated numerically, and if it does not the relation is stated as bit-exact for the declared mapping |
 | §4.31 | TRP-039, TRP-045 | Emitted-language and toolchain semantic contract: C, Rust, or WASM standard and runtime identity; toolchain identity; and the flags that change legality or results — fast-math, contraction and floating-point environment, overflow checks, panic behavior, and atomics. LEGALITY-CHANGING facts enter preparation and `PreparedDigest`; purely spelling and packaging facts enter `ArtifactDigest`. A source or binary hash IDENTIFIES an output and is never a refinement proof |
-| §4.33 | TRP-050 | `RootKind` is an INDEPENDENT closed enum — `SolveProblem`, `SolveAlgorithmBlock`, `None` — because product packaging (C-ODE, FMI, a language, eFMI AC) is NOT a semantic root. Allowed `ProductKind` × `RootKind` pairs: Hosted Rust, `no_std` Rust, Native/Cranelift, WASM, WGSL, Simulation C-ODE, and FMI component → `SolveProblem`; Embedded C and eFMI Production Code → `SolveAlgorithmBlock`; eFMI Algorithm Code and Flat/DAE exports → `None`, and a `None` product has NO `RootDigest`. Per variant: `ProductTag` (typed, REQUIRED for every product); `CoverageMode` (REQUIRED where `RootKind` is not `None`, FORBIDDEN where it is); ordered candidate lists (REQUIRED where a §4.18 plan admits alternatives, FORBIDDEN for `DirectCompact`-only products); budgets (REQUIRED for every product, TRP-022); receipts (REQUIRED per selected kernel, layout, and environment — §4.9, §4.23, §4.27). No variant carries a default; an absent REQUIRED field rejects, and a present FORBIDDEN field rejects |
-| §4.34 | TRP-013, TRP-015 | Receipt root-equivalence: a CMSIS descriptor or quantized-format mapping is root-equivalent ONLY when its receipt proves a LOSSLESS relation on the proven domain — same values, same exceptional and status behavior, same order. Absent that proof it constructs a distinct arithmetic root declaring the different semantics, or rejects; it never rides the original root as an optimization |
+| §4.33 | TRP-050 | The `ProductKind` and `RootKind` enums, their legal pairs, and the per-product field obligations are §10 |
+| §4.34 | TRP-013, TRP-015 | Receipt root-equivalence: a CMSIS descriptor or quantized-format mapping is root-equivalent ONLY when its receipt proves a LOSSLESS relation on the proven domain — same values, same exceptional and status behavior, same order — AND an identical observable effect footprint and multiplicity over the §4.9 list (`errno`, floating-point environment, globals, threading), or proves that footprint unobservable. Absent either proof it never rides the original root as an optimization. ORDERING: a non-lossless fixed-point or Q mapping REJECTS today; the distinct-root branch becomes available only once the reserved fixed-point semantic type, operation leaves, and profile contracts of §4.1 and SPEC_0049 §2 land |
 | §4.27 | TRP-045 | Handler contract, closed and checked — never a bare label: entry symbol and ABI; language, runtime, and toolchain identity; the disposition it implements; termination and non-return behavior; stack and allocation needs; reentrancy, concurrency, and interrupt assumptions; observable effects; and a binary or source hash, or a compiler-known contract version. Selection CHECKS the contract against the environment and the requested disposition; its NORMALIZED CONTENT — never the label — enters `PreparedDigest` |
 | §4.11 | SEV-014 | The nominal capability family — opaque external handles AND the explicit reference that makes a record acyclic — admits no literals, ordering, generic wire, arithmetic, address inspection, AD, or tensorization. A reference is reachable only through its declared owner |
 | §4.13 | SEV-041 | Hash-domain separation tag; typed SEMANTIC ROOT KIND identity; typed LIFECYCLE CONTRACT identity; canonical semantic payload excluding the claimed digest (semantic event schedules included); normalized arithmetic and sensitivity profiles; semantic schema and lowering version. Root kind and lifecycle contract are named typed fields, not implied by the domain tag |
@@ -274,23 +274,25 @@ the SAME §4.24/§4.25/§4.26 profiles and the one checker flow of TRP-039/042/0
 A blank is not permitted: each cell is an explicit admit or an explicit typed
 rejection recorded in the product's own profiles.
 
-| Product | Product/root kind | Closure obligations |
+| Product | `RootKind` (§10) | Closure obligations |
 |---|---|---|
 | Hosted Rust | Simulation `SolveProblem` | Every §4.1 family, §4.24 key, SPEC_0049 §1/§2 key, §4.25 environment, status class, and §4.2 layout, at `environment::hosted` |
 | `no_std` Rust | Simulation `SolveProblem` | As above at `environment::freestanding`, with its allocation, disposition, and handler decisions |
 | Native / Cranelift | Simulation `SolveProblem` | As above, plus the typed backend ABI of SEV-102 |
 | WASM | Simulation `SolveProblem` | As above, for the WebAssembly product |
 | WGSL | Simulation `SolveProblem` | A DISTINCT product from WASM: a GPU shading-language product whose f32 declaration remains the standing red (SEV-108) |
-| Simulation C-ODE | C-ODE | Its own product kind: a C source ODE product, not the Rust/native/WASM kind above |
-| FMI component | FMI component | Kernel semantics end at the Solve root; checked FMI metadata binds into prepared, artifact, and package identity only (TRP-019) |
-| Embedded C | Embedded C | Its own product kind; it does NOT collapse into eFMI Production Code and carries no eFMI container obligations |
-| eFMI Algorithm Code | AC sibling projection | Admissibility receipt only; MAY reject families it does not model, per SEV-147's selected-mapping scope |
-| eFMI Production Code | AlgorithmBlock eFMI PC | As Embedded C, plus the §4.32 AC-to-PC refinement and the co-issuance obligations of §4.19 |
+| Simulation C-ODE | `SolveProblem` | A distinct PRODUCT (a C source ODE), sharing the root kind above |
+| FMI component | `SolveProblem` | Kernel semantics end at that root; checked FMI metadata binds into prepared, artifact, and package identity only (TRP-019) |
+| Embedded C | `SolveAlgorithmBlock` | A distinct PRODUCT; it does NOT collapse into eFMI Production Code and carries no eFMI container obligations |
+| eFMI Algorithm Code | `None` | No `RootDigest` (§10). Admissibility receipt only; MAY reject families it does not model, per SEV-147's selected-mapping scope |
+| eFMI Production Code | `SolveAlgorithmBlock` | As Embedded C, plus the §4.32 AC-to-PC refinement and the co-issuance obligations of §4.19 |
 
-The four rows naming Simulation `SolveProblem` genuinely SHARE that root kind —
-they differ by environment, ABI, and emitter, not by root — and they are listed
-separately because their §4.25 and §4.24 obligations differ. Every other row is
-a distinct product and root kind; no row borrows another's name.
+Seven products share `RootKind = SolveProblem` per §10: the five language and
+backend products above — Hosted Rust, `no_std` Rust, Native/Cranelift, WASM,
+WGSL — plus Simulation C-ODE and FMI component. They differ by environment, ABI,
+emitter, and packaging, not by root, and are listed separately because their
+§4.24 and §4.25 obligations differ. The `ProductKind` names above are packaging
+identities, never root kinds; the two enums are independent (§10).
 
 ### 6. Failure and Status Mapping
 
@@ -364,7 +366,7 @@ Bound by SEV-017, which keeps Complex **Proposed and transport-only**. SPEC_0035
 is NOT retired: it stays the DRAFT owner of these rules. The table below is the
 checklist a future Complex slice must discharge before Complex becomes
 computable — value form, wire form, per-operation leaves, and classes included.
-Until then §4.1 admits Complex for transport only.
+Until then §4.1 does not admit Complex at all, and every Complex use rejects.
 
 | Carried rule | From | Placement |
 |---|---|---|
@@ -384,3 +386,47 @@ Until then §4.1 admits Complex for transport only.
 | *"DAE → `SolveProblem`; checked Algorithm Code → `SolveAlgorithmBlock` lowering"* (`rumoca-phase-solve`) | Gains the shared expression and function relation construction plus profile-bound root closure |
 | *"Checked DAE pure-function graph → shared typed Solve program regions and pure-call owners"* (`rumoca-phase-solve`) | Same shared construction; the AC sibling references it rather than re-lowering |
 | *"DAE/Solve → checked GALEC lowering"* (`rumoca-phase-galec`) | Narrows to projection and container authority, with NO expression or function lowering |
+
+### 10. Product and Root Schema (§4.33)
+
+Bound by TRP-050.
+
+**`ProductKind`** (closed, ten variants): `HostedRust`, `NoStdRust`,
+`NativeCranelift`, `Wasm`, `Wgsl`, `SimulationCOde`, `FmiComponent`,
+`EmbeddedC`, `EfmiAlgorithmCode`, `EfmiProductionCode`.
+
+**`RootKind`** (closed, independent): `SolveProblem`, `SolveAlgorithmBlock`,
+`None`. Product PACKAGING is never a root kind.
+
+**Legal pairs.**
+
+| `ProductKind` | `RootKind` |
+|---|---|
+| `HostedRust`, `NoStdRust`, `NativeCranelift`, `Wasm`, `Wgsl`, `SimulationCOde`, `FmiComponent` | `SolveProblem` |
+| `EmbeddedC`, `EfmiProductionCode` | `SolveAlgorithmBlock` |
+| `EfmiAlgorithmCode` | `None` — no `RootDigest` |
+| Flat and DAE exports (not products of this schema) | `None` — no `RootDigest` |
+
+**Per-product fields.** R = REQUIRED, F = FORBIDDEN. No field has a default;
+an absent R rejects and a present F rejects.
+
+| Field | `RootKind = SolveProblem` | `RootKind = SolveAlgorithmBlock` | `RootKind = None` |
+|---|---|---|---|
+| Root input and `RootDigest` reference | R | R | F |
+| Numeric profile (§4.21) | R | R | F |
+| Value capability profile (§4.24) | R | R | F |
+| Operation/effect profile (§4.26) | R | R | F |
+| Environment profile (§4.25) | R | R | F |
+| Emission policy (§4.22) | R | R | F |
+| `CoverageMode` | R | R | F |
+| Ordered candidates | R | R | F |
+| Budgets (TRP-022) | R | R | R |
+| Receipt SELECTORS (manifest inputs) | R | R | F |
+| Issued RECEIPTS (preparation outputs) | R | R | F |
+| Sibling inputs (eFMI pairs) | F | R for `EfmiProductionCode`, F for `EmbeddedC` | R for `EfmiAlgorithmCode` |
+
+Candidates are REQUIRED exactly where `CoverageMode` is, which removes the
+earlier circular condition: both key off `RootKind`, never off each other.
+Receipt SELECTORS are manifest INPUTS naming what may be chosen; issued RECEIPTS
+are preparation OUTPUTS recording what was chosen and proven — the two are
+distinct fields and neither substitutes for the other.

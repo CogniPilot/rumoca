@@ -191,7 +191,8 @@ separate key.
 A leaf whose contract class differs by element kind is TWO keys, not one: an
 integer `Add` and a real `Add` are separate admissions with separate contracts.
 A target admitting the real leaf has admitted nothing about the integer leaf,
-and neither implies the Complex leaf. Where §2 names two classes, the split is
+and no admission implies a Complex leaf, which SEV-017 does not admit at all.
+Where §2 names two classes, the split is
 mandatory.
 
 ### 4. Capability Key Rules

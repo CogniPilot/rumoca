@@ -24,9 +24,9 @@ voted series; until it passes, this file stays DRAFT.
 
 On acceptance this amends SPEC_0035 Summary and §§1/3/4 — precision-neutral
 `Real`, codegen-time width selection, and record scalarization are superseded by
-§3–§4. SPEC_0035 is NOT retired by this series: SEV-017 keeps Complex
-transport-only, so SPEC_0035 remains the DRAFT owner of the Complex rules until
-its own slice lands, and retiring it now would orphan a half-specified family.
+§3–§4. SPEC_0035 is NOT retired by this series: SEV-017 does not admit Complex,
+so SPEC_0035 remains the DRAFT owner of the Complex rules until its own slice
+lands, and retiring it now would orphan an unspecified family.
 This also amends DRAFT SPEC_0036 and SPEC_0043 §9 with its rounding rows
 (profile-bound identity and the §6 split). Target-facing parents are amended by
 [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) §1.
@@ -77,7 +77,7 @@ are the useful lesson; graph-kind identity is the mistake.
 | SEV-014 | Enum TYPE identity is `{EnumTypeId, cardinality}`; an ordinal identifies a VALUE of that type, so ordinal 1 of two enums is two values of two unequal types. Opaque handles and the explicit REFERENCE that makes a record acyclic (SEV-012) are one nominal capability family restricted by [§4.11](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs). | Solve types | Else a pointer |
 | SEV-015 | Zero storage is not zero identity: an empty value keeps every identity in [§4.15](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) and zero domains never run bodies. | construction | Empty is a value |
 | SEV-016 | `volatile` is NOT ABI-only: an MMIO read may change value and its access count is observable, so a cacheable `Load` cannot map to volatile. Admit only the owners in [§4.16](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs), or reject. | Solve effects | Access count observable |
-| SEV-017 | **PROPOSED, transport-only.** Complex is one element type over an admitted binary format, never a record or pair, and interleaved versus planar storage is a prepared layout. No product in this series requires it, so no `SolveScalarType::Complex` value form, wire form, or per-operation leaf is specified here: Complex may be carried and declared, never computed on, until its own slice lands. [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) stays DRAFT and un-retired meanwhile; [SPEC_0047 §9](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#9-complex-contract-spec_0035-narrowing) records what a full specification must carry. | `rumoca-ir-solve` | Half a family is no family |
+| SEV-017 | **Complex is NOT admitted.** Every Complex use REJECTS until the SPEC_0035 slice supplies its type, value, and wire representation — a family with no representation cannot be transported either. [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) stays DRAFT and un-retired as its owner; [SPEC_0047 §9](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#9-complex-contract-spec_0035-narrowing) is that slice's checklist. When it lands, Complex is one element type over an admitted binary format, never a record or pair. | `rumoca-ir-solve` | No representation, no family |
 
 ### 4. Root-Bound Profiles And Arithmetic Closure
 
