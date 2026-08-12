@@ -210,7 +210,7 @@ Each row is bound by the parent rule naming it.
 | §4.21 | TRP-012, TRP-033 | `RealRepr::{Binary32, Binary64}`; `IntRepr::{I8, I16, I32, I64, U8, U16, U32, U64}`; ONE default mapping for source Modelica `Real` and one for `Integer`; the allowed representation set for mixed-width Solve values; and the arithmetic-contract or profile ID closing rounding, overflow and status, subnormal, and reduction behavior. The allowed set is KIND-TAGGED — a `RealRepr` set and an `IntRepr` set, or one union whose members carry a kind tag; a raw heterogeneous list is inadmissible. Each kind's set is NONEMPTY and normalizes by canonical sort and dedup, and BOTH defaults MUST be members of their kind's set: a profile whose default is absent REJECTS, and normalization never unions into or mutates the request. A compiler-known named profile is admissible only when it expands to exactly these normalized fields. Reserved Binary16, BFloat16, and fixed forms REJECT until their §4.1 contracts exist; no extension string adds semantics |
 | §4.9 | TRP-013 | Kernel receipt, content-addressed and compiler-known: owning `RootDigest` and canonical OwnerPath; owner and operation identity; entry symbol, signature, and calling convention; SEMANTIC operand types plus PHYSICAL layouts and strides; the predicate domain it is selected for; library version or binary hash and build flags; accumulator and order; alias and overlap; alignment and address space; workspace; preconditions; status behavior; effect footprint (`errno`, floating-point environment, globals, threading); issuing authority and its evidence; and replay protection. CMSIS descriptors additionally bind buffer lifetime, shape/stride/quantized format, and address-space alias rules |
 | §4.28 | SEV-042 | `PreparedDigest = H(domain, RootDigest, normalized target/capability/environment profiles, ALL receipts, the selected coverage plan, preparer and schema and toolchain contract)`. Ancestry on `RootDigest` is mandatory |
-| §4.29 | SEV-042 | `ArtifactDigest = H(domain, PreparedDigest, emitter/template/asset/package identities, output manifest and RAW output bytes)`. Ancestry on `PreparedDigest` is mandatory. The claim is external to those bytes (TRP-011), so no placeholder, exclusion, or canonicalization machinery exists. Bytes IDENTIFY an output; they never prove refinement |
+| §4.29 | SEV-042 | `ArtifactDigest = H(preimage)` where the preimage is a DOMAIN-SEPARATED, LENGTH-DELIMITED ordered sequence: the domain tag; the parent `PreparedDigest`; framed emitter, template, asset, and toolchain identities; then, in canonical path order, each output file as its canonical RELATIVE PATH plus its exact raw bytes — or its content digest and byte length. Ancestry on `PreparedDigest` is mandatory. The `ArtifactDigest` claim record lies OUTSIDE every preimage member, the manifest schema included (TRP-011), so no placeholder or exclusion machinery exists. Bytes IDENTIFY an output; they never prove refinement |
 | §4.30 | SEV-042 | Occurrence and source provenance is a CORRELATED SIDECAR, not semantic Root payload, keyed by canonical wire-local occurrence and owner PATHS reissued under `RootDigest` — never a serialized root-local ID or ordinal (SEV-040). `ProvenanceDigest = H(provenance domain tag, owning RootDigest, provenance schema version, canonical sorted sequence of records, each carrying the COMPLETE §4.6 payload: owner path, occurrence path, span, origin, instance and scope path, statement and operand role, ORDERED CHILD occurrences, and execution-owner correlation)`, excluding the claimed digest. `RootDigest` ancestry is mandatory, decode RECOMPUTES the claim, and one record binds exactly one sidecar to one root. It verifies independently of the §4.28/§4.29 ladder, so provenance edits move no ladder digest yet stay tamper-evident |
 | §4.10 | TRP-017 | ABI, coverage, loop/kernel, arithmetic relation, provenance, and the typed resource request of §4.25 — the bare word "resources" is not a request |
 | §4.24 | TRP-039 | `ValueCapabilityProfile`, deny-unknown and closed: per-family admission for rank-0 and rank-N Boolean, sized signed and unsigned integers, each admitted real format, nested record arrays, empty fields and values, enum brands, and opaque VALUE handles. Effect owners are NOT here — they are §4.26. Checked TRANSITIVELY against every root owner before plan selection |
@@ -309,64 +309,79 @@ declared transport by ONE declared relation, never by convention:
 
 ### 7. Scheduled Discrete Ownership (SPEC_0046)
 
-Bound by [SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) §9. Every row
+Bound by [SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md) §12. Every row
 names the `SDO` rule it covers.
 
-**Present state.** None of SPEC_0046 §2–§8 is implemented.
+**Present state.** None of SPEC_0046 §2–§11 is implemented.
 
 | State | Present-tense fact | Where | Covers |
 |---|---|---|---|
-| Partial | Migration-period uniformity and row-filter runtime proofs exist in the working tree, each with a named deletion edge; they are transition debt, not the strata | `rumoca-solver` runtime | SDO-011, SDO-012 |
-| Partial | The one-tick and settle restorations are LANDED behavior and are the only strata semantics presently correct | `rumoca-solver` runtime | SDO-013 |
-| Absent | No whole-event candidate/commit relation exists: outcomes publish as they settle, so no owner defines whole-event publication | `rumoca-solver` runtime | SDO-020, SDO-021 |
-| Absent | No staged effect boundary: `assert`, `terminate`, and status effects emit during the attempt | `rumoca-solver` runtime | SDO-022, SDO-023 |
-| Absent | Activation and pre-mode capabilities are not construction-issued per transaction; mixed modes are representable | construction | SDO-030 |
-| Absent | No static per-step `InvocationOwnerId`; identity is not issued once per step body | construction | SDO-032 |
-| Absent | Algorithm transactions expose no complete final target tuple; statement intermediates escape the atomic section | construction | SDO-040, SDO-041 |
-| Absent | No symbolic activation proof; there is no lattice or phase-shift analysis to accept a false-union cycle or reject a jointly active one | construction | SDO-050, SDO-051 |
-| Absent | Counters are not split by phase, so an initialization firing and a runtime tick are indistinguishable | evidence | SDO-060, SDO-061 |
-| Absent | `ScheduledActivationId` and `ClockId` are conflated: Boolean `sample(start, interval)` is owned as a periodic clock | `rumoca-phase-dae` | SDO-015 |
+| Absent | No total lazy `next` relation: SOLVE-C57's admitted remainder reads held storage, so an inactive target's same-instant read is a storage read | construction | SDO-001, SDO-004 |
+| Absent | Laziness is not semantic: work under an inactive target is skipped by evaluation order, not proven to execute zero times | runtime | SDO-003 |
+| Partial | Migration-period uniformity and row-filter runtime proofs exist in the working tree, each with a named deletion edge; they are transition debt, not the strata | `rumoca-solver` runtime | SDO-031, SDO-032 |
+| Partial | The one-tick and settle restorations are LANDED behavior and are the only strata semantics presently correct. Whole-event ACTION STAGING is NOT landed — see the next row | `rumoca-solver` runtime | SDO-033 |
+| Absent | No whole-event candidate/commit relation: outcomes publish as they settle, no owner defines whole-event publication, and effects are not staged | `rumoca-solver` runtime | SDO-040, SDO-043 |
+| Absent | Rollback covers no more than target state; relation/condition memory, random state, integrator restart, FMI lifecycle, and observable ledgers are unrestored | `rumoca-solver` runtime | SDO-041 |
+| Absent | The four-outcome taxonomy does not exist; warning and terminate paths are ad hoc | `rumoca-solver` runtime | SDO-042 |
+| Absent | No `EventInstantExecutionPlan` static owner with nonoverlapping child coverage and one outer commit | `rumoca-ir-solve` | SDO-010, SDO-011 |
+| Absent | `InvocationOwnerId` is not keyed by source call occurrence plus activation, domain, and profile | construction | SDO-050, SDO-051 |
+| Partial | SOLVE-C55 already requires one `EventTransactionProgram` with a complete result tuple, so the tuple itself is not the gap. What is Absent is COMPOSITION and PUBLICATION: cross-owner cycles have no opaque-block rule, and the transaction's publication is not part of a whole-event commit | construction | SDO-060, SDO-061 |
+| Absent | No symbolic activation proof: no lattice or phase analysis accepts a false cycle or rejects a jointly active one, and no certificate reissues on tunable change | construction | SDO-070, SDO-071, SDO-073 |
+| Absent | Counters are not split by phase, so an initialization firing and a runtime tick are indistinguishable | evidence | SDO-080, SDO-081 |
+| Absent | `ScheduledActivationId` and `ClockId` are conflated: Boolean `sample(start, interval)` is owned as a periodic clock | `rumoca-phase-dae` | SDO-035 |
 
 **Preregistered gates.**
 
 | ID | Gate | Passes when | Covers |
 |----|------|-------------|--------|
-| SDO-200 | Residual SCC rejection | A legal coupled or nonlinear B.1b SCC rejects at its owning source spans; no topological order is invented and no coverage hole appears | SDO-002 |
-| SDO-201 | Independent base-clock permutation | Permuting independent base clocks leaves every observable identical; a product that observes their order fails | SDO-011 |
-| SDO-202 | Coincident directions | Boolean code reading `hold(clockVar)` observes THIS tick's newly solved value, while a Clock partition sampling a Boolean-updated variable observes its captured left limit — in one fixture, both directions at one instant | SDO-014 |
-| SDO-203 | Retry exactness | A retried attempt produces bit-identical published state to a first-try success from the same entry state | SDO-020, SDO-021 |
-| SDO-204 | Sibling-commit rollback | One sibling's failure restores every other sibling's targets, histories, schedule consumption, and evaluator/delay/cache state | SDO-021 |
-| SDO-205 | Nonconvergence rollback | A non-converging iteration restores entry state completely rather than publishing a partial settle | SDO-021 |
-| SDO-206 | Failing late action | The preregistered failing-late-action fixture emits NO `assert`, `terminate`, or status effect and leaves no published target | SDO-022 |
-| SDO-207 | Non-rollbackable effect | A transactional external effect that cannot be snapshot-and-replayed rejects BEFORE the attempt starts, not during commit | SDO-023 |
-| SDO-208 | Mixed-mode unconstructible | A transaction mixing activation or pre modes fails construction; no runtime check substitutes | SDO-030 |
-| SDO-209 | Static step identity | One static `InvocationOwnerId` per step body; IR size is invariant to simulated duration across a long run | SDO-032 |
-| SDO-210 | Statement atomicity | `x := a; x := b(x)` publishes `b(a)` as the single final target value, and no consumer observes the intermediate | SDO-040 |
-| SDO-211 | Opaque cross-owner cycle | A cross-owner cycle through a transaction rejects as one block; no split or interleaved schedule is produced | SDO-041 |
-| SDO-212 | Phase-shift acceptance | A phase-shifted cycle with provably empty activation union ACCEPTS via lattice proof, while a jointly active cycle REJECTS at its owning spans | SDO-051 |
-| SDO-213 | Coprime cost | Coprime periods stay O(owners + compact edges + rank); no cost tracks the period product, and no hyperperiod table or activation bitset is allocated | SDO-050, SDO-052 |
-| SDO-214 | Initialization phase | `sample(0, T)` does not fire during Modelica initialization, and the three-way counter split distinguishes initialization, the estimator init arm, and runtime ticks | SDO-060, SDO-061 |
+| SDO-200 | Total next, both polarities | An ACTIVE target's same-instant read observes the lazily selected RHS; an INACTIVE target's read observes the held entry through the SAME relation, with no storage-fallback path taken | SDO-001, SDO-002 |
+| SDO-201 | Inactive effects execute zero times | Calls, assertions, folds, and tensor kernels under an inactive target or untaken arm execute EXACTLY zero times, counted by issued identity | SDO-003 |
+| SDO-202 | Residual SCC rejection | A legal coupled or nonlinear B.1b SCC rejects at its owning source spans; no order is invented and no coverage hole appears | SDO-021 |
+| SDO-203 | Independent base-clock permutation | Permuting independent base clocks leaves every observable identical | SDO-031 |
+| SDO-204 | Scheduled results stay current | Scheduled `m = pre(m) + 1` followed by unclocked `n = pre(m)` cascades correctly: the scheduled owner does not rerun in later passes, and only iterative `pre` advances | SDO-033 |
+| SDO-205 | Coincident directions | In one fixture at one instant: Boolean code reading `hold(clockVar)` observes THIS tick's newly solved value, while a Clock partition sampling a Boolean-updated variable observes its captured left limit | SDO-034 |
+| SDO-206 | Cross-period cascade | An equation → algorithm → equation chain across different periods observes each stage's total-next result exactly once per activation | SDO-033, SDO-060 |
+| SDO-207 | Retry exactness | A retried attempt publishes bit-identical state to a first-try success from the same entry state | SDO-040, SDO-043 |
+| SDO-208 | Sibling-commit rollback | One sibling's failure restores every other sibling's targets, histories, schedule consumption, and evaluator/delay/cache state | SDO-041 |
+| SDO-209 | Full rollback scope | Abort restores relation and condition memory, random and impure state, integrator invalidation and restart, FMI lifecycle and next-event state, and observable ledgers — each checked separately | SDO-041 |
+| SDO-210 | Nonconvergence rollback | A non-converging iteration restores entry state completely rather than publishing a partial settle | SDO-041 |
+| SDO-211 | Outcome taxonomy | `Success + Warnings` publishes and emits its warnings once; `Success + Terminate` publishes the terminal state and emits once; `Abort` restores and emits only its specified failure. The preregistered failing-late-action fixture emits nothing and publishes nothing | SDO-042, SDO-043 |
+| SDO-212 | Non-rollbackable effect | A transactional external effect that cannot be snapshot-and-replayed rejects BEFORE the attempt starts | SDO-044 |
+| SDO-213 | Two same-body occurrences | Two calls to ONE function body at one instant issue TWO invocation and effect owners sharing ONE immutable relation body; counts and effects are per occurrence | SDO-050 |
+| SDO-214 | Static step identity | Identity issuance is static: IR size is invariant to simulated duration across a long run | SDO-051 |
+| SDO-215 | Statement atomicity | `x := a; x := b(x)` publishes `b(a)` as the single final target value, and no consumer observes the intermediate | SDO-060 |
+| SDO-216 | Opaque cross-owner cycle | A cross-owner cycle through a transaction rejects as one block; no split or interleaved schedule is produced | SDO-061 |
+| SDO-217 | False-cycle intersection | A cyclic edge set whose activation INTERSECTION is empty ACCEPTS via lattice proof; a jointly satisfiable cycle REJECTS at its owning spans | SDO-071 |
+| SDO-218 | Schedule exactness | Two equal-lattice occurrences stay distinct; no epsilon comparison, repeated-`f64` drift, or near-instant merge occurs over a long run; a tunable change reissues the certificate and the stale one is never reused | SDO-072, SDO-073 |
+| SDO-219 | Coprime cost | Coprime periods stay O(owners + compact edges + rank); no hyperperiod table or activation bitset is allocated | SDO-070, SDO-074 |
+| SDO-220 | Initialization phase | `sample(0, T)` does not fire during Modelica initialization, and the three-way counter split distinguishes initialization, the estimator init arm, and runtime ticks | SDO-080, SDO-081 |
+| SDO-221 | Million-element lazy aggregate | A million-element aggregate target under a lazy arm keeps root, wire, preparation, and stored body at O(compact bodies + owners + edges + rank); only the SELECTED payload's execution scales with extent | SDO-090, SDO-091 |
+| SDO-222 | Four-backend parity | Interpreter, Cranelift, generated C, and the definitional evaluator agree on final state AND status for one discrete fixture spanning active, inactive, warning, and terminate outcomes | SDO-042, SDO-200 |
 
-**RDD2 estimator discriminator (SDO-215).** Bound to the external model's source
-digest or its compiled structural precondition (§2's topology binding), and
-invalidated by a topology change: 101 activations — one `t = 0` initialization
-arm plus 100 runtime ticks — from ONE static owner at 0.5 s over a 5 ms step;
-per-arm ZERO-EXECUTION proofs per `navigationSource` (`= 1` exercises the
-joint-GPS arm only; `= 2` the optical arm on post-initialization fresh ticks;
-`= 0` leaves `step`, `predict`, and `navigationEstimateArrays` with corrections
-zero); the in-transaction total-next read; four-way identical per-owner counts
-split into initialization and runtime; and O(source owners + rank) independence
-from covariance extents. Counts bind issued `OccurrenceId` and
-`InvocationOwnerId` plus the source digest, never ordinals or names.
-Covers SDO-032, SDO-060, SDO-061.
+**RDD2 estimator discriminator (SDO-223).** Bound to the external model's source
+digest or its compiled structural precondition, and invalidated by a topology
+change: 101 activations — one `t = 0` initialization arm plus 100 runtime ticks
+— from ONE static owner at 0.5 s over a 5 ms step; per-arm ZERO-EXECUTION proofs
+per `navigationSource` (`= 1` exercises the joint-GPS arm only; `= 2` the
+optical arm on post-initialization fresh ticks; `= 0` leaves `step`, `predict`,
+and `navigationEstimateArrays` with corrections zero); the in-transaction
+total-next read; four-way identical per-owner counts split into initialization
+and runtime; and O(source owners + rank) independence from covariance extents.
+Counts bind issued `OccurrenceId` and `InvocationOwnerId` plus the source
+digest, never ordinals or names. Covers SDO-003, SDO-051, SDO-080, SDO-081.
 
 **Rejected alternatives.**
 
 | Alternative | Cost that defeated it | Reversal gate |
 |---|---|---|
-| A runtime row cache | A dichotomy with no escape: a cache keyed loosely enough to hit serves a STALE REPLAY, and one keyed tightly enough to be correct re-executes the row's EFFECTS. Both horns are wrong answers, not slow ones | SDO-111 |
-| Value convergence as execution cardinality | Equal values across passes prove nothing about how many times a row executed, so a million-row scalar adapter reporting one activation looks converged; cardinality is an execution fact, not a value fact | SDO-032 |
-| Combined first-pass ordering | Merging the scheduled and clocked first pass with the unclocked round invents an order among INDEPENDENT base clocks that MLS §16.5.1.1 leaves unordered | SDO-112 |
+| EXCHANGE / HOLD-FALLBACK split (SOLVE-C57) | The hold-fallback member makes a same-instant read a STORAGE read, so an inactive target's value depends on evaluation history rather than a relation — unsound, not merely complex | SDO-110 |
+| A universal execution order | Invents an order among INDEPENDENT base clocks that MLS §16.5.1.1 leaves unordered, making a permutation-invariant observable order-dependent | SDO-111 |
+| One giant re-lowered body | Program size grows with CONSUMER count rather than producer count, and every consumer re-lowers the producer graph | SDO-112 |
+| A rollback journal instead of a private arena | Journal invalidation needs ID aliasing to be sound; the observational-rollback invariant is the comparator | SDO-113 |
+| One unified history buffer | The four lanes advance differently at coincident instants, so one buffer must pick a wrong advancement for at least one lane | SDO-114 |
+| A runtime row cache | A dichotomy with no escape: a cache keyed loosely enough to hit serves a STALE REPLAY, and one keyed tightly enough to be correct re-executes the row's EFFECTS | SDO-116 |
+| Value convergence as execution cardinality | Equal values across passes prove nothing about how many times a row executed | SDO-051 |
+| Combined first-pass ordering | Merging the scheduled and clocked first pass with the unclocked round invents the order SDO-031 forbids | SDO-111 |
 
 ### 8. Acceptance-Time Amendment Map
 
@@ -401,7 +416,8 @@ SPEC_0043 §9 link are amended together.
 
 ### 9. Complex Contract (SPEC_0035 Narrowing)
 
-Bound by SEV-017, which keeps Complex **Proposed and transport-only**. SPEC_0035
+Bound by SEV-017, under which Complex is **not admitted**; this is the future
+admission checklist. SPEC_0035
 is NOT retired: it stays the DRAFT owner of these rules. The table below is the
 checklist a future Complex slice must discharge before Complex becomes
 computable — value form, wire form, per-operation leaves, and classes included.
@@ -459,10 +475,10 @@ an absent R rejects and a present F rejects.
 | Emission policy (§4.22) | R | R | F |
 | `CoverageMode` | R | R | F |
 | Ordered candidates | R | R | F |
-| Budgets (TRP-022) | R | R | R |
+| Budgets (TRP-022) | R | R | F |
 | Receipt SELECTORS (manifest inputs) | R | R | F |
 | Issued RECEIPTS (preparation outputs) | R | R | F |
-| Sibling inputs (eFMI pairs) | F | R for `EfmiProductionCode`, F for `EmbeddedC` | R for `EfmiAlgorithmCode` |
+| Sibling inputs (eFMI pairs) | F | R for `EfmiProductionCode` (it carries the AC sibling and correlation input), F for `EmbeddedC` | F |
 
 Candidates are REQUIRED exactly where `CoverageMode` is, which removes the
 earlier circular condition: both key off `RootKind`, never off each other.

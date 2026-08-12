@@ -82,7 +82,7 @@ contract. Grammar, type algebra, profiles, and the identity ladder are
 |----|------|-------------|---------------------|
 | TRP-020 | No IR, evaluation, query, or preparation path EXPANDS a compact owner or domain beyond the operations the source already authored; executors loop over the compact owner, and final emitters alone create budgeted ephemeral machine instructions. An authored `ConstructAggregate{elements}` with N operands is legal — N is source-authored, not extent-derived. | Solve, backends | Expansion, not size, is the defect |
 | TRP-021 | Prohibited: a stored semantic scalar graph, per-coordinate metadata DERIVED from tensor extent, and implicit scalar fallback; checked interval and range ownership replaces them. Backend-private structures — liveness bitsets over genuine definitions, for instance — MAY scale with those definitions, carrying zero semantic and wire authority (TRP-003). | construction | Extent-derived is the defect |
-| TRP-022 | Every product carries a checked work, code-size, and resource budget plus ONE admitted execution path from the complete §4.18 union; bounded unrolling is explicit under TRP-014, constrained by TRP-015. | preparation | Permission, not efficiency |
+| TRP-022 | Every product whose `RootKind` is NOT `None` carries a checked work, code-size, and resource budget plus ONE admitted execution path from the complete §4.18 union; bounded unrolling is explicit under TRP-014, constrained by TRP-015. A `None`-root product prepares nothing and carries neither. | preparation | Budgets bind executables |
 
 ### 5. eFMI Co-Issued Siblings
 
