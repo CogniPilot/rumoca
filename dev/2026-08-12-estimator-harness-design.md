@@ -655,6 +655,39 @@ and the in-flight record-array work in the compiler stream).
 - **Q6 report location:** comparison reports as committed artifacts
   under `artifacts/estimator-harness/` (models repo) vs rumoca `dev/`.
 
+## 12. Rulings (James, 2026-08-12)
+
+Three of the interactive question set are RULED; they override any
+conflicting default above:
+
+1. **Sensor noise models: the harness builds them (S2), from the
+   flight hardware datasheets** — IMU gyro/accel noise density and
+   bias instability, flow sigma, GPS position/velocity sigma —
+   as deterministic pre-drawn noise tables per the determinism rule.
+   James reviews the encoded numbers; logged Allan-variance data can
+   refine them later. NEES/NIS scoring is not trusted until these
+   land.
+2. **Canonical Tier-A trace records under TRUTH NAVIGATION
+   (`navigationSource = 0`)** so the trajectory is estimator-neutral;
+   no candidate's flown behavior is baked into the corpus.
+3. **Reference numerics: binary32 candidates, f64 reference
+   yardstick.** The authoritative scoring path for every CANDIDATE
+   remains the generated binary32 C (proving the algorithm works in
+   32-bit is the point); the exact fixed-lag reference runs f64 so
+   binary32 failure classes in candidates (the SPD-cliff family) are
+   DETECTED against a trustworthy baseline rather than masked by a
+   reference sharing the same failure mode. A binary32 build of the
+   reference is still produced for cost bounds only. ADDED METRIC
+   (M11): per-candidate f32/f64 self-differential — build each
+   candidate in both precisions, replay the identical trace, score
+   the divergence rate; rapid separation marks numerical fragility
+   regardless of single-trace f32 accuracy.
+
+Still open: the remaining §11 rows (weights, delay defaults,
+flight-log truth source, health-record field names, C3 re-fuse
+fidelity, report location) and the SPEC_0048 threshold-or-split
+question on the vote agenda.
+
 ---
 
 Signed-off-by: James Goppert <james.goppert@gmail.com>
