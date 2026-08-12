@@ -1116,6 +1116,37 @@ fn sim_009_pre_of_continuous_algebraic_in_when_body_snapshots_event_entry() {
 }
 
 #[test]
+fn sim_009_pre_of_a_steep_algebraic_reads_the_exact_event_time_generation() {
+    // The generation discriminator. `a` has slope 1e6, so evaluating the
+    // entry snapshot's algebraic lanes at the event's *left probe* time
+    // instead of the event time itself moves `pre(a)` by ~1e3 - three orders
+    // of magnitude above the assertion band below. Only a snapshot whose
+    // every lane belongs to the exact event-time generation passes.
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real ramp(start = 0, fixed = true);
+            Real a;
+            discrete Real a_pre(start = 0, fixed = true);
+        equation
+            der(ramp) = 1;
+            a = 1e6 * time;
+            when sample(1, 1) then
+                a_pre = pre(a);
+            end when;
+        end M;
+    "#,
+        "M",
+        1.5,
+    );
+    assert!(
+        (trace.final_value("a_pre") - 1.0e6).abs() < 1.0,
+        "pre(a) must be the left limit a(1) = 1e6, got {}",
+        trace.final_value("a_pre")
+    );
+}
+
+#[test]
 fn sim_009_pre_of_continuous_state_outside_when_clause_is_rejected() {
     // Ablation for the accept cases above: the same `pre(x)` on the same
     // continuous state is a typed rejection when no when-clause owns the read.

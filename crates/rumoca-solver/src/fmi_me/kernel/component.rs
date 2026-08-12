@@ -1404,23 +1404,13 @@ impl SolveMeKernel {
                 .unwrap_or_else(|| self.params.clone());
             return Ok((event_pre_y, event_pre_p));
         }
-        if self.advance_state_to_event_right_limit
-            && matches!(
-                event.pre_mode,
-                EventPreMode::EventEntry | EventPreMode::Fixed
-            )
-        {
-            // A time event has no discontinuity before its event update: its
-            // continuous left limit is the state supplied at the event time,
-            // while discrete `pre` lanes are the previously committed values.
-            // Derived algebraic lanes are only a seed and are canonicalized by
-            // the projected event iteration after clock activation.
-            let mut event_pre_y = self.solver_y_guess.borrow().clone();
-            event_pre_y[..self.state_count].copy_from_slice(&self.states);
-            return Ok((event_pre_y, self.params.clone()));
-        }
         let pre_time = match event.pre_mode {
             EventPreMode::EventEntry | EventPreMode::Fixed => {
+                // A time event has no discontinuity before its event update:
+                // its continuous left limit is the state supplied at the event
+                // time, so the entry snapshot is read at `event_time` itself.
+                // A located root instead brackets its crossing with a
+                // tolerance-wide probe on the left of the event.
                 if self.advance_state_to_event_right_limit {
                     event_time
                 } else {
@@ -1429,6 +1419,10 @@ impl SolveMeKernel {
             }
             EventPreMode::FollowCurrent => self.public_time_eval_time(self.time),
         };
+        // Every lane of the entry snapshot must belong to the same generation:
+        // a full evaluation at `pre_time` is what makes `pre(a)` of a
+        // continuous algebraic the exact left limit rather than whatever the
+        // integrator's guess happened to hold from an earlier probe time.
         let event_pre_y = self.solver_y_at_time(pre_time)?;
         let event_pre_p = self.params.clone();
         Ok((event_pre_y, event_pre_p))
@@ -1676,3 +1670,6 @@ impl SolveMeKernel {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
