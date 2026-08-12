@@ -82,6 +82,7 @@ Checked typed programs, arithmetic profiles, exact values, wire replay,
 | SEV-137 | `NumericProfile` parse and normalization | `f32`+`i32`, `f64`+`i64`, and a mixed allowed set each parse, deny unknown keys, normalize to §4.21 fields, and produce the expected distinct `RootDigest`s; unsigned widths parse only as declared representations; an unavailable format rejects with its reserved-shape reason | TRP-012, TRP-033 |
 | SEV-138 | Profile mismatch against a built root | A target request disagreeing with an already-profiled root rejects; no path converts a built root to another width | TRP-034 |
 | SEV-139 | Range refinement without conversion | Two `i32` inputs with ranges `[0,10]` and `[0,100]` add with NO type conversion while the result interval is derived; the same value narrowed to `i8` requires an explicit checked conversion; `i8` `MAX+1` is statically rejected or returns the one typed overflow status, never host promotion or UB | SEV-018, SEV-025 |
+| SEV-140 | Final-emission policy equivalence | One million-element `Map` stays O(source ops + rank) through root AND preparation under BOTH the `Loop` and `BoundedUnroll` policies; `Loop` emits exactly one loop; an over-budget unroll request rejects or selects its explicitly admitted loop fallback; a small fixed shape emits exactly the bounded instruction count; changing the threshold moves `PreparedDigest` and never `RootDigest`, provided both outputs pass the TRP-015 exact root-relation receipt | TRP-035, TRP-036, TRP-015 |
 
 **First vertical witness (SEV-109, covers TRP-014/TRP-018).** One real target
 (prefer `rust-fixed` or a minimal embedded C target); one declared format; one
@@ -154,7 +155,7 @@ Each row is bound by the parent rule naming it.
 | §4.5 | SEV-045 | Root handle and profile, result type, opcode plus arithmetic and status policy, ordered operand terms, compact shape/domain/view metadata, issued SSA and read-version atoms |
 | §4.6 | SEV-047 | Exact span and origin, instance and scope path, statement and operand role, ordered child occurrences, execution-owner correlation |
 | §4.7 | SEV-049 | Dominance, identical lazy activation, coordinate or loop invariance, read/history/external generations, arithmetic and AD seed or mode, total/fault/status/effect behavior, profitability |
-| §4.8 | TRP-012 | `ExecutionMode::{NativeRequired, HybridMigration}`, ordered candidates with compiler-decidable predicates, budgets, receipt selectors; deny-unknown. `NumericProfile` is the closed request schema of §4.21 |
+| §4.8 | TRP-012 | `ExecutionMode::{NativeRequired, HybridMigration}`, ordered candidates with compiler-decidable predicates, budgets, receipt selectors; deny-unknown. `NumericProfile` is the closed request schema of §4.21; the final-emission policy is §4.22 |
 | §4.21 | TRP-012 | `RealRepr::{Binary32, Binary64}`; `IntRepr::{I8, I16, I32, I64, U8, U16, U32, U64}`; ONE default mapping for source Modelica `Real` and one for `Integer`; the allowed representation SET for mixed-width Solve values; and the arithmetic-contract or profile ID closing rounding, overflow and status, subnormal, and reduction behavior. A compiler-known named profile is admissible only when it expands to exactly these normalized fields. Reserved Binary16, BFloat16, and fixed forms REJECT until their §4.1 contracts exist; no extension string adds semantics |
 | §4.9 | TRP-013 | Library version or binary hash, build flags, accumulator and order, alias and overlap, alignment, workspace, preconditions, status |
 | §4.10 | TRP-017 | ABI, coverage, loop/kernel, arithmetic relation, resources, provenance |
@@ -164,7 +165,8 @@ Each row is bound by the parent rule naming it.
 | §4.15 | SEV-015 | Type, field path, occurrence, ABI ordinal, wire identity; `[0,3]`, `[0,4]`, two empty arguments, and no argument are four distinct values; empty reductions and `[m,0]×[0,n]` carry exact semantics |
 | §4.16 | SEV-016 | An issued method-entry snapshot, or an explicit effect-token volatile/atomic load-store owner; `restrict` additionally requires a no-alias proof |
 | §4.17 | TRP-002 | Machine code, physical layouts, loop schedules, dispatch tables, references into the canonical owner |
-| §4.18 | TRP-014 | `DirectCompact`, `Loop`, `BoundedUnroll`, `Kernel`, `Composite`, `CheckedDispatch` |
+| §4.18 | TRP-014 | `DirectCompact`, `Loop`, `BoundedUnroll`, `Kernel`, `Composite`, `CheckedDispatch`. The recorded plan carries its budget and coverage receipt |
+| §4.22 | TRP-012, TRP-035 | Final-emission policy: `Loop`, `BoundedUnroll { max_elements, max_instructions }`, or `Kernel { contract, fallback }`, each optionally scoped by compiler-decidable predicates over op, rank, static shape, alignment, and alias. An unbounded `AlwaysUnroll` is INADMISSIBLE without an explicit finite code-size budget |
 | §4.19 | TRP-030 | One shared checked expression and function construction over untouched DAE plus GALEC admissibility and lifecycle facts; co-issued auditor-visible `AlgorithmCodePackage` carrying the final GALEC-language body projection; co-issued profile-bound `SolveAlgorithmBlock` consumed by Production and embedded C; exact source, statement, effect, and value correlations both ways; package checksum graph binding AC identity, `RootDigest`, and PC artifacts |
 
 #### §4.20 Current Type Signatures And Proposed Deltas
