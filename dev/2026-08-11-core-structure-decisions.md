@@ -980,3 +980,20 @@ arena-vs-journal experiment).
 EventInstantExecutionPlan (opaque coverage root over typed subrelations,
 compact child owners by ID/range) accepted as the converged composition
 shape.
+
+### 13.3 Expansion-boundary sharpening (00:06/00:12 stops, ratified 02:05)
+
+The scalar-projection license in earlier drafts ("scalar-only targets are
+a sanctioned projection point at the view layer") is WITHDRAWN — two
+successive repair attempts grew from it, one enumerating elements in the
+template view, one in eval-solve. Binding rule: the expansion boundary is
+the FINAL Jinja render. A scalar-only target meeting a compact tensor op
+has exactly two outcomes: (1) its final template renders a compact
+loop/instruction sequence directly from the op's checked O(1)/O(rank)
+metadata (render-boundary Jinja helpers allowed), or (2) checked target
+admission rejects the op before rendering. No IR, eval, query, evaluator,
+or native-preparation path materializes per-element scalar graphs from
+compact ops; the existing eval-solve scalarizer is transition debt.
+Acceptance evidence: million-element case with O(1)/O(rank) compiler
+metadata and preparation — emitted loops acceptable, materialized
+million-op vectors nowhere.
