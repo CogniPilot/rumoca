@@ -108,6 +108,6 @@ pub use runtime::timeout::{
 };
 #[cfg(not(kani))]
 pub use solver::{
-    BackendState, DiffsolMethod, SimBackend, SimOptions, SimPacingMode, SimResult, SimSolverMode,
-    SimTermination, SimVariableMeta, SimulationBackend, StepUntilOutcome,
+    BackendState, DiffsolMethod, SimBackend, SimExecutionPolicy, SimOptions, SimPacingMode,
+    SimResult, SimSolverMode, SimTermination, SimVariableMeta, SimulationBackend, StepUntilOutcome,
 };

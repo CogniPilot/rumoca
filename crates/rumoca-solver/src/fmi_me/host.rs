@@ -63,7 +63,24 @@ impl MeRuntimeHost {
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
     ) -> Result<Self, MeError> {
-        let kernel = SolveMeKernel::instantiate(source, config)?;
+        Self::instantiate_with_execution_backend(source, config, None)
+    }
+
+    /// Instantiate with a host-supplied compiled-code execution backend.
+    ///
+    /// The backend travels as the opaque [`super::MeExecutionBackend`] handle
+    /// and is only ever handed on to
+    /// [`SolveMeKernel::instantiate_with_execution_backend`], which unwraps it
+    /// inside the contract boundary (SPEC_0038 §Internal Solver Boundary).
+    /// Neither this host surface nor any integrator plugin behind it names a
+    /// Solve runtime object.
+    pub fn instantiate_with_execution_backend(
+        source: MeModelSource<'_>,
+        config: &MeInstanceConfig,
+        execution_backend: Option<super::MeExecutionBackend>,
+    ) -> Result<Self, MeError> {
+        let kernel =
+            SolveMeKernel::instantiate_with_execution_backend(source, config, execution_backend)?;
         Ok(Self {
             kernel: Rc::new(RefCell::new(kernel)),
             callback_error: Rc::new(RefCell::new(None)),
@@ -104,6 +121,29 @@ impl MeRuntimeHost {
 
     /// Initialize through the ordinary ME lifecycle without a migration
     /// compatibility oracle.
+    /// Capture the complete component state (`fmi3GetFMUState`).
+    ///
+    /// A snapshot taken immediately after instantiation lets an integrator
+    /// host keep ONE instantiated component — with every compiled execution
+    /// artifact its runtime owns — and rewind it to its pristine state
+    /// between repeated runs instead of re-instantiating (and recompiling)
+    /// per run.
+    #[must_use]
+    pub fn fmu_state(&self) -> super::MeFmuState {
+        self.kernel.borrow().fmu_state()
+    }
+
+    /// Restore a state previously captured from THIS instance
+    /// (`fmi3Reset` + `fmi3SetFMUState`); the kernel rejects snapshots from
+    /// any other instance. Pending host-level callback/event bookkeeping is
+    /// cleared along with the kernel state.
+    pub fn reset_to_fmu_state(&self, saved: &super::MeFmuState) -> Result<(), MeError> {
+        self.kernel.borrow_mut().reset_to_fmu_state(saved)?;
+        *self.callback_error.borrow_mut() = None;
+        *self.next_event_time.borrow_mut() = None;
+        Ok(())
+    }
+
     pub fn initialize_component(&self) -> Result<MeRuntimeInitialState, MeError> {
         let mut kernel = self.kernel.borrow_mut();
         kernel.enter_initialization_mode()?;

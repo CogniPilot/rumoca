@@ -11,7 +11,7 @@
 //! `rumoca-ir-solve` or `rumoca-eval-solve` at all, so naming a Solve row,
 //! layout, opcode, event, or runtime object here does not compile.
 
-use std::{rc::Rc, time::Instant};
+use std::time::Instant;
 
 use indexmap::IndexMap;
 use rumoca_solver::{
@@ -81,6 +81,15 @@ pub enum SimError {
 
     #[error("timeout after {seconds:.3}s")]
     Timeout { seconds: f64 },
+
+    /// The request's execution policy forbids compiled native execution, but a
+    /// compiled execution backend handle was supplied. The admission rule is
+    /// owned once by [`rumoca_solver::fmi_me::admit_execution_backend`]; the
+    /// transparent wrap keeps this crate's rendering identical to every other
+    /// concrete backend's, so the same public request cannot have
+    /// backend-dependent semantics.
+    #[error(transparent)]
+    ExecutionPolicyContradiction(#[from] rumoca_solver::fmi_me::MeExecutionPolicyContradiction),
 }
 
 impl From<TimeoutExceeded> for SimError {
@@ -162,12 +171,16 @@ impl SimulationSession {
     pub fn new_with_execution_backend<'a>(
         model: impl Into<MeModelSource<'a>>,
         opts: SimOptions,
-        execution_backend: Option<Rc<dyn rumoca_solver::SolveExecutionBackend>>,
+        execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, SimError> {
         match opts.solver_mode {
             SimSolverMode::Auto | SimSolverMode::RkLike => {}
             requested => return Err(SimError::UnsupportedSolverMode { requested }),
         }
+        let execution_backend = rumoca_solver::fmi_me::admit_execution_backend(
+            opts.execution_policy,
+            execution_backend,
+        )?;
         let source = model.into();
         match SolveMeKernel::instantiate_with_execution_backend(
             source,
@@ -566,13 +579,15 @@ pub fn simulate<'a>(
 pub fn simulate_with_execution_backend<'a>(
     model: impl Into<MeModelSource<'a>>,
     opts: &SimOptions,
-    execution_backend: Option<Rc<dyn rumoca_solver::SolveExecutionBackend>>,
+    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
 ) -> Result<SimResult, SimError> {
     reset_rk_eval_trace();
     match opts.solver_mode {
         SimSolverMode::Auto | SimSolverMode::RkLike => {}
         requested => return Err(SimError::UnsupportedSolverMode { requested }),
     }
+    let execution_backend =
+        rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, execution_backend)?;
 
     let kernel = SolveMeKernel::instantiate_with_execution_backend(
         model.into(),

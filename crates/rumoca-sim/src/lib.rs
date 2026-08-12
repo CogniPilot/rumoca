@@ -40,8 +40,26 @@ mod simulation_session_api;
 
 #[cfg(feature = "solver-diffsol")]
 mod diffsol;
-#[cfg(all(not(target_arch = "wasm32"), feature = "solver-rk45"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "solver-rk45", feature = "solver-diffsol")
+))]
 mod native_execution;
+/// Wasm builds carry no compiled native backend at all; the one shared
+/// admission gate uniformly withholds so every caller composes through the
+/// same name on every target.
+#[cfg(all(
+    target_arch = "wasm32",
+    any(feature = "solver-rk45", feature = "solver-diffsol")
+))]
+mod native_execution {
+    pub(crate) fn admitted_native_execution_backend(
+        _opts: &rumoca_solver::SimOptions,
+        _model: &rumoca_ir_solve::SolveModel,
+    ) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
+        None
+    }
+}
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 mod prepared_vectors;
 mod solve_lowering;
@@ -191,7 +209,8 @@ fn simulate_solve_model_diffsol(
     model: &rumoca_ir_solve::SolveModel,
     opts: &SimOptions,
 ) -> Result<SimResult, SimulationDiagnosticError> {
-    rumoca_solver_diffsol::simulate(model, opts)
+    let execution_backend = native_execution::admitted_native_execution_backend(opts, model);
+    rumoca_solver_diffsol::simulate_with_execution_backend(model, opts, execution_backend)
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
 }
 

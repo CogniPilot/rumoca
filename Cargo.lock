@@ -4943,9 +4943,7 @@ version = "0.9.20"
 dependencies = [
  "diffsol",
  "indexmap 2.14.0",
- "rumoca-core",
  "rumoca-eval-solve",
- "rumoca-exec-cranelift",
  "rumoca-ir-solve",
  "rumoca-solver",
  "thiserror 2.0.18",

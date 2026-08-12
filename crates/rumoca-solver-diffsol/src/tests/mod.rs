@@ -190,6 +190,87 @@ fn state_residual_row() -> Vec<solve::LinearOp> {
     ]
 }
 
+/// FIX-5 impure-continuation pin: every prepared run restarts the impure
+/// random streams from the DECLARED initial seed policy instead of continuing
+/// the previous run's stream.
+///
+/// The fixture's state derivative draws an impure random sample per
+/// evaluation (`der(x) = impureRandom(seed)`, draws in `(0, 1]`). The
+/// pristine rewind restores the evaluator's stream CONTENTS by value
+/// (`SimulationRuntimeState::snapshot/restore`), so a second `run()` must
+/// replay the identical draw sequence and publish a bitwise-identical
+/// trajectory; a run that CONTINUED run 1's stream would integrate different
+/// increments and diverge.
+#[test]
+fn prepared_runs_restart_impure_random_draws_from_the_declared_seed() {
+    let mut model = unit_integrator_model();
+    model.problem.continuous.derivative_rhs =
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
+            vec![vec![
+                solve::LinearOp::Const {
+                    dst: 0,
+                    value: 67867967.0,
+                },
+                solve::LinearOp::ImpureRandomInit { dst: 1, seed: 0 },
+                solve::LinearOp::ImpureRandom {
+                    dst: 2,
+                    id: 1,
+                    call_site: 7,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]],
+            fixture_span!(),
+        ));
+    issue_fixture_refresh_owners(&mut model).expect("fixture refresh owners issue");
+    let opts = SimOptions {
+        t_start: 0.0,
+        t_end: 0.4,
+        dt: Some(0.1),
+        ..Default::default()
+    };
+    let prepared = crate::build_simulation(&model, &opts).expect("impure fixture builds");
+    let first = prepared.run().expect("first impure run succeeds");
+    let second = prepared.run().expect("second impure run succeeds");
+
+    assert_eq!(first.times.len(), second.times.len(), "sample counts match");
+    assert!(
+        first
+            .times
+            .iter()
+            .zip(&second.times)
+            .all(|(a, b)| a.to_bits() == b.to_bits()),
+        "output time grids must be bit-identical"
+    );
+    assert_eq!(first.data.len(), second.data.len(), "channel counts match");
+    for (channel, (first_row, second_row)) in first.data.iter().zip(&second.data).enumerate() {
+        assert!(
+            first_row
+                .iter()
+                .zip(second_row)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "channel {channel}: run 2 must restart the impure stream from the declared \
+             seed and republish run 1's exact draws, not continue the sequence"
+        );
+    }
+
+    // Non-vacuity: the draws lie in (0, 1], so x strictly increases, and the
+    // per-interval increments vary — a constant derivative (dead RNG) or a
+    // zero trajectory cannot satisfy this.
+    let x = first.data.first().expect("x channel published");
+    assert!(
+        x.windows(2).all(|pair| pair[1] > pair[0]),
+        "x must strictly increase under positive draws: {x:?}"
+    );
+    let increments: Vec<f64> = x.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    assert!(
+        increments
+            .windows(2)
+            .any(|pair| (pair[0] - pair[1]).abs() > 1.0e-12),
+        "impure draws must vary across intervals; constant increments mean the RNG was \
+         never exercised: {increments:?}"
+    );
+}
+
 #[test]
 fn simulate_accepts_zero_state_solve_ir_without_building_ode_problem() {
     let model = solve::SolveModel::default();

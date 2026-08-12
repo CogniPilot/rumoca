@@ -118,8 +118,15 @@ fn test_solver_diffsol_dag_boundary_no_flat_or_ast_dependency() {
     }
 }
 
+/// SPEC_0041 §4 (bound by SPEC_0029 §12): concrete solver backends consume
+/// ONLY rumoca-solver's generic opaque FMI ME importer/host contract.
+/// `rumoca-exec-*` target encoders are banned from EVERY dependency table —
+/// including target-cfg tables, the exact place the pre-SPEC_0041 diffsol
+/// Cranelift dependency hid — because compiled execution reaches a concrete
+/// backend only as the opaque `MeExecutionBackend` handle composed by the
+/// importer host (`rumoca-sim`).
 #[test]
-fn test_concrete_solver_backends_consume_solve_ir_only() {
+fn test_concrete_solver_backends_consume_the_me_contract_only() {
     let root = workspace_root();
     let offenders = ["rumoca-solver-diffsol", "rumoca-solver-rk45"]
         .iter()
@@ -128,23 +135,19 @@ fn test_concrete_solver_backends_consume_solve_ir_only() {
 
     assert!(
         offenders.is_empty(),
-        "concrete solver backends must remain thin Solve-IR consumers; \
-Modelica semantics belong in DAE/Solve lowering or shared eval-solve contracts: {offenders:?}"
+        "concrete solver backends consume only rumoca-solver's opaque FMI ME importer/host \
+contract; phase, DAE-IR, facade, and rumoca-exec-* target-encoder dependencies are forbidden \
+in every manifest section: {offenders:?}"
     );
 }
 
 fn solver_backend_boundary_offenders(root: &Path, crate_name: &str) -> Vec<String> {
     let cargo_toml = root.join(format!("crates/{crate_name}/Cargo.toml"));
     let content = fs::read_to_string(&cargo_toml).expect("read solver backend Cargo.toml");
-    ["dependencies", "dev-dependencies"]
-        .iter()
-        .flat_map(|section| {
-            let section = *section;
-            section_dependency_names(&content, section)
-                .into_iter()
-                .filter(|dep| solver_backend_dep_is_banned(dep))
-                .map(move |dep| format!("{crate_name} [{section}] {dep}"))
-        })
+    all_manifest_dependency_names(&content)
+        .into_iter()
+        .filter(|(_, dep)| solver_backend_dep_is_banned(dep))
+        .map(|(section, dep)| format!("{crate_name} {section} {dep}"))
         .collect()
 }
 
@@ -776,14 +779,34 @@ target-specific execution/emission belongs in codegen or rumoca-exec-* crates: {
     );
 }
 
+/// SPEC_0041 §4 (bound by SPEC_0029 §12): a concrete solver backend consumes
+/// ONLY rumoca-solver's generic opaque FMI ME importer/host contract. The
+/// final gate is ZERO production `rumoca-ir-solve` / `rumoca-eval-solve` /
+/// `rumoca-exec-*` dependency or import in concrete solver crates.
+///
+/// Ratchet state, per crate:
+/// - `rumoca-exec-*`: the final gate holds everywhere already — see
+///   [`test_concrete_solver_backends_consume_the_me_contract_only`], which
+///   scans every dependency table of every concrete solver manifest.
+/// - `rumoca-solver-rk45`: the final gate holds for production dependencies
+///   (`rumoca-ir-solve` / `rumoca-eval-solve` are dev-only fixture deps) and
+///   is pinned here so it cannot regress.
+/// - `rumoca-solver-diffsol`: still carries production `rumoca-ir-solve` and
+///   `rumoca-eval-solve` dependencies for the pre-ME frozen driver scaffolds
+///   and the live-session path. That is DEBT scheduled for removal with the
+///   SPEC_0038 phase-2 cutover — NOT intended design — and it must not be
+///   read as a requirement: this test deliberately does not require those
+///   dependencies to exist.
 #[test]
 fn test_solver_diffsol_crate_owns_backend_dependency() {
-    let cargo_toml = workspace_root().join("crates/rumoca-solver-diffsol/Cargo.toml");
+    let root = workspace_root();
+    let cargo_toml = root.join("crates/rumoca-solver-diffsol/Cargo.toml");
     let content = fs::read_to_string(&cargo_toml).expect("read rumoca-solver-diffsol Cargo.toml");
 
     assert!(
         section_contains_dependency(&content, "dependencies", "rumoca-solver"),
-        "rumoca-solver-diffsol must depend on rumoca-solver for shared runtime helpers"
+        "rumoca-solver-diffsol must depend on rumoca-solver for the opaque FMI ME \
+importer/host contract"
     );
     assert!(
         !section_contains_dependency(&content, "dependencies", "rumoca-sim"),
@@ -792,10 +815,6 @@ fn test_solver_diffsol_crate_owns_backend_dependency() {
     assert!(
         section_contains_dependency(&content, "dependencies", "diffsol"),
         "rumoca-solver-diffsol must own the concrete diffsol dependency"
-    );
-    assert!(
-        section_contains_dependency(&content, "dependencies", "rumoca-ir-solve"),
-        "rumoca-solver-diffsol must consume solver-facing IR"
     );
     for banned in [
         "rumoca-ir-dae",
@@ -813,8 +832,29 @@ DAE-to-Solve lowering belong upstream in rumoca-phase-solve"
         !section_contains_dependency(&content, "dependencies", "rumoca-web"),
         "rumoca-solver-diffsol must not depend on rumoca-web"
     );
+
+    // Final-gate pin for the crate that already reached it: rk45's production
+    // dependency list names no Solve IR at all, only the ME contract.
+    let rk45_toml = root.join("crates/rumoca-solver-rk45/Cargo.toml");
+    let rk45 = fs::read_to_string(&rk45_toml).expect("read rumoca-solver-rk45 Cargo.toml");
+    for banned in ["rumoca-ir-solve", "rumoca-eval-solve"] {
+        assert!(
+            !section_contains_dependency(&rk45, "dependencies", banned),
+            "rumoca-solver-rk45 reached the SPEC_0041 final gate: production {banned} must \
+not return; concrete solver backends consume only the opaque FMI ME contract"
+        );
+    }
 }
 
+/// SPEC_0041 §4 source-level companion to the manifest gates above: concrete
+/// solver sources must never name DAE IR, core, compiler phases, or any
+/// `rumoca-exec-*` target encoder. Compiled execution is only ever the opaque
+/// `MeExecutionBackend` handle.
+///
+/// Remaining `rumoca_ir_solve` / `rumoca_eval_solve` imports in
+/// `rumoca-solver-diffsol` are DEBT tracked for the SPEC_0038 phase-2 cutover,
+/// not intended design; they are not banned here yet only because the frozen
+/// driver scaffolds and live-session path still carry them.
 #[test]
 fn test_concrete_solver_sources_use_solve_ir_only() {
     let root = workspace_root();
@@ -823,6 +863,7 @@ fn test_concrete_solver_sources_use_solve_ir_only() {
         "rumoca_core",
         "rumoca_phase_structural",
         "rumoca_phase_solve",
+        "rumoca_exec_",
     ];
     let mut offenders = Vec::new();
     for src in [
@@ -841,7 +882,9 @@ fn test_concrete_solver_sources_use_solve_ir_only() {
 
     assert!(
         offenders.is_empty(),
-        "concrete solver crates must be boring solver wiring over solve-IR only: {offenders:?}"
+        "concrete solver crates consume only the opaque FMI ME contract; DAE-IR, core, \
+phase, and rumoca-exec-* target-encoder imports are forbidden (remaining Solve-IR imports \
+are tracked DEBT, not design): {offenders:?}"
     );
 }
 

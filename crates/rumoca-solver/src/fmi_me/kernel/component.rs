@@ -284,11 +284,18 @@ impl SolveMeKernel {
         Self::instantiate_with_execution_backend(source, config, None)
     }
 
+    /// Instantiate with a host-supplied compiled-code execution backend.
+    ///
+    /// The backend arrives as the opaque [`crate::fmi_me::MeExecutionBackend`]
+    /// handle so an integrator host never names a runtime object (SPEC_0038
+    /// §Internal Solver Boundary); it is unwrapped here, inside the contract.
     pub fn instantiate_with_execution_backend(
         source: MeModelSource<'_>,
         config: &MeInstanceConfig,
-        execution_backend: Option<Rc<dyn crate::SolveExecutionBackend>>,
+        execution_backend: Option<crate::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, MeError> {
+        let execution_backend =
+            execution_backend.map(crate::fmi_me::MeExecutionBackend::into_runtime_backend);
         // `NoContinuousStates` is a routing answer, not a failure: a host reads
         // it to pick its zero-state path, so it stays unannotated.
         Self::instantiate_inner(source, config, execution_backend).map_err(|error| match error {

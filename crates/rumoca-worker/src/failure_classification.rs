@@ -255,6 +255,7 @@ impl ModelFailureBucket {
             // the bucket producer knowledge rather than a second mapping.
             SimError::StateOnlyPathUnavailable(_)
             | SimError::DirectionalDerivativeUnavailable { .. }
+            | SimError::ExecutionPolicyContradiction { .. }
             | SimError::SolveIr(_)
             | SimError::SolverError(_) => Self::from_sim_stage(error.stage().unwrap_or(fallback)),
             // `kind()` peels every annotation, so a `Staged` cannot reach here.

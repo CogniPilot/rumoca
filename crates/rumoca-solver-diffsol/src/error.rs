@@ -177,6 +177,21 @@ pub enum SimError {
     #[error("timeout after {seconds:.3}s")]
     Timeout { seconds: f64 },
 
+    /// The request's execution policy forbids compiled native execution, but
+    /// the caller still supplied a compiled execution backend handle.
+    ///
+    /// Honoring the handle would execute natively against an explicit
+    /// interpreter request; dropping it silently would let the caller believe
+    /// the handle was honored. Either way the backend differential oracle's
+    /// interpreter side stops being trustworthy, so the contradiction is a
+    /// typed rejection rather than a quiet resolution in either direction.
+    #[error(
+        "execution policy '{policy}' forbids compiled native execution, but a compiled \
+         execution backend handle was supplied; withhold the handle or request the \
+         'auto' policy"
+    )]
+    ExecutionPolicyContradiction { policy: &'static str },
+
     /// A failure annotated with the stage that raised it.
     ///
     /// The rendered form is exactly the inner failure's, so annotating a path

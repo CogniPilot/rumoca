@@ -324,6 +324,24 @@ impl SolveRuntime {
         Self::new_with_execution_backend(model, None)
     }
 
+    /// Construct a runtime honoring a host-provided opaque ME execution
+    /// backend handle.
+    ///
+    /// The [`crate::fmi_me::MeExecutionBackend`] handle is unwrapped here,
+    /// inside the crate that owns the [`SolveExecutionBackend`] contract, so
+    /// an integrator host can wire compiled execution through without ever
+    /// naming a Solve runtime object on its own surface (SPEC_0038 §Internal
+    /// Solver Boundary).
+    pub fn new_with_me_execution_backend(
+        model: &solve::SolveModel,
+        execution_backend: Option<crate::fmi_me::MeExecutionBackend>,
+    ) -> Result<Self, EvalSolveError> {
+        Self::new_with_execution_backend(
+            model,
+            execution_backend.map(crate::fmi_me::MeExecutionBackend::into_runtime_backend),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn new_fixture(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
         let mut model = model.clone();

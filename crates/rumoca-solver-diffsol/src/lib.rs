@@ -40,6 +40,7 @@ use diffsol::{
 #[cfg(test)]
 use init_projection::initialize_state_runtime_values;
 use me::instantiate as instantiate_me_host;
+use me::instantiate_with_execution_backend as instantiate_me_host_with_backend;
 #[cfg(test)]
 use me::{DiffsolMeHost, MeInitialState, MePostEventState};
 #[cfg(test)]
@@ -54,7 +55,10 @@ use rumoca_solver::runtime::driver::{
     SimDriverError, SolverAdvanceBackend, StateTrajectory, StepOutcome, simulate_state_targets,
 };
 use rumoca_solver::runtime_values_changed;
-use rumoca_solver::{SimOptions, SimResult, fmi_me::MeModelArtifact};
+use rumoca_solver::{
+    SimOptions, SimResult,
+    fmi_me::{MeExecutionBackend, MeModelArtifact},
+};
 #[cfg(test)]
 use rumoca_solver::{
     SimTermination, TimeoutExceeded, build_sim_result_from_solve_model, push_visible_values,
@@ -70,176 +74,6 @@ type Vector = <Matrix as MatrixCommon>::V;
 type Scalar = <Matrix as MatrixCommon>::T;
 pub(crate) type LinearSolver = FaerSparseLU<f64>;
 pub(crate) type RuntimeParameters = Rc<RefCell<Vec<f64>>>;
-
-#[cfg(not(target_arch = "wasm32"))]
-struct CraneliftExpression(rumoca_exec_cranelift::CompiledExpressionRows);
-
-#[cfg(not(target_arch = "wasm32"))]
-struct CraneliftJacobianExpression(rumoca_exec_cranelift::CompiledJacobianV);
-
-#[cfg(not(target_arch = "wasm32"))]
-struct CraneliftAssignmentSchedule(rumoca_exec_cranelift::CompiledAssignmentSchedule);
-
-#[cfg(not(target_arch = "wasm32"))]
-struct CraneliftEventTransaction {
-    pure_calls: rumoca_exec_cranelift::CompiledPureCallTable,
-    site: rumoca_ir_solve::SolvePureCallSite,
-    cells: RefCell<(Vec<u64>, Vec<u64>)>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl rumoca_solver::CompiledSolveExpression for CraneliftExpression {
-    fn call(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<(), String> {
-        self.0
-            .call_with_external_tables(y, p, t, external_tables, out)
-            .map_err(|error| error.to_string())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl rumoca_solver::CompiledSolveJacobianExpression for CraneliftJacobianExpression {
-    fn call(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        seed: &[f64],
-        external_tables: &[rumoca_core::ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<(), String> {
-        self.0
-            .call_with_external_tables(y, p, t, seed, external_tables, out)
-            .map_err(|error| error.to_string())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl rumoca_solver::CompiledSolveAssignmentSchedule for CraneliftAssignmentSchedule {
-    fn call(
-        &self,
-        y: &mut [f64],
-        p: &[f64],
-        t: f64,
-        external_tables: &[rumoca_core::ExternalTableData],
-    ) -> Result<(), String> {
-        self.0
-            .call_with_external_tables(y, p, t, external_tables)
-            .map_err(|error| error.to_string())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl rumoca_solver::CompiledSolveEventTransaction for CraneliftEventTransaction {
-    fn call(&self, input: &[f64], output: &mut [f64]) -> Result<(), String> {
-        let mut cells = self.cells.borrow_mut();
-        let (input_cells, output_cells) = &mut *cells;
-        self.pure_calls
-            .call_scalar_payload(&self.site, input, output, input_cells, output_cells)
-            .map_err(|error| error.to_string())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct CraneliftExecutionBackend {
-    pure_calls: Option<rumoca_exec_cranelift::CompiledPureCallTable>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
-    fn compile_expression(
-        &self,
-        block: &rumoca_ir_solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveExpression>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => {
-                rumoca_exec_cranelift::compile_expression_scalar_program_block_with_pure_calls(
-                    block, pure_calls,
-                )
-            }
-            None => rumoca_exec_cranelift::compile_expression_scalar_program_block(block),
-        };
-        compiled
-            .map(|compiled| Rc::new(CraneliftExpression(compiled)) as Rc<_>)
-            .map_err(|error| error.to_string())
-    }
-
-    fn compile_jacobian_expression(
-        &self,
-        block: &rumoca_ir_solve::ScalarProgramBlock,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveJacobianExpression>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => {
-                rumoca_exec_cranelift::compile_jacobian_scalar_program_block_with_pure_calls(
-                    block, pure_calls,
-                )
-            }
-            None => rumoca_exec_cranelift::compile_jacobian_scalar_program_block(block),
-        };
-        compiled
-            .map(|compiled| Rc::new(CraneliftJacobianExpression(compiled)) as Rc<_>)
-            .map_err(|error| error.to_string())
-    }
-
-    fn compile_assignment_schedule(
-        &self,
-        source: &rumoca_ir_solve::ComputeBlock,
-        owners: &rumoca_ir_solve::ContinuousRefreshOwners,
-        schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveAssignmentSchedule>, String> {
-        let compiled = match &self.pure_calls {
-            Some(pure_calls) => {
-                rumoca_exec_cranelift::compile_exact_assignment_schedule_with_pure_calls(
-                    source, owners, schedule, pure_calls,
-                )
-            }
-            None => {
-                rumoca_exec_cranelift::compile_exact_assignment_schedule(source, owners, schedule)
-            }
-        };
-        compiled
-            .map(|compiled| Rc::new(CraneliftAssignmentSchedule(compiled)) as Rc<_>)
-            .map_err(|error| error.to_string())
-    }
-
-    fn compile_event_transaction(
-        &self,
-        program: &rumoca_ir_solve::EventTransactionProgram,
-    ) -> Result<Rc<dyn rumoca_solver::CompiledSolveEventTransaction>, String> {
-        self.pure_calls
-            .as_ref()
-            .cloned()
-            .map(|pure_calls| {
-                Rc::new(CraneliftEventTransaction {
-                    pure_calls,
-                    site: program.site().clone(),
-                    cells: RefCell::new((Vec::new(), Vec::new())),
-                }) as Rc<_>
-            })
-            .ok_or_else(|| "the typed pure-call table is unavailable".to_string())
-    }
-}
-
-fn new_solve_runtime(
-    model: &rumoca_ir_solve::SolveModel,
-) -> Result<SolveRuntime, rumoca_eval_solve::EvalSolveError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let pure_calls = rumoca_exec_cranelift::compile_pure_call_table(&model.pure_calls).ok();
-        return SolveRuntime::new_with_execution_backend(
-            model,
-            Some(Rc::new(CraneliftExecutionBackend { pure_calls })),
-        );
-    }
-    #[cfg(target_arch = "wasm32")]
-    SolveRuntime::new(model)
-}
 
 /// Records which [`SimFailureStage`] the backend was running when it produced a
 /// failure.
@@ -350,11 +184,46 @@ pub fn assess_bdf_capability(
     Ok(BdfCapability::Eligible)
 }
 
+/// Admit a host-supplied compiled execution backend against the request's
+/// execution policy.
+///
+/// `SimExecutionPolicy::Interpreter` plus a supplied handle is a direct
+/// contradiction. Executing natively would falsify the interpreter side of the
+/// backend differential oracle; silently withholding the handle would let the
+/// caller believe it was honored. The rule itself is owned once, by
+/// [`rumoca_solver::fmi_me::admit_execution_backend`] at the ME contract
+/// boundary, so every concrete backend rejects the identical contradictory
+/// input identically; this crate only lifts the typed rejection into its own
+/// [`SimError`] without rewording it.
+fn admit_execution_backend(
+    opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
+) -> Result<Option<MeExecutionBackend>, SimError> {
+    rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, execution_backend)
+        .map_err(|contradiction| SimError::ExecutionPolicyContradiction {
+            policy: contradiction.policy,
+        })
+}
+
 pub fn build_simulation(
     model: impl Into<MeModelArtifact>,
     opts: &SimOptions,
 ) -> Result<PreparedSimulation, SimError> {
-    build_simulation_inner(model.into(), opts)
+    build_simulation_with_execution_backend(model, opts, None)
+}
+
+/// [`build_simulation`] with a host-supplied compiled execution backend.
+///
+/// The handle stays opaque: it is admitted against `opts.execution_policy`
+/// and handed to the generic ME runtime, which unwraps it inside the
+/// `rumoca-solver` contract boundary. This crate composes no execution
+/// backend of its own.
+pub fn build_simulation_with_execution_backend(
+    model: impl Into<MeModelArtifact>,
+    opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
+) -> Result<PreparedSimulation, SimError> {
+    build_simulation_inner(model.into(), opts, execution_backend)
         .map_err(|error| error.at_stage(SimFailureStage::BackendBuild))
 }
 
@@ -364,18 +233,45 @@ pub fn build_simulation(
 fn build_simulation_inner(
     model: MeModelArtifact,
     opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
 ) -> Result<PreparedSimulation, SimError> {
+    let execution_backend = admit_execution_backend(opts, execution_backend)?;
     let state = if model.continuous_state_count() == 0 {
+        // The zero-state path instantiates no integrator component, so a
+        // supplied backend handle is deliberately never used here.
         tracing::debug!(target: "rumoca_solver_diffsol::bdf_path", "no-state path");
         PreparedSimulationState::NoState
     } else {
-        instantiate_me_host(model.source(), opts)?;
+        // Instantiate the ONE component this prepared simulation will reuse
+        // for every run. Instantiation performs the eager native compiles;
+        // the preflight initialization below warms the lazily compiled
+        // owners (exact-assignment schedules, discrete specializations) so
+        // compilation cost lands HERE, inside the build stage the timings
+        // attribute to backend construction — hot `run()` iterations
+        // recompile nothing.
+        let host =
+            instantiate_me_host_with_backend(model.source(), opts, execution_backend.clone())?;
+        let pristine = host.fmu_state();
+        // A preflight failure is deliberately tolerated: the identical
+        // failure resurfaces on run()/check_initialization() carrying its
+        // proper Initialization-stage annotation, exactly as before. A
+        // successful preflight also evaluates the state derivatives once so
+        // the derivative-path refresh owners compile now rather than inside
+        // the first hot run.
+        if let Ok(initial) = host.initialize_component()
+            && initial.termination.is_none()
+        {
+            drop(host.derivatives(initial.time, &initial.states));
+        }
+        host.reset_to_fmu_state(&pristine)?;
         tracing::debug!(
             target: "rumoca_solver_diffsol::bdf_path",
             states = model.continuous_state_count(),
             "FMI ME BDF path"
         );
-        PreparedSimulationState::StateOnly
+        PreparedSimulationState::StateOnly(Box::new(prepared::PreparedComponent::new(
+            host, pristine,
+        )))
     };
     Ok(PreparedSimulation {
         model: model.clone(),
@@ -396,22 +292,40 @@ pub fn check_initialization(
     model: impl Into<MeModelArtifact>,
     opts: &SimOptions,
 ) -> Result<(), SimError> {
-    check_initialization_inner(model.into(), opts)
+    check_initialization_with_execution_backend(model, opts, None)
+}
+
+/// [`check_initialization`] with a host-supplied compiled execution backend,
+/// admitted against `opts.execution_policy` exactly like
+/// [`build_simulation_with_execution_backend`].
+pub fn check_initialization_with_execution_backend(
+    model: impl Into<MeModelArtifact>,
+    opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
+) -> Result<(), SimError> {
+    check_initialization_inner(model.into(), opts, execution_backend)
         .map_err(|error| error.at_stage(SimFailureStage::Initialization))
 }
 
 /// Settle initial conditions without integrating. Failures are annotated as
 /// [`SimFailureStage::Initialization`] by the wrapper above; paths that already
 /// recorded a more precise stage keep it.
-fn check_initialization_inner(model: MeModelArtifact, opts: &SimOptions) -> Result<(), SimError> {
+fn check_initialization_inner(
+    model: MeModelArtifact,
+    opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
+) -> Result<(), SimError> {
+    let execution_backend = admit_execution_backend(opts, execution_backend)?;
     if model.continuous_state_count() == 0 {
+        // Zero-state models settle through the no-state session; a supplied
+        // backend handle is deliberately never used here.
         return rumoca_solver::fmi_me::MeNoStateSession::check_initialization(
             model.source(),
             opts.clone(),
         )
         .map_err(Into::into);
     }
-    me_bdf::check_initialization(model.source(), opts)
+    me_bdf::check_initialization(model.source(), opts, execution_backend)
 }
 
 /// Settle initial conditions for a model that integrates on the reduced
@@ -439,7 +353,11 @@ fn check_state_only_initialization(
     opts: &SimOptions,
 ) -> Result<(), SimError> {
     let equilibrium_model = Arc::new(OdeModel::new(model)?);
-    let runtime = Arc::new(new_solve_runtime(model)?);
+    // Frozen scaffold, migrated explicitly off the deleted in-crate Cranelift
+    // composition (SPEC_0041 §4): the comparison fixture evaluates through the
+    // Solve-IR interpreter. Compiled execution reaches this crate only as the
+    // opaque `MeExecutionBackend` handle.
+    let runtime = Arc::new(SolveRuntime::new(model)?);
     let mut current_y = model.initial_y.clone();
     let mut params = model.parameters.clone();
     let mut current_t = opts.t_start;
@@ -480,19 +398,31 @@ pub fn simulate(
     model: impl Into<MeModelArtifact>,
     opts: &SimOptions,
 ) -> Result<SimResult, SimError> {
-    let prepared = build_simulation(model, opts)?;
+    simulate_with_execution_backend(model, opts, None)
+}
+
+/// [`simulate`] with a host-supplied compiled execution backend, admitted
+/// against `opts.execution_policy` exactly like
+/// [`build_simulation_with_execution_backend`].
+pub fn simulate_with_execution_backend(
+    model: impl Into<MeModelArtifact>,
+    opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
+) -> Result<SimResult, SimError> {
+    let prepared = build_simulation_with_execution_backend(model, opts, execution_backend)?;
     run_prepared_simulation(&prepared)
 }
 
 fn simulate_prepared(prepared: &PreparedSimulation) -> Result<SimResult, SimError> {
     let model = &prepared.model;
     let opts = &prepared.opts;
-    match &prepared.state {
-        PreparedSimulationState::NoState => {
-            rumoca_solver::fmi_me::MeNoStateSession::simulate(model.source(), opts.clone())
-                .map_err(Into::into)
-        }
-        PreparedSimulationState::StateOnly => me_bdf::simulate(model.source(), opts),
+    // `fresh_run_component` is the explicit share/fresh contract: same
+    // instance and compiled callables, all continuation state rewound — zero
+    // recompilation per run.
+    match prepared.state.fresh_run_component()? {
+        None => rumoca_solver::fmi_me::MeNoStateSession::simulate(model.source(), opts.clone())
+            .map_err(Into::into),
+        Some(host) => me_bdf::simulate_with_host(host, opts),
     }
 }
 

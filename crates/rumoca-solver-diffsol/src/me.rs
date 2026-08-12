@@ -5,7 +5,10 @@
 
 use rumoca_solver::{
     SimOptions,
-    fmi_me::{MeInstanceConfig, MeModelSource, MeNumericsProfile, MeRootProfile, MeRuntimeHost},
+    fmi_me::{
+        MeExecutionBackend, MeInstanceConfig, MeModelSource, MeNumericsProfile, MeRootProfile,
+        MeRuntimeHost,
+    },
 };
 
 use crate::SimError;
@@ -20,6 +23,21 @@ pub(crate) fn instantiate(
     source: MeModelSource<'_>,
     opts: &SimOptions,
 ) -> Result<DiffsolMeHost, SimError> {
+    instantiate_with_execution_backend(source, opts, None)
+}
+
+/// Instantiate the shared ME runtime with a host-supplied compiled execution
+/// backend.
+///
+/// The backend stays the opaque [`MeExecutionBackend`] handle end to end: this
+/// crate can only pass it on to the generic ME host, which unwraps it inside
+/// the `rumoca-solver` contract boundary (SPEC_0038 §Internal Solver
+/// Boundary).
+pub(crate) fn instantiate_with_execution_backend(
+    source: MeModelSource<'_>,
+    opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
+) -> Result<DiffsolMeHost, SimError> {
     let config = MeInstanceConfig {
         instance_name: "bdf",
         tolerance: opts.atol.max(1.0e-10),
@@ -28,5 +46,6 @@ pub(crate) fn instantiate(
         root_profile: MeRootProfile::DiffsolFrozen,
         numerics_profile: MeNumericsProfile::DiffsolFrozen,
     };
-    MeRuntimeHost::instantiate(source, &config).map_err(Into::into)
+    MeRuntimeHost::instantiate_with_execution_backend(source, &config, execution_backend)
+        .map_err(Into::into)
 }

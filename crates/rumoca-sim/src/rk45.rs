@@ -15,23 +15,6 @@ use crate::solve_lowering::{
 pub use rumoca_solver_rk45::SessionState;
 pub use rumoca_solver_rk45::SimError;
 
-#[cfg(not(target_arch = "wasm32"))]
-fn native_execution_backend(
-    pure_calls: &solve::SolvePureCallTable,
-) -> Option<std::rc::Rc<dyn rumoca_solver::SolveExecutionBackend>> {
-    if std::env::var_os("RUMOCA_DISABLE_NATIVE_EXECUTION").is_some() {
-        return None;
-    }
-    Some(crate::native_execution::backend(pure_calls))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn native_execution_backend(
-    _pure_calls: &solve::SolvePureCallTable,
-) -> Option<std::rc::Rc<dyn rumoca_solver::SolveExecutionBackend>> {
-    None
-}
-
 pub fn simulate(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
@@ -59,7 +42,7 @@ pub(crate) fn simulate_solve_model(
     rumoca_solver_rk45::simulate_with_execution_backend(
         model,
         opts,
-        native_execution_backend(&model.pure_calls),
+        crate::native_execution::admitted_native_execution_backend(opts, model),
     )
 }
 
@@ -104,10 +87,12 @@ impl SimulationSession {
         let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
         begin_stage("sim_build");
         let backend_build_start = Instant::now();
+        let execution_backend =
+            crate::native_execution::admitted_native_execution_backend(&opts, &solve_model);
         let inner = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
             &solve_model,
             opts,
-            native_execution_backend(&solve_model.pure_calls),
+            execution_backend,
         )?;
         let backend_build_seconds = backend_build_start.elapsed().as_secs_f64();
         Ok((
@@ -138,10 +123,12 @@ impl SimulationSession {
         solve_model: solve::SolveModel,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
+        let execution_backend =
+            crate::native_execution::admitted_native_execution_backend(&opts, &solve_model);
         let inner = rumoca_solver_rk45::SimulationSession::new_with_execution_backend(
             &solve_model,
             opts,
-            native_execution_backend(&solve_model.pure_calls),
+            execution_backend,
         )
         .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         Ok(Self { inner })

@@ -138,6 +138,147 @@ pub(super) fn section_dependency_line<'a>(
     None
 }
 
+/// Every dependency declared anywhere in a Cargo manifest, as
+/// `(table path, dependency name)` pairs.
+///
+/// Parsed from the actual TOML structure — not a line scan — so every spelling
+/// Cargo accepts is covered: plain `dep = "1"`, inline tables
+/// `dep = { workspace = true }`, dependency subtables `[dependencies.dep]`,
+/// and the target-cfg forms `[target.'cfg(...)'.dependencies]` /
+/// `[target.'cfg(...)'.dependencies.dep]`. A line-oriented scan misparses the
+/// subtable form (it records `workspace` where the dependency name is in the
+/// table header), which would let a forbidden target-gated dependency escape
+/// the solver-boundary gates. Renamed dependencies
+/// (`alias = { package = "real-name" }`) contribute the real package name in
+/// addition to the alias, so a rename cannot smuggle a banned crate in.
+pub(super) fn all_manifest_dependency_names(content: &str) -> Vec<(String, String)> {
+    fn is_dependency_table_key(key: &str) -> bool {
+        matches!(
+            key,
+            "dependencies" | "dev-dependencies" | "build-dependencies"
+        )
+    }
+    fn record_dependency_table(
+        table_path: &str,
+        value: &toml::Value,
+        names: &mut Vec<(String, String)>,
+    ) {
+        let Some(dependencies) = value.as_table() else {
+            return;
+        };
+        for (dependency, spec) in dependencies {
+            names.push((table_path.to_string(), dependency.clone()));
+            if let Some(package) = spec.get("package").and_then(toml::Value::as_str) {
+                names.push((table_path.to_string(), package.to_string()));
+            }
+        }
+    }
+    fn walk(path: &str, value: &toml::Value, names: &mut Vec<(String, String)>) {
+        let Some(table) = value.as_table() else {
+            return;
+        };
+        for (key, child) in table {
+            let child_path = if path.is_empty() {
+                key.clone()
+            } else {
+                format!("{path}.{key}")
+            };
+            if is_dependency_table_key(key) {
+                record_dependency_table(&child_path, child, names);
+                continue;
+            }
+            walk(&child_path, child, names);
+        }
+    }
+    let manifest: toml::Value = content
+        .parse()
+        .expect("Cargo manifest must parse as TOML for the dependency gates to be meaningful");
+    let mut names = Vec::new();
+    walk("", &manifest, &mut names);
+    names
+}
+
+/// Negative pins for [`all_manifest_dependency_names`]: each Cargo dependency
+/// spelling hiding a forbidden crate must be caught. These four forms are the
+/// complete set of shapes a dependency declaration can take in a manifest.
+mod manifest_scan_tests {
+    use super::all_manifest_dependency_names;
+
+    const FORBIDDEN: &str = "rumoca-exec-cranelift";
+
+    fn scan_names(manifest: &str) -> Vec<String> {
+        all_manifest_dependency_names(manifest)
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect()
+    }
+
+    fn assert_caught(manifest: &str, form: &str) {
+        let names = scan_names(manifest);
+        assert!(
+            names.iter().any(|name| name == FORBIDDEN),
+            "the {form} dependency form must surface `{FORBIDDEN}`; scan produced {names:?}"
+        );
+        assert!(
+            super::super::solver_backend_dep_is_banned(FORBIDDEN),
+            "the surfaced name must trip the solver-boundary ban"
+        );
+    }
+
+    #[test]
+    fn manifest_scan_catches_plain_dependency_form() {
+        assert_caught(
+            "[dependencies]\nrumoca-exec-cranelift = \"1.0\"\n",
+            "plain `dep = \"version\"`",
+        );
+    }
+
+    #[test]
+    fn manifest_scan_catches_inline_table_dependency_form() {
+        assert_caught(
+            "[dependencies]\nrumoca-exec-cranelift = { workspace = true }\n",
+            "inline-table `dep = { workspace = true }`",
+        );
+    }
+
+    #[test]
+    fn manifest_scan_catches_dependency_subtable_form() {
+        let manifest = "[dependencies.rumoca-exec-cranelift]\nworkspace = true\n";
+        assert_caught(manifest, "dependency-subtable `[dependencies.dep]`");
+        // The exact misparse the line scan committed: the subtable body's
+        // `workspace = true` must NOT be reported as a dependency name.
+        assert!(
+            !scan_names(manifest).iter().any(|name| name == "workspace"),
+            "subtable keys are spec fields, not dependency names"
+        );
+    }
+
+    #[test]
+    fn manifest_scan_catches_target_cfg_dependency_subtable_form() {
+        assert_caught(
+            "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies.rumoca-exec-cranelift]\nworkspace = true\n",
+            "target-cfg dependency-subtable `[target.'cfg(...)'.dependencies.dep]`",
+        );
+        // The historical escape: the target-cfg TABLE form with an inline
+        // entry, which the pre-typed scan was added to catch.
+        assert_caught(
+            "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies]\nrumoca-exec-cranelift = { workspace = true }\n",
+            "target-cfg table `[target.'cfg(...)'.dependencies]`",
+        );
+    }
+
+    #[test]
+    fn manifest_scan_reports_renamed_package_targets() {
+        let names = scan_names(
+            "[dependencies]\ninnocent-alias = { package = \"rumoca-exec-cranelift\", version = \"1\" }\n",
+        );
+        assert!(
+            names.iter().any(|name| name == FORBIDDEN),
+            "a rename must not smuggle a banned crate: {names:?}"
+        );
+    }
+}
+
 pub(super) fn section_dependency_names(content: &str, section: &str) -> Vec<String> {
     let header = format!("[{section}]");
     let mut in_section = false;

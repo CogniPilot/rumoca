@@ -145,6 +145,34 @@ impl rumoca_solver::SolveExecutionBackend for CraneliftExecutionBackend {
     }
 }
 
+/// The single sim-side admission gate for compiled native execution
+/// (SPEC_0038 §Internal Solver Boundary, SPEC_0041 §4).
+///
+/// Every concrete solver path — the rk-like host and the BDF host alike —
+/// composes its opaque `MeExecutionBackend` handle through this one helper, so
+/// the admission rules cannot drift between paths:
+/// - `SimExecutionPolicy::Interpreter` withholds the handle, which is what
+///   makes the interpreter side of the backend differential oracle selectable
+///   from the request itself rather than from an ambient process setting;
+/// - a zero-state (pure-discrete) model withholds it too, BEFORE any backend
+///   is built: neither host's zero-state session instantiates an integrator
+///   component, so constructing a backend would pay compilation cost for
+///   compiled code that is discarded unused.
+pub(crate) fn admitted_native_execution_backend(
+    opts: &rumoca_solver::SimOptions,
+    model: &rumoca_ir_solve::SolveModel,
+) -> Option<rumoca_solver::fmi_me::MeExecutionBackend> {
+    if !opts.execution_policy.allows_native() {
+        return None;
+    }
+    if model.state_scalar_count() == 0 {
+        return None;
+    }
+    Some(rumoca_solver::fmi_me::MeExecutionBackend::new(backend(
+        &model.pure_calls,
+    )))
+}
+
 pub(crate) fn backend(
     table: &rumoca_ir_solve::SolvePureCallTable,
 ) -> Rc<dyn rumoca_solver::SolveExecutionBackend> {

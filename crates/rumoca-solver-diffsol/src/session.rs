@@ -14,10 +14,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use rumoca_solver::fmi_me::MeExecutionBackend;
+
 use crate::{
     LinearSolver, OdeModel, RuntimeParameters, SimError, apply_event_updates, bdf_derivative_guess,
-    build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, new_solve_runtime,
-    reset_solver_state, settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
+    build_ode_problem_with_runtime_params_and_initial, initial_bdf_state, reset_solver_state,
+    settle_algebraics_and_relation_memory, solver_call, write_state_to_solver,
 };
 
 type StepFn = Box<dyn FnMut(f64) -> Result<StepAdvance, SimError>>;
@@ -98,11 +100,26 @@ struct RuntimeOnlyDriver {
 
 impl SimulationSession {
     pub fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
+        Self::new_with_execution_backend(model, opts, None)
+    }
+
+    /// [`SimulationSession::new`] with a host-supplied compiled execution
+    /// backend, admitted against `opts.execution_policy` exactly like the
+    /// batch entry points. The handle stays opaque: it is unwrapped inside
+    /// `rumoca-solver`, never here.
+    pub fn new_with_execution_backend(
+        model: &solve::SolveModel,
+        opts: SimOptions,
+        execution_backend: Option<MeExecutionBackend>,
+    ) -> Result<Self, SimError> {
+        let execution_backend = crate::admit_execution_backend(&opts, execution_backend)?;
         let t_end = opts.t_end;
         let inner = if model.state_scalar_count() == 0 {
+            // The zero-state driver instantiates no integrator runtime, so a
+            // supplied backend handle is deliberately never used here.
             SimulationSessionInner::RuntimeOnly(Box::new(RuntimeOnlyDriver::new(model, opts)?))
         } else {
-            SimulationSessionInner::Bdf(Box::new(BdfSession::new(model, opts)?))
+            SimulationSessionInner::Bdf(Box::new(BdfSession::new(model, opts, execution_backend)?))
         };
         Ok(Self { inner, t_end })
     }
@@ -299,10 +316,14 @@ impl BdfSession {
     // SPEC_0021: Exception - constructor wires Diffsol problem lifetime,
     // closures, reset behavior, and runtime input state as one owned session.
     #[allow(clippy::too_many_lines)]
-    fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
+    fn new(
+        model: &solve::SolveModel,
+        opts: SimOptions,
+        execution_backend: Option<MeExecutionBackend>,
+    ) -> Result<Self, SimError> {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
-        let runtime = new_solve_runtime(model)?;
+        let runtime = SolveRuntime::new_with_me_execution_backend(model, execution_backend)?;
         let root_runtime = Arc::new(runtime.clone());
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
@@ -352,6 +373,7 @@ impl BdfSession {
         let step_fn = make_step_fn(
             Rc::clone(&solver),
             model,
+            runtime.clone(),
             runtime_params.clone(),
             &opts,
             runtime.has_delay_channels(),
@@ -752,6 +774,7 @@ where
 fn make_step_fn<Eqn, S>(
     solver: Rc<RefCell<S>>,
     model: &solve::SolveModel,
+    step_runtime: SolveRuntime,
     params: RuntimeParameters,
     opts: &SimOptions,
     enforce_stop_time: bool,
@@ -762,7 +785,6 @@ where
     S: OdeSolverMethod<'static, Eqn> + 'static,
 {
     let step_model = OdeModel::new(model)?;
-    let step_runtime = new_solve_runtime(model)?;
     let step_opts = opts.clone();
     Ok(Box::new(move |dt: f64| {
         step_solver_by(

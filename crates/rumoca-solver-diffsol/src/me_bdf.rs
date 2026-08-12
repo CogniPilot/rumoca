@@ -10,13 +10,17 @@ use diffsol::{
 };
 use rumoca_solver::{
     SimOptions, SimResult, TimeoutBudget,
-    fmi_me::{MeEventCause, MeEventStop, MeModelSource, MeRuntimeHost, MeRuntimeOutput},
+    fmi_me::{
+        MeEventCause, MeEventStop, MeExecutionBackend, MeModelSource, MeRuntimeHost,
+        MeRuntimeOutput,
+    },
     runtime_root_event_application_time,
     timeline::{sample_time_match_with_tol, try_build_output_times},
 };
 
 use crate::{
-    LinearSolver, Matrix, Scalar, SimError, SimFailureStage, Vector, instantiate_me_host,
+    LinearSolver, Matrix, Scalar, SimError, SimFailureStage, Vector,
+    instantiate_me_host_with_backend,
     ode::{StateOdeEquations, build_me_state_ode_problem, trace_bdf_eval_counter_snapshot},
     solver_call,
 };
@@ -26,8 +30,19 @@ const MAX_STEPS_PER_OUTPUT: usize = 100_000;
 pub(crate) fn check_initialization(
     source: MeModelSource<'_>,
     opts: &SimOptions,
+    execution_backend: Option<MeExecutionBackend>,
 ) -> Result<(), SimError> {
-    let host = instantiate_me_host(source, opts)?;
+    let host = instantiate_me_host_with_backend(source, opts, execution_backend)?;
+    check_initialization_with_host(&host, opts)
+}
+
+/// [`check_initialization`] over an already-instantiated host, so a prepared
+/// simulation reuses its component (and every compiled artifact the
+/// component's runtime owns) instead of re-instantiating per check.
+pub(crate) fn check_initialization_with_host(
+    host: &MeRuntimeHost,
+    opts: &SimOptions,
+) -> Result<(), SimError> {
     let initial = host.initialize_component()?;
     if initial.termination.is_some() {
         return Ok(());
@@ -38,19 +53,22 @@ pub(crate) fn check_initialization(
     initial_bdf_state(&ode_build.problem, &initial.states, &derivative).map(|_| ())
 }
 
-pub(crate) fn simulate(
-    source: MeModelSource<'_>,
+/// BDF integration over an already-instantiated host: the prepared path
+/// instantiates (and compiles) once at build time and rewinds the SAME
+/// component per run, so hot `run()` iterations never recompile the issued
+/// executable owners its runtime holds.
+pub(crate) fn simulate_with_host(
+    host: &MeRuntimeHost,
     opts: &SimOptions,
 ) -> Result<SimResult, SimError> {
-    let host = instantiate_me_host(source, opts)?;
     let initial = host.initialize_component()?;
     if let Some(termination) = initial.termination {
-        return Ok(empty_terminated_result(&host, termination));
+        return Ok(empty_terminated_result(host, termination));
     }
     let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
     let output_times = try_build_output_times(opts.t_start, opts.t_end, dt)
         .map_err(|error| SimError::SolverError(error.to_string()))?;
-    let mut trace = TraceRecorder::new(&host, output_times.len());
+    let mut trace = TraceRecorder::new(host, output_times.len());
     let budget = TimeoutBudget::new(opts.max_wall_seconds);
     let mut pending_root = None;
     let mut pending_time_event = None;
@@ -78,7 +96,7 @@ pub(crate) fn simulate(
             })
             .map_err(|error| error.at_stage(SimFailureStage::Integration))?;
         let mut context = AdvanceContext {
-            host: &host,
+            host,
             trace: &mut trace,
             pending_root: &mut pending_root,
             pending_time_event: &mut pending_time_event,

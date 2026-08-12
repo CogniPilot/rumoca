@@ -95,6 +95,57 @@ impl SimPacingMode {
     }
 }
 
+/// Which execution strategy the runtime may use for compiler-issued Solve
+/// programs.
+///
+/// This is the inspectable, typed replacement for the ad-hoc host escape hatch
+/// that used to select the interpreter. The backend differential oracle needs
+/// to pin one side of the comparison, so the selection must stay part of the
+/// request rather than an ambient process setting.
+///
+/// A third value, `NativeRequired` — fail instead of silently falling back to
+/// the interpreter when compiled execution is unavailable — is reserved for the
+/// slice that threads a typed unavailability error out of backend
+/// construction; it is deliberately not offered until it can be honored.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimExecutionPolicy {
+    /// Use compiled native execution when the target and model support it,
+    /// otherwise evaluate through the Solve-IR interpreter.
+    #[default]
+    Auto,
+    /// Always evaluate through the Solve-IR interpreter, even where compiled
+    /// execution is available. This is the reference side of the backend
+    /// differential oracle.
+    Interpreter,
+}
+
+impl SimExecutionPolicy {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Interpreter => "interpreter",
+        }
+    }
+
+    /// Parse the external CLI/scenario spelling, or `None` when unknown.
+    #[must_use]
+    pub fn from_external_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "interpreter" => Some(Self::Interpreter),
+            _ => None,
+        }
+    }
+
+    /// True when compiled native execution may be used.
+    #[must_use]
+    pub const fn allows_native(self) -> bool {
+        matches!(self, Self::Auto)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SimOptions {
     pub t_start: f64,
@@ -124,6 +175,10 @@ pub struct SimOptions {
     /// State start-value overrides applied after lowering, keyed by scalar state
     /// name. These seed the initialization solve.
     pub start_overrides: Vec<(String, f64)>,
+    /// Which execution strategy the runtime may use for compiler-issued Solve
+    /// programs. Part of the request so a run's interpreter/native selection is
+    /// reproducible and inspectable rather than ambient.
+    pub execution_policy: SimExecutionPolicy,
 }
 
 impl Default for SimOptions {
@@ -141,6 +196,7 @@ impl Default for SimOptions {
             pacing_mode: SimPacingMode::AsFastAsPossible,
             param_overrides: Vec::new(),
             start_overrides: Vec::new(),
+            execution_policy: SimExecutionPolicy::Auto,
         }
     }
 }

@@ -120,6 +120,77 @@ impl<'a> From<&'a rumoca_ir_solve::SolveModel> for MeModelSource<'a> {
     }
 }
 
+/// The compiled-code execution backend an ME component may be instantiated
+/// with, as an opaque host handle.
+///
+/// SPEC_0038 §Internal Solver Boundary: an integrator host *wires* a backend
+/// through, it never compiles with one. Every method of the underlying
+/// `SolveExecutionBackend` trait takes Solve IR — scalar program blocks,
+/// continuous refresh owners, event-transaction programs — so naming that
+/// trait from a host crate would put Solve IR back on the host's own public
+/// API. Hosts name this handle instead, and can only hand it to
+/// [`SolveMeKernel::instantiate_with_execution_backend`].
+#[derive(Clone)]
+pub struct MeExecutionBackend(Rc<dyn crate::SolveExecutionBackend>);
+
+impl MeExecutionBackend {
+    #[must_use]
+    pub fn new(backend: Rc<dyn crate::SolveExecutionBackend>) -> Self {
+        Self(backend)
+    }
+
+    pub(crate) fn into_runtime_backend(self) -> Rc<dyn crate::SolveExecutionBackend> {
+        self.0
+    }
+}
+
+impl From<Rc<dyn crate::SolveExecutionBackend>> for MeExecutionBackend {
+    fn from(backend: Rc<dyn crate::SolveExecutionBackend>) -> Self {
+        Self::new(backend)
+    }
+}
+
+/// Typed rejection for a contradictory execution request: the request's
+/// execution policy forbids compiled native execution, yet a compiled
+/// execution backend handle was supplied.
+///
+/// Honoring the handle would execute natively against an explicit interpreter
+/// request; dropping it silently would let the caller believe it was honored.
+/// Either way the interpreter side of the backend differential oracle stops
+/// being trustworthy, so the contradiction is typed data, never a quiet
+/// resolution in either direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "execution policy '{policy}' forbids compiled native execution, but a compiled \
+     execution backend handle was supplied; withhold the handle or request the \
+     'auto' policy"
+)]
+pub struct MeExecutionPolicyContradiction {
+    /// The rendered label of the rejecting policy.
+    pub policy: &'static str,
+}
+
+/// Admit a host-supplied opaque execution backend handle against the request's
+/// execution policy.
+///
+/// This rule is owned ONCE, here at the ME contract boundary where the handle
+/// meets [`crate::SimExecutionPolicy`], so every concrete integrator backend
+/// rejects the identical contradictory input identically: the same public
+/// request must not have backend-dependent semantics. Concrete crates call
+/// this from their entry points and surface the typed contradiction through
+/// their own error enums without rewording it.
+pub fn admit_execution_backend(
+    policy: crate::SimExecutionPolicy,
+    execution_backend: Option<MeExecutionBackend>,
+) -> Result<Option<MeExecutionBackend>, MeExecutionPolicyContradiction> {
+    if execution_backend.is_some() && !policy.allows_native() {
+        return Err(MeExecutionPolicyContradiction {
+            policy: policy.label(),
+        });
+    }
+    Ok(execution_backend)
+}
+
 /// Owned checked model artifact that numerical solver plugins can retain
 /// without gaining access to Solve IR.
 ///
