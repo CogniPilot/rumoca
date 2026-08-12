@@ -1078,3 +1078,44 @@ CLAUDE COUNTER-ROUND (recorded for the DRAFT, pending Codex response):
 7. ABI maps: injective on the proven domain AND round-trip identical for
    FMI/eFMI exchange values.
 8. Rejected: graph-level format genericity (mixing is the point).
+
+### 13.6 Type-system resolutions (06:20 — no open disagreements)
+
+1. Value types identify representable domain/encoding ONLY (Binary32,
+   Binary64, sized integers, Boolean, enum brands, tensor shapes). ALL
+   arithmetic policy — rounding, contraction/FMA, exception/status, NaN
+   selection, subnormals, integer overflow discipline — lives on the
+   operation/bound arithmetic profile. NORMATIVE CONDITION: the bound
+   profile is root-identity-bearing (joins the root digest); folding and
+   simplification are profile-bound; term equality/interning across
+   profiles is forbidden. `Real { format, rounding }` is transitional.
+2. Target numeric profiles admit a SET of types plus one declared
+   default-Real specialization (never context-dependent); registers are
+   exactly typed; cross-format edges are explicit conversions.
+   One-format-per-program is a special case, not a rule.
+3. Prepared execution artifacts: may contain machine code, layouts,
+   schedules, dispatch tables, and references INTO the canonical owner;
+   may NOT contain an identity-bearing op-DAG clone, a second wire form,
+   or a scalar graph used as analysis authority. Replay rebuilds;
+   root/profile digest binds; translation-validation evidence covers.
+   Ephemeral private backend IRs are legal with zero semantic authority,
+   deleted after emission. The perf threshold (>=15-20% hot-path under
+   bounded code/RSS) governs artifact RETENTION only; a second canonical
+   graph additionally requires a different stage contract plus a semantic
+   witness inexpressible as SolveOp.
+4. Target strategies: ordered candidate lists with statically decidable
+   predicates; deterministic recorded selection; the template sees ONE
+   issued variant; kernel contract finite and compiler-known; external
+   implementations only as named trusted-refinement assumptions at lower
+   assurance.
+5. SPEC_0045 honest-gap section (verified evidence): the manifest is
+   today a capability filter; semantic choices split across phase-solve
+   (hard-coded Binary64), Rust rendering (unconditional dual views;
+   scalar_fallback defaults true), and templates (semantic lowering in
+   MiniJinja). Cutover chain: parse -> TargetNumericProfile::checked ->
+   profile-bound Solve construction -> TargetImplementationProfile::
+   checked -> PreparedTargetProgram -> passive renderer. First vertical
+   witness: one real target, one declared format, one MatMul candidate
+   list, one issued view, executing evaluator comparison, no
+   scalar-program construction on the compact path, template-side choice
+   deleted; WGSL f32 is the standing red profile-mismatch witness.
