@@ -1006,8 +1006,12 @@ million-op vectors nowhere.
 ### 13.4 Gate definition (ratified 02:20)
 
 Two reported states, never merged:
-1. ORDINARY WORKSPACE GATE: `cargo test --workspace` reaches ZERO
-   failures. Triage labels (REGRESSED / PRE-EXISTING / ABSENT-AT-BASE)
+1. ORDINARY GATE (corrected 03:05 per SPEC_0025 §4 — `cargo test
+   --workspace == 0` is ONE subgate, not the definition of green): the
+   complete applicable accepted matrix — fmt --check; all-target
+   all-feature clippy with warnings denied; workspace tests; docs; the
+   MSL gate; ModelicaTest parity; pinned modelica_models compatibility
+   for compiler/simulator semantic changes. All subgates reach zero. Triage labels (REGRESSED / PRE-EXISTING / ABSENT-AT-BASE)
    route evidence; they never waive it. Ratchets, baselines, allowlists,
    and size limits are POLICY surfaces: a failing guard is repaired at the
    source or escalated as a voted policy change — never edited under a
