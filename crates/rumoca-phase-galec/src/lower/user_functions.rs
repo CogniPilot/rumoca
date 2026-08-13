@@ -1196,10 +1196,13 @@ fn lower_tensor_function_assignment<'a, 'dae>(
     let value = coerce(value?, scalar, assignment.span)?;
     let (before, mut body) = partition_tensor_prefixes(lowerer.drain_prefix_statements(), &names);
     if body.is_empty()
-        && let Some(source) = whole_array_projection_source(&value, &indices)
-        && declared_shape(lowerer, &source).is_some_and(|(extents, source_scalar)| {
-            extents.as_slice() == assignment.target_type.dimensions() && source_scalar == scalar
-        })
+        && let Some(source) = provable_whole_array_move(
+            lowerer,
+            &value,
+            &indices,
+            assignment.target_type.dimensions(),
+            scalar,
+        )
     {
         return Ok(Some(LoweredTensorAssignment {
             before,
@@ -1356,6 +1359,37 @@ fn whole_array_projection_source(
     }
 }
 
+/// The whole decision, both conjuncts, one place: an elementwise projection
+/// may be flattened into a whole-array move exactly when the projection is
+/// the subscript identity ([`whole_array_projection_source`]) AND the
+/// source's declared shape equals the target's, element type included
+/// ([`declared_shape`]). Returns the subscript-stripped source on success.
+///
+/// The shape conjunct deserves its own defense, because on today's corpus it
+/// is a barrier, not a repair: every front-end path that currently produces
+/// an identity projection reads an object declared from the target's own
+/// type, and the shapes that WOULD go wrong (`y := s[1:2]` from a longer
+/// `s`, a comprehension over a leading sub-range) reach this point with
+/// their range arithmetic unfolded (`s[1 + (i - 1)]`), so the subscript
+/// check already rejects them. One projection-folding improvement — folding
+/// `1 + (i - 1)` to `i`, which is a natural cleanup — turns each of those
+/// into a subscript-identity projection whose flattening writes a
+/// whole-array assignment between differently-shaped objects. The unit test
+/// `whole_array_move_needs_shape_equality_not_just_subscript_identity`
+/// constructs exactly that situation and fails if this function ever
+/// collapses it.
+pub(super) fn provable_whole_array_move<'a, 'dae>(
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
+    value: &gast::Expression,
+    indices: &[gast::Expression],
+    target_extents: &[u32],
+    target_scalar: gast::ScalarType,
+) -> Option<gast::Reference> {
+    let source = whole_array_projection_source(value, indices)?;
+    let (extents, scalar) = declared_shape(lowerer, &source)?;
+    (extents.as_slice() == target_extents && scalar == target_scalar).then_some(source)
+}
+
 /// Declared extents and element type of an identity-projection source, when a
 /// declaration for it is visible to this lowerer.
 ///
@@ -1376,7 +1410,7 @@ fn whole_array_projection_source(
 /// keeps the loop — the fallback is the semantics-preserving direction, so an
 /// unresolvable name can only cost a collapse, never correctness.
 fn declared_shape<'a, 'dae>(
-    lowerer: &ExpressionLowerer<'a, 'dae>,
+    lowerer: &mut ExpressionLowerer<'a, 'dae>,
     reference: &gast::Reference,
 ) -> Option<(Vec<u32>, gast::ScalarType)> {
     match reference {
@@ -1396,16 +1430,7 @@ fn declared_shape<'a, 'dae>(
             let [part] = parts.as_slice() else {
                 return None;
             };
-            lowerer
-                .by_id
-                .values()
-                .find(|classified| classified.name.lexeme() == part.name.lexeme())
-                .map(|classified| {
-                    (
-                        classified.variable.value_type().dimensions().to_vec(),
-                        classified.scalar_type,
-                    )
-                })
+            lowerer.state_shape(part.name.lexeme())
         }
     }
 }

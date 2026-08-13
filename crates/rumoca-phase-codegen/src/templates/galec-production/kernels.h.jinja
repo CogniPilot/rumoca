@@ -1,12 +1,10 @@
 {% extends "galec-kernels.h.jinja" %}
-{#- The kernel library is target-agnostic — the same bytes the
-    `embedded-c-galec` target emits — so only the conformance banner differs.
-    Here it is part of the ProductionCode/ representation of a schema-valid
-    eFMU and is manifested with a real SHA-1 like the model sources. -#}
-{% block conformance %}/* rumoca GALEC array kernels
- * eFMI Production Code representation; rung: eFMI Production Code export
- * (SPEC_0034 GAL-021/GAL-024).
- * Conformance surface: ProductionCode/manifest.xml (LogicalData), not these
- * C names.
- * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
- * MISRA compliance and DO-178C compliance are not claimed. */{% endblock %}
+{#- Deliberately nothing else. The kernel library is target-agnostic and must
+    render BYTE-IDENTICAL from every C target: RUMOCA_GALEC_KERNELS_VERSION
+    hashes the base templates, so a target-specific banner here would be
+    different bytes under the same constant — the silent-`#error`,
+    multiple-definition-at-link failure the constant exists to prevent. The
+    base defines no overridable block, so an override added here would be
+    ignored rather than silently forking the bytes. Conformance claims live
+    in this target's model artifacts, which are the manifested Production
+    Code representation. -#}

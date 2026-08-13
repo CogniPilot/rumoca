@@ -132,13 +132,33 @@ const MAX_VOID_CASTS: usize = 120;
 /// RATCHET: already at the floor. Never raise.
 const MAX_REDUNDANT_INT32_CASTS: usize = 0;
 
-/// The emitted Production Code pair.
+/// File stem of the shared array-kernel library TU both C targets emit
+/// beside every model unit. It is model-independent, so it is measured under
+/// its own ceiling rather than the model unit's.
+const KERNEL_LIBRARY_STEM: &str = "rumoca_galec_kernels";
+
+/// The shared kernel library's `.c`, total lines. Current: 64.
+///
+/// DECISION (recorded here so the split is deliberate): the model-unit
+/// ceilings above measure the per-model review surface, and folding a
+/// constant 64-line model-independent TU into them would let model-unit
+/// growth hide behind kernel-library shrinkage (or vice versa). The library
+/// is therefore ratcheted separately — it is reviewed once per compiler
+/// build, not once per model, but it must not grow silently either: every
+/// kernel added to it is new certification surface for every consumer.
+/// RATCHET: lower when improved, never raise without a recorded decision.
+const MAX_KERNEL_LIBRARY_LINES: usize = 80;
+
+/// The emitted Production Code sources.
 struct ProductionSources {
-    /// The `.c` every metric is measured over.
+    /// The model unit's `.c` every model-surface metric is measured over.
     c: String,
     /// The companion `.h`, read only to harvest `int32_t` struct-field
     /// declarations for the redundant-cast metric.
     header: String,
+    /// The shared array-kernel library TU, measured only against
+    /// [`MAX_KERNEL_LIBRARY_LINES`].
+    kernels_c: String,
 }
 
 /// Emit `MODEL` with `--target galec-production` into `out_dir` and return the
@@ -169,20 +189,29 @@ fn emit_production_c(source_root: &Path, out_dir: &Path) -> ProductionSources {
 
     let mut sources = Vec::new();
     collect_production_c(out_dir, &mut sources);
-    assert_eq!(
-        sources.len(),
-        1,
-        "expected exactly one ProductionCode/*.c under {}, found {sources:?}",
-        out_dir.display()
-    );
-    let path = &sources[0];
+    // The container holds exactly two C translation units: the model unit and
+    // the shared array-kernel library beside it. They are gated separately —
+    // selecting by stem here is what keeps this gate measuring the model unit
+    // rather than panicking on the library's presence.
+    let (kernel_paths, model_paths): (Vec<_>, Vec<_>) = sources
+        .into_iter()
+        .partition(|path| path.file_stem().is_some_and(|stem| stem == KERNEL_LIBRARY_STEM));
+    let ([path], [kernels_path]) = (model_paths.as_slice(), kernel_paths.as_slice()) else {
+        panic!(
+            "expected exactly one model ProductionCode/*.c and one {KERNEL_LIBRARY_STEM}.c \
+             under {}, found model units {model_paths:?} and kernel TUs {kernel_paths:?}",
+            out_dir.display()
+        );
+    };
     let c = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("read emitted C {}: {error}", path.display()));
     // The header is optional as far as the metrics go: without it the
     // redundant-cast metric simply has fewer declarations to match against,
     // which can only ever under-report, never invent an offender.
     let header = fs::read_to_string(path.with_extension("h")).unwrap_or_default();
-    ProductionSources { c, header }
+    let kernels_c = fs::read_to_string(kernels_path)
+        .unwrap_or_else(|error| panic!("read kernel library {}: {error}", kernels_path.display()));
+    ProductionSources { c, header, kernels_c }
 }
 
 /// Collect every `*.c` living directly in a `ProductionCode/` directory below
@@ -218,6 +247,7 @@ fn test_navigation_estimator_production_c_review_surface_stays_under_its_ceiling
     let source = emitted.c.as_str();
 
     let declared_int32 = declared_int32_entities(&[source, emitted.header.as_str()]);
+    let kernel_library_lines = emitted.kernels_c.lines().count();
     let total_lines = source.lines().count();
     let for_loops = count_for_loops(source);
     let elementwise_copies = count_elementwise_copy_lines(source);
@@ -233,6 +263,7 @@ fn test_navigation_estimator_production_c_review_surface_stays_under_its_ceiling
         "GALEC review surface for {MODEL}: lines={total_lines} for-loops={for_loops} \
          elementwise-copies={elementwise_copies} (void)={void_casts} \
          redundant-int32-casts={redundant_index_casts} \
+         kernel-library-lines={kernel_library_lines} \
          (matched against {} declared int32_t entities)",
         declared_int32.len()
     );
@@ -245,6 +276,13 @@ fn test_navigation_estimator_production_c_review_surface_stays_under_its_ceiling
         "{MODEL} Production Code grew to {total_lines} lines, over the ceiling of \
          {MAX_TOTAL_LINES} (by {}). {RATCHET}",
         total_lines - MAX_TOTAL_LINES
+    );
+    assert!(
+        kernel_library_lines <= MAX_KERNEL_LIBRARY_LINES,
+        "the shared kernel library grew to {kernel_library_lines} lines, over the ceiling of \
+         {MAX_KERNEL_LIBRARY_LINES} (by {}). Every kernel in it is certification surface for \
+         every consumer of every generated block. {RATCHET}",
+        kernel_library_lines - MAX_KERNEL_LIBRARY_LINES
     );
     assert!(
         for_loops <= MAX_FOR_LOOPS,

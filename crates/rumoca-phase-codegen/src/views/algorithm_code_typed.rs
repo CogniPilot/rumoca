@@ -2079,9 +2079,9 @@ impl<'a, 'block> ScopeShapes<'a, 'block> {
 ///   when both operands turn out to be contiguous runs.
 ///
 /// Anything else keeps the loop nest the checked Algorithm Code spells. That
-/// fallback is not an alternate lowering path: it is where contraction shapes the rank-1
-/// kernels cannot express — a strided column walk, a computed subscript, an
-/// operand that is a whole expression rather than a run — genuinely have to go.
+/// fallback is where contraction shapes no rank-1 kernel covers — a strided
+/// column walk, a computed subscript, an operand that is a whole expression
+/// rather than a run — genuinely have to go.
 /// Drop the frame declarations whose only assignments a kernel call absorbed.
 fn surviving_locals<'a>(
     locals: Vec<TypedLocalView<'a>>,
@@ -2297,8 +2297,12 @@ fn contraction_parts<'a, 'view>(
         return None;
     };
     let name = scalar_local_name(accumulator)?;
+    // Bit equality, like `same_literal`: the dot kernel hardcodes `0.0f`, so a
+    // `-0.0` zero-init (which `==` would accept) must keep its loop — the two
+    // are different bits and the substitution contract is bit-preservation.
     if accumulator.scalar != Some(ast::ScalarType::Real)
-        || !matches!(initial.node, TypedExpressionNodeView::Real(value) if value == 0.0)
+        || !matches!(initial.node,
+            TypedExpressionNodeView::Real(value) if value.to_bits() == 0.0_f64.to_bits())
     {
         return None;
     }

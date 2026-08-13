@@ -1268,6 +1268,29 @@ fn the_kernel_library_carries_a_content_derived_version_every_model_checks() {
     );
 }
 
+/// One version constant means one set of bytes ACROSS TARGETS, not just
+/// across models: `galec-production` renders the kernel pair through its own
+/// template chain, and if that chain could change a byte (a target-specific
+/// banner once did), two files with different content would carry the same
+/// `RUMOCA_GALEC_KERNELS_VERSION` — the `#error` guard silent, and linking a
+/// block from each target into one application a multiple-definition error
+/// nobody was warned about. The base templates define no overridable block,
+/// so equality here is structural; this test pins it against regression.
+#[test]
+fn the_kernel_library_is_byte_identical_across_both_c_targets() {
+    let fixture = copy_fixture(galec::ScalarType::Real);
+    for template in ["kernels.h.jinja", "kernels.c.jinja"] {
+        assert_eq!(
+            render_target(&fixture, "embedded-c-galec", template)
+                .expect("embedded-c kernel template must render"),
+            render_target(&fixture, "galec-production", template)
+                .expect("production kernel template must render"),
+            "`{template}` must render byte-identical from both C targets: one \
+             RUMOCA_GALEC_KERNELS_VERSION has to mean one set of bytes"
+        );
+    }
+}
+
 /// Rank > 1: the kernel takes a rank-1 run, so a matrix copy is one loop over
 /// the rows and one call per row. Parameterising the extent instead of the row
 /// type is what keeps the target at one kernel per element type, and what keeps

@@ -1611,3 +1611,89 @@ fn comprehension_projects_checked_binder_values() {
         }
     });
 }
+
+/// The whole-array-move decision needs BOTH conjuncts: subscript identity
+/// alone must never flatten a projection whose source is declared with
+/// different extents than the target.
+///
+/// This constructs the situation the front end cannot yet spell — a
+/// subscript-identity projection over a shape-mismatched source — directly
+/// against `provable_whole_array_move`, because today every reachable
+/// identity projection reads an object declared from the target's own type
+/// (the would-be offenders, `y := s[1:2]` and leading sub-range
+/// comprehensions, arrive with their range arithmetic unfolded and fail the
+/// subscript check first). One index-folding improvement changes that, and
+/// this test is what bites: delete or weaken the shape conjunct and the
+/// mismatched case below collapses into a whole-array assignment between
+/// differently-shaped objects.
+#[test]
+fn whole_array_move_needs_shape_equality_not_just_subscript_identity() {
+    let model = dae::Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
+    model.inspect(|view| {
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(view, &variables, &previous);
+        for (name, extent) in [("wide", 5), ("exact", 2)] {
+            lowerer.temporary_locals.push(gast::VariableDeclaration {
+                ty: gast::TypeRef::Primitive(gast::ScalarType::Real),
+                name: gast::Name::ident(name),
+                dimensions: vec![gast::Dimension::Expr(gast::Expression::Integer(extent))],
+                range: gast::RangeAttributes::default(),
+                span: Span::DUMMY,
+            });
+        }
+        let index = gast::Expression::Ref(gast::Reference::local(gast::Name::ident("i0")));
+        let projection = |source: &str| {
+            gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
+                name: gast::Name::ident(source),
+                subscripts: vec![index.clone()],
+                span: Span::DUMMY,
+            }))
+        };
+
+        // Identity subscripts, equal declared shapes: the move is provable.
+        let proven = user_functions::provable_whole_array_move(
+            &mut lowerer,
+            &projection("exact"),
+            std::slice::from_ref(&index),
+            &[2],
+            gast::ScalarType::Real,
+        );
+        assert!(
+            matches!(
+                proven,
+                Some(gast::Reference::Local(ref part))
+                    if part.name.lexeme() == "exact" && part.subscripts.is_empty()
+            ),
+            "a shape-equal identity projection must flatten, got {proven:?}"
+        );
+
+        // The same identity subscripts over a WIDER source: flattening would
+        // write a whole-array assignment between differently-shaped objects,
+        // so the loop must stay.
+        assert_eq!(
+            user_functions::provable_whole_array_move(
+                &mut lowerer,
+                &projection("wide"),
+                std::slice::from_ref(&index),
+                &[2],
+                gast::ScalarType::Real,
+            ),
+            None,
+            "subscript identity without shape equality must keep its loop"
+        );
+
+        // Element type is part of the shape: same extents, different scalar.
+        assert_eq!(
+            user_functions::provable_whole_array_move(
+                &mut lowerer,
+                &projection("exact"),
+                std::slice::from_ref(&index),
+                &[2],
+                gast::ScalarType::Integer,
+            ),
+            None,
+            "an element-type mismatch must keep its loop"
+        );
+    });
+}

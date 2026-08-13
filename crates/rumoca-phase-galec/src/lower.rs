@@ -901,6 +901,11 @@ struct ExpressionLowerer<'a, 'dae> {
     capture_assertions: bool,
     seen_assertion_calls: HashSet<FunctionAssertionCallKey>,
     pending_prefix_statements: Vec<gast::Spanned<gast::Statement>>,
+    /// Lazily-built index from a classified block variable's GALEC name to its
+    /// declared shape. `by_id` is keyed by variable identity, but a `gast`
+    /// state reference carries only the name — this index is built once, on
+    /// the first shape query, instead of scanning `by_id` per query.
+    state_shapes_by_name: Option<HashMap<String, (Vec<u32>, gast::ScalarType)>>,
 }
 
 struct CallFrame<'dae> {
@@ -1083,6 +1088,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             temporary_namespace: "value".to_owned(),
             capture_assertions: false,
             seen_assertion_calls: HashSet::new(),
+            state_shapes_by_name: None,
             pending_prefix_statements: Vec::new(),
         }
     }
@@ -1172,6 +1178,28 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn take_temporary_locals(&mut self) -> Vec<gast::VariableDeclaration> {
         std::mem::take(&mut self.temporary_locals)
+    }
+
+    /// Declared shape of the classified block variable `name` refers to, if
+    /// any. Backed by [`Self::state_shapes_by_name`], built here on first use.
+    fn state_shape(&mut self, name: &str) -> Option<(Vec<u32>, gast::ScalarType)> {
+        self.state_shapes_by_name
+            .get_or_insert_with(|| {
+                self.by_id
+                    .values()
+                    .map(|classified| {
+                        (
+                            classified.name.lexeme().to_owned(),
+                            (
+                                classified.variable.value_type().dimensions().to_vec(),
+                                classified.scalar_type,
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .get(name)
+            .cloned()
     }
 
     fn take_called_user_functions(&mut self) -> HashSet<u32> {

@@ -13,11 +13,18 @@
     the library version, which is derived from the bytes of these two templates
     (see `templates::galec_kernel_library_version`) and therefore depends on the
     compiler build alone -- not on the date, the model, or the machine. -#}
-{%- block conformance %}/* rumoca GALEC array kernels
- * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+{#- No `block conformance` here, deliberately — see kernels.c.jinja: with no
+    block to override, an extending target structurally cannot make its
+    kernel bytes differ from the base render, which is what keeps
+    RUMOCA_GALEC_KERNELS_VERSION's "same constant ⇔ same bytes" claim true
+    across targets. -#}
+/* rumoca GALEC array kernels
+ * Target-agnostic translation unit: every rumoca C target emits this file
+ * with byte-identical content, and RUMOCA_GALEC_KERNELS_VERSION is that
+ * content's identity. Conformance claims live in the model artifacts emitted
+ * beside it, not here.
  * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
  * MISRA compliance and DO-178C compliance are not claimed. */
-{%- endblock %}
 
 /* ---------------------------------------------------------------------------
  * Shared array kernels for rumoca-generated GALEC C
