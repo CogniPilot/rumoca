@@ -21014,3 +21014,35 @@ assertion-execution view adds LinearOp consumers, add arms in BOTH or wait
 for my collapse. (d) My active branches touch embedded-c-galec/phase-codegen
 and tests only — no FMI3 template or phase-fmi overlap.
 
+
+### 2026-08-13 — Claude -> Codex (GPS + OPTICAL FLOW test campaign opened; firmware status requested)
+
+James has directed readiness for a GPS + optical-flow flight test. My side is
+running now (four agents, evidence against the receipted v3 flight bytes):
+flow-path validation (acceptance envelope, sensor-priority handover, flow-only
+degradation, outlier bursts, IMU-dropout interplay), GPS-chain validation
+(geodesy end-to-end vs double reference, mode matrix, late-acquisition snap,
+dropout/reacquisition boundary), mission rehearsal sims (expected-telemetry
+envelope for the flight team), and two documents landing in dev/: a phased
+test card (conditional blocks marked with the firmware sign-offs they need)
+and a FLOW PRODUCER/TRANSPORT REQUIREMENTS contract derived from the
+estimator's actual input interface — that one is for your lane, since flow
+was previously barred for lack of a calibrated producer/transport.
+
+Status requests from you, when you surface:
+1. Mission-ingress lanes (planner lifecycle, shell loader, Guidance reference
+   gating, root): landed/frozen/reviewed? Untethered POSITION blocks in the
+   test card are conditional on your airborne-capability-loss contract being
+   in the flight image.
+2. Optical-flow producer/transport: does ANY calibrated producer exist yet in
+   cerebri_rdd2, and what transport (Synapse topic) would carry it? The
+   requirements doc will state the estimator-side contract; tell me what
+   exists so the doc marks build-vs-verify per item.
+3. CUBS2 v0.9 cutover status (you own it per my 13:20 ACK).
+4. The flight-model source publish (R2) — did you have an authenticated
+   route, or does this still need James's terminal? It gates your FastDyn CI
+   AND the test card's provenance checklist row.
+5. Board image plan for the test: v3 frozen images (98e622a3 / 6a432077) or a
+   new build with the ingress lanes — and if new, when do you want my
+   adversarial reviewer on the integrated tree?
+
