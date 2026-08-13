@@ -1,0 +1,192 @@
+{#- GALEC-derived embedded Rust (.rs).
+    Context (same base as model.c.jinja, plus two Rust-specific keys):
+      name, name_upper, period, variables, startup, recalibrate, do_step,
+      previous_vars  – [name]   prev-value slots (from c_ctx)
+      integer_vars   – [name]   variables whose GALEC type is Integer
+    Configurable via context overrides:
+      real_type      – Rust type for Real    (default "f64")
+      integer_type   – Rust type for Integer (default "i32")
+-#}
+
+{#- ── Numeric type configuration ───────────────────────────────────── -#}
+{%- set real_type    = real_type    | default("f64") -%}
+{%- set integer_type = integer_type | default("i32") -%}
+
+{#- ── Type / zero helpers ───────────────────────────────────────────── -#}
+{%- macro rust_type(ty) -%}
+{%- if ty.Real is defined -%}{{ real_type }}
+{%- elif ty.Integer is defined -%}{{ integer_type }}
+{%- elif ty.Boolean is defined -%}bool
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro rust_zero(ty) -%}
+{%- if ty.Real is defined -%}0.0
+{%- elif ty.Integer is defined -%}0
+{%- elif ty.Boolean is defined -%}false
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro prev_type(pname) -%}
+{%- for v in variables -%}
+{%- if v.name == pname -%}{{ rust_type(v.ty) }}{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+
+{%- macro prev_zero(pname) -%}
+{%- for v in variables -%}
+{%- if v.name == pname -%}{{ rust_zero(v.ty) }}{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+
+{#- ── Operator map ──────────────────────────────────────────────────── -#}
+{%- set ops = {
+    "Add": "+",  "Sub": "-",  "Mul": "*",  "Div": "/",
+    "Lt":  "<",  "Lte": "<=", "Gt":  ">",  "Gte": ">=",
+    "Eq":  "==", "Neq": "!=",
+    "And": "&&", "Or":  "||"
+} -%}
+
+{#- ── GALEC §3.2.6 catalog → Rust (libm for transcendentals, no_std safe) ── -#}
+{%- set builtins = {
+    "absolute":  "galec_abs",
+    "sign":      "galec_sign",
+    "min":       "galec_min",    "max":       "galec_max",
+    "sqrt":      "libm::sqrt",   "exp":       "libm::exp",
+    "ln":        "libm::log",    "lg":        "libm::log10",
+    "roundDown": "libm::floor",  "roundUp":   "libm::ceil",
+    "sin":       "libm::sin",    "cos":       "libm::cos",   "tan":  "libm::tan",
+    "asin":      "libm::asin",   "acos":      "libm::acos",  "atan": "libm::atan",
+    "atan2":     "libm::atan2",
+    "sinh":      "libm::sinh",   "cosh":      "libm::cosh",  "tanh": "libm::tanh"
+} -%}
+
+{#- ── Expression renderer ──────────────────────────────────────────── -#}
+{#- Integer SelfRef/PreviousRef are promoted to real_type so mixed
+    expressions (e.g. gain * count) stay uniformly typed. The cast back
+    to integer_type is applied at the assignment site (render_assign). -#}
+{%- macro render_expr(e) -%}
+{%- if e.Literal is defined -%}
+    {%- if e.Literal.Real is defined -%}{{ e.Literal.Real | float }}
+    {%- elif e.Literal.Integer is defined -%}{{ e.Literal.Integer }}.0
+    {%- elif e.Literal.Boolean is defined -%}{{ "true" if e.Literal.Boolean else "false" }}
+    {%- endif -%}
+{%- elif e.SelfRef is defined -%}
+    {%- if e.SelfRef.name in integer_vars -%}(self.{{ e.SelfRef.name }} as {{ real_type }})
+    {%- else -%}self.{{ e.SelfRef.name }}
+    {%- endif -%}
+{%- elif e.PreviousRef is defined -%}
+    {%- if e.PreviousRef.name in integer_vars -%}(self.{{ e.PreviousRef.name }}_prev as {{ real_type }})
+    {%- else -%}self.{{ e.PreviousRef.name }}_prev
+    {%- endif -%}
+{%- elif e.Negate is defined -%}(-{{ render_expr(e.Negate) }})
+{%- elif e.Binary is defined -%}
+    {%- set b = e.Binary -%}
+    {%- if b.op == "Pow" -%}{{ real_type }}::powf({{ render_expr(b.lhs) }}, {{ render_expr(b.rhs) }})
+    {%- else -%}({{ render_expr(b.lhs) }} {{ ops[b.op] }} {{ render_expr(b.rhs) }}){%- endif -%}
+{%- elif e.Call is defined -%}
+    {%- if e.Call.name in builtins -%}
+        {{- builtins[e.Call.name] }}({% for a in e.Call.args %}{{ render_expr(a) }}{% if not loop.last %}, {% endif %}{% endfor %})
+    {%- else -%}
+        {{- e.Call.name }}({% for a in e.Call.args %}{{ render_expr(a) }}{% if not loop.last %}, {% endif %}{% endfor %})
+    {%- endif -%}
+{%- elif e.If is defined -%}
+    {%- set i = e.If -%}
+    (if {{ render_expr(i.condition) }} { {{ render_expr(i.then_branch) }} } else { {{ render_expr(i.else_branch) }} })
+{%- elif e.Index is defined -%}
+    {{- render_expr(e.Index.base) }}[
+    {%- for s in e.Index.subscripts %}{{ render_expr(s) }} as usize - 1{% if not loop.last %}, {% endif %}{% endfor -%}
+    ]
+{%- endif -%}
+{%- endmacro -%}
+
+{#- ── Statement renderer ───────────────────────────────────────────── -#}
+{#- Integer LHS: cast the (real_type-typed) RHS expression back to integer_type. -#}
+{%- macro render_assign(lhs, rhs) -%}
+{%- if lhs in integer_vars %}
+        self.{{ lhs }} = ({{ rhs }}) as {{ integer_type }};
+{%- else %}
+        self.{{ lhs }} = {{ rhs }};
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_stmt(s) -%}
+{%- if s.Assign is defined %}{{ render_assign(s.Assign.lhs, render_expr(s.Assign.rhs)) }}{%- endif -%}
+{%- endmacro -%}
+
+// Generated by rumoca from GALEC IR. Do not edit by hand.
+// {{ name }} — embedded Rust (period = {{ period }}s)
+// Models using transcendental functions (sqrt, sin, cos, …) require the
+// `libm` crate as a dependency.
+#![no_std]
+#![allow(non_snake_case, unused_parens, dead_code, clippy::excessive_precision)]
+
+// GALEC §3.2.6 helpers — all no_std safe (pure arithmetic or core intrinsics).
+// min/max use the GALEC relational definition (not fmin/fmax) so that a false
+// qNaN comparison takes the else operand (eFMI traps T9/T14).
+#[inline] fn galec_abs(x: {{ real_type }}) -> {{ real_type }} { x.abs() }
+#[inline] fn galec_sign(x: {{ real_type }}) -> {{ real_type }} { ((x > 0.0) as i32 - (x < 0.0) as i32) as {{ real_type }} }
+#[inline] fn galec_min(u1: {{ real_type }}, u2: {{ real_type }}) -> {{ real_type }} { if u1 < u2 { u1 } else { u2 } }
+#[inline] fn galec_max(u1: {{ real_type }}, u2: {{ real_type }}) -> {{ real_type }} { if u1 > u2 { u1 } else { u2 } }
+
+pub struct {{ name }}State {
+{%- for v in variables %}
+    pub {{ v.name }}: {{ rust_type(v.ty) }},  // {{ v.role }}
+{%- endfor %}
+{%- for pname in previous_vars %}
+    {{ pname }}_prev: {{ prev_type(pname) }},
+{%- endfor %}
+}
+
+impl {{ name }}State {
+    pub fn new() -> Self {
+        Self {
+{%- for v in variables %}
+            {{ v.name }}: {{ rust_zero(v.ty) }},
+{%- endfor %}
+{%- for pname in previous_vars %}
+            {{ pname }}_prev: {{ prev_zero(pname) }},
+{%- endfor %}
+        }
+    }
+
+    pub fn startup(&mut self) {
+{%- for s in startup %}
+{{ render_stmt(s) -}}
+{%- endfor %}
+{%- for pname in previous_vars %}
+        self.{{ pname }}_prev = self.{{ pname }};
+{%- endfor %}
+    }
+
+    pub fn recalibrate(&mut self) {
+{%- for s in recalibrate %}
+{{ render_stmt(s) -}}
+{%- endfor %}
+    }
+
+    pub fn do_step(&mut self) {
+{%- for group in do_step %}
+{%- if group.condition is not none %}
+        if {{ render_expr(group.condition) }} {
+{%- for s in group.statements %}
+{%- if s.Assign is defined %}
+{%- if s.Assign.lhs in integer_vars %}
+            self.{{ s.Assign.lhs }} = ({{ render_expr(s.Assign.rhs) }}) as {{ integer_type }};
+{%- else %}
+            self.{{ s.Assign.lhs }} = {{ render_expr(s.Assign.rhs) }};
+{%- endif %}
+{%- endif %}
+{%- endfor %}
+        }
+{%- else %}
+{%- for s in group.statements %}
+{{ render_stmt(s) -}}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+{%- for pname in previous_vars %}
+        self.{{ pname }}_prev = self.{{ pname }};
+{%- endfor %}
+    }
+}

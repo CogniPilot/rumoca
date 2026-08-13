@@ -20,9 +20,8 @@
 //! On the resulting total order, when file `C` is rendered every `sha1[of]`
 //! was inserted right after its producer's bytes were produced — so the value
 //! threaded into `C` is always the real SHA-1 of the producer's final bytes.
-//! No placeholder is representable ([`Sha1Hex`] is constructible only from
-//! real bytes or a strict parse), and the bytes hashed are the exact bytes
-//! written (one `bytes` buffer feeds both `Sha1Hex::of_bytes` and the write).
+//! No placeholder is representable, and the bytes hashed are the exact bytes
+//! written (one `bytes` buffer feeds both the SHA-1 calculation and the write).
 
 use std::collections::{BTreeMap, HashMap};
 #[cfg(feature = "scheduled-sim")]
@@ -32,7 +31,7 @@ use anyhow::{Context, Result, bail};
 #[cfg(feature = "scheduled-sim")]
 use rumoca_compile::codegen::targets::{AssetBundle, safe_target_join};
 use rumoca_compile::codegen::targets::{RenderedTargetFile, TargetFile};
-use rumoca_compile::galec::Sha1Hex;
+use sha1::{Digest, Sha1};
 
 #[cfg(feature = "scheduled-sim")]
 use crate::container;
@@ -210,7 +209,7 @@ pub fn render_web(
 ) -> Result<Vec<(String, Vec<u8>)>> {
     let order = topo_sort(files)?;
 
-    let mut sha1: HashMap<String, Sha1Hex> = HashMap::new();
+    let mut sha1: HashMap<String, String> = HashMap::new();
     // Render into `order` positions but return in declaration order, so the
     // in-memory caller sees files in the same order the `target.toml` declares
     // them (`render_target_files` asserts a 1:1 file-count match).
@@ -226,7 +225,7 @@ pub fn render_web(
                     need.of, file.path
                 )
             })?;
-            checksums.insert(need.as_key.clone(), digest.as_str().to_string());
+            checksums.insert(need.as_key.clone(), digest.clone());
         }
         let path = render(&file.path, &checksums)
             .with_context(|| format!("Render target output path '{}'", file.path))?
@@ -235,10 +234,10 @@ pub fn render_web(
         let bytes = render(&file.template, &checksums)
             .with_context(|| format!("Render target template '{}'", file.template))?
             .into_bytes();
-        // Hash the EXACT bytes that will be written (§4c): `Sha1Hex::of_bytes`
-        // and the write below share this one buffer with no intervening reformat.
+        // Hash the EXACT bytes that will be written (§4c): the digest and the
+        // write below share this one buffer with no intervening reformat.
         if let Some(id) = &file.id {
-            sha1.insert(id.clone(), Sha1Hex::of_bytes(&bytes));
+            sha1.insert(id.clone(), format!("{:x}", Sha1::digest(&bytes)));
         }
         rendered[index] = Some((path, bytes));
     }
@@ -610,9 +609,9 @@ template = "root-template"
         .expect("declarative package build should succeed");
 
         let leaf_bytes = std::fs::read(out_dir.join("leaf.txt")).expect("leaf written");
-        let expected = Sha1Hex::of_bytes(&leaf_bytes);
+        let expected = format!("{:x}", Sha1::digest(&leaf_bytes));
         let root = std::fs::read_to_string(out_dir.join("root.txt")).expect("root written");
-        assert_eq!(root, format!("root sees leaf={}", expected.as_str()));
+        assert_eq!(root, format!("root sees leaf={}", expected));
         let license =
             std::fs::read_to_string(out_dir.join("schemas/LICENSE")).expect("asset copied");
         assert_eq!(license, "license bytes");

@@ -4204,7 +4204,7 @@ dependencies = [
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-solve",
- "rumoca-galec-codegen",
+ "rumoca-galec",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
@@ -4222,6 +4222,7 @@ dependencies = [
  "rumoca-tool-lint",
  "serde",
  "serde_json",
+ "sha1",
  "sigpipe",
  "tar",
  "tempfile",
@@ -4296,11 +4297,8 @@ version = "0.9.20"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
- "lsp-types",
  "rumoca-compile",
- "rumoca-galec-codegen",
- "rumoca-ir-galec",
- "rumoca-tool-galec-lsp",
+ "rumoca-galec",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -4336,11 +4334,10 @@ dependencies = [
  "minijinja",
  "rayon",
  "rumoca-core",
- "rumoca-galec-codegen",
+ "rumoca-galec",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rumoca-ir-galec",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
@@ -4468,16 +4465,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-galec-codegen"
+name = "rumoca-galec"
 version = "0.9.20"
 dependencies = [
+ "minijinja",
  "rumoca-core",
  "rumoca-ir-dae",
- "rumoca-ir-galec",
+ "rumoca-phase-structural",
  "serde",
  "serde_json",
  "sha1",
- "thiserror 2.0.18",
  "time",
  "uuid",
 ]
@@ -4546,18 +4543,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-ir-galec"
-version = "0.9.20"
-dependencies = [
- "anyhow",
- "parol",
- "parol_runtime",
- "rumoca-core",
- "scnr2",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "rumoca-ir-solve"
 version = "0.9.20"
 dependencies = [
@@ -4598,7 +4583,6 @@ dependencies = [
  "minijinja",
  "rumoca-core",
  "rumoca-eval-solve",
- "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
@@ -4863,19 +4847,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
-]
-
-[[package]]
-name = "rumoca-tool-galec-lsp"
-version = "0.9.20"
-dependencies = [
- "clap",
- "futures-util",
- "lsp-types",
- "rumoca-ir-galec",
- "rumoca-lsp-position",
- "tokio",
- "tower-lsp",
 ]
 
 [[package]]

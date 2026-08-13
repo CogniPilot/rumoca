@@ -1,0 +1,20 @@
+[package]
+name = "rumoca-galec"
+description = "GALEC language support for the rumoca compiler, includes admissiblity layer, GALEC AST, and code generation (excluding jinja templates)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+autotests = false
+[lints]
+workspace = true
+[dependencies]
+rumoca-phase-structural = { workspace = true}
+rumoca-ir-dae = { workspace = true }
+rumoca-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+minijinja = { workspace = true }
+sha1 = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }

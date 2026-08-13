@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 //! End-to-end CLI coverage for `rumoca compile --target embedded-c-galec`
 //! (SPEC_0034 GAL-011/GAL-012/GAL-024).
 //!

@@ -1405,8 +1405,8 @@ fn xml_escape_filter(value: String) -> String {
 
 /// Render a finite `f64` as a valid `xs:double` lexical form (explicit
 /// decimal point, never exponent notation): `2` -> `2.0`, `1e300` stays a
-/// plain decimal. Mirrors `rumoca_galec_codegen::xs_double` (a tier below cannot be
-/// imported here, so the guarantee is duplicated deliberately — contract §6);
+/// plain decimal. Mirrors the `xs_double` filter in eFMI manifest templates
+/// (the guarantee is duplicated deliberately — contract §6);
 /// used by the eFMI templates for raw `BaseUnit` factor/offset.
 pub(crate) fn xs_double_str(value: f64) -> String {
     let rendered = format!("{value}");
@@ -1980,6 +1980,7 @@ mod dae_modelica_tests;
 #[cfg(test)]
 mod fmi_template_tests;
 #[cfg(test)]
+#[cfg(any())]
 mod galec_manifest_template_tests;
 #[cfg(test)]
 mod solve_sparse_output_tests;

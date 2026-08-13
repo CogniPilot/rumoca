@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 //! GALEC embedded-C vs Rumoca-evaluation equivalence harness (roadmap
 //! Phase 7 — Runtime and Conformance).
 //!

@@ -6,8 +6,7 @@
 //! AC-only `galec` target ships a byte-identical copy as `manifest.xml.jinja`).
 //! They are loaded here with `include_str!` and rendered through the shared
 //! [`create_environment`] (which registers the `xml_escape` / `xs_double`
-//! filters), against a serde context whose shape matches
-//! `rumoca_galec_codegen::manifest_context::EfmiManifestContext`.
+//! filters), against a serde context matching the eFMI manifest context shape.
 //!
 //! These are structural checks (child order, wrapper cardinality, 1-based-AC
 //! vs 0-based-PC `Dimension/@number`, `origin="true"`, only-when-true

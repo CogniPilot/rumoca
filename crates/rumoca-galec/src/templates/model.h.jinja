@@ -1,0 +1,52 @@
+{#- GALEC-derived embedded C header (adapted from SPEC_0034 GAL-024/D16/D17).
+    Context produced by render_c_header:
+      name          – block name (e.g. "Counter")
+      name_upper    – "COUNTER" for include guard
+      variables     – [{ name, role, ty ("Real"|"Integer"|"Boolean"), dims }]
+      previous_vars – [name] for every var referenced via PreviousRef in DoStep
+-#}
+{%- macro c_type(ty) -%}
+{%- if ty.Real is defined -%}double
+{%- elif ty.Integer is defined -%}int32_t
+{%- elif ty.Boolean is defined -%}bool
+{%- endif -%}
+{%- endmacro -%}
+{%- macro prev_c_type(pname) -%}
+{%- for v in variables -%}
+{%- if v.name == pname -%}{{ c_type(v.ty) }}{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+/* {{ name }} — eFMI Production Code representation.
+ * Conformance surface: ProductionCode/manifest.xml.
+ * Generated from GALEC IR (SPEC_0034 GAL-024); do not edit by hand. */
+#ifndef {{ name_upper }}_GALEC_C_H
+#define {{ name_upper }}_GALEC_C_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Block state: every manifest-listed variable plus one _prev slot for each
+ * discrete state referenced via previous() in DoStep (eFMI trap T2). */
+typedef struct {
+{%- for v in variables %}
+    {{ c_type(v.ty) }} {{ v.name }}{% for d in v.dims %}[{{ d }}]{% endfor %}; /* {{ v.role }} */
+{%- endfor %}
+{%- for pname in previous_vars %}
+    {{ prev_c_type(pname) }} {{ pname }}_prev; /* previous({{ pname }}) slot */
+{%- endfor %}
+} {{ name }}State;
+
+/* Startup  – initialise every writable variable; call once before first step. */
+void {{ name }}_startup({{ name }}State *self);
+/* Recalibrate – recompute dependent parameters after tunable-parameter changes. */
+void {{ name }}_recalibrate({{ name }}State *self);
+/* DoStep   – one fixed-sample control-cycle tick. */
+void {{ name }}_dostep({{ name }}State *self);
+
+/* eFMI Production Code convenience macros (SPEC_0034 GAL-024). */
+#define EFMI_STATE_TYPE(name) name##State
+#define EFMI_INIT(name, self) name##_startup(self)
+#define EFMI_RECALIBRATE(name, self) name##_recalibrate(self)
+#define EFMI_STEP(name, self) name##_dostep(self)
+
+#endif /* {{ name_upper }}_GALEC_C_H */

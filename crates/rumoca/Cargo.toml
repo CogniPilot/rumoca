@@ -58,6 +58,7 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 # Library consumers select only the axes they need.
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
+rumoca-galec = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
@@ -74,6 +75,7 @@ minijinja = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
+sha1 = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
@@ -95,6 +97,10 @@ path = "examples/simulation_session_demo.rs"
 [[example]]
 name = "quadrotor_sil"
 path = "examples/quadrotor_sil.rs"
+
+[[test]]
+name = "galec_embedded"
+path = "tests/galec_embedded.rs"
 
 [[test]]
 name = "examples_smoke"
@@ -161,10 +167,6 @@ serde = { version = "1.0", features = ["derive"] }
 ntest = "0.9"  # Test timeouts
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
-# GALEC target CI (tests only): the eFMI id/checksum primitives
-# (`Sha1Hex`/`ManifestId`/`UtcTimestamp`) for recomputing the SHA-1 web and
-# checking id/timestamp discipline over the exact on-disk container bytes.
-rumoca-galec-codegen = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
@@ -178,8 +180,8 @@ rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 # GALEC target CI (tests only): recompute the SHA-1 checksum web and check
 # manifest.xml well-formedness / attribute order over the exact on-disk bytes.
-# xmllint XSD validation runs the external `xmllint`; the SHA-1 primitive comes
-# through the `rumoca-compile` facade (rumoca-galec-codegen).
+# xmllint XSD validation runs the external `xmllint`; SHA-1 comes from
+# `rumoca-galec::manifest::sha1_hex`.
 quick-xml = { workspace = true }
 
 [lints]

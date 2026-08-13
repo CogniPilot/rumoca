@@ -1,0 +1,123 @@
+{#- GALEC Algorithm Code (.alg) template.
+    Renders a Galec IR struct into the GALEC block syntax defined by the
+    eFMI Standard 1.0.0 Beta 1 §3.
+    Key syntax rules:
+     - Assignments use :=; references to block state use `self.name`
+     - Previous values use `previous(self.name)`
+     - Guarded groups become `if cond then ... end if;` in DoStep
+     - Real literals must carry decimal places (serde_json already does this)
+-#}
+
+{%- macro galec_scalar(ty) -%}
+{%- if ty.Real is defined -%}Real
+{%- elif ty.Integer is defined -%}Integer
+{%- elif ty.Boolean is defined -%}Boolean
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_type(var) -%}
+{%- if var.dims | length == 0 -%}{{ galec_scalar(var.ty) }}
+{%- else -%}{{ galec_scalar(var.ty) }}[{{ var.dims | join(", ") }}]
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_expr(expr) -%}
+{%- if expr.Literal is defined -%}
+    {%- set lit = expr.Literal -%}
+    {%- if lit.Real is defined -%}{{ lit.Real | float }}
+    {%- elif lit.Integer is defined -%}{{ lit.Integer }}
+    {%- elif lit.Boolean is defined -%}{{ "true" if lit.Boolean else "false" }}
+    {%- endif -%}
+{%- elif expr.SelfRef is defined -%}self.{{ expr.SelfRef.name }}
+{%- elif expr.PreviousRef is defined -%}previous(self.{{ expr.PreviousRef.name }})
+{%- elif expr.Negate is defined -%}-({{ render_expr(expr.Negate) }})
+{%- elif expr.Binary is defined -%}
+    {%- set b = expr.Binary -%}
+    ({{ render_expr(b.lhs) }} {{ render_op(b.op) }} {{ render_expr(b.rhs) }})
+{%- elif expr.Call is defined -%}
+    {{- expr.Call.name }}(
+    {%- for a in expr.Call.args %}{{ render_expr(a) }}{% if not loop.last %}, {% endif %}{% endfor -%}
+    )
+{%- elif expr.If is defined -%}
+    {%- set i = expr.If -%}
+    (if {{ render_expr(i.condition) }} then {{ render_expr(i.then_branch) }} else {{ render_expr(i.else_branch) }})
+{%- elif expr.Index is defined -%}
+    {{- render_expr(expr.Index.base) }}[
+    {%- for s in expr.Index.subscripts %}{{ render_expr(s) }}{% if not loop.last %}, {% endif %}{% endfor -%}
+    ]
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_op(op) -%}
+{%- if op == "Add" -%}+
+{%- elif op == "Sub" -%}-
+{%- elif op == "Mul" -%}*
+{%- elif op == "Div" -%}/
+{%- elif op == "Pow" -%}^
+{%- elif op == "And" -%}and
+{%- elif op == "Or" -%}or
+{%- elif op == "Eq" -%}=
+{%- elif op == "Neq" -%}<>
+{%- elif op == "Lt" -%}<
+{%- elif op == "Lte" -%}<=
+{%- elif op == "Gt" -%}>
+{%- elif op == "Gte" -%}>=
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_stmt(stmt) -%}
+{%- if stmt.Assign is defined -%}
+self.{{ stmt.Assign.lhs }} := {{ render_expr(stmt.Assign.rhs) }};
+{%- endif -%}
+{%- endmacro -%}
+
+block {{ name }}
+{%- for v in variables %}
+{%- if v.role == "Input" %}
+    input {{ render_type(v) }} {{ v.name }};
+{%- elif v.role == "Output" %}
+    output {{ render_type(v) }} {{ v.name }};
+{%- elif v.role == "TunableParameter" %}
+    parameter {{ render_type(v) }} {{ v.name }};
+{%- endif %}
+{%- endfor %}
+protected
+{%- for v in variables %}
+{%- if v.role == "DependentParameter" %}
+    parameter {{ render_type(v) }} {{ v.name }};
+{%- elif v.role == "Constant" %}
+    constant {{ render_type(v) }} {{ v.name }};
+{%- elif v.role == "State" %}
+    {{ render_type(v) }} {{ v.name }};
+{%- endif %}
+{%- endfor %}
+public
+    method Startup
+    algorithm
+{%- for stmt in startup %}
+        {{ render_stmt(stmt) }}
+{%- endfor %}
+    end Startup;
+    method Recalibrate
+    algorithm
+{%- for stmt in recalibrate %}
+        {{ render_stmt(stmt) }}
+{%- endfor %}
+    end Recalibrate;
+    method DoStep
+    algorithm
+{%- for group in do_step %}
+{%- if group.condition is not none %}
+        if {{ render_expr(group.condition) }} then
+{%- for stmt in group.statements %}
+            {{ render_stmt(stmt) }}
+{%- endfor %}
+        end if;
+{%- else %}
+{%- for stmt in group.statements %}
+        {{ render_stmt(stmt) }}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+    end DoStep;
+end {{ name }};

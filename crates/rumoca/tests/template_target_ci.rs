@@ -251,9 +251,9 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
     );
 }
 
-/// The galec target renders a non-empty `<Model>.alg` (typed-printer output
-/// with the mandatory block methods) and a well-formed Algorithm Code
-/// `manifest.xml` for the discrete fixture, through the real CLI path.
+/// The galec target renders a non-empty `<Model>.alg`, a well-formed
+/// Algorithm Code `manifest.xml`, and injects the correct SHA-1 checksum
+/// into `__content.xml` via the declarative checksum web.
 #[test]
 fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
@@ -284,11 +284,11 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     // The web-injected representation checksum flows into `__content.xml`: it
     // is the SHA-1 of the exact rendered manifest bytes (GAL-021, no placeholder).
     let content = find_rendered_file(&files, "__content.xml");
-    let manifest_sha1 = rumoca_galec_codegen::Sha1Hex::of_bytes(manifest.content.as_bytes());
+    let manifest_sha1 = rumoca_galec::manifest::sha1_hex(manifest.content.as_bytes());
     assert!(
         content
             .content
-            .contains(&format!("checksum=\"{}\"", manifest_sha1.as_str())),
+            .contains(&format!("checksum=\"{manifest_sha1}\"")),
         "__content.xml must carry the SHA-1 of the rendered manifest.xml:\n{}",
         content.content
     );

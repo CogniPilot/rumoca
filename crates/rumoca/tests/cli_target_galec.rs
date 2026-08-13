@@ -1,8 +1,9 @@
 //! End-to-end CLI coverage for `rumoca compile --target galec`
 //! (SPEC_0034 GAL-011/GAL-012/GAL-021).
 //!
+//!
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
-//! generic capability gate → GALEC projection facade → a product-agnostic
+//! generic capability gate → GALEC projection → a product-agnostic
 //! context validated in Rust → jinja templates (the eFMI manifest) plus the
 //! typed GALEC `.alg` printer → the declared-checksum-web `build = "efmu"`
 //! container packaging.
@@ -64,6 +65,40 @@ equation
   der(x) = -k * x;
 end GalecCliContinuous;
 ";
+
+fn parse_manifest_id(s: &str) -> Result<(), String> {
+    let inner = s
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .ok_or_else(|| format!("expected `{{UUID}}` form, got {s:?}"))?;
+    let parts: Vec<&str> = inner.split('-').collect();
+    if parts.len() == 5
+        && parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && parts
+            .iter()
+            .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        Ok(())
+    } else {
+        Err(format!("not a valid UUID inside braces: {inner:?}"))
+    }
+}
+
+fn parse_utc_timestamp(s: &str) -> Result<(), String> {
+    if !s.ends_with('Z') {
+        return Err(format!("timestamp must end with Z for UTC, got {s:?}"));
+    }
+    if !s.contains('T') {
+        return Err(format!(
+            "timestamp must contain 'T' date/time separator, got {s:?}"
+        ));
+    }
+    Ok(())
+}
 
 fn run_compile_target_galec(file: &Path, out_dir: &Path) -> Output {
     run_compile_target(file, "galec", out_dir)
@@ -240,7 +275,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let recorded = sole_attribute_value(&container.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).as_str(),
+        rumoca_galec::manifest::sha1_hex(&manifest_bytes),
         "__content.xml checksum must be the SHA-1 of the written manifest.xml"
     );
 
@@ -248,7 +283,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let listed = sole_attribute_value(&container.manifest_xml(), "checksum");
     assert_eq!(
         listed,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).as_str(),
+        rumoca_galec::manifest::sha1_hex(&alg_bytes),
         "manifest.xml File checksum must be the SHA-1 of the written .alg"
     );
 }
@@ -282,12 +317,11 @@ fn container_ids_unique_and_generation_metadata_strict() {
         manifest_ref_id, manifest_id,
         "__content.xml manifestRefId must be the manifest's own root id"
     );
-    rumoca_galec_codegen::ManifestId::parse(&manifest_ref_id)
-        .expect("manifestRefId must be a brace-wrapped UUID");
+    parse_manifest_id(&manifest_ref_id).expect("manifestRefId must be a brace-wrapped UUID");
 
     for path in [container.content_xml(), container.manifest_xml()] {
         let timestamp = sole_attribute_value(&path, "generationDateAndTime");
-        rumoca_galec_codegen::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
+        parse_utc_timestamp(&timestamp).unwrap_or_else(|error| {
             panic!(
                 "generationDateAndTime `{timestamp}` in {} must match the strict \
                  UTC pattern: {error}",
@@ -430,7 +464,7 @@ fn rerunning_same_command_replaces_previous_container() {
     let recorded = sole_attribute_value(&second.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&second_manifest).as_str(),
+        rumoca_galec::manifest::sha1_hex(&second_manifest),
         "the replaced container's checksum must recompute from its own bytes"
     );
     assert!(second.efmu_zip.is_file(), ".efmu zip must be rebuilt too");

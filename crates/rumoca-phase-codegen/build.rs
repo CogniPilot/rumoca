@@ -32,6 +32,7 @@ fn discover_targets(templates_dir: &Path) -> Vec<TargetDir> {
     let mut targets = fs::read_dir(templates_dir)
         .expect("read codegen templates directory")
         .filter_map(Result::ok)
+        .filter(|entry| !entry.path().join(".disabled").is_file())
         .map(|entry| entry.path())
         .filter(|path| path.is_dir() && path.join("target.toml").is_file())
         .map(|dir| discover_target_dir(&dir))

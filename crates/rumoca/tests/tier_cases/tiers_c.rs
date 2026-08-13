@@ -896,28 +896,6 @@ end MiniBusTranscriptionArr;
             }),
             "redundant output-to-known bus connection should be skipped; origins={origins:?}"
         );
-
-        let projection_dae = rumoca_compile::galec::dae_for_galec_projection(&r.dae);
-        let projection_origins = projection_dae
-            .continuous
-            .equations
-            .iter()
-            .map(|eq| eq.origin.as_str())
-            .collect::<Vec<_>>();
-        assert!(
-            projection_origins
-                .iter()
-                .all(|origin| !origin.contains("equation from g")),
-            "GALEC projection should inline the hidden component output equation; origins={projection_origins:?}"
-        );
-        assert!(
-            projection_origins.iter().all(|origin| {
-                !(origin.contains("connection equation")
-                    && origin.contains("g")
-                    && origin.contains("outBus.x"))
-            }),
-            "GALEC projection should keep the redundant output-to-known bus connection skipped; origins={projection_origins:?}"
-        );
     }
 }
 

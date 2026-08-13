@@ -1,0 +1,141 @@
+{#- GALEC-derived embedded C source (adapted from SPEC_0034 GAL-024/D16/D17).
+    Same context shape as model.h.jinja, plus:
+      startup      – [GalecStatement]  (flat)
+      recalibrate  – [GalecStatement]  (flat)
+      do_step      – [{ condition: GalecExpr|null, statements: [GalecStatement] }]
+    Expressions are our enum-tagged serde shape; statements are
+    { "Assign": { "lhs": name, "rhs": expr } }.
+-#}
+
+{%- macro c_type(ty) -%}
+{%- if ty.Real is defined -%}double
+{%- elif ty.Integer is defined -%}int32_t
+{%- elif ty.Boolean is defined -%}bool
+{%- endif -%}
+{%- endmacro -%}
+
+{#- ── Operator map (GALEC name → C spelling) ──────────────────────── -#}
+{%- set ops = {
+    "Add": "+",  "Sub": "-",  "Mul": "*",  "Div": "/",
+    "Lt":  "<",  "Lte": "<=", "Gt":  ">",  "Gte": ">=",
+    "Eq":  "==", "Neq": "!=",
+    "And": "&&", "Or":  "||"
+} -%}
+
+{#- ── GALEC §3.2.6 catalog → C99/libm (mirrors remap_builtin in transformation.rs) ── -#}
+{%- set builtins = {
+    "absolute": "fabs",
+    "sign": "rumoca_ir_galec_sign",
+    "min":  "rumoca_ir_galec_min",  "max":  "rumoca_ir_galec_max",
+    "sqrt": "sqrt", "exp": "exp",
+    "ln":   "log",  "lg":  "log10",
+    "roundDown": "floor", "roundUp": "ceil",
+    "sin":  "sin",  "cos":  "cos",  "tan":  "tan",
+    "asin": "asin", "acos": "acos", "atan": "atan", "atan2": "atan2",
+    "sinh": "sinh", "cosh": "cosh", "tanh": "tanh"
+} -%}
+
+{#- ── Expression renderer ──────────────────────────────────────────── -#}
+{%- macro render_expr(e) -%}
+{%- if e.Literal is defined -%}
+    {%- if e.Literal.Real is defined -%}{{ e.Literal.Real | float }}
+    {%- elif e.Literal.Integer is defined -%}{{ e.Literal.Integer }}
+    {%- elif e.Literal.Boolean is defined -%}{{ "true" if e.Literal.Boolean else "false" }}
+    {%- endif -%}
+{%- elif e.SelfRef is defined -%}self->{{ e.SelfRef.name }}
+{%- elif e.PreviousRef is defined -%}self->{{ e.PreviousRef.name }}_prev
+{%- elif e.Negate is defined -%}(-{{ render_expr(e.Negate) }})
+{%- elif e.Binary is defined -%}
+    {%- set b = e.Binary -%}
+    {%- if b.op == "Pow" -%}pow({{ render_expr(b.lhs) }}, {{ render_expr(b.rhs) }})
+    {%- else -%}({{ render_expr(b.lhs) }} {{ ops[b.op] }} {{ render_expr(b.rhs) }}){%- endif -%}
+{%- elif e.Call is defined -%}
+    {%- if e.Call.name in builtins -%}
+        {{- builtins[e.Call.name] }}({% for a in e.Call.args %}{{ render_expr(a) }}{% if not loop.last %}, {% endif %}{% endfor %})
+    {%- else -%}
+        {{- e.Call.name }}({% for a in e.Call.args %}{{ render_expr(a) }}{% if not loop.last %}, {% endif %}{% endfor %})
+    {%- endif -%}
+{%- elif e.If is defined -%}
+    {%- set i = e.If -%}
+    ({{ render_expr(i.condition) }} ? {{ render_expr(i.then_branch) }} : {{ render_expr(i.else_branch) }})
+{%- elif e.Index is defined -%}
+    {{- render_expr(e.Index.base) }}[
+    {%- for s in e.Index.subscripts %}({{ render_expr(s) }} - 1){% if not loop.last %}, {% endif %}{% endfor -%}
+    ]
+{%- endif -%}
+{%- endmacro -%}
+
+{#- ── Statement renderer ───────────────────────────────────────────── -#}
+{%- macro render_stmt(s) -%}
+{%- if s.Assign is defined %}
+    self->{{ s.Assign.lhs }} = {{ render_expr(s.Assign.rhs) }};
+{%- endif -%}
+{%- endmacro -%}
+
+{#- ── Method body (flat list of statements) ───────────────────────── -#}
+{%- macro method_body(stmts) -%}
+{%- for s in stmts %}{{ render_stmt(s) }}{% endfor %}
+{%- endmacro -%}
+
+{#- ── DoStep body (groups with optional guard conditions) ─────────── -#}
+{%- macro dostep_body(groups) -%}
+{%- for group in groups %}
+{%- if group.condition is not none %}
+    if ({{ render_expr(group.condition) }}) {
+{%- for s in group.statements %}
+        self->{{ s.Assign.lhs }} = {{ render_expr(s.Assign.rhs) }};
+{%- endfor %}
+    }
+{%- else %}
+{%- for s in group.statements %}{{ render_stmt(s) }}{% endfor %}
+{%- endif %}
+{%- endfor %}
+{%- endmacro -%}
+
+/* {{ name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * Generated from GALEC IR; do not edit by hand. */
+#include "{{ name }}.h"
+
+#include <math.h>
+#include <string.h>
+
+#if defined(__GNUC__) || defined(__clang__)
+#  define RUMOCA_MAYBE_UNUSED __attribute__((unused))
+#else
+#  define RUMOCA_MAYBE_UNUSED
+#endif
+
+/* GALEC §3.2.6 helpers without a direct C99 counterpart.
+ * min/max use the GALEC relational definition (not fmin/fmax) so that a
+ * false qNaN comparison takes the else operand (eFMI traps T9/T14). */
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_sign(double x) {
+    return (double)((x > 0.0) - (x < 0.0));
+}
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_min(double u1, double u2) {
+    return u1 < u2 ? u1 : u2;
+}
+RUMOCA_MAYBE_UNUSED static inline double rumoca_ir_galec_max(double u1, double u2) {
+    return u1 > u2 ? u1 : u2;
+}
+
+void {{ name }}_startup({{ name }}State *self) {
+    (void)self;
+{{ method_body(startup) }}
+{%- for pname in previous_vars %}
+    self->{{ pname }}_prev = self->{{ pname }};
+{%- endfor %}
+}
+
+void {{ name }}_recalibrate({{ name }}State *self) {
+    (void)self;
+{{ method_body(recalibrate) }}
+}
+
+void {{ name }}_dostep({{ name }}State *self) {
+    (void)self;
+{{ dostep_body(do_step) }}
+{#- commit previous-value slots at end of step -#}
+{%- for pname in previous_vars %}
+    self->{{ pname }}_prev = self->{{ pname }};
+{%- endfor %}
+}

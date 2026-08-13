@@ -157,36 +157,21 @@ pub mod codegen {
     }
 }
 
-/// GALEC / eFMI Algorithm Code export facade (SPEC_0034 GAL-010: frontends
-/// reach the `rumoca-galec-codegen` projection only through this module).
+/// Identity-free GALEC render facade (shared by LSP and WASM addon).
 pub mod galec {
     pub use crate::galec_api::{
-        EMBEDDED_C_GALEC_CONFORMANCE_LINES, EMBEDDED_C_GALEC_CONFORMANCE_SUMMARY,
-        EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET, GALEC_TARGET, GalecCExport,
-        GalecExportError, GalecPackagingPlan, GalecSources, PRODUCTION_CONFORMANCE_LINES,
-        PRODUCTION_CONFORMANCE_SUMMARY, build_scalar_type_map, dae_for_galec_projection,
-        is_galec_target, plan_galec_export, plan_galec_production_export, render_galec_c_export,
-        render_galec_c_files_from_context, render_galec_sources,
-    };
-    pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
-    pub use rumoca_ir_galec::ast::ScalarType;
-
-    /// Curated downward re-export of the eFMI packaging primitives the
-    /// `rumoca` crate's generic container/checksum build step needs
-    /// (SPEC_0029 §8): the SHA-1 primitive and the path/name newtypes live in
-    /// `rumoca-galec-codegen` (Tier 3, below the build step), and the build
-    /// step imports them here rather than taking a direct dependency on the
-    /// projection crate — keeping `rumoca`'s only compiler-facing edge
-    /// `rumoca-compile`.
-    pub use rumoca_galec_codegen::{
-        EfmiError, FilePath, NameWithoutSlashes, Sha1Hex, xml_escape, xs_double,
+        EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET, GALEC_TARGET, GalecRenderError,
+        GalecSources, is_galec_target, render_galec_sources,
     };
 }
 
 /// Read-only DAE analysis helpers exposed through the compile facade.
 pub mod analysis {
     pub use rumoca_phase_dae::balance::BalanceDetail;
-    pub use rumoca_phase_dae::{balance, balance_detail, equations_unknowns, is_balanced};
+    pub use rumoca_phase_dae::{
+        balance, balance_detail, equations_unknowns, fold_hidden_component_outputs_for_projection,
+        is_balanced,
+    };
 }
 
 /// Structural-analysis primitives (BLT sorting, scalarization).

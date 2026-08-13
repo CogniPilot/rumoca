@@ -1,0 +1,32 @@
+version = 1
+ir = "dae"
+name = "embedded-rust-galec"
+description = "GALEC-derived embedded Rust export (block-state struct + startup/recalibrate/do_step over the projected GALEC block) for fixed-sample discrete models"
+execution_mode = "compiled"
+deployment_class = "cpu"
+readiness_level = 2
+completion_message = """GALEC-derived embedded Rust sources compiled to: {{ out_dir }}
+  {{ model_name }}.rs   block-state struct + startup/recalibrate/do_step implementation
+This is a GALEC-derived embedded Rust export.
+Compile: rustc --edition 2021 {{ out_dir }}/{{ model_name }}.rs --crate-type lib"""
+
+[capabilities]
+continuous_states = false
+residual_equations = false
+external_functions = false
+external_tables = false
+random = false
+initialization = false
+events = true
+runtime_events = false
+clocks = true
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+[[files]]
+path = "{{ model_name }}.rs"
+template = "model.rs.jinja"
