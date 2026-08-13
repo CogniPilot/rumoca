@@ -22,6 +22,46 @@ Two classes of cell are deliberately unfilled:
 
 ---
 
+## BLOCKERS — the frozen v3 images cannot fly POSITION
+
+**Four SEV-1 blockers were found on the receipted v3 bytes after this card's
+first draft. The frozen v3 pair (`98e622a3…` / `6a432077…`) carries all four.
+Every POSITION block on this card is RED until a fix set lands in a
+re-receipted, re-reviewed bundle.**
+
+| ID | Finding | Reachability | Effect | Owner |
+| --- | --- | --- | --- | --- |
+| **B1** | **Compiler wrong-code.** `EulerB321.from_Quat` assigns three euler elements per conditional branch; the generated GALEC kept only the **last write per branch**. Pitch and yaw are **hard-zero** in the flight bytes (witnessed: pitch 0.5 rad → euler (0,0,0)). Quaternion and DCM outputs are correct. Replicated in 3 of 6 containers | **Every tick.** `GuidanceController` **consumes it** — its attitude reference is built with **yaw = 0 continuously** | Breaks the attitude reference in any Guidance-active mode | Compiler fix agent (`fix/branch-multi-write-erasure`) |
+| **B2** | **NaN/Inf GPS is ACCEPTED.** A NaN NIS makes every gate comparison false, so `accepted=true`. State is permanently poisoned, `estimate.valid` **stays 1**, and auto-recovery is structurally impossible because acceptance resets the rejection counter. Only an external reset clears it | Any non-finite GPS field | Silent, unrecoverable navigation loss with a valid-looking estimate | Model-hardening agent |
+| **B3** | **Auto re-init adopts the rejected fix.** 50 consecutive rejections re-seed position from the very outlier the gate rejected, reset attitude to identity and velocity to zero **mid-air**. At the 1 kHz wiring this triggers in **51 ms** — the model docstring assumed 20–100 Hz aiding, so the trigger is 10–50× faster than designed. `estimate.valid` stays 1 throughout | 50 consecutive rejections | Mid-air state teleport with no invalidity indication | Model-hardening agent |
+| **B4** | **Flow-induced re-init lockout.** Ordinary preconditions (GPS outage > 1 s + degraded flow + speed > 6.3 m/s): the **shared** rejection counter makes a broken flow sensor invisible under healthy GPS; the outage drives 50 flow rejections → auto re-init → position teleports to the **parameter** origin, velocity to zero → post-re-init `P_vv = 1.0` gates out truthful returning GPS above 6.26 m/s → **permanent re-init loop at ~20 Hz** with `estimate_valid = 1` and `error_signal = 0x0` throughout. Witnessed end-to-end: Guidance consumes v=(0,0,0) at 8–12 m/s true; final position error **147–192 m** | GPS outage + degraded flow + moderate speed | Total loss of navigation, fully silent | Model-hardening agent (acceptance scenario) |
+
+### What this changes on this card
+
+| Block | Was | Now |
+| --- | --- | --- |
+| 0–2 (provenance, props-off gates, ENU walk) | RUN | RUN — unaffected, and B1–B4 make Block 1's status-word observation more important, not less |
+| 3 steps 1–3 (ground interlock, disarmed) | RUN | RUN on v3 — these observe *interlock semantics*, not navigation quality |
+| 3 step 4 (armed restrained surrogate) | RUN | **RED on v3** — arms with Guidance active (B1) |
+| 4 (manual ACRO/ATTITUDE) | RUN | **CONDITIONAL — PENDING-B1-SCOPE.** Does any ACRO/ATTITUDE path consume `eulerRpy_rad`? Confirmed consumer is `GuidanceController`; whether the manual path is clean is **not yet established** and must be answered before Block 4 flies on v3 |
+| 5 (tethered POSITION) | RUN | **RED on v3** |
+| 6 (untethered POSITION) | COND | **RED on v3**, and still COND on ingress |
+| 7–8 (flow) | COND/SKIP | **RED on v3** in addition to PENDING-FLOW-PRODUCER — B4 is a flow-triggered blocker and the flow-path producer requirements are now load-bearing safety requirements, not quality-of-implementation preferences |
+
+### The honest read
+
+The image decision (P6) is effectively made by these findings: **a new bundle
+from a fixed compiler plus a hardened model, re-receipted and re-reviewed, is
+the only path to a POSITION flight.** That also pulls the mission-ingress lanes
+into the image, which closes P5 as a side effect. Timeline consequence accepted.
+
+A GPS-only, no-Guidance day (Blocks 0–2, plus Block 3 steps 1–3) remains
+executable on the frozen v3 images and is still worth flying: it validates the
+GNSS chain, the ENU frame and the ground interlock semantics without depending
+on any of B1–B4.
+
+---
+
 ## 0. Scope: what this test adds, and what it does not
 
 ### 0.1 Prior scope of record (unchanged baseline)
@@ -45,9 +85,9 @@ fail-open default, not an accepted command.
 
 | Addition | Gate that makes it possible | Default disposition |
 | --- | --- | --- |
-| **A. GPS-aided POSITION, tethered** | already in the prior scope (item 2); extended here with explicit GPS-aiding observation | RUN (Block 5) |
-| **B. GPS-aided POSITION, untethered** | the mission-ingress lanes must be in the flown image AND carry the airborne-capability-loss contract | CONDITIONAL — **PENDING-INGRESS** (§1 P5) |
-| **C. Optical-flow aiding** | a calibrated flow producer and transport must exist in the flown image | CONDITIONAL — **PENDING-FLOW-PRODUCER** (§1 P7); at time of writing **no producer exists**, so Blocks 7–8 are expected to be SKIPPED |
+| **A. GPS-aided POSITION, tethered** | already in the prior scope (item 2); extended here with explicit GPS-aiding observation | **RED on v3** (B1) — RUN only on a fixed re-receipted bundle (Block 5) |
+| **B. GPS-aided POSITION, untethered** | the mission-ingress lanes must be in the flown image AND carry the airborne-capability-loss contract | **RED on v3** (B1), and CONDITIONAL — **PENDING-INGRESS** (§1 P5) |
+| **C. Optical-flow aiding** | a calibrated flow producer and transport must exist in the flown image | **RED on v3** (B4), and CONDITIONAL — **PENDING-FLOW-PRODUCER** (§1 P7); at time of writing **no producer exists**, so Blocks 7–8 are expected to be SKIPPED |
 
 ### 0.3 Explicitly still out of scope
 
@@ -82,6 +122,8 @@ day, not that it was reported green in the ledger at some earlier hour.
 | **P7** | Optical-flow producer calibration receipt and transport | A calibrated flow producer in `cerebri_rdd2`, a zros topic carrying it, an adapter feeding `opticalFlow_*` into the eFMU, and a **calibration receipt** (scale/focal, mount rotation, sign verification) | Codex | **RED / PENDING-FLOW-PRODUCER.** Verified directly: `src/processes/navigation_estimator.c` hard-sets `opticalFlow_valid = false; opticalFlow_fresh = false;` on every tick; no flow topic exists in `src/interfaces/zros_topics.{c,h}`; no flow driver in the tree. The `synapse_fbs` v0.9.0 schema *does* define `OpticalFlow` / `OpticalFlowVelocity`, so transport is designable but unbuilt. **Blocks 7–8 SKIP by default.** |
 | **P8** | GNSS observability on the downlink | `gnss status` shell output, `zros topic hz gnss_fix`, and telemetry exposing navigation odometry, origin latch and correction acceptance | Codex | **PENDING-VERIFY.** An earlier audit found VehicleHealth omitted GNSS and the radio downlink exposed neither odometry, origin latch, nor correction acceptance. The M10/diagnostics lane was approved afterwards; confirm on the day against the flown image before Block 1 |
 | **P9** | CUBS2 CSyn v0.9 hard cutover | CUBS2 `west.yml` on `csyn c34dd35d…` / `synapse_fbs v0.9.0` plus validation receipt | Codex (ACKed 13:20) | **PENDING-CUBS2.** *Not an RDD2 flight blocker* — it is a cross-vehicle ABI **release** blocker. Recorded here because it was requested as a prerequisite row; it does not gate any block on this card |
+| **P10** | **B1–B4 fix set in a re-receipted bundle** | Compiler fix for the conditional multi-write erasure (B1) + model hardening for the NaN acceptance predicate (B2), the re-init policy (B3) and the flow-induced lockout (B4); a **new eFMU bundle regenerated, re-receipted with a new manifest digest, and re-reviewed**; new ELF sha256s | Compiler fix agent + model-hardening agent, then Codex for the image | **RED / PENDING-FIXSET.** **Gates every POSITION and flow block.** See the BLOCKERS section |
+| **P11** | Scope of B1 outside Guidance | Confirmation of which consumers read `eulerRpy_rad`. `GuidanceController` is a **confirmed** consumer; the manual ACRO/ATTITUDE path is **unestablished** | Codex | **PENDING-B1-SCOPE.** Gates Block 4 on any v3 image. If any manual-path consumer reads euler, Block 4 is RED on v3 too and the day reduces to Blocks 0–2 + 3 steps 1–3 |
 
 ### 1.1 Honest statement on P4
 
@@ -94,9 +136,15 @@ debt is James's, and it must be recorded on the card before Block 1.
 
 ### 1.2 Hard blockers
 
-**P3 (G7)** is the only prerequisite that blocks *every powered block* on this
-card. If G7 has not been measured on the flown image, the whole card is NO-GO.
-The remaining prerequisites gate specific blocks, as marked.
+- **P3 (G7)** blocks *every powered block*. If G7 has not been measured on the
+  flown image, the whole card is NO-GO.
+- **P10 (B1–B4 fix set)** blocks *every POSITION and flow block* — Blocks 3
+  step 4, 5, 6, 7 and 8. See the BLOCKERS section.
+- **P11 (B1 scope)** blocks Block 4 on any v3 image until answered.
+
+The remaining prerequisites gate specific blocks, as marked. On the frozen v3
+images the executable day is **Blocks 0, 1, 2 and 3 steps 1–3** — and Block 4
+only if P11 comes back clean.
 
 ---
 
@@ -203,10 +251,15 @@ that must be GREEN; **SKIP** = default disposition unless the prerequisite lands
 
 ---
 
-### Block 3 — POSITION interlock checkout, tethered/restrained, props off then props on (RUN)
+### Block 3 — POSITION interlock checkout, tethered/restrained, props off then props on (steps 1–3 RUN; **step 4 RED on v3**)
 
 Verifies the accepted GNSS-readiness interlock contract without asking the
 aircraft to hold anything.
+
+> **Step 4 requires P10.** Steps 1–3 are disarmed ground-side interlock
+> semantics and are unaffected by B1–B4. Step 4 arms the vehicle with Guidance
+> active, so on a v3 image its attitude reference carries the B1 yaw-zero
+> defect. Run steps 1–3 on v3; hold step 4 for the fixed bundle.
 
 **Entry criteria**: Block 2 green. Aircraft restrained/tethered. Area clear.
 
@@ -239,10 +292,18 @@ aircraft to hold anything.
 
 ---
 
-### Block 4 — Manual ACRO / ATTITUDE free flight (RUN)
+### Block 4 — Manual ACRO / ATTITUDE free flight (CONDITIONAL on v3 — **PENDING-B1-SCOPE**)
 
-**Entry criteria**: Blocks 1–3 green. Estimator `RatesValid` true and stable.
-Timing, stacks, RC and actuator gates all green. Pilot brief §5 delivered.
+> **On a v3 image this block does not run until P11 is answered.** B1 hard-zeros
+> pitch and yaw in `eulerRpy_rad`. `GuidanceController` is a confirmed consumer;
+> whether any manual ACRO/ATTITUDE path also consumes euler is **not
+> established**. If it does, this block is RED on v3. Quaternion and DCM outputs
+> are correct, so a manual path that uses only those is clean — but that must be
+> confirmed, not assumed.
+
+**Entry criteria**: Blocks 1–3 (steps 1–3) green. **P11 answered clean, or a
+fixed bundle flown (P10).** Estimator `RatesValid` true and stable. Timing,
+stacks, RC and actuator gates all green. Pilot brief §5 delivered.
 
 **Procedure**
 1. Manual ATTITUDE takeoff to a low hover. Hold.
@@ -254,7 +315,9 @@ Timing, stacks, RC and actuator gates all green. Pilot brief §5 delivered.
 - No estimator invalidity event at any point (see §5.1 — invalidity costs ACRO
   too).
 - `estimate_valid` continuously true in flight.
-- `consecutiveRejectedCorrections` stays below TBD-R5.
+- `consecutiveRejectedCorrections` stays **≤ 5** (R5). Under healthy GPS the
+  counter is *structurally* capped at 5 even with 100% corrupt flow — anything
+  above 5 means the GPS aiding itself is being rejected.
 - Attitude tracking and control feel nominal to the pilot.
 
 **Abort criteria**
@@ -264,16 +327,24 @@ Timing, stacks, RC and actuator gates all green. Pilot brief §5 delivered.
 
 ---
 
-### Block 5 — GPS-aided POSITION, tethered / restrained (RUN — this is the primary new objective)
+### Block 5 — GPS-aided POSITION, tethered / restrained (**RED on v3 — requires P10**; primary new objective on a fixed bundle)
 
-**Entry criteria**: Block 4 green. Aircraft tethered or restrained such that a
-runaway cannot travel. GNSS ready. Origin latched. Spotter posted.
+> **Does not run on the frozen v3 images.** B1 gives Guidance an attitude
+> reference with yaw hard-zeroed continuously; B2/B3 make a poisoned or
+> teleported state indistinguishable from a healthy one on telemetry
+> (`estimate.valid` stays 1 through both). Restraint bounds the consequence but
+> does not make the observation meaningful.
+
+**Entry criteria**: **P10 GREEN** (fixed, re-receipted, re-reviewed bundle).
+Block 4 green. Aircraft tethered or restrained such that a runaway cannot
+travel. GNSS ready. Origin latched. Spotter posted.
 
 **Procedure**
 1. Arm in ATTITUDE, establish a stable low hover within the tether.
 2. Transition to POSITION. Observe **command continuity** across the transition
    (no publication gap, no motor transient).
-3. Hold for TBD-R6 seconds. Observe position and velocity residuals against the
+3. Hold for TBD-R6 seconds *(hold duration — not derivable from model sim; owed
+   by the conduct agent)*. Observe position and velocity residuals against the
    tether-constrained truth.
 4. Introduce a deliberate GNSS degradation (antenna mask) and observe the
    degrade path: effective ATTITUDE, publication continuous, no latch.
@@ -283,22 +354,30 @@ runaway cannot travel. GNSS ready. Origin latched. Spotter posted.
 
 **Success criteria**
 - Command continuity at every mode transition; no publication gap anywhere.
-- GPS position/velocity corrections accepted at the expected rate
-  (TBD-R7 acceptance fraction).
-- Position residual inside the tether envelope, within TBD-R8.
+- GPS position/velocity corrections accepted at **≥ 0.98** of aided ticks (R7).
+- Position residual inside the tether envelope, within **0.30 m** (R8).
 - Degrade and restore behave exactly as Block 3 step 4 proved on the bench.
 - Motor shutdown on disarm is clean and immediate.
 
 **Abort criteria**
 - Any publication gap or motor transient at a POSITION transition → STOP.
-- Correction acceptance below TBD-R9, or `innovationGateRejected` persistently
-  true → STOP; the filter is rejecting the aiding it is supposed to use.
-- `consecutiveRejectedCorrections` approaching 50 (the re-initialization
-  threshold) → land immediately.
+- Correction acceptance below **0.90** (R9), or `innovationGateRejected`
+  persistently true → STOP; the filter is rejecting the aiding it is supposed
+  to use.
+- `consecutiveRejectedCorrections` **≥ 25** → land immediately (§6.7 RF-1).
+  Do not wait for 50: under healthy GPS the counter is structurally capped at
+  5, so 25 means the GPS aiding is being rejected and the vehicle is on the
+  documented path to a B3/B4 re-initialization.
 
 ---
 
-### Block 6 — GPS-aided POSITION, untethered (COND — **PENDING-INGRESS**, P5)
+### Block 6 — GPS-aided POSITION, untethered (**RED on v3 — requires P10**; COND — **PENDING-INGRESS**, P5)
+
+> **Requires P10 in addition to everything below.** B4 in particular is an
+> untethered-flight killer: its preconditions (GPS outage > 1 s, degraded flow,
+> speed > 6.3 m/s) are ordinary, and the failure is silent — `estimate_valid = 1`
+> and `error_signal = 0x0` throughout a permanent re-init loop that took the
+> witnessed case to 147–192 m of position error. No tether bounds that here.
 
 > **This block does not run unless P5 is GREEN.** Specifically: the mission-ingress
 > lanes must be committed, frozen, independently APPROVEd on the integrated
@@ -323,7 +402,8 @@ runaway cannot travel. GNSS ready. Origin latched. Spotter posted.
 
 **Procedure**
 1. Manual ATTITUDE takeoff to a low hover (the shell does **not** take off).
-2. Transition to POSITION with the reference observed valid. Hold TBD-R10 s.
+2. Transition to POSITION with the reference observed valid. Hold TBD-R10 s
+   *(hold duration — not derivable from model sim; owed by the conduct agent)*.
 3. Small commanded reposition within a bounded box, pilot on the sticks.
 4. Deliberate ready→unready GNSS degradation at safe altitude: confirm degrade
    to effective ATTITUDE with continuous publication, pilot retains control.
@@ -332,14 +412,15 @@ runaway cannot travel. GNSS ready. Origin latched. Spotter posted.
 **Success criteria**
 - Reference freshness observed continuously; no interval where the accepted
   reference is stale beyond the **100 ms trajectory-reference budget**.
-- Position hold within TBD-R11; drift rate within TBD-R12.
+- Position hold within **0.30 m** (R11); drift rate within **0.05 m/s** (R12).
 - Degrade path behaves as Block 3/5 proved, in the air, with the pilot reporting
   a flyable vehicle throughout.
 
 **Abort criteria**
 - Reference age exceeds 100 ms at any point → exit POSITION.
 - Any latch created by an airborne readiness loss → land, end the day.
-- Any drift beyond TBD-R13 → exit POSITION to ATTITUDE and land.
+- Any drift beyond **1.0 m** (R13) → exit POSITION to ATTITUDE and land.
+- `consecutiveRejectedCorrections` ≥ 25 → **abort immediately** (§6.7 RF-1).
 
 ---
 
@@ -350,8 +431,18 @@ runaway cannot travel. GNSS ready. Origin latched. Spotter posted.
 > hard-wired invalid. This block runs only if Codex signs off a calibrated
 > producer **and** a calibration receipt, per
 > `2026-08-13-flow-producer-requirements.md`.
+>
+> **Additionally RED on v3 (B4).** Byte-level validation confirmed that
+> `quality`, `groundDistance_m`, `timestamp_s`, `integrationTime_s` and
+> `integratedLineOfSight_rad` are **dead inputs**: a `quality = 0` sample and a
+> NaN-timestamp sample both fuse at **full weight**, and a frozen/stuck flow
+> sensor is **never** gated (its innovation is small by construction) — witnessed
+> 3000/3000 accepted with the estimate at ~1/60 of true speed. The producer
+> requirements are therefore **load-bearing safety requirements**, not
+> implementation preferences.
 
 **Entry criteria (all required)**
+- **P10 GREEN** (B1–B4 fix set in a re-receipted bundle).
 - P7 GREEN: producer + transport + adapter present in the flown image.
 - Calibration receipt exists covering: metric scale (focal length / range
   projection), camera-to-body mount rotation, and **sign verification on all
@@ -376,13 +467,21 @@ runaway cannot travel. GNSS ready. Origin latched. Spotter posted.
 6. Observe `opticalFlowCorrectionAccepted` on the estimator status word while
    GPS is also fresh — confirm the **priority behavior** (mocap > GPS > flow;
    one correction per tick) is understood by the observers.
+7. **Verify the publication phasing** (§4.5): confirm flow and GPS are not
+   published from the same scheduler slot, and record the observed flow-applied
+   fraction. Colliding publication silently starves flow.
 
 **Success criteria**
-- Sign correct on both body axes; magnitude within TBD-R14.
-- Rotation-only test produces velocity below TBD-R15.
+- Sign correct on both body axes; magnitude within **0.10 m/s** (R14).
+- Rotation-only test produces velocity below **0.04 m/s at 2 m AGL**
+  (R15 — **ASSUMPTION-DERIVED, NOT MEASURED**: computed as 0.02 rad/s residual
+  rate × AGL. Scale it with the actual test height, and treat it as an
+  order-of-magnitude expectation until a bench measurement replaces it).
 - Degraded-scene and out-of-range cases produce `valid=false`, not zeros.
 - `opticalFlowCorrectionAccepted` observed true on ticks where no higher-priority
   source is fresh, and `innovationGateRejected` not persistently set.
+- Flow-applied fraction **≥ 0.75** (R23 as a floor); a lower fraction indicates
+  scheduler-slot collision with GPS (§4.5).
 
 **Abort criteria**
 - Any sign error → STOP; flow does not fly.
@@ -398,8 +497,8 @@ runaway cannot travel. GNSS ready. Origin latched. Spotter posted.
 > observation block. Flow provides **no position and no vertical observation**;
 > it is not a GPS substitute and this block must not be described as one.
 
-**Entry criteria**: Block 7 green; Block 5 green; aircraft tethered; textured
-ground surface; height inside the sensor's valid range.
+**Entry criteria**: **P10 GREEN**; Block 7 green; Block 5 green; aircraft
+tethered; textured ground surface; height inside the sensor's valid range.
 
 **Procedure**
 1. Tethered hover in ATTITUDE at a height inside the flow valid range.
@@ -414,32 +513,42 @@ ground surface; height inside the sensor's valid range.
 
 **Success criteria**
 - Flow corrections accepted with `innovationGateRejected` false.
-- Horizontal velocity agreement with the GPS-only baseline within TBD-R16.
-- On GPS mask, vertical drift rate matches the rehearsal prediction TBD-R17
-  (drift is *expected*; the criterion is that it matches prediction).
+- Horizontal velocity agreement with the GPS-only baseline within **0.10 m/s**
+  (R16).
+- On GPS mask, vertical drift rate matches the prediction: **0.06 m/s down over
+  an 8 s mask, 0.11 m/s sustained** (R17). Drift is *expected*; the criterion is
+  that it matches prediction. Deviation means something other than the known
+  observability structure is acting.
 
 **Abort criteria**
-- `consecutiveRejectedCorrections` climbing under flow aiding → exit; flow
-  covariance is mis-scaled.
-- Any `covarianceReinitialized` event → land immediately. Under flow-only aiding
-  a re-initialization seeds position from the **parameter**, not from a sensor,
-  because flow never seeds position — the state will jump.
+- `consecutiveRejectedCorrections` **≥ 25** → **ABORT IMMEDIATELY** (§6.7 RF-1).
+  This is the witnessed precursor to the B3/B4 re-initialization: in sim,
+  corrupt flow with GPS masked drove the counter to 50, re-initialized twice,
+  and took position error from 113 m to **3,924 m**.
+- Any `covarianceReinitialized` event → **loss of navigation** (§6.7 RF-2).
+  The filter has re-seeded position from a sensor that **cannot observe
+  position**; under flow-only aiding the seed is the *parameter* origin. Land
+  immediately and expect the state to have jumped.
+- The GPS mask in step 4 must be **brief and tethered**. B4's witnessed
+  precondition set is a GPS outage over 1 s with degraded flow above 6.3 m/s;
+  do not combine a long mask with any speed.
 
 ---
 
 ## 3. Prerequisite-to-block map
 
-| Block | Requires GREEN | Default disposition |
-| --- | --- | --- |
-| 0 Provenance | P1, P2, P6 | RUN |
-| 1 Props-off gates | P3 (G7), P8 | RUN |
-| 2 ENU walk | Block 1 | RUN |
-| 3 Interlock checkout | Block 2 | RUN |
-| 4 Manual free flight | Block 3 | RUN |
-| 5 Tethered POSITION | Block 4 | RUN |
-| 6 Untethered POSITION | **P5** | COND — SKIP if the frozen v3 image is flown |
-| 7 Flow ground checkout | **P7** | COND — **SKIP** as drafted |
-| 8 Flow-aided hover | **P7** + Block 7 | COND — **SKIP** as drafted |
+| Block | Requires GREEN | On frozen v3 | On a fixed re-receipted bundle |
+| --- | --- | --- | --- |
+| 0 Provenance | P1, P2, P6 | RUN | RUN |
+| 1 Props-off gates | P3 (G7), P8 | RUN | RUN |
+| 2 ENU walk | Block 1 | RUN | RUN |
+| 3 Interlock, steps 1–3 | Block 2 | RUN | RUN |
+| 3 Interlock, step 4 (armed) | Block 2, **P10** | **RED** | RUN |
+| 4 Manual free flight | Block 3, **P11** | COND on P11 | RUN |
+| 5 Tethered POSITION | Block 4, **P10** | **RED** | RUN |
+| 6 Untethered POSITION | **P10** + **P5** | **RED** | COND on P5 |
+| 7 Flow ground checkout | **P10** + **P7** | **RED** | COND — **SKIP** as drafted |
+| 8 Flow-aided hover | **P10** + **P7** + Block 7 | **RED** | COND — **SKIP** as drafted |
 
 ---
 
@@ -455,6 +564,21 @@ mocap → joint GPS(pos+vel) → GPS position → GPS velocity → optical flow.
 A fresh flow sample arriving on the same tick as a fresh GPS sample is
 **discarded, not queued**. The estimator thread is IMU-driven (~1600 Hz) and
 GNSS is 10 Hz, so collisions are infrequent but real.
+
+### 4.5 Wiring note — flow and GPS must be phase-offset
+
+**Flow and GPS published from the same scheduler slot silently starves flow.**
+Because `fresh` is consumed per tick with no queue, a colliding sample is
+**discarded, not deferred**. Measured both ways: in sim, a colliding publication
+phase left only **80% of flow samples applied**; on the flight bytes, **100% of
+flow samples on collision ticks are discarded**.
+
+There is no telemetry that announces this — the flow producer reports healthy,
+the estimator reports no rejection (the correction was never attempted), and the
+only observable is a lower-than-expected `opticalFlowCorrectionAccepted` rate.
+
+**Requirement on the producer/integrator: phase-offset flow publication from GPS
+publication.** This is verified in Block 7 step 7 and watched as F6 in §6.5.
 
 ### 4.2 Innovation gating and re-initialization
 
@@ -489,6 +613,23 @@ while vertical free-drifts (≈1 m of vertical error after disarm in the 45 s
 reference mission). This is the observability structure, not a defect, and it
 must not be "fixed" on the flight line.
 
+**Altitude, stated for the flight team without hedging: optical flow observes
+NO vertical axis and NO position.** The `H` matrix has **zero position columns**
+— verified from source *and* from simulation. Flow-navigated altitude
+**free-runs** at roughly **+0.10 m/s**, reaching **2.75 m of vertical error over
+45 s**. No flow calibration or tuning changes this; it is the rank of the
+measurement.
+
+Two qualification gates on the pinned lineage fail on exactly this behavior.
+Those failures are **pending confirmation against the pinned qualification
+rumoca revision `149c2ff3`** — until that confirmation lands, treat them as
+*expected-and-explained*, not as new findings, and do not accept any "fix" that
+merely suppresses the trace.
+
+**Operational consequence:** any block that relies on flow while the vertical
+channel matters needs an independent altitude source. **None is wired.** This is
+why flow is an *aiding-in-addition-to-GPS* observation only (§0.3).
+
 ---
 
 ## 5. Pilot brief
@@ -505,6 +646,21 @@ remains flyable in manual under estimator invalidity" is **NOT TRUE**.
 Mitigation of record: the no-GPS state is not reachable as a wedge — the
 generated initialization falls back to the initial tunables and still
 initializes, so an onboard build with no fix still flies.
+
+### 5.1a The failures that do NOT announce themselves — brief this explicitly
+
+The §5.1 failure is loud: motors zero, fault latches, the crew knows. **B2, B3
+and B4 are the opposite and the crew must be told so.** In every witnessed case
+of a poisoned state (B2), a mid-air state teleport (B3) and the flow-induced
+re-init lockout (B4), **`estimate_valid` stayed 1 and `error_signal` stayed
+0x0** while the navigation solution was destroyed — in B4's case to 147–192 m of
+position error while Guidance was consuming v = (0,0,0) at 8–12 m/s true.
+
+**Practical brief:** a healthy-looking telemetry page is not evidence of a
+healthy navigation solution. The only observables are
+`consecutiveRejectedCorrections` (RF-1) and `covarianceReinitialized` (RF-2).
+If the aircraft's behavior and the position display disagree, **believe the
+aircraft.** Fly visually and land.
 
 ### 5.2 POSITION refusal and degrade behavior
 
@@ -543,9 +699,20 @@ and that is expected; flow is never a GPS substitute on this card.
 
 ## 6. Telemetry watch items
 
-Envelope columns marked `TBD-R#` are owned by the rehearsal-sim agent. Threshold
-columns with a citation are **contract numbers from source** and are not
-rehearsal outputs — they do not change.
+Threshold columns with a citation are **contract numbers from source** and are
+not rehearsal outputs — they do not change.
+
+**Rehearsal envelope provenance.** Filled numeric cells below come from the
+rehearsal sim: **rumoca sim @ `44f67022`, corpus `a9e5037`, quote-aware parse,
+deterministic-sinusoid noise.** They are **envelope indications, not
+Gaussian-calibrated statistics**, and the **OMC oracle is pending**. Treat them
+as "this is the shape of the expected behavior", not as certified limits. One
+value (**R15**) is flagged in place as assumption-derived rather than simulated.
+
+**Cells still marked `TBD-R#`** were **explicitly declined** by the rehearsal
+agent as *not derivable from model simulation* — they are owed by the flight-C,
+producer and test-conduct agents. These are: **R1–R4, R6, R10, R18, R33–R68**.
+They are not oversights and must not be filled by inference.
 
 ### 6.1 Estimator health
 
@@ -553,13 +720,13 @@ rehearsal outputs — they do not change.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 | `estimate_valid` | odometry publish gate | true, continuous | any single-tick dropout | any false transition | Land immediately (§5.1 — ACRO is gone too) |
 | E2 | `status_initialized` | estimator status | true | — | false in flight | Land immediately |
-| E3 | `predictionAccepted` | estimator status | true every tick | TBD-R18 dropout rate | false while IMU valid | Land; IMU path suspect |
-| E4 | `consecutiveRejectedCorrections` | estimator status | 0 | ≥ TBD-R19 | ≥ 25 (half of the 50 re-init limit) | Exit POSITION, land |
-| E5 | `covarianceReinitialized` | estimator status | never true after origin latch | — | **any** true event | Land immediately; state may jump |
-| E6 | `innovationGateRejected` | estimator status | transient only | > TBD-R20 fraction of aided ticks | persistently true | Exit aided modes, land |
-| E7 | `gpsPositionCorrectionAccepted` | estimator status | true at aiding rate | acceptance < TBD-R21 | acceptance < TBD-R9 | Abort Block 5/6 |
-| E8 | `gpsVelocityCorrectionAccepted` | estimator status | true when both GPS validities set | TBD-R22 | TBD-R22 | Note; GPS velocity is dropped when course is invalid (accepted design) |
-| E9 | `opticalFlowCorrectionAccepted` | estimator status | *(flow blocks only)* true on non-colliding ticks | TBD-R23 | never true while flow claims valid | Abort Block 8 |
+| E3 | `predictionAccepted` | estimator status | true every tick | TBD-R18 dropout rate *(owed by flight-C agent)* | false while IMU valid | Land; IMU path suspect |
+| E4 | `consecutiveRejectedCorrections` | estimator status | 0 (≤ 5 under healthy GPS — structurally capped, R5) | **≥ 6** (R19) — GPS aiding itself is now being rejected | **≥ 25** — see RF-1 in §6.7 | **Abort immediately**, land |
+| E5 | `covarianceReinitialized` | estimator status | never true after origin latch | — | **any** true event | Land immediately; state has jumped. In a flow block see RF-2 |
+| E6 | `innovationGateRejected` | estimator status | transient only | **> 0.02** of aided ticks (R20) | persistently true | Exit aided modes, land |
+| E7 | `gpsPositionCorrectionAccepted` | estimator status | **≥ 0.98** of aided ticks (R7) | acceptance **< 0.98** (R21) | acceptance **< 0.90** (R9) | Abort Block 5/6 |
+| E8 | `gpsVelocityCorrectionAccepted` | estimator status | **100% of GPS ticks** (R22) when both GPS validities are set | below 100% of GPS ticks | sustained below 100% | Note; GPS velocity is dropped when course is invalid (accepted design). A shortfall means the velocity path is degraded, not merely course-invalid |
+| E9 | `opticalFlowCorrectionAccepted` | estimator status | *(flow blocks only)* true on non-colliding ticks | applied fraction **< 0.75** (R23) — suspect scheduler-slot collision (§4.5) | never true while flow claims valid | Abort Block 8 |
 | E10 | `rumoca_galec_error_signal_status` | generated step | 0 | any nonzero | any nonzero | Land; generated-code error signal |
 | E11 | Estimator outputs finite | firmware `efmu_estimate_is_finite` | true | — | false | Land immediately |
 
@@ -567,12 +734,12 @@ rehearsal outputs — they do not change.
 
 | # | Signal | Nominal | Yellow | Red | Action |
 | --- | --- | --- | --- | --- | --- |
-| N1 | ENU position vs known reference | TBD-R24 | TBD-R25 | TBD-R26 | Exit POSITION |
-| N2 | ENU velocity magnitude at hover | TBD-R27 | TBD-R28 | TBD-R29 | Exit POSITION |
-| N3 | Position hold drift rate (Block 5/6) | TBD-R12 | TBD-R30 | TBD-R13 | Exit POSITION to ATTITUDE |
-| N4 | Vertical estimate drift (flow blocks) | matches TBD-R17 prediction | TBD-R31 | TBD-R32 | Abort Block 8 (drift is expected; deviation from prediction is not) |
-| N5 | Attitude vs visual | agrees | TBD-R33 | obvious disagreement | Land |
-| N6 | `quality_pct` (published odometry) | TBD-R34 | TBD-R35 | TBD-R36 | Exit POSITION |
+| N1 | ENU position vs known reference | **0.05 m** (R24) | **0.30 m** (R25) | **1.0 m** (R26) | Exit POSITION |
+| N2 | ENU velocity magnitude at hover | **0.04 m/s** (R27) | **0.15 m/s** (R28) | **0.50 m/s** (R29) | Exit POSITION |
+| N3 | Position hold drift rate (Block 5/6) | **≤ 0.05 m/s** (R12) | **0.30 m** excursion (R30) | **1.0 m** (R13) | Exit POSITION to ATTITUDE |
+| N4 | Vertical estimate drift (flow blocks) | matches prediction: **0.06 m/s down over an 8 s mask, 0.11 m/s sustained** (R17) | **0.15 m/s** (R31) | **0.30 m/s** (R32) | Abort Block 8 (drift is expected; deviation from prediction is not) |
+| N5 | Attitude vs visual | agrees | TBD-R33 *(owed by conduct agent)* | obvious disagreement | Land. **On a v3 image, yaw is hard-zero in `eulerRpy_rad` (B1) — do not use euler telemetry to judge this** |
+| N6 | `quality_pct` (published odometry) | TBD-R34 *(owed by flight-C agent)* | TBD-R35 | TBD-R36 | Exit POSITION |
 | N7 | `reset_counter` (published odometry) | static | any increment | repeated increments | Land |
 
 ### 6.3 GNSS
@@ -606,7 +773,9 @@ rehearsal outputs — they do not change.
 | F2 | Producer quality metric | TBD-R57 | TBD-R58 | TBD-R59 | Abort flow blocks |
 | F3 | Range / height above ground | inside the sensor's `min/max_ground_distance_m` | TBD-R60 | outside the band | Flow must self-invalidate; if it does not, abort |
 | F4 | Flow sample age at fuse | TBD-R61 | TBD-R62 | > the staleness limit set in the requirements doc (OPEN-F5) | Abort |
-| F5 | Flow-vs-GPS horizontal velocity agreement | TBD-R16 | TBD-R63 | TBD-R64 | Abort Block 8 |
+| F5 | Flow-vs-GPS horizontal velocity agreement | **≤ 0.10 m/s** (R16) | TBD-R63 | TBD-R64 | Abort Block 8 |
+| F6 | **Flow applied fraction** (accepted ÷ published) | ≥ 0.75 (R23) | < 0.75 | near 0 | Scheduler-slot collision with GPS (§4.5) — flow is being silently starved. Phase-offset the producer; do not tune the filter |
+| F7 | Flow producer publish phase vs GPS publish phase | offset | — | same slot | Stop; §4.5 |
 
 ### 6.6 Airframe / standard
 
@@ -616,6 +785,24 @@ rehearsal outputs — they do not change.
 | A2 | RC link quality / failsafe | any failsafe entry | Per standard failsafe procedure |
 | A3 | Motor outputs | saturation or asymmetry beyond TBD-R66 | Land |
 | A4 | Vibration / IMU clipping | TBD-R67 | Land; the estimator's prediction path is affected |
+
+### 6.7 RED FLAGS — immediate abort, no discussion
+
+These two are called out separately because both are **silent**: in every
+witnessed case `estimate_valid` stayed 1 and `error_signal` stayed 0x0 while the
+navigation solution was being destroyed. Nothing else on the telemetry will tell
+the crew. Any observer calls these; no one may talk them down.
+
+| ID | Trigger | Why | Action |
+| --- | --- | --- | --- |
+| **RF-1** | `consecutiveRejectedCorrections` **≥ 25** while in any **GPS-denied or flow** block | Sim-witnessed **precursor to the covariance re-initialization that loses the vehicle**. Scenario S3b: corrupt flow with GPS masked drove the counter to 50 → re-init **×2** → position error **113 m → 3,924 m**. Under *healthy* GPS the counter is structurally capped at **5**, so a reading of 25 means the aiding the vehicle depends on is being rejected and the clock is running | **ABORT IMMEDIATELY.** Land. See **B3**, **B4** |
+| **RF-2** | `covarianceReinitialized` true in **any flow block** | **Loss of navigation.** The filter has re-seeded position from a sensor that **cannot observe position** — flow has zero position columns in `H` (§4.4), so the seed falls through to the *parameter* origin, attitude resets to identity and velocity to zero, mid-air. `estimate.valid` stays 1 throughout | **ABORT IMMEDIATELY.** Treat the position solution as invalid from that instant. See **B3**, **B4** |
+
+Both are direct manifestations of the **B1–B4** blocker set (see the BLOCKERS
+section). On the frozen v3 images the underlying defects are present and
+unfixed, which is why every flow and POSITION block is RED there. On a fixed
+bundle these rows remain as regression watches — the re-init policy is being
+redesigned, not deleted.
 
 ---
 
@@ -629,7 +816,7 @@ Ascending severity. The pilot may skip levels upward at any time without asking.
 | **L1 — Hold** | Two yellows, or one yellow trending toward red | Stop advancing; hold the current condition; do not enter the next block | Continue when the signal recovers and is stable for TBD-R68 |
 | **L2 — Mode rollback** | Any red in §6.2 or §6.5, or reference age ≥ 100 ms | Exit POSITION → ATTITUDE. Pilot flies manually. Flow blocks: disable flow aiding | Only after ground review of the log |
 | **L3 — Land** | Any red in §6.1 (except E1/E5/E11), §6.3 G-5, §6.4 T3–T7 | Land in ATTITUDE at the nearest safe point. Disarm on the ground | Day continues only with a named cause and a written disposition |
-| **L4 — Land immediately** | E1 (`estimate_valid` false), E5 (`covarianceReinitialized`), E11 (non-finite outputs), T1 ≥ 5 ms | Immediate descent and landing. Expect that if the estimate is invalid the aircraft is **already** motors-zero and latched (§5.1) — the pilot's job is to protect people, not to recover the aircraft | **End of flying for the day.** |
+| **L4 — Land immediately** | E1 (`estimate_valid` false), E5 (`covarianceReinitialized`), E11 (non-finite outputs), T1 ≥ 5 ms, **RF-1**, **RF-2** | Immediate descent and landing. Expect that if the estimate is invalid the aircraft is **already** motors-zero and latched (§5.1) — the pilot's job is to protect people, not to recover the aircraft. **For RF-1/RF-2 the opposite trap applies: the aircraft will look healthy while its position solution is gone. Fly it visually. Do not trust the position display** | **End of flying for the day.** |
 | **L5 — Stop the day** | Any Block 0/1/2 abort criterion; any ENU sign error; any publication gap at a POSITION transition; any flow sign error | Power down. No further blocks. Written finding into the ledger before any re-attempt | New card |
 
 ### 7.1 Block-level rollback
@@ -668,7 +855,12 @@ closes it.
 | PENDING-FLOW-PRODUCER (P7) | Calibrated flow producer + transport + adapter + calibration receipt | Blocks 7, 8 | Producer implementation meeting `2026-08-13-flow-producer-requirements.md`, plus a calibration receipt covering scale, mount rotation and sign |
 | PENDING-VERIFY-P8 | GNSS observability on shell + downlink in the flown image | Block 1 | Observed `gnss status`, `zros topic hz gnss_fix`, and downlink fields on the day |
 | PENDING-CUBS2 (P9) | CUBS2 CSyn v0.9 hard cutover | **none** — release blocker only | CUBS2 `west.yml` + validation receipt |
-| TBD-R1 … TBD-R68 | Rehearsal-sim expected-value envelope | §2 success criteria, §6 envelope columns | Rehearsal agent's envelope table |
+| **PENDING-FIXSET (P10)** | **B1–B4** fix set: compiler conditional-multi-write fix, NaN acceptance predicate, re-init policy redesign, flow-lockout acceptance scenario — in a **new, re-receipted, re-reviewed bundle** | **Blocks 3 step 4, 5, 6, 7, 8** | New manifest digest + new ELF sha256s + fresh adversarial APPROVE |
+| **PENDING-B1-SCOPE (P11)** | Which consumers read `eulerRpy_rad` outside Guidance | **Block 4** on any v3 image | Codex's confirmation of the manual ACRO/ATTITUDE path |
+| PENDING-FLOW-PHASING | Flow producer phase-offset from GPS publication (§4.5) | Blocks 7, 8 | Observed publish phases + flow applied fraction ≥ 0.75 |
+| PENDING-QUAL-149c2ff3 | Confirmation of the two failing altitude qualification gates against pinned qualification rumoca revision `149c2ff3` | §4.4 interpretation | Confirmation that both failures are the known flow-vertical-unobservability behavior |
+| TBD-R1–R4, R6, R10, R18, R33–R68 | **Declined by the rehearsal agent** — not derivable from model sim | §2 success criteria, §6 envelope columns | Owed by the flight-C, producer and test-conduct agents |
+| R5, R7–R9, R11–R17, R19–R32 | **FILLED** from rumoca sim @ `44f67022`, corpus `a9e5037` | §2, §6 | Envelope indications only; OMC oracle pending. R15 is assumption-derived, not simulated |
 
 ---
 
@@ -676,9 +868,17 @@ closes it.
 
 This card is not valid for flight until the following are filled in on the day:
 
+- [ ] **P10 (B1–B4 fix set) GREEN with a re-receipted bundle, or every POSITION
+      and flow block explicitly struck.** No POSITION block flies on v3.
+- [ ] **P11 (B1 scope) answered** before Block 4 flies on any v3 image.
 - [ ] All `PENDING-*` items either GREEN with a named receipt, or the dependent
       block explicitly marked SKIPPED.
-- [ ] All `TBD-R#` cells populated from the rehearsal envelope.
+- [ ] Remaining `TBD-R#` cells (R1–R4, R6, R10, R18, R33–R68) populated by the
+      flight-C, producer and conduct agents — the rehearsal agent declined them
+      as not derivable from model simulation.
+- [ ] Rehearsal-filled cells re-confirmed once the **OMC oracle** lands; they are
+      currently envelope indications, not calibrated limits.
+- [ ] **RF-1 and RF-2 briefed to every observer**, with abort authority confirmed.
 - [ ] P4 provenance disposition recorded (accepted debt or blocker) — James.
 - [ ] Flown image sha256 and `modelica_models` pin written on the card — Block 0.
 - [ ] Pilot brief §5 delivered and acknowledged, including §5.1.

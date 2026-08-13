@@ -161,14 +161,21 @@ With GNSS at 10 Hz and a plausible flow rate of 10–50 Hz against a ~1600 Hz ti
 collisions are rare but nonzero, and they are systematic if the two producers
 share a timing source.
 
-> **OPEN-F2 — dropped-sample policy.**
-> **Proposed default: accept the loss.** Presenting each sample once matches the
-> model's semantics exactly and adds no state. The adapter *may* instead hold
-> `fresh` until a tick where no higher-priority source is fresh, bounded by the
-> staleness limit (OPEN-F5) — this recovers the dropped samples but makes the
-> fused sample slightly older. Pick one and state it; do not implement both.
-> Whichever is chosen, the **rate at which flow samples are dropped by priority
-> must be counted and exposed** so the flight team can see it.
+> **~~OPEN-F2~~ — RESOLVED by measurement; this is now a requirement, not a choice.**
+> The earlier proposed default ("accept the loss") is **withdrawn.** Byte-level
+> and sim validation measured the actual cost: with a colliding publication phase
+> only **80% of flow samples are applied** in sim, and on the flight bytes
+> **100% of flow samples on collision ticks are discarded**. Publishing flow and
+> GPS from the same scheduler slot **starves flow entirely**, silently — the
+> producer looks healthy, the estimator reports no rejection because the
+> correction was never attempted, and the only observable is a low
+> `opticalFlowCorrectionAccepted` rate.
+>
+> **Requirement: the producer MUST phase-offset flow publication from GPS
+> publication.** The flow-applied fraction must be counted and exposed, with a
+> floor of **0.75**. Holding `fresh` until a non-colliding tick remains an
+> acceptable *additional* mitigation bounded by the staleness limit (OPEN-F5),
+> but it does not substitute for phase-offsetting.
 
 ---
 
@@ -504,7 +511,7 @@ pass before any flow block on the test card runs:
 | ID | Question | Proposed default | Who decides |
 | --- | --- | --- | --- |
 | **OPEN-F1** | Raw-flow → velocity sign/scale derivation | Producer-owned; correctness established by a mandatory hand-translation bench test (test-card Block 7), never by reasoning alone | Codex + flight test |
-| **OPEN-F2** | Flow samples dropped by aiding priority | Accept the loss (matches model semantics); count and expose the drop rate. Alternative hold-until-consumable policy is permitted but must be chosen exclusively | Codex |
+| ~~**OPEN-F2**~~ | Flow samples dropped by aiding priority | **RESOLVED — now a requirement.** Producer MUST phase-offset flow publication from GPS; same-slot publication discards 100% of colliding flow samples on the bytes (80% applied in sim). Count and expose the applied fraction; floor 0.75 | Closed by measurement |
 | **OPEN-F3** | Lever-arm `ω × r` compensation | Producer compensates; omission allowed only with the magnitude arithmetic written into the calibration receipt | Codex |
 | **OPEN-F4** | Covariance-inflation bound for the 2-dof flow measurement | Do not use inflation initially; use `valid=false`. If wanted later, re-probe on the v3 bytes for the 2-dof path — the GPS `1e4`/`1e6` numbers do **not** transfer | Claude (probe) + Codex |
 | **OPEN-F5** | Flow staleness limit and latency budget | ≤ 30 ms sample-to-fuse; `valid=false` beyond 50 ms. A starting point, not a derived limit — replace with bench + rehearsal numbers | Codex + rehearsal |
